@@ -1,5 +1,6 @@
 use ignore::Walk;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -7,11 +8,86 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
+use tokio::sync::oneshot;
+use tokio::time::{timeout, Duration};
 
 mod scanner;
 
 struct DeepAuditState {
     child: Mutex<Option<CommandChild>>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
+    stdout_buffer: Mutex<String>,
+}
+
+fn extract_mcp_text(value: &serde_json::Value) -> String {
+    if let Some(result) = value.get("result") {
+        if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
+            let mut out = String::new();
+            for item in content {
+                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                    out.push_str(text);
+                }
+            }
+            return out;
+        }
+        if let Some(text) = result.as_str() {
+            return text.to_string();
+        }
+        return result.to_string();
+    }
+
+    value.to_string()
+}
+
+async fn handle_python_stdout(app: &AppHandle, chunk: String) {
+    let state = app.state::<DeepAuditState>();
+    let mut buffer = state.stdout_buffer.lock().unwrap();
+    buffer.push_str(&chunk);
+
+    loop {
+        let Some(pos) = buffer.find('\n') else {
+            break;
+        };
+        let line = buffer.drain(..=pos).collect::<String>();
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parsed: serde_json::Result<serde_json::Value> = serde_json::from_str(line);
+        match parsed {
+            Ok(json) => {
+                if json.get("jsonrpc").and_then(|v| v.as_str()) == Some("2.0") {
+                    let id = json.get("id").and_then(|v| v.as_u64());
+                    if let Some(id) = id {
+                        let sender = {
+                            let mut pending = state.pending.lock().unwrap();
+                            pending.remove(&id)
+                        };
+
+                        if let Some(sender) = sender {
+                            if let Some(err) = json.get("error") {
+                                let msg = err
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("MCP 调用失败");
+                                let _ = sender.send(Err(msg.to_string()));
+                            } else {
+                                let text = extract_mcp_text(&json);
+                                let _ = sender.send(Ok(text));
+                            }
+                            continue;
+                        }
+                    }
+                }
+
+                let _ = app.emit("mcp-message", line.to_string());
+            }
+            Err(_) => {
+                let _ = app.emit("mcp-message", line.to_string());
+            }
+        }
+    }
 }
 
 async fn init_db(app: &AppHandle) -> Result<SqlitePool, String> {
@@ -115,19 +191,27 @@ async fn open_project(
 
         *child_guard = Some(child);
 
+        // Send Initialize sequence
+        if let Some(c) = child_guard.as_mut() {
+            let init_msg = "{\"jsonrpc\": \"2.0\", \"method\": \"initialize\", \"params\": {\"protocolVersion\": \"2024-11-05\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"DeepAuditClient\", \"version\": \"1.0.0\"}}, \"id\": 0}\n";
+            let _ = c.write(init_msg.as_bytes());
+
+            let initialized_msg = "{\"jsonrpc\": \"2.0\", \"method\": \"notifications/initialized\", \"params\": {}}\n";
+            let _ = c.write(initialized_msg.as_bytes());
+        }
+
         // Spawn listener
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
                 match event {
                     CommandEvent::Stdout(line) => {
-                        let text = String::from_utf8_lossy(&line);
-                        println!("Python Stdout: {}", text);
-                        app_handle.emit("mcp-message", text.to_string()).unwrap();
+                        let text = String::from_utf8_lossy(&line).to_string();
+                        handle_python_stdout(&app_handle, text).await;
                     }
                     CommandEvent::Stderr(line) => {
                         let text = String::from_utf8_lossy(&line);
-                        eprintln!("Python Stderr: {}", text);
+                        let _ = app_handle.emit("mcp-message", format!("Python: {}", text));
                     }
                     _ => {}
                 }
@@ -135,16 +219,61 @@ async fn open_project(
         });
     }
 
-    // Send "analyze" command to Python
-    if let Some(child) = child_guard.as_mut() {
-        let msg = format!(
-            "{{\"jsonrpc\": \"2.0\", \"method\": \"analyze\", \"params\": {{\"path\": \"{}\"}}}}\n",
-            path.replace("\\", "\\\\")
-        );
-        child.write(msg.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+#[tauri::command]
+async fn call_mcp_tool(
+    state: State<'_, DeepAuditState>,
+    tool_name: String,
+    arguments: String, // JSON string
+) -> Result<String, String> {
+    // Log tool call attempt
+    println!("Calling MCP Tool: {} with args: {}", tool_name, arguments);
+
+    let id: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX);
+
+    let (tx, rx) = oneshot::channel::<Result<String, String>>();
+
+    {
+        let mut pending = state.pending.lock().unwrap();
+        pending.insert(id, tx);
     }
 
-    Ok(path)
+    let write_result = {
+        let mut child_guard = state.child.lock().unwrap();
+        if let Some(child) = child_guard.as_mut() {
+            let msg = format!(
+                "{{\"jsonrpc\": \"2.0\", \"method\": \"tools/call\", \"params\": {{\"name\": \"{}\", \"arguments\": {}}}, \"id\": {}}}\n",
+                tool_name, arguments, id
+            );
+
+            child.write(msg.as_bytes()).map_err(|e| e.to_string())
+        } else {
+            Err("MCP 服务器未运行".to_string())
+        }
+    };
+
+    if let Err(e) = write_result {
+        let mut pending = state.pending.lock().unwrap();
+        pending.remove(&id);
+        return Err(e);
+    }
+
+    match timeout(Duration::from_secs(120), rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("MCP 响应通道已关闭".to_string()),
+        Err(_) => {
+            let mut pending = state.pending.lock().unwrap();
+            pending.remove(&id);
+            Err("MCP 调用超时".to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -211,9 +340,9 @@ async fn search_files(query: String, path: String) -> Result<Vec<SearchResult>, 
 async fn get_mcp_status(state: State<'_, DeepAuditState>) -> Result<String, String> {
     let child = state.child.lock().unwrap();
     if child.is_some() {
-        Ok("Running".to_string())
+        Ok("运行中".to_string())
     } else {
-        Ok("Stopped".to_string())
+        Ok("已停止".to_string())
     }
 }
 
@@ -221,22 +350,77 @@ async fn get_mcp_status(state: State<'_, DeepAuditState>) -> Result<String, Stri
 async fn list_mcp_tools() -> Result<Vec<String>, String> {
     Ok(vec![
         "analyze_project".to_string(),
-        "explain_vulnerability".to_string(),
+        "get_analysis_report".to_string(),
+        "find_call_sites".to_string(),
+        "get_call_graph".to_string(),
         "read_file".to_string(),
+        "list_files".to_string(),
         "search_files".to_string(),
+        "get_code_structure".to_string(),
+        "search_symbol".to_string(),
+        "get_class_hierarchy".to_string(),
     ])
 }
 
 #[tauri::command]
-async fn restart_mcp_server(state: State<'_, DeepAuditState>) -> Result<String, String> {
+async fn restart_mcp_server(
+    app: AppHandle,
+    state: State<'_, DeepAuditState>,
+) -> Result<String, String> {
     let mut child_guard = state.child.lock().unwrap();
+
+    // Kill existing
     if let Some(child) = child_guard.take() {
         let _ = child.kill();
     }
-    Ok(
-        "MCP Server Stopped. It will auto-restart on next project action.http://127.0.0.1:8765"
-            .to_string(),
-    )
+
+    {
+        let mut pending = state.pending.lock().unwrap();
+        pending.clear();
+        let mut buffer = state.stdout_buffer.lock().unwrap();
+        buffer.clear();
+    }
+
+    // Start Python Sidecar
+    let script_path = "../python-sidecar/agent.py";
+    let (mut rx, child) = app
+        .shell()
+        .command("python")
+        .args(&[script_path])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    *child_guard = Some(child);
+
+    // Send Initialize sequence
+    if let Some(c) = child_guard.as_mut() {
+        let init_msg = "{\"jsonrpc\": \"2.0\", \"method\": \"initialize\", \"params\": {\"protocolVersion\": \"2024-11-05\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"DeepAuditClient\", \"version\": \"1.0.0\"}}, \"id\": 0}\n";
+        let _ = c.write(init_msg.as_bytes());
+
+        let initialized_msg =
+            "{\"jsonrpc\": \"2.0\", \"method\": \"notifications/initialized\", \"params\": {}}\n";
+        let _ = c.write(initialized_msg.as_bytes());
+    }
+
+    // Spawn listener
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    let text = String::from_utf8_lossy(&line).to_string();
+                    handle_python_stdout(&app_handle, text).await;
+                }
+                CommandEvent::Stderr(line) => {
+                    let text = String::from_utf8_lossy(&line);
+                    let _ = app_handle.emit("mcp-message", format!("Python: {}", text));
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok("MCP 服务器已重启 (Stdio 模式)。".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -253,6 +437,8 @@ pub fn run() {
         })
         .manage(DeepAuditState {
             child: Mutex::new(None),
+            pending: Mutex::new(HashMap::new()),
+            stdout_buffer: Mutex::new(String::new()),
         })
         .invoke_handler(tauri::generate_handler![
             open_project,
@@ -260,7 +446,8 @@ pub fn run() {
             search_files,
             get_mcp_status,
             list_mcp_tools,
-            restart_mcp_server
+            restart_mcp_server,
+            call_mcp_tool
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

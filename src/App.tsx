@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import Editor from '@monaco-editor/react'
@@ -10,19 +10,18 @@ import {
   ShieldAlert,
   Search,
   GitBranch,
-  Bug,
   ChevronRight,
   ChevronDown,
   Folder,
   Network,
   Terminal,
-  Loader2
+  Loader2,
+  Hammer
 } from 'lucide-react'
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import {
   ResizableHandle,
@@ -161,6 +160,30 @@ const FileTreeNode = ({ node, level, onSelect, selectedPath }: { node: FileNode,
   )
 }
 
+function getLanguageFromPath(path: string | null): string {
+  if (!path) return 'Plain Text';
+  const ext = path.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'ts': return 'TypeScript';
+    case 'tsx': return 'TypeScript React';
+    case 'js': return 'JavaScript';
+    case 'jsx': return 'JavaScript React';
+    case 'rs': return 'Rust';
+    case 'py': return 'Python';
+    case 'json': return 'JSON';
+    case 'css': return 'CSS';
+    case 'html': return 'HTML';
+    case 'md': return 'Markdown';
+    case 'sql': return 'SQL';
+    case 'toml': return 'TOML';
+    case 'yaml':
+    case 'yml': return 'YAML';
+    case 'lock': return 'Lock File';
+    case 'gitignore': return 'Git Ignore';
+    default: return ext ? ext.toUpperCase() : 'Plain Text';
+  }
+}
+
 function App() {
   const [projectPath, setProjectPath] = useState<string>('')
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -168,12 +191,12 @@ function App() {
   const [fileTree, setFileTree] = useState<FileNode[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [openFiles, setOpenFiles] = useState<string[]>([])
-  const [fileContent, setFileContent] = useState<string>('// Select a file to view content')
-  const [vulnerabilities, _setVulnerabilities] = useState<Vulnerability[]>([])
+  const [fileContent, setFileContent] = useState<string>('// 请选择文件以查看内容')
+  const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([])
   const logsEndRef = useRef<HTMLDivElement>(null)
 
   const [isOutputVisible, setIsOutputVisible] = useState(true)
-  const [activeSidebarView, setActiveSidebarView] = useState<'explorer' | 'search' | 'graph'>('explorer')
+  const [activeSidebarView, setActiveSidebarView] = useState<'explorer' | 'search' | 'graph' | 'tools'>('explorer')
 
   // Search State
   const [searchQuery, setSearchQuery] = useState('')
@@ -181,6 +204,19 @@ function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [activeSearchResult, setActiveSearchResult] = useState<SearchResult | null>(null)
   const [activeBottomTab, setActiveBottomTab] = useState<'output' | 'problems' | 'terminal' | 'mcp'>('output')
+  const [replaceQuery, setReplaceQuery] = useState('')
+  const [mcpStatus, setMcpStatus] = useState<'connected' | 'disconnected'>('disconnected')
+
+  const groupedSearchResults = useMemo(() => {
+    const groups: Record<string, SearchResult[]> = {}
+    searchResults.forEach(result => {
+      if (!groups[result.file]) {
+        groups[result.file] = []
+      }
+      groups[result.file].push(result)
+    })
+    return groups
+  }, [searchResults])
 
   // Menu State
   const [activeMenu, setActiveMenu] = useState<string | null>(null)
@@ -211,6 +247,16 @@ function App() {
   }, [])
 
   useEffect(() => {
+    invoke<string>('get_mcp_status')
+      .then((status) => {
+        setMcpStatus(status === '运行中' ? 'connected' : 'disconnected')
+      })
+      .catch(() => {
+        setMcpStatus('disconnected')
+      })
+  }, [])
+
+  useEffect(() => {
     setFileTree(buildFileTree(files, projectPath))
   }, [files, projectPath])
 
@@ -230,7 +276,6 @@ function App() {
         });
         addLog(msg, 'rust');
       } else {
-        // Assume Python message if not explicitly Rust
         addLog(msg, 'python');
       }
     })
@@ -290,24 +335,69 @@ function App() {
     }])
   }
 
+  async function callMcpTool(name: string, args: any) {
+    try {
+      addLog(`正在调用工具: ${name}...`, 'system')
+      const result = await invoke<string>('call_mcp_tool', { toolName: name, arguments: JSON.stringify(args) })
+
+      try {
+        const parsed = JSON.parse(result)
+
+        if (name === 'analyze_project' && parsed.status === 'success') {
+          if (Array.isArray(parsed.findings)) {
+            setVulnerabilities(parsed.findings)
+            // Switch to problems tab to show results
+            setActiveBottomTab('problems')
+            setIsOutputVisible(true)
+          }
+          if (parsed.summary) {
+            addLog(parsed.summary, 'python')
+          } else {
+            addLog(`工具已调用: ${result}`, 'system')
+          }
+        } else if (name === 'analyze_project' && parsed.error) {
+          addLog(`分析失败: ${parsed.error}`, 'python')
+        } else if (name === 'get_analysis_report' && parsed.metadata) {
+          const meta = parsed.metadata
+          const nodeCount = typeof meta.node_count === 'number' ? meta.node_count : '未知'
+          const buildTime = typeof meta.build_time === 'string' ? meta.build_time : ''
+          addLog(`已读取缓存报告。节点数: ${nodeCount}${buildTime ? `，构建时间: ${buildTime}` : ''}`, 'python')
+        } else {
+          addLog(result, 'python')
+        }
+      } catch (e) {
+        addLog(result, 'python')
+      }
+    } catch (e) {
+      addLog(`调用工具 ${name} 出错: ${e}`, 'system')
+    }
+  }
+
   async function handleOpenProject() {
     try {
       const path = await invoke<string>('open_project')
       if (path) {
         setProjectPath(path)
         setFiles([]) // Reset files
-        addLog(`Opened project: ${path}`, 'system')
+        addLog(`已打开项目: ${path}`, 'system')
 
-        // Trigger MCP Analysis
-        if (mcpStatus === 'connected') {
-          callMcpTool('analyze_project', { path })
-        } else {
-          addLog('MCP Agent not connected. Analysis skipped.', 'system')
+        if (mcpStatus !== 'connected') {
+          addLog('正在启动 MCP 代理...', 'system')
+          try {
+            const msg = await invoke<string>('restart_mcp_server')
+            addLog(msg, 'system')
+            setMcpStatus('connected')
+          } catch (e) {
+            addLog(`启动 MCP 代理失败: ${e}`, 'system')
+            return
+          }
         }
+
+        callMcpTool('analyze_project', { directory: path })
       }
     } catch (e) {
       console.error(e)
-      addLog(`Error opening project: ${e}`, 'system')
+      addLog(`打开项目出错: ${e}`, 'system')
     }
   }
 
@@ -327,8 +417,8 @@ function App() {
         // For now, if they select a file from search results, we stay in search view but update editor.
       }
     } catch (e) {
-      addLog(`Error reading file ${path}: ${e}`, 'system');
-      setFileContent(`// Error reading file: ${e}`);
+      addLog(`读取文件 ${path} 出错: ${e}`, 'system');
+      setFileContent(`// 读取文件出错: ${e}`);
     }
   }
 
@@ -342,7 +432,7 @@ function App() {
         handleFileSelect(newOpenFiles[newOpenFiles.length - 1])
       } else {
         setSelectedFile(null)
-        setFileContent('// Select a file to view content')
+        setFileContent('// 请选择文件以查看内容')
       }
     }
   }
@@ -365,33 +455,36 @@ function App() {
       setSearchResults(results)
     } catch (e) {
       console.error(e)
-      addLog(`Search error: ${e}`, 'system')
+      addLog(`搜索出错: ${e}`, 'system')
     } finally {
       setIsSearching(false)
     }
   }
 
   // MCP Menu
-  const [activeMcpMenu, setActiveMcpMenu] = useState(false)
+  // const [activeMcpMenu] = useState(false)
 
   async function handleMcpAction(action: string) {
     setActiveMenu(null)
 
     try {
       if (action === 'connect') {
-        addLog("Restarting MCP Agent...", "system")
+        addLog("正在重启 MCP 代理...", "system")
         const msg = await invoke<string>('restart_mcp_server')
         addLog(msg, "system")
+        setMcpStatus('connected')
       } else if (action === 'status') {
         const status = await invoke<string>('get_mcp_status')
-        addLog(`MCP Server Status: ${status}`, "system")
+        addLog(`MCP 服务器状态: ${status}`, "system")
+        setMcpStatus(status === '运行中' ? 'connected' : 'disconnected')
       } else if (action === 'tools') {
         const tools = await invoke<string[]>('list_mcp_tools')
-        addLog(`Available MCP Tools:\n${tools.map(t => `- ${t}`).join('\n')}`, "system")
+        addLog(`可用 MCP 工具:\n${tools.map(t => `- ${t}`).join('\n')}`, "system")
       }
     } catch (e) {
       console.error(e)
-      addLog(`MCP Error: ${e}`, 'system')
+      addLog(`MCP 错误: ${e}`, 'system')
+      setMcpStatus('disconnected')
     }
   }
 
@@ -413,7 +506,7 @@ function App() {
                 className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'file' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
                 onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'file' ? null : 'file') }}
               >
-                File
+                文件
               </button>
               {activeMenu === 'file' && (
                 <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
@@ -422,7 +515,7 @@ function App() {
                     onClick={() => { handleOpenProject(); setActiveMenu(null) }}
                   >
                     <FolderOpen className="w-3.5 h-3.5" />
-                    Open Project...
+                    打开项目...
                   </button>
                   <div className="h-px bg-[#2b2b2b] my-1" />
                   <button
@@ -430,7 +523,7 @@ function App() {
                     onClick={() => { setActiveMenu(null) }}
                   >
                     <span className="w-3.5" />
-                    Exit
+                    退出
                   </button>
                 </div>
               )}
@@ -442,25 +535,25 @@ function App() {
                 className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'edit' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
                 onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'edit' ? null : 'edit') }}
               >
-                Edit
+                编辑
               </button>
               {activeMenu === 'edit' && (
                 <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
                   <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
-                    Undo
+                    撤销
                   </button>
                   <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
-                    Redo
+                    重做
                   </button>
                   <div className="h-px bg-[#2b2b2b] my-1" />
                   <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
-                    Cut
+                    剪切
                   </button>
                   <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
-                    Copy
+                    复制
                   </button>
                   <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
-                    Paste
+                    粘贴
                   </button>
                 </div>
               )}
@@ -472,7 +565,7 @@ function App() {
                 className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'view' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
                 onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'view' ? null : 'view') }}
               >
-                View
+                视图
               </button>
               {activeMenu === 'view' && (
                 <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
@@ -480,14 +573,14 @@ function App() {
                     className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors flex items-center justify-between"
                     onClick={() => { setIsOutputVisible(!isOutputVisible); setActiveMenu(null) }}
                   >
-                    <span>Toggle Output Panel</span>
+                    <span>切换输出面板</span>
                     {isOutputVisible && <span className="text-[10px] text-primary">✓</span>}
                   </button>
                   <button
                     className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors flex items-center justify-between"
                     onClick={() => { setActiveSidebarView(activeSidebarView === 'explorer' ? 'search' : 'explorer'); setActiveMenu(null) }}
                   >
-                    <span>Toggle Explorer/Search</span>
+                    <span>切换资源管理器/搜索</span>
                   </button>
                 </div>
               )}
@@ -507,20 +600,20 @@ function App() {
                     className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors"
                     onClick={() => handleMcpAction('status')}
                   >
-                    Server Status
+                    服务器状态
                   </button>
                   <button
                     className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors"
                     onClick={() => handleMcpAction('connect')}
                   >
-                    Restart Agent
+                    重启代理
                   </button>
                   <div className="h-px bg-[#2b2b2b] my-1" />
                   <button
                     className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors"
                     onClick={() => handleMcpAction('tools')}
                   >
-                    List Available Tools
+                    列出可用工具
                   </button>
                 </div>
               )}
@@ -532,15 +625,15 @@ function App() {
                 className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'help' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
                 onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'help' ? null : 'help') }}
               >
-                Help
+                帮助
               </button>
               {activeMenu === 'help' && (
                 <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
                   <button
                     className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors"
-                    onClick={() => { addLog("DeepAudit Nexus v0.1.0 - Native Analysis Supported", 'system'); setActiveMenu(null) }}
+                    onClick={() => { addLog("DeepAudit Nexus v0.1.0 - 支持原生分析", 'system'); setActiveMenu(null) }}
                   >
-                    About
+                    关于
                   </button>
                 </div>
               )}
@@ -567,7 +660,7 @@ function App() {
             size="icon"
             className={`w-8 h-8 rounded-md ${activeSidebarView === 'explorer' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => setActiveSidebarView('explorer')}
-            title="Explorer"
+            title="资源管理器"
           >
             <FileCode className="w-5 h-5" />
           </Button>
@@ -576,7 +669,7 @@ function App() {
             size="icon"
             className={`w-8 h-8 rounded-md ${activeSidebarView === 'search' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => setActiveSidebarView('search')}
-            title="Search"
+            title="搜索"
           >
             <Search className="w-5 h-5" />
           </Button>
@@ -585,9 +678,19 @@ function App() {
             size="icon"
             className={`w-8 h-8 rounded-md ${activeSidebarView === 'graph' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => setActiveSidebarView('graph')}
-            title="Graph View"
+            title="图谱视图"
           >
             <Network className="w-5 h-5" />
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`w-8 h-8 rounded-md ${activeSidebarView === 'tools' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveSidebarView('tools')}
+            title="MCP 工具"
+          >
+            <Hammer className="w-5 h-5" />
           </Button>
 
           <div className="flex-1" />
@@ -597,7 +700,7 @@ function App() {
             size="icon"
             className={`w-8 h-8 rounded-md ${isOutputVisible ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => setIsOutputVisible(!isOutputVisible)}
-            title="Toggle Output"
+            title="切换输出"
           >
             <Terminal className="w-5 h-5" />
           </Button>
@@ -617,7 +720,7 @@ function App() {
                     {activeSidebarView === 'explorer' && (
                       <>
                         <div className="h-8 px-3 flex items-center justify-between border-b border-border/40 bg-muted/5">
-                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Explorer</span>
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">资源管理器</span>
                           <Badge variant="secondary" className="h-4 px-1 text-[10px]">{files.length}</Badge>
                         </div>
                         <ScrollArea className="flex-1">
@@ -625,7 +728,7 @@ function App() {
                             {fileTree.length === 0 ? (
                               <div className="flex flex-col items-center justify-center py-10 text-muted-foreground opacity-50">
                                 <FolderOpen className="w-8 h-8 mb-2 stroke-1" />
-                                <span className="text-xs">No project opened</span>
+                                <span className="text-xs">未打开项目</span>
                               </div>
                             ) : (
                               fileTree.map((node) => (
@@ -647,50 +750,201 @@ function App() {
                     {activeSidebarView === 'search' && (
                       <>
                         <div className="h-8 px-3 flex items-center justify-between border-b border-border/40 bg-muted/5">
-                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Search</span>
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">搜索</span>
                         </div>
-                        <div className="p-2 border-b border-border/40">
+                        <div className="p-2 border-b border-border/40 flex flex-col gap-2">
                           <form onSubmit={handleSearchSubmit}>
                             <div className="relative">
                               <Search className="absolute left-2 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
                               <Input
-                                placeholder="Search in files..."
+                                placeholder="搜索"
                                 className="pl-8 h-8 text-xs"
                                 value={searchQuery}
                                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value)}
                               />
                             </div>
                           </form>
+                          <div className="relative">
+                            <div className="absolute left-2 top-2.5 h-3.5 w-3.5 text-muted-foreground flex items-center justify-center pointer-events-none select-none">
+                              <span className="text-[10px] font-mono">AB</span>
+                            </div>
+                            <Input
+                              placeholder="替换"
+                              className="pl-8 h-8 text-xs"
+                              value={replaceQuery}
+                              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setReplaceQuery(e.target.value)}
+                            />
+                          </div>
                         </div>
+
+                        {searchResults.length > 0 && (
+                          <div className="px-3 py-2 text-xs text-muted-foreground border-b border-border/40 flex justify-between">
+                            <span>{Object.keys(groupedSearchResults).length} 个文件，{searchResults.length} 个结果</span>
+                          </div>
+                        )}
+
                         <ScrollArea className="flex-1">
                           {isSearching ? (
                             <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
                               <Loader2 className="w-6 h-6 animate-spin mb-2" />
-                              <span className="text-xs">Searching...</span>
+                              <span className="text-xs">正在搜索...</span>
                             </div>
                           ) : searchResults.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-10 text-muted-foreground opacity-50">
-                              <span className="text-xs">No results found</span>
+                              <span className="text-xs">未找到结果</span>
                             </div>
                           ) : (
                             <div className="p-1 space-y-0.5">
-                              {searchResults.map((result, i) => (
-                                <button
-                                  key={i}
-                                  onClick={() => handleSearchResultClick(result)}
-                                  className={`w-full text-left px-2 py-2 rounded-sm text-xs hover:bg-muted/50 transition-colors flex flex-col gap-1 group ${activeSearchResult === result ? 'bg-muted' : ''}`}
-                                >
-                                  <div className="flex items-center gap-2 font-mono text-muted-foreground">
-                                    <span className="truncate max-w-[150px]">{result.file.split(/[/\\]/).pop()}</span>
-                                    <Badge variant="outline" className="text-[10px] h-3.5 px-1">{result.line}</Badge>
-                                  </div>
-                                  <div className="text-foreground/80 truncate font-mono pl-2 border-l-2 border-muted group-hover:border-primary/50">
-                                    {result.content}
-                                  </div>
-                                </button>
+                              {Object.entries(groupedSearchResults).map(([file, results]) => (
+                                <Collapsible key={file} defaultOpen className="group/file">
+                                  <CollapsibleTrigger className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted/50 text-xs font-medium text-foreground/80 select-none">
+                                    <ChevronRight className="w-3.5 h-3.5 transition-transform group-data-[state=open]/file:rotate-90 text-muted-foreground" />
+                                    <span className="truncate flex-1 text-left">{file.split(/[/\\]/).pop()}</span>
+                                    <Badge variant="secondary" className="text-[10px] h-4 px-1">{results.length}</Badge>
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent>
+                                    {results.map((result, i) => (
+                                      <button
+                                        key={i}
+                                        onClick={() => handleSearchResultClick(result)}
+                                        className={`w-full text-left pl-8 pr-2 py-1 text-xs hover:bg-muted/50 transition-colors flex gap-2 group/item ${activeSearchResult === result ? 'bg-muted text-accent-foreground' : 'text-muted-foreground'}`}
+                                      >
+                                        <span className="font-mono text-[10px] opacity-70 w-6 text-right shrink-0">{result.line}</span>
+                                        <span className="truncate font-mono">{result.content}</span>
+                                      </button>
+                                    ))}
+                                  </CollapsibleContent>
+                                </Collapsible>
                               ))}
                             </div>
                           )}
+                        </ScrollArea>
+                      </>
+                    )}
+
+                    {/* Tools View */}
+                    {activeSidebarView === 'tools' && (
+                      <>
+                        <div className="h-8 px-3 flex items-center justify-between border-b border-border/40 bg-muted/5">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">MCP 工具</span>
+                        </div>
+                        <ScrollArea className="flex-1">
+                          <div className="p-3 space-y-4">
+                            {/* Project Analysis */}
+                            <div className="space-y-2">
+                              <h3 className="text-xs font-semibold text-foreground/80">项目分析</h3>
+                              <Button
+                                variant="outline"
+                                className="w-full justify-start text-xs h-8"
+                                disabled={!projectPath}
+                                onClick={() => callMcpTool('analyze_project', { directory: projectPath })}
+                              >
+                                <ShieldAlert className="w-3.5 h-3.5 mr-2 text-orange-500" />
+                                全量安全扫描
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className="w-full justify-start text-xs h-8"
+                                disabled={!projectPath}
+                                onClick={() => callMcpTool('get_analysis_report', { directory: projectPath })}
+                              >
+                                <FileCode className="w-3.5 h-3.5 mr-2 text-zinc-500" />
+                                读取缓存报告
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className="w-full justify-start text-xs h-8"
+                                disabled={!projectPath}
+                                onClick={() => callMcpTool('list_files', { directory: projectPath })}
+                              >
+                                <Folder className="w-3.5 h-3.5 mr-2 text-blue-500" />
+                                列出所有文件
+                              </Button>
+                            </div>
+
+                            <div className="h-px bg-border/40" />
+
+                            {/* File Analysis */}
+                            <div className="space-y-2">
+                              <h3 className="text-xs font-semibold text-foreground/80">当前文件</h3>
+                              <div className="text-[10px] text-muted-foreground mb-2 px-1 truncate">
+                                {selectedFile ? selectedFile.split(/[/\\]/).pop() : "未选择文件"}
+                              </div>
+                              <Button
+                                variant="outline"
+                                className="w-full justify-start text-xs h-8"
+                                disabled={!selectedFile}
+                                onClick={() => selectedFile && callMcpTool('get_code_structure', { file_path: selectedFile })}
+                              >
+                                <Network className="w-3.5 h-3.5 mr-2 text-green-500" />
+                                获取代码结构
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className="w-full justify-start text-xs h-8"
+                                disabled={!selectedFile}
+                                onClick={() => selectedFile && callMcpTool('read_file', { file_path: selectedFile })}
+                              >
+                                <FileCode className="w-3.5 h-3.5 mr-2 text-zinc-500" />
+                                通过 MCP 读取
+                              </Button>
+                            </div>
+
+                            <div className="h-px bg-border/40" />
+
+                            {/* Symbol Search */}
+                            <div className="space-y-2">
+                              <h3 className="text-xs font-semibold text-foreground/80">符号搜索</h3>
+                              <div className="flex gap-1">
+                                <Input
+                                  placeholder="符号名称..."
+                                  className="h-7 text-xs"
+                                  id="symbol-search-input"
+                                />
+                                <Button
+                                  variant="secondary"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => {
+                                    const input = document.getElementById('symbol-search-input') as HTMLInputElement;
+                                    if (input && input.value) {
+                                      callMcpTool('search_symbol', { query: input.value });
+                                    }
+                                  }}
+                                >
+                                  <Search className="w-3.5 h-3.5" />
+                                </Button>
+                              </div>
+                            </div>
+
+                            <div className="h-px bg-border/40" />
+
+                            {/* Class Hierarchy */}
+                            <div className="space-y-2">
+                              <h3 className="text-xs font-semibold text-foreground/80">类继承层次</h3>
+                              <div className="flex gap-1">
+                                <Input
+                                  placeholder="类名..."
+                                  className="h-7 text-xs"
+                                  id="class-hierarchy-input"
+                                />
+                                <Button
+                                  variant="secondary"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => {
+                                    const input = document.getElementById('class-hierarchy-input') as HTMLInputElement;
+                                    if (input && input.value) {
+                                      callMcpTool('get_class_hierarchy', { class_name: input.value });
+                                    }
+                                  }}
+                                >
+                                  <Network className="w-3.5 h-3.5" />
+                                </Button>
+                              </div>
+                            </div>
+
+                          </div>
                         </ScrollArea>
                       </>
                     )}
@@ -741,14 +995,14 @@ function App() {
                                   onClick={(e) => handleCloseFile(e, path)}
                                   className={`ml-auto hover:bg-muted/50 rounded-sm p-0.5 ${selectedFile === path ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
                                 >
-                                  <span className="sr-only">Close</span>
+                                  <span className="sr-only">关闭</span>
                                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
                                 </button>
                               </div>
                             ))
                           ) : (
                             <div className="h-full px-3 flex items-center text-xs text-muted-foreground italic">
-                              No file selected
+                              未选择文件
                             </div>
                           )}
                         </div>
@@ -791,7 +1045,7 @@ function App() {
                               onClick={() => setActiveBottomTab('output')}
                               className={`text-xs font-medium px-1 h-full flex items-center transition-colors ${activeBottomTab === 'output' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'}`}
                             >
-                              Output
+                              输出
                             </button>
                             <button
                               onClick={() => setActiveBottomTab('mcp')}
@@ -803,16 +1057,16 @@ function App() {
                               onClick={() => setActiveBottomTab('terminal')}
                               className={`text-xs font-medium px-1 h-full flex items-center transition-colors ${activeBottomTab === 'terminal' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'}`}
                             >
-                              Terminal
+                              终端
                             </button>
                           </div>
                           <div className="flex items-center gap-2">
-                            <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => setLogs([])} title="Clear Logs">
-                              <span className="sr-only">Clear</span>
+                            <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => setLogs([])} title="清除日志">
+                              <span className="sr-only">清除</span>
                               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
                             </Button>
-                            <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => setIsOutputVisible(false)} title="Close Panel">
-                              <span className="sr-only">Close</span>
+                            <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => setIsOutputVisible(false)} title="关闭面板">
+                              <span className="sr-only">关闭</span>
                               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
                             </Button>
                           </div>
@@ -841,7 +1095,7 @@ function App() {
                             <ScrollArea className="h-full font-mono text-xs p-2 bg-black/95 text-zinc-300">
                               {logs.filter(l => l.source === 'python').length === 0 ? (
                                 <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
-                                  <p>No Python logs available.</p>
+                                  <p>暂无 Python 日志。</p>
                                 </div>
                               ) : (
                                 logs.filter(l => l.source === 'python').map((log, i) => (
@@ -864,13 +1118,13 @@ function App() {
                                 <div className="flex flex-col gap-2 items-center justify-center py-10 text-muted-foreground opacity-60">
                                   <ShieldAlert className="w-10 h-10 stroke-1" />
                                   <p className="text-xs text-center max-w-[150px]">
-                                    No vulnerabilities detected. Start a scan to analyze code.
+                                    未检测到漏洞。请开始扫描以分析代码。
                                   </p>
                                 </div>
                               ) : (
                                 <div className="space-y-2">
                                   {vulnerabilities.map((v, i) => (
-                                    <div key={i} onClick={() => handleSearchResultClick({ file: v.file, line: v.line, message: v.message })} className="flex items-start gap-3 p-2 rounded-md border border-border/40 bg-muted/5 hover:bg-muted/10 cursor-pointer transition-colors group">
+                                    <div key={i} onClick={() => handleSearchResultClick({ file: v.file, line: v.line, content: v.message })} className="flex items-start gap-3 p-2 rounded-md border border-border/40 bg-muted/5 hover:bg-muted/10 cursor-pointer transition-colors group">
                                       <div className="mt-0.5">
                                         <Badge variant={v.severity === 'high' ? 'destructive' : 'default'} className="text-[10px] h-4 px-1 rounded-sm uppercase">
                                           {v.severity}
@@ -899,7 +1153,7 @@ function App() {
 
                           {activeBottomTab === 'terminal' && (
                             <div className="h-full flex items-center justify-center text-muted-foreground text-xs font-mono">
-                              Terminal not connected
+                              终端未连接
                             </div>
                           )}
                         </div>
@@ -918,12 +1172,12 @@ function App() {
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1"><GitBranch className="w-3 h-3" /> main*</span>
           <span className="opacity-50">|</span>
-          <span>DeepAudit Ready</span>
+          <span>DeepAudit 就绪</span>
         </div>
         <div className="flex items-center gap-3">
-          <span>Ln {fileContent.split('\n').length}, Col 1</span>
+          <span>行 {fileContent.split('\n').length}, 列 1</span>
           <span>UTF-8</span>
-          <span>TypeScript React</span>
+          <span>{getLanguageFromPath(selectedFile)}</span>
         </div>
       </footer>
     </div>

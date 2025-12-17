@@ -26,6 +26,5 @@ dist-ssr
 
 
 # Other
-1.md 
-FastMcp.md
-MCP-README.md
+.deepaudit_cache
+__pycache__
