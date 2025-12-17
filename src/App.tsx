@@ -1,0 +1,933 @@
+import { useState, useEffect, useRef } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import Editor from '@monaco-editor/react'
+import ReactFlow, { Background, Controls } from 'reactflow'
+import 'reactflow/dist/style.css'
+import {
+  FolderOpen,
+  FileCode,
+  ShieldAlert,
+  Search,
+  GitBranch,
+  Bug,
+  ChevronRight,
+  ChevronDown,
+  Folder,
+  Network,
+  Terminal,
+  Loader2
+} from 'lucide-react'
+
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+
+interface LogEntry {
+  timestamp: string
+  message: string
+  source: 'rust' | 'python' | 'system'
+}
+
+interface SearchResult {
+  file: string
+  line: number
+  content: string
+}
+
+interface Vulnerability {
+  file: string
+  line: number
+  severity: 'high' | 'medium' | 'low'
+  message: string
+}
+
+interface FileNode {
+  name: string
+  path: string
+  type: 'file' | 'folder'
+  children?: FileNode[]
+}
+
+function buildFileTree(paths: string[], rootPath: string): FileNode[] {
+  const root: FileNode[] = []
+
+  paths.forEach(path => {
+    // Normalize path separators
+    let relativePath = path;
+    if (rootPath && path.startsWith(rootPath)) {
+      relativePath = path.substring(rootPath.length).replace(/^[/\\]/, '');
+    }
+
+    const parts = relativePath.split(/[/\\]/)
+    let currentLevel = root
+
+    parts.forEach((part, index) => {
+      // Skip empty parts
+      if (!part) return
+
+      const existingNode = currentLevel.find(node => node.name === part)
+      const isFile = index === parts.length - 1
+
+      if (existingNode) {
+        if (existingNode.type === 'folder' && existingNode.children) {
+          currentLevel = existingNode.children
+        }
+      } else {
+        const newNode: FileNode = {
+          name: part,
+          path: isFile ? path : parts.slice(0, index + 1).join('/'),
+          type: isFile ? 'file' : 'folder',
+          children: isFile ? undefined : []
+        }
+        currentLevel.push(newNode)
+        if (!isFile && newNode.children) {
+          currentLevel = newNode.children
+        }
+      }
+    })
+  })
+
+  // Sort: folders first, then files
+  const sortNodes = (nodes: FileNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.type === b.type) return a.name.localeCompare(b.name)
+      return a.type === 'folder' ? -1 : 1
+    })
+    nodes.forEach(node => {
+      if (node.children) sortNodes(node.children)
+    })
+  }
+  sortNodes(root)
+
+  return root
+}
+
+const FileTreeNode = ({ node, level, onSelect, selectedPath }: { node: FileNode, level: number, onSelect: (path: string) => void, selectedPath: string | null }) => {
+  const [isOpen, setIsOpen] = useState(false)
+
+  // Auto-expand if selected file is inside this folder
+  useEffect(() => {
+    if (selectedPath && selectedPath.startsWith(node.path) && node.type === 'folder') {
+      setIsOpen(true)
+    }
+  }, [selectedPath, node.path, node.type])
+
+  if (node.type === 'file') {
+    return (
+      <button
+        onClick={() => onSelect(node.path)}
+        className={`w-full text-left px-2 py-1 rounded-sm text-xs font-mono truncate transition-colors flex items-center gap-2 group ${selectedPath === node.path
+          ? 'bg-primary/10 text-primary'
+          : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+          }`}
+        style={{ paddingLeft: `${level * 12 + 8}px` }}
+        title={node.path}
+      >
+        {/* Simple Icon Logic */}
+        {node.name.endsWith('.rs') ? <span className="text-orange-500 w-3.5 text-center font-bold text-[10px]">Rs</span> :
+          node.name.endsWith('.py') ? <span className="text-blue-400 w-3.5 text-center font-bold text-[10px]">Py</span> :
+            node.name.endsWith('.tsx') || node.name.endsWith('.ts') ? <span className="text-blue-500 w-3.5 text-center font-bold text-[10px]">TS</span> :
+              <FileCode className="w-3.5 h-3.5 opacity-70" />}
+
+        <span className="truncate">{node.name}</span>
+      </button>
+    )
+  }
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <CollapsibleTrigger className="w-full text-left px-2 py-1 rounded-sm text-xs font-mono truncate transition-colors flex items-center gap-1 text-muted-foreground hover:text-foreground hover:bg-muted/30"
+        style={{ paddingLeft: `${level * 12 + 4}px` }}
+      >
+        {isOpen ? <ChevronDown className="w-3 h-3 opacity-70" /> : <ChevronRight className="w-3 h-3 opacity-70" />}
+        <Folder className={`w-3.5 h-3.5 ${isOpen ? 'text-foreground' : 'text-muted-foreground/70'}`} />
+        <span className="truncate">{node.name}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {node.children?.map(child => (
+          <FileTreeNode key={child.path} node={child} level={level + 1} onSelect={onSelect} selectedPath={selectedPath} />
+        ))}
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function App() {
+  const [projectPath, setProjectPath] = useState<string>('')
+  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [files, setFiles] = useState<string[]>([])
+  const [fileTree, setFileTree] = useState<FileNode[]>([])
+  const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [openFiles, setOpenFiles] = useState<string[]>([])
+  const [fileContent, setFileContent] = useState<string>('// Select a file to view content')
+  const [vulnerabilities, _setVulnerabilities] = useState<Vulnerability[]>([])
+  const logsEndRef = useRef<HTMLDivElement>(null)
+
+  const [isOutputVisible, setIsOutputVisible] = useState(true)
+  const [activeSidebarView, setActiveSidebarView] = useState<'explorer' | 'search' | 'graph'>('explorer')
+
+  // Search State
+  const [searchQuery, setSearchQuery] = useState('')
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [activeSearchResult, setActiveSearchResult] = useState<SearchResult | null>(null)
+  const [activeBottomTab, setActiveBottomTab] = useState<'output' | 'problems' | 'terminal' | 'mcp'>('output')
+
+  // Menu State
+  const [activeMenu, setActiveMenu] = useState<string | null>(null)
+
+  // Editor Refs
+  const editorRef = useRef<any>(null)
+  const monacoRef = useRef<any>(null)
+  const decorationsRef = useRef<string[]>([])
+
+  // Graph Nodes (Dummy for now)
+  const initialNodes = [
+    { id: '1', position: { x: 0, y: 0 }, data: { label: 'Frontend (React)' } },
+    { id: '2', position: { x: 0, y: 100 }, data: { label: 'Rust Host' } },
+    { id: '3', position: { x: 200, y: 100 }, data: { label: 'Python Sidecar' } },
+    { id: '4', position: { x: 0, y: 200 }, data: { label: 'SQLite DB' } },
+  ];
+  const initialEdges = [
+    { id: 'e1-2', source: '1', target: '2', animated: true, label: 'Commands' },
+    { id: 'e2-3', source: '2', target: '3', animated: true, label: 'MCP' },
+    { id: 'e2-4', source: '2', target: '4', label: 'SQLx' },
+  ];
+
+  // Click outside to close menu
+  useEffect(() => {
+    const handleClickOutside = () => setActiveMenu(null)
+    window.addEventListener('click', handleClickOutside)
+    return () => window.removeEventListener('click', handleClickOutside)
+  }, [])
+
+  useEffect(() => {
+    setFileTree(buildFileTree(files, projectPath))
+  }, [files, projectPath])
+
+  useEffect(() => {
+    const unlistenPromise = listen<string>('mcp-message', (event) => {
+      const msg = event.payload;
+
+      // Parse Rust Scan messages to populate file tree
+      if (msg.startsWith("Rust Scan")) {
+        // Format: Rust Scan {path}: {details}
+        const pathPart = msg.split(": ")[0].replace("Rust Scan ", "");
+        setFiles(prev => {
+          if (!prev.includes(pathPart)) {
+            return [...prev, pathPart].sort();
+          }
+          return prev;
+        });
+        addLog(msg, 'rust');
+      } else {
+        // Assume Python message if not explicitly Rust
+        addLog(msg, 'python');
+      }
+    })
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten())
+    }
+  }, [])
+
+  // Auto-scroll logs
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [logs, activeBottomTab])
+
+  // Handle Search Result Highlighting
+  useEffect(() => {
+    if (!editorRef.current || !monacoRef.current) return
+
+    const editor = editorRef.current
+    const monaco = monacoRef.current
+
+    // Clear previous decorations
+    decorationsRef.current = editor.deltaDecorations(decorationsRef.current, [])
+
+    if (activeSearchResult && selectedFile === activeSearchResult.file) {
+      const { line } = activeSearchResult
+
+      // Reveal line
+      editor.revealLineInCenter(line)
+      editor.setPosition({ lineNumber: line, column: 1 })
+      editor.focus()
+
+      // Add highlight decoration
+      const newDecorations = editor.deltaDecorations([], [
+        {
+          range: new monaco.Range(line, 1, line, 1),
+          options: {
+            isWholeLine: true,
+            className: 'bg-yellow-500/30 border-l-2 border-yellow-500', // Highlight style
+            glyphMarginClassName: 'bg-yellow-500/50 w-2 h-2 rounded-full ml-1 mt-1' // Optional glyph
+          }
+        }
+      ])
+      decorationsRef.current = newDecorations
+    }
+  }, [selectedFile, fileContent, activeSearchResult])
+
+  function handleEditorDidMount(editor: any, monaco: any) {
+    editorRef.current = editor
+    monacoRef.current = monaco
+  }
+
+  function addLog(message: string, source: LogEntry['source']) {
+    setLogs(prev => [...prev, {
+      timestamp: new Date().toLocaleTimeString(),
+      message,
+      source
+    }])
+  }
+
+  async function handleOpenProject() {
+    try {
+      const path = await invoke<string>('open_project')
+      if (path) {
+        setProjectPath(path)
+        setFiles([]) // Reset files
+        addLog(`Opened project: ${path}`, 'system')
+
+        // Trigger MCP Analysis
+        if (mcpStatus === 'connected') {
+          callMcpTool('analyze_project', { path })
+        } else {
+          addLog('MCP Agent not connected. Analysis skipped.', 'system')
+        }
+      }
+    } catch (e) {
+      console.error(e)
+      addLog(`Error opening project: ${e}`, 'system')
+    }
+  }
+
+  async function handleFileSelect(path: string) {
+    if (!openFiles.includes(path)) {
+      setOpenFiles(prev => [...prev, path])
+    }
+    setSelectedFile(path)
+    try {
+      // Use custom Rust command to read file content to bypass frontend scope restrictions
+      const text = await invoke<string>('read_file_content', { path });
+      setFileContent(text);
+      // If we are in search or graph view, maybe we want to switch back to explorer?
+      // Or at least show the editor.
+      if (activeSidebarView === 'graph') {
+        // Optionally switch back, but user might want to see file while graph is active?
+        // For now, if they select a file from search results, we stay in search view but update editor.
+      }
+    } catch (e) {
+      addLog(`Error reading file ${path}: ${e}`, 'system');
+      setFileContent(`// Error reading file: ${e}`);
+    }
+  }
+
+  function handleCloseFile(e: React.MouseEvent, path: string) {
+    e.stopPropagation()
+    const newOpenFiles = openFiles.filter(p => p !== path)
+    setOpenFiles(newOpenFiles)
+
+    if (selectedFile === path) {
+      if (newOpenFiles.length > 0) {
+        handleFileSelect(newOpenFiles[newOpenFiles.length - 1])
+      } else {
+        setSelectedFile(null)
+        setFileContent('// Select a file to view content')
+      }
+    }
+  }
+
+  function handleSearchResultClick(result: SearchResult) {
+    setActiveSearchResult(result)
+    if (selectedFile !== result.file) {
+      handleFileSelect(result.file)
+    }
+  }
+
+  async function handleSearchSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!searchQuery.trim() || !projectPath) return
+    setIsSearching(true)
+    setSearchResults([])
+    setActiveSearchResult(null)
+    try {
+      const results = await invoke<SearchResult[]>('search_files', { query: searchQuery, path: projectPath })
+      setSearchResults(results)
+    } catch (e) {
+      console.error(e)
+      addLog(`Search error: ${e}`, 'system')
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
+  // MCP Menu
+  const [activeMcpMenu, setActiveMcpMenu] = useState(false)
+
+  async function handleMcpAction(action: string) {
+    setActiveMenu(null)
+
+    try {
+      if (action === 'connect') {
+        addLog("Restarting MCP Agent...", "system")
+        const msg = await invoke<string>('restart_mcp_server')
+        addLog(msg, "system")
+      } else if (action === 'status') {
+        const status = await invoke<string>('get_mcp_status')
+        addLog(`MCP Server Status: ${status}`, "system")
+      } else if (action === 'tools') {
+        const tools = await invoke<string[]>('list_mcp_tools')
+        addLog(`Available MCP Tools:\n${tools.map(t => `- ${t}`).join('\n')}`, "system")
+      }
+    } catch (e) {
+      console.error(e)
+      addLog(`MCP Error: ${e}`, 'system')
+    }
+  }
+
+  return (
+    <div className="h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden font-sans selection:bg-primary/20">
+      {/* Header / Titlebar */}
+      <header className="h-10 border-b border-border/40 px-3 flex items-center justify-between bg-muted/20 select-none z-50 relative">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 text-primary" />
+            <span className="font-semibold text-sm tracking-tight hidden md:inline">DeepAudit Nexus</span>
+          </div>
+
+          {/* Menu Bar */}
+          <div className="flex items-center gap-0.5">
+            {/* File Menu */}
+            <div className="relative">
+              <button
+                className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'file' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
+                onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'file' ? null : 'file') }}
+              >
+                File
+              </button>
+              {activeMenu === 'file' && (
+                <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors flex items-center gap-2"
+                    onClick={() => { handleOpenProject(); setActiveMenu(null) }}
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    Open Project...
+                  </button>
+                  <div className="h-px bg-[#2b2b2b] my-1" />
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors flex items-center gap-2 text-destructive"
+                    onClick={() => { setActiveMenu(null) }}
+                  >
+                    <span className="w-3.5" />
+                    Exit
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Edit Menu */}
+            <div className="relative">
+              <button
+                className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'edit' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
+                onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'edit' ? null : 'edit') }}
+              >
+                Edit
+              </button>
+              {activeMenu === 'edit' && (
+                <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
+                  <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
+                    Undo
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
+                    Redo
+                  </button>
+                  <div className="h-px bg-[#2b2b2b] my-1" />
+                  <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
+                    Cut
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
+                    Copy
+                  </button>
+                  <button className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground cursor-not-allowed">
+                    Paste
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* View Menu */}
+            <div className="relative">
+              <button
+                className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'view' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
+                onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'view' ? null : 'view') }}
+              >
+                View
+              </button>
+              {activeMenu === 'view' && (
+                <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors flex items-center justify-between"
+                    onClick={() => { setIsOutputVisible(!isOutputVisible); setActiveMenu(null) }}
+                  >
+                    <span>Toggle Output Panel</span>
+                    {isOutputVisible && <span className="text-[10px] text-primary">✓</span>}
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors flex items-center justify-between"
+                    onClick={() => { setActiveSidebarView(activeSidebarView === 'explorer' ? 'search' : 'explorer'); setActiveMenu(null) }}
+                  >
+                    <span>Toggle Explorer/Search</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* MCP Menu */}
+            <div className="relative">
+              <button
+                className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'mcp' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
+                onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'mcp' ? null : 'mcp') }}
+              >
+                MCP
+              </button>
+              {activeMenu === 'mcp' && (
+                <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors"
+                    onClick={() => handleMcpAction('status')}
+                  >
+                    Server Status
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors"
+                    onClick={() => handleMcpAction('connect')}
+                  >
+                    Restart Agent
+                  </button>
+                  <div className="h-px bg-[#2b2b2b] my-1" />
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors"
+                    onClick={() => handleMcpAction('tools')}
+                  >
+                    List Available Tools
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Help Menu */}
+            <div className="relative">
+              <button
+                className={`px-3 py-1 text-xs rounded-sm hover:bg-muted transition-colors ${activeMenu === 'help' ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
+                onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === 'help' ? null : 'help') }}
+              >
+                Help
+              </button>
+              {activeMenu === 'help' && (
+                <div className="absolute top-full left-0 mt-1 w-48 bg-[#1e1e1e] border border-[#2b2b2b] rounded-md shadow-lg py-1 z-50">
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors"
+                    onClick={() => { addLog("DeepAudit Nexus v0.1.0 - Native Analysis Supported", 'system'); setActiveMenu(null) }}
+                  >
+                    About
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {projectPath && (
+            <span className="text-xs text-muted-foreground font-mono bg-muted/50 px-2 py-0.5 rounded">
+              {projectPath}
+            </span>
+          )}
+        </div>
+      </header>
+
+      {/* Main Workspace */}
+      <div className="flex-1 overflow-hidden flex">
+
+        {/* Activity Bar (Far Left) */}
+        <div className="w-12 border-r border-border/40 flex flex-col items-center py-2 gap-2 bg-muted/10">
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`w-8 h-8 rounded-md ${activeSidebarView === 'explorer' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveSidebarView('explorer')}
+            title="Explorer"
+          >
+            <FileCode className="w-5 h-5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`w-8 h-8 rounded-md ${activeSidebarView === 'search' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveSidebarView('search')}
+            title="Search"
+          >
+            <Search className="w-5 h-5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`w-8 h-8 rounded-md ${activeSidebarView === 'graph' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveSidebarView('graph')}
+            title="Graph View"
+          >
+            <Network className="w-5 h-5" />
+          </Button>
+
+          <div className="flex-1" />
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`w-8 h-8 rounded-md ${isOutputVisible ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setIsOutputVisible(!isOutputVisible)}
+            title="Toggle Output"
+          >
+            <Terminal className="w-5 h-5" />
+          </Button>
+        </div>
+
+        {/* Content Area */}
+        <div className="flex-1 min-w-0">
+          <ResizablePanelGroup direction="horizontal" className="h-full">
+
+            {/* Sidebar: Explorer / Search / Graph Controls */}
+            {activeSidebarView !== 'graph' && (
+              <>
+                <ResizablePanel defaultSize={20} collapsible={true} minSize={10} className="bg-background">
+                  <div className="h-full flex flex-col border-r border-border/40">
+
+                    {/* Explorer View */}
+                    {activeSidebarView === 'explorer' && (
+                      <>
+                        <div className="h-8 px-3 flex items-center justify-between border-b border-border/40 bg-muted/5">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Explorer</span>
+                          <Badge variant="secondary" className="h-4 px-1 text-[10px]">{files.length}</Badge>
+                        </div>
+                        <ScrollArea className="flex-1">
+                          <div className="p-1 space-y-0.5">
+                            {fileTree.length === 0 ? (
+                              <div className="flex flex-col items-center justify-center py-10 text-muted-foreground opacity-50">
+                                <FolderOpen className="w-8 h-8 mb-2 stroke-1" />
+                                <span className="text-xs">No project opened</span>
+                              </div>
+                            ) : (
+                              fileTree.map((node) => (
+                                <FileTreeNode
+                                  key={node.path}
+                                  node={node}
+                                  level={0}
+                                  onSelect={handleFileSelect}
+                                  selectedPath={selectedFile}
+                                />
+                              ))
+                            )}
+                          </div>
+                        </ScrollArea>
+                      </>
+                    )}
+
+                    {/* Search View */}
+                    {activeSidebarView === 'search' && (
+                      <>
+                        <div className="h-8 px-3 flex items-center justify-between border-b border-border/40 bg-muted/5">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Search</span>
+                        </div>
+                        <div className="p-2 border-b border-border/40">
+                          <form onSubmit={handleSearchSubmit}>
+                            <div className="relative">
+                              <Search className="absolute left-2 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                              <Input
+                                placeholder="Search in files..."
+                                className="pl-8 h-8 text-xs"
+                                value={searchQuery}
+                                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value)}
+                              />
+                            </div>
+                          </form>
+                        </div>
+                        <ScrollArea className="flex-1">
+                          {isSearching ? (
+                            <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
+                              <Loader2 className="w-6 h-6 animate-spin mb-2" />
+                              <span className="text-xs">Searching...</span>
+                            </div>
+                          ) : searchResults.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-10 text-muted-foreground opacity-50">
+                              <span className="text-xs">No results found</span>
+                            </div>
+                          ) : (
+                            <div className="p-1 space-y-0.5">
+                              {searchResults.map((result, i) => (
+                                <button
+                                  key={i}
+                                  onClick={() => handleSearchResultClick(result)}
+                                  className={`w-full text-left px-2 py-2 rounded-sm text-xs hover:bg-muted/50 transition-colors flex flex-col gap-1 group ${activeSearchResult === result ? 'bg-muted' : ''}`}
+                                >
+                                  <div className="flex items-center gap-2 font-mono text-muted-foreground">
+                                    <span className="truncate max-w-[150px]">{result.file.split(/[/\\]/).pop()}</span>
+                                    <Badge variant="outline" className="text-[10px] h-3.5 px-1">{result.line}</Badge>
+                                  </div>
+                                  <div className="text-foreground/80 truncate font-mono pl-2 border-l-2 border-muted group-hover:border-primary/50">
+                                    {result.content}
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </ScrollArea>
+                      </>
+                    )}
+
+                  </div>
+                </ResizablePanel>
+                <ResizableHandle withHandle={true} className="w-[4px] bg-transparent hover:bg-primary/50 transition-colors data-[resize-handle-active]:bg-primary z-10 -mx-[2px]" />
+              </>
+            )}
+
+            {/* Center: Editor / Graph & Bottom Panel */}
+            <ResizablePanel defaultSize={60} minSize={30}>
+              <ResizablePanelGroup direction="vertical">
+
+                {/* Main View Area (Editor or Graph) */}
+                <ResizablePanel defaultSize={70} minSize={20}>
+                  <div className="h-full flex flex-col bg-[#1e1e1e] relative">
+
+                    {activeSidebarView === 'graph' ? (
+                      // Graph View
+                      <div className="h-full w-full bg-background text-foreground">
+                        <ReactFlow
+                          nodes={initialNodes}
+                          edges={initialEdges}
+                          fitView
+                        >
+                          <Background />
+                          <Controls />
+                        </ReactFlow>
+                      </div>
+                    ) : (
+                      // Editor View
+                      <>
+                        {/* Editor Tabs */}
+                        <div className="h-9 flex items-end bg-[#18181b] border-b border-[#2b2b2b] overflow-x-auto no-scrollbar">
+                          {openFiles.length > 0 ? (
+                            openFiles.map(path => (
+                              <div
+                                key={path}
+                                onClick={() => handleFileSelect(path)}
+                                className={`h-full px-3 min-w-[120px] max-w-[200px] flex items-center gap-2 border-t-2 text-xs cursor-pointer group select-none ${selectedFile === path
+                                  ? 'bg-[#1e1e1e] border-primary text-foreground/90'
+                                  : 'bg-[#2d2d2d] border-transparent text-muted-foreground hover:bg-[#252526]'
+                                  }`}
+                              >
+                                <span className="truncate">{path.split(/[/\\]/).pop()}</span>
+                                <button
+                                  onClick={(e) => handleCloseFile(e, path)}
+                                  className={`ml-auto hover:bg-muted/50 rounded-sm p-0.5 ${selectedFile === path ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                                >
+                                  <span className="sr-only">Close</span>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                                </button>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="h-full px-3 flex items-center text-xs text-muted-foreground italic">
+                              No file selected
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex-1 relative">
+                          <Editor
+                            height="100%"
+                            onMount={handleEditorDidMount}
+                            defaultLanguage="typescript"
+                            language={selectedFile?.endsWith('.py') ? 'python' : selectedFile?.endsWith('.rs') ? 'rust' : 'typescript'}
+                            theme="vs-dark"
+                            value={fileContent}
+                            options={{
+                              minimap: { enabled: true, scale: 0.5 },
+                              fontSize: 13,
+                              lineHeight: 20,
+                              readOnly: true,
+                              fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
+                              scrollBeyondLastLine: false,
+                              smoothScrolling: true,
+                              padding: { top: 10 }
+                            }}
+                          />
+                        </div>
+                      </>
+                    )}
+
+                  </div>
+                </ResizablePanel>
+
+                {/* Bottom Panel: Terminal/Logs/AI */}
+                {isOutputVisible && (
+                  <>
+                    <ResizableHandle withHandle={true} className="h-[4px] bg-transparent hover:bg-primary/50 transition-colors data-[resize-handle-active]:bg-primary z-10 -my-[2px]" />
+                    <ResizablePanel defaultSize={30} minSize={10} collapsible={true}>
+                      <div className="h-full flex flex-col bg-card border-t border-border/40">
+                        <div className="h-8 px-3 border-b border-border/40 flex items-center justify-between bg-muted/10">
+                          <div className="flex items-center gap-4 h-full">
+                            <button
+                              onClick={() => setActiveBottomTab('output')}
+                              className={`text-xs font-medium px-1 h-full flex items-center transition-colors ${activeBottomTab === 'output' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'}`}
+                            >
+                              Output
+                            </button>
+                            <button
+                              onClick={() => setActiveBottomTab('mcp')}
+                              className={`text-xs font-medium px-1 h-full flex items-center transition-colors ${activeBottomTab === 'mcp' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'}`}
+                            >
+                              MCP
+                            </button>
+                            <button
+                              onClick={() => setActiveBottomTab('terminal')}
+                              className={`text-xs font-medium px-1 h-full flex items-center transition-colors ${activeBottomTab === 'terminal' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'}`}
+                            >
+                              Terminal
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => setLogs([])} title="Clear Logs">
+                              <span className="sr-only">Clear</span>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => setIsOutputVisible(false)} title="Close Panel">
+                              <span className="sr-only">Close</span>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="flex-1 overflow-hidden relative">
+                          {activeBottomTab === 'output' && (
+                            <ScrollArea className="h-full font-mono text-xs p-2 bg-black/95 text-zinc-300">
+                              {logs.map((log, i) => (
+                                <div key={i} className="mb-0.5 flex gap-2 hover:bg-white/5 px-1 rounded-sm">
+                                  <span className="text-zinc-600 shrink-0 select-none">[{log.timestamp}]</span>
+                                  <span className={`shrink-0 w-16 text-right font-bold ${log.source === 'rust' ? 'text-orange-400' :
+                                    log.source === 'python' ? 'text-blue-400' :
+                                      'text-zinc-400'
+                                    }`}>
+                                    {log.source}
+                                  </span>
+                                  <span className="break-all whitespace-pre-wrap">{log.message}</span>
+                                </div>
+                              ))}
+                              <div ref={logsEndRef} />
+                            </ScrollArea>
+                          )}
+
+                          {activeBottomTab === 'mcp' && (
+                            <ScrollArea className="h-full font-mono text-xs p-2 bg-black/95 text-zinc-300">
+                              {logs.filter(l => l.source === 'python').length === 0 ? (
+                                <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
+                                  <p>No Python logs available.</p>
+                                </div>
+                              ) : (
+                                logs.filter(l => l.source === 'python').map((log, i) => (
+                                  <div key={i} className="mb-0.5 flex gap-2 hover:bg-white/5 px-1 rounded-sm">
+                                    <span className="text-zinc-600 shrink-0 select-none">[{log.timestamp}]</span>
+                                    <span className="text-blue-400 shrink-0 w-16 text-right font-bold">
+                                      python
+                                    </span>
+                                    <span className="break-all whitespace-pre-wrap">{log.message}</span>
+                                  </div>
+                                ))
+                              )}
+                              <div ref={logsEndRef} />
+                            </ScrollArea>
+                          )}
+
+                          {activeBottomTab === 'problems' && (
+                            <ScrollArea className="h-full p-3 bg-background">
+                              {vulnerabilities.length === 0 ? (
+                                <div className="flex flex-col gap-2 items-center justify-center py-10 text-muted-foreground opacity-60">
+                                  <ShieldAlert className="w-10 h-10 stroke-1" />
+                                  <p className="text-xs text-center max-w-[150px]">
+                                    No vulnerabilities detected. Start a scan to analyze code.
+                                  </p>
+                                </div>
+                              ) : (
+                                <div className="space-y-2">
+                                  {vulnerabilities.map((v, i) => (
+                                    <div key={i} onClick={() => handleSearchResultClick({ file: v.file, line: v.line, message: v.message })} className="flex items-start gap-3 p-2 rounded-md border border-border/40 bg-muted/5 hover:bg-muted/10 cursor-pointer transition-colors group">
+                                      <div className="mt-0.5">
+                                        <Badge variant={v.severity === 'high' ? 'destructive' : 'default'} className="text-[10px] h-4 px-1 rounded-sm uppercase">
+                                          {v.severity}
+                                        </Badge>
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-0.5">
+                                          <span className="text-xs font-medium text-foreground">{v.file}</span>
+                                          <span className="text-[10px] text-muted-foreground font-mono">:{v.line}</span>
+                                        </div>
+                                        <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 group-hover:text-foreground/80 transition-colors">
+                                          {v.message}
+                                        </p>
+                                      </div>
+                                      <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <Button variant="ghost" size="icon" className="h-6 w-6">
+                                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </ScrollArea>
+                          )}
+
+                          {activeBottomTab === 'terminal' && (
+                            <div className="h-full flex items-center justify-center text-muted-foreground text-xs font-mono">
+                              Terminal not connected
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </ResizablePanel>
+                  </>
+                )}
+              </ResizablePanelGroup>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
+      </div>
+
+      {/* Status Bar */}
+      <footer className="h-6 border-t border-border/40 bg-primary text-primary-foreground px-3 flex items-center justify-between text-[10px] select-none">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1"><GitBranch className="w-3 h-3" /> main*</span>
+          <span className="opacity-50">|</span>
+          <span>DeepAudit Ready</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span>Ln {fileContent.split('\n').length}, Col 1</span>
+          <span>UTF-8</span>
+          <span>TypeScript React</span>
+        </div>
+      </footer>
+    </div>
+  )
+}
+
+export default App
