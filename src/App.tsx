@@ -16,7 +16,8 @@ import {
   Network,
   Terminal,
   Loader2,
-  Hammer
+  Hammer,
+  Database
 } from 'lucide-react'
 
 import { Button } from "@/components/ui/button"
@@ -54,6 +55,20 @@ interface FileNode {
   path: string
   type: 'file' | 'folder'
   children?: FileNode[]
+}
+
+const MCP_TOOL_DESCRIPTIONS: Record<string, string> = {
+  build_ast_index: '构建/更新项目的 AST 索引，用于后续分析',
+  run_security_scan: '使用自定义规则运行安全扫描',
+  get_analysis_report: '读取最近一次分析生成的缓存报告',
+  find_call_sites: '按被调用函数名查找调用点（基于 AST 索引）',
+  get_call_graph: '从入口函数/方法名生成深度受限调用图（基于 AST 索引）',
+  read_file: '通过 MCP 读取文件内容',
+  list_files: '列出目录下的文件与子目录（非递归）',
+  search_files: '在目录内按正则搜索文本（逐行匹配）',
+  get_code_structure: '读取单文件的类/函数/方法结构（基于 AST）',
+  search_symbol: '在项目范围内搜索类/函数等符号（基于 AST 索引）',
+  get_class_hierarchy: '查看指定类的父类/子类层次（基于 AST 索引）',
 }
 
 function buildFileTree(paths: string[], rootPath: string): FileNode[] {
@@ -194,6 +209,10 @@ function App() {
   const [fileContent, setFileContent] = useState<string>('// 请选择文件以查看内容')
   const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([])
   const logsEndRef = useRef<HTMLDivElement>(null)
+  const logQueueRef = useRef<LogEntry[]>([])
+  const logFlushTimerRef = useRef<number | null>(null)
+  const pendingFilesRef = useRef<Set<string>>(new Set())
+  const filesFlushTimerRef = useRef<number | null>(null)
 
   const [isOutputVisible, setIsOutputVisible] = useState(true)
   const [activeSidebarView, setActiveSidebarView] = useState<'explorer' | 'search' | 'graph' | 'tools'>('explorer')
@@ -217,6 +236,9 @@ function App() {
     })
     return groups
   }, [searchResults])
+
+  const pythonLogs = useMemo(() => logs.filter(l => l.source === 'python'), [logs])
+  const systemLogs = useMemo(() => logs.filter(l => l.source !== 'python'), [logs])
 
   // Menu State
   const [activeMenu, setActiveMenu] = useState<string | null>(null)
@@ -268,13 +290,21 @@ function App() {
       if (msg.startsWith("Rust Scan")) {
         // Format: Rust Scan {path}: {details}
         const pathPart = msg.split(": ")[0].replace("Rust Scan ", "");
-        setFiles(prev => {
-          if (!prev.includes(pathPart)) {
-            return [...prev, pathPart].sort();
-          }
-          return prev;
-        });
-        addLog(msg, 'rust');
+        pendingFilesRef.current.add(pathPart)
+        if (filesFlushTimerRef.current === null) {
+          filesFlushTimerRef.current = window.setTimeout(() => {
+            const pending = pendingFilesRef.current
+            pendingFilesRef.current = new Set()
+            filesFlushTimerRef.current = null
+            setFiles(prev => {
+              const merged = new Set(prev)
+              pending.forEach(p => merged.add(p))
+              return Array.from(merged).sort()
+            })
+          }, 200)
+        }
+        // Disable Rust Scan logging to prevent frontend lag during large project scans
+        // addLog(msg, 'rust');
       } else {
         addLog(msg, 'python');
       }
@@ -328,35 +358,65 @@ function App() {
   }
 
   function addLog(message: string, source: LogEntry['source']) {
-    setLogs(prev => [...prev, {
+    logQueueRef.current.push({
       timestamp: new Date().toLocaleTimeString(),
       message,
       source
-    }])
+    })
+
+    if (logFlushTimerRef.current !== null) return
+    logFlushTimerRef.current = window.setTimeout(() => {
+      const batch = logQueueRef.current
+      logQueueRef.current = []
+      logFlushTimerRef.current = null
+
+      const MAX_LOGS = 2000
+      setLogs(prev => {
+        const merged = prev.concat(batch)
+        if (merged.length <= MAX_LOGS) return merged
+        return merged.slice(merged.length - MAX_LOGS)
+      })
+    }, 80)
   }
 
   async function callMcpTool(name: string, args: any) {
+    const startedAt = performance.now()
     try {
       addLog(`正在调用工具: ${name}...`, 'system')
       const result = await invoke<string>('call_mcp_tool', { toolName: name, arguments: JSON.stringify(args) })
 
+      let ok = true
+      let errorMessage = ''
       try {
         const parsed = JSON.parse(result)
+        if (parsed && typeof parsed === 'object') {
+          if (typeof parsed.error === 'string' && parsed.error.trim()) {
+            ok = false
+            errorMessage = parsed.error
+          } else if (typeof parsed.status === 'string' && parsed.status !== 'success') {
+            ok = false
+            errorMessage = parsed.status
+          }
+        }
 
-        if (name === 'analyze_project' && parsed.status === 'success') {
+        if (name === 'build_ast_index' && parsed.status === 'success') {
+          if (parsed.summary) {
+            addLog(parsed.summary, 'python')
+          } else {
+            addLog(`AST 索引构建成功`, 'python')
+          }
+        } else if (name === 'build_ast_index' && parsed.error) {
+          addLog(`构建 AST 索引失败: ${parsed.error}`, 'python')
+        } else if (name === 'run_security_scan' && parsed.status === 'success') {
           if (Array.isArray(parsed.findings)) {
             setVulnerabilities(parsed.findings)
             // Switch to problems tab to show results
             setActiveBottomTab('problems')
             setIsOutputVisible(true)
           }
-          if (parsed.summary) {
-            addLog(parsed.summary, 'python')
-          } else {
-            addLog(`工具已调用: ${result}`, 'system')
-          }
-        } else if (name === 'analyze_project' && parsed.error) {
-          addLog(`分析失败: ${parsed.error}`, 'python')
+          addLog(`安全扫描完成，发现 ${parsed.count || 0} 个问题`, 'python')
+        } else if (name === 'run_security_scan' && parsed.error) {
+          addLog(`安全扫描失败: ${parsed.error}`, 'python')
         } else if (name === 'get_analysis_report' && parsed.metadata) {
           const meta = parsed.metadata
           const nodeCount = typeof meta.node_count === 'number' ? meta.node_count : '未知'
@@ -367,9 +427,22 @@ function App() {
         }
       } catch (e) {
         addLog(result, 'python')
+        const text = String(result ?? '')
+        const lower = text.toLowerCase()
+        if (text.startsWith('错误') || lower.includes('"error"') || lower.includes('error:')) {
+          ok = false
+          errorMessage = text.length > 200 ? text.slice(0, 200) + '...' : text
+        }
       }
+
+      const costMs = Math.round(performance.now() - startedAt)
+      addLog(
+        `工具调用${ok ? '成功' : '失败'}: ${name}${ok ? '' : `，原因: ${errorMessage || '未知错误'}`}（${costMs}ms）`,
+        'system'
+      )
     } catch (e) {
-      addLog(`调用工具 ${name} 出错: ${e}`, 'system')
+      const costMs = Math.round(performance.now() - startedAt)
+      addLog(`工具调用失败: ${name}，原因: ${e}（${costMs}ms）`, 'system')
     }
   }
 
@@ -393,7 +466,7 @@ function App() {
           }
         }
 
-        callMcpTool('analyze_project', { directory: path })
+        callMcpTool('build_ast_index', { directory: path })
       }
     } catch (e) {
       console.error(e)
@@ -432,7 +505,6 @@ function App() {
         handleFileSelect(newOpenFiles[newOpenFiles.length - 1])
       } else {
         setSelectedFile(null)
-        setFileContent('// 请选择文件以查看内容')
       }
     }
   }
@@ -479,7 +551,12 @@ function App() {
         setMcpStatus(status === '运行中' ? 'connected' : 'disconnected')
       } else if (action === 'tools') {
         const tools = await invoke<string[]>('list_mcp_tools')
-        addLog(`可用 MCP 工具:\n${tools.map(t => `- ${t}`).join('\n')}`, "system")
+        addLog(
+          `可用 MCP 工具:\n${tools
+            .map(t => `- ${t}: ${MCP_TOOL_DESCRIPTIONS[t] ?? '（缺少描述）'}`)
+            .join('\n')}`,
+          "system"
+        )
       }
     } catch (e) {
       console.error(e)
@@ -837,10 +914,19 @@ function App() {
                                 variant="outline"
                                 className="w-full justify-start text-xs h-8"
                                 disabled={!projectPath}
-                                onClick={() => callMcpTool('analyze_project', { directory: projectPath })}
+                                onClick={() => callMcpTool('build_ast_index', { directory: projectPath })}
+                              >
+                                <Database className="w-3.5 h-3.5 mr-2 text-blue-500" />
+                                构建 AST 索引
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className="w-full justify-start text-xs h-8"
+                                disabled={!projectPath}
+                                onClick={() => callMcpTool('run_security_scan', { directory: projectPath })}
                               >
                                 <ShieldAlert className="w-3.5 h-3.5 mr-2 text-orange-500" />
-                                全量安全扫描
+                                运行安全扫描
                               </Button>
                               <Button
                                 variant="outline"
@@ -1045,7 +1131,7 @@ function App() {
                               onClick={() => setActiveBottomTab('output')}
                               className={`text-xs font-medium px-1 h-full flex items-center transition-colors ${activeBottomTab === 'output' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'}`}
                             >
-                              输出
+                              系统
                             </button>
                             <button
                               onClick={() => setActiveBottomTab('mcp')}
@@ -1075,7 +1161,7 @@ function App() {
                         <div className="flex-1 overflow-hidden relative">
                           {activeBottomTab === 'output' && (
                             <ScrollArea className="h-full font-mono text-xs p-2 bg-black/95 text-zinc-300">
-                              {logs.map((log, i) => (
+                              {systemLogs.map((log, i) => (
                                 <div key={i} className="mb-0.5 flex gap-2 hover:bg-white/5 px-1 rounded-sm">
                                   <span className="text-zinc-600 shrink-0 select-none">[{log.timestamp}]</span>
                                   <span className={`shrink-0 w-16 text-right font-bold ${log.source === 'rust' ? 'text-orange-400' :
@@ -1093,12 +1179,12 @@ function App() {
 
                           {activeBottomTab === 'mcp' && (
                             <ScrollArea className="h-full font-mono text-xs p-2 bg-black/95 text-zinc-300">
-                              {logs.filter(l => l.source === 'python').length === 0 ? (
+                              {pythonLogs.length === 0 ? (
                                 <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
                                   <p>暂无 Python 日志。</p>
                                 </div>
                               ) : (
-                                logs.filter(l => l.source === 'python').map((log, i) => (
+                                pythonLogs.map((log, i) => (
                                   <div key={i} className="mb-0.5 flex gap-2 hover:bg-white/5 px-1 rounded-sm">
                                     <span className="text-zinc-600 shrink-0 select-none">[{log.timestamp}]</span>
                                     <span className="text-blue-400 shrink-0 w-16 text-right font-bold">

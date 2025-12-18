@@ -1,109 +1,179 @@
 # DeepAudit Nexus
 
-支持 MCP 协议的高级大语言模型（LLM）代码审计工具。
+支持 MCP 协议的高级大语言模型（LLM）代码审计工具，集成了 Rust AST 引擎和 Python MCP 服务器。
 
-## 架构
+## 架构概览
 
-- **前端**：React + TypeScript + Vite + Tauri  
-- **后端**：Rust（Tauri 主机）  
-- **Sidecar 服务**：Python（LangGraph + MCP）
+DeepAudit 采用混合架构设计，结合了 Rust 的性能优势和 Python 的生态丰富性：
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   前端 (React)   │◄──►│  Tauri (Rust)    │◄──►│ Python Sidecar  │
+│                 │    │                  │    │                 │
+│ • React 19      │    │ • AST 引擎       │    │ • MCP 服务器     │
+│ • TypeScript    │    │ • 文件系统操作   │    │ • 安全扫描       │
+│ • Vite          │    │ • 对话框管理     │    │ • 报告生成       │
+│ • Tailwind CSS  │    │ • SQL 数据库      │    │                 │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+```
+
+### 核心组件
+
+- **前端**：React 19 + TypeScript + Vite + Tailwind CSS
+- **后端**：Rust (Tauri 2.x) + SQLx (SQLite)
+- **AST 引擎**：Rust (tree-sitter) 支持多语言解析
+- **MCP 服务**：Python FastMCP 服务器，提供高级分析工具
+- **UI 框架**：Radix UI + Lucide React + Framer Motion
 
 ## 前置依赖
 
-- Node.js  
-- Rust（含 Cargo）  
-- Python 3.8 或更高版本  
-- Tauri CLI（推荐通过 `npm install -g @tauri-apps/cli` 全局安装）
+### 必需依赖
+- **Node.js** (推荐 v18+) 
+- **Rust** (最新稳定版)
+- **Python 3.8+**
+- **Tauri CLI** 
+  ```bash
+  npm install -g @tauri-apps/cli
+  ```
+
+### 可选依赖
+- **Git** (用于版本控制集成)
 
 ## 安装步骤
 
-1. 安装前端依赖：
-   ```bash
-   npm install
-   ```
+### 1. 克隆项目
+```bash
+git clone <repository-url>
+cd DeepAudit
+```
 
-2. 安装 Python 依赖：
-   ```bash
-   pip install -r python-sidecar/requirements.txt
-   ```
+### 2. 安装前端依赖
+```bash
+npm install
+```
 
-## 开发模式运行
+### 3. 安装 Python 依赖
+```bash
+cd python-sidecar
+pip install -r requirements.txt
+cd ..
+```
 
+### 4. 安装 Rust 依赖
+```bash
+cd src-tauri
+cargo fetch
+cd ..
+```
+
+## 运行方式
+
+### 开发模式
 ```bash
 npm run tauri dev
 ```
 
-## 使用方法
-
-1. 点击 “Open Project Folder”（打开项目文件夹）。  
-2. 选择要审计的代码目录。  
-3. 查看日志，Python Agent 将通过 MCP 协议分析代码。
-
-## MCP 工具
-
-DeepAudit 运行一个 Python MCP Sidecar 服务（`python-sidecar/agent.py`），并通过标准输入/输出（stdio）以 JSON-RPC 方式从 Tauri 主机调用工具。
-
-可用工具（由 `list_mcp_tools` 返回）：
-
-- `analyze_project(directory: string)`  
-- `get_analysis_report(directory: string)`  
-- `find_call_sites(directory: string, symbol: string)`  
-- `get_call_graph(directory: string, entry: string, max_depth?: number)`  
-- `read_file(file_path: string)`  
-- `list_files(directory: string)`  
-- `search_files(directory: string, pattern: string)`  
-- `get_code_structure(file_path: string)`  
-- `search_symbol(query: string)`  
-- `get_class_hierarchy(class_name: string)`
-
-### 调用点（Call Sites）
-
-`find_call_sites` 返回所有 AST 索引中 `callee == symbol` 的调用点。
-
-示例参数：
-
-```json
-{ "directory": "/path/to/repo", "symbol": "exec" }
+### 生产构建
+```bash
+npm run tauri build
 ```
 
-响应格式：
-
-```json
-{ "status": "success", "symbol": "exec", "count": 3, "results": [ /* 符号列表 */ ] }
+### 仅前端开发
+```bash
+npm run dev
 ```
 
-每个结果均为 `kind == "method_call"` 的符号，可能包含以下元数据字段：
-- Java：`metadata.callerClass`、`metadata.callerMethod`
-- Python/JS/TS/Rust/Go：`metadata.callerFunction`
+## 📋 使用指南
 
-### 调用图（Call Graph）
+### 基本工作流
 
-`get_call_graph` 从指定入口 `entry` 开始构建深度受限的调用图。
+1. **启动应用**：运行 `npm run tauri dev`
+2. **打开项目**：点击 "打开项目..." 按钮选择代码目录
+3. **构建索引**：使用 `build_ast_index` 工具构建 AST 索引
+4. **执行分析**：运行安全扫描或代码结构分析
+5. **查看结果**：在日志面板查看分析结果
 
-注意：当前 `entry` 匹配的是调用点元数据中记录的 *调用方法/函数名称*（而非完整限定名）。
+### 快捷功能
 
-示例参数：
+- **项目文件树**：自动显示项目结构
+- **实时日志**：分批显示 Rust 和 Python 日志
+- **工具描述**：悬停查看 MCP 工具详细说明
+- **一键清理**：清除日志和文件树缓存
 
-```json
-{ "directory": "/path/to/repo", "entry": "handleRequest", "max_depth": 2 }
-```
+## 🔧 MCP 工具集
 
-响应格式：
+DeepAudit 提供 11 个 MCP 工具，分为以下类别：
 
-```json
-{
-  "status": "success",
-  "graph": {
-    "entry": "handleRequest",
-    "nodes": [{ "id": "handleRequest", "label": "handleRequest" }],
-    "edges": [{ "from": "handleRequest", "to": "validate", "file": "...", "line": 42 }]
-  }
-}
-```
+### 核心分析工具
+
+| 工具名称 | 参数 | 描述 |
+| :--- | :--- | :--- |
+| **build_ast_index** | `directory` | 构建 AST 索引，支持多语言代码解析。初始化项目的必需步骤 |
+| **run_security_scan** | `directory`, `custom_rules`, `include_dirs`, `exclude_dirs` | 使用自定义规则运行安全扫描，支持目录过滤 |
+| **get_analysis_report** | `directory` | 获取缓存的详细分析报告（JSON 格式） |
+
+### 文件操作工具
+
+| 工具名称 | 参数 | 描述 |
+| :--- | :--- | :--- |
+| **list_files** | `directory` | 列出目录内容（非递归） |
+| **read_file** | `file_path` | 读取文件完整内容 |
+| **search_files** | `directory`, `pattern` | 正则表达式搜索文件内容 |
+| **get_code_structure** | `file_path` | 解析文件结构（类、函数、方法） |
+
+### 代码导航工具
+
+| 工具名称 | 参数 | 描述 |
+| :--- | :--- | :--- |
+| **search_symbol** | `query` | 在全局 AST 索引中搜索符号定义 |
+| **find_call_sites** | `directory`, `symbol` | 查找函数/方法的所有调用位置 |
+| **get_call_graph** | `directory`, `entry`, `max_depth` | 生成函数调用关系图 |
+| **get_class_hierarchy** | `directory`, `class_name` | 获取类的继承关系 |
+
+## 支持的编程语言
+
+Rust AST 引擎支持以下语言的解析：
+
+- **Web**: JavaScript, TypeScript, HTML, CSS, JSON
+- **后端**: Python, Java, Rust, Go, C/C++
+- **扩展性**: 可通过 tree-sitter 添加新语言支持
 
 ## 缓存机制
 
-Python Sidecar 服务会为每个代码仓库缓存 AST 和分析报告，存储在 `.deepaudit_cache/` 目录下：
+### 缓存位置
+- **AST 索引**: `.deepaudit_cache/<repo_hash>/ast_index.bin`
+- **分析报告**: `.deepaudit_cache/<repo_hash>/analysis_report.json`
 
-- AST 索引：`.deepaudit_cache/<repo_hash>/ast_index.pkl`  
-- 分析报告缓存：`.deepaudit_cache/<repo_hash>/analysis_report.json`
+### 缓存策略
+- **智能失效**: 文件修改时间变化时自动重建
+- **跨会话持久**: 关闭应用后缓存保留
+- **内存优化**: 大型项目分批处理，避免内存溢出
+
+
+## 开发指南
+
+### 项目结构
+```
+DeepAudit/
+├── src/                    # React 前端源码
+│   ├── components/         # UI 组件
+│   ├── lib/               # 工具函数
+│   └── App.tsx            # 主应用组件
+├── src-tauri/             # Rust 后端源码
+│   ├── src/
+│   │   ├── ast/           # AST 引擎
+│   │   ├── lib.rs         # Tauri 命令
+│   │   └── scanner.rs     # 文件扫描器
+│   └── Cargo.toml         # Rust 依赖
+├── python-sidecar/        # Python MCP 服务
+│   ├── agent.py           # MCP 工具定义
+│   ├── ast_engine.py      # Python AST 处理
+│   └── requirements.txt   # Python 依赖
+└── dist/                  # 构建输出
+```
+
+### 添加新的 MCP 工具
+
+1. **Python 端**：在 `python-sidecar/agent.py` 中添加 `@mcp.tool()` 装饰的函数
+2. **前端端**：在 `src/App.tsx` 的 `MCP_TOOL_DESCRIPTIONS` 中添加工具描述
+3. **类型安全**：确保参数和返回值的 JSON 序列化兼容性
