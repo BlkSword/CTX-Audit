@@ -1,4 +1,5 @@
 use ignore::Walk;
+use rayon::prelude::*;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::collections::HashMap;
 use std::fs;
@@ -11,6 +12,7 @@ use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
 use tokio::time::{timeout, Duration};
 
+pub mod ast;
 mod scanner;
 
 struct DeepAuditState {
@@ -143,8 +145,12 @@ async fn open_project(
     pool: State<'_, SqlitePool>,
 ) -> Result<String, String> {
     // Open Folder Dialog
-    // blocking_pick_folder returns Option<FilePath>
-    let folder_path = app.dialog().file().blocking_pick_folder();
+    let (tx, rx) = oneshot::channel();
+    app.dialog().file().pick_folder(move |folder_path| {
+        let _ = tx.send(folder_path);
+    });
+
+    let folder_path = rx.await.map_err(|e| e.to_string())?;
 
     let path = match folder_path {
         Some(p) => p.to_string(),
@@ -157,11 +163,11 @@ async fn open_project(
         .execute(pool.inner())
         .await;
 
-    // Start scanning in background
+    // Start scanning in background with parallel processing
     let path_clone = path.clone();
     let app_handle_scan = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        for result in Walk::new(&path_clone) {
+        Walk::new(&path_clone).par_bridge().for_each(|result| {
             if let Ok(entry) = result {
                 if entry.file_type().map_or(false, |ft| ft.is_file()) {
                     let p = entry.path();
@@ -171,7 +177,7 @@ async fn open_project(
                     }
                 }
             }
-        }
+        });
     });
 
     // Start Python Sidecar if not running
@@ -186,6 +192,8 @@ async fn open_project(
             .shell()
             .command("python")
             .args(&[script_path])
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONIOENCODING", "utf-8")
             .spawn()
             .map_err(|e| e.to_string())?;
 
@@ -211,7 +219,7 @@ async fn open_project(
                     }
                     CommandEvent::Stderr(line) => {
                         let text = String::from_utf8_lossy(&line);
-                        let _ = app_handle.emit("mcp-message", format!("Python: {}", text));
+                        let _ = app_handle.emit("mcp-message", text.to_string());
                     }
                     _ => {}
                 }
@@ -295,40 +303,47 @@ async fn search_files(query: String, path: String) -> Result<Vec<SearchResult>, 
     }
 
     let results = tauri::async_runtime::spawn_blocking(move || {
-        let mut results = Vec::new();
         let walker = ignore::WalkBuilder::new(&path).build();
 
-        for result in walker {
-            match result {
-                Ok(entry) => {
-                    if entry.file_type().map_or(false, |ft| ft.is_file()) {
+        walker
+            .par_bridge()
+            .flat_map(|result| {
+                match result {
+                    Ok(entry) if entry.file_type().map_or(false, |ft| ft.is_file()) => {
                         let file_path = entry.path();
+                        let query = query.as_str();
+
+                        let mut file_results = Vec::new();
                         if let Ok(file) = fs::File::open(file_path) {
                             let reader = std::io::BufReader::new(file);
                             use std::io::BufRead;
 
                             for (index, line) in reader.lines().enumerate() {
                                 if let Ok(content) = line {
-                                    if content.contains(&query) {
-                                        results.push(SearchResult {
+                                    if content.contains(query) {
+                                        file_results.push(SearchResult {
                                             file: file_path.to_string_lossy().to_string(),
                                             line: index + 1,
                                             content: content.trim().to_string(),
                                         });
-                                        // Safety break if too many results
-                                        if results.len() > 1000 {
-                                            return results;
+                                        // Safety break if too many results per file
+                                        if file_results.len() > 100 {
+                                            break;
                                         }
                                     }
                                 }
                             }
                         }
+
+                        file_results
                     }
+                    _ => Vec::new(),
                 }
-                Err(_) => {}
-            }
-        }
-        results
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .take(1000)
+            .collect()
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -349,7 +364,8 @@ async fn get_mcp_status(state: State<'_, DeepAuditState>) -> Result<String, Stri
 #[tauri::command]
 async fn list_mcp_tools() -> Result<Vec<String>, String> {
     Ok(vec![
-        "analyze_project".to_string(),
+        "build_ast_index".to_string(),
+        "run_security_scan".to_string(),
         "get_analysis_report".to_string(),
         "find_call_sites".to_string(),
         "get_call_graph".to_string(),
@@ -369,7 +385,7 @@ async fn restart_mcp_server(
 ) -> Result<String, String> {
     let mut child_guard = state.child.lock().unwrap();
 
-    // Kill existing
+    // Kill existing Python process if running
     if let Some(child) = child_guard.take() {
         let _ = child.kill();
     }
@@ -383,10 +399,13 @@ async fn restart_mcp_server(
 
     // Start Python Sidecar
     let script_path = "../python-sidecar/agent.py";
+
     let (mut rx, child) = app
         .shell()
         .command("python")
         .args(&[script_path])
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .spawn()
         .map_err(|e| e.to_string())?;
 
@@ -413,14 +432,15 @@ async fn restart_mcp_server(
                 }
                 CommandEvent::Stderr(line) => {
                     let text = String::from_utf8_lossy(&line);
-                    let _ = app_handle.emit("mcp-message", format!("Python: {}", text));
+                    let _ = app_handle.emit("mcp-message", text.to_string());
                 }
                 _ => {}
             }
         }
     });
 
-    Ok("MCP 服务器已重启 (Stdio 模式)。".to_string())
+    log::info!("Python MCP Server restarted successfully");
+    Ok("Python MCP Server restarted successfully".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -447,7 +467,7 @@ pub fn run() {
             get_mcp_status,
             list_mcp_tools,
             restart_mcp_server,
-            call_mcp_tool
+            call_mcp_tool,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
