@@ -11,9 +11,11 @@ use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
 use tokio::time::{timeout, Duration};
+use anyhow;
 
 pub mod ast;
 mod scanner;
+pub mod diff;
 
 struct DeepAuditState {
     child: Mutex<Option<CommandChild>>,
@@ -378,6 +380,111 @@ async fn list_mcp_tools() -> Result<Vec<String>, String> {
     ])
 }
 
+use crate::diff::{DiffEngine, GitIntegration, ComparisonConfig, ComparisonRequest, DiffViewMode};
+
+#[tauri::command]
+async fn compare_files_or_directories(
+    source_a: String,
+    source_b: String,
+    ignore_whitespace: Option<bool>,
+    ignore_case: Option<bool>,
+    view_mode: Option<String>,
+    context_lines: Option<u32>,
+    enable_syntax_highlight: Option<bool>,
+    detect_renames: Option<bool>,
+    rename_similarity_threshold: Option<f32>,
+) -> Result<String, String> {
+    let config = ComparisonConfig {
+        ignore_whitespace: ignore_whitespace.unwrap_or(false),
+        ignore_case: ignore_case.unwrap_or(false),
+        view_mode: match view_mode.as_deref() {
+            Some("side-by-side") => DiffViewMode::SideBySide,
+            Some("unified") => DiffViewMode::Unified,
+            Some("compact") => DiffViewMode::Compact,
+            _ => DiffViewMode::SideBySide,
+        },
+        context_lines: context_lines.unwrap_or(3),
+        enable_syntax_highlight: enable_syntax_highlight.unwrap_or(true),
+        detect_renames: detect_renames.unwrap_or(true),
+        rename_similarity_threshold: rename_similarity_threshold.unwrap_or(0.8),
+    };
+
+    let request = ComparisonRequest {
+        source_a,
+        source_b,
+        config,
+        is_git_comparison: false,
+        git_params: None,
+    };
+
+    let engine = DiffEngine::new(request.config.clone());
+    let result = engine.compare(request)
+        .map_err(|e| format!("比较失败: {}", e))?;
+
+    serde_json::to_string(&result)
+        .map_err(|e| format!("序列化结果失败: {}", e))
+}
+
+#[tauri::command]
+async fn compare_git_versions(
+    repository_path: String,
+    left_ref: String,
+    right_ref: String,
+    file_paths: Option<Vec<String>>,
+    ignore_whitespace: Option<bool>,
+    ignore_case: Option<bool>,
+    view_mode: Option<String>,
+    context_lines: Option<u32>,
+    enable_syntax_highlight: Option<bool>,
+) -> Result<String, String> {
+    let config = ComparisonConfig {
+        ignore_whitespace: ignore_whitespace.unwrap_or(false),
+        ignore_case: ignore_case.unwrap_or(false),
+        view_mode: match view_mode.as_deref() {
+            Some("side-by-side") => DiffViewMode::SideBySide,
+            Some("unified") => DiffViewMode::Unified,
+            Some("compact") => DiffViewMode::Compact,
+            _ => DiffViewMode::SideBySide,
+        },
+        context_lines: context_lines.unwrap_or(3),
+        enable_syntax_highlight: enable_syntax_highlight.unwrap_or(true),
+        detect_renames: true,
+        rename_similarity_threshold: 0.8,
+    };
+
+    let git_params = crate::diff::GitComparisonParams {
+        repository_path,
+        left_ref,
+        right_ref,
+        file_paths: file_paths.unwrap_or_default(),
+    };
+
+    let request = ComparisonRequest {
+        source_a: git_params.left_ref.clone(),
+        source_b: git_params.right_ref.clone(),
+        config,
+        is_git_comparison: true,
+        git_params: Some(git_params),
+    };
+
+    let engine = DiffEngine::new(request.config.clone());
+    let result = engine.compare(request)
+        .map_err(|e| format!("Git比较失败: {}", e))?;
+
+    serde_json::to_string(&result)
+        .map_err(|e| format!("序列化结果失败: {}", e))
+}
+
+#[tauri::command]
+async fn get_git_refs(repository_path: String) -> Result<String, String> {
+    let git_integration = GitIntegration::new();
+    let refs = git_integration.get_refs(&repository_path)
+        .map_err(|e| format!("获取Git引用失败: {}", e))?;
+
+    serde_json::to_string(&refs)
+        .map_err(|e| format!("序列化Git引用失败: {}", e))
+}
+
 #[tauri::command]
 async fn restart_mcp_server(
     app: AppHandle,
@@ -468,6 +575,9 @@ pub fn run() {
             list_mcp_tools,
             restart_mcp_server,
             call_mcp_tool,
+            compare_files_or_directories,
+            compare_git_versions,
+            get_git_refs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

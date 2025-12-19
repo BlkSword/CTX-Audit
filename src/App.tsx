@@ -17,7 +17,8 @@ import {
   Terminal,
   Loader2,
   Hammer,
-  Database
+  Database,
+  FileDiff
 } from 'lucide-react'
 
 import { Button } from "@/components/ui/button"
@@ -30,6 +31,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { DiffViewer } from "@/components/diff/DiffViewer"
 
 interface LogEntry {
   timestamp: string
@@ -225,6 +227,10 @@ function App() {
   const [activeBottomTab, setActiveBottomTab] = useState<'output' | 'problems' | 'terminal' | 'mcp'>('output')
   const [replaceQuery, setReplaceQuery] = useState('')
   const [mcpStatus, setMcpStatus] = useState<'connected' | 'disconnected'>('disconnected')
+
+  // Diff comparison state
+  const [comparisonResult, setComparisonResult] = useState<any>(null)
+  const [showComparisonView, setShowComparisonView] = useState(false)
 
   const groupedSearchResults = useMemo(() => {
     const groups: Record<string, SearchResult[]> = {}
@@ -474,6 +480,46 @@ function App() {
     }
   }
 
+  async function handleCompareProject() {
+    if (!projectPath) {
+      addLog('请先打开一个项目进行比较', 'system')
+      return
+    }
+
+    try {
+      addLog('请选择要比较的项目文件夹...', 'system')
+
+      // 使用 Rust 的文件选择功能
+      const selectedPath = await invoke<string>('open_project')
+
+      if (selectedPath) {
+        addLog(`开始比较项目: ${projectPath} vs ${selectedPath}`, 'system')
+
+        // 调用 Rust 的比较函数
+        const result = await invoke<string>('compare_files_or_directories', {
+          sourceA: projectPath,
+          sourceB: selectedPath,
+          ignoreWhitespace: false,
+          ignoreCase: false,
+          viewMode: 'side-by-side',
+          contextLines: 3,
+          enableSyntaxHighlight: true,
+          detectRenames: true,
+          renameSimilarityThreshold: 0.8
+        })
+
+        setComparisonResult(JSON.parse(result))
+        setShowComparisonView(true)
+        addLog('比较完成！', 'system')
+      } else {
+        addLog('取消比较', 'system')
+      }
+    } catch (e) {
+      console.error(e)
+      addLog(`比较项目出错: ${e}`, 'system')
+    }
+  }
+
   async function handleFileSelect(path: string) {
     if (!openFiles.includes(path)) {
       setOpenFiles(prev => [...prev, path])
@@ -593,6 +639,19 @@ function App() {
                   >
                     <FolderOpen className="w-3.5 h-3.5" />
                     打开项目...
+                  </button>
+                  <button
+                    className={`w-full text-left px-3 py-1.5 text-xs hover:bg-primary/20 hover:text-primary transition-colors flex items-center gap-2 ${!projectPath ? 'text-muted-foreground cursor-not-allowed' : ''}`}
+                    onClick={() => {
+                      if (projectPath) {
+                        handleCompareProject();
+                        setActiveMenu(null)
+                      }
+                    }}
+                    disabled={!projectPath}
+                  >
+                    <FileDiff className="w-3.5 h-3.5" />
+                    比较项目...
                   </button>
                   <div className="h-px bg-[#2b2b2b] my-1" />
                   <button
@@ -1094,24 +1153,31 @@ function App() {
                         </div>
 
                         <div className="flex-1 relative">
-                          <Editor
-                            height="100%"
-                            onMount={handleEditorDidMount}
-                            defaultLanguage="typescript"
-                            language={selectedFile?.endsWith('.py') ? 'python' : selectedFile?.endsWith('.rs') ? 'rust' : 'typescript'}
-                            theme="vs-dark"
-                            value={fileContent}
-                            options={{
-                              minimap: { enabled: true, scale: 0.5 },
-                              fontSize: 13,
-                              lineHeight: 20,
-                              readOnly: true,
-                              fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
-                              scrollBeyondLastLine: false,
-                              smoothScrolling: true,
-                              padding: { top: 10 }
-                            }}
-                          />
+                          {showComparisonView ? (
+                            <DiffViewer
+                              comparisonResult={comparisonResult}
+                              onClose={() => setShowComparisonView(false)}
+                            />
+                          ) : (
+                            <Editor
+                              height="100%"
+                              onMount={handleEditorDidMount}
+                              defaultLanguage="typescript"
+                              language={selectedFile?.endsWith('.py') ? 'python' : selectedFile?.endsWith('.rs') ? 'rust' : 'typescript'}
+                              theme="vs-dark"
+                              value={fileContent}
+                              options={{
+                                minimap: { enabled: true, scale: 0.5 },
+                                fontSize: 13,
+                                lineHeight: 20,
+                                readOnly: true,
+                                fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
+                                scrollBeyondLastLine: false,
+                                smoothScrolling: true,
+                                padding: { top: 10 }
+                              }}
+                            />
+                          )}
                         </div>
                       </>
                     )}
