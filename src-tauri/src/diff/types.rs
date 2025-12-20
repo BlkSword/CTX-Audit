@@ -37,6 +37,10 @@ pub struct FileDiff {
     pub status: FileStatus,
     /// 差异行列表
     pub lines: Vec<DiffLine>,
+    /// 原始内容（用于Monaco Editor等高级编辑器）
+    pub original_content: Option<String>,
+    /// 修改后的内容（用于Monaco Editor等高级编辑器）
+    pub modified_content: Option<String>,
     /// 左侧文件的统计信息
     pub left_stats: FileStats,
     /// 右侧文件的统计信息

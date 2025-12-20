@@ -20,8 +20,11 @@ import {
   Database,
   FileDiff,
   BookOpen,
-  Plus
+  Plus,
+  LayoutGrid
 } from 'lucide-react'
+import { calculateGraphLayout, assignEdgeHandles } from '@/lib/graphLayout'
+import CodeGraphNode from '@/components/graph/CodeGraphNode'
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -109,6 +112,9 @@ const MCP_TOOL_DESCRIPTIONS: Record<string, string> = {
   get_code_structure: '读取单文件的类/函数/方法结构（基于 AST）',
   search_symbol: '在项目范围内搜索类/函数等符号（基于 AST 索引）',
   get_class_hierarchy: '查看指定类的父类/子类层次（基于 AST 索引）',
+  get_knowledge_graph: '获取项目的代码知识图谱（节点与关系）',
+  verify_finding: '使用 LLM 验证安全漏洞的真实性',
+  analyze_code_with_llm: '使用 LLM 分析代码片段的逻辑或缺陷',
 }
 
 function buildFileTree(paths: string[], rootPath: string): FileNode[] {
@@ -308,6 +314,12 @@ function App() {
   // Graph Nodes
   const [graphNodes, setGraphNodes, onNodesChange] = useNodesState([]);
   const [graphEdges, setGraphEdges, onEdgesChange] = useEdgesState([]);
+  const [rfInstance, setRfInstance] = useState<any>(null);
+  const [graphSearchQuery, setGraphSearchQuery] = useState('');
+
+  const nodeTypes = useMemo(() => ({
+    codeNode: CodeGraphNode,
+  }), []);
 
   async function handleSaveRule() {
     if (!newRule.id || !newRule.name) {
@@ -349,6 +361,59 @@ function App() {
     }
   }
 
+  const handleGraphSearch = (query: string) => {
+    setGraphSearchQuery(query);
+    if (!query.trim()) {
+      // Reset styles
+      setGraphNodes((nds) =>
+        nds.map((node) => ({
+          ...node,
+          data: {
+            ...node.data,
+            style: {
+              ...node.data?.style,
+              border: '1px solid #94a3b8',
+              boxShadow: 'none',
+            }
+          }
+        }))
+      );
+      return;
+    }
+
+    const lowerQuery = query.toLowerCase();
+    const matchingNodes: any[] = [];
+
+    setGraphNodes((nds) =>
+      nds.map((node) => {
+        const label = node.data?.label || '';
+        const originalLabel = node.data?.originalLabel || '';
+        const isMatch = label.toLowerCase().includes(lowerQuery) ||
+          originalLabel.toLowerCase().includes(lowerQuery);
+
+        if (isMatch) {
+          matchingNodes.push(node);
+        }
+
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            style: {
+              ...node.data?.style,
+              border: isMatch ? '2px solid #ef4444' : '1px solid #94a3b8',
+              boxShadow: isMatch ? '0 0 10px rgba(239, 68, 68, 0.5)' : 'none',
+            }
+          }
+        };
+      })
+    );
+
+    if (matchingNodes.length > 0 && rfInstance) {
+      rfInstance.fitView({ nodes: matchingNodes, duration: 800, padding: 0.2 });
+    }
+  };
+
   async function refreshGraph() {
     if (!projectPath) return;
 
@@ -366,31 +431,29 @@ function App() {
 
       if (data.status === 'success' && data.graph) {
         addLog(`成功获取图谱数据: ${data.graph.nodes.length} 个节点, ${data.graph.edges.length} 条边`, 'python');
-        const layoutedNodes = data.graph.nodes.map((node: any, index: number) => ({
+
+        const rawNodes = data.graph.nodes.map((node: any) => ({
           ...node,
-          type: 'default', // Force default type to ensure rendering
-          position: { x: (index % 5) * 250, y: Math.floor(index / 5) * 100 }, // Grid layout
+          type: 'codeNode', // Use custom node type
           data: {
-            label: `${node.label} (${node.type})`
-          },
-          style: {
-            background: node.type === 'file' ? '#e0f2fe' :  // Blue-ish for files
-              node.type === 'class' ? '#dcfce7' :  // Green-ish for classes
-                node.type === 'method' ? '#fef9c3' : // Yellow-ish for methods
-                  '#f3f4f6',
-            color: '#1e293b',
-            border: '1px solid #94a3b8',
-            width: 200,
-            fontSize: '12px'
+            label: `${node.label} (${node.type})`,
+            type: node.type,
+            originalLabel: node.label
           }
+          // Style is now handled in the custom node component
         }));
 
-        setGraphNodes(layoutedNodes);
-        setGraphEdges(data.graph.edges.map((edge: any) => ({
+        const rawEdges = data.graph.edges.map((edge: any) => ({
           ...edge,
           animated: true,
           style: { stroke: '#64748b' }
-        })));
+        }));
+
+        const layoutedNodes = calculateGraphLayout(rawNodes, rawEdges);
+        const layoutedEdges = assignEdgeHandles(layoutedNodes, rawEdges);
+
+        setGraphNodes(layoutedNodes);
+        setGraphEdges(layoutedEdges);
       }
     } catch (e) {
       console.error("Failed to fetch graph", e);
@@ -1009,7 +1072,7 @@ function App() {
             size="icon"
             className={`w-8 h-8 rounded-md ${activeSidebarView === 'graph' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
             onClick={() => setActiveSidebarView('graph')}
-            title="图谱视图"
+            title="代码图谱"
           >
             <Network className="w-5 h-5" />
           </Button>
@@ -1196,15 +1259,6 @@ function App() {
                                 variant="outline"
                                 className="w-full justify-start text-xs h-8"
                                 disabled={!projectPath}
-                                onClick={() => callMcpTool('run_local_scan', { directory: projectPath })}
-                              >
-                                <ShieldAlert className="w-3.5 h-3.5 mr-2 text-red-500" />
-                                运行本地深度扫描
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="w-full justify-start text-xs h-8"
-                                disabled={!projectPath}
                                 onClick={() => callMcpTool('get_analysis_report', { directory: projectPath })}
                               >
                                 <FileCode className="w-3.5 h-3.5 mr-2 text-zinc-500" />
@@ -1379,10 +1433,21 @@ function App() {
                       <div className="h-full w-full bg-background text-foreground flex flex-col">
                         <div className="h-8 border-b border-border/40 flex items-center justify-between px-3 bg-muted/10">
                           <span className="text-xs font-semibold">代码图谱</span>
-                          <Button variant="ghost" size="sm" className="h-6 text-[10px]" onClick={refreshGraph}>
-                            <Network className="w-3 h-3 mr-1" />
-                            刷新图谱
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            <div className="relative">
+                              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                              <Input
+                                placeholder="搜索节点..."
+                                className="h-6 w-48 pl-7 text-[10px] bg-background border-border/50"
+                                value={graphSearchQuery}
+                                onChange={(e) => handleGraphSearch(e.target.value)}
+                              />
+                            </div>
+                            <Button variant="ghost" size="sm" className="h-6 text-[10px]" onClick={refreshGraph}>
+                              <LayoutGrid className="w-3 h-3 mr-1" />
+                              重新布局
+                            </Button>
+                          </div>
                         </div>
                         <div className="flex-1">
                           <ReactFlow
@@ -1390,7 +1455,9 @@ function App() {
                             edges={graphEdges}
                             onNodesChange={onNodesChange}
                             onEdgesChange={onEdgesChange}
+                            nodeTypes={nodeTypes}
                             fitView
+                            onInit={setRfInstance}
                           >
                             <Background />
                             <Controls />

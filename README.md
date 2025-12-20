@@ -102,7 +102,7 @@ npm run dev
 
 ## 🔧 MCP 工具集
 
-DeepAudit 提供 11 个 MCP 工具，分为以下类别：
+DeepAudit 提供 14 个 MCP 工具，分为以下类别：
 
 ### 核心分析工具
 
@@ -111,6 +111,9 @@ DeepAudit 提供 11 个 MCP 工具，分为以下类别：
 | **build_ast_index** | `directory` | 构建 AST 索引，支持多语言代码解析。初始化项目的必需步骤 |
 | **run_security_scan** | `directory`, `custom_rules`, `include_dirs`, `exclude_dirs` | 使用自定义规则运行安全扫描，支持目录过滤 |
 | **get_analysis_report** | `directory` | 获取缓存的详细分析报告（JSON 格式） |
+| **get_knowledge_graph** | `limit` | 获取项目的代码知识图谱（节点与关系） |
+| **verify_finding** | `file`, `line`, `description`, `vuln_type`, `code` | 使用 LLM 验证安全漏洞的真实性 |
+| **analyze_code_with_llm** | `code`, `context` | 使用 LLM 分析代码片段的逻辑或缺陷 |
 
 ### 文件操作工具
 

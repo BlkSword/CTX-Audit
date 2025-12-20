@@ -159,10 +159,23 @@ impl GitIntegration {
         // 获取文件统计信息
         let (left_stats, right_stats) = self.get_git_file_stats(repo_path, file_path, params)?;
 
+        // 限制内容大小为 1MB
+        let include_content = left_stats.size < 1024 * 1024 && right_stats.size < 1024 * 1024;
+
         Ok(FileDiff {
             path: file_path.to_string(),
             status: file_status,
             lines: diff_lines,
+            original_content: if include_content {
+                Some(left_content)
+            } else {
+                None
+            },
+            modified_content: if include_content {
+                Some(right_content)
+            } else {
+                None
+            },
             left_stats,
             right_stats,
         })
@@ -282,54 +295,53 @@ impl GitIntegration {
 
     /// 计算Git文件行级别的差异
     fn compute_git_line_diff(&self, lines_a: &[String], lines_b: &[String]) -> Vec<DiffLine> {
-        use dissimilar::{diff, Chunk};
+        use similar::{Algorithm, ChangeTag, TextDiff};
 
         let text_a = lines_a.join("\n");
         let text_b = lines_b.join("\n");
 
-        let chunks = diff(&text_a, &text_b);
+        let diff = TextDiff::configure()
+            .algorithm(Algorithm::Myers)
+            .diff_lines(&text_a, &text_b);
+
         let mut result = Vec::new();
         let mut left_line_num = 1u32;
         let mut right_line_num = 1u32;
 
-        for chunk in chunks {
-            match chunk {
-                Chunk::Equal(text) => {
-                    for line in text.lines() {
-                        result.push(DiffLine {
-                            left_line_number: Some(left_line_num),
-                            right_line_number: Some(right_line_num),
-                            diff_type: DiffType::Equal,
-                            content: line.to_string(),
-                            is_placeholder: false,
-                        });
-                        left_line_num += 1;
-                        right_line_num += 1;
-                    }
+        for change in diff.iter_all_changes() {
+            let content = change.value().trim_end_matches('\n').to_string();
+
+            match change.tag() {
+                ChangeTag::Equal => {
+                    result.push(DiffLine {
+                        left_line_number: Some(left_line_num),
+                        right_line_number: Some(right_line_num),
+                        diff_type: DiffType::Equal,
+                        content,
+                        is_placeholder: false,
+                    });
+                    left_line_num += 1;
+                    right_line_num += 1;
                 }
-                Chunk::Delete(text) => {
-                    for line in text.lines() {
-                        result.push(DiffLine {
-                            left_line_number: Some(left_line_num),
-                            right_line_number: None,
-                            diff_type: DiffType::Delete,
-                            content: line.to_string(),
-                            is_placeholder: false,
-                        });
-                        left_line_num += 1;
-                    }
+                ChangeTag::Delete => {
+                    result.push(DiffLine {
+                        left_line_number: Some(left_line_num),
+                        right_line_number: None,
+                        diff_type: DiffType::Delete,
+                        content,
+                        is_placeholder: false,
+                    });
+                    left_line_num += 1;
                 }
-                Chunk::Insert(text) => {
-                    for line in text.lines() {
-                        result.push(DiffLine {
-                            left_line_number: None,
-                            right_line_number: Some(right_line_num),
-                            diff_type: DiffType::Insert,
-                            content: line.to_string(),
-                            is_placeholder: false,
-                        });
-                        right_line_num += 1;
-                    }
+                ChangeTag::Insert => {
+                    result.push(DiffLine {
+                        left_line_number: None,
+                        right_line_number: Some(right_line_num),
+                        diff_type: DiffType::Insert,
+                        content,
+                        is_placeholder: false,
+                    });
+                    right_line_num += 1;
                 }
             }
         }
