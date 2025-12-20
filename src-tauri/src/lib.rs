@@ -1,97 +1,31 @@
+use crate::scanners::Finding;
 use ignore::Walk;
 use rayon::prelude::*;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use std::collections::HashMap;
 use std::fs;
-use std::sync::Mutex;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_shell::process::CommandChild;
-use tauri_plugin_shell::process::CommandEvent;
-use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
-use tokio::time::{timeout, Duration};
-use anyhow;
 
 pub mod ast;
-mod scanner;
 pub mod diff;
+pub mod mcp;
+pub mod rules;
+mod scanner;
+pub mod scanners;
+
+use mcp::service::{call_tool, start_mcp_server};
+use mcp::McpState;
+use rules::loader::load_rules_from_dir;
+use rules::model::Rule;
+use rules::scanner::RuleScanner;
+use scanners::{manager::ScannerManager, regex_scanner::RegexScanner};
 
 struct DeepAuditState {
-    child: Mutex<Option<CommandChild>>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
-    stdout_buffer: Mutex<String>,
-}
-
-fn extract_mcp_text(value: &serde_json::Value) -> String {
-    if let Some(result) = value.get("result") {
-        if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
-            let mut out = String::new();
-            for item in content {
-                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                    out.push_str(text);
-                }
-            }
-            return out;
-        }
-        if let Some(text) = result.as_str() {
-            return text.to_string();
-        }
-        return result.to_string();
-    }
-
-    value.to_string()
-}
-
-async fn handle_python_stdout(app: &AppHandle, chunk: String) {
-    let state = app.state::<DeepAuditState>();
-    let mut buffer = state.stdout_buffer.lock().unwrap();
-    buffer.push_str(&chunk);
-
-    loop {
-        let Some(pos) = buffer.find('\n') else {
-            break;
-        };
-        let line = buffer.drain(..=pos).collect::<String>();
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let parsed: serde_json::Result<serde_json::Value> = serde_json::from_str(line);
-        match parsed {
-            Ok(json) => {
-                if json.get("jsonrpc").and_then(|v| v.as_str()) == Some("2.0") {
-                    let id = json.get("id").and_then(|v| v.as_u64());
-                    if let Some(id) = id {
-                        let sender = {
-                            let mut pending = state.pending.lock().unwrap();
-                            pending.remove(&id)
-                        };
-
-                        if let Some(sender) = sender {
-                            if let Some(err) = json.get("error") {
-                                let msg = err
-                                    .get("message")
-                                    .and_then(|m| m.as_str())
-                                    .unwrap_or("MCP 调用失败");
-                                let _ = sender.send(Err(msg.to_string()));
-                            } else {
-                                let text = extract_mcp_text(&json);
-                                let _ = sender.send(Ok(text));
-                            }
-                            continue;
-                        }
-                    }
-                }
-
-                let _ = app.emit("mcp-message", line.to_string());
-            }
-            Err(_) => {
-                let _ = app.emit("mcp-message", line.to_string());
-            }
-        }
-    }
+    mcp: Arc<McpState>,
+    scanner_manager: Arc<ScannerManager>,
+    rules: Arc<Vec<Rule>>,
 }
 
 async fn init_db(app: &AppHandle) -> Result<SqlitePool, String> {
@@ -120,14 +54,20 @@ async fn init_db(app: &AppHandle) -> Result<SqlitePool, String> {
             path TEXT NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        CREATE TABLE IF NOT EXISTS scan_results (
+        CREATE TABLE IF NOT EXISTS findings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER,
+            finding_id TEXT UNIQUE, -- UUID
             file_path TEXT,
-            line INTEGER,
-            severity TEXT,
-            message TEXT,
-            remediation TEXT,
+            line_start INTEGER,
+            line_end INTEGER,
+            detector TEXT, -- e.g., 'semgrep', 'llm'
+            vuln_type TEXT, -- CWE
+            severity TEXT, -- High, Medium, Low
+            description TEXT,
+            analysis_trail TEXT, -- JSON
+            llm_output TEXT,
+            status TEXT DEFAULT 'new', -- new, confirmed, fixed, ignored
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(project_id) REFERENCES projects(id)
         );
@@ -160,130 +100,110 @@ async fn open_project(
     };
 
     // Save project to DB
-    let _ = sqlx::query("INSERT INTO projects (path) VALUES (?)")
+    let result = sqlx::query("INSERT INTO projects (path) VALUES (?)")
         .bind(&path)
         .execute(pool.inner())
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let project_id = result.last_insert_rowid();
 
     // Start scanning in background with parallel processing
     let path_clone = path.clone();
     let app_handle_scan = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        Walk::new(&path_clone).par_bridge().for_each(|result| {
-            if let Ok(entry) = result {
-                if entry.file_type().map_or(false, |ft| ft.is_file()) {
-                    let p = entry.path();
-                    if let Ok(msg) = scanner::scan_file(p) {
-                        let _ = app_handle_scan
-                            .emit("mcp-message", format!("Rust Scan {}: {}", p.display(), msg));
+    let scanner_manager = state.scanner_manager.clone();
+    let db_pool = pool.inner().clone();
+
+    tauri::async_runtime::spawn(async move {
+        let (tx_findings, mut rx_findings) = tokio::sync::mpsc::channel::<Vec<Finding>>(100);
+
+        // Spawn the CPU-bound walking/scanning in a separate blocking thread
+        let scanner_manager_inner = scanner_manager.clone();
+        let app_handle_scan_file = app_handle_scan.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            Walk::new(&path_clone).par_bridge().for_each(|result| {
+                if let Ok(entry) = result {
+                    if entry.file_type().map_or(false, |ft| ft.is_file()) {
+                        let p = entry.path();
+
+                        // Notify frontend about the file immediately for tree construction
+                        let _ = app_handle_scan_file
+                            .emit("file-found", p.to_string_lossy().to_string());
+
+                        if let Ok(content) = fs::read_to_string(p) {
+                            // Run scanners
+                            let findings = tauri::async_runtime::block_on(async {
+                                scanner_manager_inner
+                                    .scan_file(&p.to_path_buf(), &content)
+                                    .await
+                            });
+
+                            if !findings.is_empty() {
+                                let _ = tx_findings.blocking_send(findings);
+                            }
+                        }
                     }
                 }
-            }
+            });
         });
+
+        // Consume findings and save to DB
+        while let Some(findings) = rx_findings.recv().await {
+            for finding in findings {
+                let _ = sqlx::query(
+                    "INSERT INTO findings (project_id, finding_id, file_path, line_start, line_end, detector, vuln_type, severity, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                )
+                .bind(project_id)
+                .bind(&finding.finding_id)
+                .bind(&finding.file_path)
+                .bind(finding.line_start as i64)
+                .bind(finding.line_end as i64)
+                .bind(&finding.detector)
+                .bind(&finding.vuln_type)
+                .bind(&finding.severity)
+                .bind(&finding.description)
+                .execute(&db_pool)
+                .await;
+
+                let _ = app_handle_scan.emit("scan-finding", &finding);
+            }
+        }
+        let _ = app_handle_scan.emit("scan-complete", ());
     });
 
     // Start Python Sidecar if not running
-    // We lock the mutex to check if child exists
-    let mut child_guard = state.child.lock().unwrap();
-    if child_guard.is_none() {
-        // Assume python-sidecar/agent.py is in the root of the repo
-        // In dev, we are in src-tauri, so ../python-sidecar/agent.py
-        let script_path = "../python-sidecar/agent.py";
-
-        let (mut rx, child) = app
-            .shell()
-            .command("python")
-            .args(&[script_path])
-            .env("PYTHONUTF8", "1")
-            .env("PYTHONIOENCODING", "utf-8")
-            .spawn()
-            .map_err(|e| e.to_string())?;
-
-        *child_guard = Some(child);
-
-        // Send Initialize sequence
-        if let Some(c) = child_guard.as_mut() {
-            let init_msg = "{\"jsonrpc\": \"2.0\", \"method\": \"initialize\", \"params\": {\"protocolVersion\": \"2024-11-05\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"DeepAuditClient\", \"version\": \"1.0.0\"}}, \"id\": 0}\n";
-            let _ = c.write(init_msg.as_bytes());
-
-            let initialized_msg = "{\"jsonrpc\": \"2.0\", \"method\": \"notifications/initialized\", \"params\": {}}\n";
-            let _ = c.write(initialized_msg.as_bytes());
-        }
-
-        // Spawn listener
-        let app_handle = app.clone();
-        tauri::async_runtime::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    CommandEvent::Stdout(line) => {
-                        let text = String::from_utf8_lossy(&line).to_string();
-                        handle_python_stdout(&app_handle, text).await;
-                    }
-                    CommandEvent::Stderr(line) => {
-                        let text = String::from_utf8_lossy(&line);
-                        let _ = app_handle.emit("mcp-message", text.to_string());
-                    }
-                    _ => {}
-                }
-            }
-        });
-    }
+    let _ = start_mcp_server(&app, state.mcp.clone()).await;
 
     Ok(path)
 }
 
 #[tauri::command]
 async fn call_mcp_tool(
+    app: AppHandle,
     state: State<'_, DeepAuditState>,
     tool_name: String,
     arguments: String, // JSON string
 ) -> Result<String, String> {
-    // Log tool call attempt
-    println!("Calling MCP Tool: {} with args: {}", tool_name, arguments);
+    if tool_name == "run_local_scan" {
+        let args: serde_json::Value =
+            serde_json::from_str(&arguments).map_err(|e| e.to_string())?;
+        let directory = args
+            .get("directory")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".");
+        let path = directory.to_string();
 
-    let id: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX);
+        let scanner_manager = state.scanner_manager.clone();
+        let findings = scanner_manager.scan_directory(&path).await;
 
-    let (tx, rx) = oneshot::channel::<Result<String, String>>();
-
-    {
-        let mut pending = state.pending.lock().unwrap();
-        pending.insert(id, tx);
-    }
-
-    let write_result = {
-        let mut child_guard = state.child.lock().unwrap();
-        if let Some(child) = child_guard.as_mut() {
-            let msg = format!(
-                "{{\"jsonrpc\": \"2.0\", \"method\": \"tools/call\", \"params\": {{\"name\": \"{}\", \"arguments\": {}}}, \"id\": {}}}\n",
-                tool_name, arguments, id
-            );
-
-            child.write(msg.as_bytes()).map_err(|e| e.to_string())
-        } else {
-            Err("MCP 服务器未运行".to_string())
+        for finding in &findings {
+            let _ = app.emit("scan-finding", finding);
         }
-    };
 
-    if let Err(e) = write_result {
-        let mut pending = state.pending.lock().unwrap();
-        pending.remove(&id);
-        return Err(e);
+        return serde_json::to_string(&findings).map_err(|e| e.to_string());
     }
 
-    match timeout(Duration::from_secs(120), rx).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err("MCP 响应通道已关闭".to_string()),
-        Err(_) => {
-            let mut pending = state.pending.lock().unwrap();
-            pending.remove(&id);
-            Err("MCP 调用超时".to_string())
-        }
-    }
+    call_tool(&state.mcp, tool_name, arguments).await
 }
 
 #[tauri::command]
@@ -355,7 +275,7 @@ async fn search_files(query: String, path: String) -> Result<Vec<SearchResult>, 
 
 #[tauri::command]
 async fn get_mcp_status(state: State<'_, DeepAuditState>) -> Result<String, String> {
-    let child = state.child.lock().unwrap();
+    let child = state.mcp.child.lock().unwrap();
     if child.is_some() {
         Ok("运行中".to_string())
     } else {
@@ -380,7 +300,7 @@ async fn list_mcp_tools() -> Result<Vec<String>, String> {
     ])
 }
 
-use crate::diff::{DiffEngine, GitIntegration, ComparisonConfig, ComparisonRequest, DiffViewMode};
+use crate::diff::{ComparisonConfig, ComparisonRequest, DiffEngine, DiffViewMode, GitIntegration};
 
 #[tauri::command]
 async fn compare_files_or_directories(
@@ -418,11 +338,11 @@ async fn compare_files_or_directories(
     };
 
     let engine = DiffEngine::new(request.config.clone());
-    let result = engine.compare(request)
+    let result = engine
+        .compare(request)
         .map_err(|e| format!("比较失败: {}", e))?;
 
-    serde_json::to_string(&result)
-        .map_err(|e| format!("序列化结果失败: {}", e))
+    serde_json::to_string(&result).map_err(|e| format!("序列化结果失败: {}", e))
 }
 
 #[tauri::command]
@@ -468,21 +388,21 @@ async fn compare_git_versions(
     };
 
     let engine = DiffEngine::new(request.config.clone());
-    let result = engine.compare(request)
+    let result = engine
+        .compare(request)
         .map_err(|e| format!("Git比较失败: {}", e))?;
 
-    serde_json::to_string(&result)
-        .map_err(|e| format!("序列化结果失败: {}", e))
+    serde_json::to_string(&result).map_err(|e| format!("序列化结果失败: {}", e))
 }
 
 #[tauri::command]
 async fn get_git_refs(repository_path: String) -> Result<String, String> {
     let git_integration = GitIntegration::new();
-    let refs = git_integration.get_refs(&repository_path)
+    let refs = git_integration
+        .get_refs(&repository_path)
         .map_err(|e| format!("获取Git引用失败: {}", e))?;
 
-    serde_json::to_string(&refs)
-        .map_err(|e| format!("序列化Git引用失败: {}", e))
+    serde_json::to_string(&refs).map_err(|e| format!("序列化Git引用失败: {}", e))
 }
 
 #[tauri::command]
@@ -490,64 +410,69 @@ async fn restart_mcp_server(
     app: AppHandle,
     state: State<'_, DeepAuditState>,
 ) -> Result<String, String> {
-    let mut child_guard = state.child.lock().unwrap();
+    {
+        let mut child_guard = state.mcp.child.lock().unwrap();
 
-    // Kill existing Python process if running
-    if let Some(child) = child_guard.take() {
-        let _ = child.kill();
-    }
+        // Kill existing Python process if running
+        if let Some(child) = child_guard.take() {
+            let _ = child.kill();
+        }
+    } // child_guard is dropped here
 
     {
-        let mut pending = state.pending.lock().unwrap();
+        let mut pending = state.mcp.pending.lock().unwrap();
         pending.clear();
-        let mut buffer = state.stdout_buffer.lock().unwrap();
+        let mut buffer = state.mcp.stdout_buffer.lock().unwrap();
         buffer.clear();
     }
 
     // Start Python Sidecar
-    let script_path = "../python-sidecar/agent.py";
-
-    let (mut rx, child) = app
-        .shell()
-        .command("python")
-        .args(&[script_path])
-        .env("PYTHONUTF8", "1")
-        .env("PYTHONIOENCODING", "utf-8")
-        .spawn()
-        .map_err(|e| e.to_string())?;
-
-    *child_guard = Some(child);
-
-    // Send Initialize sequence
-    if let Some(c) = child_guard.as_mut() {
-        let init_msg = "{\"jsonrpc\": \"2.0\", \"method\": \"initialize\", \"params\": {\"protocolVersion\": \"2024-11-05\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"DeepAuditClient\", \"version\": \"1.0.0\"}}, \"id\": 0}\n";
-        let _ = c.write(init_msg.as_bytes());
-
-        let initialized_msg =
-            "{\"jsonrpc\": \"2.0\", \"method\": \"notifications/initialized\", \"params\": {}}\n";
-        let _ = c.write(initialized_msg.as_bytes());
-    }
-
-    // Spawn listener
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(line) => {
-                    let text = String::from_utf8_lossy(&line).to_string();
-                    handle_python_stdout(&app_handle, text).await;
-                }
-                CommandEvent::Stderr(line) => {
-                    let text = String::from_utf8_lossy(&line);
-                    let _ = app_handle.emit("mcp-message", text.to_string());
-                }
-                _ => {}
-            }
-        }
-    });
+    start_mcp_server(&app, state.mcp.clone()).await?;
 
     log::info!("Python MCP Server restarted successfully");
     Ok("Python MCP Server restarted successfully".to_string())
+}
+
+#[tauri::command]
+async fn get_loaded_rules(state: State<'_, DeepAuditState>) -> Result<Vec<Rule>, String> {
+    Ok(state.rules.as_ref().clone())
+}
+
+#[tauri::command]
+async fn save_rule(rule: Rule) -> Result<String, String> {
+    if rule.id.is_empty() {
+        return Err("Rule ID cannot be empty".to_string());
+    }
+
+    // Try to find the rules directory
+    let possible_paths = vec!["../rules", "rules", "../../rules"];
+
+    let mut rules_dir = std::path::PathBuf::from("rules");
+    let mut found = false;
+
+    for path in possible_paths {
+        let p = std::path::PathBuf::from(path);
+        if p.exists() && p.is_dir() {
+            rules_dir = p;
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        // If not found, try to create "rules" in current directory
+        if let Err(e) = std::fs::create_dir_all(&rules_dir) {
+            return Err(format!("Failed to create rules directory: {}", e));
+        }
+    }
+
+    let file_path = rules_dir.join(format!("{}.yaml", rule.id));
+
+    let yaml = serde_yaml::to_string(&rule).map_err(|e| e.to_string())?;
+
+    std::fs::write(&file_path, yaml).map_err(|e| e.to_string())?;
+
+    Ok(format!("Rule saved to {}", file_path.display()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -562,10 +487,42 @@ pub fn run() {
             app.manage(pool);
             Ok(())
         })
-        .manage(DeepAuditState {
-            child: Mutex::new(None),
-            pending: Mutex::new(HashMap::new()),
-            stdout_buffer: Mutex::new(String::new()),
+        .manage({
+            let mcp = Arc::new(McpState::new());
+
+            // Load rules
+            // Try multiple paths for robustness (dev vs prod)
+            let possible_paths = vec![
+                "../rules",
+                "rules",
+                "../../rules", // Just in case
+            ];
+
+            let mut loaded_rules = Vec::new();
+            for path in possible_paths {
+                if let Ok(rules) = load_rules_from_dir(path) {
+                    if !rules.is_empty() {
+                        log::info!("Loaded {} rules from {}", rules.len(), path);
+                        loaded_rules.extend(rules);
+                        break; // Stop after finding first valid rule set
+                    }
+                }
+            }
+
+            let mut manager = ScannerManager::new();
+            manager.register_scanner(RegexScanner::new());
+
+            if !loaded_rules.is_empty() {
+                manager.register_scanner(RuleScanner::new(loaded_rules.clone()));
+            } else {
+                log::warn!("No rules loaded.");
+            }
+
+            DeepAuditState {
+                mcp,
+                scanner_manager: Arc::new(manager),
+                rules: Arc::new(loaded_rules),
+            }
         })
         .invoke_handler(tauri::generate_handler![
             open_project,
@@ -578,6 +535,8 @@ pub fn run() {
             compare_files_or_directories,
             compare_git_versions,
             get_git_refs,
+            get_loaded_rules,
+            save_rule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

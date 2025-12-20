@@ -1,12 +1,13 @@
-use crate::diff::types::*;
 use crate::diff::git_integration::GitIntegration;
-use anyhow::{Context, Result};
+use crate::diff::types::*;
+use anyhow::Result;
 use rayon::prelude::*;
+use sha1::Digest;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::Read;
 
 /// 高性能差异比较引擎
 pub struct DiffEngine {
@@ -58,8 +59,16 @@ impl DiffEngine {
         } else {
             Err(anyhow::anyhow!(
                 "Cannot compare different types: {} and {}",
-                if path_a.is_file() { "file" } else { "directory" },
-                if path_b.is_file() { "file" } else { "directory" }
+                if path_a.is_file() {
+                    "file"
+                } else {
+                    "directory"
+                },
+                if path_b.is_file() {
+                    "file"
+                } else {
+                    "directory"
+                }
             ))
         }
     }
@@ -93,13 +102,19 @@ impl DiffEngine {
         };
 
         let lines_a: Vec<String> = if self.config.ignore_whitespace {
-            content_a.lines().map(|line| line.trim().to_string()).collect()
+            content_a
+                .lines()
+                .map(|line| line.trim().to_string())
+                .collect()
         } else {
             content_a.lines().map(|line| line.to_string()).collect()
         };
 
         let lines_b: Vec<String> = if self.config.ignore_whitespace {
-            content_b.lines().map(|line| line.trim().to_string()).collect()
+            content_b
+                .lines()
+                .map(|line| line.trim().to_string())
+                .collect()
         } else {
             content_b.lines().map(|line| line.to_string()).collect()
         };
@@ -131,7 +146,10 @@ impl DiffEngine {
 
         Ok(FileDiff {
             path: path_b.to_string_lossy().to_string(),
-            status: if diff_lines.iter().all(|line| line.diff_type == DiffType::Equal) {
+            status: if diff_lines
+                .iter()
+                .all(|line| line.diff_type == DiffType::Equal)
+            {
                 FileStatus::Unchanged
             } else {
                 FileStatus::Modified
@@ -178,7 +196,10 @@ impl DiffEngine {
         let results: Vec<Result<FileDiff>> = all_paths
             .into_par_iter()
             .map(|relative_path| {
-                match (files_a_set.get(&relative_path), files_b_set.get(&relative_path)) {
+                match (
+                    files_a_set.get(&relative_path),
+                    files_b_set.get(&relative_path),
+                ) {
                     (Some(path_a), Some(path_b)) => {
                         // 两个目录都有的文件，比较内容
                         self.compare_files(path_a, path_b)
@@ -229,7 +250,7 @@ impl DiffEngine {
 
     /// 计算行级别的差异
     fn compute_line_diff(&self, lines_a: &[String], lines_b: &[String]) -> Vec<DiffLine> {
-        use dissimilar::{Chunk, diff};
+        use dissimilar::{diff, Chunk};
 
         let text_a = lines_a.join("\n");
         let text_b = lines_b.join("\n");
@@ -310,15 +331,13 @@ impl DiffEngine {
             Ok(FileDiff {
                 path: relative_path.to_string(),
                 status: FileStatus::Deleted,
-                lines: vec![
-                    DiffLine {
-                        left_line_number: Some(1),
-                        right_line_number: None,
-                        diff_type: DiffType::Delete,
-                        content: format!("[二进制文件] 大小: {} 字节", metadata.len()),
-                        is_placeholder: false,
-                    }
-                ],
+                lines: vec![DiffLine {
+                    left_line_number: Some(1),
+                    right_line_number: None,
+                    diff_type: DiffType::Delete,
+                    content: format!("[二进制文件] 大小: {} 字节", metadata.len()),
+                    is_placeholder: false,
+                }],
                 left_stats: FileStats {
                     size: metadata.len(),
                     line_count: 1,
@@ -384,15 +403,13 @@ impl DiffEngine {
             Ok(FileDiff {
                 path: relative_path.to_string(),
                 status: FileStatus::Added,
-                lines: vec![
-                    DiffLine {
-                        left_line_number: None,
-                        right_line_number: Some(1),
-                        diff_type: DiffType::Insert,
-                        content: format!("[二进制文件] 大小: {} 字节", metadata.len()),
-                        is_placeholder: false,
-                    }
-                ],
+                lines: vec![DiffLine {
+                    left_line_number: None,
+                    right_line_number: Some(1),
+                    diff_type: DiffType::Insert,
+                    content: format!("[二进制文件] 大小: {} 字节", metadata.len()),
+                    is_placeholder: false,
+                }],
                 left_stats: FileStats {
                     size: 0,
                     line_count: 0,
@@ -451,12 +468,14 @@ impl DiffEngine {
     /// 检测文件重命名
     fn detect_renames(&self, diffs: &mut Vec<FileDiff>) {
         // 先收集所有的信息，避免借用问题
-        let added_files: Vec<(usize, &FileDiff)> = diffs.iter()
+        let added_files: Vec<(usize, &FileDiff)> = diffs
+            .iter()
             .enumerate()
             .filter(|(_, diff)| matches!(diff.status, FileStatus::Added) && !diff.lines.is_empty())
             .collect();
 
-        let deleted_files: Vec<&FileDiff> = diffs.iter()
+        let deleted_files: Vec<&FileDiff> = diffs
+            .iter()
             .filter(|diff| matches!(diff.status, FileStatus::Deleted))
             .collect();
 
@@ -476,7 +495,9 @@ impl DiffEngine {
         // 应用重命名标记
         for (new_idx, old_path) in &rename_mappings {
             if let Some(diff) = diffs.get_mut(*new_idx) {
-                diff.status = FileStatus::Renamed { old_path: old_path.clone() };
+                diff.status = FileStatus::Renamed {
+                    old_path: old_path.clone(),
+                };
             }
         }
 
@@ -503,8 +524,13 @@ impl DiffEngine {
         }
 
         // 跳过二进制文件的相似度比较
-        if lines_a.iter().any(|line| line.content.starts_with("[二进制文件]")) ||
-           lines_b.iter().any(|line| line.content.starts_with("[二进制文件]")) {
+        if lines_a
+            .iter()
+            .any(|line| line.content.starts_with("[二进制文件]"))
+            || lines_b
+                .iter()
+                .any(|line| line.content.starts_with("[二进制文件]"))
+        {
             return 0.0; // 二进制文件不参与重命名检测
         }
 
@@ -546,13 +572,10 @@ impl DiffEngine {
         if let Some(ext) = path.extension() {
             let ext_lower = ext.to_string_lossy().to_lowercase();
             let binary_extensions = [
-                "jpg", "jpeg", "png", "gif", "bmp", "ico", "svg",
-                "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-                "zip", "rar", "7z", "tar", "gz", "bz2",
-                "exe", "dll", "so", "dylib",
-                "jar", "war", "ear", "class",
-                "mp3", "mp4", "avi", "mov", "wmv",
-                "ttf", "otf", "woff", "woff2",
+                "jpg", "jpeg", "png", "gif", "bmp", "ico", "svg", "pdf", "doc", "docx", "xls",
+                "xlsx", "ppt", "pptx", "zip", "rar", "7z", "tar", "gz", "bz2", "exe", "dll", "so",
+                "dylib", "jar", "war", "ear", "class", "mp3", "mp4", "avi", "mov", "wmv", "ttf",
+                "otf", "woff", "woff2",
             ];
 
             if binary_extensions.contains(&ext_lower.as_str()) {
@@ -585,8 +608,6 @@ impl DiffEngine {
 
     /// 安全地读取文本文件
     fn read_text_file(&self, path: &Path) -> Result<String> {
-        use std::io::Read;
-
         // 限制文件大小以避免内存问题
         let metadata = match fs::metadata(path) {
             Ok(m) => m,
@@ -595,7 +616,8 @@ impl DiffEngine {
             }
         };
 
-        if metadata.len() > 10 * 1024 * 1024 { // 10MB限制
+        if metadata.len() > 10 * 1024 * 1024 {
+            // 10MB限制
             return Err(anyhow::anyhow!("文件过大，跳过文本比较"));
         }
 
@@ -610,7 +632,8 @@ impl DiffEngine {
                         if let Ok(utf8_content) = String::from_utf8(bytes.clone()) {
                             Ok(utf8_content)
                         } else {
-                            let (windows1252_content, _, _) = encoding_rs::WINDOWS_1252.decode(&bytes);
+                            let (windows1252_content, _, _) =
+                                encoding_rs::WINDOWS_1252.decode(&bytes);
                             if !windows1252_content.is_empty() {
                                 Ok(windows1252_content.to_string())
                             } else {
@@ -628,21 +651,25 @@ impl DiffEngine {
                             }
                         }
                     }
-                    Err(io_err) => {
-                        Err(anyhow::anyhow!(
-                            "无法读取文件 {}: {}。原因: {}",
-                            path.display(),
-                            e,
-                            io_err
-                        ))
-                    }
+                    Err(io_err) => Err(anyhow::anyhow!(
+                        "无法读取文件 {}: {}。原因: {}",
+                        path.display(),
+                        e,
+                        io_err
+                    )),
                 }
             }
         }
     }
 
     /// 比较二进制文件
-    fn compare_binary_files(&self, path_a: &Path, path_b: &Path, is_binary_a: bool, is_binary_b: bool) -> Result<FileDiff> {
+    fn compare_binary_files(
+        &self,
+        path_a: &Path,
+        path_b: &Path,
+        is_binary_a: bool,
+        is_binary_b: bool,
+    ) -> Result<FileDiff> {
         let metadata_a = fs::metadata(path_a)?;
         let metadata_b = fs::metadata(path_b)?;
 
@@ -726,7 +753,12 @@ impl DiffEngine {
     }
 
     /// 创建文件读取错误的差异记录
-    fn create_error_file_diff(&self, path_a: &Path, path_b: &Path, error: &anyhow::Error) -> Result<FileDiff> {
+    fn create_error_file_diff(
+        &self,
+        path_a: &Path,
+        path_b: &Path,
+        error: &anyhow::Error,
+    ) -> Result<FileDiff> {
         let metadata_a = fs::metadata(path_a).unwrap_or_else(|_| {
             // 如果无法获取元数据，创建默认值
             std::fs::metadata(".").unwrap().into()
@@ -736,15 +768,13 @@ impl DiffEngine {
             std::fs::metadata(".").unwrap().into()
         });
 
-        let lines = vec![
-            DiffLine {
-                left_line_number: Some(1),
-                right_line_number: Some(1),
-                diff_type: DiffType::Equal,
-                content: format!("[文件读取错误] {}", error),
-                is_placeholder: false,
-            }
-        ];
+        let lines = vec![DiffLine {
+            left_line_number: Some(1),
+            right_line_number: Some(1),
+            diff_type: DiffType::Equal,
+            content: format!("[文件读取错误] {}", error),
+            is_placeholder: false,
+        }];
 
         let left_stats = FileStats {
             size: metadata_a.len(),
@@ -776,14 +806,12 @@ impl DiffEngine {
     }
 
     /// 计算文件哈希值
-    fn calculate_file_hash(&self, path: &Path) -> Result<u64> {
-        use std::hash::{Hash, Hasher};
-        use std::collections::hash_map::DefaultHasher;
-
-        let content = std::fs::read(path)?;
-        let mut hasher = DefaultHasher::new();
-        content.hash(&mut hasher);
-        Ok(hasher.finish())
+    fn calculate_file_hash<P: AsRef<Path>>(&self, path: P) -> Result<String> {
+        let content = fs::read(path)?;
+        let mut hasher = sha1::Sha1::new();
+        hasher.update(&content);
+        let result = hasher.finalize();
+        Ok(format!("{:x}", result))
     }
 
     /// 计算比较结果的总体统计

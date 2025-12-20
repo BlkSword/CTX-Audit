@@ -1,6 +1,5 @@
 use crate::diff::types::*;
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -14,12 +13,19 @@ impl GitIntegration {
     }
 
     /// 执行Git比较
-    pub fn compare(&self, params: &GitComparisonParams, config: &ComparisonConfig) -> Result<Vec<FileDiff>> {
+    pub fn compare(
+        &self,
+        params: &GitComparisonParams,
+        config: &ComparisonConfig,
+    ) -> Result<Vec<FileDiff>> {
         let repo_path = Path::new(&params.repository_path);
 
         // 验证是否为Git仓库
         if !self.is_git_repository(repo_path)? {
-            return Err(anyhow::anyhow!("Not a git repository: {}", params.repository_path));
+            return Err(anyhow::anyhow!(
+                "Not a git repository: {}",
+                params.repository_path
+            ));
         }
 
         // 获取两个版本之间的文件变更列表
@@ -31,9 +37,11 @@ impl GitIntegration {
         } else {
             changed_files
                 .into_iter()
-                .filter(|file| params.file_paths.iter().any(|pattern| {
-                    file.contains(pattern) || self.matches_pattern(file, pattern)
-                }))
+                .filter(|file| {
+                    params.file_paths.iter().any(|pattern| {
+                        file.contains(pattern) || self.matches_pattern(file, pattern)
+                    })
+                })
                 .collect()
         };
 
@@ -41,9 +49,7 @@ impl GitIntegration {
         use rayon::prelude::*;
         let file_diffs: Result<Vec<FileDiff>> = files_to_compare
             .into_par_iter()
-            .map(|file_path| {
-                self.compare_git_file(repo_path, &file_path, params, config)
-            })
+            .map(|file_path| self.compare_git_file(repo_path, &file_path, params, config))
             .collect();
 
         file_diffs
@@ -118,23 +124,31 @@ impl GitIntegration {
         config: &ComparisonConfig,
     ) -> Result<FileDiff> {
         // 获取文件在左侧版本的内容
-        let left_content = self.get_file_content_at_commit(repo_path, file_path, &params.left_ref)?;
+        let left_content =
+            self.get_file_content_at_commit(repo_path, file_path, &params.left_ref)?;
 
         // 获取文件在右侧版本的内容
-        let right_content = self.get_file_content_at_commit(repo_path, file_path, &params.right_ref)?;
+        let right_content =
+            self.get_file_content_at_commit(repo_path, file_path, &params.right_ref)?;
 
         // 获取文件状态
         let file_status = self.get_file_status(repo_path, file_path, params)?;
 
         // 处理内容
         let left_lines: Vec<String> = if config.ignore_whitespace {
-            left_content.lines().map(|line| line.trim().to_string()).collect()
+            left_content
+                .lines()
+                .map(|line| line.trim().to_string())
+                .collect()
         } else {
             left_content.lines().map(|line| line.to_string()).collect()
         };
 
         let right_lines: Vec<String> = if config.ignore_whitespace {
-            right_content.lines().map(|line| line.trim().to_string()).collect()
+            right_content
+                .lines()
+                .map(|line| line.trim().to_string())
+                .collect()
         } else {
             right_content.lines().map(|line| line.to_string()).collect()
         };
@@ -215,7 +229,9 @@ impl GitIntegration {
                         "M" => return Ok(FileStatus::Modified),
                         "R" => {
                             // 对于重命名，我们需要获取旧路径
-                            if let Some(old_path) = self.get_renamed_from_path(repo_path, file_path, params)? {
+                            if let Some(old_path) =
+                                self.get_renamed_from_path(repo_path, file_path, params)?
+                            {
                                 return Ok(FileStatus::Renamed { old_path });
                             }
                         }
@@ -266,7 +282,7 @@ impl GitIntegration {
 
     /// 计算Git文件行级别的差异
     fn compute_git_line_diff(&self, lines_a: &[String], lines_b: &[String]) -> Vec<DiffLine> {
-        use dissimilar::{Chunk, diff};
+        use dissimilar::{diff, Chunk};
 
         let text_a = lines_a.join("\n");
         let text_b = lines_b.join("\n");
@@ -329,12 +345,14 @@ impl GitIntegration {
         params: &GitComparisonParams,
     ) -> Result<(FileStats, FileStats)> {
         // 左侧版本统计
-        let left_content = self.get_file_content_at_commit(repo_path, file_path, &params.left_ref)?;
+        let left_content =
+            self.get_file_content_at_commit(repo_path, file_path, &params.left_ref)?;
         let left_size = left_content.len() as u64;
         let left_line_count = left_content.lines().count() as u32;
 
         // 右侧版本统计
-        let right_content = self.get_file_content_at_commit(repo_path, file_path, &params.right_ref)?;
+        let right_content =
+            self.get_file_content_at_commit(repo_path, file_path, &params.right_ref)?;
         let right_size = right_content.len() as u64;
         let right_line_count = right_content.lines().count() as u32;
 
@@ -387,9 +405,7 @@ impl GitIntegration {
         // 简单的通配符匹配实现
         if pattern.contains('*') {
             // 转换为正则表达式
-            let regex_pattern = pattern
-                .replace('.', r"\.")
-                .replace('*', ".*");
+            let regex_pattern = pattern.replace('.', r"\.").replace('*', ".*");
 
             if let Ok(regex) = regex::Regex::new(&format!("^{}$", regex_pattern)) {
                 regex.is_match(file_path)

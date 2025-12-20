@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import Editor from '@monaco-editor/react'
-import ReactFlow, { Background, Controls } from 'reactflow'
+import ReactFlow, { Background, Controls, useNodesState, useEdgesState } from 'reactflow'
 import 'reactflow/dist/style.css'
 import {
   FolderOpen,
@@ -18,13 +18,16 @@ import {
   Loader2,
   Hammer,
   Database,
-  FileDiff
+  FileDiff,
+  BookOpen,
+  Plus
 } from 'lucide-react'
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -32,6 +35,21 @@ import {
 } from "@/components/ui/resizable"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { DiffViewer } from "@/components/diff/DiffViewer"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 interface LogEntry {
   timestamp: string
@@ -46,10 +64,30 @@ interface SearchResult {
 }
 
 interface Vulnerability {
+  id: string
   file: string
   line: number
   severity: 'high' | 'medium' | 'low'
   message: string
+  detector: string
+  vuln_type: string
+  verification?: {
+    verified: boolean
+    confidence: number
+    reasoning: string
+  }
+}
+
+interface Rule {
+  id: string
+  name: string
+  description: string
+  severity: string
+  language: string
+  pattern?: string
+  query?: string
+  category?: string
+  cwe?: string
 }
 
 interface FileNode {
@@ -217,7 +255,7 @@ function App() {
   const filesFlushTimerRef = useRef<number | null>(null)
 
   const [isOutputVisible, setIsOutputVisible] = useState(true)
-  const [activeSidebarView, setActiveSidebarView] = useState<'explorer' | 'search' | 'graph' | 'tools'>('explorer')
+  const [activeSidebarView, setActiveSidebarView] = useState<'explorer' | 'search' | 'graph' | 'tools' | 'rules'>('explorer')
 
   // Search State
   const [searchQuery, setSearchQuery] = useState('')
@@ -227,6 +265,19 @@ function App() {
   const [activeBottomTab, setActiveBottomTab] = useState<'output' | 'problems' | 'terminal' | 'mcp'>('output')
   const [replaceQuery, setReplaceQuery] = useState('')
   const [mcpStatus, setMcpStatus] = useState<'connected' | 'disconnected'>('disconnected')
+  const [loadedRules, setLoadedRules] = useState<Rule[]>([])
+  const [isAddRuleModalOpen, setIsAddRuleModalOpen] = useState(false)
+  const [newRule, setNewRule] = useState<Partial<Rule>>({
+    id: '',
+    name: '',
+    description: '',
+    severity: 'high',
+    language: 'all',
+    pattern: '',
+    cwe: '',
+    query: '',
+    category: ''
+  })
 
   // Diff comparison state
   const [comparisonResult, setComparisonResult] = useState<any>(null)
@@ -254,18 +305,103 @@ function App() {
   const monacoRef = useRef<any>(null)
   const decorationsRef = useRef<string[]>([])
 
-  // Graph Nodes (Dummy for now)
-  const initialNodes = [
-    { id: '1', position: { x: 0, y: 0 }, data: { label: 'Frontend (React)' } },
-    { id: '2', position: { x: 0, y: 100 }, data: { label: 'Rust Host' } },
-    { id: '3', position: { x: 200, y: 100 }, data: { label: 'Python Sidecar' } },
-    { id: '4', position: { x: 0, y: 200 }, data: { label: 'SQLite DB' } },
-  ];
-  const initialEdges = [
-    { id: 'e1-2', source: '1', target: '2', animated: true, label: 'Commands' },
-    { id: 'e2-3', source: '2', target: '3', animated: true, label: 'MCP' },
-    { id: 'e2-4', source: '2', target: '4', label: 'SQLx' },
-  ];
+  // Graph Nodes
+  const [graphNodes, setGraphNodes, onNodesChange] = useNodesState([]);
+  const [graphEdges, setGraphEdges, onEdgesChange] = useEdgesState([]);
+
+  async function handleSaveRule() {
+    if (!newRule.id || !newRule.name) {
+      addLog('规则 ID 和名称不能为空', 'system');
+      return;
+    }
+
+    try {
+      const ruleToSave = {
+        ...newRule,
+        // Ensure defaults
+        description: newRule.description || '',
+        severity: newRule.severity || 'medium',
+        language: newRule.language || 'all',
+        pattern: newRule.pattern ? newRule.pattern : undefined,
+        cwe: newRule.cwe ? newRule.cwe : undefined,
+        query: newRule.query ? newRule.query : undefined,
+        category: newRule.category ? newRule.category : undefined,
+      };
+      const msg = await invoke<string>('save_rule', { rule: ruleToSave });
+      addLog(msg, 'system');
+      setIsAddRuleModalOpen(false);
+      // Refresh rules
+      invoke<Rule[]>('get_loaded_rules').then(setLoadedRules);
+      // Reset form
+      setNewRule({
+        id: '',
+        name: '',
+        description: '',
+        severity: 'high',
+        language: 'all',
+        pattern: '',
+        cwe: '',
+        query: '',
+        category: ''
+      });
+    } catch (e) {
+      addLog(`保存规则失败: ${e}`, 'system');
+    }
+  }
+
+  async function refreshGraph() {
+    if (!projectPath) return;
+
+    setGraphNodes([]);
+    setGraphEdges([]);
+
+    try {
+      const resultJson = await callMcpTool('get_knowledge_graph', { limit: 100 });
+      let data;
+      try {
+        data = JSON.parse(resultJson);
+      } catch {
+        data = resultJson;
+      }
+
+      if (data.status === 'success' && data.graph) {
+        addLog(`成功获取图谱数据: ${data.graph.nodes.length} 个节点, ${data.graph.edges.length} 条边`, 'python');
+        const layoutedNodes = data.graph.nodes.map((node: any, index: number) => ({
+          ...node,
+          type: 'default', // Force default type to ensure rendering
+          position: { x: (index % 5) * 250, y: Math.floor(index / 5) * 100 }, // Grid layout
+          data: {
+            label: `${node.label} (${node.type})`
+          },
+          style: {
+            background: node.type === 'file' ? '#e0f2fe' :  // Blue-ish for files
+              node.type === 'class' ? '#dcfce7' :  // Green-ish for classes
+                node.type === 'method' ? '#fef9c3' : // Yellow-ish for methods
+                  '#f3f4f6',
+            color: '#1e293b',
+            border: '1px solid #94a3b8',
+            width: 200,
+            fontSize: '12px'
+          }
+        }));
+
+        setGraphNodes(layoutedNodes);
+        setGraphEdges(data.graph.edges.map((edge: any) => ({
+          ...edge,
+          animated: true,
+          style: { stroke: '#64748b' }
+        })));
+      }
+    } catch (e) {
+      console.error("Failed to fetch graph", e);
+    }
+  }
+
+  useEffect(() => {
+    if (activeSidebarView === 'graph' && graphNodes.length === 0) {
+      refreshGraph();
+    }
+  }, [activeSidebarView]);
 
   // Click outside to close menu
   useEffect(() => {
@@ -282,6 +418,11 @@ function App() {
       .catch(() => {
         setMcpStatus('disconnected')
       })
+
+    // Load rules
+    invoke<Rule[]>('get_loaded_rules')
+      .then(setLoadedRules)
+      .catch(console.error)
   }, [])
 
   useEffect(() => {
@@ -289,29 +430,52 @@ function App() {
   }, [files, projectPath])
 
   useEffect(() => {
+    const unlistenPromise = listen<any>('scan-finding', (event) => {
+      const finding = event.payload;
+      setVulnerabilities(prev => [...prev, {
+        id: finding.finding_id,
+        file: finding.file_path,
+        line: finding.line_start,
+        severity: finding.severity.toLowerCase(),
+        message: finding.description,
+        detector: finding.detector,
+        vuln_type: finding.vuln_type
+      }]);
+    });
+
+    return () => {
+      unlistenPromise.then(unlisten => unlisten());
+    }
+  }, []);
+
+  useEffect(() => {
+    const unlistenPromise = listen<string>('file-found', (event) => {
+      const pathPart = event.payload;
+      pendingFilesRef.current.add(pathPart)
+      if (filesFlushTimerRef.current === null) {
+        filesFlushTimerRef.current = window.setTimeout(() => {
+          const pending = pendingFilesRef.current
+          pendingFilesRef.current = new Set()
+          filesFlushTimerRef.current = null
+          setFiles(prev => {
+            const merged = new Set(prev)
+            pending.forEach(p => merged.add(p))
+            return Array.from(merged).sort()
+          })
+        }, 200)
+      }
+    });
+    return () => {
+      unlistenPromise.then(unlisten => unlisten());
+    }
+  }, []);
+
+  useEffect(() => {
     const unlistenPromise = listen<string>('mcp-message', (event) => {
       const msg = event.payload;
 
-      // Parse Rust Scan messages to populate file tree
-      if (msg.startsWith("Rust Scan")) {
-        // Format: Rust Scan {path}: {details}
-        const pathPart = msg.split(": ")[0].replace("Rust Scan ", "");
-        pendingFilesRef.current.add(pathPart)
-        if (filesFlushTimerRef.current === null) {
-          filesFlushTimerRef.current = window.setTimeout(() => {
-            const pending = pendingFilesRef.current
-            pendingFilesRef.current = new Set()
-            filesFlushTimerRef.current = null
-            setFiles(prev => {
-              const merged = new Set(prev)
-              pending.forEach(p => merged.add(p))
-              return Array.from(merged).sort()
-            })
-          }, 200)
-        }
-        // Disable Rust Scan logging to prevent frontend lag during large project scans
-        // addLog(msg, 'rust');
-      } else {
+      // Legacy Rust Scan logic removed, handled by file-found event now
+      if (!msg.startsWith("Rust Scan")) {
         addLog(msg, 'python');
       }
     })
@@ -363,6 +527,33 @@ function App() {
     monacoRef.current = monaco
   }
 
+  async function verifyFinding(id: string) {
+    const v = vulnerabilities.find(v => v.id === id);
+    if (!v) return;
+
+    try {
+      const resultJson = await callMcpTool('verify_finding', {
+        file: v.file,
+        line: v.line,
+        description: v.message,
+        vuln_type: v.vuln_type
+      });
+      let result;
+      try {
+        result = JSON.parse(resultJson);
+      } catch {
+        result = resultJson; // In case it's not JSON
+      }
+
+      setVulnerabilities(prev => prev.map(item =>
+        item.id === id ? { ...item, verification: result } : item
+      ));
+
+    } catch (e) {
+      console.error("Verification failed", e);
+    }
+  }
+
   function addLog(message: string, source: LogEntry['source']) {
     logQueueRef.current.push({
       timestamp: new Date().toLocaleTimeString(),
@@ -385,11 +576,12 @@ function App() {
     }, 80)
   }
 
-  async function callMcpTool(name: string, args: any) {
+  async function callMcpTool(name: string, args: any): Promise<string> {
     const startedAt = performance.now()
     try {
       addLog(`正在调用工具: ${name}...`, 'system')
-      const result = await invoke<string>('call_mcp_tool', { toolName: name, arguments: JSON.stringify(args) })
+      const argsStr = typeof args === 'string' ? args : JSON.stringify(args);
+      const result = await invoke<string>('call_mcp_tool', { toolName: name, arguments: argsStr })
 
       let ok = true
       let errorMessage = ''
@@ -429,10 +621,10 @@ function App() {
           const buildTime = typeof meta.build_time === 'string' ? meta.build_time : ''
           addLog(`已读取缓存报告。节点数: ${nodeCount}${buildTime ? `，构建时间: ${buildTime}` : ''}`, 'python')
         } else {
-          addLog(result, 'python')
+          // Normal log for other tools
         }
       } catch (e) {
-        addLog(result, 'python')
+        // Not JSON or parsing error, but we still return the raw result
         const text = String(result ?? '')
         const lower = text.toLowerCase()
         if (text.startsWith('错误') || lower.includes('"error"') || lower.includes('error:')) {
@@ -446,9 +638,12 @@ function App() {
         `工具调用${ok ? '成功' : '失败'}: ${name}${ok ? '' : `，原因: ${errorMessage || '未知错误'}`}（${costMs}ms）`,
         'system'
       )
+
+      return result;
     } catch (e) {
       const costMs = Math.round(performance.now() - startedAt)
       addLog(`工具调用失败: ${name}，原因: ${e}（${costMs}ms）`, 'system')
+      throw e;
     }
   }
 
@@ -829,6 +1024,16 @@ function App() {
             <Hammer className="w-5 h-5" />
           </Button>
 
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`w-8 h-8 rounded-md ${activeSidebarView === 'rules' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setActiveSidebarView('rules')}
+            title="规则"
+          >
+            <BookOpen className="w-5 h-5" />
+          </Button>
+
           <div className="flex-1" />
 
           <Button
@@ -991,6 +1196,15 @@ function App() {
                                 variant="outline"
                                 className="w-full justify-start text-xs h-8"
                                 disabled={!projectPath}
+                                onClick={() => callMcpTool('run_local_scan', { directory: projectPath })}
+                              >
+                                <ShieldAlert className="w-3.5 h-3.5 mr-2 text-red-500" />
+                                运行本地深度扫描
+                              </Button>
+                              <Button
+                                variant="outline"
+                                className="w-full justify-start text-xs h-8"
+                                disabled={!projectPath}
                                 onClick={() => callMcpTool('get_analysis_report', { directory: projectPath })}
                               >
                                 <FileCode className="w-3.5 h-3.5 mr-2 text-zinc-500" />
@@ -1094,6 +1308,58 @@ function App() {
                       </>
                     )}
 
+                    {/* Rules View */}
+                    {activeSidebarView === 'rules' && (
+                      <>
+                        <div className="h-8 px-3 flex items-center justify-between border-b border-border/40 bg-muted/5">
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">审计规则</span>
+                          <div className="flex items-center gap-2">
+                            <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground hover:text-foreground" onClick={() => setIsAddRuleModalOpen(true)}>
+                              <Plus className="w-3.5 h-3.5" />
+                            </Button>
+                            <Badge variant="secondary" className="h-4 px-1 text-[10px]">{loadedRules.length}</Badge>
+                          </div>
+                        </div>
+                        <ScrollArea className="flex-1">
+                          <div className="p-3 space-y-3">
+                            {loadedRules.length === 0 ? (
+                              <div className="flex flex-col items-center justify-center py-10 text-muted-foreground opacity-50">
+                                <BookOpen className="w-8 h-8 mb-2 stroke-1" />
+                                <span className="text-xs">未加载规则</span>
+                              </div>
+                            ) : (
+                              loadedRules.map((rule) => (
+                                <div key={rule.id} className="border border-border/40 rounded-md p-2 bg-muted/10">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <span className="text-xs font-medium truncate" title={rule.name}>{rule.name}</span>
+                                    <Badge variant="outline" className={`text-[10px] h-4 px-1 ${rule.severity.toLowerCase() === 'critical' ? 'text-red-500 border-red-500/30' :
+                                      rule.severity.toLowerCase() === 'high' ? 'text-orange-500 border-orange-500/30' :
+                                        rule.severity.toLowerCase() === 'medium' ? 'text-yellow-500 border-yellow-500/30' :
+                                          'text-blue-500 border-blue-500/30'
+                                      }`}>
+                                      {rule.severity}
+                                    </Badge>
+                                  </div>
+                                  <div className="text-[10px] text-muted-foreground line-clamp-2 mb-1" title={rule.description}>
+                                    {rule.description}
+                                  </div>
+                                  <div className="flex items-center gap-2 mt-2">
+                                    <Badge variant="secondary" className="text-[9px] h-3.5 px-1">{rule.language}</Badge>
+                                    {rule.query ? (
+                                      <Badge variant="outline" className="text-[9px] h-3.5 px-1 text-purple-500 border-purple-500/30">AST</Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="text-[9px] h-3.5 px-1 text-blue-500 border-blue-500/30">Regex</Badge>
+                                    )}
+                                    {rule.cwe && <span className="text-[9px] text-muted-foreground font-mono">CWE-{rule.cwe}</span>}
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </ScrollArea>
+                      </>
+                    )}
+
                   </div>
                 </ResizablePanel>
                 <ResizableHandle withHandle={true} className="w-[4px] bg-transparent hover:bg-primary/50 transition-colors data-[resize-handle-active]:bg-primary z-10 -mx-[2px]" />
@@ -1110,15 +1376,26 @@ function App() {
 
                     {activeSidebarView === 'graph' ? (
                       // Graph View
-                      <div className="h-full w-full bg-background text-foreground">
-                        <ReactFlow
-                          nodes={initialNodes}
-                          edges={initialEdges}
-                          fitView
-                        >
-                          <Background />
-                          <Controls />
-                        </ReactFlow>
+                      <div className="h-full w-full bg-background text-foreground flex flex-col">
+                        <div className="h-8 border-b border-border/40 flex items-center justify-between px-3 bg-muted/10">
+                          <span className="text-xs font-semibold">代码图谱</span>
+                          <Button variant="ghost" size="sm" className="h-6 text-[10px]" onClick={refreshGraph}>
+                            <Network className="w-3 h-3 mr-1" />
+                            刷新图谱
+                          </Button>
+                        </div>
+                        <div className="flex-1">
+                          <ReactFlow
+                            nodes={graphNodes}
+                            edges={graphEdges}
+                            onNodesChange={onNodesChange}
+                            onEdgesChange={onEdgesChange}
+                            fitView
+                          >
+                            <Background />
+                            <Controls />
+                          </ReactFlow>
+                        </div>
                       </div>
                     ) : (
                       // Editor View
@@ -1211,6 +1488,17 @@ function App() {
                             >
                               终端
                             </button>
+                            <button
+                              onClick={() => setActiveBottomTab('problems')}
+                              className={`text-xs font-medium px-1 h-full flex items-center transition-colors ${activeBottomTab === 'problems' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'}`}
+                            >
+                              漏洞
+                              {vulnerabilities.length > 0 && (
+                                <span className="ml-1.5 bg-destructive text-destructive-foreground text-[9px] rounded-full h-3.5 min-w-[14px] px-0.5 flex items-center justify-center">
+                                  {vulnerabilities.length}
+                                </span>
+                              )}
+                            </button>
                           </div>
                           <div className="flex items-center gap-2">
                             <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => setLogs([])} title="清除日志">
@@ -1286,10 +1574,27 @@ function App() {
                                         <div className="flex items-center gap-2 mb-0.5">
                                           <span className="text-xs font-medium text-foreground">{v.file}</span>
                                           <span className="text-[10px] text-muted-foreground font-mono">:{v.line}</span>
+                                          <Badge variant="outline" className="text-[10px] h-3 px-1">{v.detector}</Badge>
                                         </div>
                                         <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2 group-hover:text-foreground/80 transition-colors">
-                                          {v.message}
+                                          [{v.vuln_type}] {v.message}
                                         </p>
+                                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                                          {!v.verification ? (
+                                            <Button variant="outline" className="h-5 text-[10px] px-2 py-0" onClick={(e) => { e.stopPropagation(); verifyFinding(v.id); }}>
+                                              LLM 验证
+                                            </Button>
+                                          ) : (
+                                            <>
+                                              <Badge variant={v.verification.verified ? "outline" : "destructive"} className={`text-[10px] h-4 px-1 ${v.verification.verified ? "text-green-500 border-green-500/30" : ""}`}>
+                                                {v.verification.verified ? "已确认" : "误报"} ({Math.round(v.verification.confidence * 100)}%)
+                                              </Badge>
+                                              <span className="text-[10px] text-muted-foreground truncate max-w-[300px]" title={v.verification.reasoning}>
+                                                {v.verification.reasoning}
+                                              </span>
+                                            </>
+                                          )}
+                                        </div>
                                       </div>
                                       <div className="opacity-0 group-hover:opacity-100 transition-opacity">
                                         <Button variant="ghost" size="icon" className="h-6 w-6">
@@ -1332,6 +1637,147 @@ function App() {
           <span>{getLanguageFromPath(selectedFile)}</span>
         </div>
       </footer>
+
+      {/* Add Rule Dialog */}
+      <Dialog open={isAddRuleModalOpen} onOpenChange={setIsAddRuleModalOpen}>
+        <DialogContent className="sm:max-w-[425px] bg-[#1e1e1e] text-foreground border-border/40">
+          <DialogHeader>
+            <DialogTitle>添加自定义规则</DialogTitle>
+            <DialogDescription className="text-muted-foreground">
+              创建一个新的规则来扫描代码中的潜在问题。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="id" className="text-right">
+                ID
+              </Label>
+              <Input
+                id="id"
+                value={newRule.id}
+                onChange={(e) => setNewRule({ ...newRule, id: e.target.value })}
+                className="col-span-3 h-8 bg-muted/20"
+                placeholder="例如: no-eval"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="name" className="text-right">
+                名称
+              </Label>
+              <Input
+                id="name"
+                value={newRule.name}
+                onChange={(e) => setNewRule({ ...newRule, name: e.target.value })}
+                className="col-span-3 h-8 bg-muted/20"
+                placeholder="例如: 禁止使用 eval"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="severity" className="text-right">
+                严重性
+              </Label>
+              <Select
+                value={newRule.severity}
+                onValueChange={(val) => setNewRule({ ...newRule, severity: val })}
+              >
+                <SelectTrigger className="col-span-3 h-8 bg-muted/20">
+                  <SelectValue placeholder="选择严重性" />
+                </SelectTrigger>
+                <SelectContent className="bg-[#1e1e1e] border-border/40">
+                  <SelectItem value="critical">Critical</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="low">Low</SelectItem>
+                  <SelectItem value="info">Info</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="language" className="text-right">
+                语言
+              </Label>
+              <Select
+                value={newRule.language}
+                onValueChange={(val) => setNewRule({ ...newRule, language: val })}
+              >
+                <SelectTrigger className="col-span-3 h-8 bg-muted/20">
+                  <SelectValue placeholder="选择语言" />
+                </SelectTrigger>
+                <SelectContent className="bg-[#1e1e1e] border-border/40">
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="javascript">JavaScript</SelectItem>
+                  <SelectItem value="typescript">TypeScript</SelectItem>
+                  <SelectItem value="python">Python</SelectItem>
+                  <SelectItem value="rust">Rust</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="pattern" className="text-right">
+                正则模式
+              </Label>
+              <Input
+                id="pattern"
+                value={newRule.pattern}
+                onChange={(e) => setNewRule({ ...newRule, pattern: e.target.value })}
+                className="col-span-3 h-8 bg-muted/20 font-mono text-xs"
+                placeholder="正则表达式"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="cwe" className="text-right">
+                CWE
+              </Label>
+              <Input
+                id="cwe"
+                value={newRule.cwe}
+                onChange={(e) => setNewRule({ ...newRule, cwe: e.target.value })}
+                className="col-span-3 h-8 bg-muted/20"
+                placeholder="例如: CWE-79"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="category" className="text-right">
+                类别
+              </Label>
+              <Input
+                id="category"
+                value={newRule.category}
+                onChange={(e) => setNewRule({ ...newRule, category: e.target.value })}
+                className="col-span-3 h-8 bg-muted/20"
+                placeholder="例如: Security"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="query" className="text-right">
+                AST 查询
+              </Label>
+              <Input
+                id="query"
+                value={newRule.query}
+                onChange={(e) => setNewRule({ ...newRule, query: e.target.value })}
+                className="col-span-3 h-8 bg-muted/20 font-mono text-xs"
+                placeholder="Tree-sitter query"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="description" className="text-right">
+                描述
+              </Label>
+              <Input
+                id="description"
+                value={newRule.description}
+                onChange={(e) => setNewRule({ ...newRule, description: e.target.value })}
+                className="col-span-3 h-8 bg-muted/20"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsAddRuleModalOpen(false)}>取消</Button>
+            <Button onClick={handleSaveRule}>保存规则</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

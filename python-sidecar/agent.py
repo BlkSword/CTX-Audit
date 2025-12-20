@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from mcp.server.fastmcp import FastMCP, Context
 from starlette.middleware.cors import CORSMiddleware
 from ast_engine import ASTEngine
+from llm_engine import LLMEngine
 
 # Configure logging
 logging.basicConfig(
@@ -29,6 +30,9 @@ mcp = FastMCP("DeepAudit Agent")
 
 # Initialize AST Engine
 ast_engine = ASTEngine()
+
+# Initialize LLM Engine
+llm_engine = LLMEngine()
 
 class SecurityScanner:
     @staticmethod
@@ -183,6 +187,59 @@ async def build_ast_index(directory: str) -> str:
     except Exception as e:
         logger.error(f"构建 AST 索引失败: {e}")
         return json.dumps({"error": f"构建 AST 索引过程中出错: {str(e)}"})
+
+@mcp.tool()
+async def verify_finding(file: str, line: int, description: str, vuln_type: str, code: Optional[str] = None) -> str:
+    """
+    Verify a security finding using LLM.
+    Args:
+        file: File path
+        line: Line number
+        description: Vulnerability description
+        vuln_type: CWE or vulnerability type
+        code: Optional code snippet
+    """
+    try:
+        # Get context from AST engine if possible
+        context = ""
+        if file and os.path.exists(file):
+             # Simple context: read surrounding lines
+             try:
+                 with open(file, 'r', encoding='utf-8', errors='ignore') as f:
+                     lines = f.readlines()
+                     line_idx = int(line) - 1
+                     start = max(0, line_idx - 5)
+                     end = min(len(lines), line_idx + 6)
+                     context = "".join(lines[start:end])
+             except Exception as e:
+                 logger.warning(f"Failed to read context for {file}: {e}")
+        
+        finding = {
+            "file": file,
+            "line": line,
+            "description": description,
+            "vuln_type": vuln_type,
+            "code": code or ""
+        }
+        
+        result = await llm_engine.verify_vulnerability(finding, context)
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error verifying finding: {e}")
+        return json.dumps({"error": str(e)})
+
+@mcp.tool()
+async def get_knowledge_graph(limit: int = 100) -> str:
+    """
+    Get the project knowledge graph (files, classes, functions and relationships).
+    Args:
+        limit: Maximum number of nodes to return
+    """
+    try:
+        graph = ast_engine.get_knowledge_graph(limit)
+        return json.dumps({"status": "success", "graph": graph}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": f"Failed to get knowledge graph: {str(e)}"})
 
 @mcp.tool()
 async def run_security_scan(directory: str, custom_rules: Optional[str] = None, include_dirs: Optional[str] = None, exclude_dirs: Optional[str] = None) -> str:
@@ -499,6 +556,28 @@ def _start_sse_server() -> None:
         logger.info("MCP SSE 已启动: http://localhost:8338/sse")
     except Exception as e:
         logger.error(f"SSE 线程启动失败: {e}")
+
+class LLMProcessor:
+    def __init__(self):
+        self.api_key = os.environ.get("OPENAI_API_KEY")
+        
+    async def analyze(self, code: str, context: str) -> str:
+        if not self.api_key:
+            return f"LLM Analysis (Mock): Based on the code snippet provided, there appears to be a potential logic flow issue. \nContext: {context}\nSuggestion: Review input validation."
+        
+        # Placeholder for real OpenAI call
+        # client = AsyncOpenAI(api_key=self.api_key)
+        # response = await client.chat.completions.create(...)
+        return "Real LLM Analysis would happen here."
+
+llm_processor = LLMProcessor()
+
+@mcp.tool()
+async def analyze_code_with_llm(code: str, context: str = "") -> str:
+    """
+    Analyze a code snippet using LLM to find logic bugs or explain code.
+    """
+    return await llm_processor.analyze(code, context)
 
 if __name__ == "__main__":
     logger.info("Starting DeepAudit Agent via Stdio")

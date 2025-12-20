@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 use tree_sitter::{Language, Parser};
 
+#[allow(dead_code)]
 pub fn scan_file(path: &Path) -> Result<String, String> {
     let code = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut parser = Parser::new();

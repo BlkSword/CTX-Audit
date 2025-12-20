@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// 差异类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

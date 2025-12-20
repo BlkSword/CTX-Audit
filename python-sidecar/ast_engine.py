@@ -558,6 +558,77 @@ class ASTEngine:
 
         return {"entry": entry, "nodes": list(nodes.values()), "edges": edges}
 
+    def get_knowledge_graph(self, limit: int = 200) -> Dict[str, Any]:
+        """
+        Build a knowledge graph of the project (Files, Classes, Functions).
+        """
+        nodes: Dict[str, Dict[str, Any]] = {}
+        edges: List[Dict[str, Any]] = []
+        
+        count = 0
+        
+        # 1. Add File Nodes
+        for file_path, data in self.index.items():
+            if count >= limit: break
+            
+            rel_path = os.path.basename(file_path)
+            if self.repository_path:
+                try:
+                    rel_path = os.path.relpath(file_path, self.repository_path)
+                except:
+                    pass
+            
+            nodes[file_path] = {
+                "id": file_path,
+                "label": rel_path,
+                "type": "file",
+                "data": {"path": file_path}
+            }
+            count += 1
+            
+            # 2. Add Symbol Nodes and Edges
+            for sym in data.get("symbols", []):
+                if count >= limit: break
+                if sym.get("kind") in ["method_call", "variable"]: continue
+                
+                sym_id = sym.get("id")
+                if not sym_id:
+                     sym_id = f"{file_path}:{sym.get('name')}:{sym.get('startLine')}"
+                
+                label = sym.get("name")
+                kind = sym.get("kind")
+                
+                if sym_id not in nodes:
+                    nodes[sym_id] = {
+                        "id": sym_id,
+                        "label": label,
+                        "type": kind,
+                        "data": sym
+                    }
+                    count += 1
+                    
+                    # Edge: File -> Symbol (DEFINES)
+                    edges.append({
+                        "id": f"e_{file_path}_{sym_id}",
+                        "source": file_path,
+                        "target": sym_id,
+                        "label": "defines"
+                    })
+                    
+                    # Edge: Class -> SuperClass (INHERITS)
+                    if kind == "class":
+                        parents = sym.get("parent_classes", [])
+                        for p in parents:
+                            # Try to resolve parent class
+                            if p in self.class_map:
+                                parent_file = self.class_map[p]
+                                # We don't know the exact ID of parent class without searching, 
+                                # but we can try to find it in current nodes or skip
+                                # For now, let's just add a node if we can find it
+                                pass
+
+        return {"nodes": list(nodes.values()), "edges": edges}
+
     def update_file(self, file_path: str):
         """Update index for a single file if changed."""
         if not os.path.exists(file_path):
