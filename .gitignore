@@ -28,3 +28,4 @@ dist-ssr
 # Other
 .deepaudit_cache
 __pycache__
+.claude
