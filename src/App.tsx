@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import Editor from '@monaco-editor/react'
@@ -6,25 +6,27 @@ import ReactFlow, { Background, Controls, useNodesState, useEdgesState } from 'r
 import 'reactflow/dist/style.css'
 import {
   FolderOpen,
-  FileCode,
   ShieldAlert,
   Search,
   GitBranch,
-  ChevronRight,
-  ChevronDown,
-  Folder,
   Network,
   Terminal,
-  Loader2,
   Hammer,
   Database,
   FileDiff,
   BookOpen,
   Plus,
-  LayoutGrid
+  LayoutGrid,
+  Loader2
 } from 'lucide-react'
 import { calculateGraphLayout, assignEdgeHandles } from '@/lib/graphLayout'
 import CodeGraphNode from '@/components/graph/CodeGraphNode'
+
+// 导入优化后的组件
+import { FileTree } from '@/components/file-explorer/FileTree'
+import { SearchPanel } from '@/components/search/SearchPanel'
+import { LogPanel } from '@/components/log/LogPanel'
+import type { LogEntry } from '@/components/log/LogPanel'
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -36,8 +38,8 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { DiffViewer } from "@/components/diff/DiffViewer"
+import { FileCode, Folder } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -53,12 +55,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-
-interface LogEntry {
-  timestamp: string
-  message: string
-  source: 'rust' | 'python' | 'system'
-}
 
 interface SearchResult {
   file: string
@@ -171,56 +167,6 @@ function buildFileTree(paths: string[], rootPath: string): FileNode[] {
   return root
 }
 
-const FileTreeNode = ({ node, level, onSelect, selectedPath }: { node: FileNode, level: number, onSelect: (path: string) => void, selectedPath: string | null }) => {
-  const [isOpen, setIsOpen] = useState(false)
-
-  // Auto-expand if selected file is inside this folder
-  useEffect(() => {
-    if (selectedPath && selectedPath.startsWith(node.path) && node.type === 'folder') {
-      setIsOpen(true)
-    }
-  }, [selectedPath, node.path, node.type])
-
-  if (node.type === 'file') {
-    return (
-      <button
-        onClick={() => onSelect(node.path)}
-        className={`w-full text-left px-2 py-1 rounded-sm text-xs font-mono truncate transition-colors flex items-center gap-2 group ${selectedPath === node.path
-          ? 'bg-primary/10 text-primary'
-          : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
-          }`}
-        style={{ paddingLeft: `${level * 12 + 8}px` }}
-        title={node.path}
-      >
-        {/* Simple Icon Logic */}
-        {node.name.endsWith('.rs') ? <span className="text-orange-500 w-3.5 text-center font-bold text-[10px]">Rs</span> :
-          node.name.endsWith('.py') ? <span className="text-blue-400 w-3.5 text-center font-bold text-[10px]">Py</span> :
-            node.name.endsWith('.tsx') || node.name.endsWith('.ts') ? <span className="text-blue-500 w-3.5 text-center font-bold text-[10px]">TS</span> :
-              <FileCode className="w-3.5 h-3.5 opacity-70" />}
-
-        <span className="truncate">{node.name}</span>
-      </button>
-    )
-  }
-
-  return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger className="w-full text-left px-2 py-1 rounded-sm text-xs font-mono truncate transition-colors flex items-center gap-1 text-muted-foreground hover:text-foreground hover:bg-muted/30"
-        style={{ paddingLeft: `${level * 12 + 4}px` }}
-      >
-        {isOpen ? <ChevronDown className="w-3 h-3 opacity-70" /> : <ChevronRight className="w-3 h-3 opacity-70" />}
-        <Folder className={`w-3.5 h-3.5 ${isOpen ? 'text-foreground' : 'text-muted-foreground/70'}`} />
-        <span className="truncate">{node.name}</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        {node.children?.map(child => (
-          <FileTreeNode key={child.path} node={child} level={level + 1} onSelect={onSelect} selectedPath={selectedPath} />
-        ))}
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
 function getLanguageFromPath(path: string | null): string {
   if (!path) return 'Plain Text';
   const ext = path.split('.').pop()?.toLowerCase();
@@ -269,7 +215,6 @@ function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [activeSearchResult, setActiveSearchResult] = useState<SearchResult | null>(null)
   const [activeBottomTab, setActiveBottomTab] = useState<'output' | 'problems' | 'terminal' | 'mcp'>('output')
-  const [replaceQuery, setReplaceQuery] = useState('')
   const [mcpStatus, setMcpStatus] = useState<'connected' | 'disconnected'>('disconnected')
   const [loadedRules, setLoadedRules] = useState<Rule[]>([])
   const [isAddRuleModalOpen, setIsAddRuleModalOpen] = useState(false)
@@ -284,21 +229,11 @@ function App() {
     query: '',
     category: ''
   })
+  const [isSavingRule, setIsSavingRule] = useState(false)
 
   // Diff comparison state
   const [comparisonResult, setComparisonResult] = useState<any>(null)
   const [showComparisonView, setShowComparisonView] = useState(false)
-
-  const groupedSearchResults = useMemo(() => {
-    const groups: Record<string, SearchResult[]> = {}
-    searchResults.forEach(result => {
-      if (!groups[result.file]) {
-        groups[result.file] = []
-      }
-      groups[result.file].push(result)
-    })
-    return groups
-  }, [searchResults])
 
   const pythonLogs = useMemo(() => logs.filter(l => l.source === 'python'), [logs])
   const systemLogs = useMemo(() => logs.filter(l => l.source !== 'python'), [logs])
@@ -327,6 +262,8 @@ function App() {
       return;
     }
 
+    setIsSavingRule(true);
+
     try {
       const ruleToSave = {
         ...newRule,
@@ -340,10 +277,22 @@ function App() {
         category: newRule.category ? newRule.category : undefined,
       };
       const msg = await invoke<string>('save_rule', { rule: ruleToSave });
-      addLog(msg, 'system');
+
+      // Show success message
+      addLog(`✅ 规则保存成功: ${msg}`, 'system');
+
+      // Close modal immediately
       setIsAddRuleModalOpen(false);
-      // Refresh rules
-      invoke<Rule[]>('get_loaded_rules').then(setLoadedRules);
+
+      // Refresh rules and wait for completion
+      try {
+        const updatedRules = await invoke<Rule[]>('get_loaded_rules');
+        setLoadedRules(updatedRules);
+        addLog(`✅ 规则列表已更新，当前共 ${updatedRules.length} 条规则`, 'system');
+      } catch (refreshError) {
+        addLog(`⚠️ 规则保存成功，但刷新列表失败: ${refreshError}`, 'system');
+      }
+
       // Reset form
       setNewRule({
         id: '',
@@ -357,7 +306,9 @@ function App() {
         category: ''
       });
     } catch (e) {
-      addLog(`保存规则失败: ${e}`, 'system');
+      addLog(`❌ 保存规则失败: ${e}`, 'system');
+    } finally {
+      setIsSavingRule(false);
     }
   }
 
@@ -639,7 +590,7 @@ function App() {
     }, 80)
   }
 
-  async function callMcpTool(name: string, args: any): Promise<string> {
+  const callMcpTool = useCallback(async (name: string, args: any): Promise<string> => {
     const startedAt = performance.now()
     try {
       addLog(`正在调用工具: ${name}...`, 'system')
@@ -708,7 +659,7 @@ function App() {
       addLog(`工具调用失败: ${name}，原因: ${e}（${costMs}ms）`, 'system')
       throw e;
     }
-  }
+  }, [addLog, setVulnerabilities, setActiveBottomTab, setIsOutputVisible])
 
   async function handleOpenProject() {
     try {
@@ -813,14 +764,14 @@ function App() {
     }
   }
 
-  function handleSearchResultClick(result: SearchResult) {
+  const handleSearchResultClick = useCallback((result: SearchResult) => {
     setActiveSearchResult(result)
     if (selectedFile !== result.file) {
       handleFileSelect(result.file)
     }
-  }
+  }, [selectedFile, handleFileSelect])
 
-  async function handleSearchSubmit(e: React.FormEvent) {
+  const handleSearchSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault()
     if (!searchQuery.trim() || !projectPath) return
     setIsSearching(true)
@@ -835,7 +786,7 @@ function App() {
     } finally {
       setIsSearching(false)
     }
-  }
+  }, [searchQuery, projectPath, addLog, setSearchResults, setActiveSearchResult, setIsSearching])
 
   // MCP Menu
   // const [activeMcpMenu] = useState(false)
@@ -1135,15 +1086,11 @@ function App() {
                                 <span className="text-xs">未打开项目</span>
                               </div>
                             ) : (
-                              fileTree.map((node) => (
-                                <FileTreeNode
-                                  key={node.path}
-                                  node={node}
-                                  level={0}
-                                  onSelect={handleFileSelect}
-                                  selectedPath={selectedFile}
-                                />
-                              ))
+                              <FileTree
+                                nodes={fileTree}
+                                selectedPath={selectedFile}
+                                onSelect={handleFileSelect}
+                              />
                             )}
                           </div>
                         </ScrollArea>
@@ -1156,73 +1103,14 @@ function App() {
                         <div className="h-8 px-3 flex items-center justify-between border-b border-border/40 bg-muted/5">
                           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">搜索</span>
                         </div>
-                        <div className="p-2 border-b border-border/40 flex flex-col gap-2">
-                          <form onSubmit={handleSearchSubmit}>
-                            <div className="relative">
-                              <Search className="absolute left-2 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-                              <Input
-                                placeholder="搜索"
-                                className="pl-8 h-8 text-xs"
-                                value={searchQuery}
-                                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value)}
-                              />
-                            </div>
-                          </form>
-                          <div className="relative">
-                            <div className="absolute left-2 top-2.5 h-3.5 w-3.5 text-muted-foreground flex items-center justify-center pointer-events-none select-none">
-                              <span className="text-[10px] font-mono">AB</span>
-                            </div>
-                            <Input
-                              placeholder="替换"
-                              className="pl-8 h-8 text-xs"
-                              value={replaceQuery}
-                              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setReplaceQuery(e.target.value)}
-                            />
-                          </div>
-                        </div>
-
-                        {searchResults.length > 0 && (
-                          <div className="px-3 py-2 text-xs text-muted-foreground border-b border-border/40 flex justify-between">
-                            <span>{Object.keys(groupedSearchResults).length} 个文件，{searchResults.length} 个结果</span>
-                          </div>
-                        )}
-
-                        <ScrollArea className="flex-1">
-                          {isSearching ? (
-                            <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-                              <Loader2 className="w-6 h-6 animate-spin mb-2" />
-                              <span className="text-xs">正在搜索...</span>
-                            </div>
-                          ) : searchResults.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center py-10 text-muted-foreground opacity-50">
-                              <span className="text-xs">未找到结果</span>
-                            </div>
-                          ) : (
-                            <div className="p-1 space-y-0.5">
-                              {Object.entries(groupedSearchResults).map(([file, results]) => (
-                                <Collapsible key={file} defaultOpen className="group/file">
-                                  <CollapsibleTrigger className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted/50 text-xs font-medium text-foreground/80 select-none">
-                                    <ChevronRight className="w-3.5 h-3.5 transition-transform group-data-[state=open]/file:rotate-90 text-muted-foreground" />
-                                    <span className="truncate flex-1 text-left">{file.split(/[/\\]/).pop()}</span>
-                                    <Badge variant="secondary" className="text-[10px] h-4 px-1">{results.length}</Badge>
-                                  </CollapsibleTrigger>
-                                  <CollapsibleContent>
-                                    {results.map((result, i) => (
-                                      <button
-                                        key={i}
-                                        onClick={() => handleSearchResultClick(result)}
-                                        className={`w-full text-left pl-8 pr-2 py-1 text-xs hover:bg-muted/50 transition-colors flex gap-2 group/item ${activeSearchResult === result ? 'bg-muted text-accent-foreground' : 'text-muted-foreground'}`}
-                                      >
-                                        <span className="font-mono text-[10px] opacity-70 w-6 text-right shrink-0">{result.line}</span>
-                                        <span className="truncate font-mono">{result.content}</span>
-                                      </button>
-                                    ))}
-                                  </CollapsibleContent>
-                                </Collapsible>
-                              ))}
-                            </div>
-                          )}
-                        </ScrollArea>
+                        <SearchPanel
+                          searchQuery={searchQuery}
+                          isSearching={isSearching}
+                          searchResults={searchResults}
+                          onSearchQueryChange={setSearchQuery}
+                          onSearchSubmit={handleSearchSubmit}
+                          onResultClick={handleSearchResultClick}
+                        />
                       </>
                     )}
 
@@ -1581,42 +1469,11 @@ function App() {
 
                         <div className="flex-1 overflow-hidden relative">
                           {activeBottomTab === 'output' && (
-                            <ScrollArea className="h-full font-mono text-xs p-2 bg-black/95 text-zinc-300">
-                              {systemLogs.map((log, i) => (
-                                <div key={i} className="mb-0.5 flex gap-2 hover:bg-white/5 px-1 rounded-sm">
-                                  <span className="text-zinc-600 shrink-0 select-none">[{log.timestamp}]</span>
-                                  <span className={`shrink-0 w-16 text-right font-bold ${log.source === 'rust' ? 'text-orange-400' :
-                                    log.source === 'python' ? 'text-blue-400' :
-                                      'text-zinc-400'
-                                    }`}>
-                                    {log.source}
-                                  </span>
-                                  <span className="break-all whitespace-pre-wrap">{log.message}</span>
-                                </div>
-                              ))}
-                              <div ref={logsEndRef} />
-                            </ScrollArea>
+                            <LogPanel logs={systemLogs} active={activeBottomTab === 'output'} />
                           )}
 
                           {activeBottomTab === 'mcp' && (
-                            <ScrollArea className="h-full font-mono text-xs p-2 bg-black/95 text-zinc-300">
-                              {pythonLogs.length === 0 ? (
-                                <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
-                                  <p>暂无 Python 日志。</p>
-                                </div>
-                              ) : (
-                                pythonLogs.map((log, i) => (
-                                  <div key={i} className="mb-0.5 flex gap-2 hover:bg-white/5 px-1 rounded-sm">
-                                    <span className="text-zinc-600 shrink-0 select-none">[{log.timestamp}]</span>
-                                    <span className="text-blue-400 shrink-0 w-16 text-right font-bold">
-                                      python
-                                    </span>
-                                    <span className="break-all whitespace-pre-wrap">{log.message}</span>
-                                  </div>
-                                ))
-                              )}
-                              <div ref={logsEndRef} />
-                            </ScrollArea>
+                            <LogPanel logs={pythonLogs} active={activeBottomTab === 'mcp'} />
                           )}
 
                           {activeBottomTab === 'problems' && (
@@ -1841,7 +1698,16 @@ function App() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsAddRuleModalOpen(false)}>取消</Button>
-            <Button onClick={handleSaveRule}>保存规则</Button>
+            <Button onClick={handleSaveRule} disabled={isSavingRule}>
+              {isSavingRule ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  保存中...
+                </>
+              ) : (
+                '保存规则'
+              )}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
