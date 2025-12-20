@@ -1,0 +1,16 @@
+name: "AST Rules"
+version: "1.0"
+rules:
+  - id: "no-console-log"
+    name: "No Console Log"
+    description: "Detects usage of console.log which should not be in production code."
+    severity: "low"
+    language: "typescript"
+    query: |
+      (call_expression
+        function: (member_expression
+          object: (identifier) @obj
+          property: (property_identifier) @prop)
+        (#eq? @obj "console")
+        (#eq? @prop "log"))
+    cwe: "CWE-489"

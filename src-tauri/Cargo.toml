@@ -57,3 +57,5 @@ similar = { version = "2.5", features = ["text", "inline", "bytes"] }
 dissimilar = "1.0"
 # Text encoding support
 encoding_rs = "0.8"
+uuid = { version = "1.19.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
+serde_yaml = "0.9.34"
