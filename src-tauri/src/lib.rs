@@ -429,8 +429,12 @@ async fn restart_mcp_server(
     // Start Python Sidecar
     start_mcp_server(&app, state.mcp.clone()).await?;
 
-    log::info!("Python MCP Server restarted successfully");
-    Ok("Python MCP Server restarted successfully".to_string())
+    let msg = format!(
+        "Python MCP Server restarted successfully. Interface: http://localhost:{}/sse",
+        crate::mcp::MCP_PORT
+    );
+    log::info!("{}", msg);
+    Ok(msg)
 }
 
 #[tauri::command]

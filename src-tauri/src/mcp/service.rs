@@ -88,6 +88,7 @@ pub async fn start_mcp_server(app: &AppHandle, state: Arc<McpState>) -> Result<(
             .args(&[script_path])
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8")
+            .env("MCP_PORT", crate::mcp::MCP_PORT.to_string())
             .spawn()
             .map_err(|e| e.to_string())?;
 

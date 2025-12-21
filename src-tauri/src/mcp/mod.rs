@@ -5,6 +5,8 @@ use tokio::sync::oneshot;
 
 pub mod service;
 
+pub const MCP_PORT: u16 = 8338;
+
 pub struct McpState {
     pub child: Mutex<Option<CommandChild>>,
     pub pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,

@@ -136,9 +136,12 @@ class SecurityScanner:
 
 @mcp.tool()
 async def build_ast_index(directory: str) -> str:
-    """
-    Build or update the AST index for a project directory.
-    This indexes all code files to enable fast symbol search, call graph generation, etc.
+    """构建或更新项目的 AST 索引。
+
+    Purpose: 为项目目录构建 AST 索引，以支持快速符号搜索、调用图生成等功能。
+    Usage: 提供 `directory` 参数指定项目根目录。
+    Returns: JSON 字符串，包含构建状态、AST 统计信息和摘要。
+    Related: 后续可使用 `search_symbol`, `get_call_graph` 等工具。
     """
     if not os.path.exists(directory):
         return json.dumps({"error": f"路径 '{directory}' 不存在。"})
@@ -190,14 +193,12 @@ async def build_ast_index(directory: str) -> str:
 
 @mcp.tool()
 async def verify_finding(file: str, line: int, description: str, vuln_type: str, code: Optional[str] = None) -> str:
-    """
-    Verify a security finding using LLM.
-    Args:
-        file: File path
-        line: Line number
-        description: Vulnerability description
-        vuln_type: CWE or vulnerability type
-        code: Optional code snippet
+    """使用 LLM 验证安全发现。
+
+    Purpose: 利用大语言模型分析潜在的安全漏洞，判断其是否为误报。
+    Usage: 提供 `file` (文件路径), `line` (行号), `description` (描述), `vuln_type` (漏洞类型), 可选 `code` (代码片段)。
+    Returns: JSON 字符串，包含验证结果和分析详情。
+    Related: 通常在 `run_security_scan` 发现问题后使用。
     """
     try:
         # Get context from AST engine if possible
@@ -230,10 +231,12 @@ async def verify_finding(file: str, line: int, description: str, vuln_type: str,
 
 @mcp.tool()
 async def get_knowledge_graph(limit: int = 100) -> str:
-    """
-    Get the project knowledge graph (files, classes, functions and relationships).
-    Args:
-        limit: Maximum number of nodes to return
+    """获取项目的知识图谱。
+
+    Purpose: 获取项目中文件、类、函数及其关系的图形化表示。
+    Usage: 可选 `limit` 参数限制返回的节点数量（默认 100）。
+    Returns: JSON 字符串，包含节点和边的图数据。
+    Related: 可用于前端可视化项目结构。
     """
     try:
         graph = ast_engine.get_knowledge_graph(limit)
@@ -243,17 +246,12 @@ async def get_knowledge_graph(limit: int = 100) -> str:
 
 @mcp.tool()
 async def run_security_scan(directory: str, custom_rules: Optional[str] = None, include_dirs: Optional[str] = None, exclude_dirs: Optional[str] = None) -> str:
-    """
-    Run security scan on a project directory with custom rules and filtering options.
-    
-    Args:
-        directory: Directory to scan
-        custom_rules: JSON string with custom rules, format: {"ext": [{"pattern": "regex", "message": "description", "severity": "level"}]}
-        include_dirs: JSON string with list of directories to include (relative paths)
-        exclude_dirs: JSON string with list of directories to exclude (relative paths)
-        
-    Returns:
-        JSON string containing the security findings
+    """对项目目录运行安全扫描。
+
+    Purpose: 使用 AST 和正则规则扫描项目中的安全漏洞，支持自定义规则和过滤。
+    Usage: 提供 `directory`；可选 `custom_rules` (JSON字符串), `include_dirs` (JSON数组字符串), `exclude_dirs` (JSON数组字符串)。
+    Returns: JSON 字符串，包含发现的漏洞列表、统计信息和严重程度分布。
+    Related: 扫描结果可用 `verify_finding` 进行进一步验证。
     """
     if not os.path.exists(directory):
         return json.dumps({"error": f"路径 '{directory}' 不存在。"})
@@ -335,9 +333,12 @@ async def run_security_scan(directory: str, custom_rules: Optional[str] = None, 
 
 @mcp.tool()
 async def get_analysis_report(directory: str) -> str:
-    """
-    Retrieve the cached analysis report for a project.
-    Returns the JSON content of the last analysis.
+    """检索项目的缓存分析报告。
+
+    Purpose: 获取上一次构建 AST 索引时生成的详细分析报告。
+    Usage: 提供 `directory` 参数指定项目路径。
+    Returns: JSON 字符串，包含完整的分析报告内容。
+    Related: 需先运行 `build_ast_index` 生成报告。
     """
     if not os.path.exists(directory):
         return json.dumps({"error": f"路径 '{directory}' 不存在。"})
@@ -349,15 +350,21 @@ async def get_analysis_report(directory: str) -> str:
             return json.dumps({"error": "未找到缓存报告"})
 
         with open(report_cache_path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
+            content = f.read()
+            if not content:
+                return json.dumps({"error": "缓存报告为空，请重新运行 build_ast_index"})
+            return content
     except Exception as e:
         return json.dumps({"error": f"读取缓存报告失败: {str(e)}"})
 
 @mcp.tool()
 async def find_call_sites(directory: str, symbol: str) -> str:
-    """
-    Find all call sites of a specific function or method symbol in the project.
-    Returns a list of file locations and code snippets where the symbol is invoked.
+    """查找特定符号的所有调用点。
+
+    Purpose: 在项目中查找指定函数或方法的调用位置。
+    Usage: 提供 `directory` 和 `symbol` (符号名称)。
+    Returns: JSON 字符串，包含调用该符号的文件位置和代码片段列表。
+    Related: 配合 `get_call_graph` 理解调用关系。
     """
     if not os.path.exists(directory):
         return json.dumps({"error": f"路径 '{directory}' 不存在。"})
@@ -373,9 +380,12 @@ async def find_call_sites(directory: str, symbol: str) -> str:
 
 @mcp.tool()
 async def get_call_graph(directory: str, entry: str, max_depth: int = 2) -> str:
-    """
-    Generate a call graph starting from a specific entry point (function/method).
-    Returns nodes and edges representing the call structure up to max_depth.
+    """生成指定入口点的调用图。
+
+    Purpose: 生成从特定函数或方法开始的调用结构图。
+    Usage: 提供 `directory`, `entry` (入口符号名)；可选 `max_depth` (默认 2)。
+    Returns: JSON 字符串，包含节点和边的调用图数据。
+    Related: 用于深入分析代码执行流程。
     """
     if not os.path.exists(directory):
         return json.dumps({"error": f"路径 '{directory}' 不存在。"})
@@ -391,8 +401,12 @@ async def get_call_graph(directory: str, entry: str, max_depth: int = 2) -> str:
 
 @mcp.tool()
 async def read_file(file_path: str) -> str:
-    """
-    Read the contents of a file.
+    """读取文件内容。
+
+    Purpose: 获取指定文件的完整文本内容。
+    Usage: 提供 `file_path` (绝对路径)。
+    Returns: 文件的文本内容，若读取失败返回错误信息。
+    Related: 用于查看代码细节或手动分析。
     """
     try:
         if not os.path.exists(file_path):
@@ -405,8 +419,12 @@ async def read_file(file_path: str) -> str:
 
 @mcp.tool()
 async def list_files(directory: str) -> str:
-    """
-    List files and directories in a given path (non-recursive).
+    """列出目录下的文件和子目录。
+
+    Purpose: 查看指定目录下的直接子文件和子文件夹（非递归）。
+    Usage: 提供 `directory` 路径。
+    Returns: 格式化的文件列表字符串，区分文件和目录。
+    Related: 用于探索文件系统结构。
     """
     try:
         if not os.path.exists(directory):
@@ -425,17 +443,33 @@ async def list_files(directory: str) -> str:
 
 @mcp.tool()
 async def search_files(directory: str, pattern: str) -> str:
-    """
-    Search for a text pattern (regex) in all files within a directory.
+    """在目录下搜索文件名或内容匹配正则的文件。
+
+    Purpose: 通过正则表达式搜索文件名或文件内容。
+    Usage: 提供 `directory` 和 `pattern` (正则表达式)。
+    Returns: 匹配的文件路径及行内容列表字符串。
+    Related: 用于查找特定代码模式或文件。
     """
     results = []
     try:
+        # Validate regex pattern
+        try:
+            re.compile(pattern)
+        except re.error:
+            return f"无效的正则表达式: {pattern}"
+
         for root, _, files in os.walk(directory):
             if "node_modules" in root or ".git" in root or "target" in root:
                 continue
                 
             for file in files:
                 file_path = os.path.join(root, file)
+                
+                # 1. Check if filename matches pattern
+                if re.search(pattern, file):
+                    results.append(f"{file_path}: [文件名匹配]")
+
+                # 2. Check content
                 try:
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         for i, line in enumerate(f):
@@ -453,9 +487,12 @@ async def search_files(directory: str, pattern: str) -> str:
 
 @mcp.tool()
 async def get_code_structure(file_path: str) -> str:
-    """
-    Get the code structure (classes, functions, methods) of a specific file using AST analysis.
-    Useful for understanding the file's API without reading the whole content.
+    """获取指定文件的代码结构。
+
+    Purpose: 使用 AST 分析文件，提取类、函数和方法等结构信息。
+    Usage: 提供 `file_path`。
+    Returns: 格式化的代码结构描述字符串。
+    Related: 快速了解文件概况，无需阅读全部代码。
     """
     try:
         symbols = ast_engine.get_file_structure(file_path)
@@ -472,9 +509,12 @@ async def get_code_structure(file_path: str) -> str:
 
 @mcp.tool()
 async def search_symbol(query: str) -> str:
-    """
-    Search for code symbols (classes, functions) across the project using AST index.
-    Returns the file path, line number, and definition snippet.
+    """全项目搜索代码符号。
+
+    Purpose: 使用 AST 索引在整个项目中搜索类、函数等符号定义。
+    Usage: 提供 `query` (符号名称关键词)。
+    Returns: 匹配的符号列表，包含位置、类型、继承关系和代码定义。
+    Related: 用于快速定位代码定义。
     """
     try:
         results = ast_engine.search_symbols(query)
@@ -483,12 +523,18 @@ async def search_symbol(query: str) -> str:
             
         output = f"找到 {len(results)} 个匹配 '{query}' 的符号:\n\n"
         for sym in results[:20]: # Limit to 20 results
-            output += f"文件: {sym['file_path']}:{sym['line']}\n"
-            output += f"类型: {sym['kind']}\n"
-            output += f"名称: {sym['name']}\n"
+            file_path = sym.get("file_path") or sym.get("file") or "Unknown"
+            output += f"文件: {file_path}:{sym.get('line', '?')}\n"
+            output += f"类型: {sym.get('kind', 'Unknown')}\n"
+            output += f"名称: {sym.get('name', 'Unknown')}\n"
             if "parent_classes" in sym and sym["parent_classes"]:
                 output += f"继承: {', '.join(sym['parent_classes'])}\n"
-            output += f"代码: `{sym['code'].strip()}`\n\n"
+            
+            code = sym.get('code', '').strip()
+            if code:
+                output += f"代码: `{code}`\n\n"
+            else:
+                output += "\n"
             
         if len(results) > 20:
             output += f"...以及其他 {len(results) - 20} 个。"
@@ -499,8 +545,12 @@ async def search_symbol(query: str) -> str:
 
 @mcp.tool()
 async def get_class_hierarchy(class_name: str) -> str:
-    """
-    Get the inheritance hierarchy (parents and children) for a specific class.
+    """获取类的继承层次结构。
+
+    Purpose: 分析指定类的父类和子类关系。
+    Usage: 提供 `class_name`。
+    Returns: 格式化的继承树字符串，包含父类和子类信息。
+    Related: 用于理解面向对象设计结构。
     """
     try:
         data = ast_engine.get_class_hierarchy(class_name)
@@ -544,16 +594,18 @@ app.add_middleware(
 def _start_sse_server() -> None:
     def run() -> None:
         try:
-            config = uvicorn.Config(app, host="127.0.0.1", port=8338, log_level="warning")
+            port = int(os.environ.get("MCP_PORT", 8338))
+            config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
             server = uvicorn.Server(config)
             asyncio.run(server.serve())
         except Exception as e:
             logger.error(f"SSE 服务器启动失败: {e}")
 
     try:
+        port = int(os.environ.get("MCP_PORT", 8338))
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
-        logger.info("MCP SSE 已启动: http://localhost:8338/sse")
+        logger.info(f"MCP SSE 已启动: http://localhost:{port}/sse")
     except Exception as e:
         logger.error(f"SSE 线程启动失败: {e}")
 
@@ -574,8 +626,12 @@ llm_processor = LLMProcessor()
 
 @mcp.tool()
 async def analyze_code_with_llm(code: str, context: str = "") -> str:
-    """
-    Analyze a code snippet using LLM to find logic bugs or explain code.
+    """使用 LLM 分析代码片段。
+
+    Purpose: 利用大语言模型分析代码逻辑，查找潜在错误或解释代码。
+    Usage: 提供 `code` (代码片段)；可选 `context` (上下文信息)。
+    Returns: LLM 的分析结果字符串。
+    Related: 用于深入理解复杂代码段。
     """
     return await llm_processor.analyze(code, context)
 
