@@ -245,13 +245,25 @@ async def get_knowledge_graph(limit: int = 100) -> str:
         return json.dumps({"error": f"Failed to get knowledge graph: {str(e)}"})
 
 @mcp.tool()
-async def run_security_scan(directory: str, custom_rules: Optional[str] = None, include_dirs: Optional[str] = None, exclude_dirs: Optional[str] = None) -> str:
+async def run_security_scan(
+    directory: str, 
+    custom_rules: Optional[str] = None, 
+    include_dirs: Optional[str] = None, 
+    exclude_dirs: Optional[str] = None,
+    rule_ids: Optional[str] = None,
+    use_loaded_rules: bool = True
+) -> str:
     """对项目目录运行安全扫描。
 
-    Purpose: 使用 AST 和正则规则扫描项目中的安全漏洞，支持自定义规则和过滤。
-    Usage: 提供 `directory`；可选 `custom_rules` (JSON字符串), `include_dirs` (JSON数组字符串), `exclude_dirs` (JSON数组字符串)。
+    Purpose: 使用 AST 和正则规则扫描项目中的安全漏洞，支持自定义规则、选定规则扫描和目录过滤。
+    Usage: 提供 `directory`；可选参数：
+        - `custom_rules` (JSON字符串): 自定义扫描规则
+        - `include_dirs` (JSON数组字符串): 要包含的子目录列表
+        - `exclude_dirs` (JSON数组字符串): 要排除的子目录列表
+        - `rule_ids` (JSON数组字符串): 只使用指定ID的规则进行扫描（从已加载规则中选择）
+        - `use_loaded_rules` (布尔值): 是否使用已加载的自定义规则（默认 true）
     Returns: JSON 字符串，包含发现的漏洞列表、统计信息和严重程度分布。
-    Related: 扫描结果可用 `verify_finding` 进行进一步验证。
+    Related: 扫描结果可用 `verify_finding` 进行进一步验证；可先用 `get_loaded_rules` 查看可用规则。
     """
     if not os.path.exists(directory):
         return json.dumps({"error": f"路径 '{directory}' 不存在。"})
@@ -290,11 +302,71 @@ async def run_security_scan(directory: str, custom_rules: Optional[str] = None, 
             except json.JSONDecodeError as e:
                 logger.error(f"解析排除目录失败: {e}")
         
+        # Parse rule_ids if provided (filter to only use specific rules)
+        parsed_rule_ids = None
+        if rule_ids and isinstance(rule_ids, str):
+            try:
+                parsed_rule_ids = json.loads(rule_ids)
+                if not isinstance(parsed_rule_ids, list):
+                    parsed_rule_ids = None
+                else:
+                    logger.info(f"将只使用以下规则进行扫描: {parsed_rule_ids}")
+            except json.JSONDecodeError as e:
+                logger.error(f"解析规则ID列表失败: {e}")
+        
+        # Load and filter rules from rules directory if needed
+        final_rules = None
+        if use_loaded_rules and parsed_rule_ids:
+            # Load rules and filter by specified IDs
+            rules_dir = os.environ.get("RULES_DIR", "rules")
+            all_loaded_rules = load_rules_from_directory(rules_dir)
+            filtered_rules = {ext: [] for ext in set(r.get("ext") or os.path.splitext(r.get("language", ""))[1] or "" for r in all_loaded_rules)}
+            
+            for rule in all_loaded_rules:
+                if rule.get("id") in parsed_rule_ids:
+                    ext = rule.get("language", "all").lower()
+                    if ext not in final_rules:
+                        final_rules[ext] = []
+                    final_rules[ext].append({
+                        "pattern": rule.get("pattern", ""),
+                        "message": rule.get("description", ""),
+                        "severity": rule.get("severity", "medium").lower()
+                    })
+            
+            if final_rules:
+                logger.info(f"从已加载规则中筛选出 {len(parsed_rule_ids)} 条规则")
+        elif use_loaded_rules and not parsed_rule_ids:
+            # Use all loaded rules
+            rules_dir = os.environ.get("RULES_DIR", "rules")
+            all_loaded_rules = load_rules_from_directory(rules_dir)
+            final_rules = {}
+            for rule in all_loaded_rules:
+                ext = rule.get("language", "all").lower()
+                if ext not in final_rules:
+                    final_rules[ext] = []
+                final_rules[ext].append({
+                    "pattern": rule.get("pattern", ""),
+                    "message": rule.get("description", ""),
+                    "severity": rule.get("severity", "medium").lower()
+                })
+            if final_rules:
+                logger.info(f"将使用已加载的 {len(all_loaded_rules)} 条规则")
+        
+        # Merge with custom rules (custom_rules takes precedence)
+        if parsed_rules and final_rules:
+            for ext, rules in parsed_rules.items():
+                if ext not in final_rules:
+                    final_rules[ext] = []
+                final_rules[ext].extend(rules)
+            logger.info(f"合并后共有 {sum(len(r) for r in final_rules.values())} 条规则")
+        elif parsed_rules:
+            final_rules = parsed_rules
+        
         # 1. Run Security Scan with custom rules and filtering
         logger.info("正在进行安全扫描...")
         findings = await SecurityScanner.scan_directory(
             directory, 
-            custom_rules=parsed_rules, 
+            custom_rules=final_rules, 
             include_dirs=parsed_include, 
             exclude_dirs=parsed_exclude
         )
@@ -302,7 +374,7 @@ async def run_security_scan(directory: str, custom_rules: Optional[str] = None, 
         logger.info(f"安全扫描完成，发现 {len(findings)} 个问题。")
         
         # 2. Group findings by severity for better reporting
-        severity_counts = {"high": 0, "medium": 0, "low": 0}
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         for finding in findings:
             severity = finding.get("severity", "medium").lower()
             if severity in severity_counts:
@@ -315,9 +387,16 @@ async def run_security_scan(directory: str, custom_rules: Optional[str] = None, 
             "severity_counts": severity_counts,
             "message": f"安全扫描完成，发现 {len(findings)} 个问题。",
             "details": {
+                "critical": severity_counts["critical"],
                 "high": severity_counts["high"],
                 "medium": severity_counts["medium"],
-                "low": severity_counts["low"]
+                "low": severity_counts["low"],
+                "info": severity_counts["info"]
+            },
+            "scan_config": {
+                "use_loaded_rules": use_loaded_rules,
+                "selected_rule_ids": parsed_rule_ids,
+                "custom_rules_provided": custom_rules is not None
             }
         }
         
@@ -623,6 +702,168 @@ class LLMProcessor:
         return "Real LLM Analysis would happen here."
 
 llm_processor = LLMProcessor()
+
+@mcp.tool()
+async def get_loaded_rules() -> str:
+    """获取当前已加载的自定义安全规则列表。
+
+    Purpose: 列出所有已加载到系统中的自定义安全扫描规则。
+    Usage: 无需参数，直接调用即可获取规则列表。
+    Returns: JSON 字符串，包含规则 ID、名称、描述、严重程度、语言类型等信息。
+    Related: 可配合 `run_security_scan` 使用，指定规则进行扫描。
+    """
+    try:
+        rules_dir = os.environ.get("RULES_DIR", "rules")
+        rules = load_rules_from_directory(rules_dir)
+        
+        rules_data = []
+        for rule in rules:
+            rules_data.append({
+                "id": rule.get("id", ""),
+                "name": rule.get("name", ""),
+                "description": rule.get("description", ""),
+                "severity": rule.get("severity", "medium"),
+                "language": rule.get("language", "all"),
+                "pattern": rule.get("pattern", ""),
+                "query": rule.get("query", ""),
+                "cwe": rule.get("cwe", ""),
+                "category": rule.get("category", "")
+            })
+        
+        return json.dumps({
+            "status": "success",
+            "count": len(rules_data),
+            "rules": rules_data,
+            "message": f"已加载 {len(rules_data)} 条规则"
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"获取规则列表失败: {e}")
+        return json.dumps({"error": f"获取规则列表失败: {str(e)}"})
+
+def load_rules_from_directory(rules_dir: str) -> List[Dict[str, Any]]:
+    """从指定目录加载所有 YAML 规则文件。"""
+    rules = []
+    if not os.path.exists(rules_dir):
+        return rules
+    
+    for filename in os.listdir(rules_dir):
+        if filename.endswith((".yaml", ".yml")):
+            filepath = os.path.join(rules_dir, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # Try parsing as RuleSet first, then as single Rule
+                    try:
+                        import yaml
+                        data = yaml.safe_load(content)
+                        if isinstance(data, dict) and "rules" in data:
+                            rules.extend(data["rules"])
+                        else:
+                            rules.append(data)
+                    except Exception as yaml_err:
+                        logger.warning(f"解析规则文件 {filename} 失败: {yaml_err}")
+            except Exception as e:
+                logger.warning(f"读取规则文件 {filename} 失败: {e}")
+    
+    return rules
+
+@mcp.tool()
+async def save_custom_rule(
+    rule_id: str,
+    name: str,
+    description: str,
+    severity: str = "medium",
+    language: str = "all",
+    pattern: Optional[str] = None,
+    query: Optional[str] = None,
+    cwe: Optional[str] = None,
+    category: Optional[str] = None
+) -> str:
+    """保存自定义安全规则到规则库。
+
+    Purpose: 创建或更新自定义安全扫描规则，并自动加载到系统中。
+    Usage: 提供规则的基本信息，包括 `rule_id` (唯一标识符)、`name` (规则名称)、`description` (描述)、`severity` (严重程度: critical/high/medium/low/info)、`language` (目标语言: python/javascript/typescript/all 等)、`pattern` (正则表达式模式)、`query` (Tree-sitter AST 查询)、`cwe` (CWE 编号)、`category` (分类)。
+    Returns: JSON 字符串，包含保存结果和文件路径。
+    Related: 保存后可通过 `get_loaded_rules` 查看规则列表，使用 `run_security_scan` 进行扫描。
+    """
+    try:
+        if not rule_id or not rule_id.strip():
+            return json.dumps({"error": "规则 ID 不能为空"})
+        
+        if not name or not name.strip():
+            return json.dumps({"error": "规则名称不能为空"})
+        
+        rules_dir = os.environ.get("RULES_DIR", "rules")
+        if not os.path.exists(rules_dir):
+            os.makedirs(rules_dir, exist_ok=True)
+        
+        rule_data = {
+            "id": rule_id.strip(),
+            "name": name.strip(),
+            "description": description.strip() if description else "",
+            "severity": severity.lower(),
+            "language": language.lower()
+        }
+        
+        if pattern:
+            rule_data["pattern"] = pattern
+        
+        if query:
+            rule_data["query"] = query
+        
+        if cwe:
+            rule_data["cwe"] = cwe
+        
+        if category:
+            rule_data["category"] = category
+        
+        import yaml
+        filepath = os.path.join(rules_dir, f"{rule_id.strip()}.yaml")
+        with open(filepath, 'w', encoding='utf-8') as f:
+            yaml.dump(rule_data, f, allow_unicode=True, default_flow_style=False)
+        
+        logger.info(f"规则已保存: {filepath}")
+        
+        return json.dumps({
+            "status": "success",
+            "message": f"规则已保存到 {filepath}",
+            "rule_id": rule_id.strip(),
+            "file_path": filepath
+        })
+    except Exception as e:
+        logger.error(f"保存规则失败: {e}")
+        return json.dumps({"error": f"保存规则失败: {str(e)}"})
+
+@mcp.tool()
+async def delete_custom_rule(rule_id: str) -> str:
+    """删除自定义安全规则。
+
+    Purpose: 从规则库中删除指定的自定义安全规则文件。
+    Usage: 提供 `rule_id` (规则 ID，不含文件扩展名)。
+    Returns: JSON 字符串，包含删除结果。
+    Related: 删除后规则将从 `get_loaded_rules` 列表中移除。
+    """
+    try:
+        if not rule_id or not rule_id.strip():
+            return json.dumps({"error": "规则 ID 不能为空"})
+        
+        rules_dir = os.environ.get("RULES_DIR", "rules")
+        filepath = os.path.join(rules_dir, f"{rule_id.strip()}.yaml")
+        
+        if not os.path.exists(filepath):
+            return json.dumps({"error": f"规则文件不存在: {filepath}"})
+        
+        os.remove(filepath)
+        logger.info(f"规则已删除: {filepath}")
+        
+        return json.dumps({
+            "status": "success",
+            "message": f"规则已删除: {rule_id.strip()}",
+            "file_path": filepath
+        })
+    except Exception as e:
+        logger.error(f"删除规则失败: {e}")
+        return json.dumps({"error": f"删除规则失败: {str(e)}"})
 
 @mcp.tool()
 async def analyze_code_with_llm(code: str, context: str = "") -> str:
