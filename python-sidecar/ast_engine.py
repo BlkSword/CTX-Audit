@@ -106,9 +106,9 @@ class ASTEngine:
         self.class_map = {}
         for file_path, data in self.index.items():
             for sym in data["symbols"]:
-                # sym is a Symbol object
-                if sym.kind == "class":
-                    self.class_map[sym.name] = file_path
+                # sym is a dict (serialized Symbol)
+                if sym.get("kind") == "class":
+                    self.class_map[sym.get("name")] = file_path
                     
     def _init_parsers(self):
         """Initialize tree-sitter parsers for supported languages."""
@@ -172,7 +172,7 @@ class ASTEngine:
             symbols = file_data["symbols"]
             total_nodes += len(symbols)
             for sym in symbols:
-                kind = sym.kind
+                kind = sym.get("kind", "unknown")
                 # Normalize kind names for better display
                 display_kind = kind.capitalize()
                 if display_kind == "Function": display_kind = "Method/Function"
@@ -190,13 +190,12 @@ class ASTEngine:
         """Generate a detailed analysis report matching the requested format."""
         nodes = {}
         for file_path, data in self.index.items():
-            for sym_obj in data["symbols"]:
-                sym_dict = sym_obj.to_dict()
+            for sym_dict in data["symbols"]:
                 # Ensure the ID is unique and matches format
                 node_id = sym_dict.get("id")
                 if not node_id:
                      # Fallback for old cache entries
-                     node_id = f"{sym_dict['file']}:{sym_dict['name']}:{sym_dict['startLine']}"
+                     node_id = f"{sym_dict.get('file')}:{sym_dict.get('name')}:{sym_dict.get('startLine')}"
                 
                 nodes[node_id] = sym_dict
 
@@ -694,8 +693,8 @@ class ASTEngine:
         
         for file_path, data in self.index.items():
             for symbol in data["symbols"]:
-                if query in symbol.name.lower():
-                    results.append(symbol.to_dict())
+                if query in symbol.get("name", "").lower():
+                    results.append(symbol.to_dict() if hasattr(symbol, 'to_dict') else symbol)
         
         return results
 
