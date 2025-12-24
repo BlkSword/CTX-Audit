@@ -10,6 +10,7 @@ export default defineConfig({
       "@": path.resolve("src"),
     },
   },
+  base: "./",
   clearScreen: false,
   server: {
     port: 1420,

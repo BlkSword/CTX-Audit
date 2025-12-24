@@ -1,0 +1,8 @@
+category: injection
+cwe: CWE-611
+description: 检测XXE风险：不安全的XML解析器配置
+id: xxe-detection
+language: all
+name: XXE Detection
+pattern: (?i)(DocumentBuilderFactory|SAXParser|XMLReader|XmlReader|XmlDocument|XmlTextReader|XDocument|XmlParser|XmlParse|parseXml|loadXml).*(?!\bsetFeature\b.*\bexternal-general-entities\b.*false|setFeature.*external-parameter-entities.*false|setFeature.*disallow-doctype-decl.*true|expandEntityReferences.*false)
+severity: critical

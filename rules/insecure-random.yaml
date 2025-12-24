@@ -1,0 +1,8 @@
+category: cryptography
+cwe: CWE-330
+description: 检测不安全的随机数生成：使用弱随机数生成器
+id: insecure-random
+language: all
+name: Insecure Random Number Generation
+pattern: (?i)(Math\.random\(\)|java\.util\.Random|rand\(\)|random\(\)|srand\(\)|arc4random\(\)|mt_rand\(\))
+severity: medium

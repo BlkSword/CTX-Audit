@@ -12,6 +12,20 @@ rust-version = "1.77.2"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "deep-audit"
+path = "src/main.rs"
+
+# Windows GUI 配置 - 隐藏控制台窗口
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"
+
 [build-dependencies]
 tauri-build = { version = "2.5.3", features = [] }
 

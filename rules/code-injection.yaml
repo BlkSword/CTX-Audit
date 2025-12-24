@@ -1,0 +1,8 @@
+category: injection
+cwe: CWE-94
+description: 检测代码注入风险：动态代码执行
+id: code-injection
+language: all
+name: Code Injection Detection
+pattern: (?i)(eval\s*\(|exec\s*\(|Function\s*\(|setTimeout\s*\(\s*['"]|setInterval\s*\(\s*['"]|new\s+Function|vm\.runInNewContext|vm\.runInThisContext|vm\.runInContext|child_process\.exec|spawn|execSync|execFile|Runtime\.getRuntime\(\)\.exec|ProcessBuilder|GroovyShell|ScriptEngineManager|ScriptEngine|invokeMethod|invoke|createScript|eval\$\{|@eval|<%.*eval|%>)
+severity: critical

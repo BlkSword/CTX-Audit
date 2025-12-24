@@ -12,7 +12,7 @@ export function debounce<T extends (...args: any[]) => void>(
   func: T,
   wait: number
 ): (...args: Parameters<T>) => void {
-  let timeout: NodeJS.Timeout | null = null
+  let timeout: number | null = null
 
   return function executedFunction(...args: Parameters<T>) {
     const later = () => {
@@ -54,7 +54,7 @@ export function createBatchedUpdater<T>(
   timeoutMs = 100
 ) {
   const pendingRef: { current: T[] } = { current: [] }
-  let timer: NodeJS.Timeout | null = null
+  let timer: number | null = null
 
   const flush = () => {
     if (timer) {

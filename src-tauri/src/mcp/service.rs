@@ -1,6 +1,6 @@
-use crate::mcp::McpState;
+use crate::mcp::{get_tool_timeout, McpState, RequestInfo};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
@@ -52,6 +52,12 @@ pub async fn handle_python_stdout(app: &AppHandle, state: &McpState, chunk: Stri
                             pending.remove(&id)
                         };
 
+                        // 从活跃请求中移除
+                        {
+                            let mut active = state.active_requests.lock().unwrap();
+                            active.remove(&id);
+                        }
+
                         if let Some(sender) = sender {
                             if let Some(err) = json.get("error") {
                                 let msg = err
@@ -63,6 +69,8 @@ pub async fn handle_python_stdout(app: &AppHandle, state: &McpState, chunk: Stri
                                 let text = extract_mcp_text(&json);
                                 let _ = sender.send(Ok(text));
                             }
+                            // 更新活动时间
+                            state.update_activity();
                             continue;
                         }
                     }
@@ -118,12 +126,48 @@ pub async fn start_mcp_server(app: &AppHandle, state: Arc<McpState>) -> Result<(
                         let text = String::from_utf8_lossy(&line);
                         let _ = app_handle.emit("mcp-message", text.to_string());
                     }
+                    CommandEvent::Terminated(_) => {
+                        // Python进程终止，尝试重启
+                        let _ = app_handle.emit("mcp-terminated", "Python进程已终止");
+                        break;
+                    }
                     _ => {}
                 }
             }
         });
     }
     Ok(())
+}
+
+/// 健康检查任务
+pub fn start_health_check(_app: AppHandle, state: Arc<McpState>) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+
+            // 检查Python进程是否还在运行
+            let child_exists = {
+                let child = state.child.lock().unwrap();
+                child.is_some()
+            };
+
+            if !child_exists {
+                continue;
+            }
+
+            // 清理超时的请求
+            let timeout_ids = state.check_timeout(300); // 5分钟超时
+            if !timeout_ids.is_empty() {
+                let mut pending = state.pending.lock().unwrap();
+                for id in timeout_ids {
+                    if let Some(tx) = pending.remove(&id) {
+                        let _ = tx.send(Err("请求超时".to_string()));
+                    }
+                }
+            }
+        }
+    });
 }
 
 pub async fn call_tool(
@@ -133,6 +177,16 @@ pub async fn call_tool(
 ) -> Result<String, String> {
     println!("Calling MCP Tool: {} with args: {}", tool_name, arguments);
 
+    // 获取该工具的超时时间
+    let timeout_secs = get_tool_timeout(&tool_name);
+
+    // 使用信号量限制并发
+    let _permit = state
+        .request_semaphore
+        .acquire()
+        .await
+        .map_err(|_| "请求队列已满，请稍后重试".to_string())?;
+
     let id: u64 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -141,6 +195,19 @@ pub async fn call_tool(
         .unwrap_or(u64::MAX);
 
     let (tx, rx) = oneshot::channel::<Result<String, String>>();
+
+    // 记录活跃请求
+    {
+        let mut active = state.active_requests.lock().unwrap();
+        active.insert(
+            id,
+            RequestInfo {
+                id,
+                tool_name: tool_name.clone(),
+                started_at: Instant::now(),
+            },
+        );
+    }
 
     {
         let mut pending = state.pending.lock().unwrap();
@@ -164,16 +231,28 @@ pub async fn call_tool(
     if let Err(e) = write_result {
         let mut pending = state.pending.lock().unwrap();
         pending.remove(&id);
+        let mut active = state.active_requests.lock().unwrap();
+        active.remove(&id);
         return Err(e);
     }
 
-    match timeout(Duration::from_secs(120), rx).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err("MCP 响应通道已关闭".to_string()),
+    // 使用工具特定的超时时间
+    match timeout(Duration::from_secs(timeout_secs), rx).await {
+        Ok(Ok(result)) => {
+            state.update_activity();
+            result
+        }
+        Ok(Err(_)) => {
+            let mut active = state.active_requests.lock().unwrap();
+            active.remove(&id);
+            Err("MCP 响应通道已关闭".to_string())
+        }
         Err(_) => {
             let mut pending = state.pending.lock().unwrap();
             pending.remove(&id);
-            Err("MCP 调用超时".to_string())
+            let mut active = state.active_requests.lock().unwrap();
+            active.remove(&id);
+            Err(format!("MCP 调用超时 ({}秒)", timeout_secs))
         }
     }
 }

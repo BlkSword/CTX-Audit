@@ -1,0 +1,8 @@
+category: security-misconfiguration
+cwe: CWE-693
+description: 检测不安全的反序列化：使用不安全的反序列化方法
+id: unsafe-deserialization
+language: all
+name: Unsafe Deserialization
+pattern: (?i)(ObjectInputStream|readObject|readUnshared|XMLDecoder|XStream|Yaml\.load|pickle\.loads|pickle\.load|marshal\.loads|marshal\.load|unpickle|unserialize|json\.decode|JSON\.parse|MessagePack\.unpack|protobuf\.ParseFromString|\.Deserialize|\.FromBinary|\.ParseFrom)
+severity: critical

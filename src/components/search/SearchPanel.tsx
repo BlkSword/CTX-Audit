@@ -1,5 +1,5 @@
 import { useCallback, memo } from 'react'
-import { Search, Loader2, ChevronRight, ChevronDown, FileCode } from 'lucide-react'
+import { Search, Loader2, FileCode } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
 interface SearchResult {
@@ -21,8 +21,6 @@ export const SearchResultItem = memo(({ result, onClick }: {
   result: SearchResult
   onClick: () => void
 }) => {
-  const fileName = result.file.split('/').pop() || result.file
-
   return (
     <button
       className="w-full text-left p-3 hover:bg-muted/40 transition-colors rounded-md mb-2"

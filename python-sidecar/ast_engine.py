@@ -668,7 +668,7 @@ class ASTEngine:
 
     def scan_project(self, root_path: str, ctx=None):
         """Scan entire project and update index."""
-        count = 0
+        files_to_scan = []
         for root, dirs, files in os.walk(root_path):
             # Ignore common garbage
             if "node_modules" in dirs: dirs.remove("node_modules")
@@ -678,10 +678,31 @@ class ASTEngine:
             
             for file in files:
                 file_path = os.path.join(root, file)
-                self.update_file(file_path)
-                count += 1
-                if ctx and count % 50 == 0:
-                    pass # Optional progress report
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in self.parsers:
+                    files_to_scan.append(file_path)
+
+        total_files = len(files_to_scan)
+        if total_files == 0:
+            logger.info("未发现需要扫描的文件。")
+            return 0
+
+        logger.info(f"开始扫描项目，共发现 {total_files} 个文件。")
+        
+        count = 0
+        last_percent = -1
+        
+        for file_path in files_to_scan:
+            self.update_file(file_path)
+            count += 1
+            
+            percent = int((count / total_files) * 100)
+            if percent % 10 == 0 and percent != last_percent:
+                msg = f"AST 构建进度: {percent}% (已扫描 {count}/{total_files} 文件)"
+                logger.info(msg)
+                if ctx:
+                    ctx.info(msg)
+                last_percent = percent
                     
         self.save_cache()
         return count

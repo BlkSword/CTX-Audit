@@ -1,0 +1,8 @@
+category: file-operation
+cwe: CWE-22
+description: 检测路径遍历风险：用户输入直接用于文件路径操作
+id: path-traversal
+language: all
+name: Path Traversal Detection
+pattern: (?i)(new\s+File\(|FileInputStream|FileReader|FileWriter|FileOutputStream|Files\.read|Files\.write|Path\.of|Paths\.get|open\(|fopen\(|readfile\(|file_get_contents\(|include|require).*\+|File\s*\(.*request|path\s*=\s*.*request|filename\s*=\s*.*request
+severity: high

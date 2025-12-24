@@ -1,0 +1,8 @@
+category: injection
+cwe: CWE-117
+description: 检测日志注入风险：用户输入未经过滤直接写入日志
+id: log-injection
+language: all
+name: Log Injection Detection
+pattern: (?i)(logger\.|log\.|Logger\.|console\.log|console\.error|print|println|printf|System\.out\.print|System\.err\.print).*\+.*request|.*log.*\+.*user|.*log.*\+.*input|.*log.*\+.*param
+severity: medium
