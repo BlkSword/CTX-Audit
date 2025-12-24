@@ -1,0 +1,8 @@
+category: session-management
+cwe: CWE-614
+description: 检测不安全的Cookie设置：缺少Secure或HttpOnly标志
+id: insecure-cookie
+language: all
+name: Insecure Cookie Configuration
+pattern: (?i)(setCookie|cookie|Cookie|set_header.*Set-Cookie|response\.addCookie)(?!.*\bSecure\b|.*\bHttpOnly\b|.*\bSameSite\b)
+severity: medium

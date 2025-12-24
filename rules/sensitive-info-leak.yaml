@@ -1,0 +1,8 @@
+category: information-disclosure
+cwe: CWE-200
+description: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
+id: sensitive-info-leak
+language: all
+name: Sensitive Information Disclosure
+pattern: (?i)(api_key|apikey|secret|token|credential|password|passwd|pwd|private_key|privatekey|auth_token|access_token|session_token|refresh_token)\s*=\s*['"][^'\"]{10,}['"]
+severity: high

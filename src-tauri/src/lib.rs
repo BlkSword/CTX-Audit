@@ -15,7 +15,7 @@ pub mod rules;
 mod scanner;
 pub mod scanners;
 
-use mcp::service::{call_tool, start_mcp_server};
+use mcp::service::{call_tool, start_health_check, start_mcp_server};
 use mcp::McpState;
 use rules::loader::load_rules_from_dir;
 use rules::model::Rule;
@@ -276,11 +276,37 @@ async fn search_files(query: String, path: String) -> Result<Vec<SearchResult>, 
 #[tauri::command]
 async fn get_mcp_status(state: State<'_, DeepAuditState>) -> Result<String, String> {
     let child = state.mcp.child.lock().unwrap();
-    if child.is_some() {
-        Ok("运行中".to_string())
-    } else {
-        Ok("已停止".to_string())
+    let is_running = child.is_some();
+    drop(child);
+
+    let active_requests = state.mcp.active_requests.lock().unwrap();
+    let active_count = active_requests.len();
+    let pending_count = state.mcp.pending.lock().unwrap().len();
+    let idle_time = state.mcp.idle_time_secs();
+
+    // 构建活跃请求列表
+    let mut request_details = Vec::new();
+    for (_id, info) in active_requests.iter() {
+        let elapsed = info.started_at.elapsed().as_secs();
+        request_details.push(format!(
+            "{} (运行中: {}秒)",
+            info.tool_name, elapsed
+        ));
     }
+
+    let status = if is_running { "运行中" } else { "已停止" };
+
+    let result = serde_json::json!({
+        "status": status,
+        "is_running": is_running,
+        "active_requests": active_count,
+        "pending_requests": pending_count,
+        "idle_time_secs": idle_time,
+        "request_details": request_details,
+        "max_concurrent": crate::mcp::MAX_CONCURRENT_REQUESTS
+    });
+
+    serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -489,6 +515,13 @@ pub fn run() {
             let pool =
                 tauri::async_runtime::block_on(init_db(app.handle())).expect("failed to init db");
             app.manage(pool);
+
+            // 启动MCP健康检查任务
+            let mcp_state = app.state::<DeepAuditState>();
+            let mcp = mcp_state.mcp.clone();
+            let app_handle = app.handle().clone();
+            start_health_check(app_handle, mcp);
+
             Ok(())
         })
         .manage({

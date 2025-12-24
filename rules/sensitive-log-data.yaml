@@ -1,0 +1,8 @@
+category: information-disclosure
+cwe: CWE-532
+description: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+id: sensitive-log-data
+language: all
+name: Sensitive Data in Logs
+pattern: (?i)(logger\.|log\.|Logger\.|console\.log|print|println|printf|System\.out\.print|System\.err\.print).*\b(password|passwd|pwd|secret|token|api_key|apikey|private_key|privatekey|credit_card|ssn|social_security|auth|credential)\b
+severity: medium

@@ -1,0 +1,8 @@
+category: security-misconfiguration
+cwe: CWE-601
+description: 检测不安全的重定向：基于用户输入的开放重定向
+id: unsafe-redirect
+language: all
+name: Unsafe Redirect Detection
+pattern: (?i)(response\.sendRedirect|header\s*\(\s*['"]Location|location\.href|window\.location|response\.redirect|redirect\(|\.forward\().*\+|redirect.*request\.|sendRedirect.*request\.|Location.*request\.
+severity: high

@@ -1,0 +1,8 @@
+category: security-misconfiguration
+cwe: CWE-650
+description: 检测不安全的HTTP方法：允许危险的HTTP方法
+id: unsafe-http-methods
+language: all
+name: Unsafe HTTP Methods Detection
+pattern: (?i)(@RequestMapping.*method.*=.*RequestMethod\.(PUT|DELETE|TRACE|OPTIONS|PATCH)|allowMethods|allowedMethods|httpMethodAllowed|httpMethodsAllowed).*(PUT|DELETE|TRACE|OPTIONS|PATCH)
+severity: medium

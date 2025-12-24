@@ -1,0 +1,8 @@
+category: injection
+cwe: CWE-90
+description: 检测LDAP注入风险：用户输入直接用于LDAP查询
+id: ldap-injection
+language: java
+name: LDAP Injection Detection
+pattern: (?i)(DirContext|InitialDirContext|LdapContext|search\(|lookup\().*\+.*filter|searchControls.*filter.*\+
+severity: high

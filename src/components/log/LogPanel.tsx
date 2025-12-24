@@ -1,4 +1,4 @@
-import { useEffect, useRef, memo, useCallback } from 'react'
+import { useEffect, useRef, memo } from 'react'
 import { Terminal } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 

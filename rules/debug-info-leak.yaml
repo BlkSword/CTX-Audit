@@ -1,0 +1,8 @@
+category: information-disclosure
+cwe: CWE-215
+description: 检测调试信息泄露：包含调试信息的代码
+id: debug-info-leak
+language: all
+name: Debug Information Disclosure
+pattern: (?i)(console\.log|console\.debug|console\.warn|console\.error|print|println|debugger|debug\.print|System\.out\.print|System\.err\.print|trace|alert\(|console\.trace|console\.table|console\.dir)
+severity: low

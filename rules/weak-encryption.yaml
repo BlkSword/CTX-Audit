@@ -1,0 +1,8 @@
+category: cryptography
+cwe: CWE-327
+description: 检测不安全的加密算法：使用弱加密算法如DES、RC4等
+id: weak-encryption
+language: all
+name: Weak Encryption Algorithm
+pattern: (?i)(Cipher\.getInstance|SecretKeySpec|KeyGenerator|createCipher|encrypt|decrypt).*['"](DES|RC4|RC2|Blowfish|ECB|None|PKCS5Padding)['"]
+severity: high

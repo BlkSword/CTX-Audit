@@ -1,0 +1,8 @@
+category: authentication
+cwe: CWE-352
+description: 检测CSRF风险：缺少CSRF保护的表单或API端点
+id: csrf-detection
+language: all
+name: CSRF Detection
+pattern: (?i)(@PostMapping|@RequestMapping|form.*action|\.post\(|\.ajax\(|fetch\(|XMLHttpRequest).*(?!\bcsrf\b|\btoken\b|\b_csrf\b|\bX-CSRF\b|\bXSRF\b)
+severity: medium

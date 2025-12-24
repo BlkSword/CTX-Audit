@@ -1,0 +1,8 @@
+category: injection
+cwe: CWE-78
+description: 检测命令注入风险：用户输入直接用于命令执行
+id: command-injection
+language: all
+name: Command Injection Detection
+pattern: (?i)(Runtime\.getRuntime\(\)\.exec|ProcessBuilder|exec\(|system\(|popen\(|shell_exec\(|passthru\(|eval\s*\(|`[^`]+`)\s*\(.*\+|exec\s*\(\s*['"][^'"]*\$)
+severity: critical
