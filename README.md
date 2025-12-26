@@ -1,4 +1,4 @@
-# DeepAudit
+# MCPAudit
 
 支持 MCP 协议的高级代码审计工具，集成了AST 引擎、规则引擎、代码图谱等工具，可以进一步激发LLM审计能力
 
@@ -6,7 +6,7 @@
 
 ##  核心架构
 
-DeepAudit 采用双引擎混合架构，兼顾性能与扩展性：
+MCPAudit 采用双引擎混合架构，兼顾性能与扩展性：
 
 - **Rust 核心 (Tauri 2.x)**: 负责高性能文件 IO、并发扫描、AST 解析、Git 差异计算及 SQLite 数据持久化。
 - **Python Sidecar (FastMCP)**: 提供高级语义分析、知识图谱生成及 LLM 辅助验证。
