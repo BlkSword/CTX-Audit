@@ -14,17 +14,17 @@ impl RegexScanner {
             (
                 Regex::new(r#"(?i)password\s*=\s*['"][^'"]+['"]"#).unwrap(),
                 "Hardcoded Password".to_string(),
-                "High".to_string(),
+                "high".to_string(),
             ),
             (
                 Regex::new(r#"(?i)api_key\s*=\s*['"][^'"]+['"]"#).unwrap(),
                 "Hardcoded API Key".to_string(),
-                "High".to_string(),
+                "high".to_string(),
             ),
             (
                 Regex::new(r"(?i)TODO:").unwrap(),
                 "TODO Comment".to_string(),
-                "Low".to_string(),
+                "low".to_string(),
             ),
         ];
         Self { patterns }

@@ -14,6 +14,7 @@ import AgentAuditPage from '@/pages/AgentAudit'
 import { SettingsLayout } from '@/pages/settings/SettingsLayout'
 import { LLMConfigPage } from '@/pages/settings/LLMConfigPage'
 import { PromptTemplatesPage } from '@/pages/settings/PromptTemplatesPage'
+import { RulesPage } from '@/pages/settings/RulesPage'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Toaster } from '@/components/ui/toaster'
 
@@ -41,6 +42,7 @@ function App() {
           <Route path="/settings" element={<SettingsLayout />}>
             <Route path="llm" element={<LLMConfigPage />} />
             <Route path="prompts" element={<PromptTemplatesPage />} />
+            <Route path="rules" element={<RulesPage />} />
           </Route>
 
           {/* Catch all - redirect to dashboard */}

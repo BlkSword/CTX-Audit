@@ -3,7 +3,7 @@
 
 mod ast;
 mod scanner;
-mod rules;
+pub mod rules;
 mod diff;
 
 // 重新导出常用类型

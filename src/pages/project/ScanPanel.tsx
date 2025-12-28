@@ -93,11 +93,37 @@ export function ScanPanel() {
     return matchesSearch && matchesSeverity
   })
 
-  const severityCount = {
+  // 计算当前筛选后的各严重级别数量（用于显示筛选结果）
+  const filteredSeverityCount = {
+    all: filteredVulnerabilities.length,
+    critical: filteredVulnerabilities.filter(v => v.severity === 'critical').length,
+    high: filteredVulnerabilities.filter(v => v.severity === 'high').length,
+    medium: filteredVulnerabilities.filter(v => v.severity === 'medium').length,
+    low: filteredVulnerabilities.filter(v => v.severity === 'low').length,
+  }
+
+  // 总数量（用于计数板显示）
+  const totalCount = {
     critical: vulnerabilities.filter(v => v.severity === 'critical').length,
     high: vulnerabilities.filter(v => v.severity === 'high').length,
     medium: vulnerabilities.filter(v => v.severity === 'medium').length,
     low: vulnerabilities.filter(v => v.severity === 'low').length,
+    all: vulnerabilities.length,
+  }
+
+  // 处理计数板点击，切换到对应级别的筛选
+  const handleSeverityCardClick = (severity: 'all' | 'critical' | 'high' | 'medium' | 'low') => {
+    if (severityFilter === severity) {
+      // 如果已经选中该级别，则切换回全部
+      setSeverityFilter('all')
+    } else {
+      setSeverityFilter(severity)
+    }
+  }
+
+  // 检查计数板卡片是否处于激活状态
+  const isCardActive = (severity: 'critical' | 'high' | 'medium' | 'low') => {
+    return severityFilter === severity
   }
 
   const getSeverityIcon = (severity: string) => {
@@ -158,73 +184,118 @@ export function ScanPanel() {
           </Button>
         </div>
 
-        {/* Stats */}
+        {/* Stats - 可点击的计数板 */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <Card className="p-4">
+          <Card
+            className={`p-4 cursor-pointer transition-all hover:shadow-md ${
+              isCardActive('critical') ? 'ring-2 ring-red-500 bg-red-50 dark:bg-red-950/20' : ''
+            }`}
+            onClick={() => handleSeverityCardClick('critical')}
+          >
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">严重</p>
-                <p className="text-2xl font-bold text-red-600 mt-1">{severityCount.critical}</p>
+                <p className="text-2xl font-bold text-red-600 mt-1">{totalCount.critical}</p>
+                {severityFilter === 'critical' && (
+                  <p className="text-xs text-muted-foreground mt-1">已筛选</p>
+                )}
               </div>
-              <AlertTriangle className="w-8 h-8 text-red-600/20" />
+              <AlertTriangle className={`w-8 h-8 ${isCardActive('critical') ? 'text-red-600/40' : 'text-red-600/20'}`} />
             </div>
           </Card>
 
-          <Card className="p-4">
+          <Card
+            className={`p-4 cursor-pointer transition-all hover:shadow-md ${
+              isCardActive('high') ? 'ring-2 ring-orange-500 bg-orange-50 dark:bg-orange-950/20' : ''
+            }`}
+            onClick={() => handleSeverityCardClick('high')}
+          >
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">高危</p>
-                <p className="text-2xl font-bold text-orange-500 mt-1">{severityCount.high}</p>
+                <p className="text-2xl font-bold text-orange-500 mt-1">{totalCount.high}</p>
+                {severityFilter === 'high' && (
+                  <p className="text-xs text-muted-foreground mt-1">已筛选</p>
+                )}
               </div>
-              <ShieldAlert className="w-8 h-8 text-orange-500/20" />
+              <ShieldAlert className={`w-8 h-8 ${isCardActive('high') ? 'text-orange-500/40' : 'text-orange-500/20'}`} />
             </div>
           </Card>
 
-          <Card className="p-4">
+          <Card
+            className={`p-4 cursor-pointer transition-all hover:shadow-md ${
+              isCardActive('medium') ? 'ring-2 ring-yellow-500 bg-yellow-50 dark:bg-yellow-950/20' : ''
+            }`}
+            onClick={() => handleSeverityCardClick('medium')}
+          >
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">中危</p>
-                <p className="text-2xl font-bold text-yellow-500 mt-1">{severityCount.medium}</p>
+                <p className="text-2xl font-bold text-yellow-500 mt-1">{totalCount.medium}</p>
+                {severityFilter === 'medium' && (
+                  <p className="text-xs text-muted-foreground mt-1">已筛选</p>
+                )}
               </div>
-              <Bug className="w-8 h-8 text-yellow-500/20" />
+              <Bug className={`w-8 h-8 ${isCardActive('medium') ? 'text-yellow-500/40' : 'text-yellow-500/20'}`} />
             </div>
           </Card>
 
-          <Card className="p-4">
+          <Card
+            className={`p-4 cursor-pointer transition-all hover:shadow-md ${
+              isCardActive('low') ? 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/20' : ''
+            }`}
+            onClick={() => handleSeverityCardClick('low')}
+          >
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">低危</p>
-                <p className="text-2xl font-bold text-blue-500 mt-1">{severityCount.low}</p>
+                <p className="text-2xl font-bold text-blue-500 mt-1">{totalCount.low}</p>
+                {severityFilter === 'low' && (
+                  <p className="text-xs text-muted-foreground mt-1">已筛选</p>
+                )}
               </div>
-              <CheckCircle className="w-8 h-8 text-blue-500/20" />
+              <CheckCircle className={`w-8 h-8 ${isCardActive('low') ? 'text-blue-500/40' : 'text-blue-500/20'}`} />
             </div>
           </Card>
         </div>
 
         {/* Filters */}
-        <div className="flex items-center gap-4 mb-4">
-          <div className="flex-1">
-            <Input
-              placeholder="搜索漏洞..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="max-w-md"
-            />
+        <div className="flex items-center justify-between gap-4 mb-4">
+          <div className="flex items-center gap-4 flex-1">
+            <div className="flex-1">
+              <Input
+                placeholder="搜索漏洞..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="max-w-md"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">严重级别:</span>
+              {(['all', 'critical', 'high', 'medium', 'low'] as const).map((level) => (
+                <Button
+                  key={level}
+                  variant={severityFilter === level ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setSeverityFilter(level)}
+                  className="text-xs"
+                >
+                  {level === 'all' ? '全部' : level.charAt(0).toUpperCase() + level.slice(1)}
+                  {level !== 'all' && (
+                    <span className="ml-1 opacity-70">
+                      ({filteredSeverityCount[level as keyof typeof filteredSeverityCount]})
+                    </span>
+                  )}
+                </Button>
+              ))}
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">严重级别:</span>
-            {(['all', 'critical', 'high', 'medium', 'low'] as const).map((level) => (
-              <Button
-                key={level}
-                variant={severityFilter === level ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setSeverityFilter(level)}
-                className="text-xs"
-              >
-                {level === 'all' ? '全部' : level.charAt(0).toUpperCase() + level.slice(1)}
-              </Button>
-            ))}
+          {/* 筛选结果计数 */}
+          <div className="text-sm text-muted-foreground">
+            显示 <span className="font-semibold text-foreground">{filteredVulnerabilities.length}</span> /
+            <span className="font-semibold text-foreground"> {totalCount.all}</span> 个漏洞
           </div>
         </div>
 

@@ -4,6 +4,7 @@ pub mod ast;
 pub mod project;
 pub mod scanner;
 pub mod files;
+pub mod rules;
 
 pub fn create_api_router() -> Scope {
     web::scope("/api")
@@ -11,6 +12,7 @@ pub fn create_api_router() -> Scope {
         .service(ast_routes())
         .service(scanner_routes())
         .service(files_routes())
+        .service(rules_routes())
 }
 
 fn project_routes() -> Scope {
@@ -31,4 +33,9 @@ fn scanner_routes() -> Scope {
 fn files_routes() -> Scope {
     web::scope("/files")
         .configure(files::configure_files_routes)
+}
+
+fn rules_routes() -> Scope {
+    web::scope("/rules")
+        .configure(rules::configure_rules_routes)
 }

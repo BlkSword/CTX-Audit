@@ -8,6 +8,7 @@ import {
   Settings,
   Server,
   FileText,
+  Shield,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -24,6 +25,12 @@ const settingsNavItems = [
     label: '提示词模板',
     icon: FileText,
     path: '/settings/prompts',
+  },
+  {
+    id: 'rules',
+    label: '安全规则',
+    icon: Shield,
+    path: '/settings/rules',
   },
 ]
 
