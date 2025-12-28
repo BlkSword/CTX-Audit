@@ -1,0 +1,225 @@
+apiVersion: v1alpha1
+kind: Setting
+metadata:
+  name: system
+spec:
+  forms:
+    - group: basic
+      label: 基本设置
+      formSchema:
+        - $formkit: text
+          label: "站点标题"
+          name: title
+          validation: required
+        - $formkit: text
+          label: "站点副标题"
+          name: subtitle
+        - $formkit: attachment
+          label: Logo
+          name: logo
+          accepts:
+            - 'image/*'
+        - $formkit: attachment
+          label: Favicon
+          name: favicon
+          accepts:
+            - 'image/*'
+        - $formkit: select
+          label: "首选语言"
+          name: language
+          value: 'zh-CN'
+          options:
+            - label: 'English'
+              value: 'en'
+            - label: 'Español'
+              value: 'es'
+            - label: '简体中文'
+              value: 'zh-CN'
+            - label: '繁体中文'
+              value: 'zh-TW'
+    - group: post
+      label: 文章设置
+      formSchema:
+        - $formkit: number
+          label: "文章列表显示条数"
+          name: postPageSize
+          value: 10
+          min: 1
+          max: 100
+          validation: required | max:100
+        - $formkit: number
+          label: "归档页文章显示条数"
+          name: archivePageSize
+          value: 10
+          min: 1
+          max: 100
+          validation: required | max:100
+        - $formkit: number
+          label: "分类页文章显示条数"
+          name: categoryPageSize
+          value: 10
+          min: 1
+          max: 100
+          validation: required | max:100
+        - $formkit: number
+          label: "标签页文章显示条数"
+          name: tagPageSize
+          value: 10
+          min: 1
+          max: 100
+          validation: required
+        - $formkit: select
+          label: "别名生成策略"
+          name: slugGenerationStrategy
+          value: 'generateByTitle'
+          options:
+            - label: '根据标题'
+              value: 'generateByTitle'
+            - label: '时间戳'
+              value: 'timestamp'
+            - label: 'Short UUID'
+              value: 'shortUUID'
+            - label: 'UUID'
+              value: 'UUID'
+          help: 此选项仅在创建文章时生效，修改此选项不会影响已有文章
+        - $formkit: attachmentPolicySelect
+          name: attachmentPolicyName
+          label: "附件存储策略"
+          value: "default-policy"
+          help: 用于指定在文章编辑器中上传的默认附件存储策略
+        - $formkit: attachmentGroupSelect
+          name: attachmentGroupName
+          label: "附件存储组"
+          value: ""
+          help: 用于指定在文章编辑器中上传的默认附件存储分组
+    - group: seo
+      label: SEO 设置
+      formSchema:
+        - $formkit: checkbox
+          name: blockSpiders
+          label: "屏蔽搜索引擎"
+          value: false
+          help: "为所有页面添加 <meta name=\"robots\" content=\"noindex\" /> 标签，阻止搜索引擎索引，但不是所有搜索引擎都会遵守"
+        - $formkit: textarea
+          name: keywords
+          label: "站点关键词"
+          help: "目前主流搜索引擎已经不再使用此字段，所以通常不建议设置，此选项可能在未来版本中被移除"
+          auto-height: true
+        - $formkit: textarea
+          name: description
+          label: "站点描述"
+          help: "仅对首页生效，其他页面将根据页面类型自动生成描述"
+          auto-height: true
+    - group: user
+      label: 用户设置
+      formSchema:
+        - $formkit: checkbox
+          name: allowRegistration
+          id: allowRegistration
+          key: allowRegistration
+          label: "开放注册"
+          value: false
+        - $formkit: checkbox
+          name: mustVerifyEmailOnRegistration
+          label: "注册需验证邮箱"
+          if: "$get(allowRegistration).value === true"
+          help: "需要确保已经正确配置邮件通知器"
+          value: false
+        - $formkit: roleSelect
+          name: defaultRole
+          label: "默认角色"
+          validation: 'required'
+          if: "$get(allowRegistration).value === true"
+          help: 用户注册之后默认为用户分配的角色
+        - $formkit: attachmentPolicySelect
+          name: avatarPolicy
+          label: "头像存储位置"
+          value: "default-policy"
+          help: 指定用户上传头像的存储策略
+        - $formkit: attachmentPolicySelect
+          name: ucAttachmentPolicy
+          label: "个人中心附件存储位置"
+          value: "default-policy"
+          help: 指定用户在个人中心上传的附件的存储位置
+    - group: comment
+      label: 评论设置
+      formSchema:
+        - $formkit: checkbox
+          name: enable
+          value: true
+          label: "启用评论"
+        - $formkit: checkbox
+          name: requireReviewForNew
+          value: true
+          label: "新评论审核"
+          help: 开启之后，新评论需要管理员审核后才会显示
+        - $formkit: checkbox
+          name: systemUserOnly
+          value: true
+          label: "仅允许注册用户评论"
+    - group: routeRules
+      label: 主题路由设置
+      formSchema:
+        - $formkit: checkbox
+          label: "关闭主题预览"
+          value: false
+          name: disableThemePreview
+          help: "关闭后，未包含主题管理权限的用户将无法通过参数预览未激活的主题"
+        - $formkit: text
+          label: "分类页路由前缀"
+          value: "categories"
+          name: categories
+          validation: required | alphanumeric
+        - $formkit: text
+          label: "标签页路由前缀"
+          value: "tags"
+          name: tags
+          validation: required | alphanumeric
+        - $formkit: text
+          label: "归档页路由前缀"
+          value: "archives"
+          name: archives
+          validation: required | alphanumeric
+        - $formkit: select
+          label: 文章详情页访问规则
+          value: '/archives/{slug}'
+          options:
+            - label: '/archives/{slug}'
+              value: '/archives/{slug}'
+            - label: '/archives/{name}'
+              value: '/archives/{name}'
+            - label: '/?p={name}'
+              value: '/?p={name}'
+            - label: '/?p={slug}'
+              value: '/?p={slug}'
+            - label: '/{year}/{slug}'
+              value: '/{year:\d{4}}/{slug}'
+            - label: '/{year}/{month}/{slug}'
+              value: '/{year:\d{4}}/{month:\d{2}}/{slug}'
+            - label: '/{year}/{month}/{day}/{slug}'
+              value: '/{year:\d{4}}/{month:\d{2}}/{day:\d{2}}/{slug}'
+            - label: '/categories/{categorySlug}/{slug}'
+              value: '/categories/{categorySlug}/{slug}'
+          name: post
+          validation: required
+    - group: codeInjection
+      label: 代码注入
+      formSchema:
+        - $formkit: code
+          language: html
+          height: 200px
+          label: "全局 head 标签"
+          name: globalHead
+          help: "注入代码到所有页面的 head 标签部分"
+        - $formkit: code
+          language: html
+          height: 200px
+          label: "内容页 head 标签"
+          name: contentHead
+          help: "注入代码到文章页面和自定义页面的 head 标签部分"
+        - $formkit: code
+          language: html
+          height: 200px
+          label: "页脚"
+          name: footer
+          help: "注入代码到所有页面的页脚部分"

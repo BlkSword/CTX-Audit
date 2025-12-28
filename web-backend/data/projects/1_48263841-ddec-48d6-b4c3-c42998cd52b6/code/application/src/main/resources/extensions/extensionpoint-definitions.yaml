@@ -1,0 +1,109 @@
+## TODO: Currently, Halo does not support i18n for configuration file descriptions
+## So Simplified Chinese is temporarily used as the default description language.
+
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: additional-webfilter
+spec:
+  className: run.halo.app.security.AdditionalWebFilter
+  displayName: "附加 Web 过滤器"
+  type: MULTI_INSTANCE
+  description: "用于 Web 请求的链式处理，可以用来实现跨领域、与应用无关的需求，如安全性、超时等"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: reactive-post-content-handler
+spec:
+  className: run.halo.app.theme.ReactivePostContentHandler
+  displayName: "文章内容处理器"
+  type: MULTI_INSTANCE
+  description: "扩展在主题侧显示的文章内容"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: reactive-singlepage-content-handler
+spec:
+  className: run.halo.app.theme.ReactiveSinglePageContentHandler
+  displayName: "页面内容处理器"
+  type: MULTI_INSTANCE
+  description: "扩展在主题侧显示的页面内容"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: comment-widget
+spec:
+  className: run.halo.app.theme.dialect.CommentWidget
+  displayName: "评论组件"
+  type: SINGLETON
+  description: "扩展在文章页面中显示的评论组件"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: username-password-authentication-manager
+spec:
+  className: run.halo.app.security.authentication.login.UsernamePasswordAuthenticationManager
+  displayName: "用户名密码认证管理器"
+  type: SINGLETON
+  description: "扩展用户名密码认证"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: reactive-notifier
+spec:
+  className: run.halo.app.notification.ReactiveNotifier
+  displayName: "消息通知器"
+  type: MULTI_INSTANCE
+  description: "扩展消息通知器，以向用户发送通知"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: search-engine
+spec:
+  className: run.halo.app.search.SearchEngine
+  displayName: "搜索引擎"
+  type: SINGLETON
+  description: "扩展内容搜索引擎"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: template-footer-processor
+spec:
+  className: run.halo.app.theme.dialect.TemplateFooterProcessor
+  displayName: 页脚标签内容处理器
+  type: MULTI_INSTANCE
+  description: "提供用于扩展 <halo:footer/> 标签内容的扩展方式。"
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: excerpt-generator
+spec:
+  className: run.halo.app.content.ExcerptGenerator
+  displayName: 摘要生成器
+  type: SINGLETON
+  description: "提供自动生成摘要的方式扩展，如使用算法提取或使用 AI 生成。"
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionPointDefinition
+metadata:
+  name: thumbnail-provider
+spec:
+  className: run.halo.app.core.attachment.ThumbnailProvider
+  displayName: 图片缩略图生成
+  type: MULTI_INSTANCE
+  description: "提供生成图片缩略图的扩展方式"

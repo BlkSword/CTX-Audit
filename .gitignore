@@ -7,14 +7,23 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies
 node_modules
+.pnp
+.pnp.js
+
+# Build outputs
 dist
 dist-ssr
+build
 *.local
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
 .idea
 .DS_Store
 *.suo
@@ -23,9 +32,36 @@ dist-ssr
 *.sln
 *.sw?
 
+# Environment files
+.env
+.env.local
+.env.production
+.env.development
 
+# Cache
+.cache
+.parcel-cache
+.vite
+.turbo
 
-# Other
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# DeepAudit specific
 .deepaudit_cache
 __pycache__
+
+# Rust
+target
+Cargo.lock
+
+# Python (agent-service)
+agent-service/__pycache__
+agent-service/.pytest_cache
+agent-service/logs/*.log
+
+# Other
 .claude
+DeepAudit-3.0.0/

@@ -1,0 +1,59 @@
+[package]
+name = "deepaudit-web"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 核心逻辑库
+deepaudit-core = { path = "../core" }
+
+# Web 框架
+actix-web = "4.9"
+actix-multipart = "0.7"
+actix-files = "0.6"
+tokio = { version = "1", features = ["full"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 异步
+async-trait = "0.1.89"
+futures-util = "0.3"
+
+# 数据库 (只使用 SQLite)
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
+
+# 文件处理
+mime = "0.3"
+mime_guess = "2.0"
+zip = "2.1"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-actix-web = "0.7"
+
+# 环境变量
+dotenv = "0.15"
+
+# 错误处理
+anyhow = "1"
+thiserror = "1"
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
+# 临时文件
+tempfile = "3.10"
+
+# CORS
+actix-cors = "0.7"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

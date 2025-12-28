@@ -1,0 +1,42 @@
+# Node
+node_modules
+npm-debug.log
+
+# 构建产物
+dist
+target
+*.db
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Tauri
+src-tauri
+
+# Python
+__pycache__
+*.pyc
+.pytest_cache
+.python-version
+
+# 测试
+*.test.ts
+*.spec.ts
+
+# 其他
+.env
+.env.local
+*.log
+coverage
+.nyc_output

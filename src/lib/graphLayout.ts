@@ -57,6 +57,7 @@ export function calculateGraphLayout(nodes: any[], edges: any[]): Node[] {
   let currentX = 0;
   let currentY = 0;
   const COMPONENT_PADDING = 600; // Space between components
+  const MIN_NODE_SIZE = 150; // Minimum size for single-node components
 
   let rowMaxHeight = 0;
 
@@ -78,8 +79,11 @@ export function calculateGraphLayout(nodes: any[], edges: any[]): Node[] {
       maxY = Math.max(maxY, n.y!);
     });
 
-    const width = maxX - minX;
-    const height = maxY - minY;
+    // Ensure minimum size for single-node components
+    let width = maxX - minX;
+    let height = maxY - minY;
+    if (width < MIN_NODE_SIZE) width = MIN_NODE_SIZE;
+    if (height < MIN_NODE_SIZE) height = MIN_NODE_SIZE;
 
     // Check if we need to wrap to next row
     // If currentX + width is too wide? Let's just do a simple flow layout.
@@ -167,6 +171,18 @@ function runForceSimulation(nodes: LayoutNode[], edges: Edge[]) {
   const springLength = 250;
   const k = 0.1; // Spring constant
   const c = 300; // Repulsion constant
+
+  // If no edges, use a circular layout for better distribution
+  if (edges.length === 0) {
+    const radius = Math.max(100, Math.sqrt(nodes.length) * 50);
+    const angleStep = (2 * Math.PI) / nodes.length;
+
+    nodes.forEach((n, i) => {
+      n.x = Math.cos(i * angleStep) * radius + radius;
+      n.y = Math.sin(i * angleStep) * radius + radius;
+    });
+    return;
+  }
 
   // Initialize positions randomly if they are all 0
   nodes.forEach((n) => {
