@@ -416,8 +416,8 @@ async fn delete_project(
 ) -> impl Responder {
     let uuid = path.into_inner();
 
-    // 首先获取项目路径，用于后续清理文件系统
-    let project = match sqlx::query_as::<_, Project>(
+    // 首先获取项目信息（需要 project_id 用于级联删除）
+    let project = match sqlx::query_as::<_, (i64, String, String, String, String)>(
         "SELECT id, uuid, name, path, datetime(created_at) as created_at FROM projects WHERE uuid = ?"
     )
     .bind(&uuid)
@@ -439,17 +439,129 @@ async fn delete_project(
         }
     };
 
-    let project_path = project.path.clone();
+    let (project_id, _project_uuid, _project_name, project_path, _created_at) = project;
 
-    tracing::info!("Project {} deleted, cleanup scheduled for: {}", uuid, project_path);
+    tracing::info!("Deleting project {} (ID: {}), cleanup scheduled for: {}", uuid, project_id, project_path);
 
-    // 删除数据库记录
-    match sqlx::query("DELETE FROM projects WHERE uuid = ?")
-        .bind(&uuid)
-        .execute(&state.db)
+    // 使用事务删除所有关联数据
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::error!("Failed to begin transaction: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to begin transaction: {}", e)
+            }));
+        }
+    };
+
+    // 1. 删除 findings 表中的关联记录
+    match sqlx::query("DELETE FROM findings WHERE project_id = ?")
+        .bind(project_id)
+        .execute(&mut *tx)
         .await
     {
-        Ok(_) => {}
+        Ok(result) => {
+            tracing::info!("Deleted {} findings for project {}", result.rows_affected(), project_id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete findings: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to delete findings: {}", e)
+            }));
+        }
+    }
+
+    // 2. 删除 scans 表中的关联记录
+    match sqlx::query("DELETE FROM scans WHERE project_id = ?")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await
+    {
+        Ok(result) => {
+            tracing::info!("Deleted {} scan records for project {}", result.rows_affected(), project_id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete scans: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to delete scans: {}", e)
+            }));
+        }
+    }
+
+    // 3. 删除 AST 相关数据（依赖关系：call_relations -> code_graphs -> symbols -> ast_indices）
+    match sqlx::query("DELETE FROM call_relations WHERE project_id = ?")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await
+    {
+        Ok(result) => {
+            tracing::info!("Deleted {} call relations for project {}", result.rows_affected(), project_id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete call relations: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to delete call relations: {}", e)
+            }));
+        }
+    }
+
+    match sqlx::query("DELETE FROM code_graphs WHERE project_id = ?")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await
+    {
+        Ok(result) => {
+            tracing::info!("Deleted {} code graphs for project {}", result.rows_affected(), project_id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete code graphs: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to delete code graphs: {}", e)
+            }));
+        }
+    }
+
+    match sqlx::query("DELETE FROM symbols WHERE project_id = ?")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await
+    {
+        Ok(result) => {
+            tracing::info!("Deleted {} symbols for project {}", result.rows_affected(), project_id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete symbols: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to delete symbols: {}", e)
+            }));
+        }
+    }
+
+    match sqlx::query("DELETE FROM ast_indices WHERE project_id = ?")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await
+    {
+        Ok(result) => {
+            tracing::info!("Deleted {} AST indices for project {}", result.rows_affected(), project_id);
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete AST indices: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to delete AST indices: {}", e)
+            }));
+        }
+    }
+
+    // 4. 删除项目记录
+    match sqlx::query("DELETE FROM projects WHERE id = ?")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await
+    {
+        Ok(_) => {
+            tracing::info!("Deleted project {}", project_id);
+        }
         Err(e) => {
             tracing::error!("Failed to delete project: {}", e);
             return HttpResponse::InternalServerError().json(serde_json::json!({
@@ -458,12 +570,21 @@ async fn delete_project(
         }
     }
 
+    // 提交事务
+    if let Err(e) = tx.commit().await {
+        tracing::error!("Failed to commit transaction: {}", e);
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to commit transaction: {}", e)
+        }));
+    }
+
     // 异步清理文件系统
+    let project_path_clone = project_path.clone();
     tokio::spawn(async move {
-        if let Err(e) = tokio::fs::remove_dir_all(&project_path).await {
-            tracing::error!("Failed to cleanup project directory {:?}: {}", project_path, e);
+        if let Err(e) = tokio::fs::remove_dir_all(&project_path_clone).await {
+            tracing::error!("Failed to cleanup project directory {:?}: {}", project_path_clone, e);
         } else {
-            tracing::info!("Successfully cleaned up project directory: {:?}", project_path);
+            tracing::info!("Successfully cleaned up project directory: {:?}", project_path_clone);
         }
     });
 

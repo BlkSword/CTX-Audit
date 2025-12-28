@@ -4,7 +4,7 @@ pub mod parser;
 pub mod query;
 pub mod symbol;
 
-pub use cache::CacheManager;
+pub use cache::{CacheData, CacheManager, FileIndex};
 pub use engine::{ASTEngine, CustomRule, SecurityScanner};
 pub use parser::ASTParser;
 pub use query::QueryEngine;

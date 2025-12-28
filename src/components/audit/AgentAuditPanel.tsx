@@ -5,7 +5,6 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import {
   Play,
   Pause,
@@ -13,15 +12,15 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
-  CheckCircle,
   FileSearch,
   Shield,
   Bug,
-  Settings,
 } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useToast } from '@/hooks/use-toast'
+import { useToastStore } from '@/stores/toastStore'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -233,22 +232,21 @@ function EventItem({ event, isExpanded, onToggle }: EventItemProps) {
 }
 
 export function AgentAuditPanel() {
-  const navigate = useNavigate()
   const { currentProject } = useProjectStore()
   const { addLog } = useUIStore()
+  const toast = useToast()
+  const { removeToast } = useToastStore()
 
   const {
     auditStatus,
     auditProgress,
     agentStatus,
-    auditStats,
     auditError,
     events,
     llmConfigs,
     isConnected,
     startAudit,
     pauseAudit,
-    resumeAudit,
     cancelAudit,
   } = useAgentStore()
 
@@ -284,9 +282,17 @@ export function AgentAuditPanel() {
   // 处理启动审计
   const handleStartAudit = async () => {
     if (!currentProject) {
+      toast.warning('请先打开一个项目')
       addLog('请先打开一个项目', 'system')
       return
     }
+
+    if (!isConnected) {
+      toast.error('Agent 服务未连接，请先启动服务')
+      return
+    }
+
+    const loadingToast = toast.loading(`正在启动${auditType === 'quick' ? '快速' : '完整'}审计...`)
 
     try {
       addLog(`开始 ${auditType === 'quick' ? '快速' : '完整'} 审计...`, 'system')
@@ -295,9 +301,36 @@ export function AgentAuditPanel() {
         auditType,
         { llm_config: selectedLLMConfig === 'default' ? '' : selectedLLMConfig }
       )
+      toast.success(`审计任务已启动: ${auditId}`)
       addLog(`审计任务已创建: ${auditId}`, 'system')
     } catch (err) {
-      addLog(`启动审计失败: ${err}`, 'error')
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`启动审计失败: ${message}`)
+      addLog(`启动审计失败: ${err}`, 'system')
+    } finally {
+      removeToast(loadingToast)
+    }
+  }
+
+  // 处理暂停审计
+  const handlePauseAudit = async () => {
+    try {
+      await pauseAudit()
+      toast.info('审计已暂停')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`暂停失败: ${message}`)
+    }
+  }
+
+  // 处理终止审计
+  const handleCancelAudit = async () => {
+    try {
+      await cancelAudit()
+      toast.warning('审计已终止')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`终止失败: ${message}`)
     }
   }
 
@@ -340,10 +373,10 @@ export function AgentAuditPanel() {
         <div className="flex items-center gap-2">
           {auditStatus === 'running' ? (
             <>
-              <Button variant="outline" size="sm" onClick={pauseAudit}>
+              <Button variant="outline" size="sm" onClick={handlePauseAudit}>
                 <Pause className="w-4 h-4 mr-1" /> 暂停
               </Button>
-              <Button variant="destructive" size="sm" onClick={cancelAudit}>
+              <Button variant="destructive" size="sm" onClick={handleCancelAudit}>
                 <Square className="w-4 h-4 mr-1" /> 终止
               </Button>
             </>

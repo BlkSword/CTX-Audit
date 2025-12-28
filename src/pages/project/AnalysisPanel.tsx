@@ -7,6 +7,8 @@ import { Database, Folder, Network, Search, Wrench, type LucideIcon } from 'luci
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useToast } from '@/hooks/use-toast'
+import { useToastStore } from '@/stores/toastStore'
 import { astService } from '@/shared/api/services'
 import { api } from '@/shared/api/client'
 import { Button } from '@/components/ui/button'
@@ -33,60 +35,139 @@ export function AnalysisPanel() {
   const { currentProject } = useProjectStore()
   const { selectedFile, fileTree } = useFileStore()
   const { addLog } = useUIStore()
+  const toast = useToast()
+  const { removeToast } = useToastStore()
 
   const [symbolSearchQuery, setSymbolSearchQuery] = useState('')
   const [isSearching, setIsSearching] = useState(false)
   const [searchResults, setSearchResults] = useState<any[]>([])
 
+  // 递归计算文件总数
+  const countFiles = (nodes: any[]): number => {
+    let count = 0
+    for (const node of nodes) {
+      if (node.type === 'file') {
+        count++
+      } else if (node.children) {
+        count += countFiles(node.children)
+      }
+    }
+    return count
+  }
+
+  const totalFileCount = countFiles(fileTree)
+
   const handleBuildIndex = async () => {
-    if (!currentProject) return
+    if (!currentProject) {
+      toast.warning('请先选择一个项目')
+      return
+    }
+
+    const loadingToast = toast.loading('正在构建 AST 索引...')
+
     try {
       addLog('正在构建 AST 索引...', 'system')
-      const result = await astService.buildIndex(currentProject.path)
+      // 传递 project_id 以支持从数据库恢复缓存
+      const result = await astService.buildIndex(currentProject.path, currentProject.id)
+      toast.success('AST 索引构建完成')
       addLog(`AST 索引构建完成: ${result.message}`, 'system')
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`构建索引失败: ${message}`)
       addLog(`构建索引失败: ${err}`, 'system')
+    } finally {
+      removeToast(loadingToast)
     }
   }
 
   const handleListFiles = async () => {
-    if (!currentProject) return
+    if (!currentProject) {
+      toast.warning('请先选择一个项目')
+      return
+    }
+
+    const loadingToast = toast.loading('正在列出文件...')
+
     try {
       addLog('正在列出文件...', 'system')
       const result = await api.listFiles(currentProject.path)
-      addLog(`找到 ${Array.isArray(result) ? result.length : 0} 个文件`, 'system')
+      const fileCount = Array.isArray(result) ? result.length : 0
+      toast.success(`找到 ${fileCount} 个文件`)
+      addLog(`找到 ${fileCount} 个文件`, 'system')
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`列出文件失败: ${message}`)
       addLog(`列出文件失败: ${err}`, 'system')
+    } finally {
+      removeToast(loadingToast)
     }
   }
 
   const handleGetCodeStructure = async () => {
     if (!selectedFile) {
+      toast.warning('请先选择一个文件')
       addLog('请先选择一个文件', 'system')
       return
     }
+
+    if (!currentProject) {
+      toast.warning('请先选择一个项目')
+      return
+    }
+
+    const loadingToast = toast.loading(`正在获取代码结构...`)
+
     try {
       addLog(`正在获取 ${selectedFile} 的代码结构...`, 'system')
-      const result = await astService.getCodeStructure(selectedFile)
+      // 传递项目信息以支持从数据库加载缓存
+      const result = await astService.getCodeStructure(selectedFile, currentProject.id, currentProject.path)
+      toast.success('代码结构获取成功')
       addLog(`代码结构: ${JSON.stringify(result, null, 2)}`, 'system')
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`获取代码结构失败: ${message}`)
       addLog(`获取代码结构失败: ${err}`, 'system')
+    } finally {
+      removeToast(loadingToast)
     }
   }
 
   const handleSymbolSearch = async () => {
-    if (!symbolSearchQuery.trim()) return
+    if (!symbolSearchQuery.trim()) {
+      toast.warning('请输入搜索关键词')
+      return
+    }
+
+    if (!currentProject) {
+      toast.warning('请先选择一个项目')
+      return
+    }
+
     setIsSearching(true)
     setSearchResults([])
+
+    const loadingToast = toast.loading(`正在搜索符号: ${symbolSearchQuery}...`)
+
     try {
       addLog(`搜索符号: ${symbolSearchQuery}`, 'system')
-      const results = await astService.searchSymbol(symbolSearchQuery)
-      setSearchResults(Array.isArray(results) ? results : [])
-      addLog(`找到 ${Array.isArray(results) ? results.length : 0} 个结果`, 'system')
+      // 传递项目信息以支持从数据库加载缓存
+      const results = await astService.searchSymbol(symbolSearchQuery, currentProject.id, currentProject.path)
+      const resultArray = Array.isArray(results) ? results : []
+      setSearchResults(resultArray)
+
+      if (resultArray.length > 0) {
+        toast.success(`找到 ${resultArray.length} 个匹配结果`)
+      } else {
+        toast.info('未找到匹配的符号')
+      }
+      addLog(`找到 ${resultArray.length} 个结果`, 'system')
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`搜索符号失败: ${message}`)
       addLog(`搜索符号失败: ${err}`, 'system')
     } finally {
       setIsSearching(false)
+      removeToast(loadingToast)
     }
   }
 
@@ -106,7 +187,7 @@ export function AnalysisPanel() {
           description: '获取项目中所有文件的列表',
           icon: Folder,
           action: handleListFiles,
-          variant: 'outline' as const,
+          variant: 'default' as const,
         },
       ],
     },
@@ -120,7 +201,7 @@ export function AnalysisPanel() {
             : '请先选择一个文件',
           icon: Network,
           action: handleGetCodeStructure,
-          variant: 'outline' as const,
+          variant: 'default' as const,
           disabled: !selectedFile,
         },
       ],
@@ -271,7 +352,7 @@ export function AnalysisPanel() {
                 </div>
                 <div>
                   <span className="text-muted-foreground">文件数量:</span>
-                  <span className="ml-2 font-medium">{fileTree.length}</span>
+                  <span className="ml-2 font-medium">{totalFileCount}</span>
                 </div>
               </div>
             </Card>

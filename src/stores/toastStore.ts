@@ -41,9 +41,11 @@ export const useToastStore = create<ToastState>()(
         const id = generateId()
         const newToast: Toast = {
           id,
-          type: 'info',
-          duration: 3000,
-          ...toast,
+          type: toast.type || 'info',
+          title: toast.title,
+          description: toast.description,
+          action: toast.action,
+          duration: toast.duration ?? 3000, // 使用 ?? 而不是默认值展开
         }
 
         set((state) => ({

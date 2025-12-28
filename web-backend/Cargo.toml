@@ -23,6 +23,7 @@ futures-util = "0.3"
 
 # 数据库 (只使用 SQLite)
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
+chrono = "0.4"
 
 # 文件处理
 mime = "0.3"

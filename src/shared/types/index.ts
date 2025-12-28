@@ -25,14 +25,14 @@ export interface CallNode {
 
 export interface Vulnerability {
   id: string
-  file: string
-  file_path?: string
-  line: number
-  line_start?: number
-  line_end?: number
+  file_path: string
+  file?: string  // 兼容旧字段
+  line_start: number
+  line?: number  // 兼容旧字段
+  line_end: number
   severity: 'high' | 'medium' | 'low' | 'critical'
-  message: string
-  description?: string
+  description: string
+  message?: string  // 兼容旧字段
   detector: string
   vuln_type: string
   code?: string

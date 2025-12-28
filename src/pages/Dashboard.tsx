@@ -8,6 +8,7 @@ import { Plus, FolderOpen, Trash2, RefreshCw, ShieldAlert, Upload, FileArchive }
 import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useToast } from '@/hooks/use-toast'
+import { useToastStore } from '@/stores/toastStore'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -27,7 +28,8 @@ export function Dashboard() {
   const navigate = useNavigate()
   const { projects, currentProject, isLoading, error, loadProjects, createProject, deleteProject, setCurrentProject } = useProjectStore()
   const { addLog } = useUIStore()
-  const { success, error: showError, loading } = useToast()
+  const toast = useToast()
+  const { removeToast } = useToastStore()
 
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [newProjectName, setNewProjectName] = useState('')
@@ -44,38 +46,52 @@ export function Dashboard() {
 
     setIsCreating(true)
     setUploadProgress(0)
+    const loadingToast = toast.loading('正在上传并创建项目...')
 
     try {
       const project = await createProject(newProjectName, projectZip, (progress) => {
         setUploadProgress(progress)
       })
+      toast.success(`项目 "${project.name}" 创建成功！`)
       addLog(`项目创建成功: ${project.name}`, 'system')
       setIsCreateDialogOpen(false)
       setNewProjectName('')
       setProjectZip(null)
       setUploadProgress(0)
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`创建项目失败: ${message}`)
       addLog(`创建项目失败: ${err}`, 'system')
     } finally {
       setIsCreating(false)
       setUploadProgress(0)
+      // 移除加载提示
+      if (loadingToast) removeToast(loadingToast)
     }
   }
 
   const handleDeleteProject = async (id: number, name: string) => {
-    if (!confirm(`确定要删除项目 "${name}" 吗？`)) return
+    if (!confirm(`确定要删除项目 "${name}" 吗？此操作不可恢复！`)) return
+
+    const loadingToast = toast.loading(`正在删除项目 "${name}"...`)
 
     try {
       await deleteProject(id)
+      toast.success(`项目 "${name}" 已删除`)
       addLog(`项目已删除: ${name}`, 'system')
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`删除项目失败: ${message}`)
       addLog(`删除项目失败: ${err}`, 'system')
+    } finally {
+      // 移除加载提示
+      if (loadingToast) removeToast(loadingToast)
     }
   }
 
   const handleOpenProject = (project: typeof projects[0]) => {
     setCurrentProject(project)
-    navigate(`/project/${project.id}`)
+    navigate(`/project/${project.id}/editor`)
     addLog(`打开项目: ${project.name}`, 'system')
   }
 

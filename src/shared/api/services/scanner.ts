@@ -9,9 +9,10 @@ export class ScannerService {
   /**
    * 运行扫描
    */
-  async runScan(projectPath: string, rules?: string[]): Promise<ScanResult> {
+  async runScan(projectPath: string, projectId?: number, rules?: string[]): Promise<ScanResult> {
     return api.invoke('run_scan', {
       project_path: projectPath,
+      project_id: projectId,
       rules,
     })
   }

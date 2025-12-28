@@ -7,6 +7,7 @@ import { Outlet, useParams, useNavigate, useLocation, Link } from 'react-router-
 import { ShieldAlert, ArrowLeft, Terminal, FileCode, Network, Activity, Scan, Bot, RefreshCw } from 'lucide-react'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileStore } from '@/stores/fileStore'
+import { useScanStore } from '@/stores/scanStore'
 import { useUIStore } from '@/stores/uiStore'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -18,6 +19,7 @@ export function ProjectLayout() {
   const location = useLocation()
   const { currentProject, projects, setCurrentProject, isLoading: projectsLoading, isInitiallyLoaded, loadProjects } = useProjectStore()
   const { loadFiles } = useFileStore()
+  const { loadFindings } = useScanStore()
   const { bottomPanelVisible, setBottomPanelVisible, logs } = useUIStore()
 
   useEffect(() => {
@@ -36,18 +38,20 @@ export function ProjectLayout() {
       if (project) {
         setCurrentProject(project)
         loadFiles(project.path)
+        // 加载项目的扫描结果
+        loadFindings(project.id)
       } else if (projectId !== 0) {
         // 只有当项目ID有效但找不到项目时才跳转
         navigate('/')
       }
     }
-  }, [id, projects, projectsLoading, isInitiallyLoaded, navigate, setCurrentProject, loadFiles])
+  }, [id, projects, projectsLoading, isInitiallyLoaded, navigate, setCurrentProject, loadFiles, loadFindings])
 
   // 从 URL 获取当前激活的视图
   const currentView = location.pathname.split('/').pop() || 'editor'
 
   const views = [
-    { id: 'editor' as const, label: '代码编辑', icon: FileCode },
+    { id: 'editor' as const, label: '代码查看', icon: FileCode },
     { id: 'graph' as const, label: '代码图谱', icon: Network },
     { id: 'scan' as const, label: '安全扫描', icon: Scan },
     { id: 'analysis' as const, label: '分析工具', icon: Activity },

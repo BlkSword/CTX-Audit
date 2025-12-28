@@ -9,15 +9,19 @@ export class ASTService {
   /**
    * 构建 AST 索引
    */
-  async buildIndex(projectPath: string): Promise<{ files_processed: number; message: string }> {
-    return api.invoke('build_ast_index', { project_path: projectPath })
+  async buildIndex(projectPath: string, projectId?: number): Promise<{ files_processed: number; message: string }> {
+    return api.invoke('build_ast_index', { project_path: projectPath, project_id: projectId })
   }
 
   /**
    * 搜索符号
    */
-  async searchSymbol(symbolName: string): Promise<Symbol[]> {
-    return api.invoke('search_symbol', { symbol_name: symbolName })
+  async searchSymbol(symbolName: string, projectId?: number, projectPath?: string): Promise<Symbol[]> {
+    const params = new URLSearchParams()
+    if (projectId !== undefined) params.append('project_id', String(projectId))
+    if (projectPath !== undefined) params.append('project_path', projectPath)
+    const queryStr = params.toString()
+    return api.get<Symbol[]>(`/api/ast/search_symbol/${encodeURIComponent(symbolName)}${queryStr ? `?${queryStr}` : ''}`)
   }
 
   /**
@@ -36,8 +40,16 @@ export class ASTService {
   /**
    * 获取文件结构
    */
-  async getCodeStructure(filePath: string): Promise<Symbol[]> {
-    return api.invoke('get_code_structure', { file_path: filePath })
+  async getCodeStructure(filePath: string, projectId?: number, projectPath?: string): Promise<Symbol[]> {
+    const params = new URLSearchParams()
+    if (projectId !== undefined) params.append('project_id', String(projectId))
+    if (projectPath !== undefined) params.append('project_path', projectPath)
+    const queryStr = params.toString()
+    return api.invoke('get_code_structure', {
+      file_path: filePath,
+      project_id: projectId,
+      project_path: projectPath,
+    })
   }
 
   /**
@@ -61,8 +73,11 @@ export class ASTService {
   /**
    * 获取知识图谱
    */
-  async getKnowledgeGraph(): Promise<GraphData> {
-    return api.invoke('get_knowledge_graph', {})
+  async getKnowledgeGraph(projectId?: number, projectPath?: string): Promise<GraphData> {
+    return api.invoke('get_knowledge_graph', {
+      project_id: projectId,
+      project_path: projectPath,
+    })
   }
 }
 
