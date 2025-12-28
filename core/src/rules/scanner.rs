@@ -153,7 +153,7 @@ fn create_finding(
         line_end,
         detector,
         vuln_type: rule.cwe.clone().unwrap_or_else(|| "Unknown".to_string()),
-        severity: format!("{:?}", rule.severity),
+        severity: format!("{:?}", rule.severity).to_lowercase(),
         description: rule.description.clone(),
         analysis_trail: None,
         llm_output: None,

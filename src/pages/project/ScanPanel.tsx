@@ -8,6 +8,8 @@ import { useScanStore } from '@/stores/scanStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useFileStore } from '@/stores/fileStore'
+import { useToast } from '@/hooks/use-toast'
+import { useToastStore } from '@/stores/toastStore'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
@@ -19,32 +21,62 @@ export function ScanPanel() {
   const { currentProject } = useProjectStore()
   const { addLog } = useUIStore()
   const { selectFile } = useFileStore()
+  const toast = useToast()
+  const { removeToast } = useToastStore()
 
   const [searchQuery, setSearchQuery] = useState('')
   const [severityFilter, setSeverityFilter] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all')
 
   const handleRunScan = async () => {
-    if (!currentProject) return
+    if (!currentProject) {
+      toast.warning('请先选择一个项目')
+      return
+    }
+
+    const loadingToast = toast.loading('正在扫描代码安全问题...')
+
     try {
       addLog('开始扫描...', 'system')
-      await runScan(currentProject.path)
-      addLog('扫描完成', 'system')
+      const result = await runScan(currentProject.path, currentProject.id)
+
+      const findingsCount = result?.findings?.length || vulnerabilities.length
+      toast.success(`扫描完成！发现 ${findingsCount} 个安全问题`)
+      addLog(`扫描完成，发现 ${findingsCount} 个问题`, 'system')
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`扫描失败: ${message}`)
       addLog(`扫描失败: ${err}`, 'system')
+    } finally {
+      // 移除加载提示
+      removeToast(loadingToast)
     }
   }
 
   const handleVerifyFinding = async (id: string, vuln: typeof vulnerabilities[0]) => {
+    const loadingToast = toast.loading(`正在验证漏洞: ${vuln.vuln_type}...`)
+
     try {
       addLog(`验证漏洞: ${vuln.vuln_type}`, 'system')
       await verifyFinding(id, vuln)
+
+      const verifiedVuln = vulnerabilities.find(v => v.id === id)
+      if (verifiedVuln?.verification?.verified) {
+        toast.success('漏洞已确认为真实问题')
+      } else {
+        toast.info('漏洞可能是误报')
+      }
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`验证失败: ${message}`)
       addLog(`验证失败: ${err}`, 'system')
+    } finally {
+      // 移除加载提示
+      removeToast(loadingToast)
     }
   }
 
   const handleFindingClick = (vuln: typeof vulnerabilities[0]) => {
-    const filePath = vuln.file || vuln.file_path
+    const filePath = vuln.file_path
     if (filePath) {
       selectFile(filePath)
     }
@@ -52,9 +84,9 @@ export function ScanPanel() {
 
   const filteredVulnerabilities = vulnerabilities.filter(v => {
     const matchesSearch = searchQuery === '' ||
-      v.message?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      v.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       v.vuln_type?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      v.file?.toLowerCase().includes(searchQuery.toLowerCase())
+      v.file_path?.toLowerCase().includes(searchQuery.toLowerCase())
 
     const matchesSeverity = severityFilter === 'all' || v.severity === severityFilter
 
@@ -231,12 +263,12 @@ export function ScanPanel() {
                             {vuln.detector}
                           </Badge>
                           <span className="text-xs text-muted-foreground font-mono">
-                            {vuln.file || vuln.file_path}:{vuln.line || vuln.line_start}
+                            {vuln.file_path}:{vuln.line_start}
                           </span>
                         </div>
 
                         <h3 className="font-medium text-sm mb-1">
-                          [{vuln.vuln_type}] {vuln.message || vuln.description}
+                          [{vuln.vuln_type}] {vuln.description}
                         </h3>
 
                         {vuln.code_snippet && (

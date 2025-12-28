@@ -15,7 +15,7 @@ interface ScanState {
   error: string | null
 
   // Actions
-  runScan: (projectPath: string, rules?: string[]) => Promise<void>
+  runScan: (projectPath: string, projectId?: number, rules?: string[]) => Promise<void>
   loadFindings: (projectId: number) => Promise<void>
   verifyFinding: (id: string, vulnerability: Vulnerability) => Promise<void>
   clearFindings: () => void
@@ -31,10 +31,10 @@ export const useScanStore = create<ScanState>()(
       isLoading: false,
       error: null,
 
-      runScan: async (projectPath, rules) => {
+      runScan: async (projectPath, projectId, rules) => {
         set({ isScanning: true, error: null })
         try {
-          const result = await scannerService.runScan(projectPath, rules)
+          const result = await scannerService.runScan(projectPath, projectId, rules)
           set({
             scanResults: result,
             vulnerabilities: result.findings || [],
@@ -61,9 +61,9 @@ export const useScanStore = create<ScanState>()(
       verifyFinding: async (id, vulnerability) => {
         try {
           const resultJson = await scannerService.callMCPTool('verify_finding', {
-            file: vulnerability.file || vulnerability.file_path,
-            line: vulnerability.line || vulnerability.line_start,
-            description: vulnerability.message || vulnerability.description,
+            file: vulnerability.file_path,
+            line: vulnerability.line_start,
+            description: vulnerability.description,
             vuln_type: vulnerability.vuln_type
           })
 

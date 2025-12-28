@@ -34,7 +34,11 @@ export function GraphPanel() {
 
     try {
       addLog('正在构建 AST 索引...', 'system')
-      const result = await api.invoke('build_ast_index', { project_path: currentProject.path })
+      // 传递 project_id 以支持从数据库恢复缓存
+      const result = await api.invoke('build_ast_index', {
+        project_path: currentProject.path,
+        project_id: currentProject.id,
+      })
       addLog(`AST 索引构建完成: ${result.message}`, 'system')
       setNeedsIndex(false)
 
@@ -57,7 +61,12 @@ export function GraphPanel() {
 
     try {
       addLog('正在获取图谱数据...', 'system')
-      const resultJson = await api.invoke('get_knowledge_graph', { limit: 100 })
+      // 传递项目信息以支持从数据库加载缓存
+      const resultJson = await api.invoke('get_knowledge_graph', {
+        limit: 100,
+        project_id: currentProject.id,
+        project_path: currentProject.path,
+      })
 
       let data
       if (typeof resultJson === 'string') {

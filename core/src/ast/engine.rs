@@ -44,6 +44,13 @@ impl ASTEngine {
         }
     }
 
+    /// 直接从 CacheData 初始化引擎（用于从数据库恢复）
+    pub fn load_from_cache_data(&self, cache_data: CacheData) {
+        if let Ok(mut query_engine) = self.query_engine.try_lock() {
+            *query_engine = Some(QueryEngine::new(cache_data));
+        }
+    }
+
     pub fn scan_project(&self, root_path: &str) -> Result<usize, String> {
         let root_path = PathBuf::from(root_path);
         if !root_path.exists() {

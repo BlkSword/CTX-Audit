@@ -5,10 +5,19 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// AST缓存状态跟踪
+#[derive(Default)]
+pub struct AstCacheState {
+    pub current_project_id: Option<i64>,
+    pub current_project_path: Option<String>,
+    pub symbol_count: usize,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub ast_engine: Arc<Mutex<ASTEngine>>,
     pub db: Pool<Sqlite>,
+    pub ast_cache_state: Arc<Mutex<AstCacheState>>,
 }
 
 impl AppState {
@@ -20,7 +29,11 @@ impl AppState {
         // 初始化数据库
         let db = init_db().await?;
 
-        Ok(Self { ast_engine, db })
+        Ok(Self {
+            ast_engine,
+            db,
+            ast_cache_state: Arc::new(Mutex::new(AstCacheState::default())),
+        })
     }
 }
 
@@ -79,6 +92,72 @@ async fn init_db() -> anyhow::Result<Pool<Sqlite>> {
             completed_at DATETIME,
             FOREIGN KEY(project_id) REFERENCES projects(id)
         );
+
+        -- AST 索引历史表
+        CREATE TABLE IF NOT EXISTS ast_indices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            index_version TEXT NOT NULL,
+            total_symbols INTEGER DEFAULT 0,
+            total_files INTEGER DEFAULT 0,
+            index_data TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+
+        -- 符号表（支持历史查询）
+        CREATE TABLE IF NOT EXISTS symbols (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            ast_index_id INTEGER NOT NULL,
+            symbol_id TEXT NOT NULL,
+            symbol_name TEXT NOT NULL,
+            symbol_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            line_number INTEGER,
+            end_line INTEGER,
+            parent_name TEXT,
+            metadata TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(ast_index_id) REFERENCES ast_indices(id)
+        );
+
+        -- 代码图谱表
+        CREATE TABLE IF NOT EXISTS code_graphs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            graph_type TEXT NOT NULL,
+            entry_point TEXT,
+            graph_data TEXT NOT NULL,
+            node_count INTEGER DEFAULT 0,
+            edge_count INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+
+        -- 调用关系表
+        CREATE TABLE IF NOT EXISTS call_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            graph_id INTEGER NOT NULL,
+            caller_function TEXT NOT NULL,
+            callee_function TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            line_number INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(graph_id) REFERENCES code_graphs(id)
+        );
+
+        -- 创建索引以提高查询性能
+        CREATE INDEX IF NOT EXISTS idx_symbols_project ON symbols(project_id);
+        CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(symbol_name);
+        CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(symbol_type);
+        CREATE INDEX IF NOT EXISTS idx_graphs_project ON code_graphs(project_id);
+        CREATE INDEX IF NOT EXISTS idx_graphs_type ON code_graphs(graph_type);
+        CREATE INDEX IF NOT EXISTS idx_calls_project ON call_relations(project_id);
+        CREATE INDEX IF NOT EXISTS idx_indices_project ON ast_indices(project_id);
         "#,
     )
     .execute(&pool)
