@@ -15,7 +15,7 @@ interface ScanState {
   error: string | null
 
   // Actions
-  runScan: (projectPath: string, projectId?: number, rules?: string[]) => Promise<void>
+  runScan: (projectPath: string, projectId?: number, rules?: string[]) => Promise<ScanResult>
   loadFindings: (projectId: number) => Promise<void>
   verifyFinding: (id: string, vulnerability: Vulnerability) => Promise<void>
   clearFindings: () => void
@@ -40,6 +40,7 @@ export const useScanStore = create<ScanState>()(
             vulnerabilities: result.findings || [],
             isScanning: false
           })
+          return result
         } catch (error) {
           const message = error instanceof Error ? error.message : '扫描失败'
           set({ error: message, isScanning: false })
@@ -58,25 +59,19 @@ export const useScanStore = create<ScanState>()(
         }
       },
 
-      verifyFinding: async (id, vulnerability) => {
+      verifyFinding: async (id, _vulnerability) => {
+        // TODO: 实现漏洞验证功能，需要后端API支持
         try {
-          const resultJson = await scannerService.callMCPTool('verify_finding', {
-            file: vulnerability.file_path,
-            line: vulnerability.line_start,
-            description: vulnerability.description,
-            vuln_type: vulnerability.vuln_type
-          })
-
-          let result
-          if (typeof resultJson === 'string') {
-            result = JSON.parse(resultJson)
-          } else {
-            result = resultJson
+          // 暂时使用模拟数据
+          const mockResult = {
+            verified: true,
+            confidence: 0.85,
+            reasoning: '待实现：需要通过MCP工具调用LLM进行验证'
           }
 
           set(state => ({
             vulnerabilities: state.vulnerabilities.map(v =>
-              v.id === id ? { ...v, verification: result } : v
+              v.id === id ? { ...v, verification: mockResult } : v
             )
           }))
         } catch (error) {

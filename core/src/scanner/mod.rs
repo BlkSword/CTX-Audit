@@ -42,6 +42,31 @@ pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
 
     let mut findings = Vec::new();
 
+    // 加载规则
+    let rules_path = std::path::Path::new("rules");
+    let rules = if rules_path.exists() {
+        match crate::rules::loader::load_rules_from_dir(rules_path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to load rules: {}, using only RegexScanner", e);
+                vec![]
+            }
+        }
+    } else {
+        eprintln!("Rules directory not found, using only RegexScanner");
+        vec![]
+    };
+
+    // 创建规则扫描器
+    let rule_scanner = if !rules.is_empty() {
+        Some(crate::rules::scanner::RuleScanner::new(rules))
+    } else {
+        None
+    };
+
+    // 创建正则扫描器
+    let regex_scanner = regex_scanner::RegexScanner::new();
+
     // 使用 ignore 库遍历目录
     for entry in Walk::new(path) {
         if let Ok(entry) = entry {
@@ -50,12 +75,16 @@ pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
             // 只扫描支持的文件类型
             if path.is_file() && is_supported_file(path) {
                 if let Ok(content) = fs::read_to_string(path).await {
-                    // 使用 RegexScanner 进行简单扫描
-                    let scanner = regex_scanner::RegexScanner::new();
-                    let mut file_findings = scanner.scan_file(&path.to_path_buf(), &content).await;
+                    let path_buf = path.to_path_buf();
 
-                    // 如果是规则扫描器，也使用规则扫描
-                    // TODO: 添加规则扫描器集成
+                    // 使用 RegexScanner 进行简单扫描
+                    let mut file_findings = regex_scanner.scan_file(&path_buf, &content).await;
+
+                    // 如果有规则扫描器，也使用规则扫描
+                    if let Some(ref scanner) = rule_scanner {
+                        let mut rule_findings = scanner.scan_file(&path_buf, &content).await;
+                        findings.append(&mut rule_findings);
+                    }
 
                     findings.append(&mut file_findings);
                 }

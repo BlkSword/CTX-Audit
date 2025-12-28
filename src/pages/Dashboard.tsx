@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FolderOpen, Trash2, RefreshCw, ShieldAlert, Upload, FileArchive } from 'lucide-react'
+import { Plus, FolderOpen, Trash2, RefreshCw, ShieldAlert, Upload, FileArchive, Settings } from 'lucide-react'
 import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useToast } from '@/hooks/use-toast'
@@ -98,14 +98,14 @@ export function Dashboard() {
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="h-14 border-b border-border/40 px-6 flex items-center justify-between bg-muted/20">
+      <header className="h-14 border-b border-border/40 px-6 flex items-center justify-between bg-muted/20 relative z-10">
         <div className="flex items-center gap-3">
           <ShieldAlert className="w-6 h-6 text-primary" />
           <h1 className="text-xl font-semibold tracking-tight">CTX-Audit</h1>
           <Badge variant="secondary" className="text-xs">代码审计平台</Badge>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 relative z-20">
           <Button
             variant="outline"
             size="sm"
@@ -114,6 +114,15 @@ export function Dashboard() {
           >
             <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
             刷新
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate('/settings/llm')}
+          >
+            <Settings className="w-4 h-4 mr-2" />
+            设置
           </Button>
 
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
