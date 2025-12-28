@@ -1,0 +1,80 @@
+plugins {
+  id 'idea'
+  id 'base'
+  alias(libs.plugins.node)
+  alias(libs.plugins.openapi.generator)
+}
+
+idea {
+  module {
+    excludeDirs += file('node_modules/')
+    excludeDirs += file('packages').listFiles().collect {
+      file(it.path + '/node_modules/')
+    }
+    excludeDirs += file('packages').listFiles().collect {
+      file(it.path + '/dist/')
+    }
+  }
+}
+
+tasks.named('clean') {
+  dependsOn tasks.named('doClean')
+}
+
+tasks.register('doClean', Delete) {
+  delete layout.buildDirectory
+  delete fileTree('packages') {
+    include '*/dist/**'
+  }
+}
+
+tasks.named('assemble') {
+  dependsOn tasks.named('doBuild')
+}
+
+tasks.register('doBuild', PnpmTask) {
+  dependsOn tasks.named('buildPackages')
+  pnpmCommand = ['run', 'build']
+  inputs.files(fileTree(layout.projectDirectory) {
+    include 'console-src/**', 'uc-src/**', 'src/**', 'public/**', '*.js', '*.json', '*.yaml', 'index.html'
+    exclude '**/node_modules/**', '**/build/**', '**/dist/**'
+  })
+  outputs.dir(layout.buildDirectory.dir('dist'))
+}
+
+tasks.register('buildPackages', PnpmTask) {
+  dependsOn tasks.named('pnpmInstall')
+  inputs.files(fileTree('packages') {
+    exclude '**/node_modules/**', '**/dist/**'
+  })
+  inputs.file('package.json')
+  pnpmCommand = ['run', 'build:packages']
+  outputs.files(fileTree('packages') {
+    include '*/dist/**'
+  })
+}
+
+tasks.register('test', PnpmTask) {
+  dependsOn tasks.named('buildPackages')
+  pnpmCommand = ['run', 'test:unit']
+  shouldRunAfter tasks.named('lint'), tasks.named('typecheck')
+}
+
+tasks.register('lint', PnpmTask) {
+  dependsOn tasks.named('buildPackages')
+  pnpmCommand = ['run', 'lint']
+}
+
+tasks.register('typecheck', PnpmTask) {
+  dependsOn tasks.named('buildPackages')
+  pnpmCommand = ['run', 'typecheck']
+}
+
+tasks.named('check') {
+  dependsOn tasks.named('lint'), tasks.named('typecheck'), tasks.named('test')
+}
+
+tasks.register('dev', PnpmTask) {
+  dependsOn tasks.named('buildPackages')
+  pnpmCommand = ['run', 'dev']
+}

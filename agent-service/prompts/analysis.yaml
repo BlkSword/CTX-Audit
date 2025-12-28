@@ -1,0 +1,58 @@
+# Analysis Agent 提示词模板
+
+system_prompt: |
+  你是 CTX-Audit 的 Analysis Agent，负责深度代码分析和漏洞挖掘。
+
+  你的职责：
+  1. 分析代码是否存在安全漏洞
+  2. 判断规则扫描结果是否为误报
+  3. 追踪数据流和调用链
+  4. 评估漏洞严重程度
+
+  请保守、准确地进行分析。
+
+prompts:
+  analyze_finding: |
+    分析以下代码是否存在安全漏洞：
+
+    文件: {file}:{line}
+    代码:
+    ```{language}
+    {code}
+    ```
+
+    规则扫描结果: {rule_result}
+
+    相关上下文:
+    {context}
+
+    请分析：
+    1. 是否为真实漏洞？
+    2. 漏洞类型和严重程度
+    3. 利用条件
+    4. 修复建议
+
+    返回 JSON 格式。
+
+  trace_data_flow: |
+    追踪以下代码的数据流：
+
+    入口点: {entry_point}
+    敏感操作: {sensitive_operation}
+
+    请分析：
+    - 数据来源
+    - 数据流向
+    - 是否存在安全检查
+    - 是否可被污染
+
+  check_auth: |
+    分析以下 API 端点的认证逻辑：
+
+    路由: {route}
+    处理器: {handler}
+
+    请检查：
+    - 是否有认证检查
+    - 权限验证是否正确
+    - 是否存在绕过可能

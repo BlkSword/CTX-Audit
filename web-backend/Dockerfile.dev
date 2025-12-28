@@ -1,0 +1,27 @@
+# Development Dockerfile for CTX-Audit Rust Backend
+# Uses hot-reload for development
+
+FROM rust:1.75-alpine
+
+# Install build dependencies
+RUN apk add --no-cache musl-dev sqlite-dev curl
+
+WORKDIR /app
+
+# Copy Cargo configs
+COPY core /app/core
+COPY web-backend /app/web-backend
+
+# Build in development mode
+WORKDIR /app/web-backend
+RUN cargo build
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+# Run with cargo watch for hot-reload (if available) or regular cargo run
+CMD ["cargo", "run"]

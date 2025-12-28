@@ -1,0 +1,69 @@
+## TODO: Currently, Halo does not support i18n for configuration file descriptions
+## So Simplified Chinese is temporarily used as the default description language.
+
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionDefinition
+metadata:
+  name: username-password-logout-handler
+  labels:
+    auth.halo.run/extension-point-name: "additional-webfilter"
+spec:
+  className: run.halo.app.security.authentication.login.UsernamePasswordLogoutHandler
+  extensionPointName: additional-webfilter
+  displayName: "用户名密码注销处理器"
+  description: "用于用户名和密码认证的注销处理器"
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionDefinition
+metadata:
+  name: delegating-logout-page-generating-webfilter
+  labels:
+    auth.halo.run/extension-point-name: "additional-webfilter"
+spec:
+  className: run.halo.app.security.authentication.login.DelegatingLogoutPageGeneratingWebFilter
+  extensionPointName: additional-webfilter
+  displayName: "注销页面生成过滤器"
+  description: "用于生成默认的注销页面"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionDefinition
+metadata:
+  name: halo-email-notifier
+spec:
+  className: run.halo.app.notification.EmailNotifier
+  extensionPointName: reactive-notifier
+  displayName: "邮件通知器"
+  description: "支持通过电子邮件向用户发送通知"
+
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionDefinition
+metadata:
+  name: search-engine-lucene
+spec:
+  className: run.halo.app.search.lucene.LuceneSearchEngine
+  extensionPointName: search-engine
+  displayName: "Lucene 搜索引擎"
+  description: "Halo 自带的本地搜索引擎"
+  icon: /images/extension-points/lucene.png
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionDefinition
+metadata:
+  name: post-content-thumbnail-handler
+spec:
+  className: run.halo.app.content.PostContentThumbnailHandler
+  extensionPointName: reactive-post-content-handler
+  displayName: "文章内容缩略图处理"
+  description: "处理文章的 HTML 内容为 img 标签追加缩略图"
+---
+apiVersion: plugin.halo.run/v1alpha1
+kind: ExtensionDefinition
+metadata:
+  name: page-content-thumbnail-handler
+spec:
+  className: run.halo.app.content.PageContentThumbnailHandler
+  extensionPointName: reactive-page-content-handler
+  displayName: "自定义页面内容缩略图处理"
+  description: "处理页面的 HTML 内容为 img 标签追加缩略图"

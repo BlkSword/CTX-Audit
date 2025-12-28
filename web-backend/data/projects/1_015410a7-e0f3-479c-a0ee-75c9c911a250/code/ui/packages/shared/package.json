@@ -1,0 +1,43 @@
+{
+  "name": "@halo-dev/console-shared",
+  "version": "2.21.0",
+  "description": "",
+  "keywords": [],
+  "homepage": "https://github.com/halo-dev/halo/tree/main/ui/packages/shared#readme",
+  "bugs": {
+    "url": "https://github.com/halo-dev/halo/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/halo-dev/halo.git",
+    "directory": "ui/packages/shared"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "@halo-dev",
+    "url": "https://github.com/halo-dev"
+  },
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json --composite false",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@halo-dev/api-client": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.16",
+    "vue-router": "^4.5.1"
+  }
+}

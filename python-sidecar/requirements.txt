@@ -1,8 +1,0 @@
-mcp
-langgraph
-lancedb
-fastmcp
-uvicorn
-starlette
-tree-sitter
-tree-sitter-languages

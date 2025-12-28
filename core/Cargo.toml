@@ -1,0 +1,58 @@
+[package]
+name = "deepaudit-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# AST 解析
+tree-sitter = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.23"
+tree-sitter-json = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+
+# 文件遍历
+ignore = "0.4"
+walkdir = "2.4"
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+bincode = "1.3"
+
+# 日志
+log = "0.4"
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1.89"
+
+# 文本处理
+regex = "1.10"
+similar = { version = "2.5", features = ["text", "inline", "bytes"] }
+
+# 工具
+anyhow = "1"
+thiserror = "1"
+sha1 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.19", features = ["v4", "fast-rng", "macro-diagnostics"] }
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 并发
+rayon = "1.10"
+
+[lib]
+name = "deepaudit_core"
+path = "src/lib.rs"

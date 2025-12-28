@@ -1,0 +1,44 @@
+{
+  "name": "@halo-dev/ui-plugin-bundler-kit",
+  "version": "2.21.2",
+  "homepage": "https://github.com/halo-dev/halo/tree/main/ui/packages/ui-plugin-bundler-kit#readme",
+  "bugs": {
+    "url": "https://github.com/halo-dev/halo/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/halo-dev/halo.git",
+    "directory": "ui/packages/ui-plugin-bundler-kit"
+  },
+  "license": "GPL-3.0",
+  "author": "@halo-dev",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@halo-dev/api-client": "workspace:*",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
+  },
+  "peerDependencies": {
+    "@rsbuild/core": "^1.0.0",
+    "@rsbuild/plugin-vue": "^1.0.0",
+    "@vitejs/plugin-vue": "^5.0.0 || ^6.0.0",
+    "vite": "^5.0.0 || ^6.0.0 || ^7.0.0"
+  },
+  "engines": {
+    "node": "^18.0.0 || >=20.0.0"
+  }
+}

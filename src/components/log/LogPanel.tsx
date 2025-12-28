@@ -66,8 +66,6 @@ export const LogPanel = memo(({ logs, active = true }: LogPanelProps) => {
   return (
     <div className="h-full bg-background relative">
       <div className="flex items-center gap-2 mb-3 px-4 py-3 bg-muted/30 border-b border-border/40 text-sm text-muted-foreground">
-        <Terminal className="w-4 h-4" />
-        <span>输出</span>
       </div>
       <ScrollArea className="h-[calc(100%-48px)] px-4">
         <div className="py-1">

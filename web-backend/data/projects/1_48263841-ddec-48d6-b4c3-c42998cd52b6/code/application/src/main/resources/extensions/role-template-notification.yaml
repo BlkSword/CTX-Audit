@@ -1,0 +1,21 @@
+apiVersion: v1alpha1
+kind: "Role"
+metadata:
+  name: role-template-notifier-config
+  labels:
+    halo.run/role-template: "true"
+    halo.run/hidden: "true"
+  annotations:
+    rbac.authorization.halo.run/module: "Notification Configuration"
+    rbac.authorization.halo.run/display-name: "Configure Notifier"
+rules:
+  - apiGroups: [ "notification.halo.run" ]
+    resources: [ "notifierDescriptors" ]
+    verbs: [ "*" ]
+  - apiGroups: [ "api.console.halo.run" ]
+    resources: [ "notifiers/sender-config" ]
+    verbs: [ "get", "update" ]
+  - apiGroups: [ "console.api.notification.halo.run" ]
+    resources: [ "notifiers/verify-connection" ]
+    resourceNames: [ "default-email-notifier" ]
+    verbs: [ "create" ]

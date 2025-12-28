@@ -1,0 +1,231 @@
+apiVersion: notification.halo.run/v1alpha1
+kind: NotifierDescriptor
+metadata:
+  name: default-email-notifier
+spec:
+  displayName: '邮件通知'
+  description: '通过邮件将通知发送给用户'
+  notifierExtName: 'halo-email-notifier'
+  senderSettingRef:
+    name: 'notifier-setting-for-email'
+    group: 'sender'
+---
+apiVersion: v1alpha1
+kind: Setting
+metadata:
+  name: notifier-setting-for-email
+spec:
+  forms:
+    - group: sender
+      label: 发件设置
+      formSchema:
+        - $formkit: checkbox
+          label: "启用邮件通知器"
+          value: false
+          name: enable
+        - $formkit: verificationForm
+          if: "$enable"
+          action: /apis/console.api.notification.halo.run/v1alpha1/notifiers/default-email-notifier/verify-connection
+          label: 测试邮箱
+          children:
+            - $formkit: text
+              label: "用户名"
+              name: username
+              validation: required
+            - $formkit: text
+              if: "$enable"
+              label: "发信地址"
+              name: "sender"
+              help: "如果用户名为实际发信地址，可忽略"
+            - $formkit: password
+              label: "密码"
+              name: password
+              validation: required
+            - $formkit: text
+              label: "显示名称"
+              name: displayName
+            - $formkit: text
+              label: "SMTP 服务器地址"
+              name: host
+              validation: required
+            - $formkit: text
+              label: "端口号"
+              name: port
+              validation: required
+            - $formkit: select
+              label: "加密方式"
+              name: encryption
+              value: "SSL"
+              options:
+                - label: "SSL"
+                  value: "SSL"
+                - label: "TLS"
+                  value: "TLS"
+                - label: "不加密"
+                  value: "NONE"
+---
+apiVersion: notification.halo.run/v1alpha1
+kind: ReasonType
+metadata:
+  name: new-comment-on-post
+  annotations:
+    rbac.authorization.halo.run/ui-permissions: |
+      [ "uc:posts:publish" ]
+spec:
+  displayName: "我的文章收到新评论"
+  description: "如果有读者在你的文章下方留下了新的评论，你将会收到一条通知，告诉你有新的评论。
+  这个通知事件可以帮助你及时了解读者对你的文章的反馈，以便你更好地与读者互动，提高文章的质量和受欢迎程度。"
+  properties:
+    - name: postName
+      type: string
+      description: "The name of the post."
+    - name: postOwner
+      type: string
+      description: "The user name of the post owner."
+    - name: postTitle
+      type: string
+    - name: postUrl
+      type: string
+    - name: commenter
+      type: string
+      description: "The display name of the commenter."
+    - name: commentName
+      type: string
+      description: "The name of the comment."
+    - name: content
+      type: string
+      description: "The content of the comment."
+---
+apiVersion: notification.halo.run/v1alpha1
+kind: ReasonType
+metadata:
+  name: new-comment-on-single-page
+  annotations:
+    rbac.authorization.halo.run/ui-permissions: |
+      [ "system:singlepages:manage" ]
+spec:
+  displayName: "我的自定义页面收到新评论"
+  description: "当你创建的自定义页面收到新评论时，你将会收到一条通知，告诉你有新的评论。"
+  properties:
+    - name: pageName
+      type: string
+      description: "The name of the single page."
+    - name: pageOwner
+      type: string
+      description: "The user name of the page owner."
+    - name: pageTitle
+      type: string
+    - name: pageUrl
+      type: string
+    - name: commenter
+      type: string
+      description: "The display name of the commenter."
+    - name: commentName
+      type: string
+      description: "The name of the comment."
+    - name: content
+      type: string
+      description: "The content of the comment."
+---
+apiVersion: notification.halo.run/v1alpha1
+kind: ReasonType
+metadata:
+  name: someone-replied-to-you
+spec:
+  displayName: "有人回复了我"
+  description: "如果有其他用户回复了你的评论，你将会收到一条通知，告诉你有人回复了你。"
+  properties:
+    - name: commentName
+      type: string
+      description: "The name of the comment."
+    - name: commentSubjectTitle
+      type: string
+    - name: commentSubjectUrl
+      type: string
+    - name: quoteContent
+      type: string
+      optional: true
+      description: "The content of quoted reply."
+    - name: isQuoteReply
+      type: boolean
+    - name: commentContent
+      type: string
+    - name: repliedOwner
+      type: string
+      description: "The owner of the comment or reply that has been replied to."
+    - name: replyOwner
+      type: string
+      description: "The user who created the current reply."
+    - name: replier
+      type: string
+      description: "The display name of the replier."
+    - name: replyName
+      type: string
+      description: "The name of the reply."
+    - name: content
+      type: string
+      description: "The content of the reply."
+---
+apiVersion: notification.halo.run/v1alpha1
+kind: ReasonType
+metadata:
+  name: email-verification
+  labels:
+    halo.run/hidden: "true"
+spec:
+  displayName: "邮箱验证"
+  description: "当你的邮箱被用于注册账户时，会收到一条带有验证码的邮件，你需要点击邮件中的链接来验证邮箱是否属于你。"
+  properties:
+    - name: username
+      type: string
+      description: "The username of the user."
+    - name: code
+      type: string
+      description: "The verification code."
+    - name: expirationAtMinutes
+      type: string
+      description: "The expiration minutes of the verification code, such as 5 minutes."
+---
+apiVersion: notification.halo.run/v1alpha1
+kind: ReasonType
+metadata:
+  name: reset-password-by-email
+  labels:
+    halo.run/hidden: "true"
+spec:
+  displayName: "根据邮件地址重置密码"
+  description: "当你通过邮件地址找回密码时，会收到一条带密码重置链接的邮件，你需要点击邮件中的链接来重置密码。"
+  properties:
+    - name: username
+      type: string
+      description: "The username of the user."
+    - name: link
+      type: string
+      description: "The reset link."
+    - name: expirationAtMinutes
+      type: string
+      description: "The expiration minutes of the reset link, such as 30 minutes."
+---
+apiVersion: notification.halo.run/v1alpha1
+kind: ReasonType
+metadata:
+  name: new-device-login
+spec:
+  displayName: "新设备登录"
+  description: "当你的账户在新设备上登录时，你会收到一条通知，告诉你有新设备登录了你的账户。"
+  properties:
+    - name: os
+      type: string
+      description: "The operating system of the device."
+    - name: browser
+      type: string
+      description: "The browser of the device."
+    - name: ipAddress
+      type: string
+      description: "The IP address of the device."
+    - name: loginTime
+      type: string
+      description: "The login time of the device."
+    - name: principalName
+      type: string
+      description: "The principal name of the device."

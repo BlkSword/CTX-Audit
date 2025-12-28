@@ -1,0 +1,18 @@
+apiVersion: auth.halo.run/v1alpha1
+kind: AuthProvider
+metadata:
+  name: local
+  labels:
+    auth.halo.run/auth-binding: "false"
+    auth.halo.run/privileged: "true"
+  finalizers:
+    - system-protection
+spec:
+  displayName: Local
+  description: Built-in authentication for Halo.
+  logo: /images/login-methods/login-with-credentials.svg
+  website: https://www.halo.run
+  authenticationUrl: /login
+  method: post
+  rememberMeSupport: true
+  authType: form
