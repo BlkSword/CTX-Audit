@@ -1,11 +1,59 @@
 import { useCallback, memo } from 'react'
 import { Search, Loader2, FileCode } from 'lucide-react'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
 interface SearchResult {
   file: string
   line: number
   content: string
+}
+
+// 根据文件扩展名获取语言类型
+function getLanguageFromPath(filePath: string): string {
+  if (!filePath) return 'text'
+  const ext = filePath.split('.').pop()?.toLowerCase()
+  switch (ext) {
+    case 'ts': return 'typescript'
+    case 'tsx': return 'typescript'
+    case 'js': return 'javascript'
+    case 'jsx': return 'javascript'
+    case 'vue': return 'vue'
+    case 'rs': return 'rust'
+    case 'py': return 'python'
+    case 'java': return 'java'
+    case 'c': return 'c'
+    case 'cpp': return 'cpp'
+    case 'cc': return 'cpp'
+    case 'h': return 'c'
+    case 'hpp': return 'cpp'
+    case 'cs': return 'csharp'
+    case 'go': return 'go'
+    case 'php': return 'php'
+    case 'rb': return 'ruby'
+    case 'sh': return 'bash'
+    case 'json': return 'json'
+    case 'xml': return 'xml'
+    case 'yaml': return 'yaml'
+    case 'yml': return 'yaml'
+    case 'sql': return 'sql'
+    case 'css': return 'css'
+    case 'scss': return 'scss'
+    case 'sass': return 'sass'
+    case 'less': return 'less'
+    case 'html': return 'html'
+    case 'htm': return 'html'
+    case 'md': return 'markdown'
+    case 'mdx': return 'markdown'
+    case 'toml': return 'toml'
+    case 'ini': return 'ini'
+    case 'conf': return 'ini'
+    case 'dockerfile': return 'docker'
+    case 'docker': return 'docker'
+    case 'txt': return 'text'
+    default: return 'text'
+  }
 }
 
 interface SearchPanelProps {
@@ -26,13 +74,27 @@ export const SearchResultItem = memo(({ result, onClick }: {
       className="w-full text-left p-3 hover:bg-muted/40 transition-colors rounded-md mb-2"
       onClick={onClick}
     >
-      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
         <FileCode className="w-3.5 h-3.5" />
         <span className="truncate">{result.file}</span>
+        <span className="text-primary font-bold">:{result.line}</span>
       </div>
-      <div className="text-sm font-mono">
-        <span className="text-primary font-bold">{result.line}:</span>
-        <span className="ml-2">{result.content}</span>
+      <div className="rounded overflow-hidden text-xs">
+        <SyntaxHighlighter
+          language={getLanguageFromPath(result.file)}
+          style={vscDarkPlus}
+          customStyle={{
+            margin: 0,
+            borderRadius: '0.375rem',
+            fontSize: '0.75rem',
+            lineHeight: '1.4',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+          wrapLongLines={true}
+        >
+          {result.content}
+        </SyntaxHighlighter>
       </div>
     </button>
   )

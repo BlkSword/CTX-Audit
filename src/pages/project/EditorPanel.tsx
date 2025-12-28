@@ -16,7 +16,12 @@ import type { LogEntry } from '@/components/log/LogPanel'
 
 function getLanguageFromPath(path: string | null): string {
   if (!path) return 'plaintext'
-  const ext = path.split('.').pop()?.toLowerCase()
+  // 提取文件名，处理 Windows/Unix 路径分隔符
+  const filename = path.split(/[/\\]/).pop() || ''
+  const ext = filename.split('.').pop()?.toLowerCase()
+
+  if (!ext || ext === filename) return 'plaintext'
+
   switch (ext) {
     case 'ts': return 'typescript'
     case 'tsx': return 'typescript'
@@ -24,10 +29,50 @@ function getLanguageFromPath(path: string | null): string {
     case 'jsx': return 'javascript'
     case 'rs': return 'rust'
     case 'py': return 'python'
+    case 'java': return 'java'
+    case 'go': return 'go'
+    case 'c': return 'c'
+    case 'cpp': return 'cpp'
+    case 'h': return 'cpp'
+    case 'hpp': return 'cpp'
+    case 'cs': return 'csharp'
     case 'json': return 'json'
     case 'css': return 'css'
     case 'html': return 'html'
     case 'md': return 'markdown'
+    case 'yaml': return 'yaml'
+    case 'yml': return 'yaml'
+    case 'xml': return 'xml'
+    case 'sql': return 'sql'
+    case 'sh': return 'shell'
+    case 'bash': return 'shell'
+    case 'zsh': return 'shell'
+    case 'dockerfile': return 'dockerfile'
+    case 'toml': return 'toml'
+    case 'ini': return 'ini'
+    case 'conf': return 'ini'
+    case 'gradle': return 'groovy'
+    case 'vue': return 'html' // Monaco doesn't have built-in vue, use html
+    case 'svelte': return 'html'
+    case 'php': return 'php'
+    case 'rb': return 'ruby'
+    case 'swift': return 'swift'
+    case 'kt': return 'kotlin'
+    case 'dart': return 'dart'
+    case 'lua': return 'lua'
+    case 'r': return 'r'
+    case 'pl': return 'perl'
+    case 'vb': return 'vb'
+    case 'fs': return 'fsharp'
+    case 'ex': return 'elixir'
+    case 'exs': return 'elixir'
+    case 'erl': return 'erlang'
+    case 'clj': return 'clojure'
+    case 'graphql': return 'graphql'
+    case 'gql': return 'graphql'
+    case 'txt': return 'plaintext'
+    case 'log': return 'plaintext'
+    case 'env': return 'ini'
     default: return 'plaintext'
   }
 }
@@ -94,8 +139,8 @@ export function EditorPanel() {
                     key={path}
                     onClick={() => selectFile(path)}
                     className={`h-full px-3 min-w-[100px] max-w-[200px] flex items-center gap-2 border-t-2 text-xs cursor-pointer group select-none ${selectedFile === path
-                        ? 'bg-[#1e1e1e] border-primary text-foreground/90'
-                        : 'bg-[#2d2d2d] border-transparent text-muted-foreground hover:bg-[#252526]'
+                      ? 'bg-[#1e1e1e] border-primary text-foreground/90'
+                      : 'bg-[#2d2d2d] border-transparent text-muted-foreground hover:bg-[#252526]'
                       }`}
                   >
                     <span className="truncate flex-1">{path.split(/[/\\]/).pop()}</span>
@@ -133,11 +178,16 @@ export function EditorPanel() {
                     fontSize: 13,
                     lineHeight: 20,
                     readOnly: true,
+                    wordWrap: 'on',
+                    wrappingStrategy: 'advanced',
                     fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
                     scrollBeyondLastLine: false,
                     smoothScrolling: true,
                     padding: { top: 10 },
-                    automaticLayout: true
+                    automaticLayout: true,
+                    formatOnPaste: true,
+                    formatOnType: true,
+                    renderWhitespace: 'selection',
                   }}
                 />
               </div>

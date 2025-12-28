@@ -4,6 +4,8 @@
 
 import { useState } from 'react'
 import { ShieldAlert, Bug, AlertTriangle, CheckCircle, Search, RefreshCw } from 'lucide-react'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useScanStore } from '@/stores/scanStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -150,6 +152,54 @@ export function ScanPanel() {
         return 'default'
       default:
         return 'secondary'
+    }
+  }
+
+  // 根据文件扩展名获取语言类型
+  const getLanguageFromPath = (filePath: string): string => {
+    if (!filePath) return 'text'
+    const ext = filePath.split('.').pop()?.toLowerCase()
+    switch (ext) {
+      case 'ts': return 'typescript'
+      case 'tsx': return 'typescript'
+      case 'js': return 'javascript'
+      case 'jsx': return 'javascript'
+      case 'vue': return 'vue'
+      case 'rs': return 'rust'
+      case 'py': return 'python'
+      case 'java': return 'java'
+      case 'c': return 'c'
+      case 'cpp': return 'cpp'
+      case 'cc': return 'cpp'
+      case 'h': return 'c'
+      case 'hpp': return 'cpp'
+      case 'cs': return 'csharp'
+      case 'go': return 'go'
+      case 'php': return 'php'
+      case 'rb': return 'ruby'
+      case 'sh': return 'bash'
+      case 'json': return 'json'
+      case 'xml': return 'xml'
+      case 'yaml': return 'yaml'
+      case 'yml': return 'yaml'
+      case 'sql': return 'sql'
+      case 'css': return 'css'
+      case 'scss': return 'scss'
+      case 'sass': return 'sass'
+      case 'less': return 'less'
+      case 'html': return 'html'
+      case 'htm': return 'html'
+      case 'md': return 'markdown'
+      case 'mdx': return 'markdown'
+      case 'toml': return 'toml'
+      case 'ini': return 'ini'
+      case 'conf': return 'ini'
+      case 'dockerfile': return 'docker'
+      case 'docker': return 'docker'
+      case 'yaml': return 'yaml'
+      case 'yml': return 'yaml'
+      case 'txt': return 'text'
+      default: return 'text'
     }
   }
 
@@ -343,9 +393,23 @@ export function ScanPanel() {
                         </h3>
 
                         {vuln.code_snippet && (
-                          <pre className="mt-2 p-2 bg-muted rounded text-xs font-mono overflow-x-auto">
-                            <code>{vuln.code_snippet}</code>
-                          </pre>
+                          <div className="mt-2 rounded overflow-hidden text-xs">
+                            <SyntaxHighlighter
+                              language={getLanguageFromPath(vuln.file_path)}
+                              style={vscDarkPlus}
+                              customStyle={{
+                                margin: 0,
+                                borderRadius: '0.375rem',
+                                fontSize: '0.75rem',
+                                lineHeight: '1.4',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                              }}
+                              wrapLongLines={true}
+                            >
+                              {vuln.code_snippet}
+                            </SyntaxHighlighter>
+                          </div>
                         )}
 
                         {vuln.verification ? (

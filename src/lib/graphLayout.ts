@@ -56,7 +56,7 @@ export function calculateGraphLayout(nodes: any[], edges: any[]): Node[] {
   // Layout each component
   let currentX = 0;
   let currentY = 0;
-  const COMPONENT_PADDING = 600; // Space between components
+  const COMPONENT_PADDING = 300; // Space between components (reduced from 600)
   const MIN_NODE_SIZE = 150; // Minimum size for single-node components
 
   let rowMaxHeight = 0;
@@ -88,7 +88,7 @@ export function calculateGraphLayout(nodes: any[], edges: any[]): Node[] {
     // Check if we need to wrap to next row
     // If currentX + width is too wide? Let's just do a simple flow layout.
     // We'll just place them left to right, if too wide, move down.
-    if (currentX > 2000) { // Arbitrary width limit
+    if (currentX > 3000) { // Arbitrary width limit (increased since padding is reduced)
       currentX = 0;
       currentY += rowMaxHeight + COMPONENT_PADDING;
       rowMaxHeight = 0;
@@ -167,10 +167,10 @@ export function assignEdgeHandles(nodes: Node[], edges: any[]): any[] {
 }
 
 function runForceSimulation(nodes: LayoutNode[], edges: Edge[]) {
-  const iterations = 100;
-  const springLength = 250;
-  const k = 0.1; // Spring constant
-  const c = 300; // Repulsion constant
+  const iterations = 150;
+  const springLength = 180;
+  const k = 0.08; // Spring constant (reduced for gentler attraction)
+  const c = 500; // Repulsion constant (increased to prevent overlap)
 
   // If no edges, use a circular layout for better distribution
   if (edges.length === 0) {
@@ -237,9 +237,11 @@ function runForceSimulation(nodes: LayoutNode[], edges: Edge[]) {
 
     // Update positions
     for (const node of nodes) {
-      // Damping
-      node.vx! *= 0.5;
-      node.vy! *= 0.5;
+      // Damping with progressive cooling for better stabilization
+      const coolingFactor = 1 - (iter / iterations);
+      const damping = 0.3 + (coolingFactor * 0.3);
+      node.vx! *= damping;
+      node.vy! *= damping;
 
       node.x! += node.vx!;
       node.y! += node.vy!;

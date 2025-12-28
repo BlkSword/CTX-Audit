@@ -62,7 +62,21 @@ export const useProjectStore = create<ProjectState>()(
         deleteProject: async (id) => {
           set({ isLoading: true, error: null })
           try {
-            await projectService.deleteProject(id)
+            // 先获取当前项目列表，找到对应的 uuid
+            let projectUuid: string | null = null
+            set(state => {
+              const project = state.projects.find(p => p.id === id)
+              if (project) {
+                projectUuid = project.uuid
+              }
+              return state
+            })
+
+            if (!projectUuid) {
+              throw new Error('项目不存在')
+            }
+
+            await projectService.deleteProject(projectUuid)
             set(state => ({
               projects: state.projects.filter(p => p.id !== id),
               currentProject: state.currentProject?.id === id ? null : state.currentProject,

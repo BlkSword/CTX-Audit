@@ -172,7 +172,22 @@ export class APIClient {
       throw new Error(`Read file failed: ${response.statusText}`)
     }
 
-    return response.text()
+    const text = await response.text()
+    
+    // 尝试判断是否为 JSON 格式的字符串（后端可能将内容序列化为 JSON 字符串返回）
+    // 如果首尾是引号，并且看起来像是 JSON 字符串，尝试解析
+    try {
+      if (text.startsWith('"') && text.endsWith('"')) {
+        const parsed = JSON.parse(text)
+        if (typeof parsed === 'string') {
+          return parsed
+        }
+      }
+    } catch (e) {
+      // 解析失败，说明不是 JSON 字符串，直接返回原始内容
+    }
+
+    return text
   }
 
   /**

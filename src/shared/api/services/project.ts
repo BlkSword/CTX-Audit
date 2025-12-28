@@ -48,12 +48,12 @@ export class ProjectService {
   /**
    * 获取项目详情
    */
-  async getProject(projectUuid: string): Promise<Project> {
-    return api.get<Project>(`/api/projects/${projectUuid}`)
+  async getProject(projectId: number): Promise<Project> {
+    return api.get<Project>(`/api/projects/${projectId}`)
   }
 
   /**
-   * 删除项目
+   * 删除项目（使用 uuid）
    */
   async deleteProject(projectUuid: string): Promise<{ message: string }> {
     return api.delete<{ message: string }>(`/api/projects/${projectUuid}`)
