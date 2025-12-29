@@ -202,3 +202,7 @@ export const MCP_TOOL_DESCRIPTIONS: Record<string, string> = {
 // ==================== Agent 相关 ====================
 
 export * from './agent'
+
+// ==================== 设置相关 ====================
+
+export * from './settings'

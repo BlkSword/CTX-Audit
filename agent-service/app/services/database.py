@@ -81,7 +81,12 @@ async def create_audit_session(
     Returns:
         audit_id
     """
+    import json
+
     pool = await get_pool()
+
+    # 将 config 字典序列化为 JSON 字符串
+    config_json = json.dumps(config) if config else '{}'
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -92,7 +97,7 @@ async def create_audit_session(
             audit_id,
             project_id,
             audit_type,
-            config,
+            config_json,
         )
 
     return audit_id

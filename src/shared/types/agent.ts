@@ -290,95 +290,9 @@ export interface AuditStreamEvent {
 }
 
 // ==================== LLM 配置相关 ====================
+// 从 settings.ts 导入，保持类型统一
 
-export type LLMProvider =
-  | 'openai'
-  | 'anthropic'
-  | 'azure'
-  | 'openrouter'
-  | 'ollama'
-  | 'deepseek'
-  | 'custom'
-
-export interface LLMConfig {
-  id: string
-  provider: LLMProvider
-  model: string
-  apiKey: string
-  apiEndpoint?: string
-  temperature?: number
-  maxTokens?: number
-  enabled: boolean
-  isDefault: boolean
-}
-
-export interface LLMProviderInfo {
-  id: LLMProvider
-  name: string
-  description: string
-  models: string[]
-  requiresApiKey: boolean
-  supportsStreaming: boolean
-}
-
-export const LLM_PROVIDERS: Record<LLMProvider, LLMProviderInfo> = {
-  openai: {
-    id: 'openai',
-    name: 'OpenAI',
-    description: 'GPT-4, GPT-4 Turbo, GPT-3.5',
-    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'],
-    requiresApiKey: true,
-    supportsStreaming: true,
-  },
-  anthropic: {
-    id: 'anthropic',
-    name: 'Anthropic',
-    description: 'Claude 3.5 Sonnet, Claude 3 Opus',
-    models: ['claude-sonnet-3.5', 'claude-opus-3', 'claude-sonnet-3', 'claude-haiku-3'],
-    requiresApiKey: true,
-    supportsStreaming: true,
-  },
-  azure: {
-    id: 'azure',
-    name: 'Azure OpenAI',
-    description: 'Azure 托管的 OpenAI 模型',
-    models: ['gpt-4o', 'gpt-4-turbo', 'gpt-35-turbo'],
-    requiresApiKey: true,
-    supportsStreaming: true,
-  },
-  openrouter: {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    description: '统一访问多个 LLM 提供商',
-    models: ['anthropic/claude-sonnet-3.5', 'openai/gpt-4o', 'meta-llama/llama-3-70b'],
-    requiresApiKey: true,
-    supportsStreaming: true,
-  },
-  ollama: {
-    id: 'ollama',
-    name: 'Ollama',
-    description: '本地运行开源模型',
-    models: ['llama3', 'llama3:70b', 'mistral', 'codellama'],
-    requiresApiKey: false,
-    supportsStreaming: true,
-  },
-  deepseek: {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    description: 'DeepSeek Coder V2',
-    models: ['deepseek-coder', 'deepseek-chat'],
-    requiresApiKey: true,
-    supportsStreaming: true,
-  },
-  custom: {
-    id: 'custom',
-    name: '自定义',
-    description: '自定义 OpenAI 兼容 API',
-    models: [],
-    requiresApiKey: true,
-    supportsStreaming: false,
-  },
-}
+export type { LLMConfig } from './settings'
 
 // ==================== 提示词模板相关 ====================
 
@@ -574,3 +488,17 @@ export const AGENT_TOOLS: AgentTool[] = [
     enabled: true,
   },
 ]
+
+// ==================== Agent 树相关 ====================
+
+export interface AgentNode {
+  agent_id: string
+  agent_name: string
+  agent_type: string
+  task: string
+  status: 'running' | 'completed' | 'stopped' | 'error'
+  created_at: string
+  parent_id?: string
+  children?: AgentNode[]
+}
+

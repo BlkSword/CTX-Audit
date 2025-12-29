@@ -13,6 +13,7 @@ import { AnalysisPanel } from '@/pages/project/AnalysisPanel'
 import AgentAuditPage from '@/pages/AgentAudit'
 import { SettingsLayout } from '@/pages/settings/SettingsLayout'
 import { LLMConfigPage } from '@/pages/settings/LLMConfigPage'
+import { SystemSettingsPage } from '@/pages/settings/SystemSettingsPage'
 import { PromptTemplatesPage } from '@/pages/settings/PromptTemplatesPage'
 import { RulesPage } from '@/pages/settings/RulesPage'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -41,6 +42,7 @@ function App() {
           {/* Settings Routes */}
           <Route path="/settings" element={<SettingsLayout />}>
             <Route path="llm" element={<LLMConfigPage />} />
+            <Route path="system" element={<SystemSettingsPage />} />
             <Route path="prompts" element={<PromptTemplatesPage />} />
             <Route path="rules" element={<RulesPage />} />
           </Route>

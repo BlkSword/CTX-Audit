@@ -40,4 +40,4 @@ pytest-asyncio==0.24.0
 langgraph==0.2.45
 langchain==0.3.7
 langchain-core==0.3.15
-langgraph-cli==0.1.6
+langgraph-cli==0.2.7

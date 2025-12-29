@@ -4,6 +4,7 @@
  * 用于与 Agent 服务通信，包括审计任务、LLM 配置、提示词模板等
  */
 
+import type { AgentNode } from '@/shared/types'
 import type {
   AuditStartRequest,
   AuditStartResponse,
@@ -75,12 +76,12 @@ export class AgentAPIClient {
     return this.request<T>('GET', path)
   }
 
-  async post<T>(path: string, _data?: unknown): Promise<T> {
-    return this.request<T>('POST', path)
+  async post<T>(path: string, data?: unknown): Promise<T> {
+    return this.request<T>('POST', path, data)
   }
 
-  async put<T>(path: string, _data?: unknown): Promise<T> {
-    return this.request<T>('PUT', path)
+  async put<T>(path: string, data?: unknown): Promise<T> {
+    return this.request<T>('PUT', path, data)
   }
 
   async delete<T>(path: string): Promise<T> {
@@ -413,20 +414,6 @@ export async function healthCheck() {
 }
 
 // ==================== Agent 管理相关 ====================
-
-/**
- * Agent 节点类型
- */
-export interface AgentNode {
-  agent_id: string
-  agent_name: string
-  agent_type: string
-  task: string
-  status: 'running' | 'completed' | 'stopped' | 'error'
-  created_at: string
-  parent_id?: string
-  children?: AgentNode[]
-}
 
 /**
  * 获取 Agent 树结构

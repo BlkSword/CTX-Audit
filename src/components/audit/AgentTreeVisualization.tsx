@@ -29,18 +29,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import type { AgentNode } from '@/shared/types'
 
-// Agent 类型定义
-export interface AgentNode {
-  agent_id: string
-  agent_name: string
-  agent_type: string
-  task: string
-  status: 'running' | 'completed' | 'stopped' | 'error'
-  created_at: string
-  parent_id?: string
-  children?: AgentNode[]
-}
+// Agent 类型定义已移至 @/shared/types
 
 // Agent 图标映射
 const AGENT_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {

@@ -209,7 +209,7 @@ export function AnalysisPanel() {
   ]
 
   return (
-    <div className="h-full p-6 overflow-auto">
+    <div className="h-full p-6 overflow-auto no-scrollbar">
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="mb-6">

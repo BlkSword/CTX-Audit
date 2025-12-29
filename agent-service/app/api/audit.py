@@ -62,13 +62,35 @@ async def start_audit(request: AuditStartRequest, background_tasks: BackgroundTa
     # 生成审计 ID
     audit_id = f"audit_{uuid.uuid4().hex[:12]}"
 
+    # 处理 LLM 配置 - 从内存中获取完整配置
+    config = request.config or {}
+    llm_config_id = config.get("llm_config_id")
+
+    if llm_config_id:
+        # 从 LLM API 的内存中获取完整配置
+        from app.api import llm as llm_api
+        llm_configs = llm_api._llm_configs
+
+        if llm_config_id in llm_configs:
+            llm_config = llm_configs[llm_config_id]
+            # 将 LLM 配置信息合并到 config 中
+            config["llm_provider"] = llm_config.provider
+            config["llm_model"] = llm_config.model
+            config["api_key"] = llm_config.api_key
+            config["base_url"] = llm_config.api_endpoint
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"LLM 配置不存在: {llm_config_id}"
+            )
+
     # 创建数据库记录
     try:
         await create_audit_session(
             audit_id=audit_id,
             project_id=request.project_id,
             audit_type=request.audit_type,
-            config=request.config or {},
+            config=config,
         )
     except Exception as e:
         raise HTTPException(
@@ -86,7 +108,7 @@ async def start_audit(request: AuditStartRequest, background_tasks: BackgroundTa
         project_id=request.project_id,
         audit_type=request.audit_type,
         target_types=request.target_types,
-        config=request.config or {},
+        config=config,
     )
 
     return AuditStartResponse(
@@ -160,6 +182,7 @@ async def stream_audit(audit_id: str):
 
     实时推送 Agent 思考链、进度更新等事件
     """
+    from loguru import logger
     event_bus = get_event_bus()
 
     async def event_generator():
@@ -180,11 +203,15 @@ async def stream_audit(audit_id: str):
                 yield f"event: {sse_event}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
 
         except asyncio.CancelledError:
-            # 客户端断开连接
-            logger.info(f"SSE 连接断开: {audit_id}")
+            # 客户端断开连接，正常关闭
+            logger.debug(f"SSE 连接正常断开: {audit_id}")
+            raise  # 重新抛出以正确清理资源
         except Exception as e:
             logger.error(f"SSE 流错误: {e}")
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+            try:
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+            except Exception:
+                pass  # 客户端可能已经断开
 
     return StreamingResponse(
         event_generator(),

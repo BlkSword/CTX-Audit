@@ -84,7 +84,7 @@ FileTreeNode.displayName = 'FileTreeNode'
 
 export const FileTree = memo(({ nodes, selectedPath, onSelect }: FileTreeProps) => {
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto no-scrollbar">
       {nodes.map(node => (
         <FileTreeNode
           key={node.path}

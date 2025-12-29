@@ -16,7 +16,8 @@ import type {
   LLMConfig,
   PromptTemplate,
 } from '@/shared/types'
-import { agentApi, agentTreeApi, AgentNode } from '@/shared/api/agent-client'
+import { agentApi, agentTreeApi } from '@/shared/api/agent-client'
+import type { AgentNode } from '@/shared/types'
 
 interface AgentState {
   // 当前审计任务
@@ -66,6 +67,9 @@ interface AgentState {
   disconnectStream: () => void
   addEvent: (event: AgentEvent) => void
   clearEvents: () => void
+
+  // 连接检查
+  checkConnection: () => Promise<boolean>
 
   // LLM 配置操作
   loadLLMConfigs: () => Promise<void>
@@ -294,6 +298,20 @@ export const useAgentStore = create<AgentState>()(
       disconnectStream: () => {
         agentApi.disconnectAuditStream()
         set({ isConnected: false })
+      },
+
+      // 检查服务连接
+      checkConnection: async () => {
+        try {
+          const response = await agentApi.healthCheck()
+          const isHealthy = response && response.status === 'healthy'
+          set({ isConnected: isHealthy })
+          return isHealthy
+        } catch (error) {
+          console.error('连接检查失败:', error)
+          set({ isConnected: false })
+          return false
+        }
       },
 
       // 添加事件

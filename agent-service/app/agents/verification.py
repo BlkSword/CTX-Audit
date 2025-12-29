@@ -3,7 +3,7 @@ Verification Agent - LLM 驱动的漏洞验证者
 
 负责漏洞验证和智能 PoC 生成
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from loguru import logger
 
 from app.agents.base import BaseAgent
@@ -34,14 +34,12 @@ class VerificationAgent(BaseAgent):
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(name="verification", config=config)
 
-        # LLM 服务
-        llm_config = config or {}
-        self.llm = LLMService(
-            provider=LLMProvider(llm_config.get("llm_provider", "anthropic")),
-            model=llm_config.get("llm_model", "claude-3-5-sonnet-20241022"),
-            api_key=llm_config.get("api_key"),
-            base_url=llm_config.get("base_url"),
-        )
+        # 确保 config 不为 None
+        config = config or {}
+
+        # LLM 服务（延迟初始化）
+        self._llm_config = config
+        self._llm: Optional[Any] = None
 
         # Docker 客户端（如果可用）
         self._docker_client = None
@@ -51,6 +49,34 @@ class VerificationAgent(BaseAgent):
                 logger.info("Docker 客户端初始化成功")
             except Exception as e:
                 logger.warning(f"Docker 客户端初始化失败: {e}")
+
+    @property
+    def llm(self):  # type: ignore
+        """延迟初始化 LLM 服务"""
+        if self._llm is None:
+            try:
+                self._llm = LLMService(
+                    provider=LLMProvider(self._llm_config.get("llm_provider", "anthropic")),
+                    model=self._llm_config.get("llm_model", "claude-3-5-sonnet-20241022"),
+                    api_key=self._llm_config.get("api_key"),
+                    base_url=self._llm_config.get("base_url"),
+                )
+            except Exception as e:
+                logger.warning(f"LLM 服务初始化失败（将使用模拟模式）: {e}")
+                self._llm = self._create_mock_llm()
+        return self._llm
+
+    def _create_mock_llm(self):
+        """创建模拟 LLM 服务"""
+        class MockLLMService:
+            async def generate(self, *args, **kwargs):
+                from app.services.llm.adapters.base import LLMResponse
+                return LLMResponse(
+                    content="[模拟模式] LLM 未配置",
+                    model="mock",
+                    usage={"total_tokens": 0},
+                )
+        return MockLLMService()
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """

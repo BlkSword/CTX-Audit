@@ -211,7 +211,7 @@ export function PromptTemplatesPage() {
               </DialogDescription>
             </DialogHeader>
 
-            <div className="grid gap-4 py-4 overflow-y-auto max-h-[50vh]">
+            <div className="grid gap-4 py-4 overflow-y-auto max-h-[50vh] no-scrollbar">
               {/* 基本信息 */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
@@ -323,7 +323,7 @@ export function PromptTemplatesPage() {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 overflow-auto p-6 no-scrollbar">
         <div className="max-w-6xl mx-auto">
           {/* 过滤器 */}
           <div className="flex items-center gap-4 mb-6">

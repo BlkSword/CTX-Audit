@@ -5,7 +5,7 @@ Orchestrator Agent - LLM 驱动的自主编排者
 1. LLM 自主决策：LLM 决定下一步操作和 Agent 调度
 2. LangGraph 辅助：确定性流程作为备用方案
 """
-from typing import Dict, Any, Optional, List, TypedDict, Annotated, Sequence
+from typing import Dict, Any, Optional, List, TypedDict, Annotated, Sequence, TYPE_CHECKING
 from loguru import logger
 import operator
 import time
@@ -75,14 +75,12 @@ class OrchestratorAgent(BaseAgent):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         super().__init__(name="orchestrator", config=config)
 
-        # LLM 服务
-        llm_config = config or {}
-        self.llm = LLMService(
-            provider=LLMProvider(llm_config.get("llm_provider", "anthropic")),
-            model=llm_config.get("llm_model", "claude-3-5-sonnet-20241022"),
-            api_key=llm_config.get("api_key"),
-            base_url=llm_config.get("base_url"),
-        )
+        # 确保 config 不为 None
+        config = config or {}
+
+        # LLM 服务（延迟初始化，允许无 API 密钥启动）
+        self._llm_config = config
+        self._llm: Optional[LLMService] = None
 
         # 编排模式
         self.use_llm_orchestration = config.get("use_llm_orchestration", True)
@@ -96,6 +94,43 @@ class OrchestratorAgent(BaseAgent):
 
         # 对话历史
         self._conversation: List[Dict[str, Any]] = []
+
+    @property
+    def llm(self):  # type: ignore
+        """延迟初始化 LLM 服务"""
+        if self._llm is None:
+            try:
+                self._llm = LLMService(
+                    provider=LLMProvider(self._llm_config.get("llm_provider", "anthropic")),
+                    model=self._llm_config.get("llm_model", "claude-3-5-sonnet-20241022"),
+                    api_key=self._llm_config.get("api_key"),
+                    base_url=self._llm_config.get("base_url"),
+                )
+            except Exception as e:
+                logger.warning(f"LLM 服务初始化失败（将使用模拟模式）: {e}")
+                # 创建一个模拟的 LLM 服务
+                self._llm = self._create_mock_llm()
+        return self._llm
+
+    def _create_mock_llm(self):  # type: ignore
+        """创建模拟 LLM 服务（用于无 API 密钥时）"""
+        # 这里返回一个模拟对象，避免崩溃
+        class MockLLMService:
+            async def generate(self, *args, **kwargs):
+                from app.services.llm.adapters.base import LLMResponse
+                return LLMResponse(
+                    content="[模拟模式] LLM 未配置，请在前端设置中配置 API 密钥",
+                    model="mock",
+                    usage={"total_tokens": 0},
+                )
+
+            async def generate_with_tools(self, *args, **kwargs):
+                return {
+                    "content": "[模拟模式] LLM 未配置",
+                    "tool_calls": [],
+                    "usage": {"total_tokens": 0},
+                }
+        return MockLLMService()  # type: ignore
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """

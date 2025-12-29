@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Settings,
   Server,
+  Sliders,
   FileText,
   Shield,
 } from 'lucide-react'
@@ -19,6 +20,12 @@ const settingsNavItems = [
     label: 'LLM 配置',
     icon: Server,
     path: '/settings/llm',
+  },
+  {
+    id: 'system',
+    label: '系统设置',
+    icon: Sliders,
+    path: '/settings/system',
   },
   {
     id: 'prompts',
@@ -86,7 +93,7 @@ export function SettingsLayout() {
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto no-scrollbar">
           <Outlet />
         </div>
       </div>

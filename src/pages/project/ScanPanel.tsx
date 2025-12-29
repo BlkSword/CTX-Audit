@@ -194,9 +194,9 @@ export function ScanPanel() {
       case 'toml': return 'toml'
       case 'ini': return 'ini'
       case 'conf': return 'ini'
-      case 'dockerfile': return 'docker'
+      case 'dockerfile':
       case 'docker': return 'docker'
-      case 'yaml': return 'yaml'
+      case 'yaml':
       case 'yml': return 'yaml'
       case 'txt': return 'text'
       default: return 'text'
@@ -204,7 +204,7 @@ export function ScanPanel() {
   }
 
   return (
-    <div className="h-full p-6 overflow-auto">
+    <div className="h-full p-6 overflow-auto no-scrollbar">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">

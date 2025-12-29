@@ -381,7 +381,7 @@ export function RulesPage() {
 
           {/* 右侧规则详情 */}
           <div className="lg:col-span-2">
-            <Card className="p-6 h-[calc(100vh-420px)] overflow-auto">
+            <Card className="p-6 h-[calc(100vh-420px)] overflow-auto no-scrollbar">
               {!selectedRule ? (
                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
                   <Shield className="w-16 h-16 mb-4 opacity-20" />
@@ -444,7 +444,7 @@ export function RulesPage() {
                         <Code className="w-4 h-4" />
                         检测模式
                       </h3>
-                      <pre className="p-3 bg-muted rounded-lg text-xs font-mono overflow-x-auto">
+                      <pre className="p-3 bg-muted rounded-lg text-xs font-mono overflow-x-auto no-scrollbar">
                         <code>{selectedRule.pattern}</code>
                       </pre>
                     </div>
@@ -457,7 +457,7 @@ export function RulesPage() {
                         <Code className="w-4 h-4" />
                         AST 查询
                       </h3>
-                      <pre className="p-3 bg-muted rounded-lg text-xs font-mono overflow-x-auto">
+                      <pre className="p-3 bg-muted rounded-lg text-xs font-mono overflow-x-auto no-scrollbar">
                         <code>{selectedRule.query}</code>
                       </pre>
                     </div>
@@ -523,7 +523,7 @@ function RuleDialog({
 }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-background rounded-lg shadow-lg max-w-2xl w-full max-h-[90vh] overflow-auto">
+      <div className="bg-background rounded-lg shadow-lg max-w-2xl w-full max-h-[90vh] overflow-auto no-scrollbar">
         <div className="p-6 border-b border-border/40">
           <h2 className="text-xl font-bold">{title}</h2>
         </div>

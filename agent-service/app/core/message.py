@@ -3,7 +3,7 @@ Agent 间消息系统
 
 支持 Agent 之间的异步通信
 """
-from typing import Dict, Any, Optional, Callable, Awaitable
+from typing import Dict, Any, Optional, Callable, Awaitable, AsyncIterator, List
 from datetime import datetime
 from loguru import logger
 import asyncio

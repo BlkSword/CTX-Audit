@@ -24,10 +24,19 @@ def create_app() -> FastAPI:
     # 配置 CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://localhost:5173"],
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3002",
+            "http://localhost:3002",
+        ],
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=3600,
     )
 
     # 注册路由
@@ -41,13 +50,14 @@ def create_app() -> FastAPI:
 
 def _register_routes(app: FastAPI) -> None:
     """注册所有路由"""
-    from app.api import audit, agents, health, llm, prompts
+    from app.api import audit, agents, health, llm, prompts, settings
 
     app.include_router(health.router, prefix="/health", tags=["Health"])
     app.include_router(audit.router, prefix="/api/audit", tags=["Audit"])
     app.include_router(llm.router, prefix="/api/llm", tags=["LLM"])
     app.include_router(prompts.router, prefix="/api/prompts", tags=["Prompts"])
     app.include_router(agents.router, prefix="/api/agents", tags=["Agents"])
+    app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])
 
     logger.info("API 路由注册完成")
 

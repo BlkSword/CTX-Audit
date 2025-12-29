@@ -3,7 +3,7 @@ Analysis Agent - LLM 驱动的深度分析者
 
 负责深度代码分析、漏洞挖掘和误报过滤
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from loguru import logger
 import json
 
@@ -27,17 +27,15 @@ class AnalysisAgent(BaseAgent):
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(name="analysis", config=config)
 
-        # LLM 服务
-        llm_config = config or {}
-        self.llm = LLMService(
-            provider=LLMProvider(llm_config.get("llm_provider", "anthropic")),
-            model=llm_config.get("llm_model", "claude-3-5-sonnet-20241022"),
-            api_key=llm_config.get("api_key"),
-            base_url=llm_config.get("base_url"),
-        )
+        # 确保 config 不为 None
+        config = config or {}
+
+        # LLM 服务（延迟初始化）
+        self._llm_config = config
+        self._llm: Optional[Any] = None
 
         # 配置
-        self.use_rag = config.get("use_rag", True) if config else True
+        self.use_rag = config.get("use_rag", True)
         self.max_iterations = config.get("max_iterations", 15)
         self.max_findings_to_analyze = config.get("max_findings_to_analyze", 50)
 
@@ -47,6 +45,41 @@ class AnalysisAgent(BaseAgent):
         # 分析结果
         self._confirmed_findings: List[Dict[str, Any]] = []
         self._false_positives: List[str] = []
+
+    @property
+    def llm(self):  # type: ignore
+        """延迟初始化 LLM 服务"""
+        if self._llm is None:
+            try:
+                self._llm = LLMService(
+                    provider=LLMProvider(self._llm_config.get("llm_provider", "anthropic")),
+                    model=self._llm_config.get("llm_model", "claude-3-5-sonnet-20241022"),
+                    api_key=self._llm_config.get("api_key"),
+                    base_url=self._llm_config.get("base_url"),
+                )
+            except Exception as e:
+                logger.warning(f"LLM 服务初始化失败（将使用模拟模式）: {e}")
+                self._llm = self._create_mock_llm()
+        return self._llm
+
+    def _create_mock_llm(self):
+        """创建模拟 LLM 服务"""
+        class MockLLMService:
+            async def generate(self, *args, **kwargs):
+                from app.services.llm.adapters.base import LLMResponse
+                return LLMResponse(
+                    content="[模拟模式] LLM 未配置",
+                    model="mock",
+                    usage={"total_tokens": 0},
+                )
+
+            async def generate_with_tools(self, *args, **kwargs):
+                return {
+                    "content": "[模拟模式] LLM 未配置",
+                    "tool_calls": [],
+                    "usage": {"total_tokens": 0},
+                }
+        return MockLLMService()
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """

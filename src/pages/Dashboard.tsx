@@ -221,7 +221,7 @@ export function Dashboard() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto p-6">
+      <main className="flex-1 overflow-auto p-6 no-scrollbar">
         <div className="max-w-6xl mx-auto">
           {/* Stats */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">

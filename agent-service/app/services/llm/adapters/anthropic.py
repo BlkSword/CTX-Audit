@@ -40,7 +40,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         messages: List[LLMMessage],
         max_tokens: int = 4096,
         temperature: float = 0.7,
-        tools: Optional[List[Dict[str, Any]]} = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> LLMResponse:
         """生成文本"""
