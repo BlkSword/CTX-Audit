@@ -22,8 +22,9 @@ export interface AgentAPIConfig {
 
 export class AgentAPIClient {
   private config: AgentAPIConfig
-  private wsConnection: WebSocket | null = null
-  private wsEventHandlers: Map<AgentEventType, Set<(event: AgentEvent) => void>> = new Map()
+  private eventSource: EventSource | null = null
+  private sseEventHandlers: Map<AgentEventType, Set<(event: AgentEvent) => void>> = new Map()
+  private sseMessageHandlers: Set<(event: AgentEvent) => void> = new Set()
 
   get baseURL() {
     return this.config.baseURL
@@ -31,7 +32,7 @@ export class AgentAPIClient {
 
   constructor(config?: Partial<AgentAPIConfig>) {
     this.config = {
-      baseURL: config?.baseURL || import.meta.env.VITE_AGENT_API_BASE_URL || 'http://localhost:8002',
+      baseURL: config?.baseURL || import.meta.env.VITE_AGENT_API_BASE_URL || 'http://localhost:8001',
       timeout: config?.timeout || 60000,
     }
   }
@@ -138,38 +139,64 @@ export class AgentAPIClient {
     return this.get<AuditStatusResponse[]>(`/api/audit${params}`)
   }
 
-  // ==================== WebSocket 事件流 ====================
+  // ==================== SSE 事件流 ====================
 
   /**
-   * 连接到审计事件流
+   * 连接到审计事件流（使用 SSE）
    */
   connectAuditStream(auditId: string): void {
-    if (this.wsConnection?.readyState === WebSocket.OPEN) {
-      this.wsConnection.close()
+    // 先关闭之前的连接
+    this.disconnectAuditStream()
+
+    const eventSourceUrl = `${this.config.baseURL}/api/audit/${auditId}/stream`
+    this.eventSource = new EventSource(eventSourceUrl)
+
+    this.eventSource.onopen = () => {
+      console.log('SSE connected to audit stream')
     }
 
-    const wsUrl = this.config.baseURL.replace('http', 'ws')
-    this.wsConnection = new WebSocket(`${wsUrl}/api/audit/${auditId}/stream`)
-
-    this.wsConnection.onopen = () => {
-      console.log('WebSocket connected to audit stream')
-    }
-
-    this.wsConnection.onmessage = (event) => {
+    // 处理通用消息（兼容旧代码）
+    this.eventSource.addEventListener('message', (event) => {
       try {
         const agentEvent: AgentEvent = JSON.parse(event.data)
         this.emitEvent(agentEvent)
       } catch (error) {
-        console.error('Failed to parse WebSocket message:', error)
+        console.error('Failed to parse SSE message:', error)
       }
-    }
+    })
 
-    this.wsConnection.onerror = (error) => {
-      console.error('WebSocket error:', error)
-    }
+    // 处理特定事件类型
+    const eventTypes: AgentEventType[] = [
+      'thinking',
+      'action',
+      'observation',
+      'finding',
+      'decision',
+      'error',
+      'complete',
+      'progress',
+      'agent_start',
+      'agent_complete',
+      'tool_call',
+      'rag_retrieval',
+      'status',
+      'connected',
+    ]
 
-    this.wsConnection.onclose = () => {
-      console.log('WebSocket connection closed')
+    eventTypes.forEach(eventType => {
+      this.eventSource!.addEventListener(eventType, (event) => {
+        try {
+          const agentEvent: AgentEvent = JSON.parse((event as MessageEvent).data)
+          this.emitEvent(agentEvent)
+        } catch (parseError) {
+          console.error(`Failed to parse SSE ${eventType} event:`, parseError)
+        }
+      })
+    })
+
+    this.eventSource.onerror = (error) => {
+      console.error('SSE connection error:', error)
+      // EventSource 会自动重连，但遇到某些错误需要手动处理
     }
   }
 
@@ -177,24 +204,25 @@ export class AgentAPIClient {
    * 断开审计事件流
    */
   disconnectAuditStream(): void {
-    if (this.wsConnection) {
-      this.wsConnection.close()
-      this.wsConnection = null
+    if (this.eventSource) {
+      this.eventSource.close()
+      this.eventSource = null
+      console.log('SSE connection closed')
     }
   }
 
   /**
-   * 注册事件处理器
+   * 注册事件处理器（兼容旧代码）
    */
   onEvent(eventType: AgentEventType, handler: (event: AgentEvent) => void): () => void {
-    if (!this.wsEventHandlers.has(eventType)) {
-      this.wsEventHandlers.set(eventType, new Set())
+    if (!this.sseEventHandlers.has(eventType)) {
+      this.sseEventHandlers.set(eventType, new Set())
     }
-    this.wsEventHandlers.get(eventType)!.add(handler)
+    this.sseEventHandlers.get(eventType)!.add(handler)
 
     // 返回取消订阅函数
     return () => {
-      this.wsEventHandlers.get(eventType)?.delete(handler)
+      this.sseEventHandlers.get(eventType)?.delete(handler)
     }
   }
 
@@ -202,10 +230,12 @@ export class AgentAPIClient {
    * 触发事件
    */
   private emitEvent(event: AgentEvent): void {
-    const handlers = this.wsEventHandlers.get(event.type)
+    const handlers = this.sseEventHandlers.get(event.type)
     if (handlers) {
       handlers.forEach(handler => handler(event))
     }
+    // 同时触发所有消息处理器（兼容）
+    this.sseMessageHandlers.forEach(handler => handler(event))
   }
 
   // ==================== LLM 配置相关 ====================
@@ -380,4 +410,125 @@ export async function getAuditResult(auditId: string) {
 
 export async function healthCheck() {
   return agentApi.healthCheck()
+}
+
+// ==================== Agent 管理相关 ====================
+
+/**
+ * Agent 节点类型
+ */
+export interface AgentNode {
+  agent_id: string
+  agent_name: string
+  agent_type: string
+  task: string
+  status: 'running' | 'completed' | 'stopped' | 'error'
+  created_at: string
+  parent_id?: string
+  children?: AgentNode[]
+}
+
+/**
+ * 获取 Agent 树结构
+ */
+async function getAgentTree(rootId?: string): Promise<AgentNode | {}> {
+  const params = rootId ? `?root_id=${rootId}` : ''
+  return agentApi.get<AgentNode | {}>(`/api/agents/tree${params}`)
+}
+
+/**
+ * 列出所有 Agent
+ */
+async function listAgents(agentType?: string, status?: string): Promise<AgentNode[]> {
+  const params = new URLSearchParams()
+  if (agentType) params.append('agent_type', agentType)
+  if (status) params.append('status', status)
+  const queryString = params.toString()
+  return agentApi.get<AgentNode[]>(`/api/agents/list${queryString ? '?' + queryString : ''}`)
+}
+
+/**
+ * 获取单个 Agent 详情
+ */
+async function getAgentInfo(agentId: string): Promise<AgentNode> {
+  return agentApi.get<AgentNode>(`/api/agents/${agentId}`)
+}
+
+/**
+ * 创建新 Agent
+ */
+async function createAgent(agentType: string, task: string, parentId?: string, config?: Record<string, unknown>): Promise<{ agent_id: string; status: string }> {
+  return agentApi.post<{ agent_id: string; status: string }>('/api/agents/create', {
+    agent_type: agentType,
+    task,
+    parent_id: parentId,
+    config,
+  })
+}
+
+/**
+ * 停止 Agent
+ */
+async function stopAgent(agentId: string, stopChildren = true): Promise<{ status: string; agent_id: string }> {
+  return agentApi.post<{ status: string; agent_id: string }>(`/api/agents/${agentId}/stop?stop_children=${stopChildren}`)
+}
+
+/**
+ * 获取 Agent 统计信息
+ */
+async function getAgentStatistics(): Promise<{
+  total: number
+  running: number
+  completed: number
+  stopped: number
+  error: number
+  by_type: Record<string, number>
+}> {
+  return agentApi.get<{
+    total: number
+    running: number
+    completed: number
+    stopped: number
+    error: number
+    by_type: Record<string, number>
+  }>('/api/agents/statistics/overview')
+}
+
+/**
+ * 获取消息历史
+ */
+async function getMessageHistory(agentId?: string, limit = 100): Promise<Array<{
+  message_id: string
+  sender: string
+  recipient: string
+  message_type: string
+  content: string
+  priority: string
+  data: Record<string, unknown>
+  timestamp: string
+}>> {
+  const params = new URLSearchParams()
+  if (agentId) params.append('agent_id', agentId)
+  params.append('limit', limit.toString())
+  return agentApi.get<Array<{
+    message_id: string
+    sender: string
+    recipient: string
+    message_type: string
+    content: string
+    priority: string
+    data: Record<string, unknown>
+    timestamp: string
+  }>>(`/api/agents/message/history?${params}`)
+}
+
+// 导出 Agent API 方法
+export const agentTreeApi = {
+  getAgentTree,
+  listAgents,
+  getAgentInfo,
+  createAgent,
+  stopAgent,
+  getAgentStatistics,
+  getMessageHistory,
 }

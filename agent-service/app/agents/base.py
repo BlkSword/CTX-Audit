@@ -17,6 +17,7 @@ class BaseAgent(ABC):
     - 统一的初始化接口
     - 标准的执行流程
     - 思考链记录
+    - 事件发布
     - 错误处理
     """
 
@@ -32,6 +33,7 @@ class BaseAgent(ABC):
         self.config = config or {}
         self.thinking_chain: list = []
         self.execution_start_time: Optional[float] = None
+        self._audit_id: Optional[str] = None
 
     @abstractmethod
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -63,6 +65,7 @@ class BaseAgent(ABC):
         """
         self.execution_start_time = time.time()
         self.thinking_chain = []
+        self._audit_id = context.get("audit_id")
 
         try:
             logger.info(f"[{self.name}] 开始执行...")
@@ -85,6 +88,8 @@ class BaseAgent(ABC):
 
         except Exception as e:
             logger.error(f"[{self.name}] 执行失败: {e}")
+            # 发布错误事件
+            await self._publish_event("error", {"error": str(e)})
             return {
                 "agent": self.name,
                 "status": "error",
@@ -108,11 +113,49 @@ class BaseAgent(ABC):
         Args:
             thought: 思考内容
         """
+        timestamp = time.time()
         self.thinking_chain.append({
-            "timestamp": time.time(),
+            "timestamp": timestamp,
             "thought": thought,
         })
         logger.debug(f"[{self.name}] 思考: {thought}")
+
+        # 自动发布思考事件
+        if self._audit_id:
+            from app.services.event_bus import publish_event
+            # 使用 asyncio.create_task 避免阻塞
+            try:
+                import asyncio
+                asyncio.create_task(publish_event(
+                    self._audit_id,
+                    self.name,
+                    "thinking",
+                    {"message": thought}
+                ))
+            except Exception as e:
+                logger.warning(f"发布思考事件失败: {e}")
+
+    async def _publish_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """
+        发布 Agent 事件
+
+        Args:
+            event_type: 事件类型
+            data: 事件数据
+        """
+        if not self._audit_id:
+            return
+
+        try:
+            from app.services.event_bus import publish_event
+            await publish_event(
+                self._audit_id,
+                self.name,
+                event_type,
+                data
+            )
+        except Exception as e:
+            logger.warning(f"发布事件失败: {e}")
 
     async def call_llm(
         self,
@@ -131,6 +174,7 @@ class BaseAgent(ABC):
         Returns:
             LLM 响应
         """
+        self.think("调用 LLM 进行分析...")
         from app.core.llm import llm_client
         return await llm_client.generate(
             prompt=prompt,

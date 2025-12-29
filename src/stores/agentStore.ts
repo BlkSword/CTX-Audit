@@ -16,7 +16,7 @@ import type {
   LLMConfig,
   PromptTemplate,
 } from '@/shared/types'
-import { agentApi } from '@/shared/api/agent-client'
+import { agentApi, agentTreeApi, AgentNode } from '@/shared/api/agent-client'
 
 interface AgentState {
   // 当前审计任务
@@ -40,6 +40,19 @@ interface AgentState {
 
   // 提示词模板
   promptTemplates: PromptTemplate[]
+
+  // Agent 树相关
+  agentTree: AgentNode | null
+  agentTreeLoading: boolean
+  agentTreeError: string | null
+  agentStatistics: {
+    total: number
+    running: number
+    completed: number
+    stopped: number
+    error: number
+    by_type: Record<string, number>
+  } | null
 
   // 操作方法
   startAudit: (projectId: string, auditType: 'quick' | 'full' | 'targeted', config?: any) => Promise<string>
@@ -67,6 +80,14 @@ interface AgentState {
   createPromptTemplate: (template: Omit<PromptTemplate, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>
   updatePromptTemplate: (id: string, template: Partial<PromptTemplate>) => Promise<void>
   deletePromptTemplate: (id: string) => Promise<void>
+
+  // Agent 树操作
+  loadAgentTree: (rootId?: string) => Promise<void>
+  refreshAgentTree: () => Promise<void>
+  stopAgent: (agentId: string, stopChildren?: boolean) => Promise<void>
+  loadAgentStatistics: () => Promise<void>
+  createAgent: (agentType: string, task: string, parentId?: string, config?: any) => Promise<string>
+  getAgentInfo: (agentId: string) => Promise<AgentNode>
 
   // 清理
   clearError: () => void
@@ -100,6 +121,10 @@ const initialState = {
   llmConfigs: [],
   defaultLLMConfig: null,
   promptTemplates: [],
+  agentTree: null,
+  agentTreeLoading: false,
+  agentTreeError: null,
+  agentStatistics: null,
 }
 
 export const useAgentStore = create<AgentState>()(
@@ -275,7 +300,16 @@ export const useAgentStore = create<AgentState>()(
       addEvent: (event) => {
         set((state) => {
           const MAX_EVENTS = 1000
-          const events = [...state.events, event]
+          // 将后端事件格式转换为前端格式
+          const normalizedEvent: AgentEvent = {
+            id: event.event_id || event.id,
+            audit_id: event.audit_id,
+            type: event.event_type as AgentEventType || event.type,
+            agent_type: (event.agent_type?.toLowerCase() + '_' || '') as AgentType,
+            timestamp: Date.now() / 1000, // 后端发送 ISO 字符串，转换为时间戳
+            data: event.data || (event as any).data,
+          }
+          const events = [...state.events, normalizedEvent]
           if (events.length > MAX_EVENTS) {
             return { events: events.slice(events.length - MAX_EVENTS) }
           }
@@ -429,6 +463,69 @@ export const useAgentStore = create<AgentState>()(
         }
       },
 
+      // 加载 Agent 树
+      loadAgentTree: async (rootId) => {
+        set({ agentTreeLoading: true, agentTreeError: null })
+        try {
+          const tree = await agentTreeApi.getAgentTree(rootId)
+          if (tree && Object.keys(tree).length > 0) {
+            set({ agentTree: tree as AgentNode, agentTreeLoading: false })
+          } else {
+            set({ agentTree: null, agentTreeLoading: false })
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '加载 Agent 树失败'
+          set({ agentTreeError: message, agentTreeLoading: false })
+        }
+      },
+
+      // 刷新 Agent 树
+      refreshAgentTree: async () => {
+        await get().loadAgentTree()
+      },
+
+      // 停止 Agent
+      stopAgent: async (agentId, stopChildren = true) => {
+        try {
+          await agentTreeApi.stopAgent(agentId, stopChildren)
+          // 刷新树
+          await get().loadAgentTree()
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '停止 Agent 失败'
+          set({ auditError: message })
+          throw error
+        }
+      },
+
+      // 加载 Agent 统计
+      loadAgentStatistics: async () => {
+        try {
+          const stats = await agentTreeApi.getAgentStatistics()
+          set({ agentStatistics: stats })
+        } catch (error) {
+          console.error('加载 Agent 统计失败:', error)
+        }
+      },
+
+      // 创建 Agent
+      createAgent: async (agentType, task, parentId, config) => {
+        try {
+          const result = await agentTreeApi.createAgent(agentType, task, parentId, config)
+          // 刷新树
+          await get().loadAgentTree()
+          return result.agent_id
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '创建 Agent 失败'
+          set({ auditError: message })
+          throw error
+        }
+      },
+
+      // 获取 Agent 详情
+      getAgentInfo: async (agentId) => {
+        return await agentTreeApi.getAgentInfo(agentId)
+      },
+
       // 清理错误
       clearError: () => {
         set({ auditError: null })
@@ -441,6 +538,8 @@ export const useAgentStore = create<AgentState>()(
           llmConfigs: get().llmConfigs,
           defaultLLMConfig: get().defaultLLMConfig,
           promptTemplates: get().promptTemplates,
+          agentTree: get().agentTree,
+          agentStatistics: get().agentStatistics,
         })
       },
     }),

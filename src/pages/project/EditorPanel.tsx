@@ -79,7 +79,7 @@ function getLanguageFromPath(path: string | null): string {
 
 export function EditorPanel() {
   const { fileTree, openFiles, selectedFile, fileContent, selectFile, closeFile } = useFileStore()
-  const { activeSidebar, logs, bottomPanelVisible } = useUIStore()
+  const { activeSidebar, logs, bottomPanelVisible, setBottomPanelVisible, clearLogs } = useUIStore()
   const editorRef = useRef<any>(null)
 
   const handleEditorDidMount = (editor: any) => {
@@ -204,15 +204,15 @@ export function EditorPanel() {
               minSize={5}
               id="right-panel"
             >
-              <div className="h-full flex flex-col bg-card border-l border-border/40 min-w-0">
-                <div className="h-9 px-3 border-b border-border/40 flex items-center justify-between bg-muted/10 shrink-0">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground truncate">
-                    终端 / 输出
-                  </span>
-                </div>
+              <div className="h-full flex flex-col border-l border-border/40 min-w-0">
                 <div className="flex-1 overflow-hidden relative">
                   <div className="absolute inset-0">
-                    <LogPanelComponent logs={systemLogs} active={true} />
+                    <LogPanelComponent
+                      logs={systemLogs}
+                      active={true}
+                      onToggle={() => setBottomPanelVisible(false)}
+                      onClear={clearLogs}
+                    />
                   </div>
                 </div>
               </div>

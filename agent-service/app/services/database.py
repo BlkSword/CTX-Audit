@@ -208,3 +208,202 @@ async def get_findings(audit_id: str) -> list:
             audit_id,
         )
         return [dict(row) for row in rows]
+
+
+async def save_thinking_chain(audit_id: str, agent_name: str, thoughts: list) -> None:
+    """
+    保存 Agent 思考链
+
+    Args:
+        audit_id: 审计 ID
+        agent_name: Agent 名称
+        thoughts: 思考链列表，每个元素包含 timestamp 和 thought
+    """
+    import json
+
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        for thought in thoughts:
+            await conn.execute(
+                """
+                INSERT INTO audit_events (audit_id, agent_name, event_type, data, created_at)
+                VALUES ($1, $2, 'thinking', $3, to_timestamp($4))
+                """,
+                audit_id,
+                agent_name,
+                json.dumps({"thought": thought.get("thought")}),
+                thought.get("timestamp", time.time()),
+            )
+
+
+async def save_audit_event(
+    audit_id: str,
+    agent_name: str,
+    event_type: str,
+    data: dict,
+) -> None:
+    """
+    保存审计事件（用于 SSE 推送）
+
+    Args:
+        audit_id: 审计 ID
+        agent_name: Agent 名称
+        event_type: 事件类型 (thinking | action | observation | finding | error | status)
+        data: 事件数据
+    """
+    import json
+    import time
+
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO audit_events (audit_id, agent_name, event_type, data, created_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            """,
+            audit_id,
+            agent_name,
+            event_type,
+            json.dumps(data),
+        )
+
+
+async def get_audit_events(audit_id: str, limit: int = 100) -> list:
+    """
+    获取审计事件（用于历史记录）
+
+    Args:
+        audit_id: 审计 ID
+        limit: 返回数量限制
+
+    Returns:
+        事件列表
+    """
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM audit_events
+            WHERE audit_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            audit_id,
+            limit,
+        )
+        return [dict(row) for row in rows]
+
+
+async def get_agent_executions(audit_id: str) -> list:
+    """获取审计的所有 Agent 执行记录"""
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM agent_executions
+            WHERE audit_id = $1
+            ORDER BY created_at ASC
+            """,
+            audit_id,
+        )
+        return [dict(row) for row in rows]
+
+
+async def update_audit_progress(
+    audit_id: str,
+    current_stage: str,
+    progress_percentage: int,
+) -> None:
+    """
+    更新审计进度
+
+    Args:
+        audit_id: 审计 ID
+        current_stage: 当前阶段
+        progress_percentage: 进度百分比 (0-100)
+    """
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE audit_sessions
+            SET current_stage = $1, progress_percentage = $2
+            WHERE id = $3
+            """,
+            current_stage,
+            progress_percentage,
+            audit_id,
+        )
+
+
+async def get_audit_summary(audit_id: str) -> Optional[dict]:
+    """
+    获取审计摘要
+
+    Args:
+        audit_id: 审计 ID
+
+    Returns:
+        审计摘要，包含统计信息
+    """
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        session = await conn.fetchrow(
+            "SELECT * FROM audit_sessions WHERE id = $1",
+            audit_id,
+        )
+
+        if not session:
+            return None
+
+        findings = await conn.fetch(
+            "SELECT severity, COUNT(*) FROM findings WHERE audit_id = $1 GROUP BY severity",
+            audit_id,
+        )
+
+        return {
+            "session": dict(session),
+            "findings_by_severity": {row["severity"]: row["count"] for row in findings},
+            "total_findings": sum(row["count"] for row in findings),
+        }
+
+
+async def mark_finding_verified(
+    finding_id: str,
+    verified: bool,
+    confidence: float,
+    poc_output: str = "",
+) -> None:
+    """
+    标记漏洞已验证
+
+    Args:
+        finding_id: 漏洞 ID
+        verified: 是否验证为真实漏洞
+        confidence: 置信度 (0.0-1.0)
+        poc_output: PoC 执行输出
+    """
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE findings
+            SET verified = $1, verification_confidence = $2, poc_output = $3
+            WHERE id = $4
+            """,
+            verified,
+            confidence,
+            poc_output,
+            finding_id,
+        )
+
+
+# 初始化时导入 time
+import time

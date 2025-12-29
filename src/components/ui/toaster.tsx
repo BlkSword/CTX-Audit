@@ -34,7 +34,7 @@ export function Toaster() {
   const { toasts, removeToast } = useToastStore()
 
   return (
-    <div className="fixed top-20 right-4 z-[9999] flex max-h-screen w-full flex-col-reverse gap-2 p-4 sm:max-w-[420px]">
+    <div className="fixed top-32 right-4 z-[9999] flex max-h-screen w-full flex-col-reverse gap-2 p-4 sm:max-w-[420px]">
       <AnimatePresence mode="popLayout">
         {toasts.map((toast) => (
           <ToastItem

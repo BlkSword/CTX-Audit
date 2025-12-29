@@ -198,3 +198,89 @@ async def delete_prompt_template(template_id: str):
 
     del _prompt_templates[template_id]
     return {"message": "提示词模板已删除"}
+
+
+# ========== YAML 文件模板 API ==========
+
+@router.get("/yaml/agents")
+async def list_yaml_agents():
+    """列出所有有 YAML 模板的 Agent 类型"""
+    from app.services.prompt_loader import get_prompt_loader
+
+    loader = get_prompt_loader()
+    agents = []
+
+    for yaml_file in loader.prompts_dir.glob("*.yaml"):
+        agents.append(yaml_file.stem)
+
+    return {"agents": agents}
+
+
+@router.get("/yaml/{agent_type}/prompts")
+async def list_yaml_prompts(agent_type: str):
+    """列出指定 Agent 的所有提示词"""
+    from app.services.prompt_loader import get_prompt_loader
+
+    loader = get_prompt_loader()
+    prompts = await loader.list_available_prompts(agent_type)
+
+    return {
+        "agent_type": agent_type,
+        "prompts": prompts
+    }
+
+
+@router.get("/yaml/{agent_type}/prompts/{prompt_name}")
+async def get_yaml_prompt(agent_type: str, prompt_name: str):
+    """获取指定的提示词内容"""
+    from app.services.prompt_loader import get_prompt_loader
+
+    loader = get_prompt_loader()
+    content = await loader.load_template(agent_type, prompt_name)
+
+    return {
+        "agent_type": agent_type,
+        "prompt_name": prompt_name,
+        "content": content
+    }
+
+
+@router.post("/yaml/{agent_type}/prompts/{prompt_name}/render")
+async def render_yaml_prompt(
+    agent_type: str,
+    prompt_name: str,
+    variables: Dict[str, Any],
+):
+    """渲染提示词（变量替换）"""
+    from app.services.prompt_loader import get_prompt_loader
+
+    loader = get_prompt_loader()
+    rendered = await loader.render_prompt(agent_type, prompt_name, variables)
+
+    return {
+        "agent_type": agent_type,
+        "prompt_name": prompt_name,
+        "rendered": rendered
+    }
+
+
+@router.post("/yaml/reload")
+async def reload_yaml_templates():
+    """重新加载 YAML 模板（清除缓存）"""
+    from app.services.prompt_loader import get_prompt_loader
+
+    loader = get_prompt_loader()
+    loader.reload_cache()
+
+    return {"message": "YAML 模板缓存已清除，下次访问将重新加载"}
+
+
+@router.get("/yaml/all")
+async def get_all_yaml_templates():
+    """获取所有 YAML 模板"""
+    from app.services.prompt_loader import get_prompt_loader
+
+    loader = get_prompt_loader()
+    all_templates = await loader.load_all_templates()
+
+    return all_templates

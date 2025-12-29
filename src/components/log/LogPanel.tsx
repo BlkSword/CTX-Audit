@@ -1,6 +1,8 @@
 import { useEffect, useRef, memo } from 'react'
-import { Terminal } from 'lucide-react'
+import { Terminal, X, Trash2, Minus } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 
 export interface LogEntry {
   timestamp: string
@@ -11,6 +13,9 @@ export interface LogEntry {
 interface LogPanelProps {
   logs: LogEntry[]
   active?: boolean
+  onToggle?: () => void
+  onClear?: () => void
+  onMinimize?: () => void
 }
 
 const LogEntryItem = memo(({ entry }: { entry: LogEntry }) => {
@@ -54,7 +59,7 @@ const LogEntryItem = memo(({ entry }: { entry: LogEntry }) => {
 
 LogEntryItem.displayName = 'LogEntryItem'
 
-export const LogPanel = memo(({ logs, active = true }: LogPanelProps) => {
+export const LogPanel = memo(({ logs, active = true, onToggle, onClear, onMinimize }: LogPanelProps) => {
   const logsEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -64,11 +69,60 @@ export const LogPanel = memo(({ logs, active = true }: LogPanelProps) => {
   }, [logs, active])
 
   return (
-    <div className="h-full bg-background relative">
-      <div className="flex items-center gap-2 mb-3 px-4 py-3 bg-muted/30 border-b border-border/40 text-sm text-muted-foreground">
+    <div className="h-full bg-card relative flex flex-col">
+      {/* Header - 控制栏 */}
+      <div className="h-10 px-3 flex items-center justify-between bg-muted/20 border-b border-border/40 shrink-0 select-none">
+        <div className="flex items-center gap-2">
+          <Terminal className="w-4 h-4 text-muted-foreground" />
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            终端 / 输出
+          </span>
+          {logs.length > 0 && (
+            <Badge variant="secondary" className="text-[10px] h-5 px-1.5 font-normal">
+              {logs.length} 条
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {onClear && logs.length > 0 && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={onClear}
+              title="清空日志"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+          )}
+          {onMinimize && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={onMinimize}
+              title="最小化"
+            >
+              <Minus className="w-3.5 h-3.5" />
+            </Button>
+          )}
+          {onToggle && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={onToggle}
+              title="关闭面板"
+            >
+              <X className="w-3.5 h-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
-      <ScrollArea className="h-[calc(100%-48px)] px-4">
-        <div className="py-1">
+
+      {/* Logs Content */}
+      <ScrollArea className="flex-1">
+        <div className="px-3 py-2">
           {logs.length === 0 ? (
             <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
               等待操作...

@@ -4,7 +4,7 @@
 
 import { useEffect } from 'react'
 import { Outlet, useParams, useNavigate, useLocation, Link } from 'react-router-dom'
-import { ShieldAlert, ArrowLeft, Terminal, FileCode, Network, Activity, Scan, Bot, RefreshCw } from 'lucide-react'
+import { ShieldAlert, ArrowLeft, FileCode, Network, Activity, Scan, Bot, RefreshCw } from 'lucide-react'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileStore } from '@/stores/fileStore'
 import { useScanStore } from '@/stores/scanStore'
@@ -20,7 +20,7 @@ export function ProjectLayout() {
   const { currentProject, projects, setCurrentProject, isLoading: projectsLoading, isInitiallyLoaded, loadProjects } = useProjectStore()
   const { loadFiles } = useFileStore()
   const { loadFindings } = useScanStore()
-  const { bottomPanelVisible, setBottomPanelVisible, logs } = useUIStore()
+  const { bottomPanelVisible } = useUIStore()
 
   useEffect(() => {
     // 确保项目列表已加载
@@ -83,8 +83,9 @@ export function ProjectLayout() {
   return (
     <div className="h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden font-sans">
       {/* Header */}
-      <header className="h-12 border-b border-border/40 px-4 flex items-center justify-between bg-muted/20 select-none">
-        <div className="flex items-center gap-4">
+      <header className="h-12 border-b border-border/40 px-4 flex items-center bg-muted/20 select-none relative">
+        {/* Left Section */}
+        <div className="flex items-center gap-4 w-1/3">
           <Button
             variant="ghost"
             size="icon"
@@ -105,8 +106,8 @@ export function ProjectLayout() {
           </Badge>
         </div>
 
-        {/* View Tabs */}
-        <div className="flex items-center gap-1 bg-muted/30 rounded-lg p-1">
+        {/* Center - View Tabs */}
+        <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 bg-muted/30 rounded-lg p-1">
           {views.map((view) => {
             const Icon = view.icon
             const isActive = currentView === view.id
@@ -128,22 +129,8 @@ export function ProjectLayout() {
           })}
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={cn('h-7 w-7', bottomPanelVisible ? 'bg-accent text-accent-foreground' : 'text-muted-foreground')}
-            onClick={() => setBottomPanelVisible(!bottomPanelVisible)}
-            title="切换输出面板"
-          >
-            <Terminal className="w-4 h-4" />
-          </Button>
-          {logs.length > 0 && (
-            <Badge variant="secondary" className="text-[10px] h-5 px-1.5">
-              {logs.length} 条日志
-            </Badge>
-          )}
-        </div>
+        {/* Right Section - 空白，用于保持布局平衡 */}
+        <div className="w-1/3"></div>
       </header>
 
       {/* Main Content */}

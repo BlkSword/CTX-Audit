@@ -149,6 +149,8 @@ export type AgentEventType =
   | 'agent_complete' // Agent 完成执行
   | 'tool_call'      // 工具调用
   | 'rag_retrieval'  // RAG 检索
+  | 'status'         // 状态更新
+  | 'connected'      // SSE 连接成功
 
 export interface AgentEvent {
   id: string

@@ -4,9 +4,12 @@
 处理 Agent 审计任务的创建、状态查询和结果获取
 """
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import uuid
+import asyncio
+import json
 
 from app.agents.orchestrator import OrchestratorAgent
 from app.agents.recon import ReconAgent
@@ -16,7 +19,7 @@ from app.services.database import (
     update_audit_status,
     get_audit_session,
 )
-from app.services.queue import publish_event
+from app.services.event_bus import get_event_bus, EventType, create_status_event
 
 router = APIRouter()
 
@@ -73,6 +76,9 @@ async def start_audit(request: AuditStartRequest, background_tasks: BackgroundTa
             detail=f"创建审计会话失败: {str(e)}"
         )
 
+    # 发布审计开始事件
+    await create_status_event(audit_id, "pending", "审计任务已创建，正在初始化...")
+
     # 在后台执行审计
     background_tasks.add_task(
         _execute_audit,
@@ -82,9 +88,6 @@ async def start_audit(request: AuditStartRequest, background_tasks: BackgroundTa
         target_types=request.target_types,
         config=request.config or {},
     )
-
-    # 发布事件
-    await publish_event("audit:started", {"audit_id": audit_id})
 
     return AuditStartResponse(
         audit_id=audit_id,
@@ -157,11 +160,41 @@ async def stream_audit(audit_id: str):
 
     实时推送 Agent 思考链、进度更新等事件
     """
-    # TODO: 实现 SSE 流
-    return {
-        "message": "SSE stream endpoint - to be implemented",
-        "audit_id": audit_id,
-    }
+    event_bus = get_event_bus()
+
+    async def event_generator():
+        """生成 SSE 事件流"""
+        try:
+            # 发送初始连接事件
+            yield f"event: connected\ndata: {json.dumps({'audit_id': audit_id, 'message': '连接成功'})}\n\n"
+
+            # 订阅事件流
+            async for event in event_bus.subscribe(audit_id):
+                # 根据 event_type 发送不同的事件类型
+                sse_event = event.event_type
+
+                # 构建事件数据
+                event_data = event.to_dict()
+
+                # 发送 SSE 格式数据
+                yield f"event: {sse_event}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+
+        except asyncio.CancelledError:
+            # 客户端断开连接
+            logger.info(f"SSE 连接断开: {audit_id}")
+        except Exception as e:
+            logger.error(f"SSE 流错误: {e}")
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
+        },
+    )
 
 
 # ========== 内部函数 ==========
@@ -186,6 +219,7 @@ async def _execute_audit(
     try:
         # 更新状态为运行中
         await update_audit_status(audit_id, "running")
+        await create_status_event(audit_id, "running", "审计任务开始执行...")
 
         # 创建上下文
         context = {
@@ -209,13 +243,16 @@ async def _execute_audit(
         # 更新状态
         if result["status"] == "success":
             await update_audit_status(audit_id, "completed")
+            await create_status_event(audit_id, "completed", "审计任务已完成")
         else:
             await update_audit_status(audit_id, "failed")
+            await create_status_event(audit_id, "failed", f"审计失败: {result.get('error', '未知错误')}")
 
     except Exception as e:
         from loguru import logger
         logger.error(f"审计执行失败: {e}")
         await update_audit_status(audit_id, "failed")
+        await create_status_event(audit_id, "failed", f"审计异常: {str(e)}")
 
 
 def _group_by_severity(findings: list) -> dict:

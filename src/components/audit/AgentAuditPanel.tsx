@@ -15,6 +15,7 @@ import {
   FileSearch,
   Shield,
   Bug,
+  Network,
 } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -24,6 +25,7 @@ import { useToastStore } from '@/stores/toastStore'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Select,
   SelectContent,
@@ -31,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { AgentTreeVisualization } from './AgentTreeVisualization'
 import type { AgentEvent, AgentType } from '@/shared/types'
 
 // Agent 图标映射
@@ -245,14 +248,21 @@ export function AgentAuditPanel() {
     events,
     llmConfigs,
     isConnected,
+    agentTree,
+    agentTreeLoading,
+    agentTreeError,
     startAudit,
     pauseAudit,
     cancelAudit,
+    loadAgentTree,
+    refreshAgentTree,
+    stopAgent,
   } = useAgentStore()
 
   const [auditType, setAuditType] = useState<'quick' | 'full'>('quick')
   const [selectedLLMConfig, setSelectedLLMConfig] = useState<string>('default')
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set())
+  const [activeTab, setActiveTab] = useState<'events' | 'tree'>('events')
 
   const eventsEndRef = useRef<HTMLDivElement>(null)
 
@@ -260,6 +270,23 @@ export function AgentAuditPanel() {
   useEffect(() => {
     useAgentStore.getState().loadLLMConfigs()
   }, [])
+
+  // 当审计运行时，加载 Agent 树
+  useEffect(() => {
+    if (auditStatus === 'running' && activeTab === 'tree') {
+      loadAgentTree()
+    }
+  }, [auditStatus, activeTab, loadAgentTree])
+
+  // 定时刷新 Agent 树
+  useEffect(() => {
+    if (auditStatus === 'running' && activeTab === 'tree') {
+      const interval = setInterval(() => {
+        loadAgentTree()
+      }, 5000) // 每 5 秒刷新一次
+      return () => clearInterval(interval)
+    }
+  }, [auditStatus, activeTab, loadAgentTree])
 
   // 自动滚动事件列表
   useEffect(() => {
@@ -390,66 +417,108 @@ export function AgentAuditPanel() {
 
       {/* 审计流内容区域 */}
       <div className="flex-1 min-h-0 flex">
-        {/* 左侧：事件流 */}
-        <div className="flex-1 flex flex-col min-w-0 border-r">
-          <div className="p-2 bg-muted/30 text-xs font-medium border-b flex justify-between items-center">
-            <span>审计事件流</span>
-            {auditProgress && (
-              <span>{auditProgress.percentage}% - {auditProgress.current_stage}</span>
-            )}
-          </div>
-          <ScrollArea className="flex-1">
-            <div className="p-0">
-              {events.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
-                  <Brain className="w-12 h-12 mb-4 opacity-20" />
-                  <p>准备就绪，点击开始审计启动 Agent 系统</p>
-                </div>
-              ) : (
-                events.map(event => (
-                  <EventItem
-                    key={event.id}
-                    event={event}
-                    isExpanded={expandedEvents.has(event.id)}
-                    onToggle={() => toggleEventExpanded(event.id)}
-                  />
-                ))
+        {/* 主内容区：使用 Tab 切换事件流和 Agent 树 */}
+        <div className="flex-1 flex flex-col min-w-0">
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'events' | 'tree')} className="flex flex-col h-full">
+            <div className="flex items-center justify-between border-b px-4">
+              <TabsList className="h-9">
+                <TabsTrigger value="events" className="gap-2">
+                  <Brain className="w-4 h-4" />
+                  审计事件流
+                  {events.length > 0 && (
+                    <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">
+                      {events.length}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="tree" className="gap-2">
+                  <Network className="w-4 h-4" />
+                  Agent 执行树
+                  {auditStatus === 'running' && (
+                    <span className="flex h-2 w-2 relative">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    </span>
+                  )}
+                </TabsTrigger>
+              </TabsList>
+
+              {auditProgress && (
+                <span className="text-xs text-muted-foreground">
+                  {auditProgress.percentage}% - {auditProgress.current_stage}
+                </span>
               )}
-              <div ref={eventsEndRef} />
             </div>
-          </ScrollArea>
+
+            {/* 事件流 Tab */}
+            <TabsContent value="events" className="flex-1 m-0 p-0 min-h-0">
+              <ScrollArea className="h-full">
+                <div className="p-0">
+                  {events.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                      <Brain className="w-12 h-12 mb-4 opacity-20" />
+                      <p>准备就绪，点击开始审计启动 Agent 系统</p>
+                    </div>
+                  ) : (
+                    events.map(event => (
+                      <EventItem
+                        key={event.id}
+                        event={event}
+                        isExpanded={expandedEvents.has(event.id)}
+                        onToggle={() => toggleEventExpanded(event.id)}
+                      />
+                    ))
+                  )}
+                  <div ref={eventsEndRef} />
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* Agent 树 Tab */}
+            <TabsContent value="tree" className="flex-1 m-0 p-0 min-h-0">
+              <AgentTreeVisualization
+                treeData={agentTree}
+                loading={agentTreeLoading}
+                error={agentTreeError}
+                onStopAgent={stopAgent}
+                onRefresh={refreshAgentTree}
+              />
+            </TabsContent>
+          </Tabs>
         </div>
 
-        {/* 右侧：Agent 状态监控 (可选，窄栏) */}
-        <div className="w-64 bg-muted/10 flex flex-col min-w-0">
+        {/* 右侧：Agent 状态监控 (窄栏) */}
+        <div className="w-56 bg-muted/10 flex flex-col min-w-0 border-l">
           <div className="p-2 bg-muted/30 text-xs font-medium border-b">
             Agent 状态监控
           </div>
-          <div className="p-4 space-y-4">
-            {Object.entries(AGENT_NAMES).map(([type, name]) => (
-              <div key={type} className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {React.createElement(AGENT_ICONS[type as AgentType], {
-                    className: `w-4 h-4 ${agentStatus[type] === 'running' ? 'animate-pulse text-primary' : 'text-muted-foreground'}`
-                  })}
-                  <span className="text-sm">{name}</span>
+          <ScrollArea className="flex-1">
+            <div className="p-3 space-y-3">
+              {Object.entries(AGENT_NAMES).map(([type, name]) => (
+                <div key={type} className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {React.createElement(AGENT_ICONS[type as AgentType], {
+                      className: `w-4 h-4 ${agentStatus[type] === 'running' ? 'animate-pulse text-primary' : 'text-muted-foreground'}`
+                    })}
+                    <span className="text-xs">{name}</span>
+                  </div>
+                  <Badge
+                    variant={agentStatus[type] === 'running' ? 'default' : 'outline'}
+                    className="text-[9px] h-4 px-1"
+                  >
+                    {agentStatus[type] || 'idle'}
+                  </Badge>
                 </div>
-                <Badge
-                  variant={agentStatus[type] === 'running' ? 'default' : 'outline'}
-                  className="text-[10px]"
-                >
-                  {agentStatus[type] || 'idle'}
-                </Badge>
-              </div>
-            ))}
+              ))}
 
-            {auditError && (
-              <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-500">
-                <p className="font-bold mb-1">错误</p>
-                {auditError}
-              </div>
-            )}
-          </div>
+              {auditError && (
+                <div className="mt-4 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-500">
+                  <p className="font-bold mb-1">错误</p>
+                  {auditError}
+                </div>
+              )}
+            </div>
+          </ScrollArea>
         </div>
       </div>
     </div>

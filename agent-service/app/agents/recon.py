@@ -82,27 +82,27 @@ class ReconAgent(BaseAgent):
     async def _scan_structure(self, project_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         扫描项目结构
-        
+
         Args:
             project_info: 项目信息
-            
+
         Returns:
             项目结构
         """
         from app.services.rust_client import rust_client
-        
+
         project_path = project_info.get("path")
         if not project_path:
             return {"files": [], "directories": []}
-            
+
         # 简单递归扫描（深度限制为 3 以防过慢）
         files = []
         directories = []
-        
+
         async def _scan_recursive(path: str, depth: int):
             if depth > 3:
                 return
-            
+
             try:
                 items = await rust_client.list_files(path)
                 for item in items:
@@ -116,64 +116,10 @@ class ReconAgent(BaseAgent):
                         await _scan_recursive(full_path, depth + 1)
             except Exception as e:
                 logger.warning(f"扫描目录失败 {path}: {e}")
-                
+
         await _scan_recursive(project_path, 0)
-        
+
         return {"files": files, "directories": directories}
-
-    async def _identify_tech_stack(self, structure: Dict[str, Any]) -> Dict[str, Any]:
-        """识别技术栈"""
-        files = structure.get("files", [])
-        languages = set()
-        frameworks = set()
-        
-        # 基于文件扩展名的简单识别
-        extensions = {
-            ".py": "Python",
-            ".js": "JavaScript",
-            ".ts": "TypeScript",
-            ".java": "Java",
-            ".go": "Go",
-            ".rs": "Rust",
-            ".php": "PHP",
-            ".rb": "Ruby",
-        }
-        
-        for f in files:
-            for ext, lang in extensions.items():
-                if f.endswith(ext):
-                    languages.add(lang)
-                    
-            # 简单框架识别
-            if "package.json" in f:
-                frameworks.add("Node.js")
-            if "requirements.txt" in f:
-                frameworks.add("Python/Pip")
-            if "pom.xml" in f:
-                frameworks.add("Java/Maven")
-                
-        return {
-            "languages": list(languages),
-            "frameworks": list(frameworks)
-        }
-
-    async def _extract_attack_surface(self, structure: Dict[str, Any], tech_stack: Dict[str, Any]) -> Dict[str, Any]:
-        """提取攻击面"""
-        # 这里可以使用 LLM 分析关键文件，如 routes.py, app.js 等
-        # 暂时返回空，后续集成 LLM
-        return {"entry_points": []}
-
-    async def _analyze_dependencies(self, structure: Dict[str, Any]) -> Dict[str, Any]:
-        """分析依赖"""
-        return {"libraries": []}
-
-        # 临时返回模拟数据
-        return {
-            "files": [],
-            "directories": [],
-            "total_files": 0,
-            "total_lines": 0,
-        }
 
     async def _identify_tech_stack(self, structure: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -185,25 +131,54 @@ class ReconAgent(BaseAgent):
         Returns:
             技术栈信息
         """
-        # 基于文件扩展名识别语言
-        language_map = {
-            ".rs": "rust",
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".go": "go",
-            ".java": "java",
+        files = structure.get("files", [])
+        languages = set()
+        frameworks = set()
+
+        # 基于文件扩展名的简单识别
+        extensions = {
+            ".py": "Python",
+            ".js": "JavaScript",
+            ".ts": "TypeScript",
+            ".tsx": "TypeScript",
+            ".jsx": "JavaScript",
+            ".java": "Java",
+            ".go": "Go",
+            ".rs": "Rust",
+            ".php": "PHP",
+            ".rb": "Ruby",
+            ".cs": "C#",
+            ".cpp": "C++",
+            ".c": "C",
         }
 
-        languages = []
-        frameworks = []
+        for f in files:
+            # 语言识别
+            for ext, lang in extensions.items():
+                if f.endswith(ext):
+                    languages.add(lang)
 
-        # TODO: 实际分析文件
-        # 这里只是框架
+            # 简单框架识别
+            if "package.json" in f:
+                frameworks.add("Node.js")
+            if "requirements.txt" in f or "Pipfile" in f or "pyproject.toml" in f:
+                frameworks.add("Python/Pip")
+            if "pom.xml" in f:
+                frameworks.add("Java/Maven")
+            if "build.gradle" in f:
+                frameworks.add("Java/Gradle")
+            if "Cargo.toml" in f:
+                frameworks.add("Rust/Cargo")
+            if "go.mod" in f:
+                frameworks.add("Go/Module")
+            if "composer.json" in f:
+                frameworks.add("PHP/Composer")
+            if "Gemfile" in f:
+                frameworks.add("Ruby/Bundler")
 
         return {
-            "languages": list(set(languages)),
-            "frameworks": frameworks,
+            "languages": sorted(list(languages)),
+            "frameworks": sorted(list(frameworks))
         }
 
     async def _extract_attack_surface(
@@ -222,19 +197,69 @@ class ReconAgent(BaseAgent):
             攻击面信息
         """
         entry_points = []
+        api_endpoints = []
+        user_inputs = []
 
-        # TODO: 实际提取攻击面
-        # - API 路由
-        # - 表单输入
-        # - 文件上传
-        # - 命令执行点
+        files = structure.get("files", [])
+
+        # 识别潜在的攻击面入口
+        for file_path in files:
+            # Web 路由文件
+            if any(x in file_path.lower() for x in ["route", "controller", "handler", "api", "view"]):
+                entry_points.append({
+                    "type": "web_route",
+                    "file": file_path,
+                    "description": "Web 路由定义文件"
+                })
+
+            # 表单/输入处理
+            if any(x in file_path.lower() for x in ["form", "input", "upload", "submit"]):
+                user_inputs.append({
+                    "type": "user_input",
+                    "file": file_path,
+                    "description": "用户输入处理文件"
+                })
+
+            # 数据库查询
+            if any(x in file_path.lower() for x in ["model", "query", "database", "db", "sql"]):
+                entry_points.append({
+                    "type": "database",
+                    "file": file_path,
+                    "description": "数据库操作文件"
+                })
+
+            # 认证/授权
+            if any(x in file_path.lower() for x in ["auth", "login", "permission", "access"]):
+                entry_points.append({
+                    "type": "auth",
+                    "file": file_path,
+                    "description": "认证/授权文件",
+                    "severity": "high"
+                })
+
+            # 文件操作
+            if any(x in file_path.lower() for x in ["file", "fs", "io", "upload", "download"]):
+                entry_points.append({
+                    "type": "file_operation",
+                    "file": file_path,
+                    "description": "文件操作文件"
+                })
+
+            # 命令执行
+            if any(x in file_path.lower() for x in ["exec", "spawn", "shell", "command", "system"]):
+                entry_points.append({
+                    "type": "command_execution",
+                    "file": file_path,
+                    "description": "命令执行相关",
+                    "severity": "high"
+                })
 
         return {
             "entry_points": entry_points,
-            "api_endpoints": [],
-            "user_inputs": [],
-            "file_operations": [],
-            "command_executions": [],
+            "api_endpoints": api_endpoints,
+            "user_inputs": user_inputs,
+            "file_operations": [e for e in entry_points if e["type"] == "file_operation"],
+            "command_executions": [e for e in entry_points if e["type"] == "command_execution"],
         }
 
     async def _analyze_dependencies(self, structure: Dict[str, Any]) -> Dict[str, Any]:
@@ -248,17 +273,127 @@ class ReconAgent(BaseAgent):
             依赖信息
         """
         libraries = []
+        known_vulnerabilities = []
 
-        # TODO: 实际分析依赖文件
-        # - package.json (Node.js)
-        # - requirements.txt (Python)
-        # - Cargo.toml (Rust)
-        # - pom.xml (Java)
+        files = structure.get("files", [])
+
+        # 分析依赖文件
+        for file_path in files:
+            filename = file_path.split("/")[-1].lower()
+
+            if filename == "package.json":
+                # Node.js 依赖
+                libraries.extend(await self._parse_package_json(file_path))
+            elif filename == "requirements.txt":
+                # Python 依赖
+                libraries.extend(await self._parse_requirements_txt(file_path))
+            elif filename == "pom.xml":
+                # Java/Maven 依赖
+                libraries.extend(await self._parse_pom_xml(file_path))
+            elif filename == "cargo.toml":
+                # Rust 依赖
+                libraries.extend(await self._parse_cargo_toml(file_path))
+            elif filename == "go.mod":
+                # Go 依赖
+                libraries.extend(await self._parse_go_mod(file_path))
+
+        # TODO: 查询已知漏洞数据库（如 OSV、Snyk）
+        # 这里可以添加自动化的漏洞检查
 
         return {
             "libraries": libraries,
-            "known_vulnerabilities": [],
+            "known_vulnerabilities": known_vulnerabilities,
+            "total_libraries": len(libraries)
         }
+
+    async def _parse_package_json(self, file_path: str) -> List[Dict[str, str]]:
+        """解析 package.json"""
+        from app.services.rust_client import rust_client
+
+        try:
+            content = await rust_client.read_file(file_path)
+            import json
+            data = json.loads(content)
+
+            deps = data.get("dependencies", {})
+            dev_deps = data.get("devDependencies", {})
+
+            libraries = []
+            for name, version in list(deps.items()) + list(dev_deps.items()):
+                libraries.append({
+                    "name": name,
+                    "version": version,
+                    "type": "production" if name in deps else "development",
+                    "ecosystem": "npm"
+                })
+
+            return libraries
+        except Exception as e:
+            logger.warning(f"解析 package.json 失败: {e}")
+            return []
+
+    async def _parse_requirements_txt(self, file_path: str) -> List[Dict[str, str]]:
+        """解析 requirements.txt"""
+        from app.services.rust_client import rust_client
+
+        try:
+            content = await rust_client.read_file(file_path)
+
+            libraries = []
+            for line in content.split("\n"):
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                # 解析包名和版本
+                parts = line.split(">=")[:1] if ">=" in line else \
+                        line.split("==")[:1] if "==" in line else \
+                        line.split("~")[:1] if "~" in line else \
+                        [line]
+
+                if parts:
+                    libraries.append({
+                        "name": parts[0].strip(),
+                        "version": line.replace(parts[0], "").strip() or "unknown",
+                        "type": "production",
+                        "ecosystem": "pypi"
+                    })
+
+            return libraries
+        except Exception as e:
+            logger.warning(f"解析 requirements.txt 失败: {e}")
+            return []
+
+    async def _parse_pom_xml(self, file_path: str) -> List[Dict[str, str]]:
+        """解析 pom.xml（简化版）"""
+        # Maven 依赖解析比较复杂，这里简化处理
+        return [{
+            "name": "maven-project",
+            "version": "unknown",
+            "type": "production",
+            "ecosystem": "maven",
+            "note": "Maven 依赖解析需要完整 XML 解析器"
+        }]
+
+    async def _parse_cargo_toml(self, file_path: str) -> List[Dict[str, str]]:
+        """解析 Cargo.toml（简化版）"""
+        return [{
+            "name": "rust-project",
+            "version": "unknown",
+            "type": "production",
+            "ecosystem": "crates.io",
+            "note": "Cargo 依赖解析需要 TOML 解析器"
+        }]
+
+    async def _parse_go_mod(self, file_path: str) -> List[Dict[str, str]]:
+        """解析 go.mod（简化版）"""
+        return [{
+            "name": "go-project",
+            "version": "unknown",
+            "type": "production",
+            "ecosystem": "go",
+            "note": "Go 依赖解析需要专用解析器"
+        }]
 
 
 # 创建全局实例

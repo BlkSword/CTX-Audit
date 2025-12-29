@@ -1,0 +1,179 @@
+"""
+LLM 服务
+
+统一的 LLM 服务接口
+"""
+from typing import List, Dict, Any, Optional, AsyncIterator
+from loguru import logger
+
+from .adapters.base import BaseLLMAdapter, LLMResponse, LLMStreamChunk, LLMMessage, LLMProvider
+from .factory import LLMFactory, LLMAdapterError
+
+
+class LLMService:
+    """统一的 LLM 服务"""
+
+    def __init__(
+        self,
+        provider: LLMProvider = LLMProvider.ANTHROPIC,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        初始化 LLM 服务
+
+        Args:
+            provider: LLM 提供商
+            model: 模型名称
+            api_key: API 密钥
+            base_url: 自定义 API 基础 URL
+            config: 额外配置
+        """
+        self.provider = provider
+        self.model = model or LLMFactory.get_default_model(provider)
+        self.adapter = LLMFactory.create_adapter(
+            provider=provider,
+            api_key=api_key,
+            model=self.model,
+            base_url=base_url,
+            config=config,
+        )
+
+    async def generate(
+        self,
+        messages: List[LLMMessage],
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> LLMResponse:
+        """
+        生成文本
+
+        Args:
+            messages: 消息列表
+            max_tokens: 最大生成 token 数
+            temperature: 温度参数
+            tools: 工具列表 (用于工具调用)
+
+        Returns:
+            LLM 响应
+        """
+        try:
+            response = await self.adapter.generate(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+            )
+
+            logger.debug(
+                f"LLM 生成完成: provider={self.provider.value}, "
+                f"model={self.model}, "
+                f"tokens={response.usage.get('total_tokens', 0)}"
+            )
+
+            return response
+
+        except Exception as e:
+            logger.error(f"LLM 生成失败: {e}")
+            raise
+
+    async def generate_stream(
+        self,
+        messages: List[LLMMessage],
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        """
+        流式生成文本
+
+        Args:
+            messages: 消息列表
+            max_tokens: 最大生成 token 数
+            temperature: 温度参数
+
+        Yields:
+            流式响应块
+        """
+        try:
+            async for chunk in self.adapter.generate_stream(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            ):
+                yield chunk
+
+        except Exception as e:
+            logger.error(f"LLM 流式生成失败: {e}")
+            raise
+
+    async def generate_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> Dict[str, Any]:
+        """
+        生成并调用工具
+
+        Args:
+            messages: 原始消息列表 (dict 格式)
+            tools: 工具列表
+            max_tokens: 最大生成 token 数
+            temperature: 温度参数
+
+        Returns:
+            包含 content 和 tool_calls 的响应
+        """
+        # 转换消息格式
+        llm_messages = [
+            LLMMessage(
+                role=msg["role"],
+                content=msg["content"],
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+            for msg in messages
+        ]
+
+        response = await self.generate(
+            messages=llm_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+        )
+
+        return {
+            "content": response.content,
+            "tool_calls": response.tool_calls,
+            "usage": response.usage,
+            "finish_reason": response.finish_reason,
+        }
+
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> "LLMService":
+        """
+        从配置创建 LLM 服务
+
+        Args:
+            config: 配置字典
+
+        Returns:
+            LLM 服务实例
+        """
+        provider_str = config.get("provider", "anthropic")
+        try:
+            provider = LLMProvider(provider_str.lower())
+        except ValueError:
+            provider = LLMProvider.ANTHROPIC
+
+        return cls(
+            provider=provider,
+            model=config.get("model"),
+            api_key=config.get("api_key"),
+            base_url=config.get("base_url"),
+            config=config,
+        )

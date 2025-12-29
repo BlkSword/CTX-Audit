@@ -41,12 +41,13 @@ def create_app() -> FastAPI:
 
 def _register_routes(app: FastAPI) -> None:
     """注册所有路由"""
-    from app.api import audit, health, llm, prompts
+    from app.api import audit, agents, health, llm, prompts
 
     app.include_router(health.router, prefix="/health", tags=["Health"])
     app.include_router(audit.router, prefix="/api/audit", tags=["Audit"])
     app.include_router(llm.router, prefix="/api/llm", tags=["LLM"])
     app.include_router(prompts.router, prefix="/api/prompts", tags=["Prompts"])
+    app.include_router(agents.router, prefix="/api/agents", tags=["Agents"])
 
     logger.info("API 路由注册完成")
 
