@@ -211,14 +211,6 @@ export function AnalysisPanel() {
   return (
     <div className="h-full p-6 overflow-auto no-scrollbar">
       <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold">分析工具</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            使用 AST 分析和代码理解工具深入了解项目结构
-          </p>
-        </div>
-
         {/* Tools Grid */}
         <div className="space-y-6">
           {toolSections.map((section) => (

@@ -120,18 +120,12 @@ class BaseAgent(ABC):
         })
         logger.debug(f"[{self.name}] 思考: {thought}")
 
-        # 自动发布思考事件
+        # 自动发布思考事件到 event_bus_v2
         if self._audit_id:
-            from app.services.event_bus import publish_event
             # 使用 asyncio.create_task 避免阻塞
             try:
                 import asyncio
-                asyncio.create_task(publish_event(
-                    self._audit_id,
-                    self.name,
-                    "thinking",
-                    {"message": thought}
-                ))
+                asyncio.create_task(self._publish_event("thinking", {"message": thought}))
             except Exception as e:
                 logger.warning(f"发布思考事件失败: {e}")
 
@@ -147,12 +141,18 @@ class BaseAgent(ABC):
             return
 
         try:
-            from app.services.event_bus import publish_event
-            await publish_event(
-                self._audit_id,
-                self.name,
-                event_type,
-                data
+            from app.services.event_bus_v2 import get_event_bus_v2
+            event_bus = get_event_bus_v2()
+
+            # 提取消息
+            message = data.get("message") or str(data)
+
+            await event_bus.publish(
+                audit_id=self._audit_id,
+                agent_type=self.name,
+                event_type=event_type,
+                data=data,
+                message=message,
             )
         except Exception as e:
             logger.warning(f"发布事件失败: {e}")

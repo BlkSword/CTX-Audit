@@ -1,5 +1,4 @@
 # CTX-Audit Agent Service 依赖
-# 基于 CTX-Audit 项目实际需求，参考 DeepAudit 架构
 
 # ========== Web 框架 ==========
 fastapi==0.115.0

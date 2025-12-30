@@ -31,6 +31,9 @@ interface AgentState {
   // 审计历史
   auditHistory: AuditStatusResponse[]
 
+  // 是否使用从 Agent 树提取的状态（而非后端 API 返回的假数据）
+  useTreeAgentStatus: boolean
+
   // 实时事件
   events: AgentEvent[]
   isConnected: boolean
@@ -63,7 +66,7 @@ interface AgentState {
   getAuditStatus: (auditId: string) => Promise<void>
   getAuditResult: (auditId: string) => Promise<void>
   loadAuditHistory: (projectId?: string) => Promise<void>
-  connectStream: (auditId: string) => void
+  connectStream: (auditId: string) => Promise<void>
   disconnectStream: () => void
   addEvent: (event: AgentEvent) => void
   clearEvents: () => void
@@ -88,6 +91,7 @@ interface AgentState {
   // Agent 树操作
   loadAgentTree: (rootId?: string) => Promise<void>
   refreshAgentTree: () => Promise<void>
+  updateAgentStatusFromTree: (tree: AgentNode) => void
   stopAgent: (agentId: string, stopChildren?: boolean) => Promise<void>
   loadAgentStatistics: () => Promise<void>
   createAgent: (agentType: string, task: string, parentId?: string, config?: any) => Promise<string>
@@ -120,6 +124,7 @@ const initialState = {
   },
   auditError: null,
   auditHistory: [],
+  useTreeAgentStatus: true,
   events: [],
   isConnected: false,
   llmConfigs: [],
@@ -151,7 +156,7 @@ export const useAgentStore = create<AgentState>()(
           })
 
           // 连接 WebSocket 流
-          get().connectStream(response.audit_id)
+          await get().connectStream(response.audit_id)
 
           // 开始轮询状态
           get().getAuditStatus(response.audit_id)
@@ -215,12 +220,23 @@ export const useAgentStore = create<AgentState>()(
       getAuditStatus: async (auditId) => {
         try {
           const status = await agentApi.getAuditStatus(auditId)
-          set({
-            auditStatus: status.status,
-            auditProgress: status.progress,
-            agentStatus: status.agent_status,
-            auditStats: status.stats,
-          })
+
+          // 如果启用从树提取状态，不覆盖 agentStatus
+          if (get().useTreeAgentStatus) {
+            set({
+              auditStatus: status.status,
+              auditProgress: status.progress,
+              // agentStatus 由 loadAgentTree 通过 updateAgentStatusFromTree 更新
+              auditStats: status.stats,
+            })
+          } else {
+            set({
+              auditStatus: status.status,
+              auditProgress: status.progress,
+              agentStatus: status.agent_status,
+              auditStats: status.stats,
+            })
+          }
 
           // 如果审计还在运行，继续轮询
           if (status.status === 'running') {
@@ -263,12 +279,39 @@ export const useAgentStore = create<AgentState>()(
       },
 
       // 连接 WebSocket 流
-      connectStream: (auditId) => {
+      connectStream: async (auditId) => {
         try {
-          agentApi.connectAuditStream(auditId)
+          // 1. 先加载历史事件
+          try {
+            console.log(`[AgentStore] 加载历史事件: ${auditId}`)
+            const history = await agentApi.getAuditEvents(auditId, 0, 1000)
+
+            console.log(`[AgentStore] 加载了 ${history.count} 个历史事件`)
+
+            // 批量添加历史事件
+            history.events.forEach(event => {
+              get().addEvent(event)
+            })
+          } catch (error) {
+            console.warn('[AgentStore] 加载历史事件失败:', error)
+          }
+
+          // 2. 获取最新序列号
+          let latestSequence = 0
+          try {
+            const stats = await agentApi.getAuditEventsStats(auditId)
+            latestSequence = stats.latest_sequence
+            console.log(`[AgentStore] 最新序列号: ${latestSequence}`)
+          } catch (error) {
+            console.warn('[AgentStore] 获取统计信息失败:', error)
+          }
+
+          // 3. 连接 SSE 流（从最新序列号开始）
+          console.log(`[AgentStore] 连接 SSE，从序列号 ${latestSequence} 开始`)
+          agentApi.connectAuditStream(auditId, latestSequence)
           set({ isConnected: true })
 
-          // 注册事件监听器
+          // 4. 注册事件监听器
           const eventTypes: AgentEventType[] = [
             'thinking',
             'action',
@@ -316,6 +359,7 @@ export const useAgentStore = create<AgentState>()(
 
       // 添加事件
       addEvent: (event) => {
+        console.log('[AgentStore] 收到事件:', event)
         set((state) => {
           const MAX_EVENTS = 1000
           // 将后端事件格式转换为前端格式
@@ -323,10 +367,12 @@ export const useAgentStore = create<AgentState>()(
             id: event.event_id || event.id,
             audit_id: event.audit_id,
             type: event.event_type as AgentEventType || event.type,
-            agent_type: (event.agent_type?.toLowerCase() + '_' || '') as AgentType,
+            // 后端发送小写的 agent_type，需要转换为大写
+            agent_type: (event.agent_type?.toUpperCase() || 'ORCHESTRATOR') as AgentType,
             timestamp: Date.now() / 1000, // 后端发送 ISO 字符串，转换为时间戳
             data: event.data || (event as any).data,
           }
+          console.log('[AgentStore] 规范化后的事件:', normalizedEvent)
           const events = [...state.events, normalizedEvent]
           if (events.length > MAX_EVENTS) {
             return { events: events.slice(events.length - MAX_EVENTS) }
@@ -487,7 +533,14 @@ export const useAgentStore = create<AgentState>()(
         try {
           const tree = await agentTreeApi.getAgentTree(rootId)
           if (tree && Object.keys(tree).length > 0) {
-            set({ agentTree: tree as AgentNode, agentTreeLoading: false })
+            set({
+              agentTree: tree as AgentNode,
+              agentTreeLoading: false
+            })
+            // 如果启用，从树中提取 Agent 状态
+            if (get().useTreeAgentStatus) {
+              get().updateAgentStatusFromTree(tree as AgentNode)
+            }
           } else {
             set({ agentTree: null, agentTreeLoading: false })
           }
@@ -495,6 +548,56 @@ export const useAgentStore = create<AgentState>()(
           const message = error instanceof Error ? error.message : '加载 Agent 树失败'
           set({ agentTreeError: message, agentTreeLoading: false })
         }
+      },
+
+      // 从 Agent 树更新 Agent 状态
+      updateAgentStatusFromTree: (tree: AgentNode) => {
+        const extractStatusFromTree = (node: AgentNode): AgentStatusMap => {
+          const statusMap: AgentStatusMap = {
+            orchestrator: 'idle',
+            recon: 'idle',
+            analysis: 'idle',
+            verification: 'idle',
+          }
+
+          const processNode = (n: AgentNode) => {
+            const agentType = n.agent_type.toLowerCase() as keyof AgentStatusMap
+            // 优先使用 running 状态，然后是 completed，最后是其他状态
+            const currentStatus = statusMap[agentType]
+            const newStatus = n.status
+
+            // 如果已有 running 状态，保持不变
+            if (currentStatus === 'running') return
+
+            // 如果新状态是 running，更新
+            if (newStatus === 'running') {
+              statusMap[agentType] = 'running'
+            }
+            // 如果新状态是 completed，且当前不是 running，更新
+            else if (newStatus === 'completed' && currentStatus !== 'running') {
+              statusMap[agentType] = 'completed'
+            }
+            // 如果新状态是 error，且当前不是 running 或 completed，更新
+            else if (newStatus === 'error' && currentStatus !== 'running' && currentStatus !== 'completed') {
+              statusMap[agentType] = 'error'
+            }
+            // 如果当前是 idle，更新为任何非 idle 状态
+            else if (currentStatus === 'idle' && newStatus !== 'idle') {
+              statusMap[agentType] = newStatus as any
+            }
+
+            // 递归处理子节点
+            if (n.children) {
+              n.children.forEach(processNode)
+            }
+          }
+
+          processNode(node)
+          return statusMap
+        }
+
+        const newStatus = extractStatusFromTree(tree)
+        set({ agentStatus: newStatus })
       },
 
       // 刷新 Agent 树

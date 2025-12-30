@@ -1,7 +1,5 @@
 """
 CTX-Audit Agent Service 配置管理
-
-基于项目实际需求的配置，参考 DeepAudit 架构但独立实现。
 """
 from pydantic_settings import BaseSettings
 from functools import lru_cache
@@ -21,13 +19,15 @@ class Settings(BaseSettings):
 
     # ========== PostgreSQL 配置 ==========
     DATABASE_URL: str = "postgresql://audit_user:audit_pass@localhost:5432/audit_db"
+    ENABLE_POSTGRES: bool = False  # 是否启用 PostgreSQL（默认使用 SQLite）
 
     # ========== ChromaDB 配置 ==========
     CHROMADB_HOST: str = "localhost"
     CHROMADB_PORT: int = 8002
+    ENABLE_CHROMADB: bool = False  # 是否启用 ChromaDB（RAG 功能）
 
     # ========== Redis 配置 ==========
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str = "redis://localhost:6379/0"  # 保留配置但未使用
 
     # ========== LLM 配置 ==========
     LLM_PROVIDER: str = "anthropic"  # anthropic | openai | litellm

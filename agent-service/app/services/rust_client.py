@@ -46,14 +46,15 @@ class RustBackendClient:
         获取项目信息
 
         Args:
-            project_id: 项目 ID
+            project_id: 项目 UUID
 
         Returns:
             项目信息字典
         """
         client = await self._get_client()
         try:
-            response = await client.get(f"/api/project/{project_id}")
+            # 使用 /api/projects/{uuid} 路径（复数形式）
+            response = await client.get(f"/api/projects/{project_id}")
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:

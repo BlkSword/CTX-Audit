@@ -167,35 +167,24 @@ export function RulesPage() {
     <div className="p-6">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              <Shield className="w-6 h-6 text-primary" />
-              安全规则管理
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              查看和管理代码安全扫描规则
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button onClick={loadData} disabled={isLoading} variant="outline" size="sm">
-              {isLoading ? (
-                <>
-                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                  加载中...
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  刷新
-                </>
-              )}
-            </Button>
-            <Button onClick={openCreateDialog} size="sm">
-              <Plus className="w-4 h-4 mr-2" />
-              新建规则
-            </Button>
-          </div>
+        <div className="flex items-center justify-end mb-6 gap-2">
+          <Button onClick={loadData} disabled={isLoading} variant="outline" size="sm">
+            {isLoading ? (
+              <>
+                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                加载中...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                刷新
+              </>
+            )}
+          </Button>
+          <Button onClick={openCreateDialog} size="sm">
+            <Plus className="w-4 h-4 mr-2" />
+            新建规则
+          </Button>
         </div>
 
         {error && (

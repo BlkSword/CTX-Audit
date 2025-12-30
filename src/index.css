@@ -143,4 +143,35 @@
   .delay-150 {
     animation-delay: 150ms;
   }
+
+  /* 滑入动画 - Agent 树节点展开 */
+  @keyframes slideIn {
+    0% {
+      opacity: 0;
+      transform: translateX(-10px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  /* ==================== 加载动画 ==================== */
+
+  /* 加载旋转 */
+  @keyframes spin-slow {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* ==================== 过渡效果 ==================== */
+
+  /* 平滑过渡 */
+  .smooth-transition {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
 }

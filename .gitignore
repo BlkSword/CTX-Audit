@@ -49,8 +49,8 @@ build
 *.sqlite
 *.sqlite3
 
-# DeepAudit specific
-.deepaudit_cache
+# CTX-Audit specific
+.ctx_audit_cache
 __pycache__
 
 # Rust
@@ -65,3 +65,4 @@ agent-service/logs/*.log
 # Other
 .claude
 web-backend/data
+.deepaudit_cache
