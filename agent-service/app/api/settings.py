@@ -295,6 +295,7 @@ async def test_llm_config(config_id: str):
 async def test_llm_connection(config: LLMConfigModel):
     """测试 LLM 连接（临时，不保存配置）"""
     import httpx
+    import re
 
     # 构建测试请求
     headers = {
@@ -302,14 +303,21 @@ async def test_llm_connection(config: LLMConfigModel):
         "Content-Type": "application/json",
     }
 
+    # 智能 URL 构建
     test_url = config.api_endpoint or ""
-    if not test_url.endswith("/chat/completions"):
-        if test_url.endswith("/v1"):
-            test_url += "/chat/completions"
-        elif test_url.endswith("/"):
-            test_url += "v1/chat/completions"
-        else:
-            test_url += "/v1/chat/completions"
+
+    # 移除末尾斜杠
+    test_url = test_url.rstrip("/")
+
+    # 如果已经是完整的 chat/completions 路径，直接使用
+    if test_url.endswith("/chat/completions"):
+        pass  # 已经是完整路径
+    # 如果包含 /v1、/v4 等版本号，直接添加 /chat/completions
+    elif re.search(r"/v\d+(/|$)", test_url):
+        test_url += "/chat/completions"
+    # 否则添加标准的 /v1/chat/completions
+    else:
+        test_url += "/v1/chat/completions"
 
     test_payload = {
         "model": config.model,

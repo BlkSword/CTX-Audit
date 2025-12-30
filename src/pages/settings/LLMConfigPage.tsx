@@ -81,7 +81,7 @@ export function LLMConfigPage() {
     return newConfig.name && newConfig.model && newConfig.apiEndpoint && newConfig.apiKey
   }
 
-  // 创建新配置（自动验证连接）
+  // 创建新配置
   const handleCreateConfig = async () => {
     if (!isFormValid()) {
       toast.warning('请填写所有必填字段')
@@ -91,27 +91,7 @@ export function LLMConfigPage() {
     setIsCreating(true)
 
     try {
-      // 先验证连接
-      const loadingToast = toast.loading('正在验证 API 连接...')
-      const testResult = await testLLMConnection({
-        provider: newConfig.name,
-        model: newConfig.model,
-        apiKey: newConfig.apiKey,
-        apiEndpoint: newConfig.apiEndpoint,
-        temperature: newConfig.temperature,
-        maxTokens: newConfig.maxTokens,
-        enabled: newConfig.enabled,
-        isDefault: newConfig.isDefault,
-      })
-
-      if (!testResult.success) {
-        // 验证失败，不创建配置
-        removeToast(loadingToast)
-        toast.error(`API 连接验证失败: ${testResult.message}`)
-        return
-      }
-
-      // 验证成功，创建配置
+      // 直接创建配置，不再验证连接
       await createLLMConfig({
         provider: newConfig.name,
         model: newConfig.model,
@@ -123,7 +103,6 @@ export function LLMConfigPage() {
         isDefault: newConfig.isDefault,
       })
 
-      removeToast(loadingToast)
       toast.success(`LLM 配置已创建: ${newConfig.name}`)
       setIsCreateDialogOpen(false)
 
@@ -139,7 +118,6 @@ export function LLMConfigPage() {
         isDefault: false,
       })
     } catch (err) {
-      removeToast(loadingToast)
       const message = err instanceof Error ? err.message : String(err)
       toast.error(`操作失败: ${message}`)
     } finally {

@@ -77,7 +77,11 @@ export class SettingsAPIClient {
   private toSnakeCase(config: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(config)) {
-      const snakeKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)
+      // 正确的驼峰命名转换：apiKey -> api_key, apiEndpoint -> api_endpoint
+      const snakeKey = key
+        .replace(/([a-z])([A-Z])/g, '$1_$2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+        .toLowerCase()
       result[snakeKey] = value
     }
     return result

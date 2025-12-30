@@ -1,6 +1,5 @@
 /**
  * Agent 相关类型定义
- * 基于 DeepAudit-3.0.0 架构
  */
 
 // ==================== 基础类型 ====================
@@ -347,7 +346,7 @@ export interface ToolExecution {
   timestamp: string
 }
 
-// Agent 工具列表（参考 DeepAudit-3.0.0）
+// Agent 工具列表
 export const AGENT_TOOLS: AgentTool[] = [
   // 文件操作工具
   {

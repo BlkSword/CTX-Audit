@@ -159,20 +159,33 @@ class LLMService:
         从配置创建 LLM 服务
 
         Args:
-            config: 配置字典
+            config: 配置字典，包含:
+                - provider: LLM 提供商（可选）
+                - llm_provider: LLM 提供商（可选，优先级高于 provider）
+                - model: 模型名称
+                - api_key: API 密钥
+                - base_url: API 端点（可选）
 
         Returns:
             LLM 服务实例
         """
-        provider_str = config.get("provider", "anthropic")
+        # 优先使用 llm_provider，然后使用 provider
+        provider_str = config.get("llm_provider") or config.get("provider", "openai")
+
+        # 如果没有有效的 base_url，无法继续
+        if not config.get("api_key"):
+            raise ValueError("api_key is required")
+
+        # 尝试解析 provider，如果无效则使用 openai（最通用的格式）
         try:
             provider = LLMProvider(provider_str.lower())
         except ValueError:
-            provider = LLMProvider.ANTHROPIC
+            logger.warning(f"未知的 provider '{provider_str}'，使用 OpenAI 兼容模式")
+            provider = LLMProvider.OPENAI
 
         return cls(
             provider=provider,
-            model=config.get("model"),
+            model=config.get("model", "gpt-3.5-turbo"),
             api_key=config.get("api_key"),
             base_url=config.get("base_url"),
             config=config,

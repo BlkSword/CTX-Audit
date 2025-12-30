@@ -143,13 +143,52 @@ export class AgentAPIClient {
   // ==================== SSE 事件流 ====================
 
   /**
+   * 获取审计历史事件
+   */
+  async getAuditEvents(
+    auditId: string,
+    afterSequence = 0,
+    limit = 100,
+    eventTypes?: string
+  ): Promise<{ audit_id: string; count: number; events: AgentEvent[] }> {
+    const params = new URLSearchParams()
+    if (afterSequence > 0) params.append('after_sequence', String(afterSequence))
+    if (limit > 0) params.append('limit', String(limit))
+    if (eventTypes) params.append('event_types', eventTypes)
+
+    const url = `/api/audit/${auditId}/events${params.toString() ? '?' + params.toString() : ''}`
+    return this.get<{ audit_id: string; count: number; events: any[] }>(url)
+  }
+
+  /**
+   * 获取审计事件统计
+   */
+  async getAuditEventsStats(auditId: string): Promise<{
+    audit_id: string
+    latest_sequence: number
+    statistics: { total_events: number; by_type: Record<string, number> }
+  }> {
+    return this.get(`/api/audit/${auditId}/events/stats`)
+  }
+
+  /**
    * 连接到审计事件流（使用 SSE）
    */
-  connectAuditStream(auditId: string): void {
+  connectAuditStream(auditId: string, afterSequence = 0): void {
     // 先关闭之前的连接
     this.disconnectAuditStream()
 
-    const eventSourceUrl = `${this.config.baseURL}/api/audit/${auditId}/stream`
+    // 构建 URL，支持 after_sequence 参数
+    const params = new URLSearchParams()
+    if (afterSequence > 0) {
+      params.append('after_sequence', String(afterSequence))
+    }
+
+    const queryString = params.toString()
+    const eventSourceUrl = `${this.config.baseURL}/api/audit/${auditId}/stream${queryString ? '?' + queryString : ''}`
+
+    console.log(`[SSE] 连接到: ${eventSourceUrl}`)
+
     this.eventSource = new EventSource(eventSourceUrl)
 
     this.eventSource.onopen = () => {
@@ -245,42 +284,71 @@ export class AgentAPIClient {
    * 获取 LLM 配置列表
    */
   async getLLMConfigs(): Promise<LLMConfig[]> {
-    return this.get<LLMConfig[]>('/api/llm/configs')
+    const response = await this.get<{ configs: LLMConfig[] }>('/api/settings/llm/configs')
+    return response.configs
   }
 
   /**
    * 创建 LLM 配置
    */
   async createLLMConfig(config: Omit<LLMConfig, 'id'>): Promise<LLMConfig> {
-    return this.post<LLMConfig>('/api/llm/configs', config)
+    // 驼峰命名转下划线命名
+    const snakeCaseConfig: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(config)) {
+      const snakeKey = key
+        .replace(/([a-z])([A-Z])/g, '$1_$2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+        .toLowerCase()
+      snakeCaseConfig[snakeKey] = value
+    }
+    const response = await this.post<{ id: string; status: string }>('/api/settings/llm/configs', snakeCaseConfig)
+    return { ...config, id: response.id }
   }
 
   /**
    * 更新 LLM 配置
    */
   async updateLLMConfig(id: string, config: Partial<LLMConfig>): Promise<LLMConfig> {
-    return this.put<LLMConfig>(`/api/llm/configs/${id}`, config)
+    // 驼峰命名转下划线命名
+    const snakeCaseConfig: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(config)) {
+      const snakeKey = key
+        .replace(/([a-z])([A-Z])/g, '$1_$2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+        .toLowerCase()
+      snakeCaseConfig[snakeKey] = value
+    }
+    await this.put<{ id: string; status: string }>(`/api/settings/llm/configs/${id}`, snakeCaseConfig)
+    return { ...config, id } as LLMConfig
   }
 
   /**
    * 删除 LLM 配置
    */
   async deleteLLMConfig(id: string): Promise<{ success: boolean }> {
-    return this.delete<{ success: boolean }>(`/api/llm/configs/${id}`)
+    await this.delete<{ status: string }>(`/api/settings/llm/configs/${id}`)
+    return { success: true }
   }
 
   /**
    * 设置默认 LLM 配置
    */
   async setDefaultLLMConfig(id: string): Promise<LLMConfig> {
-    return this.post<LLMConfig>(`/api/llm/configs/${id}/set-default`)
+    await this.post<{ status: string }>(`/api/settings/llm/configs/${id}/default`)
+    // 重新获取配置列表
+    const configs = await this.getLLMConfigs()
+    return configs.find(c => c.id === id) || { id, provider: '', model: '', apiKey: '', enabled: false, isDefault: false }
   }
 
   /**
    * 测试 LLM 配置
    */
   async testLLMConfig(id: string): Promise<{ success: boolean; error?: string }> {
-    return this.post<{ success: boolean; error?: string }>(`/api/llm/configs/${id}/test`)
+    const response = await this.post<{ success: boolean; message?: string }>(`/api/settings/llm/configs/${id}/test`, {})
+    return {
+      success: response.success,
+      error: response.success ? undefined : response.message,
+    }
   }
 
   // ==================== 提示词模板相关 ====================

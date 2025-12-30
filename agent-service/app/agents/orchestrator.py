@@ -100,8 +100,23 @@ class OrchestratorAgent(BaseAgent):
         """延迟初始化 LLM 服务"""
         if self._llm is None:
             try:
+                provider_str = self._llm_config.get("llm_provider", "anthropic")
+
+                # 尝试解析 provider，如果无效则使用 openai 作为默认值
+                #（因为前端使用 OpenAI 兼容 API 格式）
+                try:
+                    provider = LLMProvider(provider_str)
+                except ValueError:
+                    valid_values = [p.value for p in LLMProvider]
+                    logger.warning(
+                        f"未知的 LLM provider '{provider_str}'，"
+                        f"有效值为: {valid_values}，"
+                        f"将使用默认的 'openai'（OpenAI 兼容模式）"
+                    )
+                    provider = LLMProvider.OPENAI
+
                 self._llm = LLMService(
-                    provider=LLMProvider(self._llm_config.get("llm_provider", "anthropic")),
+                    provider=provider,
                     model=self._llm_config.get("llm_model", "claude-3-5-sonnet-20241022"),
                     api_key=self._llm_config.get("api_key"),
                     base_url=self._llm_config.get("base_url"),
@@ -114,8 +129,13 @@ class OrchestratorAgent(BaseAgent):
 
     def _create_mock_llm(self):  # type: ignore
         """创建模拟 LLM 服务（用于无 API 密钥时）"""
+        import uuid
+
         # 这里返回一个模拟对象，避免崩溃
         class MockLLMService:
+            def __init__(self):
+                self._step = 0
+
             async def generate(self, *args, **kwargs):
                 from app.services.llm.adapters.base import LLMResponse
                 return LLMResponse(
@@ -125,11 +145,55 @@ class OrchestratorAgent(BaseAgent):
                 )
 
             async def generate_with_tools(self, *args, **kwargs):
-                return {
-                    "content": "[模拟模式] LLM 未配置",
-                    "tool_calls": [],
-                    "usage": {"total_tokens": 0},
-                }
+                """模拟 LLM 工具调用 - 生成演示事件流"""
+                self._step += 1
+
+                # 模拟多步执行流程
+                steps = [
+                    # 步骤 1: 调用 recon_agent
+                    {
+                        "content": "开始信息收集阶段...",
+                        "tool_calls": [
+                            {
+                                "id": f"call_{uuid.uuid4().hex[:8]}",
+                                "type": "function",
+                                "function": {
+                                    "name": "dispatch_recon_agent",
+                                    "arguments": '{"task": "收集项目信息"}'
+                                }
+                            }
+                        ],
+                        "usage": {"total_tokens": 100},
+                    },
+                    # 步骤 2: 调用 analysis_agent
+                    {
+                        "content": "开始分析阶段...",
+                        "tool_calls": [
+                            {
+                                "id": f"call_{uuid.uuid4().hex[:8]}",
+                                "type": "function",
+                                "function": {
+                                    "name": "dispatch_analysis_agent",
+                                    "arguments": '{"task": "分析代码漏洞"}'
+                                }
+                            }
+                        ],
+                        "usage": {"total_tokens": 100},
+                    },
+                    # 步骤 3: 完成审计
+                    {
+                        "content": "审计完成，共发现 0 个漏洞",
+                        "tool_calls": [],
+                        "usage": {"total_tokens": 50},
+                    }
+                ]
+
+                # 根据步骤返回相应的模拟响应
+                if self._step <= len(steps):
+                    return steps[self._step - 1]
+                else:
+                    return steps[-1]
+
         return MockLLMService()  # type: ignore
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -201,12 +265,13 @@ class OrchestratorAgent(BaseAgent):
                 }
 
             # 添加 LLM 响应到对话历史
-            self._conversation.append({
+            assistant_message = {
                 "role": "assistant",
                 "content": llm_response.get("content", ""),
-            })
+            }
             if llm_response.get("tool_calls"):
-                self._conversation.append({"tool_calls": llm_response["tool_calls"]})
+                assistant_message["tool_calls"] = llm_response["tool_calls"]
+            self._conversation.append(assistant_message)
 
             # 解析决策
             tool_calls = llm_response.get("tool_calls", [])

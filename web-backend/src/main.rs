@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
 
     // 启动服务器
     let bind_address = "0.0.0.0:8000";
-    tracing::info!("DeepAudit Web server listening on {}", bind_address);
+    tracing::info!("CTX-Audit Web server listening on {}", bind_address);
 
     HttpServer::new(move || {
         App::new()

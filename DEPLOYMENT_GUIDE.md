@@ -135,7 +135,7 @@ cargo install cargo-watch
 cargo watch -x run
 
 # 后端启动成功后会看到：
-# "DeepAudit Web server listening on 0.0.0.0:8000"
+# "CTX-Audit Web server listening on 0.0.0.0:8000"
 ```
 
 #### Step 3: 启动 Agent 服务

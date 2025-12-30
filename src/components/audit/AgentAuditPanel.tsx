@@ -1,12 +1,13 @@
 /**
- * Agent 审计面板 - 创新设计版
+ * Agent 审计面板 - 精美版
  *
  * 特性：
- * - 流光卡片效果
+ * - 动态节点树展示
+ * - 流光动画效果
  * - 时间轴布局
- * - 智能折叠卡片
  * - 实时脉动动画
  * - 玻璃态设计
+ * - 渐变色彩系统
  */
 
 import React, { useEffect, useRef, useState } from 'react'
@@ -27,6 +28,12 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
+  Sparkles,
+  TrendingUp,
+  Radio,
+  Cpu,
+  Database,
+  Info,
 } from 'lucide-react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -56,6 +63,7 @@ const AGENT_CONFIG: Record<AgentType, {
   color: string
   gradient: string
   bgGradient: string
+  glowColor: string
 }> = {
   ORCHESTRATOR: {
     icon: Brain,
@@ -63,6 +71,7 @@ const AGENT_CONFIG: Record<AgentType, {
     color: 'text-violet-500',
     gradient: 'from-violet-500 to-purple-600',
     bgGradient: 'bg-gradient-to-br from-violet-500/10 to-purple-600/10',
+    glowColor: 'shadow-violet-500/50',
   },
   RECON: {
     icon: FileSearch,
@@ -70,6 +79,7 @@ const AGENT_CONFIG: Record<AgentType, {
     color: 'text-blue-500',
     gradient: 'from-blue-500 to-cyan-600',
     bgGradient: 'bg-gradient-to-br from-blue-500/10 to-cyan-600/10',
+    glowColor: 'shadow-blue-500/50',
   },
   ANALYSIS: {
     icon: Bug,
@@ -77,6 +87,7 @@ const AGENT_CONFIG: Record<AgentType, {
     color: 'text-orange-500',
     gradient: 'from-orange-500 to-amber-600',
     bgGradient: 'bg-gradient-to-br from-orange-500/10 to-amber-600/10',
+    glowColor: 'shadow-orange-500/50',
   },
   VERIFICATION: {
     icon: Shield,
@@ -84,6 +95,7 @@ const AGENT_CONFIG: Record<AgentType, {
     color: 'text-emerald-500',
     gradient: 'from-emerald-500 to-green-600',
     bgGradient: 'bg-gradient-to-br from-emerald-500/10 to-green-600/10',
+    glowColor: 'shadow-emerald-500/50',
   },
 }
 
@@ -92,54 +104,70 @@ const EVENT_TYPE_CONFIG: Record<string, {
   color: string
   bgGradient: string
   borderGradient: string
+  glowColor: string
 }> = {
   thinking: {
     icon: Brain,
     color: 'text-violet-500',
     bgGradient: 'bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-950/30 dark:to-purple-950/30',
     borderGradient: 'border-violet-200 dark:border-violet-800',
+    glowColor: 'shadow-violet-500/20',
   },
   tool_call: {
     icon: Zap,
     color: 'text-blue-500',
     bgGradient: 'bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-950/30 dark:to-cyan-950/30',
     borderGradient: 'border-blue-200 dark:border-blue-800',
+    glowColor: 'shadow-blue-500/20',
   },
   observation: {
     icon: Activity,
     color: 'text-emerald-500',
     bgGradient: 'bg-gradient-to-br from-emerald-50 to-green-50 dark:from-emerald-950/30 dark:to-green-950/30',
     borderGradient: 'border-emerald-200 dark:border-emerald-800',
+    glowColor: 'shadow-emerald-500/20',
   },
   finding: {
     icon: AlertCircle,
     color: 'text-red-500',
     bgGradient: 'bg-gradient-to-br from-red-50 to-orange-50 dark:from-red-950/30 dark:to-orange-950/30',
     borderGradient: 'border-red-200 dark:border-red-800',
+    glowColor: 'shadow-red-500/20',
   },
   decision: {
     icon: CheckCircle2,
     color: 'text-amber-500',
     bgGradient: 'bg-gradient-to-br from-amber-50 to-yellow-50 dark:from-amber-950/30 dark:to-yellow-950/30',
     borderGradient: 'border-amber-200 dark:border-amber-800',
+    glowColor: 'shadow-amber-500/20',
   },
   progress: {
     icon: Clock,
     color: 'text-cyan-500',
     bgGradient: 'bg-gradient-to-br from-cyan-50 to-blue-50 dark:from-cyan-950/30 dark:to-blue-950/30',
     borderGradient: 'border-cyan-200 dark:border-cyan-800',
+    glowColor: 'shadow-cyan-500/20',
   },
   error: {
     icon: AlertCircle,
     color: 'text-rose-500',
     bgGradient: 'bg-gradient-to-br from-rose-50 to-red-50 dark:from-rose-950/30 dark:to-red-950/30',
     borderGradient: 'border-rose-200 dark:border-rose-800',
+    glowColor: 'shadow-rose-500/20',
   },
   complete: {
     icon: CheckCircle2,
     color: 'text-green-500',
     bgGradient: 'bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30',
     borderGradient: 'border-green-200 dark:border-green-800',
+    glowColor: 'shadow-green-500/20',
+  },
+  status: {
+    icon: Info,
+    color: 'text-blue-500',
+    bgGradient: 'bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30',
+    borderGradient: 'border-blue-200 dark:border-blue-800',
+    glowColor: 'shadow-blue-500/20',
   },
 }
 
@@ -154,7 +182,15 @@ interface TimelineEventProps {
 }
 
 function TimelineEvent({ event, isExpanded, onToggle, index, total }: TimelineEventProps) {
-  const agentConfig = AGENT_CONFIG[event.agent_type]
+  // 调试：检查事件数据
+  if (!event.type) {
+    console.warn('[TimelineEvent] 事件缺少 type 字段:', event)
+  }
+  if (!event.agent_type) {
+    console.warn('[TimelineEvent] 事件缺少 agent_type 字段:', event)
+  }
+
+  const agentConfig = AGENT_CONFIG[event.agent_type] || AGENT_CONFIG.ORCHESTRATOR
   const eventConfig = EVENT_TYPE_CONFIG[event.type] || EVENT_TYPE_CONFIG.thinking
   const EventIcon = eventConfig.icon
   const AgentIcon = agentConfig.icon
@@ -194,7 +230,10 @@ function TimelineEvent({ event, isExpanded, onToggle, index, total }: TimelineEv
           <div className="mt-3 space-y-2">
             {data.reasoning && (
               <div className="p-3 bg-violet-50 dark:bg-violet-950/20 rounded-lg border border-violet-200 dark:border-violet-800">
-                <p className="text-xs font-medium text-violet-700 dark:text-violet-300 mb-1">💭 推理过程</p>
+                <p className="text-xs font-medium text-violet-700 dark:text-violet-300 mb-1 flex items-center gap-1">
+                  <Brain className="w-3 h-3" />
+                  推理过程
+                </p>
                 <p className="text-xs text-muted-foreground">{data.reasoning}</p>
               </div>
             )}
@@ -254,7 +293,10 @@ function TimelineEvent({ event, isExpanded, onToggle, index, total }: TimelineEv
           <div className="mt-3 p-3 bg-red-50 dark:bg-red-950/20 rounded-lg border border-red-200 dark:border-red-800 space-y-2">
             <div className="flex items-start justify-between">
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium text-red-700 dark:text-red-300 mb-1">🔴 漏洞发现</p>
+                <p className="text-xs font-medium text-red-700 dark:text-red-300 mb-1 flex items-center gap-1">
+                  <Shield className="w-3 h-3" />
+                  漏洞发现
+                </p>
                 <p className="text-sm font-semibold">{finding?.title}</p>
               </div>
               <Badge className="shrink-0 ml-2" variant="destructive">
@@ -311,11 +353,12 @@ function TimelineEvent({ event, isExpanded, onToggle, index, total }: TimelineEv
 
       {/* 时间轴节点 */}
       <div className={cn(
-        "absolute left-0 top-4 w-6 h-6 rounded-full flex items-center justify-center",
-        "bg-gradient-to-br shadow-lg",
-        agentConfig.gradient
+        "absolute left-0 top-4 w-7 h-7 rounded-full flex items-center justify-center transition-all duration-300",
+        "bg-gradient-to-br shadow-lg hover:scale-110",
+        agentConfig.gradient,
+        agentConfig.glowColor
       )}>
-        <AgentIcon className="w-3.5 h-3.5 text-white" />
+        <AgentIcon className="w-4 h-4 text-white" />
       </div>
 
       {/* 事件卡片 */}
@@ -340,8 +383,9 @@ function TimelineEvent({ event, isExpanded, onToggle, index, total }: TimelineEv
           <div className="flex items-start gap-3">
             {/* 图标 */}
             <div className={cn(
-              "p-2 rounded-lg bg-gradient-to-br shadow-sm",
-              agentConfig.gradient
+              "p-2.5 rounded-xl bg-gradient-to-br shadow-sm transition-all",
+              agentConfig.gradient,
+              "hover:scale-110"
             )}>
               <EventIcon className="w-4 h-4 text-white" />
             </div>
@@ -349,16 +393,16 @@ function TimelineEvent({ event, isExpanded, onToggle, index, total }: TimelineEv
             {/* 内容 */}
             <div className="flex-1 min-w-0">
               {/* 标签行 */}
-              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+              <div className="flex items-center gap-2 mb-2 flex-wrap">
                 <Badge variant="outline" className={cn(
-                  "text-[9px] h-5 px-1.5 font-medium",
+                  "text-[9px] h-5 px-2 font-medium",
                   eventConfig.color,
                   eventConfig.borderGradient
                 )}>
                   {event.type}
                 </Badge>
                 <Badge variant="outline" className={cn(
-                  "text-[9px] h-5 px-1.5 font-medium",
+                  "text-[9px] h-5 px-2 font-medium",
                   agentConfig.color,
                   "border-current"
                 )}>
@@ -415,8 +459,9 @@ function AgentStatusCard({ type, status }: AgentStatusCardProps) {
     <div className={cn(
       "relative overflow-hidden rounded-xl border transition-all duration-300",
       config.bgGradient,
-      isRunning ? "border-current shadow-lg shadow-current/20" : "border-border/50",
-      isCompleted && "opacity-60"
+      isRunning ? "border-current shadow-lg" : "border-border/50",
+      isCompleted && "opacity-60",
+      "hover:shadow-md hover:scale-[1.02]"
     )}>
       {/* 运行时的流光边框 */}
       {isRunning && (
@@ -426,31 +471,31 @@ function AgentStatusCard({ type, status }: AgentStatusCardProps) {
         </>
       )}
 
-      <div className="relative p-3">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
+      <div className="relative p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-3">
             <div className={cn(
-              "p-1.5 rounded-lg bg-gradient-to-br",
-              config.gradient
+              "p-2 rounded-xl bg-gradient-to-br shadow-sm transition-all",
+              config.gradient,
+              isRunning && "animate-pulse"
             )}>
               <Icon className={cn(
-                "w-4 h-4 text-white",
-                isRunning && "animate-pulse"
+                "w-5 h-5 text-white"
               )} />
             </div>
-            <span className="text-sm font-medium">{config.name}</span>
+            <span className="text-sm font-semibold">{config.name}</span>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             {isRunning && (
-              <div className="flex gap-0.5">
-                <span className="w-1 h-1 rounded-full bg-current animate-pulse" />
-                <span className="w-1 h-1 rounded-full bg-current animate-pulse delay-75" />
-                <span className="w-1 h-1 rounded-full bg-current animate-pulse delay-150" />
+              <div className="flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse delay-75" />
+                <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse delay-150" />
               </div>
             )}
             {isCompleted && (
-              <CheckCircle2 className="w-4 h-4 text-green-500" />
+              <CheckCircle2 className="w-5 h-5 text-emerald-500" />
             )}
           </div>
         </div>
@@ -459,7 +504,7 @@ function AgentStatusCard({ type, status }: AgentStatusCardProps) {
           <Badge
             variant={isRunning ? "default" : "outline"}
             className={cn(
-              "text-[9px] h-5 px-1.5 font-medium",
+              "text-[10px] h-6 px-2 font-medium",
               isRunning && config.gradient
             )}
           >
@@ -467,7 +512,7 @@ function AgentStatusCard({ type, status }: AgentStatusCardProps) {
           </Badge>
 
           {isRunning && (
-            <div className="h-1 flex-1 mx-3 rounded-full bg-current/20 overflow-hidden">
+            <div className="h-1.5 flex-1 mx-3 rounded-full bg-current/20 overflow-hidden">
               <div className="h-full rounded-full bg-current animate-[progress_2s_ease-in-out_infinite]" />
             </div>
           )}
@@ -525,20 +570,21 @@ export function AgentAuditPanel() {
     return () => clearInterval(interval)
   }, [])
 
-  // 加载 Agent 树
+  // 加载 Agent 树（用于更新 Agent 状态）
+  // 无论在哪个标签页，只要审计运行就加载树
   useEffect(() => {
-    if (auditStatus === 'running' && activeTab === 'tree') {
+    if (auditStatus === 'running') {
       loadAgentTree()
     }
-  }, [auditStatus, activeTab, loadAgentTree])
+  }, [auditStatus, loadAgentTree])
 
-  // 定时刷新
+  // 定时刷新 Agent 树
   useEffect(() => {
-    if (auditStatus === 'running' && activeTab === 'tree') {
-      const interval = setInterval(() => loadAgentTree(), 5000)
+    if (auditStatus === 'running') {
+      const interval = setInterval(() => loadAgentTree(), 3000)
       return () => clearInterval(interval)
     }
-  }, [auditStatus, activeTab, loadAgentTree])
+  }, [auditStatus, loadAgentTree])
 
   // 自动滚动
   useEffect(() => {
@@ -581,7 +627,7 @@ export function AgentAuditPanel() {
       }
 
       const auditId = await startAudit(
-        currentProject.id.toString(),
+        currentProject.uuid,
         auditType,
         config
       )
@@ -616,34 +662,52 @@ export function AgentAuditPanel() {
   return (
     <div className="flex flex-col h-full bg-gradient-to-br from-background via-background to-muted/20">
       {/* 顶部控制栏 */}
-      <div className="flex items-center justify-between p-4 border-b bg-background/50 backdrop-blur-sm">
+      <div className="flex items-center justify-between p-4 border-b bg-background/80 backdrop-blur-sm">
         <div className="flex items-center gap-6">
           {/* 审计类型选择 */}
           <div className="flex items-center gap-2">
-            <label className="text-xs font-medium text-muted-foreground">审计模式</label>
+            <label className="text-xs font-semibold text-muted-foreground">审计模式</label>
             <Select value={auditType} onValueChange={(v: any) => setAuditType(v)}>
-              <SelectTrigger className="w-32 h-8">
+              <SelectTrigger className="w-36 h-9">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="quick">⚡ 快速扫描</SelectItem>
-                <SelectItem value="full">🔍 深度审计</SelectItem>
+                <SelectItem value="quick">
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-amber-500" />
+                    <span>快速扫描</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="full">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-violet-500" />
+                    <span>深度审计</span>
+                  </div>
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
 
           {/* LLM 配置选择 */}
           <div className="flex items-center gap-2">
-            <label className="text-xs font-medium text-muted-foreground">AI 模型</label>
+            <label className="text-xs font-semibold text-muted-foreground">AI 模型</label>
             <Select value={selectedLLMConfig} onValueChange={setSelectedLLMConfig}>
-              <SelectTrigger className="w-48 h-8">
+              <SelectTrigger className="w-48 h-9">
                 <SelectValue placeholder="选择配置" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="default">🤖 默认配置</SelectItem>
+                <SelectItem value="default">
+                  <div className="flex items-center gap-2">
+                    <Cpu className="w-4 h-4 text-primary" />
+                    <span>默认配置</span>
+                  </div>
+                </SelectItem>
                 {llmConfigs?.map((config: any) => (
                   <SelectItem key={config.id} value={config.id}>
-                    {config.provider} - {config.model}
+                    <div className="flex items-center gap-2">
+                      <Radio className="w-4 h-4 text-primary" />
+                      <span>{config.provider} - {config.model}</span>
+                    </div>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -651,12 +715,20 @@ export function AgentAuditPanel() {
           </div>
 
           {/* 连接状态 */}
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-background border">
+          <div className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-full border transition-all",
+            isConnected
+              ? "bg-emerald-500/10 border-emerald-500/30"
+              : "bg-rose-500/10 border-rose-500/30"
+          )}>
             <div className={cn(
               "w-2 h-2 rounded-full transition-colors",
-              isConnected ? "bg-green-500" : "bg-red-500"
+              isConnected ? "bg-emerald-500 animate-pulse" : "bg-rose-500"
             )} />
-            <span className="text-xs text-muted-foreground">
+            <span className={cn(
+              "text-xs font-medium",
+              isConnected ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
+            )}>
               {isConnected ? '已连接' : '未连接'}
             </span>
           </div>
@@ -666,16 +738,16 @@ export function AgentAuditPanel() {
         <div className="flex items-center gap-2">
           {auditStatus === 'running' ? (
             <>
-              <Button variant="outline" size="sm" onClick={handlePauseAudit} className="h-8">
-                <Pause className="w-3.5 h-3.5 mr-1" /> 暂停
+              <Button variant="outline" size="sm" onClick={handlePauseAudit} className="h-9">
+                <Pause className="w-4 h-4 mr-2" /> 暂停
               </Button>
-              <Button variant="destructive" size="sm" onClick={handleCancelAudit} className="h-8">
-                <Square className="w-3.5 h-3.5 mr-1" /> 终止
+              <Button variant="destructive" size="sm" onClick={handleCancelAudit} className="h-9">
+                <Square className="w-4 h-4 mr-2" /> 终止
               </Button>
             </>
           ) : (
-            <Button size="sm" onClick={handleStartAudit} disabled={!isConnected} className="h-8">
-              <Play className="w-3.5 h-3.5 mr-1" /> 开始审计
+            <Button size="sm" onClick={handleStartAudit} disabled={!isConnected} className="h-9">
+              <Play className="w-4 h-4 mr-2" /> 开始审计
             </Button>
           )}
         </div>
@@ -683,39 +755,42 @@ export function AgentAuditPanel() {
 
       {/* 主内容区 */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* 左侧：事件流 (70%) */}
-        <div className="flex-[7] flex flex-col min-w-0 border-r">
+        {/* 左侧：事件流 (65%) */}
+        <div className="flex-[65] flex flex-col min-w-0 border-r">
           {/* Tab 标题栏 */}
-          <div className="flex items-center justify-between px-4 py-2 border-b bg-background/50 backdrop-blur-sm">
+          <div className="flex items-center justify-between px-4 py-3 border-b bg-background/80 backdrop-blur-sm">
             <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'events' | 'tree')} className="flex-1">
-              <TabsList className="h-8 bg-muted/50">
-                <TabsTrigger value="events" className="gap-1.5 data-[state=active]:bg-background">
-                  <Activity className="w-3.5 h-3.5" />
+              <TabsList className="h-9 bg-muted/50">
+                <TabsTrigger value="events" className="gap-2 data-[state=active]:bg-background">
+                  <Activity className="w-4 h-4" />
                   事件流
                   {events.length > 0 && (
-                    <Badge variant="secondary" className="h-4 px-1 text-[9px]">
+                    <Badge variant="secondary" className="h-5 px-1.5 text-[9px]">
                       {events.length}
                     </Badge>
                   )}
                 </TabsTrigger>
-                <TabsTrigger value="tree" className="gap-1.5 data-[state=active]:bg-background">
-                  <Network className="w-3.5 h-3.5" />
+                <TabsTrigger value="tree" className="gap-2 data-[state=active]:bg-background">
+                  <Network className="w-4 h-4" />
                   Agent 树
                 </TabsTrigger>
               </TabsList>
 
-              {/* Tab 内容 - 移到 Tabs 内部 */}
+              {/* Tab 内容 */}
               <TabsContent value="events" className="mt-0 flex-1 m-0 p-0 min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
                 <ScrollArea ref={eventsContainerRef} className="h-full">
                   <div className="p-6">
                     {events.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-muted-foreground">
-                        <div className="relative">
-                          <div className="absolute inset-0 bg-gradient-to-r from-violet-500/20 to-purple-500/20 blur-3xl rounded-full" />
-                          <Brain className="relative w-16 h-16 mb-4 opacity-30" />
+                      <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-muted-foreground">
+                        <div className="relative mb-6">
+                          <div className="absolute inset-0 bg-gradient-to-r from-violet-500/30 to-purple-500/30 blur-3xl rounded-full" />
+                          <Brain className="relative w-20 h-20 opacity-20" />
                         </div>
-                        <p className="text-sm font-medium">准备就绪</p>
-                        <p className="text-xs mt-1">点击"开始审计"启动 Agent 系统</p>
+                        <div className="text-center">
+                          <Sparkles className="w-8 h-8 mx-auto mb-3 text-primary/50" />
+                          <p className="text-sm font-semibold mb-1">准备就绪</p>
+                          <p className="text-xs">点击"开始审计"启动 AI Agent 系统</p>
+                        </div>
                       </div>
                     ) : (
                       <div className="space-y-0">
@@ -747,17 +822,17 @@ export function AgentAuditPanel() {
               </TabsContent>
             </Tabs>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3 ml-4">
               {/* 进度显示 */}
               {auditProgress && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <div className="w-24 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div className="flex items-center gap-2">
+                  <div className="w-28 h-2 rounded-full bg-muted overflow-hidden">
                     <div
                       className="h-full bg-gradient-to-r from-violet-500 to-purple-600 transition-all duration-500"
                       style={{ width: `${auditProgress.percentage}%` }}
                     />
                   </div>
-                  <span className="font-mono">{auditProgress.percentage}%</span>
+                  <span className="text-xs font-mono font-semibold text-primary">{auditProgress.percentage}%</span>
                 </div>
               )}
 
@@ -767,62 +842,72 @@ export function AgentAuditPanel() {
                 size="sm"
                 onClick={() => setAutoScroll(!autoScroll)}
                 className={cn(
-                  "h-7 px-2 text-xs",
+                  "h-8 px-3 text-xs",
                   autoScroll && "bg-primary/10 text-primary"
                 )}
               >
-                {autoScroll ? '📍 跟随' : '📍 固定'}
+                {autoScroll ? <Activity className="w-3.5 h-3.5 mr-1" /> : <Clock className="w-3.5 h-3.5 mr-1" />}
+                {autoScroll ? '跟随' : '固定'}
               </Button>
             </div>
           </div>
         </div>
 
-        {/* 右侧：Agent 状态 (30%) */}
-        <div className="flex-[3] flex flex-col bg-muted/10">
+        {/* 右侧：日志面板 (35%) */}
+        <div className="flex-[35] flex flex-col bg-muted/5">
           {/* 标题 */}
-          <div className="px-4 py-2 border-b bg-background/50 backdrop-blur-sm">
-            <h3 className="text-sm font-medium">Agent 状态</h3>
+          <div className="px-5 py-3 border-b bg-background/80 backdrop-blur-sm">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-gradient-to-br from-blue-20 to-blue-10">
+                  <Radio className="w-4 h-4 text-blue-500" />
+                </div>
+                <h3 className="text-sm font-semibold">运行日志</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant={auditStatus === 'running' ? 'default' : 'secondary'} className="text-xs">
+                  {events.length} 条
+                </Badge>
+              </div>
+            </div>
           </div>
 
-          {/* Agent 卡片列表 */}
+          {/* 日志列表 */}
           <ScrollArea className="flex-1">
-            <div className="p-4 space-y-3">
-              {(Object.keys(AGENT_CONFIG) as AgentType[]).map((type) => (
-                <AgentStatusCard
-                  key={type}
-                  type={type}
-                  status={agentStatus[type] || 'idle'}
-                />
-              ))}
-
-              {/* 错误显示 */}
-              {auditError && (
-                <div className="mt-4 p-3 bg-red-50 dark:bg-red-950/20 rounded-xl border border-red-200 dark:border-red-800">
-                  <div className="flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-medium text-red-700 dark:text-red-300">错误</p>
-                      <p className="text-xs text-red-600 dark:text-red-400 mt-1">{auditError}</p>
+            <div className="p-3 space-y-1">
+              {events.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+                  <Activity className="w-12 h-12 mb-3 opacity-20" />
+                  <p className="text-xs">暂无日志</p>
+                </div>
+              ) : (
+                events.slice().reverse().map((event, index) => (
+                  <div
+                    key={event.id}
+                    className={cn(
+                      "text-xs p-2 rounded font-mono border-l-2 transition-all",
+                      {
+                        'border-blue-500 bg-blue-50/50 dark:bg-blue-950/20': event.type === 'thinking',
+                        'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20': event.type === 'observation',
+                        'border-amber-500 bg-amber-50/50 dark:bg-amber-950/20': event.type === 'tool_call' || event.type === 'action',
+                        'border-red-500 bg-red-50/50 dark:bg-red-950/20': event.type === 'error' || event.type === 'finding',
+                        'border-violet-500 bg-violet-50/50 dark:bg-violet-950/20': event.type === 'status',
+                      }
+                    )}
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="text-[10px] text-muted-foreground shrink-0">
+                        {new Date(event.timestamp * 1000).toLocaleTimeString('zh-CN', { hour12: false })}
+                      </span>
+                      <span className="text-muted-foreground shrink-0">
+                        [{event.agent_type}]
+                      </span>
+                      <span className="flex-1 break-words">
+                        {event.message || event.data?.message || JSON.stringify(event.data).substring(0, 100)}
+                      </span>
                     </div>
                   </div>
-                </div>
-              )}
-
-              {/* 统计信息 */}
-              {events.length > 0 && (
-                <div className="mt-4 p-3 bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-950/20 dark:to-purple-950/20 rounded-xl border border-violet-200 dark:border-violet-800">
-                  <p className="text-xs font-medium text-violet-700 dark:text-violet-300 mb-2">📊 审计统计</p>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="p-2 bg-background/50 rounded-lg">
-                      <p className="text-muted-foreground">总事件</p>
-                      <p className="text-lg font-bold text-foreground">{events.length}</p>
-                    </div>
-                    <div className="p-2 bg-background/50 rounded-lg">
-                      <p className="text-muted-foreground">进度</p>
-                      <p className="text-lg font-bold text-foreground">{auditProgress?.percentage || 0}%</p>
-                    </div>
-                  </div>
-                </div>
+                ))
               )}
             </div>
           </ScrollArea>

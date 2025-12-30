@@ -196,8 +196,6 @@ export function ScanPanel() {
       case 'conf': return 'ini'
       case 'dockerfile':
       case 'docker': return 'docker'
-      case 'yaml':
-      case 'yml': return 'yaml'
       case 'txt': return 'text'
       default: return 'text'
     }
@@ -205,16 +203,9 @@ export function ScanPanel() {
 
   return (
     <div className="h-full p-6 overflow-auto no-scrollbar">
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-6xl">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold">安全扫描</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              扫描代码中的安全漏洞和潜在问题
-            </p>
-          </div>
-
+        <div className="flex items-center justify-end mb-6">
           <Button
             onClick={handleRunScan}
             disabled={isScanning || !currentProject}
