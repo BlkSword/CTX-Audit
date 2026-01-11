@@ -15,7 +15,6 @@ import {
   Edit,
   Trash2,
   Save,
-  X,
 } from 'lucide-react'
 import { useRuleStore } from '@/stores/ruleStore'
 import { useToast } from '@/hooks/use-toast'
@@ -43,7 +42,7 @@ const emptyRule: RuleFormData = {
 }
 
 export function RulesPage() {
-  const { rules, stats, isLoading, error, isSaving, isDeleting, loadRules, loadStats, createRule, updateRule, deleteRule, setSelectedRule } = useRuleStore()
+  const { rules, stats, isLoading, error, isSaving, isDeleting, loadRules, loadStats, createRule, updateRule, deleteRule, setSelectedRule: _setSelectedRule } = useRuleStore()
   const toast = useToast()
 
   const [searchQuery, setSearchQuery] = useState('')

@@ -91,7 +91,7 @@ export function Dashboard() {
 
   const handleOpenProject = (project: typeof projects[0]) => {
     setCurrentProject(project)
-    navigate(`/project/${project.id}/editor`)
+    navigate(`/project/${project.id}/agent`)
     addLog(`打开项目: ${project.name}`, 'system')
   }
 

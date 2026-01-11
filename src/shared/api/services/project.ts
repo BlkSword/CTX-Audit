@@ -19,7 +19,7 @@ export class ProjectService {
   async uploadProject(
     name: string,
     zipFile: File,
-    onProgress?: (progress: number) => void
+    _onProgress?: (progress: number) => void
   ): Promise<Project> {
     const formData = new FormData()
     formData.append('name', name)

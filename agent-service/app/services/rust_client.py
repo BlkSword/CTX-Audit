@@ -162,19 +162,35 @@ class RustBackendClient:
             logger.error(f"获取 AST 上下文失败: {e}")
             raise
 
-    async def search_symbol(self, symbol_name: str) -> List[Dict[str, Any]]:
+    async def search_symbol(
+        self,
+        symbol_name: str,
+        project_id: Optional[int] = None,
+        project_path: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         搜索符号
 
         Args:
             symbol_name: 符号名称
+            project_id: 项目 ID（可选）
+            project_path: 项目路径（可选）
 
         Returns:
             符号搜索结果列表
         """
         client = await self._get_client()
         try:
-            response = await client.get(f"/api/ast/search_symbol/{symbol_name}")
+            params = {}
+            if project_id is not None:
+                params["project_id"] = str(project_id)
+            if project_path is not None:
+                params["project_path"] = project_path
+
+            response = await client.get(
+                f"/api/ast/search_symbol/{symbol_name}",
+                params=params if params else None
+            )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
@@ -265,6 +281,170 @@ class RustBackendClient:
         except httpx.HTTPError as e:
             logger.error(f"获取扫描结果失败: {e}")
             raise
+
+    # ========== 代码图谱查询 ==========
+
+    async def get_call_graph(
+        self,
+        entry_function: str,
+        max_depth: int = 3,
+        project_id: Optional[int] = None,
+        save_graph: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        获取函数调用图
+
+        Args:
+            entry_function: 入口函数名
+            max_depth: 最大深度
+            project_id: 项目 ID（可选，用于保存图谱）
+            save_graph: 是否保存图谱到数据库
+
+        Returns:
+            调用图数据，包含 nodes 和 edges
+        """
+        client = await self._get_client()
+        try:
+            payload = {
+                "entry_function": entry_function,
+                "max_depth": max_depth,
+            }
+            if project_id is not None:
+                payload["project_id"] = project_id
+            if save_graph:
+                payload["save_graph"] = True
+
+            response = await client.post("/api/ast/get_call_graph", json=payload)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"获取调用图失败: {e}")
+            raise
+
+    async def get_knowledge_graph(
+        self,
+        limit: int = 500,
+        project_id: Optional[int] = None,
+        project_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取代码知识图谱
+
+        Args:
+            limit: 节点数量限制
+            project_id: 项目 ID
+            project_path: 项目路径
+
+        Returns:
+            知识图谱数据，包含 nodes 和 edges
+        """
+        client = await self._get_client()
+        try:
+            payload = {"limit": limit}
+            if project_id is not None:
+                payload["project_id"] = project_id
+            if project_path is not None:
+                payload["project_path"] = project_path
+
+            response = await client.post("/api/ast/get_knowledge_graph", json=payload)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"获取知识图谱失败: {e}")
+            raise
+
+    async def get_code_structure(
+        self,
+        file_path: str,
+        project_id: Optional[int] = None,
+        project_path: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        获取文件的代码结构
+
+        Args:
+            file_path: 文件路径
+            project_id: 项目 ID（可选）
+            project_path: 项目路径（可选）
+
+        Returns:
+            符号列表
+        """
+        client = await self._get_client()
+        try:
+            # URL encode the file path
+            import urllib.parse
+            encoded_path = urllib.parse.quote(file_path, safe='')
+
+            params = {}
+            if project_id is not None:
+                params["project_id"] = str(project_id)
+            if project_path is not None:
+                params["project_path"] = project_path
+
+            response = await client.get(
+                f"/api/ast/get_code_structure/{encoded_path}",
+                params=params if params else None
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"获取代码结构失败: {e}")
+            return []
+
+    async def get_ast_index_history(
+        self,
+        project_id: int,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        获取项目的 AST 索引历史
+
+        Args:
+            project_id: 项目 ID
+            limit: 返回数量限制
+
+        Returns:
+            历史记录列表
+        """
+        client = await self._get_client()
+        try:
+            response = await client.get(
+                f"/api/ast/history/indices/{project_id}",
+                params={"limit": limit}
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"获取 AST 索引历史失败: {e}")
+            return []
+
+    async def get_graph_history(
+        self,
+        project_id: int,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        获取项目的代码图谱历史
+
+        Args:
+            project_id: 项目 ID
+            limit: 返回数量限制
+
+        Returns:
+            历史记录列表
+        """
+        client = await self._get_client()
+        try:
+            response = await client.get(
+                f"/api/ast/history/graphs/{project_id}",
+                params={"limit": limit}
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            logger.error(f"获取图谱历史失败: {e}")
+            return []
 
 
 # 全局客户端实例

@@ -10,9 +10,11 @@ import type {
   AuditStatusResponse,
   AuditProgress,
   AgentStatusMap,
+  AgentStatus,
   AuditStats,
   AgentEvent,
   AgentEventType,
+  AgentType,
   LLMConfig,
   PromptTemplate,
 } from '@/shared/types'
@@ -358,21 +360,39 @@ export const useAgentStore = create<AgentState>()(
       },
 
       // 添加事件
-      addEvent: (event) => {
+      // event: any - 后端发送的事件格式与前端 AgentEvent 类型不同
+      addEvent: (event: any) => {
         console.log('[AgentStore] 收到事件:', event)
         set((state) => {
           const MAX_EVENTS = 1000
-          // 将后端事件格式转换为前端格式
+
+          // 处理后端事件格式到前端格式的转换
+          // 后端格式: { event_id, event_type, agent_type, timestamp, data, message }
+          // 前端格式: { id, type, agent_type, timestamp, data }
           const normalizedEvent: AgentEvent = {
-            id: event.event_id || event.id,
-            audit_id: event.audit_id,
-            type: event.event_type as AgentEventType || event.type,
+            id: event.event_id || event.id || `evt_${Date.now()}_${Math.random()}`,
+            audit_id: event.audit_id || state.currentAuditId || '',
+            // 后端使用 event_type，前端使用 type
+            type: (event.event_type || event.type) as AgentEventType,
             // 后端发送小写的 agent_type，需要转换为大写
-            agent_type: (event.agent_type?.toUpperCase() || 'ORCHESTRATOR') as AgentType,
-            timestamp: Date.now() / 1000, // 后端发送 ISO 字符串，转换为时间戳
-            data: event.data || (event as any).data,
+            agent_type: (event.agent_type?.toUpperCase?.() || event.agent_type || 'ORCHESTRATOR') as AgentType,
+            // 后端发送 ISO 字符串或时间戳，统一转换为时间戳（秒）
+            timestamp: typeof event.timestamp === 'string'
+              ? new Date(event.timestamp).getTime() / 1000
+              : event.timestamp || Date.now() / 1000,
+            // 保留原始 data，如果没有则从 event 其他字段构建
+            data: event.data || {
+              message: event.message,
+              thought: event.thought,
+              action: event.action,
+              observation: event.observation,
+              finding: event.finding,
+              error: event.error,
+              progress: event.progress,
+            },
           }
           console.log('[AgentStore] 规范化后的事件:', normalizedEvent)
+
           const events = [...state.events, normalizedEvent]
           if (events.length > MAX_EVENTS) {
             return { events: events.slice(events.length - MAX_EVENTS) }
@@ -562,9 +582,9 @@ export const useAgentStore = create<AgentState>()(
 
           const processNode = (n: AgentNode) => {
             const agentType = n.agent_type.toLowerCase() as keyof AgentStatusMap
-            // 优先使用 running 状态，然后是 completed，最后是其他状态
-            const currentStatus = statusMap[agentType]
-            const newStatus = n.status
+            // @ts-ignore - statusMap will be properly typed after all assignments
+            const currentStatus = statusMap[agentType] as string
+            const newStatus = n.status as string
 
             // 如果已有 running 状态，保持不变
             if (currentStatus === 'running') return
@@ -577,13 +597,17 @@ export const useAgentStore = create<AgentState>()(
             else if (newStatus === 'completed' && currentStatus !== 'running') {
               statusMap[agentType] = 'completed'
             }
-            // 如果新状态是 error，且当前不是 running 或 completed，更新
+            // 如果新状态是 error，映射为 failed
             else if (newStatus === 'error' && currentStatus !== 'running' && currentStatus !== 'completed') {
-              statusMap[agentType] = 'error'
+              statusMap[agentType] = 'failed'
             }
-            // 如果当前是 idle，更新为任何非 idle 状态
+            // 如果新状态是 stopped，映射为 stopped
+            else if (newStatus === 'stopped' && currentStatus === 'idle') {
+              statusMap[agentType] = 'stopped'
+            }
+            // 如果当前是 idle，更新为任何非 idle 状态（需要映射）
             else if (currentStatus === 'idle' && newStatus !== 'idle') {
-              statusMap[agentType] = newStatus as any
+              statusMap[agentType] = (newStatus === 'error' ? 'failed' : newStatus) as AgentStatus
             }
 
             // 递归处理子节点

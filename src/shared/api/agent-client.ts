@@ -198,7 +198,14 @@ export class AgentAPIClient {
     // 处理通用消息（兼容旧代码）
     this.eventSource.addEventListener('message', (event) => {
       try {
-        const agentEvent: AgentEvent = JSON.parse(event.data)
+        const parsed = JSON.parse(event.data)
+        // 映射后端事件格式到前端
+        const agentEvent: AgentEvent = {
+          ...parsed,
+          type: parsed.event_type || parsed.type,
+          agent_type: (parsed.agent_type || '').toUpperCase(),
+          timestamp: parsed.timestamp ? new Date(parsed.timestamp).getTime() / 1000 : Date.now() / 1000,
+        }
         this.emitEvent(agentEvent)
       } catch (error) {
         console.error('Failed to parse SSE message:', error)
@@ -226,7 +233,14 @@ export class AgentAPIClient {
     eventTypes.forEach(eventType => {
       this.eventSource!.addEventListener(eventType, (event) => {
         try {
-          const agentEvent: AgentEvent = JSON.parse((event as MessageEvent).data)
+          const parsed = JSON.parse((event as MessageEvent).data)
+          // 映射后端事件格式到前端
+          const agentEvent: AgentEvent = {
+            ...parsed,
+            type: parsed.event_type || parsed.type,
+            agent_type: (parsed.agent_type || '').toUpperCase(),
+            timestamp: parsed.timestamp ? new Date(parsed.timestamp).getTime() / 1000 : Date.now() / 1000,
+          }
           this.emitEvent(agentEvent)
         } catch (parseError) {
           console.error(`Failed to parse SSE ${eventType} event:`, parseError)

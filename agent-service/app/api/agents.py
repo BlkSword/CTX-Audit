@@ -48,15 +48,59 @@ class MessageBroadcastRequest(BaseModel):
 # ========== API 端点 ==========
 
 @router.get("/tree")
-async def get_agent_tree(root_id: Optional[str] = None) -> Dict[str, Any]:
+async def get_agent_tree(root_id: Optional[str] = None, audit_id: Optional[str] = None) -> Dict[str, Any]:
     """
     获取 Agent 树结构
 
     Args:
         root_id: 根节点 Agent ID，如果为 None 则自动查找
+        audit_id: 审计 ID（可选），用于过滤特定审计的 Agent 树
     """
+    # 如果指定了 audit_id，找到对应的 orchestrator 并返回其子树
+    if audit_id:
+        # 查找 orchestrator agent: agent_id 格式为 orchestrator_{audit_id}
+        orchestrator_id = f"orchestrator_{audit_id}"
+
+        # 检查 orchestrator 是否存在
+        orchestrator_info = await agent_registry.get_agent(orchestrator_id)
+
+        if orchestrator_info:
+            # 返回该 orchestrator 的子树
+            tree = await agent_registry.get_agent_tree(root_id=orchestrator_id)
+
+            # 转换为前端期望的格式
+            if isinstance(tree, dict) and "agent_id" in tree:
+                # 单个根节点
+                return {
+                    "roots": [tree],
+                    "total_count": await _count_agents_recursive(tree),
+                    "running_count": await _count_status_recursive(tree, "running"),
+                    "completed_count": await _count_status_recursive(tree, "completed"),
+                }
+            return tree if tree else {"roots": [], "total_count": 0, "running_count": 0, "completed_count": 0}
+        else:
+            # Orchestrator 不存在，返回空树
+            return {"roots": [], "total_count": 0, "running_count": 0, "completed_count": 0}
+
+    # 如果没有 audit_id，使用原始逻辑
     tree = await agent_graph_controller.get_agent_graph(current_agent_id=root_id)
     return tree
+
+
+async def _count_agents_recursive(agent: dict) -> int:
+    """递归计算 Agent 数量"""
+    count = 1
+    for child in agent.get("children", []):
+        count += await _count_agents_recursive(child)
+    return count
+
+
+async def _count_status_recursive(agent: dict, status: str) -> int:
+    """递归计算特定状态的 Agent 数量"""
+    count = 1 if agent.get("status") == status else 0
+    for child in agent.get("children", []):
+        count += await _count_status_recursive(child, status)
+    return count
 
 
 @router.get("/list")

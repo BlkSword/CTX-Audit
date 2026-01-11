@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://audit_user:audit_pass@localhost:5432/audit_db"
     ENABLE_POSTGRES: bool = False  # 是否启用 PostgreSQL（默认使用 SQLite）
 
-    # ========== ChromaDB 配置 ==========
-    CHROMADB_HOST: str = "localhost"
-    CHROMADB_PORT: int = 8002
-    ENABLE_CHROMADB: bool = False  # 是否启用 ChromaDB（RAG 功能）
+    # ========== Qdrant 配置 ==========
+    QDRANT_HOST: str = "localhost"
+    QDRANT_PORT: int = 6333
+    ENABLE_QDRANT: bool = True  # 是否启用 Qdrant（RAG 功能）
 
     # ========== Redis 配置 ==========
     REDIS_URL: str = "redis://localhost:6379/0"  # 保留配置但未使用

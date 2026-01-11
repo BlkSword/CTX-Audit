@@ -28,9 +28,33 @@ async def init_database():
             command_timeout=30,
         )
         logger.info("PostgreSQL 连接池创建成功")
+
+        # 运行迁移
+        await _run_migrations()
     except Exception as e:
         logger.error(f"数据库连接失败: {e}")
         raise
+
+
+async def _run_migrations():
+    """运行数据库迁移"""
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        # 添加 token 和工具调用统计字段到 audit_sessions
+        try:
+            await conn.execute("""
+                ALTER TABLE audit_sessions
+                ADD COLUMN IF NOT EXISTS total_tokens INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS tool_calls INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS total_files INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS indexed_files INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS analyzed_files INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS findings_detected INTEGER DEFAULT 0
+            """)
+            logger.info("数据库迁移完成: 添加统计字段")
+        except Exception as e:
+            logger.warning(f"迁移失败（可能已存在）: {e}")
 
 
 async def close_database():
@@ -343,6 +367,80 @@ async def update_audit_progress(
             current_stage,
             progress_percentage,
             audit_id,
+        )
+
+
+async def update_audit_stats(
+    audit_id: str,
+    total_tokens: Optional[int] = None,
+    tool_calls: Optional[int] = None,
+    total_files: Optional[int] = None,
+    indexed_files: Optional[int] = None,
+    analyzed_files: Optional[int] = None,
+    findings_detected: Optional[int] = None,
+) -> None:
+    """
+    更新审计统计信息
+
+    Args:
+        audit_id: 审计 ID
+        total_tokens: 总 Token 数量
+        tool_calls: 工具调用次数
+        total_files: 总文件数
+        indexed_files: 已索引文件数
+        analyzed_files: 已分析文件数
+        findings_detected: 发现的漏洞数
+    """
+    pool = await get_pool()
+
+    # 构建动态更新语句
+    updates = []
+    params = []
+    param_idx = 1
+
+    if total_tokens is not None:
+        updates.append(f"total_tokens = total_tokens + ${param_idx}")
+        params.append(total_tokens)
+        param_idx += 1
+
+    if tool_calls is not None:
+        updates.append(f"tool_calls = tool_calls + ${param_idx}")
+        params.append(tool_calls)
+        param_idx += 1
+
+    if total_files is not None:
+        updates.append(f"total_files = ${param_idx}")
+        params.append(total_files)
+        param_idx += 1
+
+    if indexed_files is not None:
+        updates.append(f"indexed_files = ${param_idx}")
+        params.append(indexed_files)
+        param_idx += 1
+
+    if analyzed_files is not None:
+        updates.append(f"analyzed_files = ${param_idx}")
+        params.append(analyzed_files)
+        param_idx += 1
+
+    if findings_detected is not None:
+        updates.append(f"findings_detected = ${param_idx}")
+        params.append(findings_detected)
+        param_idx += 1
+
+    if not updates:
+        return
+
+    params.append(audit_id)
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"""
+            UPDATE audit_sessions
+            SET {', '.join(updates)}
+            WHERE id = ${param_idx}
+            """,
+            *params,
         )
 
 

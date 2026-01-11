@@ -86,10 +86,36 @@ class EventPersistence:
                     config TEXT,
                     current_stage TEXT,
                     progress_percentage INTEGER DEFAULT 0,
+                    total_tokens INTEGER DEFAULT 0,
+                    tool_calls INTEGER DEFAULT 0,
+                    total_files INTEGER DEFAULT 0,
+                    indexed_files INTEGER DEFAULT 0,
+                    analyzed_files INTEGER DEFAULT 0,
+                    findings_detected INTEGER DEFAULT 0,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # 迁移：添加新列（如果表已存在）
+            try:
+                conn.execute("ALTER TABLE audit_sessions ADD COLUMN total_tokens INTEGER DEFAULT 0")
+            except: pass
+            try:
+                conn.execute("ALTER TABLE audit_sessions ADD COLUMN tool_calls INTEGER DEFAULT 0")
+            except: pass
+            try:
+                conn.execute("ALTER TABLE audit_sessions ADD COLUMN total_files INTEGER DEFAULT 0")
+            except: pass
+            try:
+                conn.execute("ALTER TABLE audit_sessions ADD COLUMN indexed_files INTEGER DEFAULT 0")
+            except: pass
+            try:
+                conn.execute("ALTER TABLE audit_sessions ADD COLUMN analyzed_files INTEGER DEFAULT 0")
+            except: pass
+            try:
+                conn.execute("ALTER TABLE audit_sessions ADD COLUMN findings_detected INTEGER DEFAULT 0")
+            except: pass
 
             # ==================== 漏洞发现表 ====================
             conn.execute("""
@@ -487,6 +513,74 @@ class EventPersistence:
         except Exception as e:
             logger.error(f"获取漏洞发现失败: {e}")
             return []
+
+    async def update_audit_stats(
+        self,
+        audit_id: str,
+        total_tokens: Optional[int] = None,
+        tool_calls: Optional[int] = None,
+        total_files: Optional[int] = None,
+        indexed_files: Optional[int] = None,
+        analyzed_files: Optional[int] = None,
+        findings_detected: Optional[int] = None,
+    ) -> None:
+        """
+        更新审计统计信息（SQLite 版本）
+
+        Args:
+            audit_id: 审计 ID
+            total_tokens: 总 Token 数量
+            tool_calls: 工具调用次数
+            total_files: 总文件数
+            indexed_files: 已索引文件数
+            analyzed_files: 已分析文件数
+            findings_detected: 发现的漏洞数
+        """
+        try:
+            async with self._write_lock:
+                def _update():
+                    with sqlite3.connect(self.db_path) as conn:
+                        # 构建动态更新语句
+                        updates = []
+                        params = []
+
+                        if total_tokens is not None:
+                            updates.append("total_tokens = total_tokens + ?")
+                            params.append(total_tokens)
+
+                        if tool_calls is not None:
+                            updates.append("tool_calls = tool_calls + ?")
+                            params.append(tool_calls)
+
+                        if total_files is not None:
+                            updates.append("total_files = ?")
+                            params.append(total_files)
+
+                        if indexed_files is not None:
+                            updates.append("indexed_files = ?")
+                            params.append(indexed_files)
+
+                        if analyzed_files is not None:
+                            updates.append("analyzed_files = ?")
+                            params.append(analyzed_files)
+
+                        if findings_detected is not None:
+                            updates.append("findings_detected = ?")
+                            params.append(findings_detected)
+
+                        if updates:
+                            params.append(audit_id)
+                            conn.execute(
+                                f"UPDATE audit_sessions SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                params
+                            )
+                            conn.commit()
+
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _update)
+
+        except Exception as e:
+            logger.error(f"更新审计统计失败: {e}")
 
 
 # 全局单例

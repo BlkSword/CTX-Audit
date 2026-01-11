@@ -45,7 +45,7 @@ export class RulesService {
    * 更新规则
    */
   async updateRule(ruleId: string, rule: Omit<Rule, 'enabled'>): Promise<Rule> {
-    return api.put<Rule>(`/api/rules/${ruleId}`, rule)
+    return api.post<Rule>(`/api/rules/${ruleId}`, rule)
   }
 
   /**

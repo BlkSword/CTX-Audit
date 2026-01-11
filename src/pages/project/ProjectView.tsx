@@ -7,7 +7,7 @@ import { EditorPanel } from './EditorPanel'
 import { GraphPanel } from './GraphPanel'
 import { ScanPanel } from './ScanPanel'
 import { AnalysisPanel } from './AnalysisPanel'
-import AgentAuditPage from '@/pages/AgentAudit'
+import EnhancedAuditPage from '@/pages/AgentAudit/EnhancedAuditPage'
 
 export function ProjectView() {
   const { activeView } = useUIStore()
@@ -18,7 +18,7 @@ export function ProjectView() {
       {activeView === 'graph' && <GraphPanel />}
       {activeView === 'scan' && <ScanPanel />}
       {activeView === 'analysis' && <AnalysisPanel />}
-      {activeView === 'agent' && <AgentAuditPage />}
+      {activeView === 'agent' && <EnhancedAuditPage />}
     </div>
   )
 }

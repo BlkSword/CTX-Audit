@@ -201,8 +201,21 @@ export const MCP_TOOL_DESCRIPTIONS: Record<string, string> = {
 
 // ==================== Agent 相关 ====================
 
-export * from './agent'
+// 重新导出 Agent 相关的所有类型
+export type * from './agent'
+
+// 导出常量
+export { AGENT_TOOLS } from './agent'
 
 // ==================== 设置相关 ====================
 
 export * from './settings'
+
+// ==================== 日志类型 ====================
+
+export * from './log'
+
+// ==================== Agent 审计页面类型 ====================
+// 导出 AgentFinding 等 Agent 审计相关类型
+// 注意：AgentEvent 和 AgentType 已在 agent.ts 中定义，这里不重复导出
+export type { AgentFinding, AgentTask, AgentTreeResponse } from '@/pages/AgentAudit/types'

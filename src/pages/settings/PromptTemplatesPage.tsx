@@ -176,6 +176,7 @@ export function PromptTemplatesPage() {
       RECON: '侦察者',
       ANALYSIS: '分析者',
       VERIFICATION: '验证者',
+      SYSTEM: '系统',
     }
     return labels[agentType]
   }

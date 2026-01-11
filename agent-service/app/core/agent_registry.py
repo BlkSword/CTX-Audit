@@ -34,15 +34,27 @@ class AgentInfo:
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
+        # 将 agent_type 映射到前端期望的枚举值
+        agent_type_mapping = {
+            "orchestrator": "ORCHESTRATOR",
+            "recon": "RECON",
+            "analysis": "ANALYSIS",
+            "verification": "VERIFICATION",
+            "system": "SYSTEM",
+        }
+
+        mapped_type = agent_type_mapping.get(self.agent_type.lower(), self.agent_type.upper())
+
         return {
             "agent_id": self.agent_id,
             "agent_name": self.agent_name,
-            "agent_type": self.agent_type,
+            "agent_type": mapped_type,
             "task": self.task,
             "parent_id": self.parent_id,
             "status": self.status,
             "created_at": self.created_at,
-            "children": self.children,
+            "updated_at": self.created_at,  # 前端期望此字段
+            # 不包含 children 和 instance，children 由 _build_tree 单独处理
         }
 
 
@@ -127,6 +139,21 @@ class AgentRegistry:
             return agent_info.to_dict()
         return None
 
+    async def get_agent_instance(self, agent_id: str) -> Optional[Any]:
+        """
+        获取 Agent 实例
+
+        Args:
+            agent_id: Agent ID
+
+        Returns:
+            Agent 实例，如果不存在返回 None
+        """
+        agent_info = self._agents.get(agent_id)
+        if agent_info:
+            return agent_info.instance
+        return None
+
     async def update_agent_status(
         self,
         agent_id: str,
@@ -192,10 +219,11 @@ class AgentRegistry:
         agent_info = self._agents[agent_id]
         tree = agent_info.to_dict()
 
-        # 递归构建子树
+        # 递归构建子树 - 从 agent_info.children 获取子节点 ID 列表
         tree["children"] = [
             self._build_tree(child_id)
             for child_id in agent_info.children
+            if child_id in self._agents  # 确保子节点存在
         ]
 
         return tree

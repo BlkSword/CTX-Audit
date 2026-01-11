@@ -30,7 +30,7 @@ interface RuleState {
 
 export const useRuleStore = create<RuleState>()(
   devtools(
-    (set, get) => ({
+    (set) => ({
       rules: [],
       selectedRule: null,
       stats: null,

@@ -29,10 +29,13 @@ export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info'
 export type AuditStatus = 'pending' | 'running' | 'completed' | 'failed' | 'paused'
 
 // Agent 类型
-export type AgentType = 'ORCHESTRATOR' | 'RECON' | 'ANALYSIS' | 'VERIFICATION'
+export type AgentType = 'ORCHESTRATOR' | 'RECON' | 'ANALYSIS' | 'VERIFICATION' | 'SYSTEM'
 
-// Agent 状态
-export type AgentStatus = 'idle' | 'running' | 'completed' | 'failed'
+// Agent 状态（扩展版 - 支持 ReAct 模式）
+export type AgentStatus = 'idle' | 'running' | 'completed' | 'failed' | 'waiting' | 'paused' | 'stopped' | 'stopping'
+
+// Agent 执行状态（详细版）
+export type AgentExecutionStatus = 'created' | 'running' | 'waiting' | 'paused' | 'completed' | 'failed' | 'stopped' | 'stopping'
 
 // ==================== Agent 任务相关 ====================
 
@@ -51,6 +54,14 @@ export interface AuditConfig {
   enable_verification?: boolean
   max_iterations?: number
   timeout_seconds?: number
+  // 新增配置项
+  llm_max_retries?: number
+  llm_timeout_seconds?: number
+  tool_timeout_seconds?: number
+  enable_circuit_breaker?: boolean
+  enable_checkpoint?: boolean
+  continue_on_tool_failure?: boolean
+  checkpoint_interval?: number
 }
 
 export interface AuditStartResponse {
@@ -499,5 +510,232 @@ export interface AgentNode {
   created_at: string
   parent_id?: string
   children?: AgentNode[]
+}
+
+// ==================== Agent 状态详情（增强版） ====================
+
+export interface AgentStateInfo {
+  agent_id: string
+  agent_name: string
+  agent_type: string
+  parent_id?: string
+  task: string
+  status: AgentExecutionStatus
+  iteration: number
+  max_iterations: number
+  total_tokens: number
+  tool_calls: number
+  findings_count: number
+  errors_count: number
+  created_at: string
+  started_at?: string
+  finished_at?: string
+  duration_seconds?: number
+}
+
+// ==================== ReAct 步骤 ====================
+
+export interface ReActStep {
+  iteration: number
+  thought: string
+  action: string
+  action_input: Record<string, unknown>
+  observation?: string
+  success: boolean
+  error?: string
+  timestamp: string
+}
+
+export interface ReActLoopResult {
+  steps: ReActStep[]
+  total_iterations: number
+  total_tokens: number
+  total_tool_calls: number
+  findings_count: number
+  duration_seconds: number
+  success: boolean
+  error?: string
+}
+
+// ==================== 容错相关 ====================
+
+export interface CircuitBreakerState {
+  name: string
+  state: 'closed' | 'open' | 'half_open'
+  stats: {
+    total_calls: number
+    successful_calls: number
+    failed_calls: number
+    rejected_calls: number
+    failure_rate: number
+  }
+  time_in_state: number
+}
+
+export interface RetryStats {
+  attempts: number
+  total_delay: number
+  last_error?: string
+}
+
+export interface ResilienceConfig {
+  enable_retry: boolean
+  enable_circuit_breaker: boolean
+  max_retries: number
+  base_delay: number
+  max_delay: number
+  failure_threshold: number
+  recovery_timeout: number
+}
+
+// ==================== 取消相关 ====================
+
+export type CancelReason =
+  | 'user_request'
+  | 'timeout'
+  | 'error'
+  | 'parent_cancelled'
+  | 'resource_limit'
+
+export interface CancellationToken {
+  is_cancelled: boolean
+  reason?: CancelReason
+  message?: string
+}
+
+export interface CancelTreeNode {
+  agent_id: string
+  agent_name: string
+  is_cancelled: boolean
+  cancel_reason?: CancelReason
+  children: CancelTreeNode[]
+}
+
+// ==================== 智能去重相关 ====================
+
+export type SimilarityLevel = 'identical' | 'very_high' | 'high' | 'medium' | 'low'
+
+export interface FindingMatch {
+  finding1: Vulnerability
+  finding2: Vulnerability
+  similarity: number
+  similarity_type: SimilarityLevel
+  match_reasons: string[]
+}
+
+export interface DedupResult {
+  unique_findings: Vulnerability[]
+  duplicate_count: number
+  merged_count: number
+  matches: FindingMatch[]
+}
+
+export interface DedupConfig {
+  similarity_threshold: number
+  enable_position_match: boolean
+  enable_description_match: boolean
+  enable_type_match: boolean
+}
+
+// ==================== Agent 执行统计 ====================
+
+export interface AgentExecutionStats {
+  agent_id: string
+  agent_name: string
+  agent_type: AgentType
+  iterations: number
+  tool_calls: number
+  tokens_used: number
+  duration_ms: number
+  findings_count: number
+  errors_count: number
+  success: boolean
+  error?: string
+}
+
+// ==================== 检查点相关 ====================
+
+export interface AgentCheckpoint {
+  checkpoint_id: string
+  agent_id: string
+  iteration: number
+  timestamp: string
+  state: Record<string, unknown>
+  findings: Vulnerability[]
+  metadata?: Record<string, unknown>
+}
+
+export interface CheckpointConfig {
+  enabled: boolean
+  interval_iterations: number
+  on_tool_complete: boolean
+  on_phase_complete: boolean
+  max_checkpoints: number
+}
+
+// ==================== 任务交接（TaskHandoff） ====================
+
+export interface TaskHandoff {
+  from_agent: string
+  to_agent: string
+  summary: string
+  work_completed: string[]
+  key_findings: Vulnerability[]
+  insights: string[]
+  suggested_actions: SuggestedAction[]
+  attention_points: string[]
+  priority_areas: string[]
+  context_data: Record<string, unknown>
+  confidence: number
+  timestamp: string
+}
+
+export interface SuggestedAction {
+  type: string
+  description: string
+  priority: 'critical' | 'high' | 'medium' | 'low'
+  target_files?: string[]
+}
+
+// ==================== Agent 事件（扩展版） ====================
+
+export type ExtendedAgentEventType =
+  | AgentEventType
+  | 'llm_start'
+  | 'llm_thought'
+  | 'llm_decision'
+  | 'llm_complete'
+  | 'llm_action'
+  | 'llm_observation'
+  | 'thinking_start'
+  | 'thinking_token'
+  | 'thinking_end'
+  | 'dispatch'
+  | 'dispatch_complete'
+  | 'finding_new'
+  | 'finding_verified'
+  | 'retry_attempt'
+  | 'circuit_open'
+  | 'checkpoint_created'
+
+export interface ExtendedAgentEvent extends Omit<AgentEvent, 'type'> {
+  type: ExtendedAgentEventType
+  metadata?: {
+    iteration?: number
+    thought?: string
+    decision?: string
+    reason?: string
+    action?: string
+    action_input?: Record<string, unknown>
+    observation?: string
+    tokens_used?: number
+    duration_ms?: number
+    tool_name?: string
+    tool_input?: Record<string, unknown>
+    tool_output?: Record<string, unknown>
+    tool_duration_ms?: number
+    finding_id?: string
+    confidence?: number
+  }
 }
 

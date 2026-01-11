@@ -3,16 +3,18 @@
  * 三列布局：左侧文件树 - 中间编辑器 - 右侧终端
  */
 
-import { useRef } from 'react'
+import { useRef, useState, useMemo } from 'react'
 import Editor from '@monaco-editor/react'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useAgentStore } from '@/stores/agentStore'
+import { useAgentStream } from '@/hooks/useAgentStream'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { X } from 'lucide-react'
 import { FileTree } from '@/components/file-explorer/FileTree'
-import { LogPanel as LogPanelComponent } from '@/components/log/LogPanel'
-import type { LogEntry } from '@/components/log/LogPanel'
+import { EnhancedLogPanel } from '@/components/audit/EnhancedLogPanel'
+import type { LogItem } from '@/shared/types'
 
 function getLanguageFromPath(path: string | null): string {
   if (!path) return 'plaintext'
@@ -79,21 +81,49 @@ function getLanguageFromPath(path: string | null): string {
 
 export function EditorPanel() {
   const { fileTree, openFiles, selectedFile, fileContent, selectFile, closeFile } = useFileStore()
-  const { activeSidebar, logs, bottomPanelVisible, setBottomPanelVisible, clearLogs } = useUIStore()
+  const { logs, bottomPanelVisible, setBottomPanelVisible, clearLogs } = useUIStore()
+  const { currentAuditId } = useAgentStore()
   const editorRef = useRef<any>(null)
+
+  // 获取 Agent 实时日志
+  const { logs: agentLogs } = useAgentStream({
+    auditId: currentAuditId || undefined,
+    enabled: !!currentAuditId
+  })
+
+  // 日志展开状态
+  const [expandedLogIds, setExpandedLogIds] = useState<Set<string>>(new Set())
+  const handleToggleExpand = (id: string) => {
+    const newSet = new Set(expandedLogIds)
+    if (newSet.has(id)) {
+      newSet.delete(id)
+    } else {
+      newSet.add(id)
+    }
+    setExpandedLogIds(newSet)
+  }
 
   const handleEditorDidMount = (editor: any) => {
     editorRef.current = editor
   }
 
-  // 系统日志过滤和类型转换
-  const systemLogs: LogEntry[] = logs
-    .filter(l => l.source !== 'python')
-    .map(l => ({
-      timestamp: l.timestamp,
-      message: l.message,
-      source: l.source as 'system' | 'rust' | 'python'
-    }))
+  // 合并并排序日志
+  const allLogs = useMemo(() => {
+    // 转换系统日志
+    const systemLogItems: LogItem[] = logs
+      .filter(l => l.source !== 'python')
+      .map(l => ({
+        id: l.id,
+        type: 'system',
+        agent_type: 'SYSTEM',
+        // 尝试从 ID 提取时间戳（因为 ID 是 Date.now() + random）
+        timestamp: parseInt(l.id.substring(0, 13)) || Date.now(),
+        content: l.message
+      }))
+
+    // 合并
+    return [...systemLogItems, ...agentLogs].sort((a, b) => a.timestamp - b.timestamp)
+  }, [logs, agentLogs])
 
   return (
     <div className="h-full">
@@ -207,9 +237,11 @@ export function EditorPanel() {
               <div className="h-full flex flex-col border-l border-border/40 min-w-0">
                 <div className="flex-1 overflow-hidden relative">
                   <div className="absolute inset-0">
-                    <LogPanelComponent
-                      logs={systemLogs}
+                    <EnhancedLogPanel
+                      logs={allLogs}
                       active={true}
+                      expandedLogIds={expandedLogIds}
+                      onToggleExpand={handleToggleExpand}
                       onToggle={() => setBottomPanelVisible(false)}
                       onClear={clearLogs}
                     />

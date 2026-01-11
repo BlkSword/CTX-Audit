@@ -96,6 +96,36 @@ async def get_audit_session_sqlite(audit_id: str) -> Optional[dict]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _get)
 
+
+async def get_audit_status_sqlite(audit_id: str) -> Optional[dict]:
+    """获取审计状态（SQLite 版本）"""
+    return await get_audit_session_sqlite(audit_id)
+
+
+async def get_audit_result_sqlite(audit_id: str) -> dict:
+    """获取审计结果（SQLite 版本）"""
+    from app.services.event_persistence import get_event_persistence
+
+    # 获取会话信息
+    session = await get_audit_session_sqlite(audit_id)
+    if not session:
+        return {
+            "audit_id": audit_id,
+            "status": "not_found",
+            "vulnerabilities": [],
+        }
+
+    # 获取发现列表
+    persistence = get_event_persistence()
+    findings = persistence.get_findings(audit_id)
+
+    return {
+        "audit_id": audit_id,
+        "status": session.get("status", "unknown"),
+        "vulnerabilities": findings,
+        "total_vulnerabilities": len(findings),
+    }
+
 async def _get_llm_config_from_db(config_id: str) -> Optional[dict]:
     """从数据库获取 LLM 配置（包含完整的 API 密钥）"""
     if not DB_PATH.exists():
@@ -167,6 +197,17 @@ class AuditStartRequest(BaseModel):
     audit_type: str = "full"  # full | quick | targeted
     target_types: Optional[List[str]] = None
     config: Optional[dict] = None
+
+    # 新增配置选项
+    branch_name: Optional[str] = None  # Git 分支名称
+    exclude_patterns: Optional[List[str]] = None  # 排除的文件模式
+    target_files: Optional[List[str]] = None  # 目标文件列表
+    verification_level: Optional[str] = "basic"  # 验证级别: basic | standard | thorough
+    max_iterations: Optional[int] = 50  # 最大迭代次数
+    timeout_seconds: Optional[int] = 1800  # 超时时间（秒）
+    enable_rag: Optional[bool] = True  # 是否启用 RAG
+    parallel_agents: Optional[bool] = False  # 是否启用并行 Agent
+    max_parallel_agents: Optional[int] = 3  # 最大并行 Agent 数
 
 
 class AuditStartResponse(BaseModel):
@@ -291,22 +332,29 @@ async def get_audit_status(audit_id: str):
             detail=f"审计任务不存在: {audit_id}"
         )
 
+    # 从数据库获取实际统计数据
+    total_tokens = session.get("total_tokens", 0) or 0
+    tool_calls = session.get("tool_calls", 0) or 0
+    analyzed_files = session.get("analyzed_files", 0) or 0
+    findings_detected = session.get("findings_detected", 0) or 0
+    progress_percentage = session.get("progress_percentage", 0) or 0
+
     return AuditStatusResponse(
         audit_id=audit_id,
         status=session.get("status", "unknown"),
         progress={
-            "current_stage": session.get("status", "unknown"),
-            "percentage": 0,  # TODO: 从数据库获取实际进度
+            "current_stage": session.get("current_stage") or session.get("status", "unknown"),
+            "percentage": progress_percentage,
         },
         agent_status={
-            "orchestrator": "idle",
+            "orchestrator": "running" if session.get("status") in ["running", "pending"] else "completed",
             "recon": "pending",
             "analysis": "pending",
         },
         stats={
-            "files_scanned": 0,
-            "findings_detected": 0,
-            "verified_vulnerabilities": 0,
+            "files_scanned": analyzed_files,
+            "findings_detected": findings_detected,
+            "verified_vulnerabilities": 0,  # TODO: 从验证结果获取
         },
     )
 
@@ -349,29 +397,22 @@ async def stream_audit(audit_id: str, after_sequence: int = 0):
         audit_id: 审计 ID
         after_sequence: 从哪个序列号开始（用于断线重连）
     """
-    from app.services.event_bus_v2 import get_event_bus_v2
+    from app.services.streaming import stream_audit_events
+    from app.services.event_manager import event_manager
 
-    event_bus = get_event_bus_v2()
+    # 确保事件队列存在
+    event_manager.create_queue(audit_id)
 
     async def event_generator():
         """生成 SSE 事件流"""
         try:
-            # 发送初始连接事件
-            yield f"event: connected\ndata: {json.dumps({'audit_id': audit_id, 'message': 'SSE 连接成功'}, ensure_ascii=False)}\n\n"
-
-            # 订阅事件流
-            async for event in event_bus.subscribe(audit_id, after_sequence=after_sequence):
-                event_type = event.get("event_type", "unknown")
-
-                # 发送 SSE 格式数据
-                yield f"event: {event_type}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-
+            async for event in stream_audit_events(audit_id, after_sequence):
+                yield event
         except asyncio.CancelledError:
-            # 客户端断开连接，正常关闭
-            logger.info(f"SSE 连接断开: {audit_id}")
+            logger.info(f"[SSE] Client disconnected: {audit_id}")
             raise
         except Exception as e:
-            logger.error(f"SSE 流错误: {e}", exc_info=True)
+            logger.error(f"[SSE] Stream error: {e}", exc_info=True)
             try:
                 yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
             except Exception:
@@ -512,6 +553,94 @@ async def cancel_audit(audit_id: str):
     return {"success": True, "message": "审计已终止"}
 
 
+@router.get("/{audit_id}/report")
+async def export_audit_report(
+    audit_id: str,
+    format: str = "markdown",
+):
+    """
+    导出审计报告
+
+    Args:
+        audit_id: 审计 ID
+        format: 报告格式 (markdown, json, html)
+
+    Returns:
+        报告内容
+    """
+    from fastapi.responses import Response, JSONResponse
+    from app.services.report_generator import ReportGenerator
+    from app.services.rust_client import rust_client
+    from loguru import logger
+
+    try:
+        # 获取审计任务信息
+        task_info = await get_audit_status_sqlite(audit_id)
+
+        # 获取漏洞发现列表
+        result_data = await get_audit_result_sqlite(audit_id)
+        findings = result_data.get("vulnerabilities", [])
+
+        # 获取项目信息（如果有 project_id）
+        project_info = None
+        if task_info and task_info.get("project_id"):
+            try:
+                project_info = await rust_client.get_project(task_info["project_id"])
+            except Exception as e:
+                logger.warning(f"获取项目信息失败: {e}")
+
+        # 生成报告
+        generator = ReportGenerator()
+        format_lower = format.lower()
+
+        if format_lower == "json":
+            report = generator.generate_json_report(
+                audit_id=audit_id,
+                findings=findings,
+                task_info=task_info,
+                project_info=project_info,
+            )
+            return JSONResponse(content=report)
+
+        elif format_lower == "html":
+            report = generator.generate_html_report(
+                audit_id=audit_id,
+                findings=findings,
+                task_info=task_info,
+                project_info=project_info,
+            )
+            return Response(
+                content=report,
+                media_type="text/html",
+                headers={
+                    "Content-Disposition": f"attachment; filename=audit_report_{audit_id}.html"
+                }
+            )
+
+        else:  # markdown (default)
+            report = generator.generate_markdown_report(
+                audit_id=audit_id,
+                findings=findings,
+                task_info=task_info,
+                project_info=project_info,
+            )
+
+            return Response(
+                content=report,
+                media_type="text/markdown",
+                headers={
+                    "Content-Disposition": f"attachment; filename=audit_report_{audit_id}.md"
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"导出报告失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"导出报告失败: {str(e)}"}
+        )
+
+
 # ========== 内部函数 ==========
 
 async def _execute_audit(
@@ -532,6 +661,16 @@ async def _execute_audit(
         config: 配置
     """
     try:
+        # 获取项目信息（包含路径）
+        from app.services.rust_client import rust_client
+        project_path = ""
+        try:
+            project_info = await rust_client.get_project(project_id)
+            project_path = project_info.get("path", "")
+            logger.info(f"[Audit] 获取项目信息成功: project_id={project_id}, path={project_path}")
+        except Exception as e:
+            logger.warning(f"[Audit] 获取项目信息失败: {e}")
+
         # 更新状态为运行中
         await update_audit_status_sqlite(audit_id, "running")
 
@@ -548,6 +687,7 @@ async def _execute_audit(
         context = {
             "audit_id": audit_id,
             "project_id": project_id,
+            "project_path": project_path,
             "audit_type": audit_type,
             "target_types": target_types,
             "config": config,
@@ -585,7 +725,6 @@ async def _execute_audit(
             )
 
     except Exception as e:
-        from loguru import logger
         logger.error(f"审计执行失败: {e}")
         await update_audit_status_sqlite(audit_id, "failed")
         event_bus = get_event_bus_v2()
@@ -614,3 +753,46 @@ def _group_by_severity(findings: list) -> dict:
             grouped[severity] += 1
 
     return grouped
+
+
+@router.get("/monitoring/metrics")
+async def get_monitoring_metrics():
+    """
+    获取监控系统指标
+
+    Returns:
+        监控指标数据
+    """
+    from app.core.monitoring import get_monitoring_system
+
+    monitoring = get_monitoring_system()
+    return monitoring.get_status()
+
+
+@router.get("/monitoring/phase/{audit_id}")
+async def get_audit_phase(audit_id: str):
+    """
+    获取审计阶段信息
+
+    Args:
+        audit_id: 审计 ID
+
+    Returns:
+        当前审计阶段和进度
+    """
+    from app.core.audit_phase import get_phase_manager, PHASE_WEIGHTS
+
+    phase_manager = get_phase_manager(audit_id)
+    return {
+        "audit_id": audit_id,
+        "current_phase": phase_manager.current_phase.value,
+        "progress": phase_manager.calculate_overall_progress(),
+        "status": phase_manager.get_status(),
+        "phases": [
+            {
+                "phase": phase.value,
+                "weight": weight,
+            }
+            for phase, weight in PHASE_WEIGHTS.items()
+        ],
+    }

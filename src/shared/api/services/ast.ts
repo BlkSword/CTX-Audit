@@ -44,7 +44,6 @@ export class ASTService {
     const params = new URLSearchParams()
     if (projectId !== undefined) params.append('project_id', String(projectId))
     if (projectPath !== undefined) params.append('project_path', projectPath)
-    const queryStr = params.toString()
     return api.invoke('get_code_structure', {
       file_path: filePath,
       project_id: projectId,

@@ -80,47 +80,73 @@ pub async fn build_index(
     state: web::Data<AppState>,
     req: web::Json<BuildIndexRequest>,
 ) -> impl Responder {
+    tracing::info!(
+        "[AST:build_index] 开始构建索引 - project_path: {}, project_id: {:?}",
+        req.project_path,
+        req.project_id
+    );
+
+    let start_time = std::time::Instant::now();
     let mut engine = state.ast_engine.lock().await;
 
     // 设置仓库路径
     engine.use_repository(&req.project_path);
+    tracing::debug!("[AST:build_index] 已设置仓库路径: {}", req.project_path);
 
     // 如果提供了 project_id，尝试从数据库加载之前的索引
     if let Some(project_id) = req.project_id {
+        tracing::info!("[AST:build_index] 尝试从数据库加载索引 - project_id: {}", project_id);
         match load_ast_index_from_db(&state, project_id, &req.project_path).await {
             Ok(Some(cache_data)) => {
-                tracing::info!("Loaded previous AST index from database with {} files", cache_data.index.len());
+                tracing::info!(
+                    "[AST:build_index] 从数据库加载了 {} 个文件的 AST 索引",
+                    cache_data.index.len()
+                );
                 engine.load_from_cache_data(cache_data);
             }
             Ok(None) => {
-                tracing::info!("No previous AST index found in database, starting fresh");
+                tracing::info!("[AST:build_index] 数据库中未找到之前的索引，从头开始");
             }
             Err(e) => {
-                tracing::warn!("Failed to load AST index from database: {}, starting fresh", e);
+                tracing::warn!("[AST:build_index] 从数据库加载索引失败: {}, 从头开始", e);
             }
         }
     }
 
     // 扫描项目（如果有缓存，这将是增量更新）
+    let scan_start = std::time::Instant::now();
     let files_processed = match engine.scan_project(&req.project_path) {
         Ok(count) => count,
         Err(e) => {
+            tracing::error!("[AST:build_index] 扫描项目失败: {}", e);
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Failed to scan project: {}", e)
             }));
         }
     };
+    let scan_duration = scan_start.elapsed();
+    tracing::info!(
+        "[AST:build_index] 扫描完成 - 文件数: {}, 耗时: {}ms",
+        files_processed,
+        scan_duration.as_millis()
+    );
 
     // 获取所有符号用于存储
     let symbols = match engine.get_all_symbols() {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("Failed to get symbols: {}", e);
+            tracing::error!("[AST:build_index] 获取符号失败: {}", e);
             Vec::new()
         }
     };
 
     drop(engine);
+
+    tracing::info!(
+        "[AST:build_index] 索引构建完成 - 总耗时: {}ms, 符号数: {}",
+        start_time.elapsed().as_millis(),
+        symbols.len()
+    );
 
     // 如果提供了 project_id，保存到数据库
     let mut index_id = None;
@@ -314,6 +340,12 @@ pub async fn search_symbol(
 ) -> impl Responder {
     let name = path.into_inner();
 
+    tracing::info!(
+        "[AST:search_symbol] 搜索符号 - name: {}, project_id: {:?}",
+        name,
+        query.get("project_id")
+    );
+
     // 如果提供了项目信息，确保缓存已加载
     if let (Some(project_id_str), Some(project_path)) = (query.get("project_id"), query.get("project_path")) {
         if let Ok(project_id) = project_id_str.parse::<i64>() {
@@ -324,10 +356,13 @@ pub async fn search_symbol(
     let mut engine = state.ast_engine.lock().await;
 
     let results = match engine.search_symbols(&name) {
-        Ok(results) => results,
+        Ok(results) => {
+            tracing::info!("[AST:search_symbol] 找到 {} 个符号匹配", results.len());
+            results
+        }
         Err(_) => {
             // 没有缓存，返回空结果
-            tracing::info!("No AST cache loaded, returning empty search results");
+            tracing::warn!("[AST:search_symbol] 未加载 AST 缓存，返回空结果");
             return HttpResponse::Ok().json(vec![] as Vec<Symbol>);
         }
     };
@@ -463,6 +498,12 @@ pub async fn get_code_structure(
 ) -> impl Responder {
     let file_path = path.into_inner();
 
+    tracing::info!(
+        "[AST:get_code_structure] 获取代码结构 - file_path: {}, project_id: {:?}",
+        file_path,
+        query.get("project_id")
+    );
+
     // 如果提供了项目信息，确保缓存已加载
     if let (Some(project_id_str), Some(project_path)) = (query.get("project_id"), query.get("project_path")) {
         if let Ok(project_id) = project_id_str.parse::<i64>() {
@@ -473,10 +514,13 @@ pub async fn get_code_structure(
     let mut engine = state.ast_engine.lock().await;
 
     let structure = match engine.get_file_structure(&file_path) {
-        Ok(structure) => structure,
-        Err(_) => {
+        Ok(structure) => {
+            tracing::info!("[AST:get_code_structure] 找到 {} 个符号", structure.len());
+            structure
+        }
+        Err(e) => {
             // 没有缓存，返回空结果
-            tracing::info!("No AST cache loaded, returning empty structure");
+            tracing::warn!("[AST:get_code_structure] 未找到 AST 缓存: {}", e);
             return HttpResponse::Ok().json(vec![] as Vec<Symbol>);
         }
     };

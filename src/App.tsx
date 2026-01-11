@@ -6,11 +6,10 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Dashboard } from '@/pages/Dashboard'
 import { ProjectLayout } from '@/pages/project/ProjectLayout'
-import { EditorPanel } from '@/pages/project/EditorPanel'
 import { GraphPanel } from '@/pages/project/GraphPanel'
 import { ScanPanel } from '@/pages/project/ScanPanel'
 import { AnalysisPanel } from '@/pages/project/AnalysisPanel'
-import AgentAuditPage from '@/pages/AgentAudit'
+import EnhancedAuditPage from '@/pages/AgentAudit/EnhancedAuditPage'
 import { SettingsLayout } from '@/pages/settings/SettingsLayout'
 import { LLMConfigPage } from '@/pages/settings/LLMConfigPage'
 import { SystemSettingsPage } from '@/pages/settings/SystemSettingsPage'
@@ -29,14 +28,14 @@ function App() {
 
           {/* Project Routes */}
           <Route path="/project/:id" element={<ProjectLayout />}>
-            {/* 默认重定向到编辑器 */}
-            <Route index element={<Navigate to="editor" replace />} />
+            {/* 默认重定向到Agent审计 */}
+            <Route index element={<Navigate to="agent" replace />} />
             {/* 各个栏目路由 */}
-            <Route path="editor" element={<EditorPanel />} />
+            <Route path="agent" element={<EnhancedAuditPage />} />
+            <Route path="agent/:auditId" element={<EnhancedAuditPage />} />
             <Route path="graph" element={<GraphPanel />} />
             <Route path="scan" element={<ScanPanel />} />
             <Route path="analysis" element={<AnalysisPanel />} />
-            <Route path="agent" element={<AgentAuditPage />} />
           </Route>
 
           {/* Settings Routes */}

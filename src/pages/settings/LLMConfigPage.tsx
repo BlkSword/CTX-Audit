@@ -19,7 +19,6 @@ import {
 } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useToast } from '@/hooks/use-toast'
-import { useToastStore } from '@/stores/toastStore'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
@@ -40,8 +39,7 @@ import type { LLMConfig } from '@/shared/types'
 
 export function LLMConfigPage() {
   const toast = useToast()
-  const { removeToast } = useToastStore()
-
+  
   const {
     llmConfigs,
     defaultLLMConfigId,
@@ -52,7 +50,6 @@ export function LLMConfigPage() {
     deleteLLMConfig,
     setDefaultLLMConfig,
     testLLMConfig,
-    testLLMConnection,
   } = useSettingsStore()
 
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)

@@ -1,28 +1,44 @@
 """
-Recon Agent - 侦察兵
+Recon Agent - 侦察兵（增强版）
 
 负责信息收集、项目结构分析和攻击面识别
+集成外部安全工具和数据流分析
 """
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Set
 from loguru import logger
+from pathlib import Path
 
 from app.agents.base import BaseAgent
+from app.services.external_tools import (
+    ExternalToolService,
+    get_external_tool_service,
+    ToolInfo,
+)
+from app.core.dataflow_analysis import (
+    DataFlowAnalyzer,
+    get_dataflow_analyzer,
+    Vulnerability,
+)
 
 
 class ReconAgent(BaseAgent):
     """
-    Recon Agent
+    Recon Agent (增强版)
 
     职责：
     1. 扫描项目目录结构
     2. 识别编程语言和框架
-    3. 提取 API 端点和路由
-    4. 识别用户输入点
-    5. 分析依赖库版本
+    3. 推荐并运行外部安全工具
+    4. 执行数据流分析识别高风险区域
+    5. 生成优先级排序的扫描目标列表
+
+    参考 DeepAudit-3.0.0 实现
     """
 
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(name="recon", config=config)
+        self._tool_service: Optional[ExternalToolService] = None
+        self._dataflow_analyzer: Optional[DataFlowAnalyzer] = None
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -42,31 +58,71 @@ class ReconAgent(BaseAgent):
 
         # 1. 获取项目信息
         project_info = await self._get_project_info(project_id)
-        self.think(f"项目路径: {project_info.get('path', 'Unknown')}")
+        project_path = project_info.get("path", "")
+        self.think(f"项目路径: {project_path}")
 
-        # 2. 扫描项目结构
-        structure = await self._scan_structure(project_info)
-        self.think(f"发现 {len(structure.get('files', []))} 个文件")
+        if not project_path:
+            self.think("警告: 项目路径为空，无法进行完整扫描")
+            return {"error": "项目路径为空"}
 
-        # 3. 识别技术栈
-        tech_stack = await self._identify_tech_stack(structure)
+        # 初始化服务
+        self._tool_service = get_external_tool_service(project_path)
+        self._dataflow_analyzer = get_dataflow_analyzer()
+
+        # 2. 识别技术栈
+        tech_stack = await self._identify_tech_stack(project_path)
         self.think(f"识别到语言: {tech_stack.get('languages', [])}")
         self.think(f"识别到框架: {tech_stack.get('frameworks', [])}")
 
-        # 4. 提取攻击面
+        # 3. 推荐并检查可用工具
+        recommended_tools = await self._recommend_tools(tech_stack)
+        available_tools = await self._tool_service.get_available_tools()
+        self.think(f"推荐工具: {[t.name for t in recommended_tools]}")
+        self.think(f"可用工具: {[t.name for t in available_tools]}")
+
+        # 4. 运行外部工具进行快速扫描
+        tool_findings = await self._scan_with_tools(recommended_tools, available_tools)
+        self.think(f"外部工具发现 {len(tool_findings)} 个潜在问题")
+
+        # 5. 提取高风险区域
+        high_risk_areas = await self._extract_high_risk_areas(
+            tool_findings, tech_stack, project_path
+        )
+        self.think(f"识别到 {len(high_risk_areas)} 个高风险区域")
+
+        # 6. 执行数据流分析
+        dataflow_findings = await self._run_dataflow_analysis(project_path, tech_stack)
+        self.think(f"数据流分析发现 {len(dataflow_findings)} 个潜在漏洞")
+
+        # 7. 扫描项目结构
+        structure = await self._scan_structure(project_path)
+        self.think(f"发现 {len(structure.get('files', []))} 个文件")
+
+        # 8. 提取攻击面
         attack_surface = await self._extract_attack_surface(structure, tech_stack)
         self.think(f"发现 {len(attack_surface.get('entry_points', []))} 个攻击面入口点")
 
-        # 5. 分析依赖
+        # 9. 分析依赖
         dependencies = await self._analyze_dependencies(structure)
         self.think(f"发现 {len(dependencies.get('libraries', []))} 个依赖库")
 
+        # 10. 生成优先级排序的扫描目标
+        prioritized_targets = self._prioritize_scan_targets(
+            high_risk_areas, dataflow_findings, attack_surface
+        )
+
         return {
             "project_info": project_info,
-            "structure": structure,
             "tech_stack": tech_stack,
+            "recommended_tools": [t.name for t in recommended_tools],
+            "available_tools": [t.name for t in available_tools],
+            "tool_findings": tool_findings,
+            "high_risk_areas": high_risk_areas,
+            "dataflow_findings": dataflow_findings,
+            "structure": structure,
             "attack_surface": attack_surface,
             "dependencies": dependencies,
+            "prioritized_targets": prioritized_targets,
         }
 
     async def _get_project_info(self, project_id: str) -> Dict[str, Any]:
@@ -79,64 +135,58 @@ class ReconAgent(BaseAgent):
             logger.warning(f"获取项目信息失败: {e}")
             return {"id": project_id, "path": "unknown"}
 
-    async def _scan_structure(self, project_info: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        扫描项目结构
-
-        Args:
-            project_info: 项目信息
-
-        Returns:
-            项目结构
-        """
-        from app.services.rust_client import rust_client
-
-        project_path = project_info.get("path")
-        if not project_path:
-            return {"files": [], "directories": []}
-
-        # 简单递归扫描（深度限制为 3 以防过慢）
-        files = []
-        directories = []
-
-        async def _scan_recursive(path: str, depth: int):
-            if depth > 3:
-                return
-
-            try:
-                items = await rust_client.list_files(path)
-                for item in items:
-                    full_path = f"{path}/{item}" if path != "/" else f"/{item}"
-                    # 这里假设没有后缀的是目录，有后缀的是文件（简化逻辑）
-                    # 更好的方式是 Rust 返回文件类型
-                    if "." in item:
-                        files.append(full_path)
-                    else:
-                        directories.append(full_path)
-                        await _scan_recursive(full_path, depth + 1)
-            except Exception as e:
-                logger.warning(f"扫描目录失败 {path}: {e}")
-
-        await _scan_recursive(project_path, 0)
-
-        return {"files": files, "directories": directories}
-
-    async def _identify_tech_stack(self, structure: Dict[str, Any]) -> Dict[str, Any]:
+    async def _identify_tech_stack(self, project_path: str) -> Dict[str, Any]:
         """
         识别技术栈
 
         Args:
-            structure: 项目结构
+            project_path: 项目路径
 
         Returns:
             技术栈信息
         """
-        files = structure.get("files", [])
         languages = set()
         frameworks = set()
+        package_managers = set()
 
-        # 基于文件扩展名的简单识别
-        extensions = {
+        project_dir = Path(project_path)
+
+        # 检查常见文件识别语言和框架
+        check_files = [
+            ("package.json", "JavaScript", ["Node.js"]),
+            ("tsconfig.json", "TypeScript", ["Node.js"]),
+            ("requirements.txt", "Python", ["Python/Pip"]),
+            ("Pipfile", "Python", ["Pipenv"]),
+            ("pyproject.toml", "Python", ["Poetry"]),
+            ("setup.py", "Python", ["Python"]),
+            ("pom.xml", "Java", ["Maven"]),
+            ("build.gradle", "Java", ["Gradle"]),
+            ("Cargo.toml", "Rust", ["Cargo"]),
+            ("go.mod", "Go", ["Go Module"]),
+            ("composer.json", "PHP", ["Composer"]),
+            ("Gemfile", "Ruby", ["Bundler"]),
+            ("pubspec.yaml", "Dart", ["Pub"]),
+            ("mix.exs", "Elixir", ["Hex"]),
+        ]
+
+        for file_name, lang, fw_list in check_files:
+            if (project_dir / file_name).exists():
+                languages.add(lang)
+                frameworks.update(fw_list)
+                # 识别包管理器
+                if file_name == "package.json":
+                    package_managers.add("npm")
+                elif file_name == "requirements.txt":
+                    package_managers.add("pip")
+                elif file_name == "Cargo.toml":
+                    package_managers.add("cargo")
+                elif file_name == "go.mod":
+                    package_managers.add("go")
+                elif file_name == "pom.xml":
+                    package_managers.add("maven")
+
+        # 通过文件扩展名补充语言识别
+        extension_map = {
             ".py": "Python",
             ".js": "JavaScript",
             ".ts": "TypeScript",
@@ -150,36 +200,338 @@ class ReconAgent(BaseAgent):
             ".cs": "C#",
             ".cpp": "C++",
             ".c": "C",
+            ".kt": "Kotlin",
+            ".swift": "Swift",
         }
 
-        for f in files:
-            # 语言识别
-            for ext, lang in extensions.items():
-                if f.endswith(ext):
-                    languages.add(lang)
+        for file_path in project_dir.rglob("*"):
+            if file_path.is_file():
+                for ext, lang in extension_map.items():
+                    if str(file_path).endswith(ext):
+                        languages.add(lang)
+                        break
 
-            # 简单框架识别
-            if "package.json" in f:
-                frameworks.add("Node.js")
-            if "requirements.txt" in f or "Pipfile" in f or "pyproject.toml" in f:
-                frameworks.add("Python/Pip")
-            if "pom.xml" in f:
-                frameworks.add("Java/Maven")
-            if "build.gradle" in f:
-                frameworks.add("Java/Gradle")
-            if "Cargo.toml" in f:
-                frameworks.add("Rust/Cargo")
-            if "go.mod" in f:
-                frameworks.add("Go/Module")
-            if "composer.json" in f:
-                frameworks.add("PHP/Composer")
-            if "Gemfile" in f:
-                frameworks.add("Ruby/Bundler")
+        # 检测 Web 框架
+        if (project_dir / "app.py").exists() or (project_dir / "wsgi.py").exists():
+            frameworks.add("Flask")
+        if (project_dir / "manage.py").exists():
+            frameworks.add("Django")
+        if (project_dir / "application.go").exists():
+            frameworks.add("Go Web Framework")
 
         return {
             "languages": sorted(list(languages)),
-            "frameworks": sorted(list(frameworks))
+            "frameworks": sorted(list(frameworks)),
+            "package_managers": sorted(list(package_managers)),
         }
+
+    async def _recommend_tools(self, tech_stack: Dict[str, Any]) -> List[ToolInfo]:
+        """
+        根据技术栈推荐工具
+
+        Args:
+            tech_stack: 技术栈信息
+
+        Returns:
+            推荐的工具列表（按优先级排序）
+        """
+        languages = tech_stack.get("languages", [])
+        frameworks = tech_stack.get("frameworks", [])
+
+        # 工具推荐规则
+        recommendations = []
+
+        # Semgrep - 支持多语言，优先推荐
+        recommendations.append("semgrep")
+
+        # Gitleaks - 所有项目都需要
+        recommendations.append("gitleaks")
+
+        # 语言特定工具
+        if "Python" in languages:
+            recommendations.append("bandit")
+            recommendations.append("safety")
+
+        if any(lang in languages for lang in ["JavaScript", "TypeScript"]):
+            recommendations.append("npm_audit")
+
+        # 包管理器特定工具
+        package_managers = tech_stack.get("package_managers", [])
+        if "npm" in package_managers:
+            recommendations.append("npm_audit")
+        if "pip" in package_managers or "poetry" in package_managers:
+            recommendations.append("safety")
+
+        # 去重并保持顺序
+        seen = set()
+        ordered_tools = []
+        for tool in recommendations:
+            if tool not in seen:
+                seen.add(tool)
+                ordered_tools.append(tool)
+
+        # 获取工具信息
+        all_tools = [
+            ToolInfo(
+                name="semgrep",
+                description="静态代码分析工具，支持多种语言",
+                language=["*"],
+                install_cmd="pip install semgrep",
+                check_cmd=["semgrep", "--version"],
+                priority=10,
+            ),
+            ToolInfo(
+                name="bandit",
+                description="Python 安全漏洞扫描工具",
+                language=["python"],
+                install_cmd="pip install bandit",
+                check_cmd=["bandit", "--version"],
+                priority=9,
+            ),
+            ToolInfo(
+                name="safety",
+                description="Python 依赖漏洞扫描工具",
+                language=["python"],
+                install_cmd="pip install safety",
+                check_cmd=["safety", "--version"],
+                priority=7,
+            ),
+            ToolInfo(
+                name="gitleaks",
+                description="密钥和敏感信息检测工具",
+                language=["*"],
+                install_cmd="go install github.com/zricethezav/gitleaks/v8/cmd/gitleaks@latest",
+                check_cmd=["gitleaks", "version"],
+                priority=8,
+            ),
+            ToolInfo(
+                name="npm_audit",
+                description="Node.js 依赖漏洞扫描工具",
+                language=["javascript", "typescript"],
+                install_cmd="",  # npm 自带
+                check_cmd=["npm", "--version"],
+                priority=6,
+            ),
+        ]
+
+        # 构建推荐工具列表
+        tool_map = {t.name: t for t in all_tools}
+        return [tool_map[name] for name in ordered_tools if name in tool_map]
+
+    async def _scan_with_tools(
+        self,
+        recommended_tools: List[ToolInfo],
+        available_tools: List[ToolInfo],
+    ) -> List[Dict[str, Any]]:
+        """
+        使用推荐工具进行扫描
+
+        Args:
+            recommended_tools: 推荐的工具列表
+            available_tools: 可用的工具列表
+
+        Returns:
+            工具发现列表
+        """
+        all_findings = []
+
+        # 只运行可用的工具
+        available_names = {t.name for t in available_tools}
+
+        for tool_info in recommended_tools:
+            if tool_info.name not in available_names:
+                self.think(f"工具 {tool_info.name} 不可用，跳过")
+                continue
+
+            self.think(f"运行工具: {tool_info.name}")
+
+            try:
+                result = await self._tool_service.run_tool_by_name(tool_info.name)
+
+                if result and result.success:
+                    self.think(f"工具 {tool_info.name} 发现 {len(result.findings)} 个问题")
+
+                    # 转换为统一格式
+                    for finding in result.findings:
+                        all_findings.append({
+                            "tool": tool_info.name,
+                            "severity": finding.get("severity", "medium"),
+                            "title": finding.get("title", ""),
+                            "description": finding.get("description", ""),
+                            "file_path": finding.get("file_path", ""),
+                            "line_number": finding.get("line_number", 0),
+                            "rule_id": finding.get("rule_id", ""),
+                            "cwe_ids": finding.get("cwe_ids", []),
+                            "metadata": finding.get("metadata", {}),
+                        })
+                else:
+                    self.think(f"工具 {tool_info.name} 执行失败: {result.error if result else 'Unknown error'}")
+
+            except Exception as e:
+                logger.warning(f"运行工具 {tool_info.name} 失败: {e}")
+
+        return all_findings
+
+    async def _extract_high_risk_areas(
+        self,
+        tool_findings: List[Dict[str, Any]],
+        tech_stack: Dict[str, Any],
+        project_path: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        从工具发现中提取高风险区域
+
+        Args:
+            tool_findings: 工具发现列表
+            tech_stack: 技术栈信息
+            project_path: 项目路径
+
+        Returns:
+            高风险区域列表（带文件路径和行号）
+        """
+        high_risk_areas = []
+
+        # 按文件分组统计问题
+        file_issues = {}
+        for finding in tool_findings:
+            file_path = finding.get("file_path", "")
+            if not file_path:
+                continue
+
+            severity = finding.get("severity", "medium")
+            line_number = finding.get("line_number", 0)
+
+            if file_path not in file_issues:
+                file_issues[file_path] = {
+                    "critical": [],
+                    "high": [],
+                    "medium": [],
+                    "low": [],
+                }
+
+            if severity in file_issues[file_path]:
+                file_issues[file_path][severity].append(line_number)
+
+        # 生成高风险区域
+        for file_path, issues in file_issues.items():
+            # 优先级规则
+            priority = 0
+
+            # 有 critical 问题
+            if issues["critical"]:
+                priority = 100 + len(issues["critical"])
+            # 有 high 问题
+            elif issues["high"]:
+                priority = 70 + len(issues["high"])
+            # 有多个 medium 问题
+            elif len(issues["medium"]) >= 3:
+                priority = 50 + len(issues["medium"])
+            # 有 medium 问题
+            elif issues["medium"]:
+                priority = 30 + len(issues["medium"])
+
+            if priority > 0:
+                high_risk_areas.append({
+                    "file_path": file_path,
+                    "priority": priority,
+                    "issues": issues,
+                    "recommendation": "优先分析此文件",
+                })
+
+        # 按优先级排序
+        high_risk_areas.sort(key=lambda x: x["priority"], reverse=True)
+
+        # 只返回优先级 >= 30 的区域
+        return [area for area in high_risk_areas if area["priority"] >= 30]
+
+    async def _run_dataflow_analysis(
+        self,
+        project_path: str,
+        tech_stack: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        执行数据流分析
+
+        Args:
+            project_path: 项目路径
+            tech_stack: 技术栈信息
+
+        Returns:
+            数据流分析发现的漏洞列表
+        """
+        languages = tech_stack.get("languages", [])
+
+        # 数据流分析主要针对动态语言
+        target_languages = {"Python", "JavaScript", "TypeScript", "PHP", "Ruby"}
+        if not any(lang in languages for lang in target_languages):
+            self.think("项目不包含支持数据流分析的语言，跳过")
+            return []
+
+        self.think("开始数据流分析...")
+
+        try:
+            # 分析整个项目
+            vulnerabilities = await self._dataflow_analyzer.analyze_project(
+                project_path=project_path,
+                file_patterns=None,  # 分析所有文件
+            )
+
+            self.think(f"数据流分析完成，发现 {len(vulnerabilities)} 个潜在漏洞")
+
+            # 转换为统一格式
+            findings = []
+            for vuln in vulnerabilities:
+                findings.append({
+                    "tool": "dataflow",
+                    "vulnerability_type": vuln.vuln_type,
+                    "severity": vuln.severity,
+                    "title": f"{vuln.vuln_type} in {Path(vuln.path.sink_location[0]).name}",
+                    "description": vuln.description,
+                    "file_path": vuln.path.sink_location[0],
+                    "line_number": vuln.path.sink_location[1],
+                    "source": vuln.source.name,
+                    "sink": vuln.sink.name,
+                    "sanitized": vuln.path.is_sanitized,
+                    "confidence": vuln.path.confidence,
+                    "cwe_ids": vuln.cwe_ids,
+                    "recommendation": vuln.recommendation,
+                })
+
+            return findings
+
+        except Exception as e:
+            logger.warning(f"数据流分析失败: {e}")
+            return []
+
+    async def _scan_structure(self, project_path: str) -> Dict[str, Any]:
+        """
+        扫描项目结构
+
+        Args:
+            project_path: 项目路径
+
+        Returns:
+            项目结构
+        """
+        from app.services.rust_client import rust_client
+
+        files = []
+        directories = []
+
+        try:
+            items = await rust_client.list_files(project_path)
+            for item in items:
+                full_path = item
+                # 简单判断：有后缀的是文件
+                if "." in item.split("/")[-1]:
+                    files.append(full_path)
+                else:
+                    directories.append(full_path)
+
+        except Exception as e:
+            logger.warning(f"扫描项目结构失败: {e}")
+
+        return {"files": files, "directories": directories}
 
     async def _extract_attack_surface(
         self,
@@ -197,66 +549,72 @@ class ReconAgent(BaseAgent):
             攻击面信息
         """
         entry_points = []
-        api_endpoints = []
         user_inputs = []
 
         files = structure.get("files", [])
 
         # 识别潜在的攻击面入口
         for file_path in files:
+            file_name = file_path.split("/")[-1].lower()
+            file_dir = "/".join(file_path.split("/")[:-1]).lower()
+
             # Web 路由文件
-            if any(x in file_path.lower() for x in ["route", "controller", "handler", "api", "view"]):
+            if any(keyword in file_dir or keyword in file_name
+                   for keyword in ["route", "controller", "handler", "api", "view", "endpoint"]):
                 entry_points.append({
                     "type": "web_route",
                     "file": file_path,
-                    "description": "Web 路由定义文件"
+                    "description": "Web 路由定义文件",
                 })
 
             # 表单/输入处理
-            if any(x in file_path.lower() for x in ["form", "input", "upload", "submit"]):
+            if any(keyword in file_name for keyword in ["form", "input", "upload", "submit"]):
                 user_inputs.append({
                     "type": "user_input",
                     "file": file_path,
-                    "description": "用户输入处理文件"
+                    "description": "用户输入处理文件",
                 })
 
             # 数据库查询
-            if any(x in file_path.lower() for x in ["model", "query", "database", "db", "sql"]):
+            if any(keyword in file_dir or keyword in file_name
+                   for keyword in ["model", "query", "database", "db", "sql"]):
                 entry_points.append({
                     "type": "database",
                     "file": file_path,
-                    "description": "数据库操作文件"
+                    "description": "数据库操作文件",
                 })
 
             # 认证/授权
-            if any(x in file_path.lower() for x in ["auth", "login", "permission", "access"]):
+            if any(keyword in file_dir or keyword in file_name
+                   for keyword in ["auth", "login", "permission", "access", "user", "session"]):
                 entry_points.append({
                     "type": "auth",
                     "file": file_path,
                     "description": "认证/授权文件",
-                    "severity": "high"
+                    "severity": "high",
                 })
 
             # 文件操作
-            if any(x in file_path.lower() for x in ["file", "fs", "io", "upload", "download"]):
+            if any(keyword in file_dir or keyword in file_name
+                   for keyword in ["file", "fs", "io", "upload", "download", "storage"]):
                 entry_points.append({
                     "type": "file_operation",
                     "file": file_path,
-                    "description": "文件操作文件"
+                    "description": "文件操作文件",
                 })
 
             # 命令执行
-            if any(x in file_path.lower() for x in ["exec", "spawn", "shell", "command", "system"]):
+            if any(keyword in file_dir or keyword in file_name
+                   for keyword in ["exec", "spawn", "shell", "command", "system", "subprocess"]):
                 entry_points.append({
                     "type": "command_execution",
                     "file": file_path,
                     "description": "命令执行相关",
-                    "severity": "high"
+                    "severity": "high",
                 })
 
         return {
             "entry_points": entry_points,
-            "api_endpoints": api_endpoints,
             "user_inputs": user_inputs,
             "file_operations": [e for e in entry_points if e["type"] == "file_operation"],
             "command_executions": [e for e in entry_points if e["type"] == "command_execution"],
@@ -273,8 +631,6 @@ class ReconAgent(BaseAgent):
             依赖信息
         """
         libraries = []
-        known_vulnerabilities = []
-
         files = structure.get("files", [])
 
         # 分析依赖文件
@@ -282,28 +638,13 @@ class ReconAgent(BaseAgent):
             filename = file_path.split("/")[-1].lower()
 
             if filename == "package.json":
-                # Node.js 依赖
                 libraries.extend(await self._parse_package_json(file_path))
             elif filename == "requirements.txt":
-                # Python 依赖
                 libraries.extend(await self._parse_requirements_txt(file_path))
-            elif filename == "pom.xml":
-                # Java/Maven 依赖
-                libraries.extend(await self._parse_pom_xml(file_path))
-            elif filename == "cargo.toml":
-                # Rust 依赖
-                libraries.extend(await self._parse_cargo_toml(file_path))
-            elif filename == "go.mod":
-                # Go 依赖
-                libraries.extend(await self._parse_go_mod(file_path))
-
-        # TODO: 查询已知漏洞数据库（如 OSV、Snyk）
-        # 这里可以添加自动化的漏洞检查
 
         return {
             "libraries": libraries,
-            "known_vulnerabilities": known_vulnerabilities,
-            "total_libraries": len(libraries)
+            "total_libraries": len(libraries),
         }
 
     async def _parse_package_json(self, file_path: str) -> List[Dict[str, str]]:
@@ -324,7 +665,7 @@ class ReconAgent(BaseAgent):
                     "name": name,
                     "version": version,
                     "type": "production" if name in deps else "development",
-                    "ecosystem": "npm"
+                    "ecosystem": "npm",
                 })
 
             return libraries
@@ -356,7 +697,7 @@ class ReconAgent(BaseAgent):
                         "name": parts[0].strip(),
                         "version": line.replace(parts[0], "").strip() or "unknown",
                         "type": "production",
-                        "ecosystem": "pypi"
+                        "ecosystem": "pypi",
                     })
 
             return libraries
@@ -364,36 +705,70 @@ class ReconAgent(BaseAgent):
             logger.warning(f"解析 requirements.txt 失败: {e}")
             return []
 
-    async def _parse_pom_xml(self, file_path: str) -> List[Dict[str, str]]:
-        """解析 pom.xml（简化版）"""
-        # Maven 依赖解析比较复杂，这里简化处理
-        return [{
-            "name": "maven-project",
-            "version": "unknown",
-            "type": "production",
-            "ecosystem": "maven",
-            "note": "Maven 依赖解析需要完整 XML 解析器"
-        }]
+    def _prioritize_scan_targets(
+        self,
+        high_risk_areas: List[Dict[str, Any]],
+        dataflow_findings: List[Dict[str, Any]],
+        attack_surface: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        生成优先级排序的扫描目标列表
 
-    async def _parse_cargo_toml(self, file_path: str) -> List[Dict[str, str]]:
-        """解析 Cargo.toml（简化版）"""
-        return [{
-            "name": "rust-project",
-            "version": "unknown",
-            "type": "production",
-            "ecosystem": "crates.io",
-            "note": "Cargo 依赖解析需要 TOML 解析器"
-        }]
+        Args:
+            high_risk_areas: 高风险区域
+            dataflow_findings: 数据流分析发现
+            attack_surface: 攻击面
 
-    async def _parse_go_mod(self, file_path: str) -> List[Dict[str, str]]:
-        """解析 go.mod（简化版）"""
-        return [{
-            "name": "go-project",
-            "version": "unknown",
-            "type": "production",
-            "ecosystem": "go",
-            "note": "Go 依赖解析需要专用解析器"
-        }]
+        Returns:
+            优先级排序的扫描目标
+        """
+        targets = []
+
+        # 1. 数据流分析发现的漏洞（最高优先级）
+        for finding in dataflow_findings:
+            if finding.get("severity") in ["critical", "high"]:
+                targets.append({
+                    "type": "dataflow_vulnerability",
+                    "file_path": finding.get("file_path"),
+                    "line_number": finding.get("line_number"),
+                    "priority": 100,
+                    "reason": f"数据流分析发现的 {finding.get('severity')} 漏洞",
+                    "finding": finding,
+                })
+
+        # 2. 高风险区域
+        for area in high_risk_areas:
+            targets.append({
+                "type": "high_risk_area",
+                "file_path": area.get("file_path"),
+                "priority": area.get("priority", 50),
+                "reason": f"工具扫描发现 {area.get('priority')} 个问题",
+                "issues": area.get("issues"),
+            })
+
+        # 3. 认证/授权入口点
+        for entry in attack_surface.get("entry_points", []):
+            if entry.get("severity") == "high":
+                targets.append({
+                    "type": "auth_entry",
+                    "file_path": entry.get("file"),
+                    "priority": 70,
+                    "reason": "认证/授权相关入口点",
+                })
+
+        # 4. 命令执行入口点
+        for entry in attack_surface.get("command_executions", []):
+            targets.append({
+                "type": "command_execution",
+                "file_path": entry.get("file"),
+                "priority": 80,
+                "reason": "命令执行相关代码",
+            })
+
+        # 按优先级排序
+        targets.sort(key=lambda x: x["priority"], reverse=True)
+
+        return targets
 
 
 # 创建全局实例

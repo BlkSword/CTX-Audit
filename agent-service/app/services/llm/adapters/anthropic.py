@@ -145,13 +145,16 @@ class AnthropicAdapter(BaseLLMAdapter):
 
         for tool in tools:
             function = tool.get("function", {})
+            # OpenAI 格式: function.parameters 包含 schema
+            parameters = function.get("parameters", {})
+
             anthropic_tools.append({
                 "name": function.get("name"),
                 "description": function.get("description", ""),
                 "input_schema": {
                     "type": "object",
-                    "properties": function.get("properties", {}),
-                    "required": function.get("required", []),
+                    "properties": parameters.get("properties", {}),
+                    "required": parameters.get("required", []),
                 }
             })
 

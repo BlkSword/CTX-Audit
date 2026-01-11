@@ -38,7 +38,7 @@ export function GraphPanel() {
       const result = await api.invoke('build_ast_index', {
         project_path: currentProject.path,
         project_id: currentProject.id,
-      })
+      }) as { message: string }
       addLog(`AST 索引构建完成: ${result.message}`, 'system')
       setNeedsIndex(false)
 
