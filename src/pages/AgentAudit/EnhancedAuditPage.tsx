@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 
 // 报告导出对话框
 import { ReportExportDialog } from './components/ReportExportDialog'
@@ -571,7 +572,14 @@ export function EnhancedAuditPageContent() {
   const handleCancelAudit = async () => {
     if (!auditId) return
 
-    if (!confirm('确定要终止此审计任务吗？')) return
+    const confirmed = await confirmDialog({
+      title: '终止审计任务',
+      description: '确定要终止此审计任务吗？',
+      confirmText: '终止',
+      cancelText: '取消',
+      type: 'warning',
+    })
+    if (!confirmed) return
 
     try {
       await cancelAuditTask(auditId)
@@ -640,14 +648,23 @@ export function EnhancedAuditPageContent() {
             </span>
           </div>
 
-          {/* 审计状态徽章 */}
-          {state.task && <AuditStatusBadge status={state.task.status} progress={state.task.progress_percentage} />}
+          {/* 审计状态徽章 - 始终显示（loading状态也显示） */}
+          {auditId && (
+            state.task ? (
+              <AuditStatusBadge status={state.task.status} progress={state.task.progress_percentage} />
+            ) : state.isLoading ? (
+              <Badge variant="outline" className="bg-slate-900/50 border-slate-700 text-slate-400">
+                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                加载中...
+              </Badge>
+            ) : null
+          )}
         </div>
 
         {/* 右侧操作 */}
         <div className="flex items-center gap-2">
-          {/* 导出报告按钮 */}
-          {(state.task || state.findings.length > 0) && (
+          {/* 导出报告按钮 - 只要有审计结果就可以导出 */}
+          {(auditId || state.findings.length > 0) && (
             <Button
               variant="outline"
               size="sm"
@@ -660,21 +677,58 @@ export function EnhancedAuditPageContent() {
             </Button>
           )}
 
-          {/* 控制按钮 */}
-          {state.task?.status === 'running' ? (
-            <>
-              <Button variant="outline" size="sm" onClick={handlePauseAudit} className="h-8 bg-slate-800 border-slate-700">
-                <Pause className="w-3.5 h-3.5 mr-1.5" /> 暂停
+          {/* 控制按钮 - 始终显示，根据状态切换 */}
+          {(() => {
+            // 没有任务或任务未开始 -> 显示开始审计
+            if (!state.task || state.task.status === 'pending' || state.task.status === 'completed' || state.task.status === 'failed' || state.task.status === 'cancelled') {
+              return (
+                <Button size="sm" onClick={handleStartAudit} disabled={!isServiceHealthy || state.isLoading} className="h-8">
+                  {state.isLoading ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                      加载中...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5 mr-1.5" /> 开始审计
+                    </>
+                  )}
+                </Button>
+              )
+            }
+            // 运行中 -> 显示暂停/终止
+            if (state.task.status === 'running') {
+              return (
+                <>
+                  <Button variant="outline" size="sm" onClick={handlePauseAudit} className="h-8 bg-slate-800 border-slate-700">
+                    <Pause className="w-3.5 h-3.5 mr-1.5" /> 暂停
+                  </Button>
+                  <Button variant="destructive" size="sm" onClick={handleCancelAudit} className="h-8">
+                    <Square className="w-3.5 h-3.5 mr-1.5" /> 终止
+                  </Button>
+                </>
+              )
+            }
+            // 暂停中 -> 显示恢复/终止
+            if (state.task.status === 'paused') {
+              return (
+                <>
+                  <Button variant="outline" size="sm" onClick={handleStartAudit} className="h-8 bg-slate-800 border-slate-700">
+                    <Play className="w-3.5 h-3.5 mr-1.5" /> 恢复
+                  </Button>
+                  <Button variant="destructive" size="sm" onClick={handleCancelAudit} className="h-8">
+                    <Square className="w-3.5 h-3.5 mr-1.5" /> 终止
+                  </Button>
+                </>
+              )
+            }
+            // 默认 -> 显示开始审计
+            return (
+              <Button size="sm" onClick={handleStartAudit} disabled={!isServiceHealthy || state.isLoading} className="h-8">
+                <Play className="w-3.5 h-3.5 mr-1.5" /> 开始审计
               </Button>
-              <Button variant="destructive" size="sm" onClick={handleCancelAudit} className="h-8">
-                <Square className="w-3.5 h-3.5 mr-1.5" /> 终止
-              </Button>
-            </>
-          ) : (
-            <Button size="sm" onClick={handleStartAudit} disabled={!isServiceHealthy} className="h-8">
-              <Play className="w-3.5 h-3.5 mr-1.5" /> 开始审计
-            </Button>
-          )}
+            )
+          })()}
 
           {/* 全屏切换 */}
           <Button
@@ -815,15 +869,22 @@ export function EnhancedAuditPageContent() {
 
         {/* 右侧：状态 + Agent 树 + 详情/统计 (30%) */}
         <div className="w-[30%] flex flex-col bg-slate-900/20 min-w-0">
-          {/* 审计状态指示器 */}
-          {state.task && (
+          {/* 审计状态指示器 - 只要有auditId就显示 */}
+          {auditId && (
             <div className="p-4 border-b border-slate-800 shrink-0">
-              <AuditStatusIndicator
-                status={state.task.status}
-                progress={state.task.progress_percentage}
-                currentPhase={state.task.current_phase}
-                error={state.error}
-              />
+              {state.task ? (
+                <AuditStatusIndicator
+                  status={state.task.status}
+                  progress={state.task.progress_percentage}
+                  currentPhase={state.task.current_phase}
+                  error={state.error}
+                />
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-slate-400">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>加载审计信息...</span>
+                </div>
+              )}
             </div>
           )}
 

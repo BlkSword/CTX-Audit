@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import type { SystemSettings } from '@/shared/types'
 
 export function SystemSettingsPage() {
@@ -82,7 +83,14 @@ export function SystemSettingsPage() {
 
   // 重置设置
   const handleReset = async () => {
-    if (!confirm('确定要重置所有设置为默认值吗？')) return
+    const confirmed = await confirmDialog({
+      title: '重置系统设置',
+      description: '确定要重置所有设置为默认值吗？',
+      confirmText: '重置',
+      cancelText: '取消',
+      type: 'warning',
+    })
+    if (!confirmed) return
 
     setIsSaving(true)
     try {
@@ -135,12 +143,7 @@ export function SystemSettingsPage() {
       <div className="border-b border-border/40 px-6 py-4 flex items-center justify-between bg-muted/20">
         <div className="flex items-center gap-3">
           <SettingsIcon className="w-5 h-5 text-primary" />
-          <div>
-            <h2 className="text-lg font-semibold">系统设置</h2>
-            <p className="text-xs text-muted-foreground">
-              配置分析参数、Git 集成、Agent 行为和界面偏好
-            </p>
-          </div>
+          <h2 className="text-lg font-semibold">系统设置</h2>
         </div>
 
         <div className="flex items-center gap-2">

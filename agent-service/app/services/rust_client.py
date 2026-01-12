@@ -104,21 +104,30 @@ class RustBackendClient:
 
     # ========== AST 查询 ==========
 
-    async def build_ast_index(self, project_path: str) -> Dict[str, Any]:
+    async def build_ast_index(
+        self,
+        project_path: str,
+        project_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         构建 AST 索引
 
         Args:
             project_path: 项目路径
+            project_id: 项目 ID（可选，用于将索引保存到数据库）
 
         Returns:
             索引构建结果
         """
         client = await self._get_client()
         try:
+            payload = {"project_path": project_path}
+            if project_id is not None:
+                payload["project_id"] = project_id
+
             response = await client.post(
                 "/api/ast/build_index",
-                json={"project_path": project_path}
+                json=payload
             )
             response.raise_for_status()
             return response.json()
@@ -132,6 +141,8 @@ class RustBackendClient:
         line_range: List[int],
         include_callers: bool = True,
         include_callees: bool = True,
+        project_id: Optional[int] = None,
+        project_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         获取 AST 上下文
@@ -141,20 +152,29 @@ class RustBackendClient:
             line_range: 行范围 [start, end]
             include_callers: 是否包含调用者
             include_callees: 是否包含被调用者
+            project_id: 项目ID（可选）
+            project_path: 项目路径（可选）
 
         Returns:
             AST 上下文信息
         """
         client = await self._get_client()
         try:
+            payload = {
+                "file_path": file_path,
+                "line_range": line_range,
+                "include_callers": include_callers,
+                "include_callees": include_callees,
+            }
+            # 添加可选的项目信息
+            if project_id is not None:
+                payload["project_id"] = project_id
+            if project_path is not None:
+                payload["project_path"] = project_path
+
             response = await client.post(
                 "/api/ast/context",
-                json={
-                    "file_path": file_path,
-                    "line_range": line_range,
-                    "include_callers": include_callers,
-                    "include_callees": include_callees,
-                }
+                json=payload
             )
             response.raise_for_status()
             return response.json()

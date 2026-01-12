@@ -35,6 +35,7 @@ import {
 } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import { Slider } from '@/components/ui/slider'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import type { LLMConfig } from '@/shared/types'
 
 export function LLMConfigPage() {
@@ -124,7 +125,14 @@ export function LLMConfigPage() {
 
   // 删除配置
   const handleDeleteConfig = async (id: string, name: string) => {
-    if (!confirm(`确定要删除 LLM 配置 "${name}" 吗？`)) return
+    const confirmed = await confirmDialog({
+      title: '删除 LLM 配置',
+      description: `确定要删除 LLM 配置 "${name}" 吗？`,
+      confirmText: '删除',
+      cancelText: '取消',
+      type: 'destructive',
+    })
+    if (!confirmed) return
 
     try {
       await deleteLLMConfig(id)
@@ -190,12 +198,7 @@ export function LLMConfigPage() {
       <div className="border-b border-border/40 px-6 py-4 flex items-center justify-between bg-muted/20">
         <div className="flex items-center gap-3">
           <Server className="w-5 h-5 text-primary" />
-          <div>
-            <h2 className="text-lg font-semibold">LLM 配置</h2>
-            <p className="text-xs text-muted-foreground">
-              配置自定义 LLM API 用于 AI Agent 审计分析
-            </p>
-          </div>
+          <h2 className="text-lg font-semibold">LLM 配置</h2>
         </div>
 
         <Dialog open={isCreateDialogOpen} onOpenChange={handleDialogOpenChange}>

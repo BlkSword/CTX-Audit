@@ -116,6 +116,10 @@ class AnalysisAgent(BaseAgent):
         analysis_context["_false_positives"] = self._false_positives
         analysis_context["use_rag"] = self.use_rag
 
+        # 存储扫描结果总数，用于验证是否所有结果都被处理
+        analysis_context["_total_scan_results"] = len(scan_results)
+        analysis_context["_scan_results"] = scan_results
+
         tool_handlers, llm_tools = create_tool_bridge(context=analysis_context)
 
         self.think(f"已加载 {len(llm_tools)} 个 MCP 工具")
@@ -169,29 +173,67 @@ class AnalysisAgent(BaseAgent):
 
     def _format_initial_message(self, context: Dict[str, Any]) -> str:
         scan_results = context["scan_results"]
-        return f"""开始分析。共收到 {len(scan_results)} 个扫描结果。
+        scan_count = len(scan_results)
 
-**可用工具:**
+        # 格式化扫描结果列表
+        results_list = ""
+        for i, result in enumerate(scan_results[:10], 1):  # 只显示前10个
+            results_list += f"""
+{i}. **{result.get('title', '未命名')}** ({result.get('severity', 'unknown').upper()})
+   - 类型: {result.get('type', 'unknown')}
+   - 文件: {result.get('file_path', 'unknown')}
+   - 描述: {result.get('description', '无描述')[:100]}...
+"""
+
+        if scan_count > 10:
+            results_list += f"\n... 还有 {scan_count - 10} 个扫描结果\n"
+
+        return f"""⚠️ **重要：你必须对每个扫描结果做出明确判断**
+
+你有 **{scan_count}** 个扫描结果需要分析。
+
+## 扫描结果列表
+{results_list}
+
+## ⚠️ 强制要求
+
+**对于每个扫描结果，你必须：**
+1. 使用工具分析代码（read_file、get_ast_context、search_symbol等）
+2. 调用 `report_finding` 报告确认的漏洞
+3. 或调用 `mark_false_positive` 标记为误报
+4. 分析完所有结果后，调用 `finish_analysis` 完成任务
+
+## 🚫 严禁以下行为
+
+- **严禁**在没有分析所有扫描结果的情况下直接调用 `finish_analysis`
+- **严禁**跳过任何扫描结果
+- **严禁**同时对多个结果做出判断，必须逐一分析
+
+## 可用工具
+
+**代码分析工具：**
 - `read_file` - 读取文件内容
-- `get_ast_context` - 获取AST上下文
-- `search_similar_code` - 相似代码搜索（需要RAG）
-- `search_vulnerability_patterns` - 漏洞模式搜索（需要RAG）
-- `get_call_graph` - 获取调用图
-- `get_knowledge_graph` - 获取知识图谱
-- `search_symbol` - 符号搜索
-- `get_code_structure` - 代码结构
-- `list_files` - 列出文件
-- `report_finding` - 报告漏洞
-- `mark_false_positive` - 标记误报
-- `finish_analysis` - 完成分析
+- `get_ast_context` - 获取AST上下文（包含调用关系）
+- `search_symbol` - 搜索符号定义
+- `get_code_structure` - 获取代码结构
+- `list_files` - 列出目录文件
 
-请对高危结果进行逐一验证：
-1. 使用 `read_file` 或 `get_ast_context` 查看代码
-2. 使用 `search_vulnerability_patterns` 查找相关漏洞模式
-3. 判断是否为误报
-4. 如果是真实漏洞，使用 `report_finding` 记录
-5. 如果是误报，使用 `mark_false_positive` 记录
-6. 完成后调用 `finish_analysis`
+**漏洞判定工具：**
+- `report_finding` - **必须调用**来报告真实漏洞
+- `mark_false_positive` - **必须调用**来标记误报
+
+**完成工具：**
+- `finish_analysis` - 只在处理完所有结果后调用
+
+## 开始分析
+
+请从第一个扫描结果开始分析。你必须：
+1. 先使用代码分析工具查看相关代码
+2. 然后根据分析结果调用 `report_finding` 或 `mark_false_positive`
+3. 继续下一个结果，直到所有结果都处理完毕
+4. 最后调用 `finish_analysis` 完成任务
+
+**记住：每个扫描结果都必须被处理，不能遗漏任何一个！**
 """
 
     def _prioritize_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

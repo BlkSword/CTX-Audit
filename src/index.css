@@ -299,4 +299,138 @@
       transform: translate(0);
     }
   }
+
+  /* ==================== Audit 主题颜色变量 ==================== */
+  /* 新设计颜色方案 */
+  :root {
+    /* 背景和基础色 */
+    --audit-bg-primary: #121212;
+    --audit-bg-secondary: #1a1a1a;
+    --audit-bg-tertiary: #242424;
+
+    /* 边框和分隔线 */
+    --audit-border-primary: #333333;
+    --audit-border-secondary: #444444;
+    --audit-border-tertiary: #555555;
+
+    /* 文本颜色 */
+    --audit-text-primary: #FFFFFF;
+    --audit-text-secondary: #CCCCCC;
+    --audit-text-tertiary: #888888;
+    --audit-text-quaternary: #666666;
+
+    /* 状态颜色 */
+    --audit-status-running: #10B981;     /* 绿色 */
+    --audit-status-running-bg: rgba(16, 185, 129, 0.2);
+    --audit-status-running-border: rgba(16, 185, 129, 0.3);
+
+    --audit-status-orange: #F97316;      /* 橙色 */
+    --audit-status-orange-bg: rgba(249, 115, 22, 0.1);
+    --audit-status-orange-border: rgba(249, 115, 22, 0.3);
+
+    --audit-status-red: #EF4444;         /* 红色 */
+    --audit-status-red-bg: rgba(239, 68, 68, 0.2);
+    --audit-status-red-border: rgba(239, 68, 68, 0.3);
+
+    --audit-status-purple: #8B5CF6;      /* 紫色 */
+    --audit-status-purple-bg: rgba(139, 92, 246, 0.2);
+    --audit-status-purple-border: rgba(139, 92, 246, 0.3);
+
+    --audit-status-teal: #14B8A6;        /* 青色 */
+    --audit-status-teal-bg: rgba(20, 184, 166, 0.1);
+    --audit-status-teal-border: rgba(20, 184, 166, 0.3);
+
+    /* 品牌颜色 */
+    --audit-brand-orange: #F97316;
+    --audit-brand-green: #10B981;
+  }
+
+  /* ==================== Audit 主题专用类 ==================== */
+
+  /* 审计页面背景 */
+  .audit-theme {
+    background-color: var(--audit-bg-primary);
+    color: var(--audit-text-primary);
+  }
+
+  /* 边框样式 */
+  .audit-border {
+    border-color: var(--audit-border-primary);
+  }
+  .audit-border-secondary {
+    border-color: var(--audit-border-secondary);
+  }
+
+  /* 文本样式 */
+  .audit-text-primary { color: var(--audit-text-primary); }
+  .audit-text-secondary { color: var(--audit-text-secondary); }
+  .audit-text-tertiary { color: var(--audit-text-tertiary); }
+  .audit-text-quaternary { color: var(--audit-text-quaternary); }
+
+  /* 状态徽章 */
+  .audit-badge-running {
+    background-color: var(--audit-status-running-bg);
+    color: var(--audit-status-running);
+    border-color: var(--audit-status-running-border);
+  }
+  .audit-badge-orange {
+    background-color: var(--audit-status-orange-bg);
+    color: var(--audit-status-orange);
+    border-color: var(--audit-status-orange-border);
+  }
+  .audit-badge-red {
+    background-color: var(--audit-status-red-bg);
+    color: var(--audit-status-red);
+    border-color: var(--audit-status-red-border);
+  }
+  .audit-badge-purple {
+    background-color: var(--audit-status-purple-bg);
+    color: var(--audit-status-purple);
+    border-color: var(--audit-status-purple-border);
+  }
+  .audit-badge-teal {
+    background-color: var(--audit-status-teal-bg);
+    color: var(--audit-status-teal);
+    border-color: var(--audit-status-teal-border);
+  }
+
+  /* 进度条动画 */
+  @keyframes audit-progress {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+
+  .audit-progress-animated {
+    background: linear-gradient(
+      90deg,
+      var(--audit-status-orange) 0%,
+      #FFA500 50%,
+      var(--audit-status-orange) 100%
+    );
+    background-size: 200% 100%;
+    animation: audit-progress 2s ease infinite;
+  }
+
+  /* 加载旋转 */
+  @keyframes audit-spin-purple {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .audit-spinner-purple {
+    border: 2px solid var(--audit-border-primary);
+    border-top-color: var(--audit-status-purple);
+    animation: audit-spin-purple 1s linear infinite;
+  }
+
+  /* 实时指示器脉冲 */
+  @keyframes audit-pulse-live {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(1.1); }
+  }
+
+  .audit-pulse-live {
+    animation: audit-pulse-live 1.5s ease-in-out infinite;
+  }
 }

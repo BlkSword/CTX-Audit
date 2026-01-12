@@ -393,8 +393,26 @@ Action Input: {"agent": "recon", "task": "侦察项目结构和技术栈"}
                             await self._phase_manager.transition_to(AuditPhase.ANALYSIS)
                             self._update_progress(35, "侦察完成，准备分析")
                         elif agent_name == "analysis":
-                            await self._phase_manager.transition_to(AuditPhase.VERIFICATION)
-                            self._update_progress(85, "分析完成，准备验证")
+                            # 分析完成，不再进入验证阶段，直接准备完成审计
+                            await self._phase_manager.transition_to(AuditPhase.COMPLETE)
+                            self._update_progress(95, "分析完成，审计已完成")
+
+                            # 添加提示，告诉LLM可以调用finish了
+                            observation = f"""{observation}
+
+---
+
+## 📊 分析已完成
+
+分析Agent已完成代码审计。现在你可以：
+
+1. 查看上述分析结果
+2. 如果满意，调用 `finish` 完成审计
+3. 如果需要更多分析，可以再次调度 analysis Agent
+
+**建议直接调用 finish 完成审计。**
+"""
+                            step.observation = observation
                     except Exception as e:
                         logger.error(f"[Orchestrator] Sub-agent {agent_name} failed: {e}")
                         observation = f"## {agent_name} Agent 执行失败\n\n错误: {str(e)}"
@@ -594,6 +612,8 @@ Action Input: {"conclusion": "审计完成，共发现 X 个漏洞"}
 3. **最后**调用 finish 完成审计
 
 **不能直接调用 finish！必须先调度 recon Agent！**
+
+**注意：analysis 完成后直接调用 finish 即可，无需验证阶段。**
 
 请立即开始：首先输出你的思考，然后调用 dispatch_agent 调度 recon Agent。
 

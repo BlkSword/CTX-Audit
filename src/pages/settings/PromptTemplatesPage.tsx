@@ -38,6 +38,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import type { PromptTemplate, AgentType } from '@/shared/types'
 
 const CATEGORIES = [
@@ -137,7 +138,14 @@ export function PromptTemplatesPage() {
 
   // 删除模板
   const handleDeleteTemplate = async (id: string, name: string) => {
-    if (!confirm(`确定要删除提示词模板 "${name}" 吗？`)) return
+    const confirmed = await confirmDialog({
+      title: '删除提示词模板',
+      description: `确定要删除提示词模板 "${name}" 吗？`,
+      confirmText: '删除',
+      cancelText: '取消',
+      type: 'destructive',
+    })
+    if (!confirmed) return
 
     try {
       await deletePromptTemplate(id)
@@ -194,8 +202,6 @@ export function PromptTemplatesPage() {
           <FileText className="w-5 h-5 text-primary" />
           <h2 className="text-lg font-semibold">提示词模板</h2>
         </div>
-
-        <div className="flex-1" />
 
         <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
           <DialogTrigger asChild>

@@ -153,6 +153,44 @@ class LLMService:
             "finish_reason": response.finish_reason,
         }
 
+    async def generate_stream_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ):
+        """
+        流式生成文本（支持工具调用）
+
+        Args:
+            messages: 原始消息列表 (dict 格式)
+            tools: 工具列表
+            max_tokens: 最大生成 token 数
+            temperature: 温度参数
+
+        Yields:
+            LLMStreamChunk: 流式响应块
+        """
+        # 转换消息格式
+        llm_messages = [
+            LLMMessage(
+                role=msg["role"],
+                content=msg["content"],
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+            for msg in messages
+        ]
+
+        async for chunk in self.adapter.generate_stream_with_tools(
+            messages=llm_messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        ):
+            yield chunk
+
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "LLMService":
         """

@@ -92,6 +92,17 @@ class BaseLLMAdapter(ABC):
         """流式生成文本"""
         pass
 
+    @abstractmethod
+    async def generate_stream_with_tools(
+        self,
+        messages: List[LLMMessage],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        """流式生成文本（支持工具调用）"""
+        pass
+
     def _convert_messages(self, messages: List[LLMMessage]) -> List[Dict[str, Any]]:
         """转换消息格式"""
         result = []

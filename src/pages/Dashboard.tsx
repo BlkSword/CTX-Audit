@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, FolderOpen, Trash2, RefreshCw, ShieldAlert, Upload, FileArchive, Settings } from 'lucide-react'
+import { Plus, FolderOpen, Trash2, RefreshCw, ShieldAlert, FileArchive, Settings } from 'lucide-react'
 import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useToast } from '@/hooks/use-toast'
@@ -23,6 +23,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
+import { confirmDialog } from "@/components/ui/confirm-dialog"
+import { FileUpload } from "@/components/ui/file-upload"
 
 export function Dashboard() {
   const navigate = useNavigate()
@@ -71,7 +73,14 @@ export function Dashboard() {
   }
 
   const handleDeleteProject = async (id: number, name: string) => {
-    if (!confirm(`确定要删除项目 "${name}" 吗？此操作不可恢复！`)) return
+    const confirmed = await confirmDialog({
+      title: '删除项目',
+      description: `确定要删除项目 "${name}" 吗？此操作不可恢复。`,
+      confirmText: '删除',
+      cancelText: '取消',
+      type: 'destructive',
+    })
+    if (!confirmed) return
 
     const loadingToast = toast.loading(`正在删除项目 "${name}"...`)
 
@@ -102,7 +111,6 @@ export function Dashboard() {
         <div className="flex items-center gap-3">
           <ShieldAlert className="w-6 h-6 text-primary" />
           <h1 className="text-xl font-semibold tracking-tight">CTX-Audit</h1>
-          <Badge variant="secondary" className="text-xs">代码审计平台</Badge>
         </div>
 
         <div className="flex items-center gap-2 relative z-20">
@@ -150,34 +158,14 @@ export function Dashboard() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="zip">项目文件 (ZIP)</Label>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      id="zip"
-                      type="file"
-                      accept=".zip"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0]
-                        if (file) {
-                          if (!file.name.endsWith('.zip')) {
-                            addLog('请上传 ZIP 格式的文件', 'system')
-                            return
-                          }
-                          setProjectZip(file)
-                        }
-                      }}
-                      disabled={isCreating}
-                      className="flex-1"
-                    />
-                    {projectZip && (
-                      <FileArchive className="w-5 h-5 text-green-500" />
-                    )}
-                  </div>
-                  {projectZip && (
-                    <p className="text-xs text-muted-foreground">
-                      已选择: {projectZip.name} ({(projectZip.size / 1024 / 1024).toFixed(2)} MB)
-                    </p>
-                  )}
+                  <Label>项目文件 (ZIP)</Label>
+                  <FileUpload
+                    accept=".zip"
+                    disabled={isCreating}
+                    value={projectZip}
+                    onChange={(file) => setProjectZip(file)}
+                    maxSize={500}
+                  />
                 </div>
 
                 {/* 上传进度 */}
@@ -201,7 +189,6 @@ export function Dashboard() {
                   variant="outline"
                   onClick={() => {
                     setIsCreateDialogOpen(false)
-                    setProjectZip(null)
                     setUploadProgress(0)
                   }}
                   disabled={isCreating}
@@ -272,14 +259,10 @@ export function Dashboard() {
           {projects.length === 0 && !isLoading ? (
             <Card className="p-12 text-center">
               <FileArchive className="w-16 h-16 mx-auto mb-4 text-muted-foreground/30" />
-              <h3 className="text-lg font-semibold mb-2">还没有项目</h3>
+              <h3 className="text-lg font-semibold mb-2">没有项目</h3>
               <p className="text-sm text-muted-foreground mb-6 max-w-md mx-auto">
                 上传项目 ZIP 文件，创建您的第一个审计项目
               </p>
-              <Button onClick={() => setIsCreateDialogOpen(true)}>
-                <Upload className="w-4 h-4 mr-2" />
-                上传项目
-              </Button>
             </Card>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -348,7 +331,7 @@ export function Dashboard() {
       {/* Footer */}
       <footer className="h-8 border-t border-border/40 px-4 flex items-center justify-between text-[10px] text-muted-foreground select-none bg-muted/20">
         <span>CTX-Audit v1.0.0</span>
-        <span>© 2024 Code Security Audit Platform</span>
+        <span>© 2026 Code Security Audit Platform</span>
       </footer>
     </div>
   )

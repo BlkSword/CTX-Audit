@@ -17,6 +17,8 @@ import { PromptTemplatesPage } from '@/pages/settings/PromptTemplatesPage'
 import { RulesPage } from '@/pages/settings/RulesPage'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Toaster } from '@/components/ui/toaster'
+import { ConfirmDialogComponent } from '@/components/ui/confirm-dialog'
+import { AgentUIDemo } from '@/pages/Demo/AgentUIDemo'
 
 function App() {
   return (
@@ -25,6 +27,9 @@ function App() {
         <Routes>
           {/* Dashboard - 项目列表 */}
           <Route path="/" element={<Dashboard />} />
+
+          {/* Demo - UI组件演示页面（无需后端） */}
+          <Route path="/demo" element={<AgentUIDemo />} />
 
           {/* Project Routes */}
           <Route path="/project/:id" element={<ProjectLayout />}>
@@ -52,6 +57,8 @@ function App() {
       </BrowserRouter>
       {/* 全局 Toast 提示 */}
       <Toaster />
+      {/* 全局确认对话框 */}
+      <ConfirmDialogComponent />
     </ErrorBoundary>
   )
 }

@@ -171,49 +171,266 @@ TOOL_USAGE_GUIDE = """
 
 ### 工具优先级（从高到低）
 
-#### 第一优先级：外部专业安全工具
+#### 第一优先级：外部专业安全工具 ⚡
 | 工具 | 用途 | 何时使用 |
 |------|------|---------|
 | `semgrep_scan` | 多语言静态分析 | **每次分析必用**，支持30+语言 |
 | `bandit_scan` | Python安全扫描 | Python项目**必用** |
 | `gitleaks_scan` | 密钥泄露检测 | **每次分析必用** |
+| `safety_scan` | Python依赖扫描 | Python项目推荐 |
+| `npm_audit` | Node.js依赖扫描 | Node.js项目推荐 |
 
 #### 第二优先级：智能扫描工具
 | 工具 | 用途 |
 |------|------|
-| `smart_scan` | 综合智能扫描 |
-| `quick_audit` | 快速审计模式 |
+| `pattern_match` | 正则模式匹配（外部工具不可用时的备选） |
 
 #### 第三优先级：内置分析工具
 | 工具 | 用途 |
 |------|------|
-| `pattern_match` | 正则模式匹配 |
-| `dataflow_analysis` | 数据流追踪验证 |
-
-#### 辅助工具
-| 工具 | 用途 |
-|------|------|
-| `rag_query` | **首选代码搜索工具** - 语义搜索 |
-| `security_search` | **首选安全搜索工具** |
-| `function_context` | **理解代码结构** |
 | `read_file` | 读取文件内容验证发现 |
-| `list_files` | 了解根目录结构 |
+| `get_ast_context` | 获取代码上下文 |
+| `dataflow_analysis` | 数据流追踪验证 |
+| `get_code_structure` | 理解代码结构 |
+| `search_symbol` | 搜索符号定义 |
+| `list_files` | 了解目录结构 |
 
 ### 推荐分析流程
 
-#### 第一步：快速侦察（5%时间）
-了解项目根目录结构（不要遍历全项目）
+#### 第一步：外部工具全面扫描（60%时间）⚡
+**必须首先执行以下扫描（并行调用多个工具）：**
 
-#### 第二步：外部工具全面扫描（60%时间）
-根据技术栈选择对应工具，并行执行多个扫描
+```json
+// 所有项目必做
+{"tool": "semgrep_scan", "input": {"target_path": ".", "rules": "auto"}}
+{"tool": "gitleaks_scan", "input": {"target_path": "."}}
 
-#### 第三步：深度分析（25%时间）
-对外部工具发现的问题进行深入分析
+// Python 项目额外
+{"tool": "bandit_scan", "input": {"target_path": ".", "severity": "medium"}}
 
-#### 第四步：验证和报告（10%时间）
-- 确认漏洞可利用性
-- 评估影响范围
-- 生成修复建议
+// Node.js 项目额外
+{"tool": "npm_audit", "input": {"target_path": "."}}
+```
+
+#### 第二步：深度分析（30%时间）
+- 使用 `read_file` 查看完整代码上下文
+- 使用 `get_ast_context` 理解函数调用关系
+- 使用 `dataflow_analysis` 追踪污点数据流
+- 验证每个发现的真实性
+
+#### 第三步：汇总报告（10%时间）
+- 使用 `report_finding` 记录每个确认的漏洞
+- 使用 `mark_false_positive` 标记误报
+- 使用 `finish_analysis` 完成分析（**必须处理所有结果后调用**）
+"""
+
+# ==================== 新增：严格约束规则 ====================
+
+STRICT_CONSTRAINTS = """
+## ⚠️ 强制约束 - 必须严格遵守！
+
+### 1. 最少工具调用要求 ⚡⚡⚡
+**禁止在没有调用任何工具的情况下直接输出结论！**
+
+#### 最低要求：
+- **至少调用 2 个外部扫描工具**（semgrep_scan, bandit_scan, gitleaks_scan）
+- **至少调用 1 个读取工具**（read_file 或 get_ast_context）验证发现
+- **必须处理所有扫描结果**（每个结果都要调用 report_finding 或 mark_false_positive）
+
+#### 违规示例（❌ 禁止）：
+```
+Thought: 根据项目结构，可能存在安全问题
+Final Answer: {"findings": [...]}  # 没有调用任何工具！
+```
+
+#### 正确示例（✅ 必须）：
+```
+Thought: 我需要先使用外部工具进行全面扫描
+Action: semgrep_scan
+Action Input: {"target_path": ".", "rules": "auto"}
+
+Observation: [返回15个问题]
+
+Thought: 同时检查密钥泄露
+Action: gitleaks_scan
+Action Input: {"target_path": "."}
+
+Observation: [返回3个问题]
+
+Thought: 发现一个高危问题，需要查看代码验证
+Action: read_file
+Action Input: {"file_path": "src/auth.py"}
+
+Observation: [代码内容]
+
+Thought: 确认存在漏洞，记录发现
+Action: report_finding
+Action Input: {...}
+```
+
+### 2. 外部工具优先原则 ⚡⚡⚡
+**强制使用顺序：**
+1. **第一步必须调用外部工具** - semgrep_scan、gitleaks_scan、bandit_scan
+2. 第二步使用内置工具深度分析
+3. 最后使用 read_file 验证代码
+
+**禁止跳过外部工具直接使用内置工具！**
+
+### 3. 结果处理完整性 ⚡⚡⚡
+**finish_analysis 工具的强制约束：**
+- 必须在处理完**所有**扫描结果后才能调用
+- 每个扫描结果必须调用 `report_finding` 或 `mark_false_positive`
+- 不能有任何未处理的结果
+
+**如果调用 finish_analysis 时还有未处理的结果，工具将返回错误！**
+
+### 4. 代码验证要求 ⚡⚡
+**报告漏洞前的必做检查：**
+1. 使用 `read_file` 读取包含漏洞的文件
+2. 确认代码确实存在安全问题
+3. 提供准确的行号
+4. 引用真实的代码片段
+
+**禁止基于推测报告漏洞！**
+
+### 5. 思考过程展示要求
+**每次调用工具前，先说明：**
+- 当前状态分析
+- 为什么选择这个工具
+- 期望得到什么结果
+
+**示例：**
+```
+Thought: 当前已获得扫描结果，发现3个潜在SQL注入问题。我需要查看第一个问题的完整代码上下文来验证是否为真实漏洞。
+Action: read_file
+Action Input: {"file_path": "src/db.py", "line_range": [120, 150]}
+```
+"""
+
+# ==================== 新增：显式 ReAct 格式 ====================
+
+REACT_FORMAT_GUIDE = """
+## ReAct 格式（思考-行动-观察）
+
+### 输出格式要求
+
+每次迭代，你需要按照以下格式输出：
+
+```
+Thought: [你的思考过程 - 分析当前情况，规划下一步]
+
+Action: [工具名称]
+
+Action Input: {
+  "参数名": "参数值",
+  ...
+}
+```
+
+### 格式说明
+
+#### Thought（思考）
+- 分析当前状态和已获得的信息
+- 评估发现的优先级和可信度
+- 决定下一步行动
+- 解释为什么选择这个工具
+
+#### Action（动作）
+- 要调用的工具名称
+- 必须是可用工具列表中的名称
+- 精确匹配，大小写敏感
+
+#### Action Input（动作输入）
+- 工具所需的参数
+- 必须是有效的 JSON 格式
+- 参数名称和类型必须符合工具定义
+
+### 完整示例
+
+```
+Thought: 我需要先使用外部工具对项目进行全面安全扫描。首先使用 Semgrep 进行静态代码分析，它可以检测30+编程语言的安全问题。
+
+Action: semgrep_scan
+
+Action Input: {
+  "target_path": ".",
+  "rules": "auto",
+  "severity": "WARNING"
+}
+
+[等待工具返回结果...]
+
+Thought: Semgrep 发现了 15 个潜在问题，其中 3 个是高危 SQL 注入问题。我还需要检查是否有密钥泄露问题。
+
+Action: gitleaks_scan
+
+Action Input: {
+  "target_path": "."
+}
+
+[等待工具返回结果...]
+
+Thought: Gitleaks 发现了 2 个潜在的密钥泄露。现在我需要查看第一个 SQL 问题的完整代码来验证它是否为真实漏洞。
+
+Action: read_file
+
+Action Input: {
+  "file_path": "src/database/query.py",
+  "line_range": [42, 65]
+}
+
+[等待工具返回结果...]
+
+Thought: 我查看了代码，第 45 行确实存在 SQL 注入漏洞。user_id 参数直接拼接到 SQL 语句中，没有使用参数化查询。这是一个真实的高危漏洞，需要记录到报告中。
+
+Action: report_finding
+
+Action Input: {
+  "title": "SQL 注入漏洞",
+  "severity": "high",
+  "file_path": "src/database/query.py",
+  "line_number": 45,
+  "description": "user_id 参数直接拼接到 SQL 语句，没有使用参数化查询",
+  "code_snippet": "query = f'SELECT * FROM users WHERE id = {user_id}'",
+  "confidence": 0.95
+}
+
+[继续处理其他发现...]
+
+Thought: 我已经处理了所有扫描结果：确认了 5 个真实漏洞，标记了 10 个误报。现在可以完成分析。
+
+Action: finish_analysis
+
+Action Input: {
+  "summary": "共分析 18 个扫描结果，确认 5 个高危漏洞，标记 10 个误报",
+  "recommendations": [
+    "修复所有 SQL 注入漏洞，使用参数化查询",
+    "移除硬编码的 API 密钥，使用环境变量",
+    "添加输入验证中间件"
+  ]
+}
+```
+
+### 禁止格式
+
+❌ **禁止使用 Markdown 标记：**
+```
+**Thought:** 分析中...
+**Action:** semgrep_scan
+```
+
+❌ **禁止直接输出 Final Answer：**
+```
+Thought: 可能存在一些安全问题
+Final Answer: {...}  # 没有调用任何工具！
+```
+
+❌ **禁止省略 Action Input：**
+```
+Thought: 需要扫描
+Action: semgrep_scan
+[缺少 Action Input]
+```
 """
 
 MULTI_AGENT_RULES = """
@@ -275,6 +492,8 @@ class PromptBuilder:
         include_core_principles: bool = True,
         include_validation_rules: bool = True,
         include_tool_guide: bool = True,
+        include_strict_constraints: bool = True,  # 新增
+        include_react_format: bool = True,       # 新增
     ) -> str:
         """
         为特定 Agent 构建完整提示词（增强版）
@@ -285,6 +504,8 @@ class PromptBuilder:
             include_core_principles: 是否包含核心安全原则
             include_validation_rules: 是否包含验证规则
             include_tool_guide: 是否包含工具指南
+            include_strict_constraints: 是否包含严格约束（新增）
+            include_react_format: 是否包含 ReAct 格式指南（新增）
 
         Returns:
             完整的提示词
@@ -300,44 +521,54 @@ class PromptBuilder:
 
         sections.append(base_prompt)
 
-        # 2. 添加核心安全原则（新增）
+        # 2. 添加严格约束（新增 - 优先级最高）
+        if include_strict_constraints:
+            sections.append("\n\n")
+            sections.append(STRICT_CONSTRAINTS)
+
+        # 3. 添加 ReAct 格式指南（新增 - 第二优先级）
+        if include_react_format:
+            sections.append("\n\n")
+            sections.append(REACT_FORMAT_GUIDE)
+
+        # 4. 添加核心安全原则
         if include_core_principles:
             sections.append("\n\n")
             sections.append(CORE_SECURITY_PRINCIPLES)
 
-        # 3. 添加文件验证规则（新增）
+        # 5. 添加文件验证规则
         if include_validation_rules:
             sections.append("\n\n")
             sections.append(FILE_VALIDATION_RULES)
 
-        # 4. 添加漏洞优先级指南
+        # 6. 添加漏洞优先级指南
         if include_core_principles:
             sections.append("\n\n")
             sections.append(VULNERABILITY_PRIORITIES)
 
-        # 5. 添加工具使用指南
+        # 7. 添加工具使用指南
         if include_tool_guide:
             sections.append("\n\n")
             sections.append(TOOL_USAGE_GUIDE)
 
-        # 6. 添加多 Agent 协作规则（对 orchestrator）
+        # 8. 添加多 Agent 协作规则（对 orchestrator）
         if agent_type == "orchestrator":
             sections.append("\n\n")
             sections.append(MULTI_AGENT_RULES)
 
-        # 7. 添加 Agent 特定的验证规则
+        # 9. 添加 Agent 特定的验证规则
         validation_rules = self._get_validation_rules(agent_type)
         if validation_rules:
             sections.append("\n\n")
             sections.append(validation_rules)
 
-        # 8. 加载相关知识模块
+        # 10. 加载相关知识模块
         knowledge = await self._load_relevant_knowledge(agent_type, context)
         if knowledge:
             sections.append("\n\n")
             sections.append(knowledge)
 
-        # 9. 添加上下文信息（如果有）
+        # 11. 添加上下文信息（如果有）
         context_info = self._format_context(agent_type, context)
         if context_info:
             sections.append("\n\n")
@@ -454,9 +685,10 @@ class PromptBuilder:
         return prompt
 
     def _build_analysis_task_description(self, context: Dict[str, Any]) -> str:
-        """构建分析任务描述"""
+        """构建分析任务描述（包含严格约束）"""
         scan_results = context.get("scan_results", [])
         recon_result = context.get("recon_result", {})
+        tech_stack = recon_result.get("tech_stack", {}) if recon_result else {}
 
         description = f"""
 ## 当前分析任务
@@ -464,30 +696,112 @@ class PromptBuilder:
 ### 项目信息
 - 审计 ID: {context.get('audit_id', 'N/A')}
 - 项目 ID: {context.get('project_id', 'N/A')}
+- 技术栈: {', '.join(tech_stack.get('languages', []))}
+- 框架: {', '.join(tech_stack.get('frameworks', []))}
 
-### 扫描结果
-共收到 {len(scan_results)} 个需要分析的扫描结果。
+### 扫描结果状态
+- 已收到扫描结果: {len(scan_results)} 个
+- 状态: {'有结果需要分析' if scan_results else '无结果，必须先运行外部工具扫描'}
 
-### 侦察结果（如果有）
-"""
+{STRICT_CONSTRAINTS}
 
-        if recon_result:
-            tech_stack = recon_result.get("tech_stack", {})
-            description += f"""
-**技术栈**:
-- 语言: {tech_stack.get('languages', [])}
-- 框架: {tech_stack.get('frameworks', [])}
+---
 
-**攻击面**: {len(recon_result.get('attack_surface', {}).get('entry_points', []))} 个入口点
-"""
+## 执行流程（强制遵守）
 
-        description += """
-## 分析要求
-1. 对每个扫描结果进行深度验证
-2. 使用工具获取代码上下文（read_file, get_ast_context）
-3. 判断是否为真实漏洞或误报
-4. 只报告经过验证的漏洞
-5. 每个发现必须有完整的代码证据
+### 第一阶段：外部工具扫描（60%时间）⚡⚡⚡
+{'**如果 scan_results 为空，你必须先执行以下扫描！**' if not scan_results else '**如果需要更全面的扫描，执行以下扫描：**'}
+
+```
+# 必做 - 所有项目
+Thought: 我需要使用 Semgrep 进行多语言静态分析
+Action: semgrep_scan
+Action Input: {{"target_path": ".", "rules": "auto", "severity": "WARNING"}}
+
+Thought: 同时检查密钥泄露问题
+Action: gitleaks_scan
+Action Input: {{"target_path": "."}}
+```
+
+```
+# Python 项目必做
+Thought: 这是 Python 项目，使用 Bandit 进行安全扫描
+Action: bandit_scan
+Action Input: {{"target_path": ".", "severity": "medium"}}
+```
+
+### 第二阶段：深度分析（30%时间）
+对每个发现进行验证：
+
+```
+Thought: 发现一个潜在的 [漏洞类型]，需要查看完整代码来验证
+Action: read_file
+Action Input: {{"file_path": "路径", "line_range": [start, end]}}
+
+Thought: 理解这个函数的调用关系
+Action: get_ast_context
+Action Input: {{"file_path": "路径", "line_number": 行号}}
+
+Thought: 追踪数据流，确认污点来源
+Action: [使用 dataflow_analysis 或其他分析工具]
+Action Input: {...}
+```
+
+### 第三阶段：报告结果（10%时间）
+```
+Thought: 确认这是一个真实漏洞
+Action: report_finding
+Action Input: {{
+  "title": "漏洞标题",
+  "severity": "high",
+  "file_path": "文件路径",
+  "line_number": 行号,
+  "description": "详细描述",
+  "code_snippet": "危险代码",
+  "confidence": 0.9
+}}
+
+# 或标记为误报
+Thought: 这不是真实漏洞，是误报
+Action: mark_false_positive
+Action Input: {{"finding_id": "ID", "reason": "原因"}}
+```
+
+### 第四阶段：完成分析
+```
+Thought: 我已经处理了所有扫描结果
+Action: finish_analysis
+Action Input: {{
+  "summary": "分析总结",
+  "recommendations": ["建议1", "建议2"]
+}}
+```
+
+---
+
+## ⚠️ 违规后果
+
+### 禁止行为：
+1. ❌ 没有调用任何工具就直接输出结论
+2. ❌ 跳过外部工具直接使用内置工具
+3. ❌ 在处理完所有结果前调用 finish_analysis
+4. ❌ 报告没有通过 read_file 验证的漏洞
+
+### 系统将拒绝：
+- 没有工具调用的分析结果
+- 未经验证的漏洞报告
+- 不完整的分析（有未处理的结果）
+
+---
+
+## 重点关注的漏洞类型
+- **SQL 注入** - query(), execute(), raw SQL
+- **命令注入** - exec(), system(), subprocess
+- **XSS** - innerHTML, v-html, dangerouslySetInnerHTML
+- **路径遍历** - open(), readFile(), path拼接
+- **SSRF** - requests.get(), fetch(), URL参数
+- **密钥泄露** - 硬编码 password, api_key, secret
+- **不安全反序列化** - pickle.loads(), yaml.load(), eval()
 """
 
         return description

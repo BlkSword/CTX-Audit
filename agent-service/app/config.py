@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
 
     # ========== RAG 配置 ==========
-    RAG_ENABLED: bool = True
+    RAG_ENABLED: bool = False  # 禁用RAG，使用云端LLM无需本地向量检索
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50

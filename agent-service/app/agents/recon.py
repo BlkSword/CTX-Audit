@@ -149,7 +149,18 @@ class ReconAgent(BaseAgent):
         frameworks = set()
         package_managers = set()
 
-        project_dir = Path(project_path)
+        # 规范化路径：转换为绝对路径并规范化分隔符
+        project_dir = Path(project_path).resolve()
+        self.think(f"规范化后的项目路径: {project_dir}")
+
+        # 检查目录是否存在
+        if not project_dir.exists():
+            self.think(f"警告: 项目目录不存在: {project_dir}")
+            return {
+                "languages": [],
+                "frameworks": [],
+                "package_managers": [],
+            }
 
         # 检查常见文件识别语言和框架
         check_files = [
@@ -169,10 +180,13 @@ class ReconAgent(BaseAgent):
             ("mix.exs", "Elixir", ["Hex"]),
         ]
 
+        found_files = []
         for file_name, lang, fw_list in check_files:
-            if (project_dir / file_name).exists():
+            file_path = project_dir / file_name
+            if file_path.exists():
                 languages.add(lang)
                 frameworks.update(fw_list)
+                found_files.append(file_name)
                 # 识别包管理器
                 if file_name == "package.json":
                     package_managers.add("npm")
@@ -184,6 +198,9 @@ class ReconAgent(BaseAgent):
                     package_managers.add("go")
                 elif file_name == "pom.xml":
                     package_managers.add("maven")
+
+        if found_files:
+            self.think(f"找到配置文件: {found_files}")
 
         # 通过文件扩展名补充语言识别
         extension_map = {
@@ -204,12 +221,23 @@ class ReconAgent(BaseAgent):
             ".swift": "Swift",
         }
 
-        for file_path in project_dir.rglob("*"):
-            if file_path.is_file():
-                for ext, lang in extension_map.items():
-                    if str(file_path).endswith(ext):
-                        languages.add(lang)
-                        break
+        # 限制扫描深度，避免扫描过深
+        scanned_count = 0
+        max_files = 500  # 最多扫描500个文件
+
+        try:
+            for file_path in project_dir.rglob("*"):
+                if scanned_count >= max_files:
+                    break
+                if file_path.is_file():
+                    scanned_count += 1
+                    file_str = str(file_path)
+                    for ext, lang in extension_map.items():
+                        if file_str.endswith(ext):
+                            languages.add(lang)
+                            break
+        except PermissionError as e:
+            self.think(f"文件扫描权限错误: {e}")
 
         # 检测 Web 框架
         if (project_dir / "app.py").exists() or (project_dir / "wsgi.py").exists():
@@ -219,11 +247,14 @@ class ReconAgent(BaseAgent):
         if (project_dir / "application.go").exists():
             frameworks.add("Go Web Framework")
 
-        return {
+        result = {
             "languages": sorted(list(languages)),
             "frameworks": sorted(list(frameworks)),
             "package_managers": sorted(list(package_managers)),
         }
+
+        self.think(f"技术栈识别结果 - 语言: {result['languages']}, 框架: {result['frameworks']}")
+        return result
 
     async def _recommend_tools(self, tech_stack: Dict[str, Any]) -> List[ToolInfo]:
         """

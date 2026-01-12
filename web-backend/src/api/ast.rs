@@ -64,6 +64,58 @@ pub struct CodeGraphHistory {
     pub created_at: String,
 }
 
+// ==================== AST Context 相关 ====================
+
+#[derive(Serialize, Deserialize)]
+pub struct AstContextRequest {
+    pub file_path: String,
+    pub line_range: Vec<usize>,
+    #[serde(default)]
+    pub include_callers: bool,
+    #[serde(default)]
+    pub include_callees: bool,
+    pub project_id: Option<i64>,
+    pub project_path: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct AstContextResponse {
+    pub file_path: String,
+    pub line_range: Vec<usize>,
+    pub context: AstContextData,
+}
+
+#[derive(Serialize)]
+pub struct AstContextData {
+    pub code_snippet: String,
+    pub function_name: Option<String>,
+    pub callers: Vec<CallerInfo>,
+    pub callees: Vec<CalleeInfo>,
+    pub symbols: Vec<ContextSymbol>,
+}
+
+#[derive(Serialize)]
+pub struct CallerInfo {
+    pub file_path: String,
+    pub function_name: String,
+    pub line: usize,
+}
+
+#[derive(Serialize)]
+pub struct CalleeInfo {
+    pub name: String,
+    pub file_path: String,
+    pub line: usize,
+}
+
+#[derive(Serialize)]
+pub struct ContextSymbol {
+    pub name: String,
+    pub kind: String,
+    pub line: usize,
+    pub column: usize,
+}
+
 pub fn configure_ast_routes(cfg: &mut web::ServiceConfig) {
     cfg
         .route("/build_index", web::post().to(build_index))
@@ -71,6 +123,7 @@ pub fn configure_ast_routes(cfg: &mut web::ServiceConfig) {
         .route("/get_call_graph", web::post().to(get_call_graph))
         .route("/get_code_structure/{file_path}", web::get().to(get_code_structure))
         .route("/get_knowledge_graph", web::post().to(get_knowledge_graph))
+        .route("/context", web::post().to(get_ast_context))  // 新增：AST上下文端点
         // 新增：历史查询端点
         .route("/history/indices/{project_id}", web::get().to(get_index_history))
         .route("/history/graphs/{project_id}", web::get().to(get_graph_history));
@@ -891,4 +944,159 @@ pub async fn get_graph_history(
         .collect();
 
     HttpResponse::Ok().json(history)
+}
+
+/// 获取 AST 上下文
+pub async fn get_ast_context(
+    state: web::Data<AppState>,
+    req: web::Json<AstContextRequest>,
+) -> impl Responder {
+    tracing::info!(
+        "[AST:get_ast_context] 获取AST上下文 - file_path: {}, line_range: {:?}",
+        req.file_path,
+        req.line_range
+    );
+
+    // 读取文件内容
+    let code_snippet = match std::fs::read_to_string(&req.file_path) {
+        Ok(content) => {
+            // 提取指定行范围
+            let lines: Vec<&str> = content.lines().collect();
+            let start = if let Some(&s) = req.line_range.first() { s - 1 } else { 0 };
+            let end = if let Some(&e) = req.line_range.get(1) { e } else { lines.len() };
+
+            if start >= lines.len() {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("Invalid line range: start {} exceeds file length {}", start + 1, lines.len())
+                }));
+            }
+
+            let actual_end = end.min(lines.len());
+            let range_lines = &lines[start..actual_end];
+            range_lines.join("\n")
+        }
+        Err(e) => {
+            tracing::error!("[AST:get_ast_context] 读取文件失败: {}", e);
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": format!("Failed to read file: {}", e)
+            }));
+        }
+    };
+
+    // 获取AST引擎
+    let engine = state.ast_engine.lock().await;
+
+    // 尝试从数据库加载索引（如果提供了project_id或project_path）
+    if let Some(project_id) = req.project_id {
+        if let Some(project_path) = &req.project_path {
+            match load_ast_index_from_db(&state, project_id, project_path).await {
+                Ok(Some(cache_data)) => {
+                    tracing::info!("[AST:get_ast_context] 从数据库加载了索引");
+                    engine.load_from_cache_data(cache_data);
+                }
+                Ok(None) => {
+                    tracing::info!("[AST:get_ast_context] 数据库中未找到索引，使用现有缓存");
+                }
+                Err(e) => {
+                    tracing::warn!("[AST:get_ast_context] 加载索引失败: {}", e);
+                }
+            }
+        }
+    }
+
+    // 查找函数名 - 通过搜索符号来确定
+    let start_line = if let Some(&s) = req.line_range.first() { s } else { 1 };
+    let function_name: Option<String> = None;  // 简化实现，暂不查找函数名
+
+    // 收集调用者 - 使用find_call_sites方法
+    let mut callers = Vec::new();
+    if req.include_callers {
+        // 由于没有具体的函数名，我们搜索文件中的所有函数符号
+        if let Ok(all_symbols) = engine.get_all_symbols() {
+            for symbol in all_symbols {
+                // 只查找同一文件中的函数符号
+                if symbol.file_path == req.file_path {
+                    // 使用matches!宏检查SymbolKind
+                    if matches!(symbol.kind, deepaudit_core::SymbolKind::Function) {
+                        // 尝试查找调用该函数的位置
+                        if let Ok(call_sites) = engine.find_call_sites(&symbol.name) {
+                            for site in call_sites {
+                                callers.push(CallerInfo {
+                                    file_path: site.file_path.clone(),
+                                    function_name: site.name.clone(),
+                                    line: site.line as usize,  // u32转usize
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 收集被调用者 - 由于没有具体的函数调用分析，简化为查找文件中的符号
+    let mut callees = Vec::new();
+    if req.include_callees {
+        // 查找文件中的函数符号作为潜在的被调用者
+        if let Ok(all_symbols) = engine.get_all_symbols() {
+            for symbol in all_symbols {
+                if symbol.file_path == req.file_path {
+                    if matches!(symbol.kind, deepaudit_core::SymbolKind::Function) {
+                        // 只添加在目标行之后的函数作为潜在的被调用者
+                        if symbol.line as usize >= start_line {
+                            callees.push(CalleeInfo {
+                                name: symbol.name.clone(),
+                                file_path: symbol.file_path.clone(),
+                                line: symbol.line as usize,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 获取指定行范围内的符号
+    let mut symbols = Vec::new();
+    let end_line = if let Some(&e) = req.line_range.get(1) { e } else { start_line };
+
+    if let Ok(all_symbols) = engine.get_all_symbols() {
+        for symbol in all_symbols {
+            if symbol.file_path == req.file_path {
+                let symbol_line = symbol.line as usize;
+                if symbol_line >= start_line && symbol_line <= end_line {
+                    symbols.push(ContextSymbol {
+                        name: symbol.name,
+                        kind: format!("{:?}", symbol.kind),
+                        line: symbol_line,
+                        column: 0,  // Symbol没有column字段，使用默认值0
+                    });
+                }
+            }
+        }
+    }
+
+    drop(engine);
+
+    let response = AstContextResponse {
+        file_path: req.file_path.clone(),
+        line_range: req.line_range.clone(),
+        context: AstContextData {
+            code_snippet,
+            function_name: function_name.clone(),
+            callers,
+            callees,
+            symbols,
+        },
+    };
+
+    tracing::info!(
+        "[AST:get_ast_context] 返回上下文 - 函数: {:?}, 调用者: {}, 被调用者: {}, 符号: {}",
+        function_name,
+        response.context.callers.len(),
+        response.context.callees.len(),
+        response.context.symbols.len()
+    );
+
+    HttpResponse::Ok().json(response)
 }

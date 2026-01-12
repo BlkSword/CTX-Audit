@@ -184,25 +184,31 @@ class SemgrepAdapter(ExternalToolAdapter):
         env["PYTHONIOENCODING"] = "utf-8"
         env["LANG"] = "en_US.UTF-8"
         env["LC_ALL"] = "en_US.UTF-8"
+        env["PYTHONUTF8"] = "1"  # 强制Python使用UTF-8
+        # 在Windows上，设置控制台代码页为UTF-8
+        if os.name == "nt":  # Windows系统
+            env["PYTHONLEGACYWINDOWSSTDIO"] = "0"  # 使用新的UTF-8stdio
+            # 使用chcp命令设置代码页为UTF-8 (65001)
+            cmd = ["cmd", "/c", "chcp", "65001", ">", "nul", "&&"] + cmd
 
-        # 执行命令
+        # 执行命令（使用bytes模式）
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout, stderr = await process.communicate()
+        stdout_bytes, stderr_bytes = await process.communicate()
 
         if process.returncode != 0:
             # Semgrep 返回非0可能是因为没有发现结果
-            if stderr:
+            if stderr_bytes:
                 # 使用 UTF-8 解码，忽略无法解码的字符
-                logger.warning(f"Semgrep 警告: {stderr.decode('utf-8', errors='ignore')}")
+                logger.warning(f"Semgrep 警告: {stderr_bytes.decode('utf-8', errors='ignore')}")
 
         # 解析结果
         try:
-            result = json.loads(stdout.decode('utf-8'))
+            result = json.loads(stdout_bytes.decode('utf-8', errors='ignore'))
             return self._parse_results(result)
         except json.JSONDecodeError:
             return []

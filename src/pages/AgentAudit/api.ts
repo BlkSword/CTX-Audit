@@ -45,25 +45,53 @@ async function apiRequest<T>(
 // ==================== 任务相关 ====================
 
 /**
+ * 后端状态响应格式
+ */
+interface BackendStatusResponse {
+  audit_id: string
+  status: string
+  progress?: {
+    current_stage?: string
+    percentage?: number
+    total_files?: number
+    indexed_files?: number
+    analyzed_files?: number
+    findings_detected?: number
+  }
+  stats?: {
+    files_scanned?: number
+    findings_detected?: number
+    verified_vulnerabilities?: number
+  }
+  agent_status?: {
+    orchestrator?: string
+    recon?: string
+    analysis?: string
+  }
+}
+
+/**
  * 获取审计任务详情
  */
 export async function getAuditTask(auditId: string): Promise<AgentTask> {
-  const data = await apiRequest<{ audit_id: string; status: string; progress?: any }>(
+  const data = await apiRequest<BackendStatusResponse>(
     `/api/audit/${auditId}/status`
   )
 
   // 转换后端格式到前端格式
+  // 注意：后端可能从 progress 或 stats 字段返回数据
   return {
     id: data.audit_id,
     project_id: '',
     audit_type: 'full',
     status: data.status as AgentTask['status'],
-    current_phase: data.progress?.current_stage,
+    current_phase: data.progress?.current_stage || data.status,
     progress_percentage: data.progress?.percentage || 0,
+    // 优先从 progress 获取，如果没有则从 stats 获取
     total_files: data.progress?.total_files || 0,
     indexed_files: data.progress?.indexed_files || 0,
-    analyzed_files: data.progress?.analyzed_files || 0,
-    findings_count: data.progress?.findings_detected || 0,
+    analyzed_files: data.progress?.analyzed_files || data.stats?.files_scanned || 0,
+    findings_count: data.progress?.findings_detected || data.stats?.findings_detected || 0,
     created_at: '',
     updated_at: '',
   }

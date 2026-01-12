@@ -25,6 +25,7 @@ import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
 import type { Rule } from '@/shared/types'
 
 type RuleFormData = Omit<Rule, 'enabled'>
@@ -98,7 +99,14 @@ export function RulesPage() {
   }
 
   const handleDelete = async (ruleId: string, ruleName: string) => {
-    if (!confirm(`确定要删除规则 "${ruleName}" 吗？此操作不可恢复！`)) return
+    const confirmed = await confirmDialog({
+      title: '删除规则',
+      description: `确定要删除规则 "${ruleName}" 吗？此操作不可恢复。`,
+      confirmText: '删除',
+      cancelText: '取消',
+      type: 'destructive',
+    })
+    if (!confirmed) return
 
     try {
       await deleteRule(ruleId)
@@ -163,10 +171,15 @@ export function RulesPage() {
   }
 
   return (
-    <div className="p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-end mb-6 gap-2">
+    <div className="h-full flex flex-col">
+      {/* Header */}
+      <div className="border-b border-border/40 px-6 py-4 flex items-center justify-between bg-muted/20 shrink-0">
+        <div className="flex items-center gap-3">
+          <Shield className="w-5 h-5 text-primary" />
+          <h2 className="text-lg font-semibold">规则管理</h2>
+        </div>
+
+        <div className="flex items-center gap-2">
           <Button onClick={loadData} disabled={isLoading} variant="outline" size="sm">
             {isLoading ? (
               <>
@@ -185,6 +198,11 @@ export function RulesPage() {
             新建规则
           </Button>
         </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 overflow-auto p-6 no-scrollbar">
+        <div className="max-w-7xl mx-auto">
 
         {error && (
           <div className="mb-4 p-4 bg-destructive/10 text-destructive rounded-lg">
@@ -455,39 +473,40 @@ export function RulesPage() {
             </Card>
           </div>
         </div>
+
+        {/* 新建规则对话框 */}
+        {isCreateDialogOpen && (
+          <RuleDialog
+            title="新建规则"
+            formData={formData}
+            setFormData={setFormData}
+            onSave={handleCreate}
+            onCancel={() => {
+              setIsCreateDialogOpen(false)
+              setFormData(emptyRule)
+            }}
+            isSaving={isSaving}
+          />
+        )}
+
+        {/* 编辑规则对话框 */}
+        {isEditDialogOpen && (
+          <RuleDialog
+            title="编辑规则"
+            formData={formData}
+            setFormData={setFormData}
+            onSave={handleUpdate}
+            onCancel={() => {
+              setIsEditDialogOpen(false)
+              setSelectedRuleState(null)
+              setFormData(emptyRule)
+            }}
+            isSaving={isSaving}
+            isEdit={true}
+          />
+        )}
+        </div>
       </div>
-
-      {/* 新建规则对话框 */}
-      {isCreateDialogOpen && (
-        <RuleDialog
-          title="新建规则"
-          formData={formData}
-          setFormData={setFormData}
-          onSave={handleCreate}
-          onCancel={() => {
-            setIsCreateDialogOpen(false)
-            setFormData(emptyRule)
-          }}
-          isSaving={isSaving}
-        />
-      )}
-
-      {/* 编辑规则对话框 */}
-      {isEditDialogOpen && (
-        <RuleDialog
-          title="编辑规则"
-          formData={formData}
-          setFormData={setFormData}
-          onSave={handleUpdate}
-          onCancel={() => {
-            setIsEditDialogOpen(false)
-            setSelectedRuleState(null)
-            setFormData(emptyRule)
-          }}
-          isSaving={isSaving}
-          isEdit={true}
-        />
-      )}
     </div>
   )
 }

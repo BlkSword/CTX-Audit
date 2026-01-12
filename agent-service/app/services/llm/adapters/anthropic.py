@@ -139,6 +139,103 @@ class AnthropicAdapter(BaseLLMAdapter):
             logger.error(f"Anthropic 流式 API 调用失败: {e}")
             raise
 
+    async def generate_stream_with_tools(
+        self,
+        messages: List[LLMMessage],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        """
+        流式生成文本（支持工具调用）
+
+        返回包含 content 和累积的 tool_calls 的流式块
+        当工具调用完成时，最终的块将包含完整的 tool_calls
+
+        Yields:
+            LLMStreamChunk: 每个 token 块，可能包含:
+                - content: 文本内容
+                - tool_calls: 累积的工具调用（如果有）
+                - is_complete: 是否完成
+        """
+        # 分离系统消息
+        system_message = ""
+        user_messages = []
+
+        for msg in messages:
+            if msg.role == "system":
+                system_message = msg.content
+            else:
+                user_messages.append({
+                    "role": msg.role,
+                    "content": msg.content,
+                })
+
+        request_params = {
+            "model": self.model,
+            "messages": user_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        if system_message:
+            request_params["system"] = system_message
+
+        if tools:
+            request_params["tools"] = self._convert_tools(tools)
+
+        collected_tool_calls = []
+        current_content = ""
+
+        try:
+            # 使用原始的 stream API 来获取事件流
+            async with self.client.messages.stream(**request_params) as stream:
+                async for event in stream:
+                    if event.type == "content_block_start":
+                        # 新的内容块开始
+                        if event.content_block.type == "tool_use":
+                            # 工具使用块开始
+                            tool_call = {
+                                "id": event.content_block.id,
+                                "type": "function",
+                                "function": {
+                                    "name": event.content_block.name,
+                                    "arguments": "",
+                                }
+                            }
+                            collected_tool_calls.append(tool_call)
+
+                    elif event.type == "content_block_delta":
+                        # 内容增量
+                        if event.delta.type == "text_delta":
+                            # 文本增量
+                            text = event.delta.text
+                            current_content += text
+                            yield LLMStreamChunk(
+                                content=text,
+                                tool_calls=None,
+                                is_complete=False
+                            )
+                        elif event.delta.type == "input_json_delta":
+                            # 工具参数增量
+                            if collected_tool_calls:
+                                # 更新最后一个工具调用的参数
+                                last_tool = collected_tool_calls[-1]
+                                last_tool["function"]["arguments"] += event.delta.partial_json
+
+                    elif event.type == "message_stop":
+                        # 消息完成
+                        # 返回最终状态，包含所有工具调用
+                        yield LLMStreamChunk(
+                            content="",
+                            tool_calls=collected_tool_calls if collected_tool_calls else None,
+                            is_complete=True
+                        )
+
+        except Exception as e:
+            logger.error(f"Anthropic 流式工具调用失败: {e}")
+            raise
+
     def _convert_tools(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """转换工具格式为 Anthropic 格式"""
         anthropic_tools = []

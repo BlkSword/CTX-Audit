@@ -258,33 +258,65 @@ class GetASTContextTool(MCPTool):
 
             self.think(f"获取 {file_path}:{line_number} 的AST上下文")
 
+            # 从上下文获取项目信息
+            project_id = self.context.get("project_id")
+            project_path = self.context.get("project_path")
+
             line_range = [line_number - 5, line_number + 5]
             ast_context = await rust_client.get_ast_context(
                 file_path=file_path,
                 line_range=line_range,
                 include_callers=include_callers,
                 include_callees=include_callees,
+                project_id=project_id,
+                project_path=project_path,
             )
+
+            # 检查是否有错误
+            if "error" in ast_context:
+                self.log(f"获取AST上下文失败: {ast_context['error']}")
+                return ToolResult.error(
+                    f"获取AST上下文失败: {ast_context['error']}",
+                    ToolErrorCode.INTERNAL_ERROR
+                )
 
             # 格式化上下文信息
             context_text = [f"AST上下文: {file_path}:{line_number}"]
 
-            if "function" in ast_context:
-                context_text.append(f"所属函数: {ast_context['function']}")
+            # 新API返回格式
+            if "context" in ast_context:
+                ctx_data = ast_context["context"]
 
-            if include_callers and "callers" in ast_context:
-                callers = ast_context["callers"]
-                if callers:
-                    context_text.append(f"被以下位置调用 ({len(callers)}个):")
-                    for caller in callers[:5]:
-                        context_text.append(f"  - {caller}")
+                if "function_name" in ctx_data and ctx_data["function_name"]:
+                    context_text.append(f"所属函数: {ctx_data['function_name']}")
 
-            if include_callees and "callees" in ast_context:
-                callees = ast_context["callees"]
-                if callees:
-                    context_text.append(f"调用了以下函数 ({len(callees)}个):")
-                    for callee in callees[:5]:
-                        context_text.append(f"  - {callee}")
+                if "code_snippet" in ctx_data:
+                    snippet = ctx_data["code_snippet"]
+                    if snippet:
+                        # 只显示前500个字符
+                        preview = snippet[:500] + "..." if len(snippet) > 500 else snippet
+                        context_text.append(f"代码片段:\n{preview}")
+
+                if include_callers and "callers" in ctx_data:
+                    callers = ctx_data["callers"]
+                    if callers:
+                        context_text.append(f"被以下位置调用 ({len(callers)}个):")
+                        for caller in callers[:5]:
+                            context_text.append(f"  - {caller.get('function_name', '?')} ({caller.get('file_path', '?')}:{caller.get('line', '?')})")
+
+                if include_callees and "callees" in ctx_data:
+                    callees = ctx_data["callees"]
+                    if callees:
+                        context_text.append(f"调用了以下函数 ({len(callees)}个):")
+                        for callee in callees[:5]:
+                            context_text.append(f"  - {callee.get('name', '?')} ({callee.get('file_path', '?')}:{callee.get('line', '?')})")
+
+                if "symbols" in ctx_data:
+                    symbols = ctx_data["symbols"]
+                    if symbols:
+                        context_text.append(f"附近符号 ({len(symbols)}个):")
+                        for symbol in symbols[:10]:
+                            context_text.append(f"  - {symbol.get('name', '?')} ({symbol.get('kind', '?')}):{symbol.get('line', '?')}")
 
             return ToolResult.json(
                 data=ast_context,
@@ -1165,22 +1197,45 @@ class FinishAnalysisTool(MCPTool):
     完成分析工具
 
     标记分析任务完成，生成总结
+
+    ⚠️ 重要：必须对所有扫描结果调用 report_finding 或 mark_false_positive 后才能调用此工具！
     """
 
     name = "finish_analysis"
     description = """
 完成分析任务，生成分析总结。
 
+**⚠️ 重要前提条件：**
+- 必须对所有扫描结果调用了 `report_finding` 或 `mark_false_positive`
+- 不能有任何未处理的扫描结果
+- 如果还有未处理的结果，此工具将返回错误
+
 **用途:**
 - 标记分析任务完成
 - 提供分析总结
 - 触发后续流程
 
+**参数:**
+- summary: 分析总结（必填）
+- recommendations: 修复建议列表（可选）
+
 **示例:**
 ```json
 {
-  "summary": "共分析了50个扫描结果，确认5个高危漏洞，3个误报"
+  "summary": "共分析了20个扫描结果，确认5个高危漏洞，标记15个误报",
+  "recommendations": [
+    "建议1: 修复SQL注入漏洞",
+    "建议2: 添加输入验证"
+  ]
 }
+```
+
+**错误示例（将被拒绝）:**
+```json
+{
+  "summary": "未完成分析就调用finish"
+}
+// 如果还有未处理的扫描结果，将返回错误！
 ```
     """
 
@@ -1204,6 +1259,21 @@ class FinishAnalysisTool(MCPTool):
         try:
             findings = self.context.get("_confirmed_findings", [])
             false_positives = self.context.get("_false_positives", [])
+            total_scan_results = self.context.get("_total_scan_results", 0)
+
+            # 验证是否所有扫描结果都被处理了
+            processed_count = len(findings) + len(false_positives)
+
+            if total_scan_results > 0 and processed_count < total_scan_results:
+                remaining = total_scan_results - processed_count
+                self.log(f"警告: 还有 {remaining} 个扫描结果未处理！")
+
+                return ToolResult.error(
+                    f"不能完成分析！还有 {remaining} 个扫描结果未处理。\n"
+                    f"已处理: {processed_count}/{total_scan_results}\n"
+                    f"你必须对每个扫描结果调用 `report_finding` 或 `mark_false_positive` 后才能完成分析。",
+                    ToolErrorCode.PERMISSION_DENIED
+                )
 
             self.context["_analysis_summary"] = summary
             if recommendations:
@@ -1215,13 +1285,15 @@ class FinishAnalysisTool(MCPTool):
                 "summary": summary,
                 "confirmed_findings": len(findings),
                 "false_positives": len(false_positives),
+                "total_processed": processed_count,
+                "total_scan_results": total_scan_results,
             }
 
             if recommendations:
                 result_data["recommendations"] = recommendations
 
             return ToolResult.success(
-                text=f"分析完成指令已接收\n{summary}",
+                text=f"分析完成。共处理 {processed_count} 个扫描结果，发现 {len(findings)} 个漏洞，标记 {len(false_positives)} 个误报。\n{summary}",
                 data=result_data
             )
 
@@ -1230,11 +1302,510 @@ class FinishAnalysisTool(MCPTool):
             return ToolResult.error(f"完成分析失败: {str(e)}", ToolErrorCode.INTERNAL_ERROR)
 
 
+# ==================== 外部安全扫描工具 ====================
+
+class SemgrepScanTool(MCPTool):
+    """
+    Semgrep 静态代码分析工具
+
+    使用 Semgrep 进行多语言安全扫描，检测常见漏洞模式。
+    """
+
+    name = "semgrep_scan"
+    description = """
+使用 Semgrep 进行静态代码安全分析。
+
+**⭐ 外部专业工具 - 优先级最高！**
+
+Semgrep 是业界领先的静态分析工具，支持30+编程语言，具有：
+- 经过验证的专业规则库
+- 更低的误报率
+- 更全面的漏洞检测能力
+
+**用途:**
+- 检测 SQL 注入、命令注入、XSS 等漏洞
+- 发现不安全的代码模式
+- 支持自定义规则
+
+**何时使用:**
+- ⭐ 每次分析必用，优先于内置工具
+
+**示例:**
+```json
+{"target_path": ".", "rules": "auto"}
+```
+
+**返回格式:**
+```json
+{
+  "content": [
+    {"type": "text", "text": "发现 15 个安全问题"},
+    {"type": "json", "json": {"findings": [...]}}
+  ]
+}
+```
+    """
+
+    parameters = [
+        ToolParameter(
+            name="target_path",
+            type="string",
+            description="扫描目标路径，默认为项目根目录",
+            required=False,
+            default="."
+        ),
+        ToolParameter(
+            name="rules",
+            type="string",
+            description="规则配置：auto=自动选择，p/security-audit=安全审计规则",
+            required=False,
+            default="auto"
+        ),
+        ToolParameter(
+            name="severity",
+            type="string",
+            description="最低严重程度: ERROR, WARNING, INFO",
+            required=False,
+            enum=["ERROR", "WARNING", "INFO"],
+            default="WARNING"
+        ),
+    ]
+
+    async def execute(
+        self,
+        target_path: str = ".",
+        rules: str = "auto",
+        severity: str = "WARNING"
+    ) -> ToolResult:
+        try:
+            from app.services.external_tools import SemgrepAdapter
+
+            project_path = self.context.get("project_path", ".")
+
+            self.think(f"使用 Semgrep 扫描: {target_path}")
+
+            # 使用 Semgrep 适配器
+            adapter = SemgrepAdapter(project_path)
+            result = await adapter.run(
+                target=target_path,
+                rules=rules,
+                severity=severity
+            )
+
+            if not result.success:
+                # Docker 不可用或工具未安装
+                if "不可用" in (result.error or ""):
+                    return ToolResult.error(
+                        f"Semgrep 不可用: {result.error}\n"
+                        f"请安装: {adapter.tool_info.install_cmd}\n"
+                        f"或者使用内置的 pattern_match 工具作为备选。",
+                        ToolErrorCode.PERMISSION_DENIED
+                    )
+                return ToolResult.error(result.error or "Semgrep 扫描失败", ToolErrorCode.INTERNAL_ERROR)
+
+            # 格式化结果
+            findings = result.findings
+            lines = [
+                f"Semgrep 扫描完成: {target_path}",
+                f"发现 {len(findings)} 个问题",
+                f"执行时间: {result.execution_time:.2f}秒"
+            ]
+
+            if findings:
+                lines.append("\n问题列表:")
+                for i, finding in enumerate(findings[:20], 1):
+                    lines.append(f"\n{i}. **{finding.get('check_id', 'unknown')}**")
+                    lines.append(f"   文件: {finding.get('file', 'unknown')}:{finding.get('line', '?')}")
+                    lines.append(f"   严重性: {finding.get('severity', 'unknown')}")
+                    message = finding.get('extra', {}).get('message', '')
+                    if message:
+                        lines.append(f"   描述: {message[:100]}")
+
+                if len(findings) > 20:
+                    lines.append(f"\n... 还有 {len(findings) - 20} 个问题")
+
+            return ToolResult.json(
+                data={
+                    "tool": "semgrep",
+                    "target_path": target_path,
+                    "findings": findings,
+                    "count": len(findings),
+                    "execution_time": result.execution_time
+                },
+                description="\n".join(lines)
+            )
+
+        except ImportError:
+            return ToolResult.error(
+                "Semgrep 适配器未找到，请检查 app/services/external_tools.py",
+                ToolErrorCode.INTERNAL_ERROR
+            )
+        except Exception as e:
+            self.log(f"Semgrep 扫描失败: {str(e)}")
+            return ToolResult.error(f"Semgrep 扫描失败: {str(e)}", ToolErrorCode.INTERNAL_ERROR)
+
+
+class BanditScanTool(MCPTool):
+    """
+    Bandit Python 安全扫描工具
+
+    专门用于 Python 代码的安全扫描。
+    """
+
+    name = "bandit_scan"
+    description = """
+使用 Bandit 进行 Python 代码安全扫描。
+
+**⭐ 外部专业工具 - Python 项目必用！**
+
+Bandit 是专门针对 Python 的安全分析工具，可以发现：
+- 硬编码密钥和密码
+- 不安全的函数使用
+- YAML 反序列化漏洞
+- SQL 注入风险
+
+**用途:**
+- Python 项目必用
+- 检测 Python 特定漏洞
+
+**何时使用:**
+- ⭐ Python 项目每次分析必用
+
+**示例:**
+```json
+{"target_path": ".", "severity": "medium"}
+```
+
+**返回格式:**
+```json
+{
+  "content": [
+    {"type": "text", "text": "发现 8 个安全问题"},
+    {"type": "json", "json": {"findings": [...]}}
+  ]
+}
+```
+    """
+
+    parameters = [
+        ToolParameter(
+            name="target_path",
+            type="string",
+            description="扫描目标路径",
+            required=False,
+            default="."
+        ),
+        ToolParameter(
+            name="severity",
+            type="string",
+            description="最低严重程度: low, medium, high",
+            required=False,
+            enum=["low", "medium", "high"],
+            default="medium"
+        ),
+    ]
+
+    async def execute(
+        self,
+        target_path: str = ".",
+        severity: str = "medium"
+    ) -> ToolResult:
+        try:
+            from app.services.external_tools import BanditAdapter
+
+            project_path = self.context.get("project_path", ".")
+
+            self.think(f"使用 Bandit 扫描 Python 代码: {target_path}")
+
+            adapter = BanditAdapter(project_path)
+            result = await adapter.run(
+                target=target_path,
+                severity=severity
+            )
+
+            if not result.success:
+                if "不可用" in (result.error or ""):
+                    return ToolResult.error(
+                        f"Bandit 不可用: {result.error}\n"
+                        f"请安装: pip install bandit",
+                        ToolErrorCode.PERMISSION_DENIED
+                    )
+                return ToolResult.error(result.error or "Bandit 扫描失败", ToolErrorCode.INTERNAL_ERROR)
+
+            findings = result.findings
+            lines = [
+                f"Bandit 扫描完成: {target_path}",
+                f"发现 {len(findings)} 个问题",
+                f"执行时间: {result.execution_time:.2f}秒"
+            ]
+
+            if findings:
+                lines.append("\n问题列表:")
+                for i, finding in enumerate(findings[:20], 1):
+                    lines.append(f"\n{i}. **{finding.get('test_id', 'unknown')}**")
+                    lines.append(f"   文件: {finding.get('filename', 'unknown')}:{finding.get('line_number', '?')}")
+                    lines.append(f"   严重性: {finding.get('issue_severity', 'unknown')}")
+                    lines.append(f"   置信度: {finding.get('issue_confidence', 'unknown')}")
+
+                    issue_text = finding.get('issue_text', '')
+                    if issue_text:
+                        lines.append(f"   问题: {issue_text[:100]}")
+
+                if len(findings) > 20:
+                    lines.append(f"\n... 还有 {len(findings) - 20} 个问题")
+
+            return ToolResult.json(
+                data={
+                    "tool": "bandit",
+                    "target_path": target_path,
+                    "findings": findings,
+                    "count": len(findings),
+                    "execution_time": result.execution_time
+                },
+                description="\n".join(lines)
+            )
+
+        except ImportError:
+            return ToolResult.error(
+                "Bandit 适配器未找到",
+                ToolErrorCode.INTERNAL_ERROR
+            )
+        except Exception as e:
+            self.log(f"Bandit 扫描失败: {str(e)}")
+            return ToolResult.error(f"Bandit 扫描失败: {str(e)}", ToolErrorCode.INTERNAL_ERROR)
+
+
+class GitleaksScanTool(MCPTool):
+    """
+    Gitleaks 密钥泄露检测工具
+
+    检测代码中的硬编码密钥、密码等敏感信息。
+    """
+
+    name = "gitleaks_scan"
+    description = """
+使用 Gitleaks 检测敏感信息泄露。
+
+**⭐ 外部专业工具 - 每次扫描必用！**
+
+Gitleaks 可以发现：
+- API 密钥和令牌
+- 数据库密码
+- 私钥和证书
+- OAuth 凭证
+
+**用途:**
+- 检测硬编码密钥
+- 发现敏感信息泄露
+
+**何时使用:**
+- ⭐ 每次分析必用
+
+**示例:**
+```json
+{"target_path": "."}
+```
+    """
+
+    parameters = [
+        ToolParameter(
+            name="target_path",
+            type="string",
+            description="扫描目标路径",
+            required=False,
+            default="."
+        ),
+    ]
+
+    async def execute(self, target_path: str = ".") -> ToolResult:
+        try:
+            from app.services.external_tools import GitleaksAdapter
+
+            project_path = self.context.get("project_path", ".")
+
+            self.think(f"使用 Gitleaks 扫描敏感信息: {target_path}")
+
+            adapter = GitleaksAdapter(project_path)
+            result = await adapter.run(target=target_path)
+
+            if not result.success:
+                if "不可用" in (result.error or ""):
+                    return ToolResult.error(
+                        f"Gitleaks 不可用: {result.error}\n"
+                        f"请安装: https://github.com/gitleaks/gitleaks/releases",
+                        ToolErrorCode.PERMISSION_DENIED
+                    )
+                return ToolResult.error(result.error or "Gitleaks 扫描失败", ToolErrorCode.INTERNAL_ERROR)
+
+            findings = result.findings
+            lines = [
+                f"Gitleaks 扫描完成: {target_path}",
+                f"发现 {len(findings)} 个敏感信息泄露",
+                f"执行时间: {result.execution_time:.2f}秒"
+            ]
+
+            if findings:
+                lines.append("\n敏感信息列表:")
+                for i, finding in enumerate(findings[:20], 1):
+                    lines.append(f"\n{i}. **{finding.get('rule', 'unknown')}**")
+                    lines.append(f"   文件: {finding.get('file', 'unknown')}:{finding.get('line', '?')}")
+                    lines.append(f"   严重性: {finding.get('severity', 'unknown')}")
+
+                    # 隐藏实际的敏感信息
+                    lines.append(f"   指纹: {finding.get('fingerprint', 'unknown')[:20]}...")
+
+                if len(findings) > 20:
+                    lines.append(f"\n... 还有 {len(findings) - 20} 个")
+
+            return ToolResult.json(
+                data={
+                    "tool": "gitleaks",
+                    "target_path": target_path,
+                    "findings": findings,
+                    "count": len(findings),
+                    "execution_time": result.execution_time
+                },
+                description="\n".join(lines)
+            )
+
+        except ImportError:
+            return ToolResult.error(
+                "Gitleaks 适配器未找到",
+                ToolErrorCode.INTERNAL_ERROR
+            )
+        except Exception as e:
+            self.log(f"Gitleaks 扫描失败: {str(e)}")
+            return ToolResult.error(f"Gitleaks 扫描失败: {str(e)}", ToolErrorCode.INTERNAL_ERROR)
+
+
+class PatternMatchTool(MCPTool):
+    """
+    模式匹配工具（内置备选）
+
+    当外部工具不可用时的备选方案。
+    """
+
+    name = "pattern_match"
+    description = """
+使用正则表达式模式匹配检测潜在漏洞（内置工具）。
+
+**⚠️ 注意：这是内置工具，误报率较高！**
+**强烈建议优先使用外部工具：semgrep_scan, bandit_scan**
+
+**用途:**
+- 外部工具不可用时的备选
+- 快速检测已知危险模式
+
+**支持的漏洞类型:**
+- sql_injection: SQL 注入
+- command_injection: 命令注入
+- xss: XSS 漏洞
+- path_traversal: 路径遍历
+- hardcoded_secrets: 硬编码密钥
+
+**示例:**
+```json
+{"scan_file": "app.py", "pattern_types": ["sql_injection", "xss"]}
+```
+    """
+
+    parameters = [
+        ToolParameter(
+            name="scan_file",
+            type="string",
+            description="要扫描的文件路径",
+            required=True
+        ),
+        ToolParameter(
+            name="pattern_types",
+            type="array",
+            description="漏洞类型列表",
+            required=False,
+            items={"type": "string"},
+            default=["sql_injection", "command_injection", "xss"]
+        ),
+    ]
+
+    async def execute(self, scan_file: str, pattern_types: Optional[list] = None) -> ToolResult:
+        try:
+            from app.services.rust_client import rust_client
+            from app.core.dataflow_analysis import TaintAnalyzer
+
+            if pattern_types is None:
+                pattern_types = ["sql_injection", "command_injection", "xss"]
+
+            self.think(f"使用模式匹配扫描: {scan_file}")
+
+            # 读取文件内容
+            content = await rust_client.read_file(scan_file)
+            if not content:
+                return ToolResult.error(f"无法读取文件: {scan_file}", ToolErrorCode.NOT_FOUND)
+
+            # 使用污点分析器检测
+            analyzer = TaintAnalyzer()
+            vulnerabilities = analyzer.analyze_file(scan_file, content)
+
+            # 过滤漏洞类型
+            type_mapping = {
+                "sql_injection": "SQL Injection",
+                "command_injection": "Command Injection",
+                "xss": "Cross-Site Scripting",
+                "path_traversal": "Path Traversal",
+                "hardcoded_secrets": "Hardcoded Secrets"
+            }
+
+            filtered = []
+            for vuln in vulnerabilities:
+                for pt in pattern_types:
+                    if pt.lower() in vuln.vuln_type.lower():
+                        filtered.append(vuln)
+                        break
+
+            lines = [
+                f"模式匹配扫描完成: {scan_file}",
+                f"发现 {len(filtered)} 个潜在问题",
+                f"使用的模式: {', '.join(pattern_types)}"
+            ]
+
+            if filtered:
+                lines.append("\n问题列表:")
+                for i, vuln in enumerate(filtered[:10], 1):
+                    lines.append(f"\n{i}. **{vuln.vuln_type}**")
+                    lines.append(f"   位置: {vuln.path.source_location[0]}:{vuln.path.source_location[1]}")
+                    lines.append(f"   严重性: {vuln.severity}")
+                    lines.append(f"   描述: {vuln.description[:100]}")
+
+            return ToolResult.json(
+                data={
+                    "tool": "pattern_match",
+                    "file": scan_file,
+                    "findings": [
+                        {
+                            "type": v.vuln_type,
+                            "severity": v.severity,
+                            "description": v.description,
+                            "source": v.source_location,
+                            "sink": v.sink_location,
+                            "confidence": v.path.confidence
+                        }
+                        for v in filtered
+                    ],
+                    "count": len(filtered)
+                },
+                description="\n".join(lines)
+            )
+
+        except Exception as e:
+            self.log(f"模式匹配失败: {str(e)}")
+            return ToolResult.error(f"模式匹配失败: {str(e)}", ToolErrorCode.INTERNAL_ERROR)
+
+
 # ==================== 注册所有工具 ====================
 
 def register_all_tools():
     """注册所有MCP工具到全局注册表"""
     tools = [
+        # 内部代码分析工具
         ReadFileTool,
         ListFilesTool,
         GetASTContextTool,
@@ -1242,8 +1813,16 @@ def register_all_tools():
         SearchSymbolTool,
         GetCallGraphTool,
         GetKnowledgeGraphTool,
+        # RAG 工具
         SearchSimilarCodeTool,
         SearchVulnerabilityPatternsTool,
+        # 外部安全扫描工具 ⭐ 新增！
+        SemgrepScanTool,
+        BanditScanTool,
+        GitleaksScanTool,
+        # 内置模式匹配工具（备选）
+        PatternMatchTool,
+        # 报告工具
         ReportFindingTool,
         MarkFalsePositiveTool,
         FinishAnalysisTool,

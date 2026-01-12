@@ -693,13 +693,53 @@ async def _execute_audit(
             "config": config,
         }
 
-        # TODO: 执行完整的审计流程
-        # 1. Recon Agent
-        # 2. Scanner (Rust backend)
-        # 3. Analysis Agent
-        # 4. Verification Agent (可选)
+        # ========== 构建AST索引（必须在Agent执行前完成）==========
+        if project_path:
+            try:
+                # 尝试将project_id转换为整数
+                project_id_int = None
+                try:
+                    project_id_int = int(project_id)
+                except (ValueError, TypeError):
+                    logger.warning(f"无法转换project_id为整数: {project_id}")
 
-        # 简化版本：只调用 Orchestrator
+                logger.info(f"[Audit] 开始构建AST索引 - project_path={project_path}, project_id={project_id_int}")
+                index_result = await rust_client.build_ast_index(
+                    project_path=project_path,
+                    project_id=project_id_int,
+                )
+                files_processed = index_result.get("files_processed", 0)
+                logger.info(f"[Audit] AST索引构建完成 - 处理了 {files_processed} 个文件")
+
+                # 发布索引构建完成事件
+                await event_bus.publish(
+                    audit_id=audit_id,
+                    agent_type="system",
+                    event_type="status",
+                    data={"status": "indexing", "message": f"AST索引构建完成，处理了 {files_processed} 个文件"},
+                    message=f"AST索引构建完成，处理了 {files_processed} 个文件",
+                )
+            except Exception as e:
+                logger.error(f"[Audit] AST索引构建失败: {e}")
+                # 索引构建失败不阻断审计流程，但会记录警告
+                await event_bus.publish(
+                    audit_id=audit_id,
+                    agent_type="system",
+                    event_type="warning",
+                    data={"warning": "AST索引构建失败，检索功能可能不可用", "error": str(e)},
+                    message=f"警告: AST索引构建失败 ({str(e)})，检索功能可能不可用",
+                )
+        else:
+            logger.warning("[Audit] 项目路径为空，跳过AST索引构建")
+
+        # ========== 执行Agent审计流程 ==========
+        # 完整流程：
+        # 1. Recon Agent - 信息收集
+        # 2. Scanner (Rust backend) - 规则扫描
+        # 3. Analysis Agent - 深度分析
+        # 4. Verification Agent - 漏洞验证（可选）
+
+        # 使用Orchestrator Agent进行编排
         orchestrator = OrchestratorAgent(config=config)
         result = await orchestrator.run(context)
 

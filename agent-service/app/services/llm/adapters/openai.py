@@ -135,3 +135,39 @@ class OpenAIAdapter(BaseLLMAdapter):
         except Exception as e:
             logger.error(f"OpenAI 流式 API 调用失败: {e}")
             raise
+
+    async def generate_stream_with_tools(
+        self,
+        messages: List[LLMMessage],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        """
+        流式生成文本（支持工具调用）
+
+        注意: OpenAI 适配器的工具流式支持为简化版本，
+        使用完整响应后模拟流式输出。
+        """
+        # 先调用完整版本获取结果
+        response = await self.generate(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+        )
+
+        # 模拟流式输出内容
+        if response.content:
+            # 按字符分块输出
+            chunk_size = 10
+            for i in range(0, len(response.content), chunk_size):
+                chunk = response.content[i:i + chunk_size]
+                yield LLMStreamChunk(content=chunk, is_complete=False)
+
+        # 返回工具调用和完成标记
+        yield LLMStreamChunk(
+            content="",
+            tool_calls=response.tool_calls,
+            is_complete=True
+        )
