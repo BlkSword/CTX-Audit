@@ -100,17 +100,17 @@ class VerificationAgent(BaseAgent):
         verified = []
 
         for finding in findings:
-            # 跳过低危和信息级别的漏洞
+            # 跳过信息级别的漏洞，但保留低危（为了更全面的覆盖）
             severity = finding.get("severity", "info").lower()
-            if severity in ["low", "info"]:
-                self.think(f"跳过低危漏洞: {finding.get('title', 'Unknown')}")
+            if severity == "info":
+                self.think(f"跳过 Info 级别发现: {finding.get('title', 'Unknown')}")
                 continue
 
-            # 只验证高置信度的发现
-            confidence = finding.get("confidence", 0.5)
-            if confidence < 0.6:
-                self.think(f"跳过低置信度 ({confidence}) 的发现: {finding.get('title')}")
-                continue
+            # 放宽置信度要求，避免漏报
+            # confidence = finding.get("confidence", 0.5)
+            # if confidence < 0.6:
+            #     self.think(f"跳过低置信度 ({confidence}) 的发现: {finding.get('title')}")
+            #     continue
 
             result = await self._verify_finding(finding)
             verified.append(result)
@@ -228,30 +228,14 @@ class VerificationAgent(BaseAgent):
         output = execution_result.get("output", "")
 
         # 构建分析提示词
-        analysis_prompt = f"""
-请分析以下 PoC 执行结果，判断是否确认漏洞存在：
+        finding_with_lang = finding.copy()
+        finding_with_lang['language'] = self._detect_language(finding.get('file_path', ''))
 
-**漏洞类型**: {finding.get('vulnerability_type', finding.get('type', 'unknown'))}
-**PoC 代码**:
-```{self._detect_language(finding.get('file_path', ''))}
-{poc_code}
-```
-
-**执行结果**:
-- 退出码: {exit_code}
-- 输出:
-```
-{output[:1000]}
-```
-
-请分析并返回 JSON 格式：
-{{
-  "verified": true/false,
-  "confidence": 0.0-1.0,
-  "reasoning": "分析理由",
-  "evidence": "证据描述"
-}}
-"""
+        analysis_prompt = await prompt_builder.build_poc_analysis_prompt(
+            finding=finding_with_lang,
+            poc_code=poc_code,
+            execution_result=execution_result
+        )
 
         try:
             response = await self.llm.generate(

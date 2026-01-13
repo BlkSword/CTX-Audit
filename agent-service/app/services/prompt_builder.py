@@ -293,21 +293,54 @@ Action Input: {...}
 
 **禁止基于推测报告漏洞！**
 
-### 5. 思考过程展示要求
-**每次调用工具前，先说明：**
-- 当前状态分析
-- 为什么选择这个工具
-- 期望得到什么结果
+### 5. 思考过程展示要求 ⚡⚡⚡
+**每次调用工具前，必须严格遵循 [认知与推理协议]：**
+- **必须**展示攻击者视角的分析
+- **必须**明确当前的假设和验证计划
+- **必须**在 Thought 中包含 "Observation", "Hypothesis", "Verification", "Conclusion" 四个维度的思考
+- **禁止**省略推理过程直接跳转到 Action
 
 **示例：**
 ```
-Thought: 当前已获得扫描结果，发现3个潜在SQL注入问题。我需要查看第一个问题的完整代码上下文来验证是否为真实漏洞。
+Thought: 
+[Observation] Semgrep 报告在 db.py 第 45 行存在 SQL 注入风险。
+[Hypothesis] 代码可能直接使用了字符串拼接构建 SQL 查询，允许攻击者注入恶意 SQL 命令。
+[Verification] 我需要读取该文件的上下文，检查 user_id 变量的来源以及是否使用了参数化查询。
+[Conclusion] 下一步动作是读取文件内容。
+
 Action: read_file
-Action Input: {"file_path": "src/db.py", "line_range": [120, 150]}
+Action Input: {"file_path": "src/db.py", "line_range": [40, 60]}
 ```
 """
 
-# ==================== 新增：显式 ReAct 格式 ====================
+COGNITIVE_PROCESS_GUIDE = """
+## 🧠 认知与推理协议 (Cognitive Process)
+
+### 1. 攻击者思维 (Attacker Mindset)
+在分析代码时，必须始终保持"攻击者"视角：
+- **入口点分析**：用户的输入从哪里进入系统？(HTTP参数, API调用, 文件上传)
+- **信任边界**：数据何时跨越信任边界？是否有验证？
+- **假设最坏情况**：假设所有输入都是恶意的，所有未明确过滤的数据都是污点。
+
+### 2. 推理链 (Chain of Thought)
+在 `Thought` 块中，必须展示完整的逻辑推演过程，不仅仅是简单的下一步计划：
+- **观察 (Observation)**：我看到了什么代码/结果？
+- **假设 (Hypothesis)**：这可能意味着什么漏洞？(例如："这里直接拼接了字符串，可能存在SQL注入")
+- **验证计划 (Verification)**：我需要查什么来证实这个假设？(例如："需要查看 `query` 函数的定义确认是否支持参数化")
+- **结论 (Conclusion)**：基于证据的最终判断。
+
+### 3. 深度分析循环 (Deep Analysis Loop)
+不要满足于表面的扫描结果。对于每个潜在发现：
+1. **追踪数据流**：Source -> Propagation -> Sink
+2. **检查过滤逻辑**：中间是否有 `sanitize`, `validate`, `encode` 操作？这些操作是否有效？
+3. **寻找绕过方式**：是否存在特殊的编码、截断或逻辑漏洞可以绕过防御？
+
+### 4. 自我修正 (Self-Correction)
+在做出判断前，问自己：
+- 这个函数在其他地方是否被安全地封装了？
+- 是否存在全局的异常处理或输入清洗中间件？
+- 我是否误解了框架的默认行为？
+"""
 
 REACT_FORMAT_GUIDE = """
 ## ReAct 格式（思考-行动-观察）
@@ -525,6 +558,10 @@ class PromptBuilder:
         if include_strict_constraints:
             sections.append("\n\n")
             sections.append(STRICT_CONSTRAINTS)
+            
+            # 添加认知与推理协议 (配合严格约束使用)
+            sections.append("\n\n")
+            sections.append(COGNITIVE_PROCESS_GUIDE)
 
         # 3. 添加 ReAct 格式指南（新增 - 第二优先级）
         if include_react_format:
@@ -681,6 +718,12 @@ class PromptBuilder:
             if knowledge_modules:
                 knowledge = await self.knowledge.load_modules(knowledge_modules)
                 prompt += f"\n\n## 相关漏洞知识\n{knowledge}"
+
+        # 添加认知与推理协议
+        prompt += "\n\n" + COGNITIVE_PROCESS_GUIDE
+        
+        # 添加 ReAct 格式指南
+        prompt += "\n\n" + REACT_FORMAT_GUIDE
 
         return prompt
 
@@ -842,7 +885,76 @@ Action Input: {{
         sections.append("\n\n")
         sections.append(self._format_finding(finding))
 
+        # 添加认知与推理协议 (重点是攻击者思维)
+        sections.append("\n\n")
+        sections.append(COGNITIVE_PROCESS_GUIDE)
+
         return "".join(sections)
+
+    async def build_poc_analysis_prompt(
+        self,
+        finding: Dict[str, Any],
+        poc_code: str,
+        execution_result: Dict[str, Any],
+    ) -> str:
+        """
+        构建 PoC 分析提示词
+        
+        Args:
+            finding: 漏洞信息
+            poc_code: PoC 代码
+            execution_result: 执行结果
+            
+        Returns:
+            分析提示词
+        """
+        exit_code = execution_result.get("exit_code", -1)
+        output = execution_result.get("output", "")
+        vuln_type = finding.get('vulnerability_type', finding.get('type', 'unknown'))
+        language = finding.get('language', 'python') # 简单假设，或者传入
+
+        prompt = f"""
+## PoC 执行结果分析任务
+
+请分析以下 PoC 代码及其在沙箱中的执行结果，判断是否成功验证了漏洞的存在。
+
+### 1. 漏洞信息
+- **类型**: {vuln_type}
+- **描述**: {finding.get('description', 'N/A')}
+
+### 2. PoC 代码
+```{language}
+{poc_code}
+```
+
+### 3. 执行结果
+- **退出码**: {exit_code}
+- **输出**:
+```
+{output[:2000]}
+```
+
+### 4. 分析要求 (Attacker Mindset)
+请基于"攻击者视角"进行分析：
+1. **预期行为**：PoC 试图通过什么方式触发漏洞？
+2. **实际行为**：输出结果是否符合漏洞被触发的特征？
+   - 是否泄露了敏感数据？
+   - 是否执行了非预期命令？
+   - 是否导致了异常崩溃（DoS）？
+3. **误报排除**：
+   - 是否只是简单的语法错误或连接超时？
+   - 是否被 WAF 或其他防御机制拦截但未触发核心漏洞？
+
+### 5. 输出格式
+请返回严格的 JSON 格式：
+{{
+  "verified": true/false,  // 是否确认漏洞存在
+  "confidence": 0.0-1.0,   // 置信度
+  "reasoning": "详细的分析理由，解释为什么认为漏洞存在或不存在，引用输出中的具体证据",
+  "evidence": "从输出中提取的关键证据片段"
+}}
+"""
+        return prompt
 
     def _get_validation_rules(self, agent_type: str) -> str:
         """获取验证规则"""

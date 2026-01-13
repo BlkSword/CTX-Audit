@@ -53,18 +53,36 @@ class AnalysisAgent(BaseAgent):
         """延迟初始化 LLM 服务"""
         if self._llm is None:
             try:
-                # 从配置或运行时上下文获取 LLM 配置
-                provider_str = self._llm_config.get("llm_provider", "anthropic")
-                model = self._llm_config.get("llm_model", "claude-3-5-sonnet-20241022")
+                # 1. 优先使用初始化配置
+                provider_str = self._llm_config.get("llm_provider") or "anthropic"
+                model = self._llm_config.get("llm_model") or "claude-3-5-sonnet-20241022"
                 api_key = self._llm_config.get("api_key")
                 base_url = self._llm_config.get("base_url")
 
-                # 如果配置为空，尝试从运行时上下文获取（由 orchestrator 传递）
-                if not api_key and hasattr(self, '_runtime_context'):
-                    api_key = self._runtime_context.get("api_key")
-                    provider_str = self._runtime_context.get("llm_provider", provider_str)
-                    model = self._runtime_context.get("llm_model", model)
-                    base_url = self._runtime_context.get("base_url")
+                # 2. 如果配置缺失，尝试从运行时上下文获取（由 orchestrator 传递）
+                if hasattr(self, '_runtime_context'):
+                    # 使用 or 确保 None 值不会覆盖默认值
+                    ctx_api_key = self._runtime_context.get("api_key")
+                    if ctx_api_key:
+                        api_key = ctx_api_key
+                    
+                    ctx_provider = self._runtime_context.get("llm_provider")
+                    if ctx_provider:
+                        provider_str = ctx_provider
+                        
+                    ctx_model = self._runtime_context.get("llm_model")
+                    if ctx_model:
+                        model = ctx_model
+                        
+                    ctx_base_url = self._runtime_context.get("base_url")
+                    if ctx_base_url:
+                        base_url = ctx_base_url
+
+                # Debug log for API Key presence (do not log the actual key)
+                if api_key:
+                    logger.info(f"[Analysis] API Key found (length: {len(str(api_key))})")
+                else:
+                    logger.warning("[Analysis] API Key NOT found in config or runtime_context")
 
                 try:
                     provider = LLMProvider(provider_str)
@@ -80,7 +98,7 @@ class AnalysisAgent(BaseAgent):
                 )
             except Exception as e:
                 logger.error(f"LLM 服务初始化失败: {e}")
-                raise ValueError("LLM 服务未配置，请在设置中配置 API Key")
+                raise ValueError(f"LLM 服务未配置: {str(e)}")
         return self._llm
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:

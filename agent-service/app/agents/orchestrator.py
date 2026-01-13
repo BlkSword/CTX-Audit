@@ -376,6 +376,9 @@ Action Input: {"agent": "recon", "task": "侦察项目结构和技术栈"}
                     elif agent_name == "analysis":
                         await self._phase_manager.transition_to(AuditPhase.ANALYSIS)
                         self._update_progress(45, f"开始分析漏洞")
+                    elif agent_name == "verification":
+                        await self._phase_manager.transition_to(AuditPhase.VERIFICATION)
+                        self._update_progress(75, f"开始验证漏洞")
 
                     self.think(f"调度 {agent_name} Agent: {task[:100]}")
                     await self._publish_event("action", {
@@ -393,11 +396,11 @@ Action Input: {"agent": "recon", "task": "侦察项目结构和技术栈"}
                             await self._phase_manager.transition_to(AuditPhase.ANALYSIS)
                             self._update_progress(35, "侦察完成，准备分析")
                         elif agent_name == "analysis":
-                            # 分析完成，不再进入验证阶段，直接准备完成审计
-                            await self._phase_manager.transition_to(AuditPhase.COMPLETE)
-                            self._update_progress(95, "分析完成，审计已完成")
+                            # 分析完成后，建议进入验证阶段
+                            await self._phase_manager.transition_to(AuditPhase.VERIFICATION)
+                            self._update_progress(70, "分析完成，准备验证")
 
-                            # 添加提示，告诉LLM可以调用finish了
+                            # 添加提示，告诉LLM接下来的选择
                             observation = f"""{observation}
 
 ---
@@ -406,13 +409,18 @@ Action Input: {"agent": "recon", "task": "侦察项目结构和技术栈"}
 
 分析Agent已完成代码审计。现在你可以：
 
-1. 查看上述分析结果
-2. 如果满意，调用 `finish` 完成审计
-3. 如果需要更多分析，可以再次调度 analysis Agent
+1. **查看上述分析结果**
+2. **如果发现高危漏洞，强烈建议调度 `verification` Agent 进行验证**
+3. 如果满意，也可以调用 `finish` 完成审计
 
-**建议直接调用 finish 完成审计。**
+**建议：如果有高危漏洞，请务必验证！**
 """
                             step.observation = observation
+                        
+                        elif agent_name == "verification":
+                            await self._phase_manager.transition_to(AuditPhase.COMPLETE)
+                            self._update_progress(95, "验证完成，准备生成报告")
+
                     except Exception as e:
                         logger.error(f"[Orchestrator] Sub-agent {agent_name} failed: {e}")
                         observation = f"## {agent_name} Agent 执行失败\n\n错误: {str(e)}"
@@ -498,9 +506,25 @@ Action Input: {"agent": "recon", "task": "侦察项目结构和技术栈"}
 3. 决定何时调用哪个子 Agent
 4. 判断何时审计完成
 
+## 🧠 战略思考协议 (Strategic Thinking Protocol) ⚡⚡⚡
+作为编排者，你的 `Thought` 必须包含以下维度：
+
+### 1. 全局态势感知 (Situational Awareness)
+- **当前阶段**：我们在审计的哪个阶段？(侦察/分析/验证)
+- **信息完整性**：我们对项目结构、技术栈、攻击面了解多少？是否还有盲区？
+
+### 2. 决策逻辑 (Decision Logic)
+- **Why**: 为什么要调用这个 Agent？(例如："Recon 发现大量 API 端点，需要 Analysis 深度扫描")
+- **Expectation**: 期望它返回什么？(例如："期望发现未授权访问漏洞")
+
+### 3. 自我反思 (Self-Reflection)
+- 我是否在重复调度同一个 Agent 而没有新发现？
+- 我是否遗漏了某些高危文件？
+
 ## 你可以调度的子 Agent
 1. **recon**: 信息收集 Agent - 分析项目结构、技术栈、入口点
 2. **analysis**: 分析 Agent - 深度代码审计、漏洞检测
+3. **verification**: 验证 Agent - 验证发现的漏洞，生成 PoC
 
 ## 你可以使用的操作
 
@@ -525,7 +549,7 @@ Action Input: {"conclusion": "审计结论"}
 ## 工作方式
 每一步，你需要：
 
-1. **Thought**: 分析当前状态，思考下一步应该做什么
+1. **Thought**: 严格遵循 [战略思考协议]。分析当前状态，评估已有的发现，决定下一步的最佳策略。
 2. **Action**: 选择一个操作 (dispatch_agent/summarize/finish)
 3. **Action Input**: 提供操作参数 (必须是有效的 JSON)
 
@@ -533,42 +557,35 @@ Action Input: {"conclusion": "审计结论"}
 每一步必须严格按照以下格式（禁止使用 Markdown 格式标记）：
 
 ```
-Thought: [你的思考过程]
+Thought: 
+[Situational Awareness] Recon 已完成，确认项目为 Python Flask 应用，发现 3 个 API 端点和 1 个数据库连接文件。
+[Decision Logic] 由于发现了数据库连接代码，存在 SQL 注入风险，需要调度 Analysis Agent 进行深度扫描。
+[Expectation] 期望 Analysis Agent 能覆盖这些高风险文件。
+
 Action: dispatch_agent
-Action Input: {"agent": "recon", "task": "侦察项目结构和技术栈"}
+Action Input: {"agent": "analysis", "task": "深度分析数据库连接和API接口"}
 ```
 
 ## ⚠️ 重要格式要求
 
-**禁止使用 Markdown 格式标记！** 你的输出必须是纯文本格式：
-
-✅ 正确格式：
-```
-Thought: 我需要先了解项目结构
-Action: dispatch_agent
-Action Input: {"agent": "recon", "task": "侦察项目结构和技术栈"}
-```
-
-❌ 错误格式（禁止使用）：
-```
-**Thought:** 我需要先了解项目结构
-**Action:** dispatch_agent
-**Action Input:** {"agent": "recon", "task": "侦察项目结构和技术栈"}
-```
+**禁止使用 Markdown 格式标记！** 你的输出必须是纯文本格式。
 
 ## 审计流程要求
 
-**你必须按照以下顺序执行审计，不能跳过步骤：**
+虽然你需要自主决策，但通常遵循以下逻辑：
 
-1. **第一步**：必须先调用 `dispatch_agent` 调度 `recon` Agent 来了解项目
-2. **第二步**：根据 recon 结果，调度 `analysis` Agent 进行深度分析
-3. **第三步**：如果分析有发现，可以再次调度 analysis 或直接完成审计
-4. **最后**：调用 `finish` 完成审计
+1. **侦察阶段**：调用 `recon` Agent 了解项目。如果信息不足，可以再次调用。
+2. **分析阶段**：调用 `analysis` Agent 进行深度分析。
+   - 如果发现大量漏洞，可以考虑分批分析。
+   - 如果没有发现漏洞，但你怀疑有遗漏，可以指定特定的关注点再次调用 `analysis`。
+3. **验证阶段**（推荐）：如果有高危漏洞，调用 `verification` Agent 进行验证。
+4. **完成**：调用 `finish` 完成审计。
 
 **重要：**
-- 你必须先调度 recon Agent，不能直接调用 finish
-- 每个步骤都要思考为什么这么做
-- Action Input 必须是有效的 JSON 格式
+- 必须先侦察 (recon)。
+- 不要急于 finish，确保已充分挖掘潜在漏洞。
+- 只有在确认没有更多工作需要做时，才调用 finish。
+- Action Input 必须是有效的 JSON 格式。
 
 ## 示例流程
 
@@ -579,15 +596,24 @@ Action Input: {"agent": "recon", "task": "分析项目结构、技术栈和入�
 
 Observation: [recon 结果...]
 
-Thought: 项目是 Python Flask 应用，发现了一些高风险区域。现在我需要对这些区域进行深度分析
+Thought: 
+[Situational Awareness] 项目是 Python Flask 应用，发现了一些高风险区域。
+[Decision Logic] 现在我需要对这些区域进行深度分析。
+
 Action: dispatch_agent
 Action Input: {"agent": "analysis", "task": "深度分析高风险区域的代码安全问题"}
 
 Observation: [analysis 结果...]
 
-Thought: 已完成深度分析，发现了 X 个漏洞。审计工作已经充分完成
+Thought: 分析发现了一个 SQL 注入漏洞，我需要验证它是否真实存在
+Action: dispatch_agent
+Action Input: {"agent": "verification", "task": "验证 SQL 注入漏洞"}
+
+Observation: [verification 结果...]
+
+Thought: 已完成验证，漏洞确认为真实。审计工作已经充分完成
 Action: finish
-Action Input: {"conclusion": "审计完成，共发现 X 个漏洞"}
+Action Input: {"conclusion": "审计结论"}
 ```
 
 现在开始审计，请先调用 recon Agent！"""
@@ -604,16 +630,16 @@ Action Input: {"conclusion": "审计完成，共发现 X 个漏洞"}
 ## 可用子 Agent
 - recon: 信息收集 Agent，用于分析项目结构和技术栈
 - analysis: 分析 Agent，用于深度代码审计和漏洞检测
+- verification: 验证 Agent，用于验证发现的漏洞
 
 ## ⚠️ 重要提示
-你必须按照以下步骤执行审计：
-1. **首先**调用 dispatch_agent 调度 recon Agent 了解项目
-2. **然后**根据结果调度 analysis Agent 进行分析
-3. **最后**调用 finish 完成审计
+推荐的执行步骤：
+1. **首先**调用 recon Agent 了解项目
+2. **然后**调用 analysis Agent 进行分析
+3. **可选**调用 verification Agent 验证高危漏洞
+4. **最后**调用 finish 完成审计
 
 **不能直接调用 finish！必须先调度 recon Agent！**
-
-**注意：analysis 完成后直接调用 finish 即可，无需验证阶段。**
 
 请立即开始：首先输出你的思考，然后调用 dispatch_agent 调度 recon Agent。
 
@@ -621,6 +647,7 @@ Action Input: {"conclusion": "审计完成，共发现 X 个漏洞"}
 Thought: 我需要先了解项目的结构和技术栈
 Action: dispatch_agent
 Action Input: {{"agent": "recon", "task": "侦察项目结构和技术栈"}}"""
+
 
     def _parse_llm_response(self, response: str) -> Optional[AgentStep]:
         """解析 LLM 响应"""
@@ -671,7 +698,8 @@ Action Input: {{"agent": "recon", "task": "侦察项目结构和技术栈"}}"""
 
         # 检查是否重复调度同一个 Agent
         dispatch_count = self._dispatched_tasks.get(agent_name, 0)
-        if dispatch_count >= 2:
+        # 放宽重复调度限制，允许 Analysis 多次运行
+        if dispatch_count >= 3:
             return f"""## 重复调度警告
 
 你已经调度 {agent_name} Agent {dispatch_count} 次了。
@@ -693,134 +721,152 @@ Action Input: {{"agent": "recon", "task": "侦察项目结构和技术栈"}}"""
                 parent_id=self.agent_id,
             )
 
-            # 获取 agent 实例（不使用 to_dict 返回的数据）
+            # 获取 agent 实例
             agent = await agent_registry.get_agent_instance(agent_id)
             if not agent:
                 return f"## 调度失败\n\n错误: 无法获取 Agent 实例: {agent_id}"
 
-            # 构建子 Agent 输入
-            sub_input = {
+            # 准备 LLM 配置参数
+            llm_params = {}
+            
+            # 1. 从 Orchestrator 配置获取
+            if self._llm_config.get("llm_provider"):
+                llm_params["llm_provider"] = self._llm_config.get("llm_provider")
+            if self._llm_config.get("llm_model"):
+                llm_params["llm_model"] = self._llm_config.get("llm_model")
+            if self._llm_config.get("api_key"):
+                llm_params["api_key"] = self._llm_config.get("api_key")
+            if self._llm_config.get("base_url"):
+                llm_params["base_url"] = self._llm_config.get("base_url")
+                
+            # 2. 如果缺失，尝试从运行时上下文的 config 获取 (Global Config)
+            global_config = self._runtime_context.get("config", {})
+            if not llm_params.get("api_key") and global_config.get("api_key"):
+                llm_params["api_key"] = global_config.get("api_key")
+                # Also check for provider/model in global config
+                if not llm_params.get("llm_provider") and global_config.get("llm_provider"):
+                    llm_params["llm_provider"] = global_config.get("llm_provider")
+                if not llm_params.get("llm_model") and global_config.get("llm_model"):
+                    llm_params["llm_model"] = global_config.get("llm_model")
+
+            # Log dispatch info (mask key)
+            has_key = bool(llm_params.get("api_key"))
+            logger.info(f"[Orchestrator] Dispatching {agent_name} with LLM config: provider={llm_params.get('llm_provider')}, has_key={has_key}")
+
+            # 执行子 Agent
+            result_data = await agent.run({
                 "audit_id": self._runtime_context.get("audit_id"),
                 "project_id": self._runtime_context.get("project_id"),
-                "project_path": self._runtime_context.get("project_path", ""),
+                "project_path": self._runtime_context.get("project_path"),
                 "task": task,
-                "previous_results": {
-                    "findings": self._all_findings,
-                },
+                # 传递已有的发现给验证 Agent
+                "findings": self._all_findings if agent_name == "verification" else [],
                 # 传递之前 Agent 的结果
                 **self._agent_results,
                 # 传递 LLM 配置给子 Agent
-                "llm_provider": self._llm_config.get("llm_provider"),
-                "llm_model": self._llm_config.get("llm_model"),
-                "api_key": self._llm_config.get("api_key"),
-                "base_url": self._llm_config.get("base_url"),
-            }
+                **llm_params
+            })
 
-            # 执行子 Agent
-            result = await agent.run(sub_input)
+            # 提取结果
+            status = result_data.get("status")
+            result = result_data.get("result", {})
+            
+            if status == "error":
+                return f"## {agent_name} Agent 执行出错\n\n错误: {result_data.get('error')}"
 
-            if result.get("status") == "success":
-                data = result.get("result", {})
+            # ------------------------------------------------------------------
+            # CRITICAL FIX: 收集子 Agent 的发现
+            # ------------------------------------------------------------------
+            new_findings = []
+            
+            # Recon Agent 返回 findings 在 tool_findings, dataflow_findings 等字段
+            if agent_name == "recon":
+                if isinstance(result, dict):
+                    # 提取工具发现
+                    if "tool_findings" in result:
+                        new_findings.extend(result["tool_findings"])
+                    # 提取数据流发现
+                    if "dataflow_findings" in result:
+                        new_findings.extend(result["dataflow_findings"])
+            
+            # Analysis Agent 通常直接返回 findings 列表或包含 findings 的字典
+            elif agent_name == "analysis":
+                if isinstance(result, dict):
+                    if "findings" in result:
+                        new_findings.extend(result["findings"])
+                elif isinstance(result, list):
+                    new_findings.extend(result)
 
-                # 保存 Agent 结果
-                self._agent_results[agent_name] = data
+            # Verification Agent 返回验证后的 findings
+            elif agent_name == "verification":
+                # 验证 Agent 不产生新漏洞，而是更新现有漏洞的状态
+                # 这里我们可以获取验证结果报告
+                verified_results = result.get("verified", [])
+                # 更新 _all_findings 中的验证状态
+                for v_res in verified_results:
+                    f_id = v_res.get("finding_id")
+                    is_verified = v_res.get("verified", False)
+                    for finding in self._all_findings:
+                        if finding.get("id") == f_id:
+                            finding["verified"] = is_verified
+                            finding["verification_evidence"] = v_res.get("evidence")
+                            finding["poc_code"] = v_res.get("poc_code")
 
-                # 收集发现
-                findings = data.get("findings", [])
-                if findings:
-                    for finding in findings:
-                        if isinstance(finding, dict):
-                            # 标准化发现格式
-                            normalized = self._normalize_finding(finding)
-                            if normalized:
-                                self._all_findings.append(normalized)
+            # 将新发现添加到总列表中 (去重)
+            added_count = 0
+            existing_ids = {f.get("id") for f in self._all_findings if f.get("id")}
+            
+            for f in new_findings:
+                # 确保每个 finding 都有 ID
+                if not f.get("id"):
+                    import uuid
+                    f["id"] = str(uuid.uuid4())
+                
+                if f.get("id") not in existing_ids:
+                    self._all_findings.append(f)
+                    existing_ids.add(f.get("id"))
+                    added_count += 1
+            
+            logger.info(f"[Orchestrator] 从 {agent_name} 收集到 {added_count} 个新发现 (总计: {len(self._all_findings)})")
+            
+            # 实时通知前端有新发现
+            if added_count > 0:
+                await self._publish_event("findings_detected", {
+                    "message": f"由 {agent_name} 发现 {added_count} 个新问题",
+                    "count": added_count,
+                    "total": len(self._all_findings),
+                    "agent": agent_name
+                })
+            
+            # ------------------------------------------------------------------
 
-                # 更新统计
-                if agent_name == "analysis":
-                    self._runtime_context["files_scanned"] = data.get("files_analyzed", 0)
+            # 保存 Agent 结果
+            self._agent_results[agent_name] = result
 
-                # 构建观察结果
-                if agent_name == "recon":
-                    # Recon 返回的格式: project_info, structure, tech_stack, attack_surface, dependencies
-                    structure = data.get('structure', {})
-                    attack_surface = data.get('attack_surface', {})
-                    tech_stack = data.get('tech_stack', {})
-                    dependencies = data.get('dependencies', {})
-
-                    # 将 attack_surface 转换为 scan_results 格式供 analysis agent 使用
-                    scan_results = []
-                    for entry_point in attack_surface.get('entry_points', []):
-                        scan_results.append({
-                            "id": f"recon_{len(scan_results)}",
-                            "title": f"潜在攻击面: {entry_point.get('description', '未知')}",
-                            "severity": entry_point.get('severity', 'medium'),
-                            "file_path": entry_point.get('file', ''),
-                            "type": entry_point.get('type', 'unknown'),
-                            "description": entry_point.get('description', ''),
-                            "source": "recon"
-                        })
-
-                    # 保存 scan_results 供 analysis 使用
-                    self._agent_results['scan_results'] = scan_results
-                    self._runtime_context['scan_results'] = scan_results
-
-                    logger.info(f"[Orchestrator] Recon 完成，生成 {len(scan_results)} 个扫描候选")
-
-                    observation = f"""## Recon Agent 执行结果
-
-**状态**: 成功
-
-### 项目结构
-- 文件数: {len(structure.get('files', []))}
-- 目录数: {len(structure.get('directories', []))}
-
-### 技术栈
-- 语言: {tech_stack.get('languages', [])}
-- 框架: {tech_stack.get('frameworks', [])}
-
-### 攻击面分析
-- 入口点数量: {len(attack_surface.get('entry_points', []))}
-- API 端点: {len(attack_surface.get('api_endpoints', []))}
-- 用户输入点: {len(attack_surface.get('user_inputs', []))}
-- 文件操作: {len(attack_surface.get('file_operations', []))}
-- 命令执行: {len(attack_surface.get('command_executions', []))}
-
-### 依赖分析
-- 依赖库数量: {dependencies.get('total_libraries', 0)}
-
-### 生成的扫描候选
-已生成 {len(scan_results)} 个需要分析的候选区域
-"""
-
-                else:
-                    observation = f"""## {agent_name} Agent 执行结果
-
-**状态**: 成功
-**发现数量**: {len(findings)}
-
-### 发现摘要
-"""
-                    for i, f in enumerate(findings[:10]):
-                        if isinstance(f, dict):
-                            observation += f"""
-{i+1}. [{f.get('severity', 'unknown')}] {f.get('title', 'Unknown')}
-   - 类型: {f.get('vulnerability_type', 'unknown')}
-   - 文件: {f.get('file_path', 'unknown')}
-"""
-
-                    if len(findings) > 10:
-                        observation += f"\n... 还有 {len(findings) - 10} 个发现"
-
-                if data.get("summary"):
-                    observation += f"\n\n### Agent 总结\n{data['summary']}"
-
-                return observation
+            # 格式化观察结果供 LLM 阅读
+            if agent_name == "recon":
+                summary = f"发现 {len(new_findings)} 个潜在问题。项目技术栈: {result.get('tech_stack', {}).get('languages', [])}"
+            elif agent_name == "analysis":
+                summary = f"分析完成，发现 {len(new_findings)} 个漏洞。"
+            elif agent_name == "verification":
+                summary = f"验证完成。确认 {result.get('total_verified', 0)} 个漏洞，排除 {result.get('total_false_positives', 0)} 个误报。"
             else:
-                return f"## {agent_name} Agent 执行失败\n\n错误: {result.get('error', 'Unknown error')}"
+                summary = "执行完成"
+
+            return f"""## {agent_name} 执行成功
+
+{summary}
+
+### 详细结果摘要
+- 新增发现: {added_count}
+- 当前总发现: {len(self._all_findings)}
+
+(完整结果已保存到上下文)
+"""
 
         except Exception as e:
-            logger.error(f"Sub-agent dispatch failed: {e}", exc_info=True)
-            return f"## 调度失败\n\n错误: {str(e)}"
+            logger.error(f"调度 {agent_name} 失败: {e}", exc_info=True)
+            return f"调度失败: {str(e)}"
 
     def _normalize_finding(self, finding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """标准化发现格式"""
