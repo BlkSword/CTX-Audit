@@ -66,3 +66,4 @@ agent-service/logs/*.log
 .claude
 web-backend/data
 .deepaudit_cache
+CLAUDE.md
