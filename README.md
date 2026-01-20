@@ -1,21 +1,20 @@
-# CTX-Audit
+# CTX-Audit Desktop
 
-> AI 驱动的代码安全审计平台
+> AI 驱动的代码安全审计桌面应用
 
+**项目正在积极开发中(之前的项目偏离了原先的期望，现在在进行结构重构，找回正轨)**
 
-**当前项目还在开发调试过程中，还不是最终结果
-
-基于 Rust 高性能后端和 React 现代前端的代码安全审计工具，集成 AST 引擎、规则引擎、代码图谱等核心功能，支持 LLM 辅助审计。
+CTX-Audit Desktop 是一个基于 Tauri 2.x 的桌面应用，提供高性能代码安全审计功能。采用 Rust 后端和 React 前端，集成 AST 引擎、规则引擎等核心功能，支持 LLM 辅助审计。
 
 ## 核心架构
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   前端 (React)   │◄──►│  后端 (Rust)     │◄──►│  Agent 服务     │
-│ • React 18      │    │ • Axum Web 框架  │    │ • FastAPI       │
+│   前端 (React)   │◄──►│  Tauri (Rust)    │◄──►│  Agent 服务     │
+│ • React 19      │    │ • Commands API   │    │ • FastAPI       │
 │ • TypeScript    │    │ • AST 引擎       │    │ • LLM 集成       │
-│ • Monaco Editor │    │ • 高性能扫描     │    │ • RAG 支持       │
-│ • ReactFlow     │    │ • SQLite 存储    │    │ • 任务编排       │
+│ • Monaco Editor │    │ • 高性能扫描     │    │ • 任务编排       │
+│ • ReactFlow     │    │ • SQLite 存储    │    │                 │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
                                 │
                                 ▼
@@ -29,178 +28,132 @@
 
 ## 关键功能
 
-- **项目上传**: 支持 ZIP 文件上传并自动解压
-- **AST 智能分析**: 基于 Tree-sitter 的多语言代码解析引擎
+- **VSCode 风格界面**: 可拖拽的多面板布局
+- **多语言 AST 分析**: 基于 Tree-sitter 的代码解析引擎
 - **高性能扫描**: Rust 实现的并发文件扫描引擎
 - **代码图谱可视化**: 交互式展示代码依赖关系
 - **Agent 审计**: AI 驱动的智能代码审计流程
-- **知识图谱**: 基于 ChromaDB 的向量存储
+- **多项目支持**: 同时审计多个项目
+- **本地 LLM**: 支持 Ollama 本地模型
 
 ## 技术栈
 
 ### 前端
-- **框架**: React 18 + TypeScript
-- **构建工具**: Vite
+- **框架**: React 19 + TypeScript
+- **构建工具**: Vite 7.x
 - **UI 库**: Radix UI + Tailwind CSS
 - **代码编辑**: Monaco Editor
 - **图谱可视化**: ReactFlow
 - **状态管理**: Zustand
+- **可拖拽面板**: react-resizable-panels
 
-### 后端
+### 后端 (Tauri)
 - **语言**: Rust
-- **Web 框架**: Axum 0.7
-- **数据库**: SQLite (sqlx)
+- **框架**: Tauri 2.x
+- **数据库**: SQLite (嵌入式)
 - **AST 解析**: Tree-sitter
 - **异步运行时**: Tokio
 
-### Agent 服务
+### Agent 服务 (可选)
 - **语言**: Python 3.8+
 - **框架**: FastAPI
-- **LLM**: Claude / OpenAI / Gemini
-- **向量数据库**: ChromaDB
-- **消息队列**: Redis
+- **LLM**: Claude / OpenAI / Ollama
 
 ## 快速开始
 
-### 开发环境
+### 前置要求
 
-#### 1. 启动基础服务 (Docker)
+- Node.js 18+
+- Rust 1.70+
+- Python 3.8+ (可选，用于 Agent)
 
-```bash
-# 启动 PostgreSQL, ChromaDB, Redis
-docker-compose up -d postgres chromadb redis
-```
-
-#### 2. 启动后端 (Rust)
+### 安装依赖
 
 ```bash
-cd web-backend
-cargo run
-# 运行在 http://localhost:8000
+npm install
 ```
 
-#### 3. 启动前端 (React)
+### 启动开发环境
 
 ```bash
-npm run dev
-# 运行在 http://localhost:3002
+# 启动 Tauri 开发服务器 (包括前端 + 后端)
+npm run tauri:dev
 ```
 
-#### 4. 启动 Agent 服务 (Python)
+### 启动 Agent 服务 (可选)
 
 ```bash
 cd agent-service
 pip install -r requirements.txt
 python -m app.main
-# 运行在 http://localhost:8001
 ```
 
-### Docker 一键启动
+### 构建生产版本
 
 ```bash
-# 启动所有服务
-docker-compose up -d
-
-# 访问前端
-http://localhost:3000
+npm run tauri:build
 ```
-
-## 端口分配
-
-| 服务 | 端口 | 说明 |
-|------|------|------|
-| 前端开发服务器 | 3002 | Vite 开发服务器 |
-| 前端生产服务器 | 3000 | Nginx 静态文件服务 |
-| Rust 后端 | 8000 | Axum Web 服务 |
-| Agent 服务 | 8001 | FastAPI 服务 |
-| PostgreSQL | 15432 | Agent 状态存储 |
-| ChromaDB | 8002 | 向量数据库 |
-| Redis | 6379 | 消息队列 |
 
 ## 项目结构
 
 ```
 ctx-audit/
 ├── src/                    # React 前端源码
-│   ├── pages/             # 页面组件
-│   │   ├── Dashboard.tsx  # 项目列表页
-│   │   ├── project/       # 项目相关页面
-│   │   └── settings/      # 设置页面
-│   ├── components/        # UI 组件
-│   │   ├── ui/           # 基础组件
-│   │   ├── graph/        # 图谱组件
-│   │   ├── log/          # 日志组件
-│   │   └── search/       # 搜索组件
-│   ├── shared/           # 共享代码
-│   │   ├── api/          # API 客户端
-│   │   │   ├── client.ts # HTTP 客户端
-│   │   │   └── services/ # 服务层
-│   │   └── types/        # 类型定义
-│   └── stores/           # Zustand 状态管理
-├── web-backend/          # Rust 后端
+│   ├── pages/              # 页面组件
+│   ├── components/         # UI 组件
+│   │   └── ui/             # 基础组件 (Radix UI)
+│   ├── shared/             # 共享代码
+│   │   └── api/            # Tauri API 客户端
+│   └── stores/             # Zustand 状态管理
+├── src-tauri/              # Tauri 后端 (Rust)
+│   ├── src/
+│   │   ├── commands/       # Tauri Commands
+│   │   │   ├── project.rs  # 项目管理
+│   │   │   ├── scanner.rs  # 扫描器
+│   │   │   ├── files.rs    # 文件操作
+│   │   │   └── agent.rs    # Agent 控制
+│   │   ├── services/       # 业务服务层
+│   │   │   ├── database.rs # SQLite 管理
+│   │   │   └── agent_service.rs # Agent 进程管理
+│   │   └── main.rs         # Tauri 入口
+│   ├── Cargo.toml          # Rust 依赖
+│   └── tauri.conf.json     # Tauri 配置
+├── core/                   # 核心共享库
 │   └── src/
-│       ├── main.rs       # 后端入口
-│       ├── api/          # API 路由
-│       │   ├── project.rs
-│       │   ├── scanner.rs
-│       │   ├── ast.rs
-│       │   └── files.rs
-│       └── state.rs      # 应用状态
-├── core/                 # 核心共享库
-│   └── src/
-│       ├── ast/          # AST 引擎
-│       ├── scanner/      # 扫描器
-│       ├── rules/        # 规则系统
-│       └── diff/         # 差异对比
-├── agent-service/        # Agent 服务
+│       ├── ast/            # AST 引擎
+│       ├── scanner/        # 扫描器
+│       ├── rules/          # 规则系统
+│       └── diff/           # 差异对比
+├── agent-service/          # Agent 服务 (可选)
 │   └── app/
-│       ├── main.py       # FastAPI 入口
-│       ├── agents/       # Agent 实现
-│       ├── services/     # 服务层
-│       └── prompts/      # Prompt 模板
-├── docker/               # Docker 配置
-├── docker-compose.yml    # Docker Compose 配置
-└── ARCHITECTURE.md       # 详细架构文档
+│       ├── main.py         # FastAPI 入口
+│       ├── agents/         # Agent 实现
+│       └── services/       # 服务层
+└── rules/                  # 审计规则
 ```
 
-## API 文档
+## Tauri Commands API
 
-详细的 API 文档请参考 [ARCHITECTURE.md](ARCHITECTURE.md)
+### 项目管理
+- `list_projects()` - 获取所有项目
+- `create_project(name, path)` - 创建新项目
+- `delete_project(uuid)` - 删除项目
 
-### 主要 API 端点
+### 扫描
+- `run_scan(project_path, project_id?, rules?)` - 运行扫描
+- `get_findings(project_id)` - 获取扫描结果
 
-#### 项目管理
-- `POST /api/project/upload` - 上传 ZIP 项目
-- `GET /api/project/list` - 项目列表
-- `GET /api/project/:id` - 项目详情
-- `POST /api/project/:id` - 删除项目
+### 文件操作
+- `read_file(path)` - 读取文件内容
+- `list_directory(path)` - 列出目录内容
+- `select_directory()` - 打开目录选择对话框
 
-#### AST 分析
-- `POST /api/ast/build_index` - 构建 AST 索引
-- `POST /api/ast/search_symbol` - 搜索符号
-- `POST /api/ast/get_call_graph` - 获取调用图
-- `POST /api/ast/get_knowledge_graph` - 获取知识图谱
-
-#### 扫描
-- `POST /api/scanner/scan` - 运行扫描
-- `GET /api/scanner/findings/:id` - 获取结果
-
-#### 文件操作
-- `GET /api/files/read` - 读取文件
-- `GET /api/files/list` - 列出目录
-- `GET /api/files/search` - 搜索文件
+### Agent 控制
+- `start_agent_service()` - 启动 Agent
+- `stop_agent_service()` - 停止 Agent
+- `get_agent_status()` - 获取状态
 
 ## 配置
-
-### 前端环境变量
-
-创建 `.env.web` 文件：
-
-```bash
-VITE_API_BASE_URL=http://localhost:8000
-VITE_AGENT_API_BASE_URL=http://localhost:8001
-VITE_PLATFORM=web
-```
 
 ### Agent 服务配置
 
@@ -211,73 +164,45 @@ VITE_PLATFORM=web
 AGENT_PORT=8001
 LOG_LEVEL=info
 
-# LLM 配置
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-3-5-sonnet-20241022
+# LLM 配置 (支持 Ollama/Claude/OpenAI)
+LLM_PROVIDER=ollama|anthropic|openai
+LLM_MODEL=llama3.2|claude-3-5-sonnet-20241022
 ANTHROPIC_API_KEY=your_key_here
-
-# 数据库
-DATABASE_URL=postgresql://audit_user:audit_pass@localhost:15432/audit_db
-CHROMADB_HOST=localhost
-CHROMADB_PORT=8002
-REDIS_URL=redis://localhost:6379/0
+OPENAI_API_KEY=your_key_here
+OLLAMA_BASE_URL=http://localhost:11434
 ```
 
 ## 开发指南
 
-### 添加新的 API 端点
+### 添加新的 Tauri Command
 
-1. 后端：在 `web-backend/src/api/` 创建模块
-2. 前端：在 `src/shared/api/services/` 创建服务类
-3. 类型：在 `src/shared/types/` 添加类型定义
+1. 在 `src-tauri/src/commands/` 创建模块
+2. 定义 `#[tauri::command]` 函数
+3. 在 `main.rs` 的 `invoke_handler!` 中注册
+4. 在前端 `src/shared/api/tauri-client.ts` 添加调用方法
 
-### 添加新的页面
+### 添加新页面
 
 1. 在 `src/pages/` 创建页面组件
 2. 在 `App.tsx` 添加路由
-3. 更新导航组件（如需要）
 
-### 数据库迁移
+### 数据库位置
 
-```bash
-# 查看数据库
-sqlite3 data/audit.db
-
-# 执行 SQL
-sqlite3 data/audit.db "SELECT * FROM projects;"
-```
-
-## 部署
-
-### Docker 部署
-
-```bash
-# 开发环境
-docker-compose up
-
-# 生产环境
-docker-compose --profile production up
-```
-
-### 手动部署
-
-```bash
-# 前端构建
-npm run build
-
-# 后端构建
-cd web-backend
-cargo build --release
-```
+SQLite 数据库位于：
+- Windows: `%APPDATA%\com.ctx-audit.desktop\audit.db`
+- macOS: `~/Library/Application Support/com.ctx-audit.desktop/audit.db`
+- Linux: `~/.local/share/com.ctx-audit.desktop/audit.db`
 
 ## 常见问题
 
-### 后端编译失败
+### Tauri 开发服务器无法启动
 
-确保安装了 Rust 工具链：
 ```bash
-rustc --version
-cargo --version
+# 清理并重新构建
+cd src-tauri
+cargo clean
+cd ..
+npm run tauri:dev
 ```
 
 ### 前端依赖安装失败
@@ -287,13 +212,29 @@ rm -rf node_modules package-lock.json
 npm install
 ```
 
-### ChromaDB 连接失败
+### Agent 连接失败
 
+确保 Agent 服务正在运行：
 ```bash
-# Windows 上可能需要禁用 orjson
-set CHROMA_DISABLE_INFERENCE=1
+cd agent-service
 python -m app.main
 ```
+
+## 桌面版改造计划
+
+### 已完成 ✅
+- [x] 阶段一：Tauri 基础框架
+- [x] 移植核心 Commands
+- [x] SQLite 数据库集成
+
+### 待实施 📋
+- [ ] 阶段二：Agent 服务简化
+- [ ] 阶段三：VSCode 风格布局
+- [ ] 阶段四：LLM 双模式支持
+- [ ] 阶段五：多项目并行
+- [ ] 阶段六：打包和优化
+
+详细计划请参考 [CLAUDE.md](CLAUDE.md)
 
 ## 许可证
 
