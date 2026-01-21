@@ -5,8 +5,8 @@
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Dashboard } from '@/pages/Dashboard'
+import { EditorView } from '@/pages/EditorView'
 import { ProjectLayout } from '@/pages/project/ProjectLayout'
-import { GraphPanel } from '@/pages/project/GraphPanel'
 import { ScanPanel } from '@/pages/project/ScanPanel'
 import { AnalysisPanel } from '@/pages/project/AnalysisPanel'
 import EnhancedAuditPage from '@/pages/AgentAudit/EnhancedAuditPage'
@@ -28,17 +28,19 @@ function App() {
           {/* Dashboard - 项目列表 */}
           <Route path="/" element={<Dashboard />} />
 
+          {/* 新的编辑器视图 */}
+          <Route path="/editor/:id" element={<EditorView />} />
+
           {/* Demo - UI组件演示页面（无需后端） */}
           <Route path="/demo" element={<AgentUIDemo />} />
 
-          {/* Project Routes */}
+          {/* 旧的 Project Routes（保留用于兼容） */}
           <Route path="/project/:id" element={<ProjectLayout />}>
             {/* 默认重定向到Agent审计 */}
             <Route index element={<Navigate to="agent" replace />} />
             {/* 各个栏目路由 */}
             <Route path="agent" element={<EnhancedAuditPage />} />
             <Route path="agent/:auditId" element={<EnhancedAuditPage />} />
-            <Route path="graph" element={<GraphPanel />} />
             <Route path="scan" element={<ScanPanel />} />
             <Route path="analysis" element={<AnalysisPanel />} />
           </Route>

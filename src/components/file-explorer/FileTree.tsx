@@ -2,7 +2,7 @@ import { useState, useCallback, memo } from 'react'
 import { ChevronRight, ChevronDown, Folder, FileCode } from 'lucide-react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 
-interface FileNode {
+export interface FileNode {
   name: string
   path: string
   type: 'file' | 'folder'

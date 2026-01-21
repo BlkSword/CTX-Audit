@@ -14,7 +14,7 @@
  * - 边框深灰: #333333
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import { ArrowDown, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -27,7 +27,7 @@ export interface ActivityLogPanelProps {
   onToggleAutoScroll?: () => void
   isLoading?: boolean
   // 自定义日志渲染器
-  renderLogItem?: (log: LogItem, index: number) => React.ReactNode
+  renderLogItem?: (log: LogItem) => React.ReactNode
 }
 
 export function ActivityLogPanel({
@@ -58,7 +58,7 @@ export function ActivityLogPanel({
   }, [])
 
   // 默认日志渲染器
-  const defaultRenderLogItem = useCallback((log: LogItem, index: number) => {
+  const defaultRenderLogItem = useCallback((log: LogItem) => {
     // 获取日志类型样式
     const getLogTypeStyle = (type: string) => {
       const styles: Record<string, { bg: string; text: string; border: string }> = {
@@ -181,7 +181,7 @@ export function ActivityLogPanel({
         ) : (
           <div className="space-y-1">
             {logs.map((log, index) =>
-              renderLogItem ? renderLogItem(log, index) : defaultRenderLogItem(log, index)
+              renderLogItem ? renderLogItem(log) : defaultRenderLogItem(log)
             )}
           </div>
         )}

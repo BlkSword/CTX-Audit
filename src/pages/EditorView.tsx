@@ -1,22 +1,24 @@
 /**
- * ProjectLayout - 项目页面布局 (VSCode 风格)
+ * EditorView - 代码审计编辑器页面
+ *
+ * 主编辑器视图，使用 EditorLayout
+ * 包含：文件浏览器、代码编辑器、Agent 面板
  */
 
 import { useEffect } from 'react'
-import { Outlet, useParams, useNavigate, useLocation, Link } from 'react-router-dom'
-import { ShieldAlert, ArrowLeft, Network, Activity, Scan, Bot, RefreshCw, FileCode } from 'lucide-react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { ShieldAlert, ArrowLeft, Home } from 'lucide-react'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileStore } from '@/stores/fileStore'
 import { useScanStore } from '@/stores/scanStore'
-import { VSCodeLayout } from '@/components/layout'
+import { EditorLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
-export function ProjectLayout() {
+export function EditorView() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const location = useLocation()
   const { currentProject, projects, setCurrentProject, isLoading: projectsLoading, isInitiallyLoaded, loadProjects } = useProjectStore()
   const { loadFiles } = useFileStore()
   const { loadFindings } = useScanStore()
@@ -46,28 +48,13 @@ export function ProjectLayout() {
     }
   }, [id, projects, projectsLoading, isInitiallyLoaded, navigate, setCurrentProject, loadFiles, loadFindings])
 
-  const views = [
-    { id: 'agent' as const, label: 'Agent 审计', icon: Bot },
-    { id: 'graph' as const, label: '代码图谱', icon: Network },
-    { id: 'scan' as const, label: '安全扫描', icon: Scan },
-    { id: 'analysis' as const, label: '分析工具', icon: Activity },
-  ]
-
-  // 从 URL 获取当前激活的视图
-  // 处理嵌套路由，如 /project/3/agent/audit_xxx 应该识别为 agent 视图
-  const pathSegments = location.pathname.split('/').filter(Boolean)
-  // 查找第一个匹配 views.id 的片段
-  const currentView = pathSegments.find(segment =>
-    views.some(view => view.id === segment)
-  ) || 'agent'
-
   if (!currentProject) {
     // 如果正在加载项目列表，显示加载状态
     if (projectsLoading || !isInitiallyLoaded) {
       return (
         <div className="h-screen w-screen flex items-center justify-center bg-[#1e1e1e]">
           <div className="text-center">
-            <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground mx-auto mb-4" />
+            <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
             <p className="text-muted-foreground">加载项目...</p>
           </div>
         </div>
@@ -77,12 +64,12 @@ export function ProjectLayout() {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-[#1e1e1e]">
         <div className="text-center">
-          <p className="text-muted-foreground">项目不存在</p>
+          <p className="text-muted-foreground mb-4">项目不存在</p>
           <Button
             variant="outline"
-            className="mt-4"
             onClick={() => navigate('/')}
           >
+            <Home className="w-4 h-4 mr-2" />
             返回仪表板
           </Button>
         </div>
@@ -112,39 +99,16 @@ export function ProjectLayout() {
         </Badge>
       </div>
 
-      {/* View Tabs */}
-      <div className="flex items-center gap-1 bg-[#252526] rounded p-0.5">
-        {views.map((view) => {
-          const Icon = view.icon
-          const isActive = currentView === view.id
-          return (
-            <Link
-              key={view.id}
-              to={view.id}
-              className={cn(
-                'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all',
-                isActive
-                  ? 'bg-[#1e1e1e] text-white'
-                  : 'text-muted-foreground hover:text-white hover:bg-white/5'
-              )}
-            >
-              <Icon className="w-3 h-3" />
-              {view.label}
-            </Link>
-          )
-        })}
+      <div className="flex items-center gap-2">
+        {/* 可以添加其他控制按钮 */}
       </div>
-
-      <div className="w-20"></div>
     </header>
   )
 
   return (
-    <VSCodeLayout
+    <EditorLayout
       header={header}
-      editorContent={<Outlet />}
       showActivityBar={true}
-      showProjectTabs={true}
     />
   )
 }

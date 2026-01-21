@@ -281,7 +281,6 @@ export function transformBackendEvent(backendEvent: any): AgentEvent {
     accumulated_thought: backendEvent.accumulated_thought || data?.accumulated,
     finding: backendEvent.finding || data?.finding,
     progress: backendEvent.progress || data?.progress,
-    status: backendEvent.status || data?.status,
     metadata: data,
   }
 }
@@ -389,13 +388,13 @@ export function eventToLogItem(event: AgentEvent): LogItem | null {
 
   const logType = logTypeMap[event.event_type] || 'info'
 
-  const content =
-    event.message ||
-    event.thought ||
-    event.accumulated_thought ||
-    (event.finding?.title) ||
-    (event.progress?.message) ||
-    (event.metadata?.message) ||
+  const content: string =
+    event.message ??
+    event.thought ??
+    event.accumulated_thought ??
+    event.finding?.title ??
+    event.progress?.message ??
+    event.metadata?.message as string ??
     ''
 
   // 确保有唯一的 ID：使用 event.id，如果为空则生成一个唯一的组合 ID

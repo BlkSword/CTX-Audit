@@ -55,9 +55,47 @@ import { alertDialog, confirmDialog } from '@/components/ui/confirm-dialog'
 import { AuditHeader } from '@/components/audit/AuditHeader'
 import { ActivityLogPanel } from '@/components/audit/ActivityLogPanel'
 import { StatusCards } from '@/components/audit/StatusCards'
-import { AgentTreePanelNew } from '@/components/audit/AgentTreePanelNew'
 import type { LogItem } from '@/shared/types'
 import type { AgentTreeNode } from '@/pages/AgentAudit/types'
+
+// 占位符组件：Agent Tree Panel
+function AgentTreePanelNew({ treeData, loading, selectedAgentId, onSelectAgent }: any) {
+  return (
+    <div className="h-full flex flex-col bg-[#252526]/20">
+      <div className="px-4 py-3 border-b border-border/40 bg-[#252526]/50 flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-white">Agent Tree</h3>
+      </div>
+      <div className="flex-1 overflow-auto">
+        {loading ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : treeData?.roots?.length ? (
+          <div className="p-2">
+            {treeData.roots.map((agent: any) => (
+              <div
+                key={agent.agent_id}
+                className={`p-2 rounded cursor-pointer transition-colors ${
+                  selectedAgentId === agent.agent_id
+                    ? 'bg-primary/20 text-white'
+                    : 'bg-[#1e1e1e] hover:bg-[#2a2a2a] text-muted-foreground'
+                }`}
+                onClick={() => onSelectAgent?.(agent.agent_id)}
+              >
+                <div className="text-sm font-medium">{agent.agent_type}</div>
+                <div className="text-xs text-muted-foreground">{agent.agent_id}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+            暂无 Agent 数据
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // 模拟日志数据
 const mockLogs: LogItem[] = [
@@ -93,9 +131,9 @@ const mockAgentTree: { roots: AgentTreeNode[] } = {
     {
       agent_id: 'orch-001',
       agent_type: 'ORCHESTRATOR',
+      agent_name: '主控Agent',
       status: 'running',
       task: '协调所有Agent进行安全审计',
-      parent_id: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       children: [],
@@ -425,7 +463,7 @@ export function AgentUIDemo() {
                 <CardContent className="pt-6">
                   <div className="space-y-4">
                     <div className="flex items-center space-x-2">
-                      <Checkbox checked={checkboxValue} onCheckedChange={setCheckboxValue} />
+                      <Checkbox checked={checkboxValue} onCheckedChange={(c) => setCheckboxValue(!!c)} />
                       <Label>我同意服务条款和隐私政策</Label>
                     </div>
                     <div className="flex items-center space-x-2">

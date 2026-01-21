@@ -1,6 +1,7 @@
 """
-CTX-Audit Agent Service 配置管理
+CTX-Audit Agent Service 配置管理（精简版）
 """
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -17,30 +18,19 @@ class Settings(BaseSettings):
     # ========== Rust 后端配置 ==========
     RUST_BACKEND_URL: str = "http://localhost:8000"
 
-    # ========== PostgreSQL 配置 ==========
-    DATABASE_URL: str = "postgresql://audit_user:audit_pass@localhost:5432/audit_db"
-    ENABLE_POSTGRES: bool = False  # 是否启用 PostgreSQL（默认使用 SQLite）
-
-    # ========== Qdrant 配置 ==========
-    QDRANT_HOST: str = "localhost"
-    QDRANT_PORT: int = 6333
-    ENABLE_QDRANT: bool = True  # 是否启用 Qdrant（RAG 功能）
-
-    # ========== Redis 配置 ==========
-    REDIS_URL: str = "redis://localhost:6379/0"  # 保留配置但未使用
+    # ========== SQLite 配置 ==========
+    # 数据库文件路径（相对于应用根目录）
+    DATABASE_PATH: str = "audit_agent.db"
 
     # ========== LLM 配置 ==========
-    LLM_PROVIDER: str = "anthropic"  # anthropic | openai | litellm
+    LLM_PROVIDER: str = "anthropic"  # anthropic | openai | ollama
     LLM_MODEL: str = "claude-3-5-sonnet-20241022"
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
 
     # ========== RAG 配置 ==========
-    RAG_ENABLED: bool = False  # 禁用RAG，使用云端LLM无需本地向量检索
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
-    CHUNK_SIZE: int = 500
-    CHUNK_OVERLAP: int = 50
-    TOP_K_RETRIEVAL: int = 5
+    RAG_ENABLED: bool = False  # 禁用 RAG，使用云端 LLM
 
     # ========== Agent 配置 ==========
     MAX_CONCURRENT_AGENTS: int = 3
@@ -50,6 +40,16 @@ class Settings(BaseSettings):
     # ========== 安全配置 ==========
     API_KEY_HEADER: str = "X-API-Key"
     API_KEY: str = ""
+
+    @property
+    def database_url(self) -> str:
+        """获取 SQLite 数据库 URL"""
+        # 确保路径是绝对路径
+        db_path = Path(self.DATABASE_PATH)
+        if not db_path.is_absolute():
+            # 使用应用根目录
+            db_path = Path(__file__).parent.parent / self.DATABASE_PATH
+        return f"sqlite:///{db_path}"
 
     class Config:
         env_file = ".env"

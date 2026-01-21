@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   resolve: {
     alias: {
@@ -28,19 +28,63 @@ export default defineConfig({
   envPrefix: ['VITE_'],
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    sourcemap: mode === 'development',
+    minify: 'esbuild',
+    target: 'esnext',
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom'],
-          ui: [
-            '@radix-ui/react-dialog',
-            '@radix-ui/react-select',
-          ],
-          editor: ['@monaco-editor/react'],
-          graph: ['reactflow'],
+        manualChunks: (id) => {
+          // Vendor chunks
+          if (id.includes('node_modules')) {
+            // React core
+            if (id.includes('react') || id.includes('react-dom')) {
+              return 'react-core'
+            }
+            // Radix UI
+            if (id.includes('@radix-ui')) {
+              return 'ui'
+            }
+            // Router
+            if (id.includes('react-router')) {
+              return 'router'
+            }
+            // Editor
+            if (id.includes('monaco-editor')) {
+              return 'editor'
+            }
+            // Graph
+            if (id.includes('reactflow')) {
+              return 'graph'
+            }
+            // State management
+            if (id.includes('zustand')) {
+              return 'state'
+            }
+            // Other vendor
+            return 'vendor'
+          }
         },
+        // 资源文件命名
+        chunkFileNames: 'assets/js/[name]-[hash].js',
+        entryFileNames: 'assets/js/[name]-[hash].js',
+        assetFileNames: 'assets/[ext]/[name]-[hash].[ext]',
       },
     },
+    // 优化配置
+    chunkSizeWarningLimit: 1000,
+    // CSS 代码分割
+    cssCodeSplit: true,
   },
-})
+  // 优化依赖预构建
+  optimizeDeps: {
+    include: [
+      'react',
+      'react-dom',
+      'react-router-dom',
+      'zustand',
+      '@radix-ui/react-dialog',
+      '@radix-ui/react-select',
+      '@radix-ui/react-tabs',
+    ],
+  },
+}))

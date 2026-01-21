@@ -1,65 +1,38 @@
 """
-消息队列服务
+消息队列服务（内存版本）
 
-Redis 连接和消息队列操作
+使用 asyncio.Queue 实现内存队列，无需 Redis
 """
-from typing import Optional, Any, List
+from typing import Optional, Any, Dict
 from loguru import logger
-import redis.asyncio as redis
+import asyncio
 
-from app.config import settings
-
-# 全局 Redis 客户端
-_redis_client: Optional[redis.Redis] = None
+# 全局队列存储
+_queues: Dict[str, asyncio.Queue] = {}
+_cache: Dict[str, Any] = {}
 
 
 async def init_redis():
-    """初始化 Redis 连接"""
-    global _redis_client
-
-    if _redis_client is not None:
-        return
-
-    try:
-        _redis_client = redis.from_url(
-            settings.REDIS_URL,
-            encoding="utf-8",
-            decode_responses=True,
-        )
-        # 测试连接
-        await _redis_client.ping()
-        logger.info("Redis 连接初始化成功")
-    except Exception as e:
-        logger.error(f"Redis 连接失败: {e}")
-        # 不抛出异常，允许在没有 Redis 的情况下运行
-        _redis_client = None
+    """初始化队列服务（兼容接口）"""
+    logger.info("内存队列服务初始化成功")
 
 
 async def close_redis():
-    """关闭 Redis 连接"""
-    global _redis_client
-
-    if _redis_client:
-        await _redis_client.close()
-        _redis_client = None
-        logger.info("Redis 连接已关闭")
+    """关闭队列服务（兼容接口）"""
+    global _queues, _cache
+    _queues.clear()
+    _cache.clear()
+    logger.info("内存队列服务已关闭")
 
 
 async def check_redis() -> bool:
-    """检查 Redis 连接状态"""
-    if not _redis_client:
-        return False
-
-    try:
-        await _redis_client.ping()
-        return True
-    except Exception:
-        return False
+    """检查队列服务状态（兼容接口）"""
+    return True
 
 
-def get_client() -> Optional[redis.Redis]:
-    """获取 Redis 客户端"""
-    return _redis_client
+def get_client():
+    """获取客户端（兼容接口，返回 None）"""
+    return None
 
 
 # ========== 队列操作函数 ==========
@@ -72,14 +45,13 @@ async def push_task(queue_name: str, task_data: dict) -> None:
         queue_name: 队列名称
         task_data: 任务数据（字典）
     """
-    client = get_client()
-    if not client:
-        logger.warning("Redis 未连接，跳过任务推送")
-        return
+    global _queues
+
+    if queue_name not in _queues:
+        _queues[queue_name] = asyncio.Queue()
 
     try:
-        import json
-        await client.lpush(queue_name, json.dumps(task_data))
+        await _queues[queue_name].put(task_data)
         logger.debug(f"任务推送到队列 {queue_name}")
     except Exception as e:
         logger.error(f"推送任务失败: {e}")
@@ -96,16 +68,19 @@ async def pop_task(queue_name: str, timeout: int = 5) -> Optional[dict]:
     Returns:
         任务数据字典，超时返回 None
     """
-    client = get_client()
-    if not client:
-        return None
+    global _queues
+
+    if queue_name not in _queues:
+        _queues[queue_name] = asyncio.Queue()
 
     try:
-        import json
-        result = await client.brpop(queue_name, timeout=timeout)
-        if result:
-            _, data = result
-            return json.loads(data)
+        # 使用 asyncio.wait_for 实现超时
+        task_data = await asyncio.wait_for(
+            _queues[queue_name].get(),
+            timeout=timeout
+        )
+        return task_data
+    except asyncio.TimeoutError:
         return None
     except Exception as e:
         logger.error(f"弹出任务失败: {e}")
@@ -114,12 +89,13 @@ async def pop_task(queue_name: str, timeout: int = 5) -> Optional[dict]:
 
 async def get_queue_size(queue_name: str) -> int:
     """获取队列长度"""
-    client = get_client()
-    if not client:
+    global _queues
+
+    if queue_name not in _queues:
         return 0
 
     try:
-        return await client.llen(queue_name)
+        return _queues[queue_name].qsize()
     except Exception:
         return 0
 
@@ -133,17 +109,19 @@ async def set_cache(key: str, value: Any, ttl: int = 3600) -> None:
     Args:
         key: 缓存键
         value: 缓存值
-        ttl: 过期时间（秒）
+        ttl: 过期时间（秒）- 注意：内存版本不支持 TTL
     """
-    client = get_client()
-    if not client:
-        return
+    global _cache
 
-    try:
-        import json
-        await client.setex(key, ttl, json.dumps(value))
-    except Exception as e:
-        logger.error(f"设置缓存失败: {e}")
+    _cache[key] = value
+    if ttl > 0:
+        # 使用 asyncio 创建 TTL
+        async def _expire():
+            await asyncio.sleep(ttl)
+            if key in _cache:
+                del _cache[key]
+
+        asyncio.create_task(_expire())
 
 
 async def get_cache(key: str) -> Optional[Any]:
@@ -156,34 +134,20 @@ async def get_cache(key: str) -> Optional[Any]:
     Returns:
         缓存值，不存在返回 None
     """
-    client = get_client()
-    if not client:
-        return None
-
-    try:
-        import json
-        data = await client.get(key)
-        if data:
-            return json.loads(data)
-        return None
-    except Exception as e:
-        logger.error(f"获取缓存失败: {e}")
-        return None
+    global _cache
+    return _cache.get(key)
 
 
 async def delete_cache(key: str) -> None:
     """删除缓存"""
-    client = get_client()
-    if not client:
-        return
-
-    try:
-        await client.delete(key)
-    except Exception as e:
-        logger.error(f"删除缓存失败: {e}")
+    global _cache
+    _cache.pop(key, None)
 
 
-# ========== 发布订阅 ==========
+# ========== 发布订阅（简化版本） ==========
+
+_subscribers: Dict[str, list] = {}
+
 
 async def publish_event(channel: str, event_data: dict) -> None:
     """
@@ -193,36 +157,33 @@ async def publish_event(channel: str, event_data: dict) -> None:
         channel: 频道名称
         event_data: 事件数据
     """
-    client = get_client()
-    if not client:
-        return
+    global _subscribers
 
-    try:
-        import json
-        await client.publish(channel, json.dumps(event_data))
-        logger.debug(f"事件发布到频道 {channel}")
-    except Exception as e:
-        logger.error(f"发布事件失败: {e}")
+    if channel in _subscribers:
+        for callback in _subscribers[channel]:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(event_data)
+                else:
+                    callback(event_data)
+            except Exception as e:
+                logger.error(f"事件回调失败: {e}")
+
+    logger.debug(f"事件发布到频道 {channel}")
 
 
-async def subscribe(channel: str) -> Any:
+async def subscribe(channel: str, callback) -> None:
     """
     订阅频道
 
     Args:
         channel: 频道名称
-
-    Returns:
-        订阅对象
+        callback: 回调函数
     """
-    client = get_client()
-    if not client:
-        return None
+    global _subscribers
 
-    try:
-        pubsub = client.pubsub()
-        await pubsub.subscribe(channel)
-        return pubsub
-    except Exception as e:
-        logger.error(f"订阅频道失败: {e}")
-        return None
+    if channel not in _subscribers:
+        _subscribers[channel] = []
+
+    _subscribers[channel].append(callback)
+    logger.debug(f"已订阅频道 {channel}")

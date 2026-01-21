@@ -13,7 +13,6 @@ import {
   Wrench,
   Eye,
 } from 'lucide-react'
-import { useAgentStore } from '@/stores/agentStore'
 import { useUIStore } from '@/stores/uiStore'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -60,12 +59,8 @@ const AGENT_TYPES: { value: AgentType | null; label: string }[] = [
 export function PromptTemplatesPage() {
   const { addLog } = useUIStore()
 
-  const {
-    promptTemplates,
-    loadPromptTemplates,
-    createPromptTemplate,
-    deletePromptTemplate,
-  } = useAgentStore()
+  // 使用本地状态管理提示词模板
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([])
 
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false)
@@ -95,8 +90,10 @@ export function PromptTemplatesPage() {
   })
 
   useEffect(() => {
-    loadPromptTemplates(categoryFilter === 'all' ? undefined : categoryFilter)
-  }, [categoryFilter, loadPromptTemplates])
+    // 加载提示词模板
+    // TODO: 实现加载逻辑
+    setPromptTemplates([])
+  }, [categoryFilter])
 
   // 过滤模板
   const filteredTemplates = promptTemplates.filter((template) => {
@@ -114,11 +111,16 @@ export function PromptTemplatesPage() {
   // 创建新模板
   const handleCreateTemplate = async () => {
     try {
-      await createPromptTemplate({
+      const newId = `tpl_${Date.now()}`
+      const template: PromptTemplate = {
+        id: newId,
         ...newTemplate,
         variables: [],
         isSystem: false,
-      })
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      setPromptTemplates([...promptTemplates, template])
       addLog(`提示词模板已创建: ${newTemplate.name}`, 'system')
       setIsCreateDialogOpen(false)
       setNewTemplate({
@@ -130,7 +132,6 @@ export function PromptTemplatesPage() {
         template: '',
         isActive: true,
       } as typeof newTemplate)
-      loadPromptTemplates()
     } catch (err) {
       addLog(`创建提示词模板失败: ${err}`, 'system')
     }
@@ -148,9 +149,8 @@ export function PromptTemplatesPage() {
     if (!confirmed) return
 
     try {
-      await deletePromptTemplate(id)
+      setPromptTemplates(promptTemplates.filter(t => t.id !== id))
       addLog(`提示词模板已删除: ${name}`, 'system')
-      loadPromptTemplates()
     } catch (err) {
       addLog(`删除提示词模板失败: ${err}`, 'system')
     }

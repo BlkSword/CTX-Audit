@@ -45,7 +45,6 @@ import { useResilientStream } from './useResilientStream'
 import { ChatLogPanel } from '@/components/audit/ChatLogPanel'
 import { FindingsPanel } from '@/components/audit/FindingsPanel'
 import { AuditStatusIndicator, AuditStatusBadge } from '@/components/audit/AuditStatusIndicator'
-import { AgentTreePanel } from './AgentTreePanel'
 import { StatsPanel } from './StatsPanel'
 import { AgentDetailPanel } from './AgentDetailPanel'
 import { AuditFooter } from '@/components/audit/AuditFooter'
@@ -594,23 +593,23 @@ export function EnhancedAuditPageContent() {
 
   return (
     <div className={cn(
-      "flex flex-col h-full bg-slate-950",
+      "flex flex-col h-full bg-[#1e1e1e]",
       isFullscreen && "fixed inset-0 z-50"
     )}>
       {/* 顶部控制栏 */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm shrink-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border/40 bg-[#252526] shrink-0">
         <div className="flex items-center gap-4">
           {/* 审计模式选择 */}
           <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-400">审计模式</label>
-            <div className="flex rounded-lg bg-slate-900/50 p-1 border border-slate-800">
+            <label className="text-xs font-semibold text-muted-foreground">审计模式</label>
+            <div className="flex rounded-lg bg-[#1e1e1e] p-1 border border-border/40">
               <button
                 onClick={() => setAuditType('quick')}
                 className={cn(
                   "px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
                   auditType === 'quick'
                     ? "bg-amber-500/20 text-amber-300"
-                    : "text-slate-500 hover:text-slate-300"
+                    : "text-muted-foreground hover:text-white hover:bg-white/5"
                 )}
               >
                 <Zap className="w-3.5 h-3.5" />
@@ -622,7 +621,7 @@ export function EnhancedAuditPageContent() {
                   "px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
                   auditType === 'full'
                     ? "bg-violet-500/20 text-violet-300"
-                    : "text-slate-500 hover:text-slate-300"
+                    : "text-muted-foreground hover:text-white hover:bg-white/5"
                 )}
               >
                 <Sparkles className="w-3.5 h-3.5" />
@@ -634,15 +633,15 @@ export function EnhancedAuditPageContent() {
           {/* 连接状态 */}
           <div className={cn(
             "flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all",
-            isServiceHealthy ? "bg-emerald-950/30 border-emerald-800/50" : "bg-rose-950/30 border-rose-800/50"
+            isServiceHealthy ? "bg-green-950/30 border-green-800/50" : "bg-red-950/30 border-red-800/50"
           )}>
             <div className={cn(
               "w-2 h-2 rounded-full transition-colors",
-              isCheckingHealth ? "bg-amber-400 animate-pulse" : isServiceHealthy ? "bg-emerald-400 animate-pulse" : "bg-rose-400"
+              isCheckingHealth ? "bg-yellow-400 animate-pulse" : isServiceHealthy ? "bg-green-400 animate-pulse" : "bg-red-400"
             )} />
             <span className={cn(
               "text-xs font-medium",
-              isCheckingHealth ? "text-amber-400" : isServiceHealthy ? "text-emerald-400" : "text-rose-400"
+              isCheckingHealth ? "text-yellow-400" : isServiceHealthy ? "text-green-400" : "text-red-400"
             )}>
               {isCheckingHealth ? '检查中...' : isServiceHealthy ? '服务正常' : '服务离线'}
             </span>
@@ -653,7 +652,7 @@ export function EnhancedAuditPageContent() {
             state.task ? (
               <AuditStatusBadge status={state.task.status} progress={state.task.progress_percentage} />
             ) : state.isLoading ? (
-              <Badge variant="outline" className="bg-slate-900/50 border-slate-700 text-slate-400">
+              <Badge variant="outline" className="bg-[#1e1e1e] border-border/40 text-muted-foreground">
                 <Loader2 className="w-3 h-3 mr-1 animate-spin" />
                 加载中...
               </Badge>
@@ -670,7 +669,7 @@ export function EnhancedAuditPageContent() {
               size="sm"
               onClick={() => setExportDialogOpen(true)}
               disabled={!auditId}
-              className="h-8 bg-slate-800 border-slate-700 text-slate-300 hover:text-slate-100"
+              className="h-8 bg-[#1e1e1e] border-border/40 text-muted-foreground hover:text-white"
             >
               <Download className="w-3.5 h-3.5 mr-1.5" />
               导出报告
@@ -700,7 +699,7 @@ export function EnhancedAuditPageContent() {
             if (state.task.status === 'running') {
               return (
                 <>
-                  <Button variant="outline" size="sm" onClick={handlePauseAudit} className="h-8 bg-slate-800 border-slate-700">
+                  <Button variant="outline" size="sm" onClick={handlePauseAudit} className="h-8 bg-[#1e1e1e] border-border/40 text-muted-foreground hover:text-white">
                     <Pause className="w-3.5 h-3.5 mr-1.5" /> 暂停
                   </Button>
                   <Button variant="destructive" size="sm" onClick={handleCancelAudit} className="h-8">
@@ -713,7 +712,7 @@ export function EnhancedAuditPageContent() {
             if (state.task.status === 'paused') {
               return (
                 <>
-                  <Button variant="outline" size="sm" onClick={handleStartAudit} className="h-8 bg-slate-800 border-slate-700">
+                  <Button variant="outline" size="sm" onClick={handleStartAudit} className="h-8 bg-[#1e1e1e] border-border/40 text-muted-foreground hover:text-white">
                     <Play className="w-3.5 h-3.5 mr-1.5" /> 恢复
                   </Button>
                   <Button variant="destructive" size="sm" onClick={handleCancelAudit} className="h-8">
@@ -734,7 +733,7 @@ export function EnhancedAuditPageContent() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 text-slate-400 hover:text-slate-200"
+            className="h-8 w-8 text-muted-foreground hover:text-white"
             onClick={() => setIsFullscreen(!isFullscreen)}
           >
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
@@ -745,30 +744,30 @@ export function EnhancedAuditPageContent() {
       {/* 主内容区 */}
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* 左侧：主面板 (70%) */}
-        <div className="w-[70%] flex flex-col border-r border-slate-800 min-w-0">
+        <div className="w-[70%] flex flex-col border-r border-border/40 min-w-0">
           {/* 标签页切换 */}
           <Tabs value={activeTab} onValueChange={(v: any) => setActiveTab(v)} className="flex-1 flex flex-col">
             <div className="px-4 pt-3 shrink-0">
-              <TabsList className="w-full bg-slate-900/50 border border-slate-800 rounded-lg p-1">
-                <TabsTrigger value="logs" className="flex items-center gap-2 data-[state=active]:bg-slate-800">
+              <TabsList className="w-full bg-[#252526] border border-border/40 rounded-lg p-1">
+                <TabsTrigger value="logs" className="flex items-center gap-2 data-[state=active]:bg-[#1e1e1e]">
                   <Activity className="w-4 h-4" />
                   <span>活动日志</span>
                   {state.logs.length > 0 && (
-                    <Badge variant="secondary" className="ml-1 text-xs bg-slate-700 text-slate-400">
+                    <Badge variant="secondary" className="ml-1 text-xs bg-[#3c3c3c] text-muted-foreground border-border/40">
                       {state.logs.length}
                     </Badge>
                   )}
                 </TabsTrigger>
-                <TabsTrigger value="findings" className="flex items-center gap-2 data-[state=active]:bg-slate-800">
+                <TabsTrigger value="findings" className="flex items-center gap-2 data-[state=active]:bg-[#1e1e1e]">
                   <FileText className="w-4 h-4" />
                   <span>审计结果</span>
                   {state.findings.length > 0 && (
-                    <Badge variant="secondary" className="ml-1 text-xs bg-rose-900/50 text-rose-400">
+                    <Badge variant="secondary" className="ml-1 text-xs bg-red-900/50 text-red-400 border-border/40">
                       {state.findings.length}
                     </Badge>
                   )}
                 </TabsTrigger>
-                <TabsTrigger value="viz" className="flex items-center gap-2 data-[state=active]:bg-slate-800">
+                <TabsTrigger value="viz" className="flex items-center gap-2 data-[state=active]:bg-[#1e1e1e]">
                   <BarChart3 className="w-4 h-4" />
                   <span>数据统计</span>
                 </TabsTrigger>
@@ -779,14 +778,14 @@ export function EnhancedAuditPageContent() {
             <div className="flex-1 min-h-0 overflow-hidden">
               <TabsContent value="logs" className="h-full m-0 p-0 overflow-hidden">
                 {/* 日志视图切换按钮 */}
-                <div className="absolute top-24 right-4 z-10 flex items-center gap-1 bg-slate-900/80 border border-slate-700 rounded-lg p-1">
+                <div className="absolute top-24 right-4 z-10 flex items-center gap-1 bg-[#252526] border border-border/40 rounded-lg p-1">
                   <Button
                     variant={logViewStyle === 'chat' ? 'default' : 'ghost'}
                     size="sm"
                     onClick={() => setLogViewStyle('chat')}
                     className={cn(
                       "h-7 px-2 text-xs",
-                      logViewStyle === 'chat' ? "bg-slate-700 text-white" : "text-slate-400"
+                      logViewStyle === 'chat' ? "bg-[#1e1e1e] text-white" : "text-muted-foreground hover:text-white"
                     )}
                   >
                     💬 聊天式
@@ -797,7 +796,7 @@ export function EnhancedAuditPageContent() {
                     onClick={() => setLogViewStyle('terminal')}
                     className={cn(
                       "h-7 px-2 text-xs",
-                      logViewStyle === 'terminal' ? "bg-slate-700 text-white" : "text-slate-400"
+                      logViewStyle === 'terminal' ? "bg-[#1e1e1e] text-white" : "text-muted-foreground hover:text-white"
                     )}
                   >
                     ⌨️ 终端式
@@ -825,8 +824,8 @@ export function EnhancedAuditPageContent() {
               <TabsContent value="findings" className="h-full m-0 p-0 overflow-hidden">
                 <div className="h-full flex flex-col">
                   {/* 工具栏 */}
-                  <div className="px-4 py-2 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between shrink-0">
-                    <div className="text-sm text-slate-400">
+                  <div className="px-4 py-2 border-b border-border/40 bg-[#252526] flex items-center justify-between shrink-0">
+                    <div className="text-sm text-muted-foreground">
                       发现 {state.findings.length} 个漏洞
                     </div>
                     <Button
@@ -834,7 +833,7 @@ export function EnhancedAuditPageContent() {
                       size="sm"
                       onClick={() => setExportDialogOpen(true)}
                       disabled={state.findings.length === 0}
-                      className="h-8 bg-slate-800 border-slate-700"
+                      className="h-8 bg-[#1e1e1e] border-border/40 text-muted-foreground hover:text-white"
                     >
                       <Download className="w-3.5 h-3.5 mr-1.5" />
                       导出报告
@@ -868,10 +867,10 @@ export function EnhancedAuditPageContent() {
         </div>
 
         {/* 右侧：状态 + Agent 树 + 详情/统计 (30%) */}
-        <div className="w-[30%] flex flex-col bg-slate-900/20 min-w-0">
+        <div className="w-[30%] flex flex-col bg-[#252526]/20 min-w-0">
           {/* 审计状态指示器 - 只要有auditId就显示 */}
           {auditId && (
-            <div className="p-4 border-b border-slate-800 shrink-0">
+            <div className="p-4 border-b border-border/40 shrink-0">
               {state.task ? (
                 <AuditStatusIndicator
                   status={state.task.status}
@@ -880,7 +879,7 @@ export function EnhancedAuditPageContent() {
                   error={state.error}
                 />
               ) : (
-                <div className="flex items-center gap-2 text-sm text-slate-400">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="w-4 h-4 animate-spin" />
                   <span>加载审计信息...</span>
                 </div>
@@ -890,33 +889,54 @@ export function EnhancedAuditPageContent() {
 
           {/* Agent 树 */}
           <div className={cn(
-            "flex flex-col border-b border-slate-800 bg-slate-900/20",
+            "flex flex-col border-b border-border/40 bg-[#252526]/20",
             state.selectedAgentId ? "h-[40%]" : "flex-1"
           )}>
-            <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between shrink-0">
-              <h3 className="text-sm font-semibold text-slate-200">Agent Tree</h3>
-              {isConnecting && <Loader2 className="w-4 h-4 animate-spin text-slate-500" />}
+            <div className="px-4 py-3 border-b border-border/40 bg-[#252526]/50 flex items-center justify-between shrink-0">
+              <h3 className="text-sm font-semibold text-white">Agent Tree</h3>
+              {isConnecting && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
             </div>
-            <div className="flex-1 overflow-hidden">
-              <AgentTreePanel
-                treeData={state.agentTree}
-                loading={state.isLoading}
-                selectedAgentId={state.selectedAgentId}
-                onSelectAgent={selectAgent}
-              />
+            <div className="flex-1 overflow-auto">
+              {state.isLoading ? (
+                <div className="flex items-center justify-center h-full">
+                  <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : state.agentTree?.roots?.length ? (
+                <div className="p-2">
+                  {state.agentTree.roots.map((agent: any) => (
+                    <div
+                      key={agent.agent_id}
+                      className={cn(
+                        "p-2 rounded cursor-pointer transition-colors",
+                        state.selectedAgentId === agent.agent_id
+                          ? "bg-primary/20 text-white"
+                          : "bg-[#1e1e1e] hover:bg-[#2a2a2a] text-muted-foreground"
+                      )}
+                      onClick={() => selectAgent(agent.agent_id)}
+                    >
+                      <div className="text-sm font-medium">{agent.agent_type}</div>
+                      <div className="text-xs text-muted-foreground">{agent.agent_id}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+                  暂无 Agent 数据
+                </div>
+              )}
             </div>
           </div>
 
           {/* Agent 详情 或 统计面板 */}
           {state.selectedAgentId ? (
             <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between shrink-0">
-                <h3 className="text-sm font-semibold text-slate-200">Agent 详情</h3>
+              <div className="px-4 py-3 border-b border-border/40 bg-[#252526]/50 flex items-center justify-between shrink-0">
+                <h3 className="text-sm font-semibold text-white">Agent 详情</h3>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => selectAgent(null)}
-                  className="h-6 text-xs text-slate-400 hover:text-slate-200"
+                  className="h-6 text-xs text-muted-foreground hover:text-white"
                 >
                   关闭
                 </Button>
@@ -966,11 +986,7 @@ export function EnhancedAuditPageContent() {
   )
 }
 
-// 导出默认组件
+// 导出默认组件 (VSCode 风格)
 export default function EnhancedAuditPage() {
-  return (
-    <div className="h-screen w-screen bg-background text-foreground overflow-hidden">
-      <EnhancedAuditPageContent />
-    </div>
-  )
+  return <EnhancedAuditPageContent />
 }

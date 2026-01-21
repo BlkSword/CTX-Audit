@@ -5,7 +5,7 @@
 import { create } from 'zustand'
 import { devtools, persist } from 'zustand/middleware'
 import type { Project } from '@/shared/types'
-import { projectService } from '@/shared/api/services'
+import { tauriApi } from '@/shared/api/tauri-client'
 
 interface ProjectState {
   projects: Project[]
@@ -16,7 +16,7 @@ interface ProjectState {
 
   // Actions
   loadProjects: () => Promise<void>
-  createProject: (name: string, zipFile: File, onProgress?: (progress: number) => void) => Promise<Project>
+  createProject: (name: string, path: string) => Promise<Project>
   deleteProject: (id: number) => Promise<void>
   setCurrentProject: (project: Project | null) => void
   clearError: () => void
@@ -35,7 +35,7 @@ export const useProjectStore = create<ProjectState>()(
         loadProjects: async () => {
           set({ isLoading: true, error: null })
           try {
-            const projects = await projectService.listProjects()
+            const projects = await tauriApi.listProjects()
             set({ projects, isLoading: false, isInitiallyLoaded: true })
           } catch (error) {
             const message = error instanceof Error ? error.message : '加载项目失败'
@@ -43,10 +43,10 @@ export const useProjectStore = create<ProjectState>()(
           }
         },
 
-        createProject: async (name, zipFile, onProgress) => {
+        createProject: async (name, path) => {
           set({ isLoading: true, error: null })
           try {
-            const project = await projectService.uploadProject(name, zipFile, onProgress)
+            const project = await tauriApi.createProject(name, path)
             set(state => ({
               projects: [project, ...state.projects],
               isLoading: false
@@ -76,7 +76,7 @@ export const useProjectStore = create<ProjectState>()(
               throw new Error('项目不存在')
             }
 
-            await projectService.deleteProject(projectUuid)
+            await tauriApi.deleteProject(projectUuid)
             set(state => ({
               projects: state.projects.filter(p => p.id !== id),
               currentProject: state.currentProject?.id === id ? null : state.currentProject,

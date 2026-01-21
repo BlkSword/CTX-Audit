@@ -1,5 +1,5 @@
 /**
- * 设置页面布局
+ * 设置页面布局 (VSCode 风格)
  */
 
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
@@ -11,6 +11,7 @@ import {
   FileText,
   Shield,
 } from 'lucide-react'
+import { VSCodeLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -45,58 +46,60 @@ export function SettingsLayout() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  return (
-    <div className="h-screen w-screen bg-background text-foreground flex flex-col overflow-hidden font-sans">
-      {/* Header */}
-      <header className="h-14 border-b border-border/40 px-6 flex items-center gap-4 bg-muted/20">
+  // VSCode 风格的 Header
+  const header = (
+    <header className="h-9 flex items-center justify-between px-3 bg-[#3c3c3c] border-b border-border/40 select-none">
+      <div className="flex items-center gap-3">
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8"
+          className="h-6 w-6 text-muted-foreground hover:text-white hover:bg-white/10"
           onClick={() => navigate('/')}
+          title="返回仪表板"
         >
-          <ArrowLeft className="w-4 h-4" />
+          <ArrowLeft className="w-3.5 h-3.5" />
         </Button>
-
-        <div className="flex items-center gap-3">
-          <Settings className="w-5 h-5 text-primary" />
-          <h1 className="text-lg font-semibold">设置</h1>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <div className="flex-1 overflow-hidden flex">
-        {/* Sidebar */}
-        <div className="w-56 border-r border-border/40 p-4">
-          <nav className="space-y-1">
-            {settingsNavItems.map((item) => {
-              const Icon = item.icon
-              const isActive = location.pathname === item.path
-
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => navigate(item.path)}
-                  className={cn(
-                    'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
-                    isActive
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                  )}
-                >
-                  <Icon className="w-4 h-4" />
-                  {item.label}
-                </button>
-              )
-            })}
-          </nav>
-        </div>
-
-        {/* Content Area */}
-        <div className="flex-1 overflow-auto no-scrollbar">
-          <Outlet />
+        <div className="flex items-center gap-2">
+          <Settings className="w-4 h-4 text-primary" />
+          <span className="text-sm font-medium text-white">设置</span>
         </div>
       </div>
-    </div>
+
+      {/* Settings Navigation Tabs */}
+      <div className="flex items-center gap-1 bg-[#252526] rounded p-0.5">
+        {settingsNavItems.map((item) => {
+          const Icon = item.icon
+          const isActive = location.pathname === item.path
+
+          return (
+            <button
+              key={item.id}
+              onClick={() => navigate(item.path)}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all',
+                isActive
+                  ? 'bg-[#1e1e1e] text-white'
+                  : 'text-muted-foreground hover:text-white hover:bg-white/5'
+              )}
+              title={item.label}
+            >
+              <Icon className="w-3 h-3" />
+              {item.label}
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="w-20"></div>
+    </header>
+  )
+
+  return (
+    <VSCodeLayout
+      header={header}
+      editorContent={<Outlet />}
+      showActivityBar={true}
+      showProjectTabs={false}
+    />
   )
 }
