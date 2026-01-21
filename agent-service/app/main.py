@@ -1,7 +1,8 @@
 """
-CTX-Audit Agent Service 主应用入口
+CTX-Audit Agent Service 主应用入口（精简版）
 
 Multi-Agent 代码审计系统的 FastAPI 服务
+使用 SQLite 持久化，无需外部数据库
 """
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -52,29 +53,6 @@ async def lifespan(app: FastAPI):
         logger.info("✅ 认证系统初始化完成")
     except Exception as e:
         logger.warning(f"⚠️ 认证系统初始化失败: {e}")
-
-    # PostgreSQL - 可选，由 ENABLE_POSTGRES 控制
-    if settings.ENABLE_POSTGRES:
-        try:
-            from app.services.database import init_database
-            await init_database()
-            logger.info("✅ PostgreSQL 连接池创建成功")
-        except Exception as e:
-            logger.warning(f"⚠️ PostgreSQL 连接失败: {e}")
-    else:
-        logger.info("ℹ️ PostgreSQL 已禁用，使用 SQLite")
-
-    # Qdrant 向量存储（RAG）- 可选
-    if settings.ENABLE_QDRANT:
-        try:
-            from app.services.vector_store import init_vector_store
-            await init_vector_store()
-        except Exception as e:
-            logger.warning(f"⚠️ Qdrant 初始化失败: {e}")
-            logger.info("提示: 请运行: docker run -p 6333:6333 qdrant/qdrant")
-            logger.info("提示: 请安装: pip install qdrant-client fastembed")
-    else:
-        logger.info("ℹ️ Qdrant 已禁用，RAG 功能不可用")
 
     logger.info(f"🎉 服务启动完成，监听端口: {settings.AGENT_PORT}")
 

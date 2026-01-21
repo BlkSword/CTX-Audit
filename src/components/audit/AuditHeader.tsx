@@ -47,7 +47,7 @@ export interface AuditHeaderProps {
 
 export function AuditHeader({
   taskName,
-  status = 'pending',
+  status,
   progress = 0,
   isLoading = false,
   isServiceHealthy = true,
@@ -59,7 +59,7 @@ export function AuditHeader({
   hideBrand = false,
 }: AuditHeaderProps) {
   const isRunning = status === 'running'
-  const canStart = !status || status === 'pending' || status === 'completed' || status === 'failed' || status === 'cancelled'
+  const canStart = !status || ['pending', 'completed', 'failed', 'cancelled'].includes(status)
 
   return (
     <div className="flex items-center justify-between px-4 py-3 border-b border-[#333333] bg-[#121212] shrink-0">
@@ -162,7 +162,7 @@ export function AuditHeader({
               ) : (
                 <Play className="w-3 h-3" />
               )}
-              <span className="text-xs font-semibold">{status === 'paused' ? 'RESUME' : 'START'}</span>
+              <span className="text-xs font-semibold">{status && ['paused', 'running'].includes(status) ? 'RESUME' : 'START'}</span>
             </Button>
           )}
         </div>

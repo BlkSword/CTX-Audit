@@ -65,10 +65,18 @@ export class TauriAPIClient {
     try {
       return await invoke<T>(command, args)
     } catch (error) {
+      // 处理各种错误类型
+      let message = 'Unknown error'
       if (error instanceof Error) {
-        throw new Error(`Command ${command} failed: ${error.message}`)
+        message = error.message
+      } else if (typeof error === 'string') {
+        message = error
+      } else if (error && typeof error === 'object' && 'message' in error) {
+        message = String(error.message)
+      } else if (error) {
+        message = JSON.stringify(error)
       }
-      throw error
+      throw new Error(`Command ${command} failed: ${message}`)
     }
   }
 
