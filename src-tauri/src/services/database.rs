@@ -1,7 +1,7 @@
 // Copyright 2024 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::commands::{Finding, Project};
+use crate::commands::{Finding, FindingStatus, Project};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Pool, Sqlite};
 use std::path::Path;
@@ -168,6 +168,254 @@ impl Database {
         .fetch_all(&self.pool)
         .await
     }
+
+    // ==================== 实时审计相关方法 ====================
+
+    /// 获取文件的所有漏洞
+    pub async fn get_file_findings(
+        &self,
+        file_path: &str,
+        project_id: i64,
+    ) -> Result<Vec<Finding>, sqlx::Error> {
+        sqlx::query_as::<_, Finding>(
+            r#"
+            SELECT id, file_path, line_start, line_end, detector, vuln_type, severity, description, code_snippet, status, datetime(created_at) as created_at
+            FROM findings
+            WHERE file_path = ? AND project_id = ?
+            ORDER BY line_start ASC
+            "#
+        )
+        .bind(file_path)
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// 更新漏洞状态
+    pub async fn update_finding_status(
+        &self,
+        finding_id: &str,
+        status: FindingStatus,
+        user_note: Option<String>,
+    ) -> Result<(), sqlx::Error> {
+        let status_str = match status {
+            FindingStatus::New => "new",
+            FindingStatus::Fixed => "fixed",
+            FindingStatus::FalsePositive => "false_positive",
+            FindingStatus::Ignored => "ignored",
+            FindingStatus::Verified => "verified",
+        };
+
+        // 更新 findings 表
+        sqlx::query("UPDATE findings SET status = ? WHERE id = ?")
+            .bind(status_str)
+            .bind(finding_id)
+            .execute(&self.pool)
+            .await?;
+
+        // 插入或更新 finding_markers 表
+        sqlx::query(
+            r#"
+            INSERT INTO finding_markers (finding_id, file_path, status, user_note, updated_at)
+            VALUES (?, (SELECT file_path FROM findings WHERE id = ?), ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(finding_id) DO UPDATE SET
+                status = excluded.status,
+                user_note = excluded.user_note,
+                updated_at = CURRENT_TIMESTAMP
+            "#
+        )
+        .bind(finding_id)
+        .bind(finding_id)
+        .bind(status_str)
+        .bind(user_note)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 保存扫描结果
+    pub async fn save_scan_results(
+        &self,
+        project_id: i64,
+        file_path: &str,
+        findings: &[Finding],
+        content_hash: &str,
+    ) -> Result<(), sqlx::Error> {
+        // 保存每个漏洞
+        for finding in findings {
+            sqlx::query(
+                r#"
+                INSERT OR REPLACE INTO findings (finding_id, file_path, project_id, line_start, line_end, detector, vuln_type, severity, description, code_snippet, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#
+            )
+            .bind(&finding.id)
+            .bind(file_path)
+            .bind(project_id)
+            .bind(finding.line_start as i64)
+            .bind(finding.line_end as i64)
+            .bind(&finding.detector)
+            .bind(&finding.vuln_type)
+            .bind(&finding.severity)
+            .bind(&finding.description)
+            .bind(&finding.code_snippet)
+            .bind(&finding.status)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// 获取文件扫描缓存
+    pub async fn get_file_scan_cache(
+        &self,
+        file_path: &str,
+    ) -> Result<Option<FileScanCache>, sqlx::Error> {
+        #[derive(sqlx::FromRow)]
+        struct CacheRow {
+            id: i64,
+            file_path: String,
+            content_hash: String,
+            findings_json: String,
+            scanned_at: String,
+        }
+
+        let row = sqlx::query_as::<_, CacheRow>(
+            r#"
+            SELECT id, file_path, content_hash, findings_json, datetime(scanned_at) as scanned_at
+            FROM file_scan_cache
+            WHERE file_path = ?
+            ORDER BY scanned_at DESC
+            LIMIT 1
+            "#
+        )
+        .bind(file_path)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| FileScanCache {
+            id: r.id,
+            file_path: r.file_path,
+            content_hash: r.content_hash,
+            findings_json: r.findings_json,
+            scanned_at: r.scanned_at,
+        }))
+    }
+
+    /// 更新文件扫描缓存
+    pub async fn update_file_scan_cache(
+        &self,
+        file_path: &str,
+        content_hash: &str,
+        findings_json: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO file_scan_cache (file_path, content_hash, findings_json, scanned_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            "#
+        )
+        .bind(file_path)
+        .bind(content_hash)
+        .bind(findings_json)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 获取项目统计信息
+    pub async fn get_project_stats(
+        &self,
+        project_id: i64,
+    ) -> Result<ProjectStats, sqlx::Error> {
+        #[derive(sqlx::FromRow)]
+        struct StatsRow {
+            total_files: i64,
+            total_findings: i64,
+            critical: i64,
+            high: i64,
+            medium: i64,
+            low: i64,
+            info: i64,
+        }
+
+        let row = sqlx::query_as::<_, StatsRow>(
+            r#"
+            SELECT
+                (SELECT COUNT(DISTINCT file_path) FROM findings WHERE project_id = ?) as total_files,
+                (SELECT COUNT(*) FROM findings WHERE project_id = ?) as total_findings,
+                (SELECT COUNT(*) FROM findings WHERE project_id = ? AND severity = 'critical') as critical,
+                (SELECT COUNT(*) FROM findings WHERE project_id = ? AND severity = 'high') as high,
+                (SELECT COUNT(*) FROM findings WHERE project_id = ? AND severity = 'medium') as medium,
+                (SELECT COUNT(*) FROM findings WHERE project_id = ? AND severity = 'low') as low,
+                (SELECT COUNT(*) FROM findings WHERE project_id = ? AND severity = 'info') as info
+            "#
+        )
+        .bind(project_id)
+        .bind(project_id)
+        .bind(project_id)
+        .bind(project_id)
+        .bind(project_id)
+        .bind(project_id)
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(ProjectStats {
+            total_files: row.total_files,
+            total_findings: row.total_findings,
+            by_severity: SeverityStats {
+                critical: row.critical,
+                high: row.high,
+                medium: row.medium,
+                low: row.low,
+                info: row.info,
+            },
+        })
+    }
+
+    /// 获取项目文件列表
+    pub async fn get_project_files(
+        &self,
+        project_id: i64,
+    ) -> Result<Vec<ProjectFile>, sqlx::Error> {
+        #[derive(sqlx::FromRow)]
+        struct FileRow {
+            path: String,
+            name: String,
+            language: String,
+            findings_count: i64,
+            last_modified: String,
+        }
+
+        let rows = sqlx::query_as::<_, FileRow>(
+            r#"
+            SELECT
+                file_path as path,
+                file_name as name,
+                language,
+                findings_count,
+                datetime(last_modified) as last_modified
+            FROM project_files
+            WHERE project_id = ?
+            ORDER BY findings_count DESC, name ASC
+            "#
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| ProjectFile {
+            path: r.path,
+            name: r.name,
+            language: r.language,
+            findings_count: r.findings_count,
+            last_modified: r.last_modified,
+        }).collect())
+    }
 }
 
 /// 初始化数据库表
@@ -212,6 +460,35 @@ async fn init_tables(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             FOREIGN KEY(project_id) REFERENCES projects(id)
         );
 
+        CREATE TABLE IF NOT EXISTS finding_markers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            finding_id TEXT NOT NULL UNIQUE,
+            file_path TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'new',
+            user_note TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(finding_id) REFERENCES findings(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS file_scan_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT NOT NULL UNIQUE,
+            content_hash TEXT NOT NULL,
+            findings_json TEXT NOT NULL,
+            scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS project_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            file_path TEXT NOT NULL UNIQUE,
+            file_name TEXT NOT NULL,
+            language TEXT NOT NULL,
+            findings_count INTEGER DEFAULT 0,
+            last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+
         CREATE TABLE IF NOT EXISTS ast_indices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
@@ -243,10 +520,49 @@ async fn init_tables(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         CREATE INDEX IF NOT EXISTS idx_symbols_project ON symbols(project_id);
         CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(symbol_name);
         CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(symbol_type);
+        CREATE INDEX IF NOT EXISTS idx_findings_file ON findings(file_path);
+        CREATE INDEX IF NOT EXISTS idx_findings_project ON findings(project_id);
+        CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
         "#,
     )
     .execute(pool)
     .await?;
 
     Ok(())
+}
+
+// ==================== 辅助类型 ====================
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileScanCache {
+    pub id: i64,
+    pub file_path: String,
+    pub content_hash: String,
+    pub findings_json: String,
+    pub scanned_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectStats {
+    pub total_files: i64,
+    pub total_findings: i64,
+    pub by_severity: SeverityStats,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SeverityStats {
+    pub critical: i64,
+    pub high: i64,
+    pub medium: i64,
+    pub low: i64,
+    pub info: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectFile {
+    pub path: String,
+    pub name: String,
+    pub language: String,
+    pub findings_count: i64,
+    pub last_modified: String,
 }

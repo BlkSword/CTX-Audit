@@ -1,16 +1,10 @@
-/**
- * BottomPanel - VSCode 风格底部面板
- *
- * 显示输出、终端、问题、调试控制台等
- */
-
 import { Terminal, AlertCircle, Bug, ScrollText, X, Maximize2 } from 'lucide-react'
 import { useLayoutStore } from '@/stores/layoutStore'
 import type { BottomPanelTab } from '@/stores/layoutStore'
-import { ResizablePanel } from '@/components/ui/resizable'
 import { cn } from '@/lib/utils'
+import { ProblemsPanel } from '@/components/editor/ProblemsPanel'
+import { useFindingMarkerStore } from '@/stores/findingMarkerStore'
 
-// 底部面板标签配置
 const bottomPanelTabs: Array<{
   id: BottomPanelTab
   icon: typeof Terminal
@@ -41,18 +35,8 @@ export function BottomPanel({ className, children }: BottomPanelProps) {
   }
 
   return (
-    <ResizablePanel
-      defaultSize={25}
-      minSize={10}
-      maxSize={60}
-      className={cn(
-        'bg-[#1e1e1e] border-t border-border/40 flex flex-col',
-        className
-      )}
-    >
-      {/* 底部面板标题栏 */}
+    <div className={cn('bg-[#1e1e1e] border-t border-border/40 flex flex-col h-full', className)}>
       <div className="h-9 flex items-center justify-between px-2 bg-[#252526] border-b border-border/40 select-none">
-        {/* 左侧：标签 */}
         <div className="flex items-center gap-1">
           {bottomPanelTabs.map((tab) => {
             const Icon = tab.icon
@@ -76,7 +60,6 @@ export function BottomPanel({ className, children }: BottomPanelProps) {
           })}
         </div>
 
-        {/* 右侧：操作按钮 */}
         <div className="flex items-center gap-1">
           <button
             className="p-1.5 text-muted-foreground hover:text-white hover:bg-white/5 rounded transition-colors"
@@ -94,15 +77,13 @@ export function BottomPanel({ className, children }: BottomPanelProps) {
         </div>
       </div>
 
-      {/* 底部面板内容 */}
       <div className="flex-1 overflow-auto">
         {children || <BottomPanelContent />}
       </div>
-    </ResizablePanel>
+    </div>
   )
 }
 
-// 默认底部面板内容
 function BottomPanelContent() {
   const { activeBottomTab } = useLayoutStore()
 
@@ -122,7 +103,6 @@ function BottomPanelContent() {
   }
 }
 
-// 输出内容
 function OutputContent() {
   return (
     <div className="p-4 text-sm font-mono text-muted-foreground">
@@ -132,7 +112,6 @@ function OutputContent() {
   )
 }
 
-// 终端内容
 function TerminalContent() {
   return (
     <div className="p-4 text-sm font-mono text-muted-foreground">
@@ -142,17 +121,14 @@ function TerminalContent() {
   )
 }
 
-// 问题内容
 function ProblemsContent() {
+  const { jumpToFinding } = useFindingMarkerStore()
+
   return (
-    <div className="p-4 text-sm text-muted-foreground">
-      <p>问题面板</p>
-      <p className="mt-2 text-xs">显示代码中的错误和警告</p>
-    </div>
+    <ProblemsPanel onJumpToFinding={(findingId) => jumpToFinding('group-1', findingId)} />
   )
 }
 
-// 调试控制台内容
 function DebugConsoleContent() {
   return (
     <div className="p-4 text-sm font-mono text-muted-foreground">
@@ -162,7 +138,6 @@ function DebugConsoleContent() {
   )
 }
 
-// 日志内容
 function LogsContent() {
   return (
     <div className="p-4 text-sm font-mono text-muted-foreground">

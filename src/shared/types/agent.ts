@@ -54,7 +54,6 @@ export interface AuditConfig {
   enable_verification?: boolean
   max_iterations?: number
   timeout_seconds?: number
-  // 新增配置项
   llm_max_retries?: number
   llm_timeout_seconds?: number
   tool_timeout_seconds?: number
@@ -112,6 +111,14 @@ export interface Vulnerability {
   file_path: string
   line_number: number
   line_end?: number
+  // 内联标记支持
+  column_start?: number
+  column_end?: number
+  code_context?: string
+  // 状态管理
+  status?: 'new' | 'fixed' | 'false_positive' | 'ignored' | 'verified'
+  user_note?: string
+  // 原有字段
   code_snippet: string
   remediation: string
   exploit_condition?: string

@@ -87,9 +87,24 @@ export class TauriAPIClient {
     return this.invoke<Project[]>('list_projects')
   }
 
+  /** 获取单个项目 */
+  async getProjectById(id: number): Promise<Project> {
+    return this.invoke<Project>('get_project_by_id', { id })
+  }
+
+  /** 通过路径获取项目 */
+  async getProjectByPath(path: string): Promise<Project | null> {
+    return this.invoke<Project | null>('get_project_by_path', { path })
+  }
+
   /** 创建项目 */
   async createProject(name: string, path: string): Promise<Project> {
     return this.invoke<Project>('create_project', { name, path })
+  }
+
+  /** 打开目录（自动创建或获取现有项目） */
+  async openDirectory(): Promise<Project> {
+    return this.invoke<Project>('open_directory')
   }
 
   /** 删除项目 */
