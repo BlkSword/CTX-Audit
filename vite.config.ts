@@ -10,6 +10,10 @@ export default defineConfig(({ mode }) => ({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // Worker 配置，支持 Monaco Editor
+  worker: {
+    format: 'es',
+  },
   base: '/',
   clearScreen: false,
   server: {

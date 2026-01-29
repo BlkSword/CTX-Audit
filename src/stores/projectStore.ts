@@ -16,7 +16,9 @@ interface ProjectState {
 
   // Actions
   loadProjects: () => Promise<void>
+  getProjectById: (id: number) => Promise<Project>
   createProject: (name: string, path: string) => Promise<Project>
+  openDirectory: () => Promise<Project>
   deleteProject: (id: number) => Promise<void>
   setCurrentProject: (project: Project | null) => void
   clearError: () => void
@@ -43,6 +45,19 @@ export const useProjectStore = create<ProjectState>()(
           }
         },
 
+        getProjectById: async (id) => {
+          set({ isLoading: true, error: null })
+          try {
+            const project = await tauriApi.getProjectById(id)
+            set({ isLoading: false })
+            return project
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '获取项目失败'
+            set({ error: message, isLoading: false })
+            throw error
+          }
+        },
+
         createProject: async (name, path) => {
           set({ isLoading: true, error: null })
           try {
@@ -54,6 +69,33 @@ export const useProjectStore = create<ProjectState>()(
             return project
           } catch (error) {
             const message = error instanceof Error ? error.message : '创建项目失败'
+            set({ error: message, isLoading: false })
+            throw error
+          }
+        },
+
+        openDirectory: async () => {
+          set({ isLoading: true, error: null })
+          try {
+            const project = await tauriApi.openDirectory()
+            set(state => {
+              // 检查项目是否已存在
+              const existing = state.projects.find(p => p.id === project.id)
+              if (!existing) {
+                return {
+                  projects: [project, ...state.projects],
+                  currentProject: project,
+                  isLoading: false
+                }
+              }
+              return {
+                currentProject: project,
+                isLoading: false
+              }
+            })
+            return project
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '打开目录失败'
             set({ error: message, isLoading: false })
             throw error
           }

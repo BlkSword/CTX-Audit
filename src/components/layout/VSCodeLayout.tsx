@@ -1,10 +1,3 @@
-/**
- * VSCodeLayout - VSCode 风格主布局
- *
- * 整合 ActivityBar、Sidebar、Editor Panel、BottomPanel、ProjectTabsBar
- * 提供可拖拽调整大小的面板布局，支持多项目并行审计
- */
-
 import { type ReactNode } from 'react'
 import { Outlet } from 'react-router-dom'
 import { ActivityBar } from './ActivityBar'
@@ -12,53 +5,26 @@ import { Sidebar } from './Sidebar'
 import { BottomPanel } from './BottomPanel'
 import { ProjectTabsBar } from './ProjectTabsBar'
 import { useLayoutStore } from '@/stores/layoutStore'
-import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
 import { cn } from '@/lib/utils'
+import {
+  HorizontalGroup,
+  VerticalGroup,
+  HPanel,
+  VPanel,
+  FixedPanel,
+  FlexPanel,
+} from './FlexLayout'
 
 interface VSCodeLayoutProps {
-  /**
-   * 顶部标题栏内容
-   */
   header?: ReactNode
-
-  /**
-   * 编辑器区域内容（如果为空，则使用 Outlet 渲染子路由）
-   */
   editorContent?: ReactNode
-
-  /**
-   * 底部面板内容（如果为空，则使用默认内容）
-   */
   bottomPanelContent?: ReactNode
-
-  /**
-   * 自定义类名
-   */
   className?: string
-
-  /**
-   * 是否显示活动栏
-   */
   showActivityBar?: boolean
-
-  /**
-   * 是否显示项目标签栏（多项目模式）
-   */
   showProjectTabs?: boolean
+  forceHideSidebar?: boolean
 }
 
-/**
- * VSCode 风格布局组件
- *
- * @example
- * ```tsx
- * <VSCodeLayout
- *   header={<CustomHeader />}
- *   editorContent={<CustomEditor />}
- *   showProjectTabs={true}
- * />
- * ```
- */
 export function VSCodeLayout({
   header,
   editorContent,
@@ -66,82 +32,82 @@ export function VSCodeLayout({
   className,
   showActivityBar = true,
   showProjectTabs = false,
+  forceHideSidebar = false,
 }: VSCodeLayoutProps) {
   const { sidebarVisible, bottomPanelVisible } = useLayoutStore()
+  const shouldShowSidebar = !forceHideSidebar && sidebarVisible && showActivityBar
 
   return (
     <div className={cn('h-screen w-screen flex flex-col bg-background text-foreground overflow-hidden', className)}>
-      {/* 顶部标题栏 */}
-      {header && (
-        <div className="shrink-0">
-          {header}
-        </div>
-      )}
+      {header && <div className="shrink-0">{header}</div>}
 
-      {/* 项目标签栏（多项目模式） */}
       {showProjectTabs && (
         <div className="shrink-0">
           <ProjectTabsBar />
         </div>
       )}
 
-      {/* 主内容区域 */}
       <div className="flex-1 flex overflow-hidden">
-        {/* 活动栏 */}
         {showActivityBar && (
-          <div className="shrink-0">
+          <FixedPanel basis="48px">
             <ActivityBar />
-          </div>
+          </FixedPanel>
         )}
 
-        {/* 可调整大小的面板组 */}
-        <ResizablePanelGroup
-          direction="horizontal"
-          className="flex-1"
-        >
-          {/* 侧边栏 */}
-          {sidebarVisible && <Sidebar />}
-
-          {/* 侧边栏和编辑器之间的分隔条 */}
-          {sidebarVisible && <ResizableHandle withHandle />}
-
-          {/* 编辑器和底部面板 - 作为可调整大小的面板 */}
-          <ResizablePanel defaultSize={80} minSize={20}>
-            <ResizablePanelGroup
-              direction="vertical"
-              className="h-full"
+        <HorizontalGroup className="flex-1">
+          {shouldShowSidebar && (
+            <HPanel
+              key="sidebar"
+              defaultSize={20}
+              minSize={15}
+              maxSize={50}
+              className="bg-[#252526] border-r border-border/40"
             >
-              {/* 编辑器区域 */}
-              <ResizablePanel
-                defaultSize={bottomPanelVisible ? 75 : 100}
-                minSize={20}
-                className="bg-[#1e1e1e] overflow-auto"
-              >
-                {editorContent || <Outlet />}
-              </ResizablePanel>
+              <Sidebar />
+            </HPanel>
+          )}
 
-              {/* 底部面板 */}
+          <FlexPanel>
+            <VerticalGroup className="h-full">
+              {bottomPanelVisible ? (
+                <VPanel
+                  defaultSize={75}
+                  minSize={20}
+                  showHandle={true}
+                  className="bg-[#1e1e1e] overflow-auto"
+                >
+                  {editorContent || <Outlet />}
+                </VPanel>
+              ) : (
+                <div className="flex-1 min-h-0 bg-[#1e1e1e] overflow-auto">
+                  {editorContent || <Outlet />}
+                </div>
+              )}
+
               {bottomPanelVisible && (
-                <>
-                  <ResizableHandle withHandle />
+                <VPanel
+                  key="bottom"
+                  defaultSize={25}
+                  minSize={15}
+                  maxSize={50}
+                  showHandle={false}
+                  className="bg-[#252526] border-t border-border/40"
+                >
                   <BottomPanel>
                     {bottomPanelContent}
                   </BottomPanel>
-                </>
+                </VPanel>
               )}
-            </ResizablePanelGroup>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+            </VerticalGroup>
+          </FlexPanel>
+        </HorizontalGroup>
       </div>
     </div>
   )
 }
 
-// 导出所有子组件
 export { ActivityBar } from './ActivityBar'
 export { Sidebar } from './Sidebar'
 export { BottomPanel } from './BottomPanel'
 export { ProjectTabsBar } from './ProjectTabsBar'
-
-// 导出布局 store hooks
 export { useLayoutStore, useActiveActivity, useSidebarVisible, useBottomPanelVisible, useActiveBottomTab } from '@/stores/layoutStore'

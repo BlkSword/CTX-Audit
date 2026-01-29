@@ -46,7 +46,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Projects
             commands::project::list_projects,
+            commands::project::get_project_by_id,
+            commands::project::get_project_by_path,
             commands::project::create_project,
+            commands::project::open_directory,
             commands::project::delete_project,
             // Files
             commands::files::read_file,
@@ -59,6 +62,12 @@ pub fn run() {
             commands::agent::start_agent_service,
             commands::agent::stop_agent_service,
             commands::agent::get_agent_status,
+            // Realtime Audit
+            commands::realtime_audit::get_file_findings,
+            commands::realtime_audit::update_finding_status,
+            commands::realtime_audit::scan_file,
+            commands::realtime_audit::get_project_stats,
+            commands::realtime_audit::get_project_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

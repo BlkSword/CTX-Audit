@@ -57,7 +57,7 @@ const defaultLayout = {
   activeActivity: 'explorer' as ActivityBarItem | null,
   sidebarVisible: true,
   sidebarSize: 20, // 20%
-  agentPanelVisible: true,
+  agentPanelVisible: false,  // 默认隐藏 Agent 面板
   agentPanelSize: 35, // 35%
   bottomPanelVisible: false,
   bottomPanelSize: 25, // 25%
@@ -134,8 +134,8 @@ export const useLayoutStore = create<LayoutState>()(
         set(defaultLayout),
     }),
     {
-      name: 'ctx-audit-layout', // localStorage key
-      version: 2,
+      name: 'ctx-audit-layout-flex', // 使用纯 Flexbox 实现
+      version: 1,
     }
   )
 )

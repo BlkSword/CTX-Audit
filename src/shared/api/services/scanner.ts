@@ -2,7 +2,7 @@
  * 扫描器服务 API
  */
 
-import { api } from '../client'
+import { tauriApi } from '../tauri-client'
 import type { Vulnerability, ScanResult } from '@/shared/types'
 
 export class ScannerService {
@@ -10,25 +10,21 @@ export class ScannerService {
    * 运行扫描
    */
   async runScan(projectPath: string, projectId?: number, rules?: string[]): Promise<ScanResult> {
-    return api.invoke('run_scan', {
-      project_path: projectPath,
-      project_id: projectId,
-      rules,
-    })
+    return tauriApi.runScan(projectPath, projectId, rules)
   }
 
   /**
-   * 上传并扫描（Web 版）
+   * 上传并扫描（Web 版 - Tauri 不支持）
    */
-  async uploadAndScan(files: FileList): Promise<ScanResult> {
-    return api.uploadFiles(files)
+  async uploadAndScan(_files: FileList): Promise<ScanResult> {
+    throw new Error('uploadAndScan is not supported in Tauri desktop app')
   }
 
   /**
    * 获取扫描结果
    */
   async getFindings(projectId: number): Promise<Vulnerability[]> {
-    return api.get<Vulnerability[]>(`/api/scanner/findings/${projectId}`)
+    return tauriApi.getFindings(projectId)
   }
 }
 
