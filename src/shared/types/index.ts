@@ -84,6 +84,9 @@ export interface FileNode {
   children?: FileNode[]
   size?: number
   modified?: string
+  // 懒加载相关
+  loaded?: boolean
+  hasChildren?: boolean
 }
 
 // ==================== 搜索相关 ====================

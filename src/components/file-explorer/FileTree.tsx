@@ -34,7 +34,7 @@ interface FileTreeProps {
 }
 
 // 根据文件扩展名获取图标
-function getFileIcon(filename: string) {
+export function getFileIcon(filename: string) {
   const ext = filename.split('.').pop()?.toLowerCase() || ''
 
   // 代码文件
@@ -132,13 +132,11 @@ const FileTreeNode = memo(({
   level,
   selectedPath,
   onSelect,
-  onDataChange,
 }: {
   node: FileNode
   level: number
   selectedPath: string | null
   onSelect: (path: string | null) => void
-  onDataChange?: () => void
 }) => {
   const [isOpen, setIsOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -174,9 +172,6 @@ const FileTreeNode = memo(({
       setChildren(newChildren)
       setIsOpen(true)
       setIsLoading(false)
-
-      // 通知父组件更新
-      onDataChange?.()
     } catch (error) {
       console.error('Failed to load directory:', error)
       setIsLoading(false)
@@ -184,7 +179,7 @@ const FileTreeNode = memo(({
       setChildren([])
       node.loaded = true
     }
-  }, [node, isFolder, isOpen, children, onSelect, onDataChange])
+  }, [node, isFolder, isOpen, onSelect])
 
   // 文件节点
   if (!isFolder) {
@@ -239,7 +234,6 @@ const FileTreeNode = memo(({
               level={level + 1}
               selectedPath={selectedPath}
               onSelect={onSelect}
-              onDataChange={onDataChange}
             />
           ))}
         </div>
@@ -275,9 +269,6 @@ export const FileTree = memo(({ nodes, selectedPath, onSelect }: FileTreeProps) 
           level={0}
           selectedPath={selectedPath}
           onSelect={onSelect}
-          onDataChange={() => {
-            // 可以在这里触发其他更新
-          }}
         />
       ))}
     </div>

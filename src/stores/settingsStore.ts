@@ -1,6 +1,7 @@
 /**
- * 系统设置状态管理
- * 基于 Zustand
+ * 系统设置状态管理 (纯本地版本)
+ *
+ * 使用 localStorage 存储设置，LLM 测试通过 Tauri 后端
  */
 
 import { create } from 'zustand'
@@ -9,32 +10,20 @@ import type {
   SystemSettings,
   LLMConfig,
 } from '@/shared/types'
-import {
-  getLLMConfigs,
-  createLLMConfig,
-  updateLLMConfig,
-  deleteLLMConfig,
-  setDefaultLLMConfig,
-  testLLMConfig,
-  testLLMConnection,
-  getSystemSettings,
-  updateSystemSettings as updateSystemSettingsAPI,
-  resetSystemSettings,
-  getDefaultSettings,
-} from '@/shared/api/settings-client'
 import { DEFAULT_SYSTEM_SETTINGS as DEFAULTS } from '@/shared/types'
+import { tauriApi } from '@/shared/api/tauri-client'
+
+// localStorage keys
+const LLM_CONFIGS_KEY = 'ctx-audit-llm-configs'
+const SYSTEM_SETTINGS_KEY = 'ctx-audit-system-settings'
 
 interface SettingsState {
   // LLM 配置
   llmConfigs: LLMConfig[]
   defaultLLMConfigId: string | null
-  llmConfigsLoading: boolean
-  llmConfigsError: string | null
 
   // 系统设置
   systemSettings: SystemSettings
-  systemSettingsLoading: boolean
-  systemSettingsError: string | null
 
   // 操作方法
   // LLM 配置
@@ -50,197 +39,157 @@ interface SettingsState {
   loadSystemSettings: () => Promise<void>
   updateSystemSettings: (settings: Partial<SystemSettings>) => Promise<void>
   resetSystemSettings: () => Promise<void>
-  loadDefaultSettings: () => Promise<void>
 
   // 清理
   clearError: () => void
   reset: () => void
 }
 
+// LocalStorage 辅助函数
+const loadFromStorage = <T>(key: string, defaultValue: T): T => {
+  try {
+    const item = localStorage.getItem(key)
+    if (!item) return defaultValue
+    return JSON.parse(item) as T
+  } catch {
+    return defaultValue
+  }
+}
+
+const saveToStorage = <T>(key: string, value: T): void => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch (error) {
+    console.error(`Failed to save ${key}:`, error)
+  }
+}
+
 const initialState = {
   llmConfigs: [],
   defaultLLMConfigId: null,
-  llmConfigsLoading: false,
-  llmConfigsError: null,
-
   systemSettings: DEFAULTS,
-  systemSettingsLoading: false,
-  systemSettingsError: null,
 }
 
 export const useSettingsStore = create<SettingsState>()(
   devtools(
-    persist(
-      (set, get) => ({
-        ...initialState,
+    (set, get) => ({
+      ...initialState,
 
-        // ==================== LLM 配置操作 ====================
+      // ==================== LLM 配置操作 ====================
 
-        loadLLMConfigs: async () => {
-          set({ llmConfigsLoading: true, llmConfigsError: null })
-          try {
-            const response = await getLLMConfigs()
-            set({
-              llmConfigs: response.configs,
-              defaultLLMConfigId: response.configs.find(c => c.isDefault)?.id || null,
-              llmConfigsLoading: false,
-            })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '加载 LLM 配置失败'
-            set({ llmConfigsError: message, llmConfigsLoading: false })
-            throw error
+      loadLLMConfigs: async () => {
+        const stored: LLMConfig[] = loadFromStorage(LLM_CONFIGS_KEY, [])
+        set({
+          llmConfigs: stored,
+          defaultLLMConfigId: stored.find((c: LLMConfig) => c.isDefault)?.id || null,
+        })
+      },
+
+      createLLMConfig: async (config) => {
+        const newConfig: LLMConfig = {
+          ...config,
+          id: `llm_${Date.now()}`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        const current = get().llmConfigs
+        const updated = [...current, newConfig]
+        saveToStorage(LLM_CONFIGS_KEY, updated)
+        set({ llmConfigs: updated })
+      },
+
+      updateLLMConfig: async (id, config) => {
+        const current = get().llmConfigs
+        const updated = current.map(c =>
+          c.id === id
+            ? { ...c, ...config, updatedAt: new Date().toISOString() }
+            : c
+        )
+        saveToStorage(LLM_CONFIGS_KEY, updated)
+        set({ llmConfigs: updated })
+      },
+
+      deleteLLMConfig: async (id) => {
+        const current = get().llmConfigs
+        const updated = current.filter(c => c.id !== id)
+        saveToStorage(LLM_CONFIGS_KEY, updated)
+
+        // 如果删除的是默认配置，清除默认设置
+        const defaultId = get().defaultLLMConfigId
+        if (defaultId === id) {
+          set({ llmConfigs: updated, defaultLLMConfigId: null })
+        } else {
+          set({ llmConfigs: updated })
+        }
+      },
+
+      setDefaultLLMConfig: async (id) => {
+        const current = get().llmConfigs
+        const updated = current.map(c =>
+          c.id === id ? { ...c, isDefault: true } : { ...c, isDefault: false }
+        )
+        saveToStorage(LLM_CONFIGS_KEY, updated)
+        set({ llmConfigs: updated, defaultLLMConfigId: id })
+      },
+
+      testLLMConfig: async (id) => {
+        try {
+          return await tauriApi.testLLMConfig(id)
+        } catch (error) {
+          console.error('LLM config test failed:', error)
+          return {
+            success: false,
+            message: error instanceof Error ? error.message : '测试失败'
           }
-        },
+        }
+      },
 
-        createLLMConfig: async (config) => {
-          try {
-            await createLLMConfig(config)
-            // 重新加载配置列表
-            await get().loadLLMConfigs()
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '创建 LLM 配置失败'
-            set({ llmConfigsError: message })
-            throw error
+      testLLMConnection: async (config) => {
+        try {
+          return await tauriApi.testLLMConnection(config)
+        } catch (error) {
+          console.error('LLM connection test failed:', error)
+          return {
+            success: false,
+            message: error instanceof Error ? error.message : '测试失败'
           }
-        },
+        }
+      },
 
-        updateLLMConfig: async (id, config) => {
-          try {
-            await updateLLMConfig(id, config)
-            // 重新加载配置列表
-            await get().loadLLMConfigs()
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '更新 LLM 配置失败'
-            set({ llmConfigsError: message })
-            throw error
-          }
-        },
+      // ==================== 系统设置操作 ====================
 
-        deleteLLMConfig: async (id) => {
-          try {
-            await deleteLLMConfig(id)
-            // 重新加载配置列表
-            await get().loadLLMConfigs()
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '删除 LLM 配置失败'
-            set({ llmConfigsError: message })
-            throw error
-          }
-        },
+      loadSystemSettings: async () => {
+        const stored = loadFromStorage(SYSTEM_SETTINGS_KEY, DEFAULTS)
+        set({ systemSettings: { ...DEFAULTS, ...stored } })
+      },
 
-        setDefaultLLMConfig: async (id) => {
-          try {
-            await setDefaultLLMConfig(id)
-            // 重新加载配置列表
-            await get().loadLLMConfigs()
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '设置默认配置失败'
-            set({ llmConfigsError: message })
-            throw error
-          }
-        },
+      updateSystemSettings: async (settings) => {
+        const current = get().systemSettings
+        const updated = { ...current, ...settings }
+        saveToStorage(SYSTEM_SETTINGS_KEY, updated)
+        set({ systemSettings: updated })
+      },
 
-        testLLMConfig: async (id) => {
-          try {
-            const result = await testLLMConfig(id)
-            return result
-          } catch (error) {
-            return {
-              success: false,
-              message: error instanceof Error ? error.message : '测试连接失败',
-            }
-          }
-        },
+      resetSystemSettings: async () => {
+        saveToStorage(SYSTEM_SETTINGS_KEY, DEFAULTS)
+        set({ systemSettings: DEFAULTS })
+      },
 
-        testLLMConnection: async (config) => {
-          try {
-            const result = await testLLMConnection(config)
-            return result
-          } catch (error) {
-            return {
-              success: false,
-              message: error instanceof Error ? error.message : '测试连接失败',
-            }
-          }
-        },
+      // ==================== 清理 ====================
 
-        // ==================== 系统设置操作 ====================
+      clearError: () => {
+        // No errors in localStorage-only mode
+      },
 
-        loadSystemSettings: async () => {
-          set({ systemSettingsLoading: true, systemSettingsError: null })
-          try {
-            const settings = await getSystemSettings()
-            set({
-              systemSettings: { ...DEFAULTS, ...settings },
-              systemSettingsLoading: false,
-            })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '加载系统设置失败'
-            set({ systemSettingsError: message, systemSettingsLoading: false })
-            // 使用默认设置
-            set({ systemSettings: DEFAULTS, systemSettingsLoading: false })
-          }
-        },
-
-        updateSystemSettings: async (settings) => {
-          try {
-            await updateSystemSettingsAPI(settings)
-            set((state) => ({
-              systemSettings: { ...state.systemSettings, ...settings },
-            }))
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '更新系统设置失败'
-            set({ systemSettingsError: message })
-            throw error
-          }
-        },
-
-        resetSystemSettings: async () => {
-          try {
-            await resetSystemSettings()
-            set({ systemSettings: DEFAULTS })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '重置系统设置失败'
-            set({ systemSettingsError: message })
-            throw error
-          }
-        },
-
-        loadDefaultSettings: async () => {
-          try {
-            const defaults = await getDefaultSettings()
-            set({ systemSettings: defaults })
-          } catch (error) {
-            console.error('加载默认设置失败:', error)
-          }
-        },
-
-        // ==================== 清理 ====================
-
-        clearError: () => {
-          set({
-            llmConfigsError: null,
-            systemSettingsError: null,
-          })
-        },
-
-        reset: () => {
-          set(initialState)
-        },
+      reset: () => {
+        set(initialState)
+      },
+    }),
+    {
+      name: 'settings-storage',
+      partialize: (state: SettingsState) => ({
+        systemSettings: state.systemSettings,
       }),
-      {
-        name: 'settings-storage',
-        // 只持久化部分设置（不包括敏感信息）
-        partialize: (state) => ({
-          systemSettings: {
-            ...state.systemSettings,
-            // 不持久化敏感字段
-            git: {
-              defaultBranch: state.systemSettings.git?.defaultBranch,
-            },
-          },
-        }),
-      }
-    )
+    }
   )
 )

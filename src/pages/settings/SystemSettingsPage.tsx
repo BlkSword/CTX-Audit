@@ -39,8 +39,6 @@ export function SystemSettingsPage() {
 
   const {
     systemSettings,
-    systemSettingsLoading,
-    systemSettingsError,
     loadSystemSettings,
     updateSystemSettings,
     resetSystemSettings,
@@ -52,14 +50,12 @@ export function SystemSettingsPage() {
 
   useEffect(() => {
     loadSystemSettings()
-  }, [loadSystemSettings])
+  }, []) // 只在组件挂载时加载一次
 
   // 当系统设置加载完成后，同步到本地状态
   useEffect(() => {
-    if (!systemSettingsLoading) {
-      setLocalSettings(systemSettings)
-    }
-  }, [systemSettings, systemSettingsLoading])
+    setLocalSettings(systemSettings)
+  }, [systemSettings])
 
   // 检查是否有变更
   useEffect(() => {
@@ -115,35 +111,12 @@ export function SystemSettingsPage() {
     })
   }
 
-  if (systemSettingsLoading) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  if (systemSettingsError) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <Card className="p-8 text-center border-destructive">
-          <p className="text-destructive mb-4">{systemSettingsError}</p>
-          <Button onClick={loadSystemSettings} variant="outline">
-            <RotateCcw className="w-4 h-4 mr-2" />
-            重试
-          </Button>
-        </Card>
-      </div>
-    )
-  }
-
   return (
-    <div className="h-full flex flex-col">
-      {/* Header */}
-      <div className="border-b border-border/40 px-6 py-4 flex items-center justify-between bg-muted/20">
-        <div className="flex items-center gap-3">
-          <SettingsIcon className="w-5 h-5 text-primary" />
-          <h2 className="text-lg font-semibold">系统设置</h2>
+    <div className="max-w-3xl mx-auto">
+      {/* 操作工具栏 */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="text-sm text-[var(--vscode-descriptionForeground)]">
+          配置应用程序的各项参数和行为
         </div>
 
         <div className="flex items-center gap-2">
@@ -171,9 +144,7 @@ export function SystemSettingsPage() {
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 overflow-auto p-6 no-scrollbar">
-        <Tabs defaultValue="analysis" className="max-w-3xl mx-auto">
+      <Tabs defaultValue="analysis">
           <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="analysis" className="gap-2">
               <Scan className="w-4 h-4" />
@@ -199,8 +170,8 @@ export function SystemSettingsPage() {
 
           {/* 分析参数设置 */}
           <TabsContent value="analysis" className="mt-6 space-y-6">
-            <Card className="p-6">
-              <h3 className="text-lg font-semibold mb-4">扫描分析参数</h3>
+            <Card className="p-6 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
+              <h3 className="text-lg font-semibold mb-4 text-[var(--vscode-editor-foreground)]">扫描分析参数</h3>
               <div className="space-y-6">
 
                 {/* 最大分析文件数 */}
@@ -365,7 +336,7 @@ export function SystemSettingsPage() {
 
           {/* Git 集成设置 */}
           <TabsContent value="git" className="mt-6 space-y-6">
-            <Card className="p-6">
+            <Card className="p-6 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <h3 className="text-lg font-semibold mb-4">Git 仓库集成</h3>
               <p className="text-sm text-muted-foreground mb-6">
                 配置 Git 托管平台的访问令牌
@@ -424,7 +395,7 @@ export function SystemSettingsPage() {
 
           {/* Agent 配置 */}
           <TabsContent value="agent" className="mt-6 space-y-6">
-            <Card className="p-6">
+            <Card className="p-6 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <h3 className="text-lg font-semibold mb-4">Agent 行为配置</h3>
               <div className="space-y-6">
 
@@ -496,7 +467,7 @@ export function SystemSettingsPage() {
 
           {/* 界面偏好设置 */}
           <TabsContent value="ui" className="mt-6 space-y-6">
-            <Card className="p-6">
+            <Card className="p-6 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <h3 className="text-lg font-semibold mb-4">界面偏好</h3>
               <div className="space-y-6">
 
@@ -606,7 +577,7 @@ export function SystemSettingsPage() {
 
           {/* 嵌入模型配置 */}
           <TabsContent value="embedding" className="mt-6 space-y-6">
-            <Card className="p-6">
+            <Card className="p-6 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <h3 className="text-lg font-semibold mb-4">嵌入模型配置</h3>
               <p className="text-sm text-muted-foreground mb-6">
                 配置向量嵌入模型用于 RAG 知识检索
@@ -681,26 +652,6 @@ export function SystemSettingsPage() {
             </Card>
           </TabsContent>
         </Tabs>
-      </div>
-
-      {/* Footer - 提示有未保存的更改 */}
-      {hasChanges && (
-        <div className="border-t border-border/40 px-6 py-3 bg-muted/30">
-          <div className="flex items-center justify-center gap-2 text-sm text-amber-600 dark:text-amber-400">
-            <span>您有未保存的更改</span>
-            <Button size="sm" variant="ghost" onClick={handleSave} disabled={isSaving}>
-              {isSaving ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <>
-                  <Save className="w-4 h-4 mr-1" />
-                  立即保存
-                </>
-              )}
-            </Button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

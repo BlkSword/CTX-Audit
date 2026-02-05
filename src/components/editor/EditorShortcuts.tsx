@@ -7,7 +7,7 @@
 import { useEffect, useCallback } from 'react'
 import { useEditorStore } from '@/stores/editorStore'
 import { useFindingMarkerStore } from '@/stores/findingMarkerStore'
-import { useLayoutStore } from '@/stores/layoutStore'
+import { useLayoutStore, setActiveBottomTab } from '@/stores/layoutStore'
 import { useRealtimeAuditStore } from '@/stores/realTimeAuditStore'
 
 export interface EditorShortcutsProps {
@@ -25,7 +25,7 @@ export function EditorShortcuts({ enabled = true }: EditorShortcutsProps) {
     splitGroup,
   } = useEditorStore()
   const { jumpToFinding } = useFindingMarkerStore()
-  const { toggleBottomPanel, setActiveBottomTab } = useLayoutStore()
+  const toggleBottomPanel = useLayoutStore(state => state.toggleBottomPanel)
   const { autoMode, setAutoMode } = useRealtimeAuditStore()
 
   /**

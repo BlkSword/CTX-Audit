@@ -4,7 +4,7 @@ import { Sidebar } from './Sidebar'
 import { BottomPanel } from './BottomPanel'
 import { AgentPanel } from './AgentPanel'
 import { CodeEditorPanel } from './CodeEditorPanel'
-import { useLayoutStore } from '@/stores/layoutStore'
+import { useLayoutStore, useSidebarVisible, useSidebarSize, useAgentPanelVisible, useAgentPanelSize } from '@/stores/layoutStore'
 import { cn } from '@/lib/utils'
 import {
   HorizontalGroup,
@@ -16,7 +16,6 @@ import {
 } from './FlexLayout'
 
 export interface EditorLayoutProps {
-  header?: ReactNode
   editorContent?: ReactNode
   agentContent?: ReactNode
   bottomPanelContent?: ReactNode
@@ -26,7 +25,6 @@ export interface EditorLayoutProps {
 }
 
 export function EditorLayout({
-  header,
   editorContent,
   agentContent,
   bottomPanelContent,
@@ -34,21 +32,15 @@ export function EditorLayout({
   showActivityBar = true,
   showBottomPanel = false,
 }: EditorLayoutProps) {
-  const {
-    sidebarVisible,
-    sidebarSize,
-    agentPanelVisible,
-    agentPanelSize,
-    bottomPanelVisible,
-    bottomPanelSize,
-  } = useLayoutStore()
+  const sidebarVisible = useSidebarVisible()
+  const sidebarSize = useSidebarSize()
+  const agentPanelVisible = useAgentPanelVisible()
+  const agentPanelSize = useAgentPanelSize()
+  const bottomPanelVisible = useLayoutStore(state => state.bottomPanelVisible)
+  const bottomPanelSize = useLayoutStore(state => state.bottomPanelSize)
 
   return (
     <div className={cn('h-screen w-screen flex flex-col bg-[#1e1e1e] text-foreground overflow-hidden', className)}>
-      {header && (
-        <div className="shrink-0">{header}</div>
-      )}
-
       <div className="flex-1 flex overflow-hidden">
         {showActivityBar && (
           <FixedPanel basis="48px">
@@ -63,7 +55,7 @@ export function EditorLayout({
               defaultSize={sidebarSize}
               minSize={15}
               maxSize={50}
-              className="bg-[#252526] border-r border-border/40"
+              className="bg-[#252526]"
             >
               <Sidebar />
             </HPanel>
@@ -75,7 +67,7 @@ export function EditorLayout({
                 <VPanel
                   defaultSize={bottomPanelVisible ? 75 : 100}
                   minSize={20}
-                  showHandle={bottomPanelVisible || showBottomPanel}
+                  showHandle={false}
                   className="bg-[#1e1e1e]"
                 >
                   {editorContent || <CodeEditorPanel />}
@@ -93,7 +85,7 @@ export function EditorLayout({
                   minSize={15}
                   maxSize={60}
                   showHandle={false}
-                  className="bg-[#252526] border-t border-border/40"
+                  className="bg-[#252526]"
                 >
                   <BottomPanel>
                     {bottomPanelContent}
@@ -109,7 +101,7 @@ export function EditorLayout({
               defaultSize={agentPanelSize}
               minSize={20}
               maxSize={50}
-              className="bg-[#252526] border-l border-border/40"
+              className="bg-[#252526]"
             >
               {agentContent || <AgentPanel />}
             </HPanel>

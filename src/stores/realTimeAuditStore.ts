@@ -5,18 +5,47 @@
  */
 
 import { create } from 'zustand'
-import { invoke } from '@tauri-apps/api/core'
+import { realtimeAuditService } from '@/shared/api/services/realtime'
+import type { FileFinding, ProjectStats, ProjectFile } from '@/shared/api/services/realtime'
+import type { Vulnerability } from '@/shared/types/agent'
 
 // ==================== 类型定义 ====================
 
 export type ScanStatus = 'idle' | 'scanning' | 'completed' | 'error'
+
+// ==================== 工具函数 ====================
+
+/**
+ * 将 FileFinding 转换为 Vulnerability 类型 (agent.ts)
+ */
+function convertToVulnerability(finding: FileFinding): Vulnerability {
+  return {
+    id: finding.id,
+    vulnerability_type: (finding.vuln_type || 'unknown') as any,
+    severity: finding.severity as any,
+    confidence: finding.confidence ?? 0.5,
+    title: finding.detector,
+    description: finding.description,
+    file_path: finding.file_path,
+    line_number: finding.line_start,
+    line_end: finding.line_end,
+    code_snippet: finding.code_snippet || '',
+    remediation: '',
+    agent_found: 'realtime_audit',
+    verified: finding.status === 'resolved',
+    status: finding.status === 'open' ? 'new' :
+            finding.status === 'resolved' ? 'fixed' :
+            finding.status === 'ignored' ? 'ignored' : 'new',
+  }
+}
 
 interface ScanQueueItem {
   filePath: string
   content: string
   status: ScanStatus
   error?: string
-  findings: any[]
+  findings: FileFinding[]
+  cached: boolean
 }
 
 interface RealtimeAuditState {
@@ -34,8 +63,20 @@ interface RealtimeAuditState {
   scanQueue: Map<string, ScanQueueItem>
 
   // 当前项目
-  currentProjectId: string | null
-  setCurrentProject: (projectId: string) => void
+  currentProjectId: number | null
+  setCurrentProject: (projectId: number | null) => void
+
+  // 项目统计
+  projectStats: ProjectStats | null
+  loadProjectStats: () => Promise<void>
+
+  // 项目文件列表
+  projectFiles: ProjectFile[]
+  loadProjectFiles: (includePatterns?: string[], excludePatterns?: string[]) => Promise<void>
+
+  // 漏洞操作
+  updateFindingStatus: (findingId: string, status: FileFinding['status']) => Promise<boolean>
+  batchUpdateFindingStatus: (updates: Array<{ findingId: string; status: FileFinding['status'] }>) => Promise<{ success: number; failed: number }>
 
   // 扫描设置
   scanDebounceMs: number
@@ -67,6 +108,8 @@ export const useRealtimeAuditStore = create<RealtimeAuditState>((set, get) => ({
   scanQueue: new Map(),
   currentProjectId: null,
   scanDebounceMs: 500,
+  projectStats: null,
+  projectFiles: [],
 
   // 设置自动模式
   setAutoMode: (enabled) => {
@@ -75,12 +118,114 @@ export const useRealtimeAuditStore = create<RealtimeAuditState>((set, get) => ({
 
   // 设置当前项目
   setCurrentProject: (projectId) => {
-    set({ currentProjectId: projectId })
+    set({
+      currentProjectId: projectId,
+      projectStats: null,
+      projectFiles: [],
+      scanQueue: new Map(),
+    })
   },
 
   // 设置扫描防抖时间
   setScanDebounceMs: (ms) => {
     set({ scanDebounceMs: ms })
+  },
+
+  // 加载项目统计信息
+  loadProjectStats: async () => {
+    const { currentProjectId } = get()
+    if (!currentProjectId) {
+      set({ projectStats: null })
+      return
+    }
+
+    try {
+      const stats = await realtimeAuditService.getProjectStats(currentProjectId)
+      set({ projectStats: stats })
+    } catch (error) {
+      console.error('Failed to load project stats:', error)
+    }
+  },
+
+  // 加载项目文件列表
+  loadProjectFiles: async (includePatterns, excludePatterns) => {
+    const { currentProjectId } = get()
+    if (!currentProjectId) {
+      set({ projectFiles: [] })
+      return
+    }
+
+    try {
+      const files = await realtimeAuditService.getProjectFiles(
+        currentProjectId,
+        includePatterns,
+        excludePatterns
+      )
+      set({ projectFiles: files })
+    } catch (error) {
+      console.error('Failed to load project files:', error)
+    }
+  },
+
+  // 更新漏洞状态
+  updateFindingStatus: async (findingId, status) => {
+    const { currentProjectId } = get()
+    if (!currentProjectId) return false
+
+    try {
+      const result = await realtimeAuditService.updateFindingStatus(
+        currentProjectId,
+        findingId,
+        status
+      )
+
+      if (result) {
+        // 更新队列中的漏洞状态
+        set((state) => {
+          const newQueue = new Map(state.scanQueue)
+          for (const [filePath, item] of newQueue) {
+            const updatedFindings = item.findings.map(f =>
+              f.id === findingId ? { ...f, status } : f
+            )
+            if (updatedFindings.some(f => f.id === findingId && f.status !== f.status)) {
+              newQueue.set(filePath, { ...item, findings: updatedFindings })
+            }
+          }
+          return { scanQueue: newQueue }
+        })
+
+        // 重新加载统计信息
+        get().loadProjectStats()
+      }
+
+      return result
+    } catch (error) {
+      console.error('Failed to update finding status:', error)
+      return false
+    }
+  },
+
+  // 批量更新漏洞状态
+  batchUpdateFindingStatus: async (updates) => {
+    const { currentProjectId } = get()
+    if (!currentProjectId) return { success: 0, failed: updates.length }
+
+    try {
+      const result = await realtimeAuditService.batchUpdateFindingStatus(
+        currentProjectId,
+        updates
+      )
+
+      // 重新加载统计信息
+      if (result.success > 0) {
+        get().loadProjectStats()
+      }
+
+      return result
+    } catch (error) {
+      console.error('Failed to batch update finding status:', error)
+      return { success: 0, failed: updates.length }
+    }
   },
 
   // 开始监听文件变化
@@ -123,12 +268,12 @@ export const useRealtimeAuditStore = create<RealtimeAuditState>((set, get) => ({
         scanningFiles: new Set(state.scanningFiles).add(filePath),
       }))
 
-      // 调用后端扫描
-      const result = await invoke('scan_file', {
+      // 使用服务层调用后端扫描
+      const result = await realtimeAuditService.scanFile(
+        currentProjectId,
         filePath,
-        projectId: currentProjectId,
-        content: content || '',
-      })
+        content || ''
+      )
 
       // 更新队列状态
       set((state) => {
@@ -139,7 +284,8 @@ export const useRealtimeAuditStore = create<RealtimeAuditState>((set, get) => ({
           filePath,
           content: content || existingItem?.content || '',
           status: 'completed',
-          findings: (result as any).findings || [],
+          findings: result.findings,
+          cached: result.cached,
         })
 
         const newScanningFiles = new Set(state.scanningFiles)
@@ -155,14 +301,15 @@ export const useRealtimeAuditStore = create<RealtimeAuditState>((set, get) => ({
       const { useFindingMarkerStore } = await import('./findingMarkerStore')
       const findingMarkerStore = useFindingMarkerStore.getState()
 
-      // 更新文件漏洞列表
+      // 更新文件漏洞列表（转换为 Vulnerability 类型）
+      const vulnerabilities = result.findings.map(convertToVulnerability)
       const findingsByFile = new Map(findingMarkerStore.findingsByFile)
-      findingsByFile.set(filePath, (result as any).findings || [])
+      findingsByFile.set(filePath, vulnerabilities)
 
       findingMarkerStore.findingsByFile = findingsByFile
 
-      // 更新装饰器
-      // TODO: 触发装饰器更新
+      // 重新加载统计信息
+      get().loadProjectStats()
     } catch (error) {
       console.error('Failed to scan file:', error)
 
@@ -177,6 +324,7 @@ export const useRealtimeAuditStore = create<RealtimeAuditState>((set, get) => ({
           status: 'error',
           error: String(error),
           findings: [],
+          cached: false,
         })
 
         const newScanningFiles = new Set(state.scanningFiles)
@@ -199,6 +347,7 @@ export const useRealtimeAuditStore = create<RealtimeAuditState>((set, get) => ({
         content,
         status: 'idle',
         findings: [],
+        cached: false,
       })
 
       return {

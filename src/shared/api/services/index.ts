@@ -1,9 +1,12 @@
 /**
- * API Services Export
+ * API Services Export (纯 Tauri 版本)
  */
 
+// AST 服务 - 待实现
 export { astService, ASTService } from './ast'
-export { projectService, ProjectService } from './project'
+
+// 扫描器服务 - 已使用 Tauri API
 export { scannerService, ScannerService } from './scanner'
-export { fileService, FileService } from './file'
-export { rulesService, RulesService } from './rules'
+
+// 实时审计服务
+export { realtimeAuditService, RealtimeAuditService, type FileFinding as RTFileFinding } from './realtime'

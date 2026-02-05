@@ -54,6 +54,57 @@ export interface AgentStatus {
   uptime_secs?: number
 }
 
+export interface SymbolInfo {
+  name: string
+  kind: string  // "function", "class", "variable", etc.
+  file_path: string
+  line: number
+  column: number
+  parent?: string
+  code_snippet?: string
+  start_line: number
+  end_line: number
+}
+
+export interface CallNode {
+  name: string
+  file_path: string
+  line: number
+  children: CallNode[]
+}
+
+export interface SymbolSearchResult {
+  name: string
+  kind: string
+  file_path: string
+  line: number
+  definition: string
+}
+
+// ==================== LLM 相关 ====================
+
+export interface LLMConfig {
+  provider: string
+  model: string
+  apiKey: string
+  apiEndpoint?: string
+  temperature?: number
+  maxTokens?: number
+}
+
+export interface TestResult {
+  success: boolean
+  message: string
+  details?: TestDetails
+}
+
+export interface TestDetails {
+  endpoint: string
+  model: string
+  response_time_ms?: number
+  available_models?: string[]
+}
+
 /**
  * Tauri API 客户端
  */
@@ -146,21 +197,87 @@ export class TauriAPIClient {
     return this.invoke<Finding[]>('get_findings', { projectId })
   }
 
-  // ==================== Agent 服务 ====================
+  // ==================== Agent 审计（Rust 后端） ====================
 
-  /** 启动 Agent 服务 */
-  async startAgentService(): Promise<AgentStatus> {
-    return this.invoke<AgentStatus>('start_agent_service')
+  /** 启动审计 */
+  async startAudit(request: {
+    projectId: string
+    auditType: string
+    config?: Record<string, any>
+  }): Promise<{ audit_id: string; status: string }> {
+    return this.invoke('start_audit', request)
   }
 
-  /** 停止 Agent 服务 */
-  async stopAgentService(): Promise<void> {
-    return this.invoke<void>('stop_agent_service')
+  /** 获取审计状态 */
+  async getAuditStatus(auditId: string): Promise<{
+    audit_id: string
+    status: string
+    progress: Record<string, any>
+    stats: Record<string, any>
+  }> {
+    return this.invoke('get_audit_status', { auditId })
   }
 
-  /** 获取 Agent 服务状态 */
-  async getAgentStatus(): Promise<AgentStatus> {
-    return this.invoke<AgentStatus>('get_agent_status')
+  /** 暂停审计 */
+  async pauseAudit(auditId: string): Promise<void> {
+    return this.invoke('pause_audit', { auditId })
+  }
+
+  /** 取消审计 */
+  async cancelAudit(auditId: string): Promise<void> {
+    return this.invoke('cancel_audit', { auditId })
+  }
+
+  /** 获取审计结果 */
+  async getAuditResult(auditId: string): Promise<any[]> {
+    return this.invoke('get_audit_result', { auditId })
+  }
+
+  /** 获取审计事件 */
+  async getAuditEvents(auditId: string, afterSequence?: number, limit?: number): Promise<any[]> {
+    return this.invoke('get_audit_events', { auditId, afterSequence, limit })
+  }
+
+  /** 获取 Agent 树 */
+  async getAgentTree(auditId: string): Promise<{
+    nodes: any[]
+    edges: any[]
+  }> {
+    return this.invoke('get_agent_tree', { auditId })
+  }
+
+  // ==================== 索引器 ====================
+
+  /** 索引项目中的所有文件 */
+  async indexProject(projectPath: string): Promise<number> {
+    return this.invoke<number>('index_project', { projectPath })
+  }
+
+  /** 获取文件中的符号 */
+  async getFileSymbols(filePath: string): Promise<SymbolInfo[]> {
+    return this.invoke<SymbolInfo[]>('get_file_symbols', { filePath })
+  }
+
+  /** 搜索符号 */
+  async searchSymbol(symbolName: string, projectId: number): Promise<SymbolSearchResult[]> {
+    return this.invoke<SymbolSearchResult[]>('search_symbol', { symbolName, projectId })
+  }
+
+  /** 获取调用图 */
+  async getCallGraph(entryFunction: string, maxDepth: number, projectId: number): Promise<CallNode> {
+    return this.invoke<CallNode>('get_call_graph', { entryFunction, maxDepth, projectId })
+  }
+
+  // ==================== LLM 测试 ====================
+
+  /** 测试 LLM 连接 */
+  async testLLMConnection(config: LLMConfig): Promise<TestResult> {
+    return this.invoke<TestResult>('test_llm_connection', { config })
+  }
+
+  /** 测试已保存的 LLM 配置 */
+  async testLLMConfig(id: string): Promise<TestResult> {
+    return this.invoke<TestResult>('test_llm_config', { id })
   }
 }
 

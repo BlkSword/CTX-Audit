@@ -32,7 +32,9 @@ export function RealtimeAuditManager({
   // 初始化
   useEffect(() => {
     if (!isInitialized.current) {
-      setCurrentProject(String(projectId))
+      // 将字符串 projectId 转换为数字
+      const numericProjectId = parseInt(projectId, 10)
+      setCurrentProject(isNaN(numericProjectId) ? null : numericProjectId)
       injectDecorationStyles()
       isInitialized.current = true
 

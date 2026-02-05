@@ -1,5 +1,5 @@
 import { Terminal, AlertCircle, Bug, ScrollText, X, Maximize2 } from 'lucide-react'
-import { useLayoutStore } from '@/stores/layoutStore'
+import { useLayoutStore, useActiveBottomTab, setActiveBottomTab } from '@/stores/layoutStore'
 import type { BottomPanelTab } from '@/stores/layoutStore'
 import { cn } from '@/lib/utils'
 import { ProblemsPanel } from '@/components/editor/ProblemsPanel'
@@ -23,20 +23,17 @@ interface BottomPanelProps {
 }
 
 export function BottomPanel({ className, children }: BottomPanelProps) {
-  const {
-    bottomPanelVisible,
-    activeBottomTab,
-    setActiveBottomTab,
-    toggleBottomPanel,
-  } = useLayoutStore()
+  const bottomPanelVisible = useLayoutStore(state => state.bottomPanelVisible)
+  const activeBottomTab = useActiveBottomTab()
+  const toggleBottomPanel = useLayoutStore(state => state.toggleBottomPanel)
 
   if (!bottomPanelVisible) {
     return null
   }
 
   return (
-    <div className={cn('bg-[#1e1e1e] border-t border-border/40 flex flex-col h-full', className)}>
-      <div className="h-9 flex items-center justify-between px-2 bg-[#252526] border-b border-border/40 select-none">
+    <div className={cn('bg-[var(--vscode-editor-background)] border-t border-[var(--vscode-panel-border)] flex flex-col h-full', className)}>
+      <div className="h-9 flex items-center justify-between px-2 bg-[var(--vscode-sideBar-background)] border-b border-[var(--vscode-panel-border)] select-none">
         <div className="flex items-center gap-1">
           {bottomPanelTabs.map((tab) => {
             const Icon = tab.icon
@@ -49,8 +46,8 @@ export function BottomPanel({ className, children }: BottomPanelProps) {
                 className={cn(
                   'flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-t transition-colors',
                   isActive
-                    ? 'bg-[#1e1e1e] text-white'
-                    : 'text-muted-foreground hover:text-white hover:bg-white/5'
+                    ? 'bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]'
+                    : 'text-[var(--vscode-sideBar-foreground)] hover:text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-toolbar-hoverBackground)]'
                 )}
               >
                 <Icon className="w-3.5 h-3.5" />
@@ -62,14 +59,14 @@ export function BottomPanel({ className, children }: BottomPanelProps) {
 
         <div className="flex items-center gap-1">
           <button
-            className="p-1.5 text-muted-foreground hover:text-white hover:bg-white/5 rounded transition-colors"
+            className="p-1.5 text-[var(--vscode-sideBar-foreground)] hover:text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-toolbar-hoverBackground)] rounded transition-colors"
             title="最大化面板"
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={toggleBottomPanel}
-            className="p-1.5 text-muted-foreground hover:text-white hover:bg-white/5 rounded transition-colors"
+            className="p-1.5 text-[var(--vscode-sideBar-foreground)] hover:text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-toolbar-hoverBackground)] rounded transition-colors"
             title="关闭面板"
           >
             <X className="w-3.5 h-3.5" />
@@ -85,7 +82,7 @@ export function BottomPanel({ className, children }: BottomPanelProps) {
 }
 
 function BottomPanelContent() {
-  const { activeBottomTab } = useLayoutStore()
+  const activeBottomTab = useActiveBottomTab()
 
   switch (activeBottomTab) {
     case 'output':

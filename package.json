@@ -11,8 +11,7 @@
     "lint": "tsc --noEmit",
     "tauri:dev": "cargo tauri dev",
     "tauri:build": "cargo tauri build",
-    "build:portable": "build-portable.bat",
-    "agent": "cd agent-service && python -m app.main"
+    "build:portable": "build-portable.bat"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",

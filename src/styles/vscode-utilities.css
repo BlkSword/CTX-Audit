@@ -1,0 +1,330 @@
+/**
+ * VSCode 风格工具类
+ */
+
+/* ==================== 间距工具类 - 基于 4px 网格 ==================== */
+
+/* Padding */
+.vs-p-xs { padding: 4px; }
+.vs-p-sm { padding: 8px; }
+.vs-p-md { padding: 12px; }
+.vs-p-lg { padding: 16px; }
+.vs-p-xl { padding: 20px; }
+
+.vs-px-xs { padding-left: 4px; padding-right: 4px; }
+.vs-px-sm { padding-left: 8px; padding-right: 8px; }
+.vs-px-md { padding-left: 12px; padding-right: 12px; }
+.vs-px-lg { padding-left: 16px; padding-right: 16px; }
+.vs-px-xl { padding-left: 20px; padding-right: 20px; }
+
+.vs-py-xs { padding-top: 4px; padding-bottom: 4px; }
+.vs-py-sm { padding-top: 8px; padding-bottom: 8px; }
+.vs-py-md { padding-top: 12px; padding-bottom: 12px; }
+.vs-py-lg { padding-top: 16px; padding-bottom: 16px; }
+
+/* Margin */
+.vs-m-xs { margin: 4px; }
+.vs-m-sm { margin: 8px; }
+.vs-m-md { margin: 12px; }
+.vs-m-lg { margin: 16px; }
+
+.vs-mx-auto { margin-left: auto; margin-right: auto; }
+.vs-mx-xs { margin-left: 4px; margin-right: 4px; }
+.vs-mx-sm { margin-left: 8px; margin-right: 8px; }
+.vs-mx-md { margin-left: 12px; margin-right: 12px; }
+
+.vs-my-xs { margin-top: 4px; margin-bottom: 4px; }
+.vs-my-sm { margin-top: 8px; margin-bottom: 8px; }
+.vs-my-md { margin-top: 12px; margin-bottom: 12px; }
+
+/* Gap */
+.vs-gap-xs { gap: 4px; }
+.vs-gap-sm { gap: 8px; }
+.vs-gap-md { gap: 12px; }
+.vs-gap-lg { gap: 16px; }
+.vs-gap-xl { gap: 20px; }
+
+/* ==================== VSCode 颜色快捷类 ==================== */
+
+/* Background */
+.vs-bg-editor { background-color: var(--vscode-editor-background); }
+.vs-bg-sidebar { background-color: var(--vscode-sideBar-background); }
+.vs-bg-activitybar { background-color: var(--vscode-activityBar-background); }
+.vs-bg-hover { background-color: var(--vscode-toolbar-hoverBackground); }
+.vs-bg-input { background-color: var(--vscode-input-background); }
+.vs-bg-button { background-color: var(--vscode-button-background); }
+.vs-bg-tab-inactive { background-color: var(--vscode-tab-inactiveBackground); }
+.vs-bg-tab-active { background-color: var(--vscode-tab-activeBackground); }
+.vs-bg-dropdown { background-color: var(--vscode-dropdown-background); }
+
+/* Foreground */
+.vs-fg-default { color: var(--vscode-editor-foreground); }
+.vs-fg-muted { color: var(--vscode-sideBar-foreground); }
+.vs-fg-header { color: var(--vscode-sideBarSectionHeader-foreground); }
+.vs-fg-inactive { color: var(--vscode-activityBar-inactiveForeground); }
+.vs-fg-link { color: var(--vscode-textLink-foreground); }
+.vs-fg-description { color: var(--vscode-descriptionForeground); }
+.vs-fg-error { color: var(--vscode-errorForeground); }
+.vs-fg-warning { color: var(--vscode-warningForeground); }
+
+/* Border */
+.vs-border-default { border-color: var(--vscode-widget-border); }
+.vs-border-panel { border-color: var(--vscode-panel-border); }
+.vs-border-sidebar { border-color: var(--vscode-sideBar-border); }
+.vs-border-input { border-color: var(--vscode-input-border); }
+.vs-border-focus { border-color: var(--vscode-focusBorder); }
+.vs-border-group { border-color: var(--vscode-editorGroup-border); }
+
+/* ==================== 文本样式 ==================== */
+
+.vs-text-xs { font-size: 11px; line-height: 1.4; }
+.vs-text-sm { font-size: 12px; line-height: 1.5; }
+.vs-text-base { font-size: 13px; line-height: 1.5; }
+.vs-text-md { font-size: 14px; line-height: 1.5; }
+.vs-text-lg { font-size: 16px; line-height: 1.5; }
+
+.vs-font-normal { font-weight: 400; }
+.vs-font-semibold { font-weight: 600; }
+.vs-font-bold { font-weight: 700; }
+
+/* ==================== 滚动条 ==================== */
+
+.vs-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.vs-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.vs-scrollbar::-webkit-scrollbar-thumb {
+  background-color: var(--vscode-scrollbarSlider-background);
+  border-radius: 0;
+}
+.vs-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: var(--vscode-scrollbarSlider-hoverBackground);
+}
+.vs-scrollbar::-webkit-scrollbar-thumb:active {
+  background-color: var(--vscode-scrollbarSlider-activeBackground);
+}
+
+.vs-scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.vs-scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.vs-scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: var(--vscode-scrollbarSlider-background);
+}
+.vs-scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background-color: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+/* ==================== 过渡效果 ==================== */
+
+.vs-transition {
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.vs-transition-colors {
+  transition-property: color, background-color, border-color;
+  transition-duration: 0.15s;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ==================== 圆角 ==================== */
+
+.vs-rounded-sm { border-radius: 2px; }
+.vs-rounded-md { border-radius: 4px; }
+.vs-rounded-lg { border-radius: 6px; }
+
+/* ==================== 交互状态 ==================== */
+
+.vs-hover:hover {
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.vs-focus:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.vs-selected {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+/* ==================== 阴影 ==================== */
+
+.vs-shadow {
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+}
+
+.vs-shadow-sm {
+  box-shadow: 0 1px 4px var(--vscode-widget-shadow);
+}
+
+.vs-shadow-lg {
+  box-shadow: 0 4px 16px var(--vscode-widget-shadow);
+}
+
+/* ==================== 实用工具 ==================== */
+
+.vs-overflow-hidden { overflow: hidden; }
+.vs-overflow-auto { overflow: auto; }
+.vs-overflow-scroll { overflow: scroll; }
+
+.vs-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vs-break-words {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* Flexbox 工具 */
+.vs-flex { display: flex; }
+.vs-flex-col { flex-direction: column; }
+.vs-items-center { align-items: center; }
+.vs-justify-center { justify-content: center; }
+.vs-justify-between { justify-content: space-between; }
+.vs-flex-1 { flex: 1; }
+.vs-flex-shrink-0 { flex-shrink: 0; }
+.vs-flex-grow-0 { flex-grow: 0; }
+
+/* ==================== 专用组合类 ==================== */
+
+/* VSCode 风格输入框 */
+.vs-input {
+  display: flex;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border);
+  font-size: 13px;
+  transition: all 0.15s ease;
+}
+
+.vs-input:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder);
+}
+
+.vs-input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+}
+
+/* VSCode 风格按钮 */
+.vs-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  background-color: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.vs-btn:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+.vs-btn-secondary {
+  background-color: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.vs-btn-secondary:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* VSCode 风格标签页栏 */
+.vs-tabs-header {
+  display: flex;
+  align-items: center;
+  height: 35px;
+  background-color: var(--vscode-editorGroupHeader-tabsBackground);
+  border-bottom: 1px solid var(--vscode-editorGroup-border);
+}
+
+.vs-tab {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  height: 100%;
+  background-color: var(--vscode-tab-inactiveBackground);
+  color: var(--vscode-activityBar-inactiveForeground);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-right: 1px solid var(--vscode-sideBar-border);
+  transition: all 0.15s ease;
+}
+
+.vs-tab:hover {
+  color: var(--vscode-editor-foreground);
+  background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.vs-tab.active {
+  background-color: var(--vscode-tab-activeBackground);
+  color: var(--vscode-editor-foreground);
+}
+
+/* VSCode 风格面板 */
+.vs-panel {
+  background-color: var(--vscode-sideBar-background);
+  border: 1px solid var(--vscode-panel-border);
+}
+
+.vs-panel-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--vscode-sideBarSectionHeader-foreground);
+}
+
+/* VSCode 风格列表项 */
+.vs-list-item {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.vs-list-item:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.vs-list-item.selected {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+/* VSCode 风格徽章 */
+.vs-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 2px;
+}

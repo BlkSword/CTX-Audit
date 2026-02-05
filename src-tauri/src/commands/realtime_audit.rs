@@ -9,6 +9,7 @@
 //! - 增量扫描单个文件
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use tauri::State;
 
 use crate::services::database::{Database, ProjectStats, ProjectFile};
@@ -159,9 +160,34 @@ fn calculate_content_hash(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// 扫描文件内容（TODO: 实现真正的扫描逻辑）
-async fn scan_file_content(_file_path: &str, _content: &str) -> Result<Vec<Finding>, String> {
-    // TODO: 调用核心库扫描
-    // 暂时返回空列表
-    Ok(vec![])
+/// 扫描文件内容
+async fn scan_file_content(file_path: &str, content: &str) -> Result<Vec<Finding>, String> {
+    use deepaudit_core::RegexScanner;
+    use deepaudit_core::Scanner; // 导入 Scanner trait
+
+    let path_buf = PathBuf::from(file_path);
+    let scanner = RegexScanner::new();
+
+    // 执行扫描
+    let core_findings = scanner.scan_file(&path_buf, content).await;
+
+    // 转换为前端 Finding 类型
+    let findings: Vec<Finding> = core_findings
+        .into_iter()
+        .map(|f| Finding {
+            id: f.finding_id,
+            file_path: f.file_path,
+            line_start: f.line_start as i64,
+            line_end: f.line_end as i64,
+            detector: f.detector,
+            vuln_type: f.vuln_type,
+            severity: f.severity,
+            description: f.description,
+            code_snippet: None,
+            status: "new".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })
+        .collect();
+
+    Ok(findings)
 }

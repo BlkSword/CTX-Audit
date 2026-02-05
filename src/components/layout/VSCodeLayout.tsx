@@ -4,7 +4,7 @@ import { ActivityBar } from './ActivityBar'
 import { Sidebar } from './Sidebar'
 import { BottomPanel } from './BottomPanel'
 import { ProjectTabsBar } from './ProjectTabsBar'
-import { useLayoutStore } from '@/stores/layoutStore'
+import { useLayoutStore, useSidebarVisible } from '@/stores/layoutStore'
 import { cn } from '@/lib/utils'
 import {
   HorizontalGroup,
@@ -34,11 +34,17 @@ export function VSCodeLayout({
   showProjectTabs = false,
   forceHideSidebar = false,
 }: VSCodeLayoutProps) {
-  const { sidebarVisible, bottomPanelVisible } = useLayoutStore()
+  const sidebarVisible = useSidebarVisible()
+  const bottomPanelVisible = useLayoutStore(state => state.bottomPanelVisible)
   const shouldShowSidebar = !forceHideSidebar && sidebarVisible && showActivityBar
 
   return (
-    <div className={cn('h-screen w-screen flex flex-col bg-background text-foreground overflow-hidden', className)}>
+    <div className={cn(
+      'h-screen w-screen flex flex-col overflow-hidden',
+      'bg-[var(--vscode-editor-background)]',
+      'text-[var(--vscode-editor-foreground)]',
+      className
+    )}>
       {header && <div className="shrink-0">{header}</div>}
 
       {showProjectTabs && (
@@ -61,7 +67,7 @@ export function VSCodeLayout({
               defaultSize={20}
               minSize={15}
               maxSize={50}
-              className="bg-[#252526] border-r border-border/40"
+              className="bg-[var(--vscode-sideBar-background)]"
             >
               <Sidebar />
             </HPanel>
@@ -73,13 +79,13 @@ export function VSCodeLayout({
                 <VPanel
                   defaultSize={75}
                   minSize={20}
-                  showHandle={true}
-                  className="bg-[#1e1e1e] overflow-auto"
+                  showHandle={false}
+                  className="bg-[var(--vscode-editor-background)] overflow-auto"
                 >
                   {editorContent || <Outlet />}
                 </VPanel>
               ) : (
-                <div className="flex-1 min-h-0 bg-[#1e1e1e] overflow-auto">
+                <div className="flex-1 min-h-0 bg-[var(--vscode-editor-background)] overflow-auto">
                   {editorContent || <Outlet />}
                 </div>
               )}
@@ -91,7 +97,7 @@ export function VSCodeLayout({
                   minSize={15}
                   maxSize={50}
                   showHandle={false}
-                  className="bg-[#252526] border-t border-border/40"
+                  className="bg-[var(--vscode-sideBar-background)]"
                 >
                   <BottomPanel>
                     {bottomPanelContent}

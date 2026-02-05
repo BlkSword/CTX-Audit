@@ -9,39 +9,51 @@
  * - 内联漏洞标记
  */
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useEditorStore } from '@/stores/editorStore'
 import { EditorSplitContainer } from '@/components/editor/EditorSplitContainer'
 import { useFileStore } from '@/stores/fileStore'
-import { tauriApi } from '@/shared/api/tauri-client'
 import { getLanguageFromPath } from '@/components/editor/MonacoEditor'
 
 export function CodeEditorPanel() {
-  const { selectedFile, fileContent } = useFileStore()
-  const { editorGroups, openFileInGroup } = useEditorStore()
+  // 使用精确的 selector，只订阅需要的状态
+  const selectedFile = useFileStore(state => state.selectedFile)
+  const fileContent = useFileStore(state => state.fileContent)
+
+  // 使用 ref 来跟踪上次打开的文件，避免重复打开
+  const lastOpenedFileRef = useRef<string | null>(null)
 
   // 当用户在文件浏览器中点击文件时，在第一个编辑器组中打开
   useEffect(() => {
-    if (selectedFile && fileContent && fileContent !== '// 请选择文件以查看内容') {
-      loadAndOpenFile(selectedFile, fileContent)
+    if (!selectedFile) {
+      lastOpenedFileRef.current = null
+      return
     }
+
+    // 避免重复打开同一个文件
+    if (selectedFile === lastOpenedFileRef.current) {
+      return
+    }
+
+    if (!fileContent) return
+
+    // 排除初始占位符内容和错误消息
+    if (fileContent.startsWith('// 无法加载文件') ||
+        fileContent === '// 请选择文件以查看内容') {
+      return
+    }
+
+    const { editorGroups, openFileInGroup } = useEditorStore.getState()
+    const firstGroup = editorGroups[0]
+    if (!firstGroup) return
+
+    // 打开文件
+    const language = getLanguageFromPath(selectedFile)
+    openFileInGroup(firstGroup.id, selectedFile, fileContent, language)
+
+    // 记录已打开的文件
+    lastOpenedFileRef.current = selectedFile
   }, [selectedFile, fileContent])
-
-  // 加载并打开文件
-  const loadAndOpenFile = async (filePath: string, content: string) => {
-    try {
-      // const content = await tauriApi.readFile(filePath)
-      const language = getLanguageFromPath(filePath)
-
-      // 在第一个编辑器组中打开文件
-      const firstGroup = editorGroups[0]
-      if (firstGroup) {
-        openFileInGroup(firstGroup.id, filePath, content, language)
-      }
-    } catch (error) {
-      console.error('Failed to load file:', error)
-    }
-  }
 
   return (
     <div className="flex flex-col h-full bg-[#1e1e1e]">

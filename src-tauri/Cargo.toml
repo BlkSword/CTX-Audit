@@ -22,15 +22,27 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+regex = "1"
 
 # 核心库
 deepaudit-core = { path = "../core" }
 
+# 文件遍历
+ignore = "0.4"
+
 # HTTP 客户端 (与 Agent 服务通信)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # 进程管理 (启动 Agent 服务)
 sysinfo = "0.30"
+
+# Agent 引擎依赖
+async-trait = "0.1"
+futures = "0.3"
+tokio-stream = "0.1"
+serde_yaml = "0.9"
+priority-queue = "2.0"
+async-channel = "2.0"
 
 # 文件对话框
 rfd = "0.14"

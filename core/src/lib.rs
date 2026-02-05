@@ -11,6 +11,7 @@ pub use ast::{ASTEngine, ASTParser, CacheData, CacheManager, FileIndex, QueryEng
 pub use diff::DiffEngine;
 pub use scanner::{Finding, Scanner, scan_directory};
 pub use scanner::manager::ScannerManager;
+pub use scanner::regex_scanner::RegexScanner;
 
 // 规则系统
 pub use rules::{loader::load_rules_from_dir, model::Rule, scanner::RuleScanner};

@@ -1,3 +1,7 @@
+/* VSCode 设计系统 - @import 必须在最前面 */
+@import './styles/vscode-colors.css';
+@import './styles/vscode-utilities.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

@@ -6,22 +6,27 @@
  */
 
 import { useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { ShieldAlert, ArrowLeft, Home } from 'lucide-react'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { Home } from 'lucide-react'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileStore } from '@/stores/fileStore'
 import { useScanStore } from '@/stores/scanStore'
+import { useLayoutStore } from '@/stores/layoutStore'
 import { EditorLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
+import { useEditorShortcuts } from '@/hooks/useKeyboard'
 
 export function EditorView() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { currentProject, projects, setCurrentProject, isLoading: projectsLoading, isInitiallyLoaded, loadProjects } = useProjectStore()
   const { loadFiles } = useFileStore()
   const { loadFindings } = useScanStore()
+  const { setActiveActivity } = useLayoutStore()
+
+  // 启用编辑器快捷键
+  useEditorShortcuts()
 
   useEffect(() => {
     // 确保项目列表已加载
@@ -41,30 +46,42 @@ export function EditorView() {
         loadFiles(project.path)
         // 加载项目的扫描结果
         loadFindings(project.id)
+
+        // 处理 panel 参数，设置对应的活动区域
+        const panel = searchParams.get('panel')
+        if (panel) {
+          const activityMap: Record<string, 'explorer' | 'search' | 'ast-tools' | 'scan-results' | 'terminal'> = {
+            'search': 'search',
+            'ast': 'ast-tools',
+            'scan': 'scan-results',
+            'terminal': 'terminal',
+          }
+          setActiveActivity(activityMap[panel] || 'explorer')
+        }
       } else if (projectId !== 0) {
         // 只有当项目ID有效但找不到项目时才跳转
         navigate('/')
       }
     }
-  }, [id, projects, projectsLoading, isInitiallyLoaded, navigate, setCurrentProject, loadFiles, loadFindings])
+  }, [id, projects, projectsLoading, isInitiallyLoaded, navigate, setCurrentProject, loadFiles, loadFindings, searchParams, setActiveActivity])
 
   if (!currentProject) {
     // 如果正在加载项目列表，显示加载状态
     if (projectsLoading || !isInitiallyLoaded) {
       return (
-        <div className="h-screen w-screen flex items-center justify-center bg-[#1e1e1e]">
+        <div className="h-screen w-screen flex items-center justify-center bg-[var(--vscode-editor-background)]">
           <div className="text-center">
             <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-muted-foreground">加载项目...</p>
+            <p className="text-[var(--vscode-descriptionForeground)]">加载项目...</p>
           </div>
         </div>
       )
     }
     // 如果项目列表已加载完成但找不到项目
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-[#1e1e1e]">
+      <div className="h-screen w-screen flex items-center justify-center bg-[var(--vscode-editor-background)]">
         <div className="text-center">
-          <p className="text-muted-foreground mb-4">项目不存在</p>
+          <p className="text-[var(--vscode-descriptionForeground)] mb-4">项目不存在</p>
           <Button
             variant="outline"
             onClick={() => navigate('/')}
@@ -77,38 +94,5 @@ export function EditorView() {
     )
   }
 
-  // VSCode 风格的 Header
-  const header = (
-    <header className="h-9 flex items-center justify-between px-3 bg-[#3c3c3c] border-b border-border/40 select-none">
-      <div className="flex items-center gap-3">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 text-muted-foreground hover:text-white hover:bg-white/10"
-          onClick={() => navigate('/')}
-          title="返回仪表板"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" />
-        </Button>
-        <div className="flex items-center gap-2">
-          <ShieldAlert className="w-4 h-4 text-primary" />
-          <span className="text-sm font-medium text-white">{currentProject.name}</span>
-        </div>
-        <Badge variant="outline" className="text-[10px] font-mono bg-transparent border-border/40 text-muted-foreground">
-          {currentProject.path}
-        </Badge>
-      </div>
-
-      <div className="flex items-center gap-2">
-        {/* 可以添加其他控制按钮 */}
-      </div>
-    </header>
-  )
-
-  return (
-    <EditorLayout
-      header={header}
-      showActivityBar={true}
-    />
-  )
+  return <EditorLayout showActivityBar={true} />
 }

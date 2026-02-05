@@ -1,9 +1,11 @@
 /**
  * CTX-Audit - 代码审计平台
  * 主应用入口 - 路由配置
+ * 全新 VSCode 风格布局
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { VSCodeWorkspaceLayout } from '@/components/vscode'
 import { Dashboard } from '@/pages/Dashboard'
 import { EditorView } from '@/pages/EditorView'
 import { ProjectLayout } from '@/pages/project/ProjectLayout'
@@ -24,38 +26,41 @@ function App() {
   return (
     <ErrorBoundary>
       <BrowserRouter>
-        <Routes>
-          {/* Dashboard - 项目列表 */}
-          <Route path="/" element={<Dashboard />} />
+        <VSCodeWorkspaceLayout>
+          <Routes>
+            {/* Dashboard - 项目列表 */}
+            <Route path="/" element={<Dashboard />} />
 
-          {/* 新的编辑器视图 */}
-          <Route path="/editor/:id" element={<EditorView />} />
+            {/* 新的编辑器视图 */}
+            <Route path="/editor/:id" element={<EditorView />} />
 
-          {/* Demo - UI组件演示页面（无需后端） */}
-          <Route path="/demo" element={<AgentUIDemo />} />
+            {/* Demo - UI组件演示页面（无需后端） */}
+            <Route path="/demo" element={<AgentUIDemo />} />
 
-          {/* 旧的 Project Routes（保留用于兼容） */}
-          <Route path="/project/:id" element={<ProjectLayout />}>
-            {/* 默认重定向到Agent审计 */}
-            <Route index element={<Navigate to="agent" replace />} />
-            {/* 各个栏目路由 */}
-            <Route path="agent" element={<EnhancedAuditPage />} />
-            <Route path="agent/:auditId" element={<EnhancedAuditPage />} />
-            <Route path="scan" element={<ScanPanel />} />
-            <Route path="analysis" element={<AnalysisPanel />} />
-          </Route>
+            {/* 旧的 Project Routes（保留用于兼容） */}
+            <Route path="/project/:id" element={<ProjectLayout />}>
+              {/* 默认重定向到Agent审计 */}
+              <Route index element={<Navigate to="agent" replace />} />
+              {/* 各个栏目路由 */}
+              <Route path="agent" element={<EnhancedAuditPage />} />
+              <Route path="agent/:auditId" element={<EnhancedAuditPage />} />
+              <Route path="scan" element={<ScanPanel />} />
+              <Route path="analysis" element={<AnalysisPanel />} />
+            </Route>
 
-          {/* Settings Routes */}
-          <Route path="/settings" element={<SettingsLayout />}>
-            <Route path="llm" element={<LLMConfigPage />} />
-            <Route path="system" element={<SystemSettingsPage />} />
-            <Route path="prompts" element={<PromptTemplatesPage />} />
-            <Route path="rules" element={<RulesPage />} />
-          </Route>
+            {/* Settings Routes - 使用独立布局 */}
+            <Route path="/settings" element={<SettingsLayout />}>
+              <Route index element={<Navigate to="llm" replace />} />
+              <Route path="llm" element={<LLMConfigPage />} />
+              <Route path="system" element={<SystemSettingsPage />} />
+              <Route path="prompts" element={<PromptTemplatesPage />} />
+              <Route path="rules" element={<RulesPage />} />
+            </Route>
 
-          {/* Catch all - redirect to dashboard */}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+            {/* Catch all - redirect to dashboard */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </VSCodeWorkspaceLayout>
       </BrowserRouter>
       {/* 全局 Toast 提示 */}
       <Toaster />

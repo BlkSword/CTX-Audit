@@ -65,19 +65,19 @@ export function ProjectLayout() {
     // 如果正在加载项目列表，显示加载状态
     if (projectsLoading || !isInitiallyLoaded) {
       return (
-        <div className="h-screen w-screen flex items-center justify-center bg-[#1e1e1e]">
+        <div className="h-screen w-screen flex items-center justify-center bg-[var(--vscode-editor-background)]">
           <div className="text-center">
-            <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground mx-auto mb-4" />
-            <p className="text-muted-foreground">加载项目...</p>
+            <RefreshCw className="w-8 h-8 animate-spin text-[var(--vscode-descriptionForeground)] mx-auto mb-4" />
+            <p className="text-[var(--vscode-descriptionForeground)]">加载项目...</p>
           </div>
         </div>
       )
     }
     // 如果项目列表已加载完成但找不到项目
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-[#1e1e1e]">
+      <div className="h-screen w-screen flex items-center justify-center bg-[var(--vscode-editor-background)]">
         <div className="text-center">
-          <p className="text-muted-foreground">项目不存在</p>
+          <p className="text-[var(--vscode-descriptionForeground)]">项目不存在</p>
           <Button
             variant="outline"
             className="mt-4"
@@ -92,12 +92,12 @@ export function ProjectLayout() {
 
   // VSCode 风格的 Header
   const header = (
-    <header className="h-9 flex items-center justify-between px-3 bg-[#3c3c3c] border-b border-border/40 select-none">
+    <header className="h-9 flex items-center justify-between px-3 bg-[var(--vscode-activityBar-background)] border-b border-[var(--vscode-sideBar-border)] select-none">
       <div className="flex items-center gap-3">
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 text-muted-foreground hover:text-white hover:bg-white/10"
+          className="h-6 w-6 text-[var(--vscode-activityBar-inactiveForeground)] hover:text-[var(--vscode-activityBar-foreground)] hover:bg-[var(--vscode-toolbar-hoverBackground)]"
           onClick={() => navigate('/')}
           title="返回仪表板"
         >
@@ -105,15 +105,15 @@ export function ProjectLayout() {
         </Button>
         <div className="flex items-center gap-2">
           <ShieldAlert className="w-4 h-4 text-primary" />
-          <span className="text-sm font-medium text-white">{currentProject.name}</span>
+          <span className="text-sm font-medium text-[var(--vscode-activityBar-foreground)]">{currentProject.name}</span>
         </div>
-        <Badge variant="outline" className="text-[10px] font-mono bg-transparent border-border/40 text-muted-foreground">
+        <Badge variant="outline" className="text-[10px] font-mono bg-transparent border-[var(--vscode-sideBar-border)] text-[var(--vscode-descriptionForeground)]">
           {currentProject.path}
         </Badge>
       </div>
 
       {/* View Tabs */}
-      <div className="flex items-center gap-1 bg-[#252526] rounded p-0.5">
+      <div className="flex items-center gap-1 bg-[var(--vscode-sideBar-background)] rounded p-0.5">
         {views.map((view) => {
           const Icon = view.icon
           const isActive = currentView === view.id
@@ -124,8 +124,8 @@ export function ProjectLayout() {
               className={cn(
                 'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all',
                 isActive
-                  ? 'bg-[#1e1e1e] text-white'
-                  : 'text-muted-foreground hover:text-white hover:bg-white/5'
+                  ? 'bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]'
+                  : 'text-[var(--vscode-activityBar-inactiveForeground)] hover:text-[var(--vscode-activityBar-foreground)] hover:bg-[var(--vscode-toolbar-hoverBackground)]'
               )}
             >
               <Icon className="w-3 h-3" />
