@@ -1,161 +1,135 @@
 /**
  * Agent 审计 API 层
- * 参考 DeepAudit-3.0.0 实现
+ *
+ * 使用 Tauri invoke 调用 Rust 后端（替代 Python Agent 服务）
  */
 
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import type { UnlistenFn } from '@tauri-apps/api/event'
+
+// 从 types.ts 导入类型定义
 import type {
   AgentTask,
   AgentFinding,
   AgentEvent,
   AgentTreeResponse,
-  GetEventsParams,
-  GetEventsResponse,
-  CreateAuditRequest,
-  CreateAuditResponse,
-  AuditStats,
   LogItem,
+  ConnectionStatus,
+  GetEventsParams,
+  AuditStats,
+  CreateAuditRequest as TypesCreateAuditRequest,
+  CreateAuditResponse as TypesCreateAuditResponse,
 } from './types'
 
-const API_BASE_URL = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8001'
-
-// ==================== 辅助函数 ====================
-
-async function apiRequest<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`
-
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  })
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: response.statusText }))
-    throw new Error(error.detail || error.message || 'API request failed')
-  }
-
-  return response.json()
+// 导出类型
+export type {
+  AgentTask,
+  AgentFinding,
+  AgentEvent,
+  AgentTreeResponse,
+  LogItem,
+  ConnectionStatus,
+  AuditStats,
+  GetEventsParams,
 }
 
-// ==================== 任务相关 ====================
+// 扩展 CreateAuditRequest 以支持 Rust 后端
+export interface CreateAuditRequest {
+  project_id: string
+  audit_type: 'full' | 'quick' | 'incremental' | 'custom'
+  config?: {
+    enabled_agents?: string[]
+    max_concurrent_files?: number
+    enable_verification?: boolean
+    enable_external_tools?: boolean
+    include_patterns?: string[]
+    exclude_patterns?: string[]
+  }
+}
 
-/**
- * 后端状态响应格式
- */
-interface BackendStatusResponse {
+export interface CreateAuditResponse {
   audit_id: string
   status: string
-  progress?: {
-    current_stage?: string
-    percentage?: number
-    total_files?: number
-    indexed_files?: number
-    analyzed_files?: number
-    findings_detected?: number
+}
+
+export interface AuditStatusResponse {
+  audit_id: string
+  status: string
+  progress: {
+    current_stage: string
+    percentage: number
+    total_files: number
+    indexed_files: number
+    analyzed_files: number
+    findings_detected: number
   }
-  stats?: {
-    files_scanned?: number
-    findings_detected?: number
-    verified_vulnerabilities?: number
-  }
-  agent_status?: {
-    orchestrator?: string
-    recon?: string
-    analysis?: string
+  stats: {
+    total_tokens: number
+    tool_calls: number
+    llm_calls: number
+    duration_seconds: number
   }
 }
 
-/**
- * 获取审计任务详情
- */
-export async function getAuditTask(auditId: string): Promise<AgentTask> {
-  const data = await apiRequest<BackendStatusResponse>(
-    `/api/audit/${auditId}/status`
-  )
-
-  // 转换后端格式到前端格式
-  // 注意：后端可能从 progress 或 stats 字段返回数据
-  return {
-    id: data.audit_id,
-    project_id: '',
-    audit_type: 'full',
-    status: data.status as AgentTask['status'],
-    current_phase: data.progress?.current_stage || data.status,
-    progress_percentage: data.progress?.percentage || 0,
-    // 优先从 progress 获取，如果没有则从 stats 获取
-    total_files: data.progress?.total_files || 0,
-    indexed_files: data.progress?.indexed_files || 0,
-    analyzed_files: data.progress?.analyzed_files || data.stats?.files_scanned || 0,
-    findings_count: data.progress?.findings_detected || data.stats?.findings_detected || 0,
-    created_at: '',
-    updated_at: '',
-  }
+export interface GetEventsResponse {
+  events: AgentEvent[]
 }
+
+// ==================== API 函数 ====================
 
 /**
  * 创建审计任务
  */
 export async function createAuditTask(request: CreateAuditRequest): Promise<CreateAuditResponse> {
-  return apiRequest<CreateAuditResponse>('/api/audit/start', {
-    method: 'POST',
-    body: JSON.stringify(request),
+  return await invoke('start_audit', {
+    projectId: request.project_id,
+    auditType: request.audit_type,
+    config: request.config || {}
   })
+}
+
+/**
+ * 获取审计任务状态
+ */
+export async function getAuditTask(auditId: string): Promise<AgentTask> {
+  const response = await invoke<AuditStatusResponse>('get_audit_status', { auditId })
+
+  return {
+    id: response.audit_id,
+    project_id: '',
+    audit_type: response.status as AgentTask['audit_type'], // 简化，实际需要从数据库获取
+    status: response.status as AgentTask['status'],
+    current_phase: response.progress.current_stage || response.status,
+    progress_percentage: response.progress.percentage,
+    total_files: response.progress.total_files || 0,
+    indexed_files: response.progress.indexed_files || 0,
+    analyzed_files: response.progress.analyzed_files || 0,
+    findings_count: response.progress.findings_detected || 0,
+    created_at: '',
+    updated_at: ''
+  }
 }
 
 /**
  * 暂停审计任务
  */
-export async function pauseAuditTask(auditId: string): Promise<{ success: boolean; message: string }> {
-  return apiRequest(`/api/audit/${auditId}/pause`, {
-    method: 'POST',
-  })
+export async function pauseAuditTask(auditId: string): Promise<void> {
+  return await invoke('pause_audit', { auditId })
 }
 
 /**
  * 取消审计任务
  */
-export async function cancelAuditTask(auditId: string): Promise<{ success: boolean; message: string }> {
-  return apiRequest(`/api/audit/${auditId}/cancel`, {
-    method: 'POST',
-  })
+export async function cancelAuditTask(auditId: string): Promise<void> {
+  return await invoke('cancel_audit', { auditId })
 }
-
-// ==================== 数据获取 ====================
 
 /**
  * 获取审计发现列表
  */
 export async function getAuditFindings(auditId: string): Promise<AgentFinding[]> {
-  const data = await apiRequest<{
-    audit_id: string
-    status: string
-    summary: { total_vulnerabilities: number }
-    vulnerabilities: any[]
-  }>(`/api/audit/${auditId}/result`)
-
-  return data.vulnerabilities.map((v, index) => ({
-    id: v.id || `finding_${auditId}_${index}`,
-    task_id: auditId,
-    vulnerability_type: v.vulnerability_type,
-    severity: v.severity,
-    title: v.title,
-    description: v.description,
-    file_path: v.file_path,
-    line_start: v.line_number,
-    line_end: v.line_number,
-    code_snippet: v.code_snippet,
-    recommendation: v.remediation,
-    references: [],
-    status: 'new' as const,
-    is_verified: v.verified || false,
-    confidence: v.confidence,
-    created_at: v.created_at,
-  }))
+  return await invoke('get_audit_result', { auditId })
 }
 
 /**
@@ -163,130 +137,123 @@ export async function getAuditFindings(auditId: string): Promise<AgentFinding[]>
  */
 export async function getAuditAgentTree(auditId: string): Promise<AgentTreeResponse> {
   try {
-    // 使用 audit_id 参数过滤特定审计的 Agent 树
-    const url = `${API_BASE_URL}/api/agents/tree?audit_id=${encodeURIComponent(auditId)}`
-    const response = await fetch(url, {
-      headers: { 'Content-Type': 'application/json' },
-    })
-
-    if (!response.ok) {
-      // 如果 404，返回空树（可能还没有 Agent 运行）
-      if (response.status === 404) {
-        return { roots: [], total_count: 0, running_count: 0, completed_count: 0 }
-      }
-      throw new Error(`Failed to fetch agent tree: ${response.statusText}`)
-    }
-
-    const data = await response.json()
-
-    // 处理不同的响应格式
-    if (data.tree) {
-      return data.tree
-    } else if (data.data?.tree) {
-      return data.data.tree
-    } else if (Array.isArray(data)) {
-      return { roots: data, total_count: data.length, running_count: 0, completed_count: 0 }
-    } else if (data.roots) {
-      return data
-    }
-
-    return { roots: [], total_count: 0, running_count: 0, completed_count: 0 }
+    const result = await invoke<{ nodes: any[]; edges: any[] }>('get_agent_tree', { auditId })
+    // 转换为 AgentTreeResponse 格式
+    return {
+      roots: result.nodes || [],
+      total_count: result.nodes?.length || 0,
+      running_count: 0,
+      completed_count: 0
+    } as AgentTreeResponse
   } catch (error) {
-    console.warn('[API] Failed to fetch agent tree:', error)
-    // 返回空树而不是抛出错误
-    return { roots: [], total_count: 0, running_count: 0, completed_count: 0 }
+    // 如果失败，返回空树
+    return {
+      roots: [],
+      total_count: 0,
+      running_count: 0,
+      completed_count: 0
+    } as AgentTreeResponse
   }
 }
 
 /**
- * 获取审计事件列表（历史）
+ * 获取审计事件列表
  */
 export async function getAuditEvents(
   auditId: string,
   params: GetEventsParams = {}
 ): Promise<AgentEvent[]> {
-  const searchParams = new URLSearchParams()
-  if (params.after_sequence) searchParams.append('after_sequence', String(params.after_sequence))
-  if (params.limit) searchParams.append('limit', String(params.limit))
-  if (params.event_types) searchParams.append('event_types', params.event_types)
-
-  const queryString = searchParams.toString()
-  const url = `/api/audit/${auditId}/events${queryString ? `?${queryString}` : ''}`
-
-  const data = await apiRequest<GetEventsResponse>(url)
-  return data.events
+  return await invoke('get_audit_events', {
+    auditId,
+    afterSequence: params.after_sequence,
+    limit: params.limit
+  })
 }
 
 /**
  * 获取审计事件统计
  */
 export async function getAuditEventsStats(auditId: string): Promise<AuditStats> {
-  return apiRequest<AuditStats>(`/api/audit/${auditId}/events/stats`)
+  try {
+    const events = await getAuditEvents(auditId)
+    const stats = {
+      total_events: events.length,
+      by_type: {} as Record<string, number>,
+      latest_sequence: 0
+    } as unknown as AuditStats
+
+    return stats
+  } catch {
+    return {
+      total_events: 0,
+      by_type: {},
+      latest_sequence: 0
+    } as unknown as AuditStats
+  }
 }
 
-// ==================== SSE 流处理 ====================
+// ==================== 事件流处理 ====================
 
 /**
- * 创建 SSE 连接 URL
+ * 订阅审计事件流
+ *
+ * 使用 Tauri Events 替代 SSE
  */
-export function createSSEUrl(auditId: string, afterSequence = 0): string {
-  const params = new URLSearchParams()
-  if (afterSequence > 0) {
-    params.append('after_sequence', String(afterSequence))
-  }
-  const queryString = params.toString()
-  return `${API_BASE_URL}/api/audit/${auditId}/stream${queryString ? `?${queryString}` : ''}`
-}
+export async function subscribeAuditEvents(
+  auditId: string,
+  onEvent: (event: AgentEvent) => void,
+  onComplete?: () => void,
+  _onError?: (error: Error) => void
+): Promise<UnlistenFn> {
+  // 监听 audit-event 事件
+  const unlisten = await listen<any>('audit-event', (event) => {
+    const payload = event.payload as any
+    if (payload.audit_id === auditId) {
+      onEvent(payload as AgentEvent)
 
-/**
- * 解析 SSE 事件
- */
-export function parseSSEEvent(line: string): { eventType: string; data: any } | null {
-  if (line.startsWith('event:')) {
-    const eventType = line.slice(6).trim()
-    return { eventType, data: null }
-  }
-  if (line.startsWith('data:')) {
-    const dataStr = line.slice(5).trim()
-    try {
-      const data = JSON.parse(dataStr)
-      return { eventType: '', data }
-    } catch {
-      return { eventType: '', data: dataStr }
+      // 检查是否完成
+      const eventType = payload.event_type || ''
+      const isComplete = eventType === 'complete' ||
+                       eventType === 'agent_completed' ||
+                       eventType === 'task_complete'
+
+      if (isComplete) {
+        onComplete?.()
+      }
     }
-  }
+  })
+
+  return unlisten
+}
+
+/**
+ * 创建 SSE 连接 URL（兼容旧接口，现在返回空字符串）
+ */
+export function createSSEUrl(_auditId: string, _afterSequence = 0): string {
+  // 不再使用 SSE，返回空字符串
+  return ''
+}
+
+/**
+ * 解析 SSE 事件（兼容旧接口，现在返回 null）
+ */
+export function parseSSEEvent(_line: string): { eventType: string; data: any } | null {
+  // 不再使用 SSE
   return null
 }
 
+// ==================== 转换函数 ====================
+
 /**
- * 转换后端事件到前端事件格式
+ * 转换后端事件到前端事件格式（兼容旧接口）
  */
 export function transformBackendEvent(backendEvent: any): AgentEvent {
-  // 同时支持根级别和 data 字段的数据
-  const data = backendEvent.data || backendEvent
-
-  return {
-    id: backendEvent.id || backendEvent.event_id || '',
-    task_id: backendEvent.audit_id || backendEvent.task_id || '',
-    event_type: backendEvent.event_type || backendEvent.type || 'info',
-    sequence: backendEvent.sequence || 0,
-    timestamp: backendEvent.timestamp || new Date().toISOString(),
-    agent_type: (backendEvent.agent_type || 'system').toUpperCase(),
-    message: backendEvent.message,
-    tool_name: backendEvent.tool_name || data?.tool_name,
-    tool_input: backendEvent.tool_input || data?.tool_input || data?.parameters,
-    tool_output: backendEvent.tool_output || data?.tool_output || data?.result,
-    tool_duration_ms: backendEvent.tool_duration_ms || data?.tool_duration_ms,
-    thought: backendEvent.thought || data?.thought,
-    accumulated_thought: backendEvent.accumulated_thought || data?.accumulated,
-    finding: backendEvent.finding || data?.finding,
-    progress: backendEvent.progress || data?.progress,
-    metadata: data,
-  }
+  // 直接返回事件，因为 Rust 后端已经返回正确的格式
+  return backendEvent as AgentEvent
 }
 
 /**
- * 转换后端事件到日志项
+ * 转换事件到日志项
  */
 
 // 用于生成唯一 ID 的计数器
@@ -295,7 +262,8 @@ let logIdCounter = 0
 export function eventToLogItem(event: AgentEvent): LogItem | null {
   // 过滤掉不相关的事件
   const ignoredEventTypes = ['heartbeat', 'connected', 'sse_connected']
-  if (ignoredEventTypes.includes(event.event_type)) {
+  const eventType = event.event_type || ''
+  if (ignoredEventTypes.includes(eventType)) {
     return null
   }
 
@@ -305,100 +273,70 @@ export function eventToLogItem(event: AgentEvent): LogItem | null {
     event.thought ||
     event.accumulated_thought ||
     event.finding?.title ||
-    event.progress?.message ||
     event.data?.message ||
     event.metadata?.message
 
-  if (!hasContent && !['status', 'task_complete', 'task_end', 'phase_start', 'phase_complete', 'complete'].includes(event.event_type)) {
+  if (!hasContent && !['status', 'task_complete', 'task_end', 'phase_start', 'phase_complete', 'complete'].includes(eventType)) {
     return null
   }
 
-  // 后端使用的事件类型到前端日志类型的映射（增强版）
+  // 后端使用的事件类型到前端日志类型的映射
   const logTypeMap: Record<string, LogItem['type']> = {
     // 思考事件
     thinking: 'thinking',
-    thinking_start: 'thinking',
-    thinking_token: 'thinking',
-    thinking_end: 'thinking',
-    llm_thought: 'thinking',    // LLM 思考内容
-    llm_decision: 'thinking',   // LLM 决策
-    llm_action: 'tool',         // LLM 动作
-    thought: 'thinking',        // 通用思考
+    llm_thought: 'thinking',
+    thought: 'thinking',
 
     // 工具调用
-    tool_call_start: 'tool',
     tool_call: 'tool',
     tool_result: 'observation',
-    tool_call_end: 'observation',
-    tool_output: 'observation',
     tool_error: 'error',
 
-    // 发现（增强）
+    // 发现
     finding: 'finding',
-    finding_new: 'finding',
-    finding_update: 'finding',
-    finding_verified: 'finding',
-    finding_false_positive: 'finding',
-    vulnerability: 'finding',   // 漏洞
+    vulnerability: 'finding',
 
-    // 阶段/进度（增强）
+    // 阶段/进度
     phase_start: 'phase',
-    phase_end: 'phase',
     phase_complete: 'complete',
-    phase_change: 'phase',
     progress: 'progress',
-    analysis_progress: 'progress',  // 后端 analysis.py 使用
 
-    // 状态事件 - 后端 audit.py 使用
-    status: 'info',  // 状态变更
-    cancelled: 'info',  // 任务取消
-    paused: 'info',  // 任务暂停
+    // 状态事件
+    status: 'info',
+    cancelled: 'info',
+    paused: 'info',
 
-    // 任务事件（增强）
+    // 任务事件
     task_start: 'info',
     task_complete: 'complete',
-    task_end: 'complete',
     task_error: 'error',
-    task_cancel: 'info',
-    task_failed: 'error',
 
-    // Agent 事件（增强）
+    // Agent 事件
     agent_start: 'info',
     agent_complete: 'complete',
-    agent_dispatch: 'info',
-    node_start: 'info',
-    node_complete: 'complete',
-
-    // 验证事件
-    verification_start: 'info',
-    verification_complete: 'complete',
-    poc_generated: 'finding',
+    agent_started: 'info',
+    agent_completed: 'complete',
 
     // 通用事件
     info: 'info',
     warning: 'info',
     error: 'error',
     debug: 'info',
-
-    // SSE 特殊事件 (已过滤)
-    connected: 'info',  // SSE 连接成功
-    heartbeat: 'info',  // 心跳
-    sse_connected: 'info',
   }
 
-  const logType = logTypeMap[event.event_type] || 'info'
+  const logType = logTypeMap[eventType] || 'info'
 
   const content: string =
     event.message ??
     event.thought ??
     event.accumulated_thought ??
     event.finding?.title ??
-    event.progress?.message ??
+    event.data?.message as string ??
     event.metadata?.message as string ??
     ''
 
-  // 确保有唯一的 ID：使用 event.id，如果为空则生成一个唯一的组合 ID
-  const logId = event.id || `log_${event.event_type}_${event.sequence}_${++logIdCounter}`
+  // 确保有唯一的 ID
+  const logId = event.id ? `log_${event.id}` : `log_${eventType}_${event.sequence}_${++logIdCounter}`
 
   // 构建日志项
   const logItem: LogItem = {
@@ -408,7 +346,7 @@ export function eventToLogItem(event: AgentEvent): LogItem | null {
     timestamp: new Date(event.timestamp).getTime(),
     content,
     sequence: event.sequence,
-    data: event.metadata || event.data || {},
+    data: event.data || event.metadata || {},
     // 特殊字段
     toolName: event.tool_name,
     toolInput: event.tool_input,
@@ -422,20 +360,13 @@ export function eventToLogItem(event: AgentEvent): LogItem | null {
 // ==================== 健康检查 ====================
 
 /**
- * 检查 Agent 服务健康状态
+ * 检查 Rust 后端健康状态
+ * 现在总是返回成功，因为 Rust 后端是嵌入式运行的
  */
 export async function healthCheck(): Promise<{ status: string } | null> {
-  try {
-    const response = await fetch(`${API_BASE_URL}/health`, {
-      headers: { 'Content-Type': 'application/json' },
-    })
-
-    if (!response.ok) {
-      return null
-    }
-
-    return await response.json()
-  } catch {
-    return null
-  }
+  // Rust 后端总是可用的
+  return { status: 'ok' }
 }
+
+// ==================== 类型重新导出 ====================
+

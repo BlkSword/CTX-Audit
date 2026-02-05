@@ -7,9 +7,11 @@ use tauri::Manager;
 use tracing_subscriber::prelude::*;
 
 mod commands;
+mod models;
 mod services;
 
 use services::database::Database;
+use services::llm::LLMFactory;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,9 +38,9 @@ pub fn run() {
             let db = rt.block_on(Database::new(&db_path)).expect("Failed to initialize database");
             app.manage(db);
 
-            // 初始化 Agent 服务
-            let agent_service = services::agent_service::AgentService::new(8001);
-            app.manage(std::sync::Arc::new(tokio::sync::Mutex::new(agent_service)));
+            // 初始化 LLM Factory
+            let llm_factory = std::sync::Arc::new(tokio::sync::Mutex::new(LLMFactory::with_default_config()));
+            app.manage(llm_factory);
 
             tracing::info!("CTX-Audit Desktop initialized");
             Ok(())
@@ -58,16 +60,28 @@ pub fn run() {
             // Scanner
             commands::scanner::run_scan,
             commands::scanner::get_findings,
-            // Agent
-            commands::agent::start_agent_service,
-            commands::agent::stop_agent_service,
-            commands::agent::get_agent_status,
+            // Audit (Rust Agent Engine)
+            commands::audit::start_audit,
+            commands::audit::get_audit_status,
+            commands::audit::pause_audit,
+            commands::audit::cancel_audit,
+            commands::audit::get_audit_result,
+            commands::audit::get_audit_events,
+            commands::audit::get_agent_tree,
             // Realtime Audit
             commands::realtime_audit::get_file_findings,
             commands::realtime_audit::update_finding_status,
             commands::realtime_audit::scan_file,
             commands::realtime_audit::get_project_stats,
             commands::realtime_audit::get_project_files,
+            // Indexer
+            commands::indexer::index_project,
+            commands::indexer::get_file_symbols,
+            commands::indexer::search_symbol,
+            commands::indexer::get_call_graph,
+            // LLM
+            commands::llm::test_llm_connection,
+            commands::llm::test_llm_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

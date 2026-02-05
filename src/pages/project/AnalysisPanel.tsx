@@ -1,5 +1,7 @@
 /**
  * AnalysisPanel - 分析工具面板
+ *
+ * 纯桌面版本，使用本地数据和 Tauri Commands
  */
 
 import { useState } from 'react'
@@ -10,7 +12,6 @@ import { useUIStore } from '@/stores/uiStore'
 import { useToast } from '@/hooks/use-toast'
 import { useToastStore } from '@/stores/toastStore'
 import { astService } from '@/shared/api/services'
-import { api } from '@/shared/api/client'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -86,21 +87,10 @@ export function AnalysisPanel() {
       return
     }
 
-    const loadingToast = toast.loading('正在列出文件...')
-
-    try {
-      addLog('正在列出文件...', 'system')
-      const result = await api.listFiles(currentProject.path)
-      const fileCount = Array.isArray(result) ? result.length : 0
-      toast.success(`找到 ${fileCount} 个文件`)
-      addLog(`找到 ${fileCount} 个文件`, 'system')
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '未知错误'
-      toast.error(`列出文件失败: ${message}`)
-      addLog(`列出文件失败: ${err}`, 'system')
-    } finally {
-      removeToast(loadingToast)
-    }
+    // 使用已有的文件树统计
+    const fileCount = totalFileCount
+    toast.success(`当前项目有 ${fileCount} 个文件`)
+    addLog(`项目包含 ${fileCount} 个文件`, 'system')
   }
 
   const handleGetCodeStructure = async () => {

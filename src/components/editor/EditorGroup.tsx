@@ -4,7 +4,7 @@
  * 管理单个编辑器组，支持文件标签页
  */
 
-import type { FC } from 'react'
+import { useCallback } from 'react'
 import { X, FileCode, SplitSquareVertical, SplitSquareHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -34,22 +34,23 @@ export function EditorGroup({ groupId, onSplit, onClose }: EditorGroupProps) {
 
   const { files, activeFile } = group
 
+  // 使用 useCallback 缓存回调函数，避免每次渲染都创建新函数导致子组件重新渲染
   // 处理内容变化
-  const handleContentChange = (content: string) => {
+  const handleContentChange = useCallback((content: string) => {
     // TODO: 更新文件内容到 store
     console.log('Content changed:', content)
-  }
+  }, [])
 
   // 处理光标位置变化
-  const handleCursorChange = (position: { line: number; column: number }) => {
+  const handleCursorChange = useCallback((position: { line: number; column: number }) => {
     // TODO: 更新状态栏显示
     console.log('Cursor changed:', position)
-  }
+  }, [])
 
   // 处理编辑器挂载
-  const handleEditorMount = (editor: monaco.editor.IStandaloneCodeEditor) => {
+  const handleEditorMount = useCallback((editor: monaco.editor.IStandaloneCodeEditor) => {
     setEditorInstance(groupId, editor)
-  }
+  }, [groupId, setEditorInstance])
 
   return (
     <div className="flex flex-col h-full bg-[#1e1e1e]">

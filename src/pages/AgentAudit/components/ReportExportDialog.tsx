@@ -34,6 +34,16 @@ import type { AgentFinding } from "../types"
 
 type ReportFormat = "markdown" | "json" | "html"
 
+// 统计数据类型
+interface ReportStats {
+  score: number
+  criticalCount: number
+  highCount: number
+  mediumCount: number
+  lowCount: number
+  total: number
+}
+
 interface ReportExportDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -115,6 +125,445 @@ function calculateScore(findings: AgentFinding[]): number {
 
   const score = 100 - criticalCount * 25 - highCount * 10 - mediumCount * 5 - lowCount * 2
   return Math.max(0, score)
+}
+
+// 生成 Markdown 报告
+function generateMarkdownReport(
+  auditId: string,
+  findings: AgentFinding[],
+  task: any,
+  stats: ReportStats
+): string {
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+  const severityEmoji: Record<string, string> = {
+    critical: '🔴',
+    high: '🟠',
+    medium: '🟡',
+    low: '🔵',
+    info: '⚪'
+  }
+
+  let md = `# 代码安全审计报告
+
+---
+
+## 📊 审计概览
+
+| 项目 | 详情 |
+|------|------|
+| **审计 ID** | \`${auditId}\` |
+| **生成时间** | ${now} |
+| **漏洞总数** | ${stats.total} |
+| **安全评分** | ${stats.score}/100 |
+| **严重** | ${stats.criticalCount} |
+| **高危** | ${stats.highCount} |
+| **中危** | ${stats.mediumCount} |
+| **低危** | ${stats.lowCount} |
+
+${task ? `
+## 📋 任务信息
+
+| 项目 | 详情 |
+|------|------|
+| **审计类型** | ${task.audit_type || 'N/A'} |
+| **状态** | ${task.status || 'N/A'} |
+| **总文件数** | ${task.total_files || 0} |
+| **已分析文件** | ${task.analyzed_files || 0} |
+| **创建时间** | ${task.created_at ? new Date(task.created_at).toLocaleString('zh-CN') : 'N/A'} |
+` : ''}
+
+---
+
+## 🔍 漏洞详情
+
+${findings.length === 0 ? `
+### ✅ 未发现漏洞
+
+未检测到任何安全问题。
+` : findings.map((finding, index) => `
+### ${severityEmoji[finding.severity]} ${index + 1}. ${finding.title}
+
+| 属性 | 值 |
+|------|------|
+| **严重程度** | ${finding.severity.toUpperCase()} |
+| **漏洞类型** | ${finding.vulnerability_type} |
+| **文件** | \`${finding.file_path || 'N/A'}\` |
+| **行号** | ${finding.line_start ? `${finding.line_start}${finding.line_end ? `-${finding.line_end}` : ''}` : 'N/A'} |
+| **状态** | ${finding.status} |
+| **置信度** | ${finding.confidence ? `${Math.round(finding.confidence * 100)}%` : 'N/A'} |
+
+**描述:**
+
+${finding.description}
+
+${finding.code_snippet ? `
+**代码片段:**
+
+\`\`\`
+${finding.code_snippet}
+\`\`\`
+` : ''}
+
+${finding.recommendation ? `
+**修复建议:**
+
+${finding.recommendation}
+` : ''}
+
+${finding.references && finding.references.length > 0 ? `
+**参考链接:**
+
+${finding.references.map(ref => `- [${ref}](${ref})`).join('\n')}
+` : ''}
+
+---
+`).join('')}
+
+---
+
+*本报告由 CTX-Audit 自动生成*
+`
+
+  return md
+}
+
+// 生成 JSON 报告
+function generateJsonReport(
+  auditId: string,
+  findings: AgentFinding[],
+  task: any,
+  stats: ReportStats
+): string {
+  const report = {
+    audit_id: auditId,
+    generated_at: new Date().toISOString(),
+    summary: {
+      total_findings: stats.total,
+      security_score: stats.score,
+      severity_breakdown: {
+        critical: stats.criticalCount,
+        high: stats.highCount,
+        medium: stats.mediumCount,
+        low: stats.lowCount
+      }
+    },
+    task: task ? {
+      audit_type: task.audit_type,
+      status: task.status,
+      total_files: task.total_files,
+      analyzed_files: task.analyzed_files,
+      created_at: task.created_at,
+      completed_at: task.completed_at
+    } : null,
+    findings: findings.map(f => ({
+      id: f.id,
+      task_id: f.task_id,
+      vulnerability_type: f.vulnerability_type,
+      severity: f.severity,
+      title: f.title,
+      description: f.description,
+      file_path: f.file_path,
+      line_start: f.line_start,
+      line_end: f.line_end,
+      code_snippet: f.code_snippet,
+      recommendation: f.recommendation,
+      references: f.references,
+      status: f.status,
+      is_verified: f.is_verified,
+      confidence: f.confidence,
+      created_at: f.created_at
+    }))
+  }
+
+  return JSON.stringify(report, null, 2)
+}
+
+// 生成 HTML 报告
+function generateHtmlReport(
+  auditId: string,
+  findings: AgentFinding[],
+  task: any,
+  stats: ReportStats
+): string {
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+  const severityColor: Record<string, string> = {
+    critical: '#f43f5e',
+    high: '#f97316',
+    medium: '#f59e0b',
+    low: '#0ea5e9',
+    info: '#94a3b8'
+  }
+  const severityBgColor: Record<string, string> = {
+    critical: '#fef2f2',
+    high: '#fff7ed',
+    medium: '#fffbeb',
+    low: '#f0f9ff',
+    info: '#f8fafc'
+  }
+
+  const findingsHtml = findings.length === 0
+    ? '<div class="empty-state"><p>✅ 未发现漏洞</p></div>'
+    : findings.map((finding, index) => `
+      <div class="finding-card" style="border-left-color: ${severityColor[finding.severity]}">
+        <div class="finding-header">
+          <span class="finding-severity severity-${finding.severity}">${finding.severity.toUpperCase()}</span>
+          <h3>${index + 1}. ${finding.title}</h3>
+        </div>
+        <table class="finding-meta">
+          <tr><th>漏洞类型</th><td>${finding.vulnerability_type}</td></tr>
+          <tr><th>文件</th><td><code>${finding.file_path || 'N/A'}</code></td></tr>
+          <tr><th>行号</th><td>${finding.line_start ? `${finding.line_start}${finding.line_end ? `-${finding.line_end}` : ''}` : 'N/A'}</td></tr>
+          <tr><th>状态</th><td>${finding.status}</td></tr>
+          ${finding.confidence !== undefined ? `<tr><th>置信度</th><td>${Math.round(finding.confidence * 100)}%</td></tr>` : ''}
+        </table>
+        <div class="finding-section">
+          <h4>描述</h4>
+          <p>${finding.description.replace(/\n/g, '<br>')}</p>
+        </div>
+        ${finding.code_snippet ? `
+        <div class="finding-section">
+          <h4>代码片段</h4>
+          <pre><code>${finding.code_snippet.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>
+        </div>
+        ` : ''}
+        ${finding.recommendation ? `
+        <div class="finding-section">
+          <h4>修复建议</h4>
+          <p>${finding.recommendation.replace(/\n/g, '<br>')}</p>
+        </div>
+        ` : ''}
+        ${finding.references && finding.references.length > 0 ? `
+        <div class="finding-section">
+          <h4>参考链接</h4>
+          <ul>
+            ${finding.references.map(ref => `<li><a href="${ref}" target="_blank">${ref}</a></li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+      </div>
+    `).join('')
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>代码安全审计报告 - ${auditId}</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      padding: 20px;
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      overflow: hidden;
+    }
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 40px;
+    }
+    .header h1 {
+      font-size: 32px;
+      margin-bottom: 10px;
+    }
+    .header .meta {
+      opacity: 0.9;
+      font-size: 14px;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      padding: 30px;
+      background: #f8fafc;
+    }
+    .summary-card {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      text-align: center;
+    }
+    .summary-card .value {
+      font-size: 32px;
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    .summary-card .label {
+      color: #64748b;
+      font-size: 14px;
+    }
+    .summary-card.score .value { color: ${stats.score >= 80 ? '#10b981' : stats.score >= 60 ? '#f59e0b' : '#ef4444'}; }
+    .content {
+      padding: 30px;
+    }
+    .section-title {
+      font-size: 24px;
+      margin-bottom: 20px;
+      color: #1e293b;
+    }
+    .finding-card {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .finding-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+    .finding-severity {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    .finding-severity.severity-critical { background: #fef2f2; color: #f43f5e; }
+    .finding-severity.severity-high { background: #fff7ed; color: #f97316; }
+    .finding-severity.severity-medium { background: #fffbeb; color: #f59e0b; }
+    .finding-severity.severity-low { background: #f0f9ff; color: #0ea5e9; }
+    .finding-severity.severity-info { background: #f8fafc; color: #94a3b8; }
+    .finding-header h3 {
+      font-size: 18px;
+      color: #1e293b;
+    }
+    .finding-meta {
+      width: 100%;
+      margin-bottom: 15px;
+      border-collapse: collapse;
+    }
+    .finding-meta th, .finding-meta td {
+      padding: 8px;
+      text-align: left;
+      border-bottom: 1px solid #e2e8f0;
+      font-size: 14px;
+    }
+    .finding-meta th {
+      color: #64748b;
+      font-weight: 600;
+      width: 100px;
+    }
+    .finding-meta code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .finding-section {
+      margin-top: 15px;
+    }
+    .finding-section h4 {
+      font-size: 16px;
+      color: #334155;
+      margin-bottom: 8px;
+    }
+    .finding-section p {
+      color: #475569;
+      line-height: 1.7;
+    }
+    .finding-section pre {
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 15px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    .finding-section ul {
+      list-style: none;
+      padding-left: 0;
+    }
+    .finding-section li {
+      padding: 5px 0;
+    }
+    .finding-section a {
+      color: #3b82f6;
+      text-decoration: none;
+    }
+    .finding-section a:hover {
+      text-decoration: underline;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #64748b;
+    }
+    .empty-state p {
+      font-size: 18px;
+    }
+    .footer {
+      text-align: center;
+      padding: 20px;
+      background: #f8fafc;
+      color: #64748b;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🔒 代码安全审计报告</h1>
+      <div class="meta">
+        <span>审计 ID: <code>${auditId}</code></span> |
+        <span>生成时间: ${now}</span>
+      </div>
+    </div>
+
+    <div class="summary">
+      <div class="summary-card">
+        <div class="value" style="color: #ef4444">${stats.total}</div>
+        <div class="label">漏洞总数</div>
+      </div>
+      <div class="summary-card score">
+        <div class="value">${stats.score}</div>
+        <div class="label">安全评分</div>
+      </div>
+      <div class="summary-card">
+        <div class="value" style="color: #f43f5e">${stats.criticalCount}</div>
+        <div class="label">严重</div>
+      </div>
+      <div class="summary-card">
+        <div class="value" style="color: #f97316">${stats.highCount}</div>
+        <div class="label">高危</div>
+      </div>
+      <div class="summary-card">
+        <div class="value" style="color: #f59e0b">${stats.mediumCount}</div>
+        <div class="label">中危</div>
+      </div>
+      <div class="summary-card">
+        <div class="value" style="color: #0ea5e9">${stats.lowCount}</div>
+        <div class="label">低危</div>
+      </div>
+    </div>
+
+    <div class="content">
+      <h2 class="section-title">🔍 漏洞详情</h2>
+      ${findingsHtml}
+    </div>
+
+    <div class="footer">
+      <p>本报告由 CTX-Audit 自动生成</p>
+    </div>
+  </div>
+</body>
+</html>`
 }
 
 // ============ Sub Components ============
@@ -328,7 +777,7 @@ export const ReportExportDialog = ({
   onOpenChange,
   auditId,
   findings,
-  task: _task,
+  task,
 }: ReportExportDialogProps) => {
   const [activeFormat, setActiveFormat] = useState<ReportFormat>("markdown")
   const [downloading, setDownloading] = useState(false)
@@ -349,34 +798,31 @@ export const ReportExportDialog = ({
     return { score, criticalCount, highCount, mediumCount, lowCount, total: findings.length }
   }, [findings])
 
-  // 加载预览
-  const loadPreview = useCallback(async (format: ReportFormat) => {
+  // 加载预览（客户端生成）
+  const loadPreview = useCallback((format: ReportFormat) => {
     setIsLoadingPreview(true)
     try {
-      const API_BASE = import.meta.env.VITE_AGENT_SERVICE_URL || "http://localhost:8001"
-      const url = `${API_BASE}/api/audit/${auditId}/report?format=${format}`
-
-      const response = await fetch(url)
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`)
+      let content = ""
+      switch (format) {
+        case "markdown":
+          content = generateMarkdownReport(auditId, findings, task, stats)
+          break
+        case "json":
+          content = generateJsonReport(auditId, findings, task, stats)
+          break
+        case "html":
+          content = generateHtmlReport(auditId, findings, task, stats)
+          break
       }
-
-      if (format === "json") {
-        const data = await response.json()
-        setPreviewContent(JSON.stringify(data, null, 2))
-      } else {
-        const text = await response.text()
-        setPreviewContent(text)
-      }
+      setPreviewContent(content)
     } catch (err) {
-      console.error("Preview load failed:", err)
-      const errorMessage = err instanceof Error ? err.message : "加载预览失败"
-      setPreviewContent(`# 错误\n\n无法加载报告预览：\n\n\`\`\`\n${errorMessage}\n\`\`\`\n\n请检查：\n1. Agent 服务是否运行\n2. 审计 ID 是否正确\n3. 网络连接是否正常`)
+      console.error("Preview generation failed:", err)
+      const errorMessage = err instanceof Error ? err.message : "生成预览失败"
+      setPreviewContent(`# 错误\n\n无法生成报告预览：\n\n\`\`\`\n${errorMessage}\n\`\`\``)
     } finally {
       setIsLoadingPreview(false)
     }
-  }, [auditId])
+  }, [auditId, findings, task, stats])
 
   // 当对话框打开或格式改变时加载预览
   useEffect(() => {
@@ -394,46 +840,37 @@ export const ReportExportDialog = ({
     }
   }, [open])
 
-  // 处理下载
-  const handleDownload = async () => {
+  // 处理下载（客户端生成）
+  const handleDownload = () => {
     setDownloading(true)
     try {
-      const API_BASE = import.meta.env.VITE_AGENT_SERVICE_URL || "http://localhost:8001"
-      const url = `${API_BASE}/api/audit/${auditId}/report?format=${activeFormat}`
-
-      const response = await fetch(url)
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`)
+      let content = ""
+      switch (activeFormat) {
+        case "markdown":
+          content = generateMarkdownReport(auditId, findings, task, stats)
+          break
+        case "json":
+          content = generateJsonReport(auditId, findings, task, stats)
+          break
+        case "html":
+          content = generateHtmlReport(auditId, findings, task, stats)
+          break
       }
 
-      // 获取文件名
-      const disposition = response.headers.get("Content-Disposition")
-      let filename = `audit_report_${auditId}${FORMAT_CONFIG[activeFormat].extension}`
-      if (disposition) {
-        const match = disposition.match(/filename="?([^"]+)"?/)
-        if (match) filename = match[1]
-      }
+      // 生成文件名
+      const timestamp = new Date().toISOString().slice(0, 10)
+      const filename = `audit_report_${auditId.slice(0, 8)}_${timestamp}${FORMAT_CONFIG[activeFormat].extension}`
 
-      // 获取内容
-      let blob: Blob
-      if (activeFormat === "json") {
-        const data = await response.json()
-        blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
-      } else {
-        const text = await response.text()
-        blob = new Blob([text], { type: FORMAT_CONFIG[activeFormat].mime })
-      }
-
-      // 触发下载
-      const url2 = URL.createObjectURL(blob)
+      // 创建 Blob 并触发下载
+      const blob = new Blob([content], { type: FORMAT_CONFIG[activeFormat].mime })
+      const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
-      a.href = url2
+      a.href = url
       a.download = filename
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
-      URL.revokeObjectURL(url2)
+      URL.revokeObjectURL(url)
 
       setDownloadSuccess(true)
       setTimeout(() => {
@@ -442,15 +879,7 @@ export const ReportExportDialog = ({
     } catch (err) {
       console.error("Download failed:", err)
       const errorMessage = err instanceof Error ? err.message : "导出报告失败，请重试"
-
-      // 使用 toast 替代 alert
-      if (window.navigator.clipboard) {
-        // 尝试复制错误信息到剪贴板
-        navigator.clipboard.writeText(errorMessage)
-      }
-
-      // 显示更友好的错误信息
-      alert(`${errorMessage}\n\n请检查：\n1. Agent 服务是否运行\n2. 审计 ID 是否正确\n3. 网络连接是否正常\n\n错误信息已复制到剪贴板`)
+      alert(`${errorMessage}\n\n如果问题持续存在，请尝试刷新页面重试。`)
     } finally {
       setDownloading(false)
     }

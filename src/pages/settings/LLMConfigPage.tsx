@@ -40,12 +40,10 @@ import type { LLMConfig } from '@/shared/types'
 
 export function LLMConfigPage() {
   const toast = useToast()
-  
+
   const {
     llmConfigs,
     defaultLLMConfigId,
-    llmConfigsLoading,
-    llmConfigsError,
     loadLLMConfigs,
     createLLMConfig,
     deleteLLMConfig,
@@ -60,7 +58,7 @@ export function LLMConfigPage() {
 
   useEffect(() => {
     loadLLMConfigs()
-  }, [loadLLMConfigs])
+  }, []) // 只在组件挂载时加载一次
 
   // 新建配置表单状态
   const [newConfig, setNewConfig] = useState({
@@ -193,12 +191,11 @@ export function LLMConfigPage() {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Page Header */}
-      <div className="border-b border-border/40 px-6 py-4 flex items-center justify-between bg-muted/20">
-        <div className="flex items-center gap-3">
-          <Server className="w-5 h-5 text-primary" />
-          <h2 className="text-lg font-semibold">LLM 配置</h2>
+    <div className="max-w-4xl mx-auto">
+      {/* 操作工具栏 */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="text-sm text-[var(--vscode-descriptionForeground)]">
+          管理 LLM API 配置，支持任何兼容 OpenAI API 格式的服务
         </div>
 
         <Dialog open={isCreateDialogOpen} onOpenChange={handleDialogOpenChange}>
@@ -349,9 +346,9 @@ export function LLMConfigPage() {
 
               {/* 创建中提示 */}
               {isCreating && (
-                <div className="flex items-center justify-center gap-2 p-4 bg-muted rounded-lg">
+                <div className="flex items-center justify-center gap-2 p-4 bg-[var(--vscode-sideBar-background)] rounded-lg">
                   <Loader2 className="w-5 h-5 animate-spin text-primary" />
-                  <span className="text-sm text-muted-foreground">
+                  <span className="text-sm text-[var(--vscode-descriptionForeground)]">
                     正在验证 API 连接并创建配置...
                   </span>
                 </div>
@@ -387,143 +384,127 @@ export function LLMConfigPage() {
         </Dialog>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 overflow-auto p-6 no-scrollbar">
-        {llmConfigsLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-          </div>
-        ) : llmConfigsError ? (
-          <Card className="p-12 text-center border-destructive">
-            <X className="w-16 h-16 mx-auto mb-4 text-destructive" />
-            <h3 className="text-lg font-semibold mb-2">加载失败</h3>
-            <p className="text-sm text-muted-foreground mb-6">{llmConfigsError}</p>
-            <Button onClick={loadLLMConfigs} variant="outline">
-              <RotateCcw className="w-4 h-4 mr-2" />
-              重试
-            </Button>
-          </Card>
-        ) : llmConfigs.length === 0 ? (
-          <Card className="p-12 text-center">
-            <Server className="w-16 h-16 mx-auto mb-4 text-muted-foreground/30" />
-            <h3 className="text-lg font-semibold mb-2">还没有 LLM 配置</h3>
-            <p className="text-sm text-muted-foreground mb-6 max-w-md mx-auto">
-              添加 LLM 配置以启用 AI Agent 审计功能。支持任何兼容 OpenAI API 格式的服务。
-            </p>
-            <Button onClick={() => setIsCreateDialogOpen(true)}>
-              <Plus className="w-4 h-4 mr-2" />
-              添加第一个配置
-            </Button>
-          </Card>
-        ) : (
-          <div className="max-w-4xl mx-auto space-y-4">
-            {llmConfigs.map((config) => {
-              const testResult = testResults[config.id]
+      {/* 配置列表 */}
+      {llmConfigs.length === 0 ? (
+        <Card className="p-12 text-center bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
+          <Server className="w-16 h-16 mx-auto mb-4 text-[var(--vscode-descriptionForeground)]/30" />
+          <h3 className="text-lg font-semibold mb-2 text-[var(--vscode-editor-foreground)]">还没有 LLM 配置</h3>
+          <p className="text-sm text-[var(--vscode-descriptionForeground)] mb-6 max-w-md mx-auto">
+            添加 LLM 配置以启用 AI Agent 审计功能。支持任何兼容 OpenAI API 格式的服务。
+          </p>
+          <Button onClick={() => setIsCreateDialogOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            添加第一个配置
+          </Button>
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          {llmConfigs.map((config) => {
+            const testResult = testResults[config.id]
 
-              return (
-                <Card key={config.id} className="p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    {/* 左侧：图标和信息 */}
-                    <div className="flex items-start gap-4 flex-1">
-                      <div className="p-3 rounded-lg bg-primary/10">
-                        <Server className="w-6 h-6 text-primary" />
-                      </div>
-
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                          <h3 className="font-semibold text-base">{config.provider}</h3>
-                          {config.id === defaultLLMConfigId && (
-                            <Badge variant="default" className="text-[10px]">
-                              <Sparkles className="w-3 h-3 mr-1" />
-                              默认
-                            </Badge>
-                          )}
-                          {!config.enabled && (
-                            <Badge variant="outline" className="text-[10px]">已禁用</Badge>
-                          )}
-                          {testResult?.success ? (
-                            <Badge variant="outline" className="text-[10px] text-green-500 border-green-500">
-                              <Check className="w-3 h-3 mr-1" />
-                              连接成功
-                            </Badge>
-                          ) : testResult && !testResult.success ? (
-                            <Badge variant="outline" className="text-[10px] text-red-500 border-red-500">
-                              <X className="w-3 h-3 mr-1" />
-                              连接失败
-                            </Badge>
-                          ) : null}
-                        </div>
-
-                        <p className="text-sm font-medium mb-1">{config.model}</p>
-
-                        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-muted-foreground mb-3">
-                          <div>温度: <span className="text-foreground">{config.temperature?.toFixed(1) ?? 'N/A'}</span></div>
-                          <div>最大令牌: <span className="text-foreground">{config.maxTokens ?? 'N/A'}</span></div>
-                          <div className="col-span-2">
-                            端点: <span className="font-mono text-foreground">{config.apiEndpoint}</span>
-                          </div>
-                          <div>密钥: <span className="font-mono text-foreground">{config.apiKey}</span></div>
-                          <div>状态: <span className={config.enabled ? "text-green-500" : "text-muted-foreground"}>
-                            {config.enabled ? "已启用" : "已禁用"}
-                          </span></div>
-                        </div>
-
-                        {/* 错误信息 */}
-                        {testResult && !testResult.success && (
-                          <div className="mt-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-xs text-destructive">
-                            {testResult.message}
-                          </div>
-                        )}
-                      </div>
+            return (
+              <Card key={config.id} className="p-5 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
+                <div className="flex items-start justify-between gap-4">
+                  {/* 左侧：图标和信息 */}
+                  <div className="flex items-start gap-4 flex-1">
+                    <div className="p-3 rounded-lg bg-primary/10">
+                      <Server className="w-6 h-6 text-primary" />
                     </div>
 
-                    {/* 右侧：操作按钮 */}
-                    <div className="flex items-center gap-2">
-                      {/* 测试按钮 */}
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <h3 className="font-semibold text-base">{config.provider}</h3>
+                        {config.id === defaultLLMConfigId && (
+                          <Badge variant="default" className="text-[10px]">
+                            <Sparkles className="w-3 h-3 mr-1" />
+                            默认
+                          </Badge>
+                        )}
+                        {!config.enabled && (
+                          <Badge variant="outline" className="text-[10px]">已禁用</Badge>
+                        )}
+                        {testResult?.success ? (
+                          <Badge variant="outline" className="text-[10px] text-green-500 border-green-500">
+                            <Check className="w-3 h-3 mr-1" />
+                            连接成功
+                          </Badge>
+                        ) : testResult && !testResult.success ? (
+                          <Badge variant="outline" className="text-[10px] text-red-500 border-red-500">
+                            <X className="w-3 h-3 mr-1" />
+                            连接失败
+                          </Badge>
+                        ) : null}
+                      </div>
+
+                      <p className="text-sm font-medium mb-1">{config.model}</p>
+
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-muted-foreground mb-3">
+                        <div>温度: <span className="text-foreground">{config.temperature?.toFixed(1) ?? 'N/A'}</span></div>
+                        <div>最大令牌: <span className="text-foreground">{config.maxTokens ?? 'N/A'}</span></div>
+                        <div className="col-span-2">
+                          端点: <span className="font-mono text-foreground">{config.apiEndpoint}</span>
+                        </div>
+                        <div>密钥: <span className="font-mono text-foreground">{config.apiKey}</span></div>
+                        <div>状态: <span className={config.enabled ? "text-green-500" : "text-muted-foreground"}>
+                          {config.enabled ? "已启用" : "已禁用"}
+                        </span></div>
+                      </div>
+
+                      {/* 错误信息 */}
+                      {testResult && !testResult.success && (
+                        <div className="mt-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-xs text-destructive">
+                          {testResult.message}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 右侧：操作按钮 */}
+                  <div className="flex items-center gap-2">
+                    {/* 测试按钮 */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleTestConfig(config)}
+                      disabled={testingConfigId === config.id || !config.enabled}
+                      title="测试连接"
+                    >
+                      {testingConfigId === config.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Check className="w-4 h-4" />
+                      )}
+                    </Button>
+
+                    {/* 设为默认 */}
+                    {config.id !== defaultLLMConfigId && (
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => handleTestConfig(config)}
-                        disabled={testingConfigId === config.id || !config.enabled}
-                        title="测试连接"
+                        onClick={() => handleSetDefault(config.id)}
+                        title="设为默认"
                       >
-                        {testingConfigId === config.id ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Check className="w-4 h-4" />
-                        )}
+                        <Sparkles className="w-4 h-4" />
                       </Button>
+                    )}
 
-                      {/* 设为默认 */}
-                      {config.id !== defaultLLMConfigId && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleSetDefault(config.id)}
-                          title="设为默认"
-                        >
-                          <Sparkles className="w-4 h-4" />
-                        </Button>
-                      )}
-
-                      {/* 删除 */}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-destructive hover:text-destructive"
-                        onClick={() => handleDeleteConfig(config.id, config.provider)}
-                        title="删除配置"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
+                    {/* 删除 */}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive"
+                      onClick={() => handleDeleteConfig(config.id, config.provider)}
+                      title="删除配置"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
                   </div>
-                </Card>
-              )
-            })}
-          </div>
-        )}
-      </div>
+                </div>
+              </Card>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

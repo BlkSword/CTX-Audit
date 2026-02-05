@@ -1,102 +1,155 @@
 /**
- * ActivityBar - VSCode 风格左侧活动栏
+ * ActivityBar - 左侧活动栏
  *
- * 显示用于切换不同侧边栏视图的图标按钮
+ * 只负责主要功能区域的切换
+ * 不处理页面内的子导航（如设置的子页面）
  */
 
-import { FileText, Search, AlertTriangle, Settings, X, PanelRightClose, PanelRight } from 'lucide-react'
-import { useLayoutStore } from '@/stores/layoutStore'
-import type { ActivityBarItem } from '@/stores/layoutStore'
+import { useLayoutStore, type ActivityId } from '@/stores/layoutStore'
+import { ACTIVITY_BAR_ITEMS, getPathWithId } from '@/config/navigation'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { Settings, Home } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useProjectStore } from '@/stores/projectStore'
 
-// 活动栏项配置
-const activityBarItems: Array<{
-  id: ActivityBarItem
-  icon: typeof FileText
+// ==================== 类型定义 ====================
+
+interface ActivityButtonProps {
+  id: string
+  icon: React.ComponentType<{ className?: string }>
   label: string
-}> = [
-  { id: 'explorer', icon: FileText, label: '资源管理器' },
-  { id: 'search', icon: Search, label: '搜索' },
-  { id: 'findings', icon: AlertTriangle, label: '扫描结果' },
-  { id: 'settings', icon: Settings, label: '设置' },
-]
+  isActive: boolean
+  isDisabled?: boolean
+  onClick: () => void
+  shortcut?: string
+}
+
+// ==================== 子组件 ====================
+
+/**
+ * 单个活动按钮
+ */
+function ActivityButton({ id, icon: Icon, label, isActive, isDisabled, onClick, shortcut }: ActivityButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={isDisabled}
+      className={cn(
+        "relative w-12 h-12 flex items-center justify-center",
+        "transition-all duration-150",
+        "group",
+        isActive && "before:absolute before:left-0 before:top-0 before:bottom-0 before:w-0.5 before:bg-[var(--vscode-activityBar-foreground)]",
+        !isActive && !isDisabled && "opacity-60 hover:opacity-100",
+        isDisabled && "opacity-30 cursor-not-allowed"
+      )}
+      title={`${label}${shortcut ? ` (${shortcut})` : ''}${isDisabled ? ' (请先打开项目)' : ''}`}
+    >
+      <Icon className={cn(
+        "w-5 h-5",
+        isActive
+          ? "text-[var(--vscode-activityBar-foreground)]"
+          : "text-[var(--vscode-activityBar-inactiveForeground)]",
+        !isDisabled && "group-hover:text-[var(--vscode-activityBar-foreground)]"
+      )} />
+    </button>
+  )
+}
+
+/**
+ * 分隔线
+ */
+function Separator() {
+  return (
+    <div className="w-8 h-0.5 mx-auto my-1 bg-[var(--vscode-activityBar-inactiveForeground)]/20" />
+  )
+}
+
+// ==================== 主组件 ====================
 
 export function ActivityBar() {
-  const { activeActivity, setActiveActivity, sidebarVisible, agentPanelVisible, toggleAgentPanel } = useLayoutStore()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { activeActivity, setActiveActivity } = useLayoutStore()
+  const { currentProject } = useProjectStore()
 
-  const handleItemClick = (itemId: ActivityBarItem) => {
-    // 如果点击的是当前活动项，则切换侧边栏显示/隐藏
-    if (activeActivity === itemId) {
-      if (sidebarVisible) {
-        setActiveActivity(null)
-      }
-    } else {
-      // 切换到新的活动项
-      setActiveActivity(itemId)
+  // 处理活动项点击
+  const handleActivityClick = (itemId: string, itemPathTemplate: string) => {
+    // 如果没有项目，提示用户先打开项目
+    if (!currentProject) {
+      // 不做任何操作，按钮已经被禁用
+      return
     }
+
+    // 如果点击当前活动项，则不切换
+    if (activeActivity === itemId) {
+      return
+    }
+
+    // 设置新的活动项
+    setActiveActivity(itemId as ActivityId)
+    // 使用项目 ID 生成完整路径
+    const fullPath = itemPathTemplate.replace('{id}', String(currentProject.id))
+    navigate(fullPath)
   }
 
+  // 判断是否是设置页面
+  const isSettingsPage = location.pathname.startsWith('/settings')
+  // 判断是否是首页
+  const isHomePage = location.pathname === '/'
+
+  // 判断是否在编辑器页面
+  const isEditorPage = location.pathname.startsWith('/editor')
+
   return (
-    <div className="flex flex-col items-center py-2 gap-1 w-12 h-full bg-[#3c3c3c] border-r border-border/40 select-none">
-      {/* 应用图标 */}
-      <div className="w-full flex items-center justify-center py-3 mb-2">
-        <div className="w-8 h-8 rounded bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center">
-          <span className="text-white font-bold text-sm">C</span>
-        </div>
-      </div>
+    <div className="w-12 h-full bg-[var(--vscode-activityBar-background)] flex flex-col items-center py-2 select-none">
+      {/* Logo/首页按钮 */}
+      <button
+        onClick={() => navigate('/')}
+        className={cn(
+          "w-12 h-12 flex items-center justify-center mb-2",
+          "transition-opacity duration-150",
+          isHomePage ? "opacity-100" : "opacity-50 hover:opacity-100"
+        )}
+        title="主页"
+      >
+        <Home className={cn(
+          "w-5 h-5",
+          isHomePage
+            ? "text-[var(--vscode-activityBar-foreground)]"
+            : "text-[var(--vscode-activityBar-inactiveForeground)]"
+        )} />
+      </button>
 
-      {/* 分隔线 */}
-      <div className="w-8 h-[1px] bg-border/40 mb-2" />
+      <Separator />
 
-      {/* 活动项 */}
-      {activityBarItems.map((item) => {
-        const Icon = item.icon
-        const isActive = activeActivity === item.id
-
+      {/* 主要活动项 */}
+      {ACTIVITY_BAR_ITEMS.map((item) => {
+        const isActive = isEditorPage && activeActivity === item.id
+        const isDisabled = !currentProject
         return (
-          <button
+          <ActivityButton
             key={item.id}
-            onClick={() => handleItemClick(item.id)}
-            className={cn(
-              'relative w-full py-3 flex items-center justify-center text-muted-foreground hover:text-white transition-colors group',
-              isActive && 'text-white before:absolute before:left-0 before:top-0 before:bottom-0 before:w-0.5 before:bg-white'
-            )}
-            title={item.label}
-          >
-            <Icon className="w-6 h-6" />
-          </button>
+            id={item.id}
+            icon={item.icon}
+            label={item.label}
+            isActive={isActive}
+            isDisabled={isDisabled}
+            shortcut={item.shortcut}
+            onClick={() => handleActivityClick(item.id, item.pathTemplate)}
+          />
         )
       })}
 
-      {/* 底部空间占位 */}
-      <div className="flex-1" />
+      <Separator />
 
-      {/* Agent 面板切换按钮 */}
-      <button
-        onClick={toggleAgentPanel}
-        className={cn(
-          'w-full py-3 flex items-center justify-center transition-colors relative',
-          agentPanelVisible
-            ? 'text-white before:absolute before:left-0 before:top-0 before:bottom-0 before:w-0.5 before:bg-white'
-            : 'text-muted-foreground hover:text-white'
-        )}
-        title={agentPanelVisible ? '隐藏 Agent 面板' : '显示 Agent 面板'}
-      >
-        {agentPanelVisible ? <PanelRightClose className="w-5 h-5" /> : <PanelRight className="w-5 h-5" />}
-      </button>
-
-      {/* 关闭侧边栏按钮 */}
-      {sidebarVisible && (
-        <button
-          onClick={() => {
-            setActiveActivity(null)
-          }}
-          className="w-full py-3 flex items-center justify-center text-muted-foreground hover:text-white transition-colors"
-          title="隐藏侧边栏"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      )}
+      {/* 设置按钮 */}
+      <ActivityButton
+        id="settings"
+        icon={Settings}
+        label="设置"
+        isActive={isSettingsPage}
+        onClick={() => navigate('/settings/llm')}
+      />
     </div>
   )
 }

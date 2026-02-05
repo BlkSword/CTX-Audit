@@ -108,6 +108,17 @@ export const useFileStore = create<FileState>()(
       },
 
       selectFile: async (filePath) => {
+        // 如果已经选中了同一个文件，不执行任何操作
+        const state = get()
+        if (state.selectedFile === filePath) {
+          return
+        }
+
+        // 检查文件是否已经在打开的文件列表中（已缓存）
+        // 注意：这里我们只检查是否在 openFiles 中，不进行实际的内容缓存
+        // 如果需要更好的性能，可以添加一个 fileContents 缓存对象
+        const isAlreadyOpen = state.openFiles.includes(filePath)
+
         set({ isLoading: true, error: null })
         try {
           // 使用 Tauri API 读取文件

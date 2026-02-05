@@ -44,16 +44,27 @@ pub async fn read_file(path: String) -> Result<String, String> {
         }
     }
 
-    // 尝试读取文件
-    fs::read_to_string(&path)
+    // 读取文件为字节，然后尝试转换为 UTF-8
+    let bytes = fs::read(&path)
         .map_err(|e| {
-            // 提供更友好的错误信息
             if e.kind() == std::io::ErrorKind::PermissionDenied {
                 format!("权限不足，无法读取文件: {}", path)
             } else {
                 format!("读取文件失败: {} ({})", path, e)
             }
-        })
+        })?;
+
+    // 尝试将字节转换为 UTF-8 字符串
+    // 如果包含无效的 UTF-8 序列，使用替换字符
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+
+    // 检查内容是否为空
+    if content.is_empty() && !bytes.is_empty() {
+        // 如果字节不为空但转换为空字符串，可能是编码问题
+        return Err(format!("文件编码不支持或无法解析: {}", path));
+    }
+
+    Ok(content)
 }
 
 /// 列出目录内容

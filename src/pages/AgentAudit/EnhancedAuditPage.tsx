@@ -541,7 +541,7 @@ export function EnhancedAuditPageContent() {
       const result = await createAuditTask({
         project_id: currentProject.uuid,
         audit_type: auditType,
-        config: _selectedLLMConfig !== 'default' ? { llm_config_id: _selectedLLMConfig } : undefined,
+        config: _selectedLLMConfig !== 'default' ? { enabled_agents: ['orchestrator'] } : undefined,
       })
 
       toast.success(`审计任务已启动: ${result.audit_id}`)
@@ -593,23 +593,23 @@ export function EnhancedAuditPageContent() {
 
   return (
     <div className={cn(
-      "flex flex-col h-full bg-[#1e1e1e]",
+      "flex flex-col h-full bg-[var(--vscode-editor-background)]",
       isFullscreen && "fixed inset-0 z-50"
     )}>
       {/* 顶部控制栏 */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border/40 bg-[#252526] shrink-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background)] shrink-0">
         <div className="flex items-center gap-4">
           {/* 审计模式选择 */}
           <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-muted-foreground">审计模式</label>
-            <div className="flex rounded-lg bg-[#1e1e1e] p-1 border border-border/40">
+            <label className="text-xs font-semibold text-[var(--vscode-descriptionForeground)]">审计模式</label>
+            <div className="flex rounded-lg bg-[var(--vscode-editor-background)] p-1 border border-[var(--vscode-sideBar-border)]">
               <button
                 onClick={() => setAuditType('quick')}
                 className={cn(
                   "px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
                   auditType === 'quick'
                     ? "bg-amber-500/20 text-amber-300"
-                    : "text-muted-foreground hover:text-white hover:bg-white/5"
+                    : "text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-toolbar-hoverBackground)]"
                 )}
               >
                 <Zap className="w-3.5 h-3.5" />
@@ -621,7 +621,7 @@ export function EnhancedAuditPageContent() {
                   "px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5",
                   auditType === 'full'
                     ? "bg-violet-500/20 text-violet-300"
-                    : "text-muted-foreground hover:text-white hover:bg-white/5"
+                    : "text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)] hover:bg-[var(--vscode-toolbar-hoverBackground)]"
                 )}
               >
                 <Sparkles className="w-3.5 h-3.5" />
@@ -652,7 +652,7 @@ export function EnhancedAuditPageContent() {
             state.task ? (
               <AuditStatusBadge status={state.task.status} progress={state.task.progress_percentage} />
             ) : state.isLoading ? (
-              <Badge variant="outline" className="bg-[#1e1e1e] border-border/40 text-muted-foreground">
+              <Badge variant="outline" className="bg-[var(--vscode-editor-background)] border-[var(--vscode-sideBar-border)] text-[var(--vscode-descriptionForeground)]">
                 <Loader2 className="w-3 h-3 mr-1 animate-spin" />
                 加载中...
               </Badge>
@@ -669,7 +669,7 @@ export function EnhancedAuditPageContent() {
               size="sm"
               onClick={() => setExportDialogOpen(true)}
               disabled={!auditId}
-              className="h-8 bg-[#1e1e1e] border-border/40 text-muted-foreground hover:text-white"
+              className="h-8 bg-[var(--vscode-editor-background)] border-[var(--vscode-sideBar-border)] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)]"
             >
               <Download className="w-3.5 h-3.5 mr-1.5" />
               导出报告
@@ -733,7 +733,7 @@ export function EnhancedAuditPageContent() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 text-muted-foreground hover:text-white"
+            className="h-8 w-8 text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)]"
             onClick={() => setIsFullscreen(!isFullscreen)}
           >
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
@@ -744,30 +744,30 @@ export function EnhancedAuditPageContent() {
       {/* 主内容区 */}
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* 左侧：主面板 (70%) */}
-        <div className="w-[70%] flex flex-col border-r border-border/40 min-w-0">
+        <div className="w-[70%] flex flex-col border-r border-[var(--vscode-sideBar-border)] min-w-0">
           {/* 标签页切换 */}
           <Tabs value={activeTab} onValueChange={(v: any) => setActiveTab(v)} className="flex-1 flex flex-col">
             <div className="px-4 pt-3 shrink-0">
-              <TabsList className="w-full bg-[#252526] border border-border/40 rounded-lg p-1">
-                <TabsTrigger value="logs" className="flex items-center gap-2 data-[state=active]:bg-[#1e1e1e]">
+              <TabsList className="w-full bg-[var(--vscode-sideBar-background)] border border-[var(--vscode-sideBar-border)] rounded-lg p-1">
+                <TabsTrigger value="logs" className="flex items-center gap-2 data-[state=active]:bg-[var(--vscode-editor-background)]">
                   <Activity className="w-4 h-4" />
                   <span>活动日志</span>
                   {state.logs.length > 0 && (
-                    <Badge variant="secondary" className="ml-1 text-xs bg-[#3c3c3c] text-muted-foreground border-border/40">
+                    <Badge variant="secondary" className="ml-1 text-xs bg-[var(--vscode-activityBar-background)] text-[var(--vscode-descriptionForeground)] border-[var(--vscode-sideBar-border)]">
                       {state.logs.length}
                     </Badge>
                   )}
                 </TabsTrigger>
-                <TabsTrigger value="findings" className="flex items-center gap-2 data-[state=active]:bg-[#1e1e1e]">
+                <TabsTrigger value="findings" className="flex items-center gap-2 data-[state=active]:bg-[var(--vscode-editor-background)]">
                   <FileText className="w-4 h-4" />
                   <span>审计结果</span>
                   {state.findings.length > 0 && (
-                    <Badge variant="secondary" className="ml-1 text-xs bg-red-900/50 text-red-400 border-border/40">
+                    <Badge variant="secondary" className="ml-1 text-xs bg-red-900/50 text-red-400 border-[var(--vscode-sideBar-border)]">
                       {state.findings.length}
                     </Badge>
                   )}
                 </TabsTrigger>
-                <TabsTrigger value="viz" className="flex items-center gap-2 data-[state=active]:bg-[#1e1e1e]">
+                <TabsTrigger value="viz" className="flex items-center gap-2 data-[state=active]:bg-[var(--vscode-editor-background)]">
                   <BarChart3 className="w-4 h-4" />
                   <span>数据统计</span>
                 </TabsTrigger>
@@ -778,14 +778,14 @@ export function EnhancedAuditPageContent() {
             <div className="flex-1 min-h-0 overflow-hidden">
               <TabsContent value="logs" className="h-full m-0 p-0 overflow-hidden">
                 {/* 日志视图切换按钮 */}
-                <div className="absolute top-24 right-4 z-10 flex items-center gap-1 bg-[#252526] border border-border/40 rounded-lg p-1">
+                <div className="absolute top-24 right-4 z-10 flex items-center gap-1 bg-[var(--vscode-sideBar-background)] border border-[var(--vscode-sideBar-border)] rounded-lg p-1">
                   <Button
                     variant={logViewStyle === 'chat' ? 'default' : 'ghost'}
                     size="sm"
                     onClick={() => setLogViewStyle('chat')}
                     className={cn(
                       "h-7 px-2 text-xs",
-                      logViewStyle === 'chat' ? "bg-[#1e1e1e] text-white" : "text-muted-foreground hover:text-white"
+                      logViewStyle === 'chat' ? "bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]" : "text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)]"
                     )}
                   >
                     💬 聊天式
@@ -796,7 +796,7 @@ export function EnhancedAuditPageContent() {
                     onClick={() => setLogViewStyle('terminal')}
                     className={cn(
                       "h-7 px-2 text-xs",
-                      logViewStyle === 'terminal' ? "bg-[#1e1e1e] text-white" : "text-muted-foreground hover:text-white"
+                      logViewStyle === 'terminal' ? "bg-[var(--vscode-editor-background)] text-[var(--vscode-editor-foreground)]" : "text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)]"
                     )}
                   >
                     ⌨️ 终端式
@@ -824,8 +824,8 @@ export function EnhancedAuditPageContent() {
               <TabsContent value="findings" className="h-full m-0 p-0 overflow-hidden">
                 <div className="h-full flex flex-col">
                   {/* 工具栏 */}
-                  <div className="px-4 py-2 border-b border-border/40 bg-[#252526] flex items-center justify-between shrink-0">
-                    <div className="text-sm text-muted-foreground">
+                  <div className="px-4 py-2 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background)] flex items-center justify-between shrink-0">
+                    <div className="text-sm text-[var(--vscode-descriptionForeground)]">
                       发现 {state.findings.length} 个漏洞
                     </div>
                     <Button
@@ -833,7 +833,7 @@ export function EnhancedAuditPageContent() {
                       size="sm"
                       onClick={() => setExportDialogOpen(true)}
                       disabled={state.findings.length === 0}
-                      className="h-8 bg-[#1e1e1e] border-border/40 text-muted-foreground hover:text-white"
+                      className="h-8 bg-[var(--vscode-editor-background)] border-[var(--vscode-sideBar-border)] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)]"
                     >
                       <Download className="w-3.5 h-3.5 mr-1.5" />
                       导出报告
@@ -867,10 +867,10 @@ export function EnhancedAuditPageContent() {
         </div>
 
         {/* 右侧：状态 + Agent 树 + 详情/统计 (30%) */}
-        <div className="w-[30%] flex flex-col bg-[#252526]/20 min-w-0">
+        <div className="w-[30%] flex flex-col bg-[var(--vscode-sideBar-background)]/20 min-w-0">
           {/* 审计状态指示器 - 只要有auditId就显示 */}
           {auditId && (
-            <div className="p-4 border-b border-border/40 shrink-0">
+            <div className="p-4 border-b border-[var(--vscode-panel-border)] shrink-0">
               {state.task ? (
                 <AuditStatusIndicator
                   status={state.task.status}
@@ -879,7 +879,7 @@ export function EnhancedAuditPageContent() {
                   error={state.error}
                 />
               ) : (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2 text-sm text-[var(--vscode-descriptionForeground)]">
                   <Loader2 className="w-4 h-4 animate-spin" />
                   <span>加载审计信息...</span>
                 </div>
@@ -889,17 +889,17 @@ export function EnhancedAuditPageContent() {
 
           {/* Agent 树 */}
           <div className={cn(
-            "flex flex-col border-b border-border/40 bg-[#252526]/20",
+            "flex flex-col border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background)]/20",
             state.selectedAgentId ? "h-[40%]" : "flex-1"
           )}>
-            <div className="px-4 py-3 border-b border-border/40 bg-[#252526]/50 flex items-center justify-between shrink-0">
-              <h3 className="text-sm font-semibold text-white">Agent Tree</h3>
-              {isConnecting && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
+            <div className="px-4 py-3 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background)]/50 flex items-center justify-between shrink-0">
+              <h3 className="text-sm font-semibold text-[var(--vscode-editor-foreground)]">Agent Tree</h3>
+              {isConnecting && <Loader2 className="w-4 h-4 animate-spin text-[var(--vscode-descriptionForeground)]" />}
             </div>
             <div className="flex-1 overflow-auto">
               {state.isLoading ? (
                 <div className="flex items-center justify-center h-full">
-                  <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                  <Loader2 className="w-6 h-6 animate-spin text-[var(--vscode-descriptionForeground)]" />
                 </div>
               ) : state.agentTree?.roots?.length ? (
                 <div className="p-2">
@@ -909,18 +909,18 @@ export function EnhancedAuditPageContent() {
                       className={cn(
                         "p-2 rounded cursor-pointer transition-colors",
                         state.selectedAgentId === agent.agent_id
-                          ? "bg-primary/20 text-white"
-                          : "bg-[#1e1e1e] hover:bg-[#2a2a2a] text-muted-foreground"
+                          ? "bg-primary/20 text-[var(--vscode-editor-foreground)]"
+                          : "bg-[var(--vscode-editor-background)] hover:bg-[var(--vscode-toolbar-hoverBackground)] text-[var(--vscode-descriptionForeground)]"
                       )}
                       onClick={() => selectAgent(agent.agent_id)}
                     >
                       <div className="text-sm font-medium">{agent.agent_type}</div>
-                      <div className="text-xs text-muted-foreground">{agent.agent_id}</div>
+                      <div className="text-xs text-[var(--vscode-descriptionForeground)]">{agent.agent_id}</div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+                <div className="flex items-center justify-center h-full text-sm text-[var(--vscode-descriptionForeground)]">
                   暂无 Agent 数据
                 </div>
               )}
@@ -930,13 +930,13 @@ export function EnhancedAuditPageContent() {
           {/* Agent 详情 或 统计面板 */}
           {state.selectedAgentId ? (
             <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              <div className="px-4 py-3 border-b border-border/40 bg-[#252526]/50 flex items-center justify-between shrink-0">
-                <h3 className="text-sm font-semibold text-white">Agent 详情</h3>
+              <div className="px-4 py-3 border-b border-[var(--vscode-panel-border)] bg-[var(--vscode-sideBar-background)]/50 flex items-center justify-between shrink-0">
+                <h3 className="text-sm font-semibold text-[var(--vscode-editor-foreground)]">Agent 详情</h3>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => selectAgent(null)}
-                  className="h-6 text-xs text-muted-foreground hover:text-white"
+                  className="h-6 text-xs text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)]"
                 >
                   关闭
                 </Button>

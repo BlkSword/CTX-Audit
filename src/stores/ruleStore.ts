@@ -1,21 +1,24 @@
 /**
- * 规则状态管理
+ * 规则状态管理 (纯本地版本)
+ *
+ * 使用 localStorage 存储规则，不需要后端 API
  */
 
 import { create } from 'zustand'
-import { devtools } from 'zustand/middleware'
+import { devtools, persist } from 'zustand/middleware'
 import type { Rule } from '@/shared/types'
-import { rulesService } from '@/shared/api/services'
-import type { RuleStats } from '@/shared/api/services/rules'
+
+interface RuleStats {
+  total: number
+  by_severity: Record<string, number>
+  by_language: Record<string, number>
+  by_category: Record<string, number>
+}
 
 interface RuleState {
   rules: Rule[]
   selectedRule: Rule | null
   stats: RuleStats | null
-  isLoading: boolean
-  isSaving: boolean
-  isDeleting: boolean
-  error: string | null
 
   // Actions
   loadRules: () => Promise<void>
@@ -28,97 +31,116 @@ interface RuleState {
   clearError: () => void
 }
 
+const RULES_KEY = 'ctx-audit-rules'
+
+const defaultStats: RuleStats = {
+  total: 0,
+  by_severity: {},
+  by_language: {},
+  by_category: {},
+}
+
+// LocalStorage 辅助函数
+const loadFromStorage = <T>(key: string, defaultValue: T): T => {
+  try {
+    const item = localStorage.getItem(key)
+    return item ? JSON.parse(item) : defaultValue
+  } catch {
+    return defaultValue
+  }
+}
+
+const saveToStorage = <T>(key: string, value: T): void => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch (error) {
+    console.error(`Failed to save ${key}:`, error)
+  }
+}
+
+// 计算规则统计
+const calculateStats = (rules: Rule[]): RuleStats => {
+  const stats: RuleStats = {
+    total: rules.length,
+    by_severity: {},
+    by_language: {},
+    by_category: {},
+  }
+
+  rules.forEach(rule => {
+    stats.by_severity[rule.severity] = (stats.by_severity[rule.severity] || 0) + 1
+    stats.by_language[rule.language] = (stats.by_language[rule.language] || 0) + 1
+    if (rule.category) {
+      stats.by_category[rule.category] = (stats.by_category[rule.category] || 0) + 1
+    }
+  })
+
+  return stats
+}
+
 export const useRuleStore = create<RuleState>()(
   devtools(
-    (set) => ({
+    (set, get) => ({
       rules: [],
       selectedRule: null,
       stats: null,
-      isLoading: false,
-      isSaving: false,
-      isDeleting: false,
-      error: null,
 
       loadRules: async () => {
-        set({ isLoading: true, error: null })
-        try {
-          const rules = await rulesService.getRules()
-          set({ rules, isLoading: false })
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '加载规则失败'
-          set({ error: message, isLoading: false, rules: [] })
-        }
+        const stored = loadFromStorage<Rule[]>(RULES_KEY, [])
+        set({ rules: stored, stats: calculateStats(stored) })
       },
 
       loadRuleById: async (ruleId) => {
-        set({ isLoading: true, error: null })
-        try {
-          const rule = await rulesService.getRuleById(ruleId)
-          set({ selectedRule: rule, isLoading: false })
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '加载规则详情失败'
-          set({ error: message, isLoading: false })
+        const stored = loadFromStorage<Rule[]>(RULES_KEY, [])
+        const rule = stored.find(r => r.id === ruleId)
+        if (rule) {
+          set({ selectedRule: rule })
         }
       },
 
       loadStats: async () => {
-        set({ isLoading: true, error: null })
-        try {
-          const stats = await rulesService.getRuleStats()
-          set({ stats, isLoading: false })
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '加载规则统计失败'
-          set({ error: message, isLoading: false })
-        }
+        const stored = loadFromStorage<Rule[]>(RULES_KEY, [])
+        set({ stats: calculateStats(stored) })
       },
 
       createRule: async (rule) => {
-        set({ isSaving: true, error: null })
-        try {
-          const newRule = await rulesService.createRule(rule)
-          set(state => ({
-            rules: [...state.rules, newRule],
-            isSaving: false
-          }))
-          return newRule
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '创建规则失败'
-          set({ error: message, isSaving: false })
-          throw error
+        const newRule: Rule = {
+          ...rule,
+          id: `rule_${Date.now()}`,
+          enabled: true,
         }
+        const current = get().rules
+        const updated = [...current, newRule]
+        saveToStorage(RULES_KEY, updated)
+        set({ rules: updated, stats: calculateStats(updated) })
+        return newRule
       },
 
       updateRule: async (ruleId, rule) => {
-        set({ isSaving: true, error: null })
-        try {
-          const updatedRule = await rulesService.updateRule(ruleId, rule)
-          set(state => ({
-            rules: state.rules.map(r => r.id === ruleId ? updatedRule : r),
-            selectedRule: state.selectedRule?.id === ruleId ? updatedRule : state.selectedRule,
-            isSaving: false
-          }))
-          return updatedRule
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '更新规则失败'
-          set({ error: message, isSaving: false })
-          throw error
-        }
+        const current = get().rules
+        const updated = current.map(r =>
+          r.id === ruleId ? { ...r, ...rule } : r
+        )
+        saveToStorage(RULES_KEY, updated)
+        set(state => ({
+          rules: updated,
+          selectedRule: state.selectedRule?.id === ruleId
+            ? { ...state.selectedRule, ...rule }
+            : state.selectedRule,
+          stats: calculateStats(updated),
+        }))
+        return updated.find(r => r.id === ruleId)!
       },
 
       deleteRule: async (ruleId) => {
-        set({ isDeleting: true, error: null })
-        try {
-          await rulesService.deleteRule(ruleId)
-          set(state => ({
-            rules: state.rules.filter(r => r.id !== ruleId),
-            selectedRule: state.selectedRule?.id === ruleId ? null : state.selectedRule,
-            isDeleting: false
-          }))
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '删除规则失败'
-          set({ error: message, isDeleting: false })
-          throw error
-        }
+        const current = get().rules
+        const updated = current.filter(r => r.id !== ruleId)
+        saveToStorage(RULES_KEY, updated)
+        set(state => ({
+          rules: updated,
+          selectedRule: state.selectedRule?.id === ruleId ? null : state.selectedRule,
+          stats: calculateStats(updated),
+        }))
       },
 
       setSelectedRule: (rule) => {
@@ -126,9 +148,14 @@ export const useRuleStore = create<RuleState>()(
       },
 
       clearError: () => {
-        set({ error: null })
+        // No errors in localStorage-only mode
       },
     }),
-    { name: 'rule-store' }
+    {
+      name: 'rule-store',
+      partialize: (state: RuleState) => ({
+        rules: state.rules,
+      }),
+    }
   )
 )

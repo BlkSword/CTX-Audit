@@ -103,29 +103,77 @@ export function Dashboard() {
     }
   }
 
-  // 自定义 Header
+  // 自定义 Header - 简化版，移除右上角的新建项目按钮
   const header = (
-    <header className="h-9 flex items-center justify-between px-3 bg-[#3c3c3c] border-b border-border/40 select-none">
+    <header className="h-9 flex items-center justify-between px-3 bg-[var(--vscode-activityBar-background)] border-b border-[var(--vscode-sideBar-border)] select-none">
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2">
           <FileCode className="w-4 h-4 text-primary" />
-          <span className="text-sm font-medium text-white">CTX-Audit</span>
+          <span className="text-sm font-medium text-[var(--vscode-activityBar-foreground)]">CTX-Audit</span>
         </div>
-        <Badge variant="outline" className="text-[10px] bg-transparent border-border/40 text-muted-foreground">
+        <Badge variant="outline" className="text-[10px] bg-transparent border-[var(--vscode-sideBar-border)] text-[var(--vscode-descriptionForeground)]">
           欢迎
         </Badge>
       </div>
-      <div className="flex items-center gap-2">
-        <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-          <DialogTrigger asChild>
-            <Button
-              size="sm"
-              className="h-7 px-3 text-xs bg-primary hover:bg-primary/90"
+    </header>
+  )
+
+  // 主内容区域 - VSCode 风格欢迎页面
+  const mainContent = (
+    <div className="h-full bg-[var(--vscode-editor-background)] overflow-auto">
+      <div className="max-w-4xl mx-auto px-8 py-12">
+        {/* 欢迎标题 */}
+        <h1 className="text-3xl font-light text-[var(--vscode-editor-foreground)] mb-2">
+          CTX-Audit
+        </h1>
+        <p className="text-sm text-[var(--vscode-descriptionForeground)] mb-8">
+          AI 驱动的代码安全审计工具
+        </p>
+
+        {/* Start 区域 */}
+        <div className="mb-10">
+          <h2 className="text-sm font-semibold text-[var(--vscode-editor-foreground)] uppercase tracking-wide mb-3">
+            Start
+          </h2>
+          <div className="space-y-1">
+            <button
+              onClick={() => setIsCreateDialogOpen(true)}
+              className="w-full text-left px-4 py-3 bg-[var(--vscode-sideBar-background)] hover:bg-[var(--vscode-toolbar-hoverBackground)] border border-[var(--vscode-sideBar-border)] rounded transition-colors flex items-center gap-3 group"
             >
-              <Plus className="w-3 h-3 mr-1" />
-              新建项目
-            </Button>
-          </DialogTrigger>
+              <FileCode className="w-5 h-5 text-primary" />
+              <div>
+                <div className="text-sm text-[var(--vscode-editor-foreground)] group-hover:text-primary transition-colors">
+                  新建项目
+                </div>
+                <div className="text-xs text-[var(--vscode-descriptionForeground)]">
+                  创建一个新的代码审计项目
+                </div>
+              </div>
+            </button>
+            <button
+              onClick={handleOpenDirectory}
+              disabled={isLoading}
+              className="w-full text-left px-4 py-3 bg-[var(--vscode-sideBar-background)] hover:bg-[var(--vscode-toolbar-hoverBackground)] border border-[var(--vscode-sideBar-border)] rounded transition-colors flex items-center gap-3 group disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? (
+                <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+              ) : (
+                <FolderOpen className="w-5 h-5 text-blue-400" />
+              )}
+              <div>
+                <div className="text-sm text-[var(--vscode-editor-foreground)] group-hover:text-blue-400 transition-colors">
+                  打开项目目录
+                </div>
+                <div className="text-xs text-[var(--vscode-descriptionForeground)]">
+                  从本地文件系统打开项目
+                </div>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        {/* 创建项目 Dialog */}
+        <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>创建新项目</DialogTitle>
@@ -179,81 +227,24 @@ export function Dashboard() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
-    </header>
-  )
-
-  // 主内容区域 - VSCode 风格欢迎页面
-  const mainContent = (
-    <div className="h-full bg-[#1e1e1e] overflow-auto">
-      <div className="max-w-4xl mx-auto px-8 py-12">
-        {/* 欢迎标题 */}
-        <h1 className="text-3xl font-light text-white mb-2">
-          CTX-Audit
-        </h1>
-        <p className="text-sm text-muted-foreground mb-8">
-          AI 驱动的代码安全审计工具
-        </p>
-
-        {/* Start 区域 */}
-        <div className="mb-10">
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wide mb-3">
-            Start
-          </h2>
-          <div className="space-y-1">
-            <button
-              onClick={() => setIsCreateDialogOpen(true)}
-              className="w-full text-left px-4 py-3 bg-[#252526] hover:bg-[#2a2a2a] border border-border/40 rounded transition-colors flex items-center gap-3 group"
-            >
-              <FileCode className="w-5 h-5 text-primary" />
-              <div>
-                <div className="text-sm text-white group-hover:text-primary transition-colors">
-                  新建项目
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  创建一个新的代码审计项目
-                </div>
-              </div>
-            </button>
-            <button
-              onClick={handleOpenDirectory}
-              disabled={isLoading}
-              className="w-full text-left px-4 py-3 bg-[#252526] hover:bg-[#2a2a2a] border border-border/40 rounded transition-colors flex items-center gap-3 group disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isLoading ? (
-                <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
-              ) : (
-                <FolderOpen className="w-5 h-5 text-blue-400" />
-              )}
-              <div>
-                <div className="text-sm text-white group-hover:text-blue-400 transition-colors">
-                  打开项目目录
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  从本地文件系统打开项目
-                </div>
-              </div>
-            </button>
-          </div>
-        </div>
 
         {/* Recent 区域 */}
         <div className="mb-10">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-white uppercase tracking-wide">
+            <h2 className="text-sm font-semibold text-[var(--vscode-editor-foreground)] uppercase tracking-wide">
               Recent
             </h2>
             {projects.length > 0 && (
               <button
                 onClick={() => loadProjects()}
-                className="text-xs text-muted-foreground hover:text-white transition-colors"
+                className="text-xs text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-editor-foreground)] transition-colors"
               >
                 刷新
               </button>
             )}
           </div>
           {projects.length === 0 ? (
-            <div className="text-sm text-muted-foreground p-4 text-center bg-[#252526] border border-border/40 rounded">
+            <div className="text-sm text-[var(--vscode-descriptionForeground)] p-4 text-center bg-[var(--vscode-sideBar-background)] border border-[var(--vscode-sideBar-border)] rounded">
               暂无最近项目
             </div>
           ) : (
@@ -262,18 +253,18 @@ export function Dashboard() {
                 <button
                   key={project.id}
                   onClick={() => handleOpenProject(project.id)}
-                  className="w-full text-left px-4 py-3 bg-[#252526] hover:bg-[#2a2a2a] border border-border/40 rounded transition-colors flex items-center gap-3 group"
+                  className="w-full text-left px-4 py-3 bg-[var(--vscode-sideBar-background)] hover:bg-[var(--vscode-toolbar-hoverBackground)] border border-[var(--vscode-sideBar-border)] rounded transition-colors flex items-center gap-3 group"
                 >
-                  <FileCode className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
+                  <FileCode className="w-5 h-5 text-[var(--vscode-descriptionForeground)] group-hover:text-primary transition-colors" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm text-white group-hover:text-primary transition-colors truncate">
+                    <div className="text-sm text-[var(--vscode-editor-foreground)] group-hover:text-primary transition-colors truncate">
                       {project.name}
                     </div>
-                    <div className="text-xs text-muted-foreground truncate">
+                    <div className="text-xs text-[var(--vscode-descriptionForeground)] truncate">
                       {project.path}
                     </div>
                   </div>
-                  <span className="text-xs text-muted-foreground shrink-0">
+                  <span className="text-xs text-[var(--vscode-descriptionForeground)] shrink-0">
                     {new Date(project.created_at).toLocaleDateString()}
                   </span>
                 </button>
@@ -284,7 +275,7 @@ export function Dashboard() {
 
         {/* Help 区域 */}
         <div>
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wide mb-3">
+          <h2 className="text-sm font-semibold text-[var(--vscode-editor-foreground)] uppercase tracking-wide mb-3">
             Help
           </h2>
           <div className="space-y-1">
@@ -292,22 +283,22 @@ export function Dashboard() {
               href="https://github.com/ctx-audit/ctx-audit"
               target="_blank"
               rel="noopener noreferrer"
-              className="block w-full text-left px-4 py-3 bg-[#252526] hover:bg-[#2a2a2a] border border-border/40 rounded transition-colors"
+              className="block w-full text-left px-4 py-3 bg-[var(--vscode-sideBar-background)] hover:bg-[var(--vscode-toolbar-hoverBackground)] border border-[var(--vscode-sideBar-border)] rounded transition-colors"
             >
-              <div className="text-sm text-white hover:text-primary transition-colors">
+              <div className="text-sm text-[var(--vscode-editor-foreground)] hover:text-primary transition-colors">
                 文档和指南
               </div>
-              <div className="text-xs text-muted-foreground">
+              <div className="text-xs text-[var(--vscode-descriptionForeground)]">
                 了解如何使用 CTX-Audit
               </div>
             </a>
             <button
-              className="w-full text-left px-4 py-3 bg-[#252526] hover:bg-[#2a2a2a] border border-border/40 rounded transition-colors"
+              className="w-full text-left px-4 py-3 bg-[var(--vscode-sideBar-background)] hover:bg-[var(--vscode-toolbar-hoverBackground)] border border-[var(--vscode-sideBar-border)] rounded transition-colors"
             >
-              <div className="text-sm text-white hover:text-primary transition-colors">
+              <div className="text-sm text-[var(--vscode-editor-foreground)] hover:text-primary transition-colors">
                 键盘快捷键
               </div>
-              <div className="text-xs text-muted-foreground">
+              <div className="text-xs text-[var(--vscode-descriptionForeground)]">
                 查看所有可用的快捷键
               </div>
             </button>

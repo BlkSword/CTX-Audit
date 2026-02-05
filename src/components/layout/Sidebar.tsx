@@ -4,36 +4,41 @@
  * 根据活动栏显示不同的侧边栏内容：
  * - explorer: 文件资源管理器
  * - search: 搜索
- * - findings: 扫描结果
- * - settings: 设置
+ * - ast-tools: AST 工具
+ * - scan-results: 扫描结果
+ * - terminal: 终端
  */
 
-import { useState } from 'react'
-import { FileText, Search, AlertTriangle, Settings, Folder, FileCode, Trash2 } from 'lucide-react'
+import { useState, useCallback, memo } from 'react'
+import { FileText, Search, GitGraph, BarChart3, Terminal, Folder, FileCode, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { useLayoutStore } from '@/stores/layoutStore'
-import type { ActivityBarItem } from '@/stores/layoutStore'
+import { useLayoutStore, type ActivityId } from '@/stores/layoutStore'
 import { FileTree } from '@/components/file-explorer/FileTree'
 import { useFileStore } from '@/stores/fileStore'
 import { useProjectStore } from '@/stores/projectStore'
-import { useScanStore } from '@/stores/scanStore'
 import { cn } from '@/lib/utils'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Button } from '@/components/ui/button'
+import { FileSearchPanel, ContentSearchPanel } from '@/components/search'
+import { ASTToolsPanel } from '@/components/ast/ASTToolsPanel'
+import { ScanResultsPanel } from '@/components/scan/ScanResultsPanel'
+import { TerminalPanel } from '@/components/terminal'
 
 // 侧边栏标题映射
-const sidebarTitles: Record<ActivityBarItem, string> = {
+const sidebarTitles: Record<Exclude<ActivityId, null>, string> = {
   explorer: '资源管理器',
   search: '搜索',
-  findings: '扫描结果',
-  settings: '设置',
+  'ast-tools': 'AST 工具',
+  'scan-results': '扫描结果',
+  terminal: '终端',
 }
 
-const sidebarIcons: Record<ActivityBarItem, React.ElementType> = {
+const sidebarIcons: Record<Exclude<ActivityId, null>, React.ElementType> = {
   explorer: FileText,
   search: Search,
-  findings: AlertTriangle,
-  settings: Settings,
+  'ast-tools': GitGraph,
+  'scan-results': BarChart3,
+  terminal: Terminal,
 }
 
 interface SidebarProps {
@@ -53,12 +58,12 @@ export function Sidebar({ className }: SidebarProps) {
 
   return (
     <div className={cn(
-      'bg-[#252526] border-r border-border/40 flex flex-col overflow-hidden h-full',
+      'bg-[var(--vscode-sideBar-background)] flex flex-col overflow-hidden h-full',
       className
     )}
     >
       {/* 侧边栏标题 */}
-      <div className="h-9 flex items-center px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wide select-none">
+      <div className="h-9 flex items-center px-4 text-xs font-semibold text-[var(--vscode-sideBarSectionHeader-foreground)] uppercase tracking-wide select-none">
         <Icon className="w-4 h-4 mr-2" />
         {title}
       </div>
@@ -67,66 +72,45 @@ export function Sidebar({ className }: SidebarProps) {
       <div className="flex-1 overflow-auto">
         {activeActivity === 'explorer' && <ExplorerContent />}
         {activeActivity === 'search' && <SearchContent />}
-        {activeActivity === 'findings' && <FindingsContent />}
-        {activeActivity === 'settings' && <SettingsContent />}
+        {activeActivity === 'ast-tools' && <ASTToolsContent />}
+        {activeActivity === 'scan-results' && <ScanResultsContent />}
+        {activeActivity === 'terminal' && <TerminalContent />}
       </div>
     </div>
   )
 }
 
-// 资源管理器内容
-function ExplorerContent() {
+// 资源管理器内容 - 使用 memo 避免不必要的重渲染
+// 同时使用精确的 selector 来订阅 store，只在需要的状态变化时才重新渲染
+const ExplorerContent = memo(function ExplorerContent() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
-  const { fileTree, isLoading, selectFile } = useFileStore()
-  const { currentProject } = useProjectStore()
+
+  // 使用精确的 selector，只订阅需要的状态
+  // 注意：不订阅 isLoading，因为文件加载状态不应该影响文件树的显示
+  const fileTree = useFileStore(state => state.fileTree)
+  const selectFile = useFileStore(state => state.selectFile)
+  const currentProject = useProjectStore(state => state.currentProject)
+
+  // 使用 useCallback 缓存函数，避免每次渲染都创建新函数
+  // 注意：必须在所有 early return 之前调用，否则会违反 React Hooks 规则
+  const handleFileSelect = useCallback(async (path: string | null) => {
+    if (!path) {
+      setSelectedPath(null)
+      return
+    }
+
+    // 直接打开文件
+    setSelectedPath(path)
+    await selectFile(path)
+  }, [selectFile])
 
   // 如果没有当前项目，显示项目列表
   if (!currentProject) {
     return <ProjectListContent />
   }
 
-  // 加载中状态
-  if (isLoading) {
-    return (
-      <div className="text-sm text-muted-foreground p-4 text-center">
-        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-        加载中...
-      </div>
-    )
-  }
-
-  // 处理文件选择
-  const handleFileSelect = async (path: string | null) => {
-    if (!path) {
-      setSelectedPath(null)
-      return
-    }
-
-    // 检查是否是文件
-    const findFile = (nodes: any[], targetPath: string): any => {
-      for (const node of nodes) {
-        if (node.path === targetPath) {
-          return node
-        }
-        if (node.children) {
-          const found = findFile(node.children, targetPath)
-          if (found) return found
-        }
-      }
-      return null
-    }
-
-    const fileNode = findFile(fileTree, path)
-    if (fileNode && fileNode.type === 'file') {
-      setSelectedPath(path)
-      await selectFile(path)
-    } else {
-      // 文件夹点击：只设置选中状态，不加载内容
-      setSelectedPath(path)
-    }
-  }
-
   // 使用 fileStore 中已经构建好的文件树
+  // 注意：移除了 isLoading 检查，因为文件加载不应该隐藏文件树
   return (
     <div className="p-2">
       {fileTree.length > 0 ? (
@@ -142,92 +126,59 @@ function ExplorerContent() {
       )}
     </div>
   )
-}
+})
 
 // 搜索内容
 function SearchContent() {
-  return (
-    <div className="p-4 text-sm text-muted-foreground">
-      <p>搜索功能</p>
-      <p className="mt-2 text-xs">在项目中搜索文件和内容</p>
-    </div>
-  )
-}
-
-// 扫描结果内容
-function FindingsContent() {
-  const { vulnerabilities } = useScanStore()
-
-  // 按严重程度分组
-  const groupedFindings = {
-    critical: vulnerabilities.filter((f: any) => f.severity === 'critical'),
-    high: vulnerabilities.filter((f: any) => f.severity === 'high'),
-    medium: vulnerabilities.filter((f: any) => f.severity === 'medium'),
-    low: vulnerabilities.filter((f: any) => f.severity === 'low'),
-    info: vulnerabilities.filter((f: any) => f.severity === 'info'),
-  }
-
-  const severityColors = {
-    critical: 'text-red-400',
-    high: 'text-orange-400',
-    medium: 'text-yellow-400',
-    low: 'text-blue-400',
-    info: 'text-gray-400',
-  }
-
-  const severityLabels = {
-    critical: '严重',
-    high: '高危',
-    medium: '中危',
-    low: '低危',
-    info: '信息',
-  }
+  const [searchType, setSearchType] = useState<'files' | 'content'>('files')
 
   return (
-    <div className="p-2">
-      {vulnerabilities.length === 0 ? (
-        <div className="text-sm text-muted-foreground p-4 text-center">
-          暂无扫描结果
-        </div>
-      ) : (
-        <div className="space-y-1">
-          {Object.entries(groupedFindings).map(([severity, items]) =>
-            items.length > 0 ? (
-              <div key={severity} className="mb-2">
-                <div className={cn('text-xs font-semibold mb-1', severityColors[severity as keyof typeof severityColors])}>
-                  {severityLabels[severity as keyof typeof severityLabels]} ({items.length})
-                </div>
-                {items.slice(0, 10).map((finding: any) => (
-                  <div
-                    key={finding.id}
-                    className="text-xs p-2 rounded bg-[#1e1e1e] hover:bg-[#2a2a2a] cursor-pointer transition-colors"
-                  >
-                    <div className="font-medium text-white truncate">{finding.title || finding.vuln_type}</div>
-                    <div className="text-muted-foreground truncate mt-1">{finding.file_path}</div>
-                  </div>
-                ))}
-                {items.length > 10 && (
-                  <div className="text-xs text-muted-foreground p-1 text-center">
-                    还有 {items.length - 10} 条...
-                  </div>
-                )}
-              </div>
-            ) : null
+    <div className="flex flex-col h-full">
+      {/* 搜索类型切换 */}
+      <div className="flex border-b border-[var(--vscode-sideBar-border)]">
+        <button
+          className={cn(
+            'flex-1 px-4 py-2 text-xs font-medium transition-colors',
+            searchType === 'files'
+              ? 'text-[var(--vscode-sideBar-foreground)] border-b-2 border-primary'
+              : 'text-[var(--vscode-sideBar-foreground)] hover:text-[var(--vscode-sideBar-foreground)]'
           )}
-        </div>
-      )}
+          onClick={() => setSearchType('files')}
+        >
+          文件搜索
+        </button>
+        <button
+          className={cn(
+            'flex-1 px-4 py-2 text-xs font-medium transition-colors',
+            searchType === 'content'
+              ? 'text-[var(--vscode-sideBar-foreground)] border-b-2 border-primary'
+              : 'text-[var(--vscode-sideBar-foreground)] hover:text-[var(--vscode-sideBar-foreground)]'
+          )}
+          onClick={() => setSearchType('content')}
+        >
+          内容搜索
+        </button>
+      </div>
+
+      {/* 搜索面板 */}
+      {searchType === 'files' ? <FileSearchPanel /> : <ContentSearchPanel />}
     </div>
   )
 }
 
-// 设置内容
-function SettingsContent() {
-  return (
-    <div className="p-4 text-sm text-muted-foreground">
-      <p>设置</p>
-      <p className="mt-2 text-xs">配置应用程序设置</p>
-    </div>
-  )
+// 扫描结果内容 - 使用 ScanResultsPanel 组件
+function ScanResultsContent() {
+  return <ScanResultsPanel />
+}
+
+// AST 工具内容 - 使用 ASTToolsPanel 组件
+function ASTToolsContent() {
+  return <ASTToolsPanel />
+}
+
+// 终端内容
+function TerminalContent() {
+  return <TerminalPanel />
 }
 
 // 项目列表内容（显示在资源管理器中）
@@ -278,13 +229,13 @@ function ProjectListContent() {
       {projects.map((project) => (
         <div
           key={project.id}
-          className="group flex items-center gap-2 px-2 py-1.5 hover:bg-[#2a2a2a] rounded cursor-pointer transition-colors"
+          className="group flex items-center gap-2 px-2 py-1.5 hover:bg-[var(--vscode-toolbar-hoverBackground)] rounded cursor-pointer transition-colors"
           onClick={() => handleOpenProject(project.id)}
         >
-          <FileCode className="w-4 h-4 text-muted-foreground shrink-0" />
+          <FileCode className="w-4 h-4 text-[var(--vscode-sideBar-foreground)] shrink-0" />
           <div className="flex-1 min-w-0">
-            <div className="text-sm text-white truncate">{project.name}</div>
-            <div className="text-xs text-muted-foreground truncate">{project.path}</div>
+            <div className="text-sm text-[var(--vscode-sideBar-foreground)] truncate">{project.name}</div>
+            <div className="text-xs text-[var(--vscode-descriptionForeground)] truncate">{project.path}</div>
           </div>
           <Button
             size="sm"

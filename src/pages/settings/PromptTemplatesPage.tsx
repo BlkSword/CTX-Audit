@@ -14,6 +14,7 @@ import {
   Eye,
 } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
+import { usePromptTemplateStore } from '@/stores/promptTemplateStore'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
@@ -58,9 +59,13 @@ const AGENT_TYPES: { value: AgentType | null; label: string }[] = [
 
 export function PromptTemplatesPage() {
   const { addLog } = useUIStore()
-
-  // 使用本地状态管理提示词模板
-  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([])
+  const {
+    templates,
+    isLoading,
+    loadTemplates,
+    createTemplate,
+    deleteTemplate,
+  } = usePromptTemplateStore()
 
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false)
@@ -90,13 +95,12 @@ export function PromptTemplatesPage() {
   })
 
   useEffect(() => {
-    // 加载提示词模板
-    // TODO: 实现加载逻辑
-    setPromptTemplates([])
-  }, [categoryFilter])
+    // 加载提示词模板（只加载一次）
+    loadTemplates()
+  }, []) // 只在组件挂载时加载一次
 
   // 过滤模板
-  const filteredTemplates = promptTemplates.filter((template) => {
+  const filteredTemplates = templates.filter((template) => {
     const matchesSearch =
       searchQuery === '' ||
       template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -111,16 +115,11 @@ export function PromptTemplatesPage() {
   // 创建新模板
   const handleCreateTemplate = async () => {
     try {
-      const newId = `tpl_${Date.now()}`
-      const template: PromptTemplate = {
-        id: newId,
+      await createTemplate({
         ...newTemplate,
         variables: [],
         isSystem: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      }
-      setPromptTemplates([...promptTemplates, template])
+      })
       addLog(`提示词模板已创建: ${newTemplate.name}`, 'system')
       setIsCreateDialogOpen(false)
       setNewTemplate({
@@ -149,7 +148,7 @@ export function PromptTemplatesPage() {
     if (!confirmed) return
 
     try {
-      setPromptTemplates(promptTemplates.filter(t => t.id !== id))
+      await deleteTemplate(id)
       addLog(`提示词模板已删除: ${name}`, 'system')
     } catch (err) {
       addLog(`删除提示词模板失败: ${err}`, 'system')
@@ -195,12 +194,11 @@ export function PromptTemplatesPage() {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Page Header */}
-      <div className="border-b border-border/40 px-6 py-4 flex items-center justify-between bg-muted/20">
-        <div className="flex items-center gap-3">
-          <FileText className="w-5 h-5 text-primary" />
-          <h2 className="text-lg font-semibold">提示词模板</h2>
+    <div className="max-w-6xl mx-auto">
+      {/* 操作工具栏 */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="text-sm text-[var(--vscode-descriptionForeground)]">
+          管理用于 Agent 的自定义提示词模板
         </div>
 
         <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
@@ -329,11 +327,8 @@ export function PromptTemplatesPage() {
         </Dialog>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 overflow-auto p-6 no-scrollbar">
-        <div className="max-w-6xl mx-auto">
-          {/* 过滤器 */}
-          <div className="flex items-center gap-4 mb-6">
+      {/* 过滤器 */}
+      <div className="flex items-center gap-4 mb-6">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
@@ -371,7 +366,7 @@ export function PromptTemplatesPage() {
 
           {/* 模板列表 */}
           {filteredTemplates.length === 0 ? (
-            <Card className="p-12 text-center">
+            <Card className="p-12 text-center bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <FileText className="w-16 h-16 mx-auto mb-4 text-muted-foreground/30" />
               <h3 className="text-lg font-semibold mb-2">没有找到提示词模板</h3>
               <p className="text-sm text-muted-foreground mb-6">
@@ -389,7 +384,7 @@ export function PromptTemplatesPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredTemplates.map((template) => (
-                <Card key={template.id} className="p-4 hover:shadow-md transition-shadow">
+                <Card key={template.id} className="p-4 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)] hover:shadow-md transition-shadow">
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <div className="p-1.5 rounded bg-primary/10">
@@ -454,8 +449,6 @@ export function PromptTemplatesPage() {
               ))}
             </div>
           )}
-        </div>
-      </div>
 
       {/* 查看模板对话框 */}
       <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
@@ -500,7 +493,7 @@ export function PromptTemplatesPage() {
               {/* 模板内容 */}
               <div>
                 <h4 className="text-sm font-semibold mb-2">模板内容</h4>
-                <ScrollArea className="h-[300px] p-4 bg-muted rounded">
+                <ScrollArea className="h-[300px] p-4 bg-[var(--vscode-sideBar-background)] rounded">
                   <pre className="text-xs font-mono whitespace-pre-wrap">{viewingTemplate.template}</pre>
                 </ScrollArea>
               </div>

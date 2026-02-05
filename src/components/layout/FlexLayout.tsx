@@ -117,7 +117,7 @@ export function HPanel({
   maxSize = 90,
   onResize,
   className,
-  resizable = true,
+  resizable = false,  // 默认不可调整大小
 }: HPanelProps) {
   const [size, setSize] = useState(defaultSize)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -147,7 +147,7 @@ export function HPanel({
       >
         {children}
       </div>
-      {resizable && <ResizableHandle direction="horizontal" onDrag={handleDrag} withHandle />}
+      {resizable && <ResizableHandle direction="horizontal" onDrag={handleDrag} />}
     </>
   )
 }
@@ -171,8 +171,8 @@ export function VPanel({
   maxSize = 90,
   onResize,
   className,
-  resizable = true,
-  showHandle = true,
+  resizable = false,  // 默认不可调整大小
+  showHandle = false,
 }: VPanelProps) {
   const [size, setSize] = useState(defaultSize)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -201,7 +201,7 @@ export function VPanel({
       >
         {children}
       </div>
-      {resizable && showHandle && <ResizableHandle direction="vertical" onDrag={handleDrag} withHandle />}
+      {resizable && showHandle && <ResizableHandle direction="vertical" onDrag={handleDrag} />}
     </>
   )
 }

@@ -43,7 +43,7 @@ const emptyRule: RuleFormData = {
 }
 
 export function RulesPage() {
-  const { rules, stats, isLoading, error, isSaving, isDeleting, loadRules, loadStats, createRule, updateRule, deleteRule, setSelectedRule: _setSelectedRule } = useRuleStore()
+  const { rules, stats, loadRules, loadStats, createRule, updateRule, deleteRule, setSelectedRule: _setSelectedRule } = useRuleStore()
   const toast = useToast()
 
   const [searchQuery, setSearchQuery] = useState('')
@@ -53,6 +53,8 @@ export function RulesPage() {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [formData, setFormData] = useState<RuleFormData>(emptyRule)
+  const [isSaving, setIsSaving] = useState(false)  // 本地加载状态
+  const [isDeleting, setIsDeleting] = useState<string | null>(null)  // 本地加载状态
 
   useEffect(() => {
     loadData()
@@ -72,6 +74,7 @@ export function RulesPage() {
       return
     }
 
+    setIsSaving(true)
     try {
       await createRule(formData)
       toast.success('规则创建成功')
@@ -80,12 +83,15 @@ export function RulesPage() {
       loadData()
     } catch (err) {
       toast.error(`创建失败: ${err instanceof Error ? err.message : '未知错误'}`)
+    } finally {
+      setIsSaving(false)
     }
   }
 
   const handleUpdate = async () => {
     if (!selectedRule) return
 
+    setIsSaving(true)
     try {
       await updateRule(selectedRule.id, formData)
       toast.success('规则更新成功')
@@ -95,6 +101,8 @@ export function RulesPage() {
       loadData()
     } catch (err) {
       toast.error(`更新失败: ${err instanceof Error ? err.message : '未知错误'}`)
+    } finally {
+      setIsSaving(false)
     }
   }
 
@@ -108,6 +116,7 @@ export function RulesPage() {
     })
     if (!confirmed) return
 
+    setIsDeleting(ruleId)
     try {
       await deleteRule(ruleId)
       toast.success('规则删除成功')
@@ -117,6 +126,8 @@ export function RulesPage() {
       loadData()
     } catch (err) {
       toast.error(`删除失败: ${err instanceof Error ? err.message : '未知错误'}`)
+    } finally {
+      setIsDeleting(null)
     }
   }
 
@@ -171,27 +182,17 @@ export function RulesPage() {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Header */}
-      <div className="border-b border-border/40 px-6 py-4 flex items-center justify-between bg-muted/20 shrink-0">
-        <div className="flex items-center gap-3">
-          <Shield className="w-5 h-5 text-primary" />
-          <h2 className="text-lg font-semibold">规则管理</h2>
+    <div className="max-w-7xl mx-auto">
+      {/* 操作工具栏 */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="text-sm text-[var(--vscode-descriptionForeground)]">
+          管理安全审计规则，创建自定义规则以扩展检测能力
         </div>
 
         <div className="flex items-center gap-2">
-          <Button onClick={loadData} disabled={isLoading} variant="outline" size="sm">
-            {isLoading ? (
-              <>
-                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                加载中...
-              </>
-            ) : (
-              <>
-                <RefreshCw className="w-4 h-4 mr-2" />
-                刷新
-              </>
-            )}
+          <Button onClick={loadData} variant="outline" size="sm">
+            <RefreshCw className="w-4 h-4 mr-2" />
+            刷新
           </Button>
           <Button onClick={openCreateDialog} size="sm">
             <Plus className="w-4 h-4 mr-2" />
@@ -200,20 +201,11 @@ export function RulesPage() {
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 overflow-auto p-6 no-scrollbar">
-        <div className="max-w-7xl mx-auto">
-
-        {error && (
-          <div className="mb-4 p-4 bg-destructive/10 text-destructive rounded-lg">
-            {error}
-          </div>
-        )}
 
         {/* 统计信息 */}
         {stats && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <Card className="p-4">
+            <Card className="p-4 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">总规则数</p>
@@ -222,7 +214,7 @@ export function RulesPage() {
                 <Shield className="w-8 h-8 text-primary/20" />
               </div>
             </Card>
-            <Card className="p-4">
+            <Card className="p-4 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">严重/高危</p>
@@ -233,7 +225,7 @@ export function RulesPage() {
                 <AlertTriangle className="w-8 h-8 text-red-600/20" />
               </div>
             </Card>
-            <Card className="p-4">
+            <Card className="p-4 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">支持语言</p>
@@ -242,7 +234,7 @@ export function RulesPage() {
                 <Code className="w-8 h-8 text-blue-600/20" />
               </div>
             </Card>
-            <Card className="p-4">
+            <Card className="p-4 bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">类别数</p>
@@ -312,7 +304,7 @@ export function RulesPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* 左侧规则列表 */}
           <div className="lg:col-span-1">
-            <Card className="overflow-hidden">
+            <Card className="overflow-hidden bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               <ScrollArea className="h-[calc(100vh-420px)]">
                 <div className="divide-y divide-border/40">
                   {filteredRules.length === 0 ? (
@@ -371,7 +363,7 @@ export function RulesPage() {
                               size="icon"
                               className="h-7 w-7 text-destructive"
                               onClick={() => handleDelete(rule.id, rule.name)}
-                              disabled={isDeleting}
+                              disabled={isDeleting === rule.id}
                             >
                               <Trash2 className="w-3 h-3" />
                             </Button>
@@ -387,7 +379,7 @@ export function RulesPage() {
 
           {/* 右侧规则详情 */}
           <div className="lg:col-span-2">
-            <Card className="p-6 h-[calc(100vh-420px)] overflow-auto no-scrollbar">
+            <Card className="p-6 h-[calc(100vh-420px)] overflow-auto no-scrollbar bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border)]">
               {!selectedRule ? (
                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
                   <Shield className="w-16 h-16 mb-4 opacity-20" />
@@ -450,7 +442,7 @@ export function RulesPage() {
                         <Code className="w-4 h-4" />
                         检测模式
                       </h3>
-                      <pre className="p-3 bg-muted rounded-lg text-xs font-mono overflow-x-auto no-scrollbar">
+                      <pre className="p-3 bg-[var(--vscode-sideBar-background)] rounded-lg text-xs font-mono overflow-x-auto no-scrollbar">
                         <code>{selectedRule.pattern}</code>
                       </pre>
                     </div>
@@ -463,7 +455,7 @@ export function RulesPage() {
                         <Code className="w-4 h-4" />
                         AST 查询
                       </h3>
-                      <pre className="p-3 bg-muted rounded-lg text-xs font-mono overflow-x-auto no-scrollbar">
+                      <pre className="p-3 bg-[var(--vscode-sideBar-background)] rounded-lg text-xs font-mono overflow-x-auto no-scrollbar">
                         <code>{selectedRule.query}</code>
                       </pre>
                     </div>
@@ -505,8 +497,6 @@ export function RulesPage() {
             isEdit={true}
           />
         )}
-        </div>
-      </div>
     </div>
   )
 }
@@ -530,9 +520,9 @@ function RuleDialog({
 }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-background rounded-lg shadow-lg max-w-2xl w-full max-h-[90vh] overflow-auto no-scrollbar">
-        <div className="p-6 border-b border-border/40">
-          <h2 className="text-xl font-bold">{title}</h2>
+      <div className="bg-[var(--vscode-editor-background)] rounded-lg shadow-lg max-w-2xl w-full max-h-[90vh] overflow-auto no-scrollbar border border-[var(--vscode-widget-border)]">
+        <div className="p-6 border-b border-[var(--vscode-panel-border)]">
+          <h2 className="text-xl font-bold text-[var(--vscode-editor-foreground)]">{title}</h2>
         </div>
 
         <div className="p-6 space-y-4">
@@ -654,7 +644,7 @@ function RuleDialog({
           </div>
         </div>
 
-        <div className="p-6 border-t border-border/40 flex justify-end gap-2">
+        <div className="p-6 border-t border-[var(--vscode-panel-border)] flex justify-end gap-2">
           <Button variant="outline" onClick={onCancel} disabled={isSaving}>
             取消
           </Button>
