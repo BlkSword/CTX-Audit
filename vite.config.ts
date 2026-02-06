@@ -20,14 +20,6 @@ export default defineConfig(({ mode }) => ({
     port: 3002,
     strictPort: false,
     host: '127.0.0.1',
-    // API 代理配置（开发环境）
-    proxy: {
-      '/api': {
-        target: process.env.VITE_API_BASE_URL || 'http://localhost:8000',
-        changeOrigin: true,
-        secure: false,
-      },
-    },
   },
   envPrefix: ['VITE_'],
   build: {

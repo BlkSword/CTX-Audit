@@ -1,6 +1,5 @@
 /**
  * 系统设置页面
- * 对应后端API: agent-service/app/api/settings.py
  */
 
 import { useEffect, useState } from 'react'
