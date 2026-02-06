@@ -65,7 +65,6 @@ CTX-Audit Desktop 是一个基于 Tauri 2.x 的桌面应用，提供高性能代
 
 - Node.js 18+
 - Rust 1.70+
-- Python 3.8+ (可选，用于 Agent)
 
 ### 安装依赖
 
@@ -78,14 +77,6 @@ npm install
 ```bash
 # 启动 Tauri 开发服务器 (包括前端 + 后端)
 npm run tauri:dev
-```
-
-### 启动 Agent 服务 (可选)
-
-```bash
-cd agent-service
-pip install -r requirements.txt
-python -m app.main
 ```
 
 ### 构建生产版本
@@ -124,11 +115,6 @@ ctx-audit/
 │       ├── scanner/        # 扫描器
 │       ├── rules/          # 规则系统
 │       └── diff/           # 差异对比
-├── agent-service/          # Agent 服务 (可选)
-│   └── app/
-│       ├── main.py         # FastAPI 入口
-│       ├── agents/         # Agent 实现
-│       └── services/       # 服务层
 └── rules/                  # 审计规则
 ```
 
@@ -148,10 +134,12 @@ ctx-audit/
 - `list_directory(path)` - 列出目录内容
 - `select_directory()` - 打开目录选择对话框
 
-### Agent 控制
-- `start_agent_service()` - 启动 Agent
-- `stop_agent_service()` - 停止 Agent
-- `get_agent_status()` - 获取状态
+### Agent 控制 (Rust 引擎)
+- `start_audit()` - 启动 Agent 审计
+- `get_audit_status()` - 获取审计状态
+- `pause_audit()` - 暂停审计
+- `cancel_audit()` - 取消审计
+- `get_audit_events()` - 获取审计事件
 
 ## 配置
 
@@ -214,11 +202,7 @@ npm install
 
 ### Agent 连接失败
 
-确保 Agent 服务正在运行：
-```bash
-cd agent-service
-python -m app.main
-```
+检查 LLM 配置是否正确（设置 → LLM），确保 API Key 已配置。
 
 ## 桌面版改造计划
 
