@@ -1,22 +1,6 @@
 # Logs
 logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# Dependencies
-node_modules
-.pnp
-.pnp.js
-
-# Build outputs
-dist
-dist-ssr
-build
-*.local
 
 # Editor directories and files
 .vscode/*
@@ -41,8 +25,6 @@ build
 # Cache
 .cache
 .parcel-cache
-.vite
-.turbo
 
 # Database
 *.db
@@ -51,19 +33,17 @@ build
 
 # CTX-Audit specific
 .ctx_audit_cache
-__pycache__
 
 # Rust
-target
+target/
 Cargo.lock
-
-# Python (agent-service)
-agent-service/__pycache__
-agent-service/.pytest_cache
-agent-service/logs/*.log
 
 # Other
 .claude
 web-backend/data
 .deepaudit_cache
 CLAUDE.md
+
+# Configuration (keep local config out of repo)
+.config/
+ctx-audit.toml

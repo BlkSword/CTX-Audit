@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = [
+    "cli",
+    "core",
+    "agent-engine",
+    "llm",
+    "tools",
+]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+authors = ["CTX-Audit Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/ctx-audit/ctx-audit"
+
+[workspace.dependencies]
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+tokio-stream = "0.1"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 错误处理
+anyhow = "1"
+thiserror = "1"
+
+# 时间处理
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# 正则表达式
+regex = "1"
+
+# CLI 工具
+clap = { version = "4.5", features = ["derive"] }
+indicatif = "0.17"
+console = "0.15"
+crossterm = "0.27"
+rustyline = "14"
+
+# HTTP 客户端
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# 文件遍历
+ignore = "0.4"
+walkdir = "2.4"
+
+# 文本处理
+similar = { version = "2.5", features = ["text", "inline", "bytes"] }
+
+# 优先级队列
+priority-queue = "2.0"
+
+# 异步通道
+async-channel = "2.0"
+
+# 内部包
+deepaudit-core = { path = "core" }
+ctx-audit-agent-engine = { path = "agent-engine" }
+ctx-audit-llm = { path = "llm" }
+ctx-audit-tools = { path = "tools" }
