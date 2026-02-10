@@ -1,0 +1,36 @@
+[package]
+name = "ctx-audit-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tool system for CTX-Audit"
+
+[dependencies]
+# 序列化
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 异步运行时
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# 日志
+tracing = { workspace = true }
+
+# 错误处理
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# 正则表达式
+regex = { workspace = true }
+
+# 外部工具检测
+which = "6"
+
+# UUID
+uuid = { workspace = true }
+
+# 内部包
+deepaudit-core = { workspace = true }
