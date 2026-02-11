@@ -40,7 +40,7 @@ impl Default for Config {
 /// LLM 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
-    /// 提供商 (anthropic, openai, ollama)
+    /// 提供商 (anthropic, openai, openai-compatible, ollama)
     pub provider: String,
 
     /// API 密钥

@@ -307,8 +307,21 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // 检查命令类型以决定日志策略
+    let is_tui_command = matches!(cli.command, Commands::Ui { .. });
+    let is_chat_command = matches!(cli.command, Commands::Chat { .. });
+
     // 初始化日志
-    init_logging(&cli);
+    // - TUI 模式: 完全禁用日志（避免干扰界面渲染）
+    // - Chat 模式: 只显示 warn 和 error 级别（避免干扰交互）
+    // - 其他模式: 正常初始化日志
+    if !is_tui_command {
+        if is_chat_command {
+            init_logging_chat_only();
+        } else {
+            init_logging(&cli);
+        }
+    }
 
     // 执行命令
     match cli.command {
@@ -420,6 +433,18 @@ fn init_logging(cli: &Cli) {
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .init();
+}
+
+/// 初始化日志系统（仅用于 Chat/REPL 模式）
+/// 只显示警告和错误，避免干扰用户交互
+fn init_logging_chat_only() {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)

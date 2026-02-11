@@ -39,6 +39,10 @@ async-trait = "0.1.89"
 regex = "1.10"
 similar = { version = "2.5", features = ["text", "inline", "bytes"] }
 
+# 哈希
+md5 = "0.7"
+sha2 = "0.10"
+
 # 工具
 anyhow = "1"
 thiserror = "1"

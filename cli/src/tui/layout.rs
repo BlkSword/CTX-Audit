@@ -43,6 +43,10 @@ pub struct AppLayout {
     progress_message: String,
     /// 漏洞数量
     findings_count: usize,
+    /// 漏洞列表
+    findings: Vec<FindingEvent>,
+    /// 漏洞列表滚动位置
+    findings_scroll: usize,
     /// 聊天消息
     chat_messages: Vec<ChatMessageData>,
     /// 思考过程
@@ -86,6 +90,8 @@ impl Default for AppLayout {
             progress: 0,
             progress_message: String::new(),
             findings_count: 0,
+            findings: Vec::new(),
+            findings_scroll: 0,
             chat_messages: Vec::new(),
             thoughts: Vec::new(),
             tool_calls: Vec::new(),
@@ -124,11 +130,11 @@ impl AppLayout {
 
     /// 渲染布局
     pub fn render(&self, f: &mut Frame, active: PanelType) {
-        self.render_with_input(f, active, "")
+        self.render_with_input(f, active, "", 0)
     }
 
     /// 渲染布局（带输入）
-    pub fn render_with_input(&self, f: &mut Frame, active: PanelType, input: &str) {
+    pub fn render_with_input(&self, f: &mut Frame, active: PanelType, input: &str, cursor_pos: usize) {
         let size = f.area();
 
         // 顶部状态栏
@@ -171,7 +177,7 @@ impl AppLayout {
             width: size.width,
             height: 3,
         };
-        self.render_input(f, input_rect, active == PanelType::ChatInput, input);
+        self.render_input(f, input_rect, active == PanelType::ChatInput, input, cursor_pos);
     }
 
     /// 渲染状态栏
@@ -368,17 +374,50 @@ impl AppLayout {
             Line::from(""),
         ];
 
-        if self.findings_count == 0 {
+        if self.findings.is_empty() {
             lines.push(Line::from(Span::styled(
                 "暂无漏洞发现",
                 Style::default().fg(Color::DarkGray)
             )));
         } else {
-            // TODO: 显示实际漏洞列表
-            lines.push(Line::from(Span::styled(
-                "等待审计完成...",
-                Style::default().fg(Color::DarkGray)
-            )));
+            // 显示实际漏洞列表
+            let start = self.findings_scroll.min(self.findings.len().saturating_sub(1));
+            let end = (start + 10).min(self.findings.len());
+
+            for finding in self.findings.iter().take(end).skip(start) {
+                let severity_color = match finding.severity.as_str() {
+                    "critical" => Color::Red,
+                    "high" => Color::LightRed,
+                    "medium" => Color::Yellow,
+                    "low" => Color::Blue,
+                    _ => Color::DarkGray,
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("[{}] ", finding.severity.to_uppercase()),
+                        Style::default().fg(severity_color),
+                    ),
+                    Span::styled(
+                        finding.title.clone(),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(
+                        format!(" - {}:{}",
+                            finding.file_path,
+                            finding.line.map(|l| l.to_string()).unwrap_or_default()
+                        ),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+
+            if self.findings.len() > 10 {
+                lines.push(Line::from(Span::styled(
+                    format!("... 还有 {} 个漏洞 (使用 ↑↓ 滚动)", self.findings.len() - end),
+                    Style::default().fg(Color::DarkGray)
+                )));
+            }
         }
 
         let paragraph = Paragraph::new(lines)
@@ -393,24 +432,27 @@ impl AppLayout {
     }
 
     /// 渲染输入区域
-    fn render_input(&self, f: &mut Frame, rect: Rect, active: bool, input: &str) {
+    fn render_input(&self, f: &mut Frame, rect: Rect, active: bool, input: &str, cursor_pos: usize) {
         let border_style = if active {
             Style::default().fg(Color::Cyan)
         } else {
             Style::default()
         };
 
-        // 显示实际输入内容，如果为空则显示提示符
-        let display_input = if input.is_empty() {
-            ""
+        // 根据光标位置分割输入文本
+        let (before, after) = if cursor_pos <= input.len() {
+            input.split_at(cursor_pos)
         } else {
-            input
+            // 光标位置超出范围，调整到末尾
+            input.split_at(input.len())
         };
 
+        // 显示实际输入内容，如果为空则显示提示符
         let input_text = vec![Line::from(vec![
             Span::styled("> ", Style::default().fg(Color::Green)),
-            Span::raw(display_input),
-            Span::raw("█"), // 光标
+            Span::raw(before),
+            Span::styled("█", Style::default().fg(Color::White)), // 光标
+            Span::raw(after),
         ])];
 
         let paragraph = Paragraph::new(input_text)
@@ -423,8 +465,33 @@ impl AppLayout {
     }
 
     /// 处理导航
-    pub fn handle_navigation(&mut self, _key: KeyCode) {
-        // TODO: 实现列表导航
+    pub fn handle_navigation(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.findings_scroll > 0 {
+                    self.findings_scroll = self.findings_scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let max_scroll = self.findings.len().saturating_sub(1);
+                if self.findings_scroll < max_scroll {
+                    self.findings_scroll += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                self.findings_scroll = self.findings_scroll.saturating_sub(10);
+            }
+            KeyCode::PageDown => {
+                self.findings_scroll = (self.findings_scroll + 10).min(self.findings.len().saturating_sub(1));
+            }
+            KeyCode::Home => {
+                self.findings_scroll = 0;
+            }
+            KeyCode::End => {
+                self.findings_scroll = self.findings.len().saturating_sub(1);
+            }
+            _ => {}
+        }
     }
 
     /// 更新进度
@@ -436,6 +503,26 @@ impl AppLayout {
     /// 更新漏洞数量
     pub fn update_findings_count(&mut self, count: usize) {
         self.findings_count = count;
+    }
+
+    /// 添加漏洞
+    pub fn add_finding(&mut self, finding: FindingEvent) {
+        self.findings.push(finding);
+        self.findings_count = self.findings.len();
+    }
+
+    /// 设置漏洞列表
+    pub fn set_findings(&mut self, findings: Vec<FindingEvent>) {
+        self.findings = findings;
+        self.findings_count = self.findings.len();
+        self.findings_scroll = 0;
+    }
+
+    /// 清除漏洞列表
+    pub fn clear_findings(&mut self) {
+        self.findings.clear();
+        self.findings_count = 0;
+        self.findings_scroll = 0;
     }
 
     /// 添加用户消息

@@ -246,3 +246,52 @@ impl std::str::FromStr for FindingStatus {
         }
     }
 }
+
+// ============================================================================
+// Conversation 模型
+// ============================================================================
+
+/// 对话会话数据库模型
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DbConversation {
+    pub id: String,
+    pub title: String,
+    pub project_path: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub message_count: i32,
+    pub tokens_used: i32,
+}
+
+/// 对话消息数据库模型
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DbConversationMessage {
+    pub id: String,
+    pub conversation_id: String,
+    pub role: String,
+    pub content: String,
+    pub is_tool_call: bool,
+    pub tool_name: Option<String>,
+    pub timestamp: String,
+    pub tokens: i32,
+}
+
+/// 创建对话
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateConversation {
+    pub id: String,
+    pub title: String,
+    pub project_path: Option<String>,
+}
+
+/// 创建对话消息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateConversationMessage {
+    pub id: String,
+    pub conversation_id: String,
+    pub role: String,
+    pub content: String,
+    pub is_tool_call: bool,
+    pub tool_name: Option<String>,
+    pub tokens: i32,
+}

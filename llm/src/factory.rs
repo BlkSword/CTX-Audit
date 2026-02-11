@@ -15,7 +15,7 @@ use super::providers::{AnthropicClient, OpenAIClient, OllamaClient};
 /// LLM 配置
 #[derive(Debug, Clone)]
 pub struct LLMConfig {
-    /// 提供商 (anthropic, openai, ollama)
+    /// 提供商 (anthropic, openai, openai-compatible, ollama)
     pub provider: String,
 
     /// API 密钥
@@ -83,20 +83,32 @@ impl LLMFactory {
                 })?,
                 config.model,
             )?),
-            "openai" => Arc::new(OpenAIClient::new(
-                config.api_key.ok_or_else(|| {
-                    LLMError::ConfigError("OpenAI API key is required".to_string())
-                })?,
-                config.model,
-                config.base_url,
-            )?),
+            "openai" | "openai-compatible" => {
+                // 对于 openai-compatible，base_url 是必需的
+                let base_url = if config.provider == "openai-compatible" {
+                    Some(config.base_url.ok_or_else(|| {
+                        LLMError::ConfigError(
+                            "base_url is required for openai-compatible provider".to_string()
+                        )
+                    })?)
+                } else {
+                    config.base_url
+                };
+                Arc::new(OpenAIClient::new(
+                    config.api_key.ok_or_else(|| {
+                        LLMError::ConfigError("API key is required".to_string())
+                    })?,
+                    config.model,
+                    base_url,
+                )?)
+            }
             "ollama" => Arc::new(OllamaClient::new(
                 config.model,
                 config.base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
             )?),
             _ => {
                 return Err(LLMError::ConfigError(format!(
-                    "Unknown provider: {}",
+                    "Unknown provider: {}. Supported providers: anthropic, openai, openai-compatible, ollama",
                     config.provider
                 )))
             }

@@ -704,17 +704,34 @@ impl DiffEngine {
     /// 比较二进制文件
     fn compare_binary_files(
         &self,
-        _path_a: &Path,
+        path_a: &Path,
         path_b: &Path,
         is_binary_a: bool,
         is_binary_b: bool,
     ) -> Result<FileDiff> {
-        let metadata_a = fs::metadata(_path_a)?;
+        let metadata_a = fs::metadata(path_a)?;
         let metadata_b = fs::metadata(path_b)?;
 
-        // TODO: 比较二进制内容 (MD5 or SHA256)
-        // 这里简单比较大小
-        let modified = metadata_a.len() != metadata_b.len();
+        // 计算哈希值进行比较
+        let hash_a = self.compute_file_hash(path_a)?;
+        let hash_b = self.compute_file_hash(path_b)?;
+
+        let modified = hash_a.md5 != hash_b.md5 || hash_a.sha256 != hash_b.sha256;
+
+        // 生成哈希信息字符串
+        let hash_info = if self.config.show_binary_hashes {
+            format!(
+                "[二进制文件]\n  MD5: {}\n  SHA256: {}\n  大小: {} 字节",
+                hash_a.md5,
+                hash_a.sha256,
+                metadata_a.len()
+            )
+        } else {
+            format!(
+                "[二进制文件] 大小: {} 字节",
+                metadata_a.len()
+            )
+        };
 
         Ok(FileDiff {
             path: path_b.to_string_lossy().to_string(),
@@ -724,28 +741,51 @@ impl DiffEngine {
                 FileStatus::Unchanged
             },
             lines: vec![DiffLine {
-                left_line_number: None,
-                right_line_number: None,
+                left_line_number: Some(1),
+                right_line_number: Some(1),
                 diff_type: DiffType::Equal,
-                content: format!(
-                    "[二进制文件比较] {} vs {}",
-                    if is_binary_a { "Binary" } else { "Text" },
-                    if is_binary_b { "Binary" } else { "Text" }
-                ),
+                content: hash_info,
                 is_placeholder: false,
             }],
             original_content: None,
             modified_content: None,
             left_stats: FileStats {
                 size: metadata_a.len(),
-                line_count: 0,
-                modified_time: None,
+                line_count: 1,
+                modified_time: metadata_a
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64),
             },
             right_stats: FileStats {
                 size: metadata_b.len(),
-                line_count: 0,
-                modified_time: None,
+                line_count: 1,
+                modified_time: metadata_b
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64),
             },
+        })
+    }
+
+    /// 计算文件哈希值
+    fn compute_file_hash(&self, path: &Path) -> Result<FileHash> {
+        let content = fs::read(path)?;
+
+        // 计算 MD5
+        let md5_hash = md5::compute(content.as_slice());
+        let md5_hex = format!("{:x}", md5_hash);
+
+        // 计算 SHA256
+        use sha2::Digest;
+        let sha256_hash = sha2::Sha256::digest(&content);
+        let sha256_hex = format!("{:x}", sha256_hash);
+
+        Ok(FileHash {
+            md5: md5_hex,
+            sha256: sha256_hex,
         })
     }
 }

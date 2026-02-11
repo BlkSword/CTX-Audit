@@ -17,7 +17,7 @@ pub use client::{LLMMessage, MessageRole, MessageContent, LLMResponse, ToolUse, 
 pub use error::LLMError;
 pub use stream::{LLMStreamChunk, ToolCallDelta, Usage};
 pub use providers::{AnthropicClient, OpenAIClient, OllamaClient};
-pub use factory::LLMFactory;
+pub use factory::{LLMFactory, LLMConfig};
 
 /// LLM 客户端版本
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
