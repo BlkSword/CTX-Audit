@@ -4,18 +4,20 @@
 //! TUI 应用主循环
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, KeyEventKind};
 use ratatui::{backend::Backend, Frame, Terminal};
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, error};
+use futures::StreamExt;
 
-use super::layout::{Layout, PanelType};
-use super::panels::*;
-use super::llm::{StreamChatProcessor, StreamConfig, StreamEvent};
 use super::audit::AuditManager;
-use crate::slash::{SlashCommandParser, SlashCommandExecutor, SlashCommand};
+use super::layout::{Layout, PanelType};
+use super::llm::{StreamChatProcessor, StreamConfig, StreamEvent};
+use super::panels::*;
 use crate::config::ConfigManager;
 use crate::database::Database;
+use crate::slash::{SlashCommand, SlashCommandExecutor, SlashCommandParser};
+use ctx_audit_llm::{LLMFactory, LLMConfig, LLMMessage, MessageRole, MessageContent};
 use std::sync::Arc;
 
 /// 应用事件
@@ -39,6 +41,8 @@ pub enum AppEvent {
     Error(String),
     /// 退出
     Quit,
+    /// LLM 配置已更新
+    LLMConfigUpdated,
 }
 
 /// 审计事件
@@ -89,6 +93,8 @@ pub struct App {
     is_generating: bool,
     /// LLM 处理器（可选）
     llm_processor: Option<StreamChatProcessor>,
+    /// LLM 工厂
+    llm_factory: Arc<LLMFactory>,
     /// 审计管理器
     audit_manager: Arc<AuditManager>,
     /// 项目路径
@@ -103,6 +109,10 @@ pub struct App {
     ctrl_c_count: u8,
     /// 上次 Ctrl+C 按下时间
     last_ctrl_c_time: Option<std::time::Instant>,
+    /// 上次按键事件（用于防抖）
+    last_key_event: Option<(KeyCode, KeyModifiers, std::time::Instant)>,
+    /// 光标位置（在输入缓冲区中的位置）
+    cursor_position: usize,
 }
 
 /// 审计状态
@@ -141,11 +151,14 @@ impl App {
 
         // 初始化配置管理器（同步）
         let config_manager = Arc::new(std::sync::RwLock::new(
-            ConfigManager::new(None).map_err(|e| anyhow::anyhow!("{}", e))?
+            ConfigManager::new(None).map_err(|e| anyhow::anyhow!("{}", e))?,
         ));
 
         // 初始化斜杠命令解析器
         let slash_parser = SlashCommandParser::new();
+
+        // 初始化 LLM 工厂
+        let llm_factory = Arc::new(LLMFactory::new());
 
         Ok(Self {
             running: true,
@@ -161,6 +174,7 @@ impl App {
             current_response: String::new(),
             is_generating: false,
             llm_processor: None,
+            llm_factory,
             audit_manager: Arc::new(AuditManager::new()),
             project_path: None,
             slash_parser,
@@ -168,6 +182,8 @@ impl App {
             config_manager,
             ctrl_c_count: 0,
             last_ctrl_c_time: None,
+            last_key_event: None,
+            cursor_position: 0,
         })
     }
 
@@ -180,7 +196,42 @@ impl App {
         // 初始化斜杠命令执行器
         self.slash_executor = Some(Arc::new(SlashCommandExecutor::new(db)));
 
+        // 配置 LLM 工厂
+        self.configure_llm_factory().await?;
+
         info!("App initialization complete");
+        Ok(())
+    }
+
+    /// 配置 LLM 工厂（从配置管理器读取）
+    async fn configure_llm_factory(&self) -> Result<()> {
+        let config_mgr = self.config_manager.read().map_err(|e| anyhow::anyhow!("Config lock error: {}", e))?;
+
+        let provider = config_mgr.get("llm.provider").unwrap_or("anthropic".to_string());
+        let api_key = config_mgr.get("llm.api_key");
+        let model = config_mgr.get("llm.model").unwrap_or("claude-3-5-sonnet-20241022".to_string());
+        let base_url = config_mgr.get("llm.base_url");
+
+        // 检查是否配置了 API 密钥
+        if api_key.is_none() && provider != "ollama" {
+            debug!("LLM API key not configured, provider={}", provider);
+            return Ok(());
+        }
+
+        // 克隆以供后续使用
+        let provider_clone = provider.clone();
+        let model_clone = model.clone();
+
+        let llm_config = LLMConfig {
+            provider,
+            api_key,
+            model: Some(model),
+            base_url,
+            timeout_secs: Some(120),
+        };
+
+        self.llm_factory.set_config(llm_config);
+        info!("LLM factory configured: provider={}, model={}", provider_clone, model_clone);
         Ok(())
     }
 
@@ -223,19 +274,40 @@ impl App {
             if event::poll(std::time::Duration::from_millis(5))? {
                 let now = std::time::Instant::now();
 
-                // 检查是否有过快的重复输入（防抖）
-                if let Some(last_time) = last_key_time {
-                    if now.duration_since(last_time).as_millis() < 10 {
-                        debug!("Debouncing fast input, ignoring");
-                        continue;
-                    }
-                }
-
                 let evt = event::read()?;
+
                 match evt {
                     Event::Key(key) => {
-                        debug!("Loop {}: Key event received: {:?}", loop_count, key);
+                        // 只处理 Press 事件，忽略 Repeat（键盘按住）和 Release 事件
+                        if key.kind != KeyEventKind::Press {
+                            debug!("Ignoring non-Press event: kind={:?}, code={:?}", key.kind, key.code);
+                            continue;
+                        }
+
+                        // 跨平台统一的重复检测逻辑
+                        let is_duplicate = if let Some((last_code, last_modifiers, last_time)) =
+                            self.last_key_event
+                        {
+                            let same_key = last_code == key.code && last_modifiers == key.modifiers;
+                            let time_diff = now.duration_since(last_time).as_millis();
+                            // 在50ms内相同按键视为重复（区分正常输入和系统重复事件）
+                            same_key && time_diff < 50
+                        } else {
+                            false
+                        };
+
+                        if is_duplicate {
+                            debug!("Duplicate key event: {:?}, time_diff: {}ms, ignoring",
+                                key, now.duration_since(self.last_key_event.unwrap().2).as_millis());
+                            continue;
+                        }
+
+                        // 记录本次按键事件（在处理之前记录）
+                        self.last_key_event = Some((key.code, key.modifiers, now));
+                        debug!("Processing key event: {:?}, loop: {}, buffer_len: {}",
+                            key, loop_count, self.input_buffer.len());
                         self.handle_key_event(key);
+                        debug!("After handle_key_event, buffer_len: {}", self.input_buffer.len());
                         last_key_time = Some(now);
                     }
                     _ => {}
@@ -248,15 +320,21 @@ impl App {
 
     /// 绘制界面
     fn draw(&self, f: &mut Frame) {
-        self.layout.render_with_input(f, self.active_panel, &self.input_buffer);
+        self.layout
+            .render_with_input(f, self.active_panel, &self.input_buffer, self.cursor_position);
     }
 
     /// 处理键盘事件
     fn handle_key_event(&mut self, key: KeyEvent) {
-        debug!("handle_key_event called: {:?}, buffer length: {}", key, self.input_buffer.len());
+        debug!(
+            "handle_key_event called: {:?}, buffer length: {}",
+            key,
+            self.input_buffer.len()
+        );
 
         // 重置 Ctrl+C 计数器（按下非 Ctrl+C 键时）
-        let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        let is_ctrl_c =
+            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
         if !is_ctrl_c && self.ctrl_c_count > 0 {
             self.ctrl_c_count = 0;
             self.last_ctrl_c_time = None;
@@ -280,7 +358,8 @@ impl App {
             self.last_ctrl_c_time = Some(now);
 
             // 显示提示
-            self.layout.add_system_message("再按一次 Ctrl+C 退出程序".to_string());
+            self.layout
+                .add_system_message("再按一次 Ctrl+C 退出程序".to_string());
             return;
         }
 
@@ -301,9 +380,15 @@ impl App {
             }
             KeyCode::Char(c) => {
                 if self.active_panel == PanelType::ChatInput {
-                    debug!("Char '{}' added to buffer", c);
-                    self.input_buffer.push(c);
-                    debug!("Buffer is now: '{}', len: {}", self.input_buffer, self.input_buffer.len());
+                    debug!("Char '{}' added to buffer at position {}", c, self.cursor_position);
+                    self.input_buffer.insert(self.cursor_position, c);
+                    self.cursor_position += 1;
+                    debug!(
+                        "Buffer is now: '{}', len: {}, cursor: {}",
+                        self.input_buffer,
+                        self.input_buffer.len(),
+                        self.cursor_position
+                    );
                 }
             }
             KeyCode::Enter => {
@@ -312,18 +397,40 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                if self.active_panel == PanelType::ChatInput {
-                    debug!("Backspace, buffer before pop: '{}'", self.input_buffer);
-                    self.input_buffer.pop();
+                if self.active_panel == PanelType::ChatInput && self.cursor_position > 0 {
+                    debug!("Backspace, buffer before pop: '{}', cursor: {}", self.input_buffer, self.cursor_position);
+                    self.cursor_position -= 1;
+                    self.input_buffer.remove(self.cursor_position);
+                    debug!("Buffer is now: '{}', cursor: {}", self.input_buffer, self.cursor_position);
                 }
             }
-            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
-                self.layout.handle_navigation(key.code);
+            KeyCode::Up | KeyCode::Down => {
+                // 上下键用于导航列表（当不在 ChatInput 面板时）
+                if self.active_panel != PanelType::ChatInput {
+                    self.layout.handle_navigation(key.code);
+                }
+            }
+            KeyCode::Left => {
+                if self.active_panel == PanelType::ChatInput && self.cursor_position > 0 {
+                    self.cursor_position -= 1;
+                } else {
+                    self.layout.handle_navigation(key.code);
+                }
+            }
+            KeyCode::Right => {
+                if self.active_panel == PanelType::ChatInput && self.cursor_position < self.input_buffer.len() {
+                    self.cursor_position += 1;
+                } else {
+                    self.layout.handle_navigation(key.code);
+                }
             }
             _ => {}
         }
 
-        debug!("handle_key_event completed, buffer: '{}'", self.input_buffer);
+        debug!(
+            "handle_key_event completed, buffer: '{}'",
+            self.input_buffer
+        );
     }
 
     /// 处理应用事件
@@ -340,24 +447,22 @@ impl App {
                 self.findings.push(finding);
                 self.layout.update_findings_count(self.findings.len());
             }
-            AppEvent::Agent(agent_event) => {
-                match agent_event {
-                    AgentEvent::Thinking(msg) => {
-                        self.layout.add_thought(msg);
-                    }
-                    AgentEvent::ToolCall(tool, input) => {
-                        self.layout.add_tool_call(tool, input);
-                    }
-                    AgentEvent::Complete(msg) => {
-                        self.audit_status = AuditStatus::Completed;
-                        self.layout.add_assistant_message(msg);
-                    }
-                    AgentEvent::Error(err) => {
-                        self.audit_status = AuditStatus::Failed(err);
-                    }
-                    _ => {}
+            AppEvent::Agent(agent_event) => match agent_event {
+                AgentEvent::Thinking(msg) => {
+                    self.layout.add_thought(msg);
                 }
-            }
+                AgentEvent::ToolCall(tool, input) => {
+                    self.layout.add_tool_call(tool, input);
+                }
+                AgentEvent::Complete(msg) => {
+                    self.audit_status = AuditStatus::Completed;
+                    self.layout.add_assistant_message(msg);
+                }
+                AgentEvent::Error(err) => {
+                    self.audit_status = AuditStatus::Failed(err);
+                }
+                _ => {}
+            },
             AppEvent::Error(err) => {
                 self.layout.add_error(err);
             }
@@ -367,14 +472,47 @@ impl App {
             AppEvent::Quit => {
                 self.running = false;
             }
+            AppEvent::LLMConfigUpdated => {
+                // LLM 配置已更新，重新配置工厂
+                if let Err(e) = self.configure_llm_factory_sync() {
+                    debug!("Failed to reconfigure LLM factory: {}", e);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// 同步配置 LLM 工厂（从配置管理器读取）
+    fn configure_llm_factory_sync(&self) -> Result<()> {
+        let config_mgr = self.config_manager.read().map_err(|e| anyhow::anyhow!("Config lock error: {}", e))?;
+
+        let provider = config_mgr.get("llm.provider").unwrap_or("anthropic".to_string());
+        let api_key = config_mgr.get("llm.api_key");
+        let model = config_mgr.get("llm.model").unwrap_or("claude-3-5-sonnet-20241022".to_string());
+        let base_url = config_mgr.get("llm.base_url");
+
+        // 克隆以供后续使用
+        let provider_clone = provider.clone();
+        let model_clone = model.clone();
+
+        let llm_config = LLMConfig {
+            provider,
+            api_key,
+            model: Some(model),
+            base_url,
+            timeout_secs: Some(120),
+        };
+
+        self.llm_factory.set_config(llm_config);
+        info!("LLM factory reconfigured: provider={}, model={}", provider_clone, model_clone);
+        Ok(())
     }
 
     /// 处理聊天输入
     fn handle_chat_input(&mut self) {
         let input = self.input_buffer.clone();
         self.input_buffer.clear();
+        self.cursor_position = 0;
 
         // 添加用户消息
         self.chat_history.push(ChatMessage {
@@ -411,7 +549,10 @@ impl App {
             Ok(SlashCommand::Audit { path }) => {
                 // 检查 LLM 配置
                 if !self.check_llm_config() {
-                    self.layout.add_error("LLM 未配置。请使用 /config llm.api_key <your-api-key> 配置 API 密钥。".to_string());
+                    self.layout.add_error(
+                        "LLM 未配置。请使用 /config llm.api_key <your-api-key> 配置 API 密钥。"
+                            .to_string(),
+                    );
                     self.layout.add_system_message(
                         "\n配置示例:\n  /config llm.provider anthropic\n  /config llm.api_key sk-ant-xxx...\n  /config llm.model claude-3-5-sonnet-20241022\n".to_string()
                     );
@@ -453,9 +594,7 @@ impl App {
                             Some("配置管理器错误".to_string())
                         }
                     }
-                    (None, Some(_)) => {
-                        Some("配置键不能为空".to_string())
-                    }
+                    (None, Some(_)) => Some("配置键不能为空".to_string()),
                     (Some(k), None) => {
                         if let Some(manager) = config_manager.read().ok() {
                             if let Some(v) = manager.get(k) {
@@ -489,24 +628,36 @@ impl App {
                     let config_manager_clone = Arc::clone(&config_manager);
 
                     // 设置值并准备响应
-                    let (set_result, response) = if let Some(mut manager) = config_manager.write().ok() {
-                        let set_result = manager.set(&k, v.clone());
-                        let response = match &set_result {
-                            Ok(_) => format!("配置已更新: {} = {}",
-                                if k.contains("api_key") { "***" } else { &k },
-                                if k.contains("api_key") { "***" } else { &v }),
-                            Err(e) => format!("设置失败: {}", e),
+                    let (set_result, response) =
+                        if let Some(mut manager) = config_manager.write().ok() {
+                            let set_result = manager.set(&k, v.clone());
+                            let response = match &set_result {
+                                Ok(_) => format!(
+                                    "配置已更新: {} = {}",
+                                    if k.contains("api_key") { "***" } else { &k },
+                                    if k.contains("api_key") { "***" } else { &v }
+                                ),
+                                Err(e) => format!("设置失败: {}", e),
+                            };
+                            (set_result, response)
+                        } else {
+                            (
+                                Err(anyhow::anyhow!("无法获取配置锁")),
+                                "配置管理器错误".to_string(),
+                            )
                         };
-                        (set_result, response)
-                    } else {
-                        (Err(anyhow::anyhow!("无法获取配置锁")), "配置管理器错误".to_string())
-                    };
 
                     // 立即发送响应
                     let _ = event_tx.send(AppEvent::System(response));
 
                     // 如果设置成功，在后台异步保存（不需要返回结果）
                     if set_result.is_ok() {
+                        // 检查是否是 LLM 相关配置
+                        let is_llm_config = k.starts_with("llm.");
+                        if is_llm_config {
+                            let _ = event_tx.send(AppEvent::LLMConfigUpdated);
+                        }
+
                         let _ = std::thread::spawn(move || {
                             // 使用 tokio runtime 来运行异步保存
                             let rt = tokio::runtime::Handle::try_current();
@@ -529,7 +680,8 @@ impl App {
             }
             Ok(SlashCommand::Findings) => {
                 // 显示漏洞列表
-                self.layout.add_system_message("漏洞列表功能开发中...".to_string());
+                self.layout
+                    .add_system_message("漏洞列表功能开发中...".to_string());
             }
             Ok(cmd) => {
                 // 对于其他命令，使用执行器
@@ -570,7 +722,8 @@ impl App {
     fn start_audit(&mut self, path: String) {
         self.audit_status = AuditStatus::Initializing;
         self.project_path = Some(path.clone());
-        self.layout.add_system_message(format!("开始审计: {}", path));
+        self.layout
+            .add_system_message(format!("开始审计: {}", path));
 
         // 使用审计管理器启动审计
         let event_tx = self.event_tx.clone();
@@ -625,14 +778,20 @@ LLM 配置:
   /config llm.provider anthropic
   /config llm.api_key sk-ant-xxx...
   /config llm.model claude-3-5-sonnet-20241022
+
+自定义 AI (OpenAI 兼容):
+  /config llm.provider openai-compatible
+  /config llm.api_key your-api-key
+  /config llm.base_url https://your-api-endpoint.com/v1
+  /config llm.model your-model-name
 "#;
         self.layout.add_system_message(help.to_string());
     }
 
     /// 发送事件
     pub fn send_event(&self, event: AppEvent) -> Result<()> {
-        // TODO: 实现事件发送
-        Ok(())
+        self.event_tx.send(event)
+            .map_err(|e| anyhow::anyhow!("发送事件失败: {}", e))
     }
 
     /// 处理流式响应事件
@@ -670,10 +829,17 @@ LLM 配置:
 
     /// 发送消息到 LLM
     fn send_to_llm(&mut self, message: String) {
-        use ctx_audit_llm::{LLMMessage, MessageRole, MessageContent};
+        use ctx_audit_llm::{LLMMessage, MessageContent, MessageRole};
+
+        // 确保配置是最新的
+        if let Err(e) = self.configure_llm_factory_sync() {
+            self.layout.add_error(format!("LLM 配置错误: {}", e));
+            return;
+        }
 
         // 构建消息历史
-        let messages: Vec<LLMMessage> = self.chat_history
+        let messages: Vec<LLMMessage> = self
+            .chat_history
             .iter()
             .map(|msg| LLMMessage {
                 role: match msg.role {
@@ -681,7 +847,9 @@ LLM 配置:
                     ChatRole::Assistant => MessageRole::Assistant,
                     ChatRole::System => MessageRole::System,
                 },
-                content: vec![MessageContent::Text { text: msg.content.clone() }],
+                content: vec![MessageContent::Text {
+                    text: msg.content.clone(),
+                }],
                 cache_control: None,
             })
             .collect();
@@ -698,9 +866,50 @@ LLM 配置:
         let (tx, rx) = mpsc::unbounded_channel();
         self.stream_rx = Some(rx);
 
-        // TODO: 实际调用 LLM
-        // 这里需要异步任务来处理 LLM 调用
-        // 暂时模拟响应
-        self.layout.add_system_message("LLM 集成待实现...".to_string());
+        // 获取 LLM 客户端（克隆 factory 用于异步任务）
+        let factory = Arc::clone(&self.llm_factory);
+        let event_tx = self.event_tx.clone();
+
+        // 在异步任务中调用 LLM
+        tokio::spawn(async move {
+            // 获取客户端
+            let client = match factory.get_client().await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Failed to get LLM client: {:?}", e);
+                    let _ = event_tx.send(AppEvent::Error(format!("LLM 客户端错误: {}", e)));
+                    return;
+                }
+            };
+
+            // 开始流式生成
+            let mut stream = client.generate_stream(
+                all_messages,
+                4096,     // max_tokens
+                0.7,      // temperature
+            ).await;
+
+            // 处理流式响应
+            use futures::StreamExt;
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        if chunk.done {
+                            // 完成
+                            let _ = tx.send(StreamEvent::Complete);
+                            break;
+                        } else {
+                            // 发送 token
+                            let _ = tx.send(StreamEvent::Token(chunk.delta));
+                        }
+                    }
+                    Err(e) => {
+                        error!("Stream error: {:?}", e);
+                        let _ = tx.send(StreamEvent::Error(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
     }
 }

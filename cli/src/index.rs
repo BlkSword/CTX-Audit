@@ -413,11 +413,79 @@ impl IndexManager {
 
     /// 清除索引
     pub async fn clear_index(&self, project_path: &str) -> Result<(), String> {
+        // 从内存中移除
         let mut indexes = self.indexes.write().await;
         indexes.remove(project_path);
+        drop(indexes);
 
-        // TODO: 清除磁盘缓存
+        // 清除磁盘缓存
+        self.clear_disk_cache(project_path).await?;
+
+        // 从数据库中删除相关符号
+        if let Ok(db) = Database::with_default_path().await {
+            // 获取项目 ID
+            let pool = db.pool();
+            if let Ok(Some(project)) = crate::database::ProjectQueries::get_by_path(pool, project_path).await {
+                // 删除符号
+                let _ = sqlx::query("DELETE FROM symbols WHERE project_id = ?")
+                    .bind(project.id)
+                    .execute(pool)
+                    .await;
+
+                // 删除项目文件
+                let _ = sqlx::query("DELETE FROM project_files WHERE project_id = ?")
+                    .bind(project.id)
+                    .execute(pool)
+                    .await;
+
+                tracing::info!("已清除数据库中的索引数据: {}", project_path);
+            }
+        }
+
         Ok(())
+    }
+
+    /// 清除磁盘缓存
+    async fn clear_disk_cache(&self, project_path: &str) -> Result<(), String> {
+        // 获取缓存目录
+        let cache_dir = self.get_cache_dir(project_path)?;
+
+        // 如果缓存目录存在，删除它
+        if cache_dir.exists() {
+            fs::remove_dir_all(&cache_dir)
+                .await
+                .map_err(|e| format!("删除缓存目录失败: {}", e))?;
+
+            tracing::info!("已清除磁盘缓存: {}", cache_dir.display());
+        }
+
+        Ok(())
+    }
+
+    /// 获取缓存目录
+    fn get_cache_dir(&self, project_path: &str) -> Result<PathBuf, String> {
+        // 获取系统缓存目录
+        let cache_base = dirs::cache_dir()
+            .ok_or_else(|| "无法获取缓存目录".to_string())?;
+
+        // 创建项目特定的缓存目录
+        let project_hash = self.hash_path(project_path);
+        let cache_dir = cache_base
+            .join("ctx-audit")
+            .join("projects")
+            .join(project_hash);
+
+        Ok(cache_dir)
+    }
+
+    /// 生成路径哈希
+    fn hash_path(&self, path: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        path.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
     }
 
     /// 获取所有索引

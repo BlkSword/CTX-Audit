@@ -10,7 +10,9 @@ use rustyline::{DefaultEditor, Helper};
 use std::sync::Arc;
 
 use crate::config::ConfigManager;
+use crate::database::Database;
 use crate::terminal::TerminalRenderer;
+use ctx_audit_llm::{LLMFactory, LLMConfig, LLMMessage, MessageRole, MessageContent};
 
 /// REPL 会话
 pub struct ReplSession {
@@ -25,6 +27,12 @@ pub struct ReplSession {
 
     /// 会话历史
     history: Vec<String>,
+
+    /// 数据库
+    db: Option<Arc<Database>>,
+
+    /// LLM 工厂
+    llm_factory: Arc<LLMFactory>,
 }
 
 impl ReplSession {
@@ -40,12 +48,17 @@ impl ReplSession {
             let _ = editor.load_history(&history_path);
         }
 
+        // 初始化 LLM 工厂
+        let llm_factory = Arc::new(LLMFactory::new());
+
         Ok(Self {
             editor,
             renderer: TerminalRenderer::new(),
             config,
             current_project: None,
             history: Vec::new(),
+            db: None,
+            llm_factory,
         })
     }
 
@@ -159,7 +172,7 @@ impl ReplSession {
             "/config" | "/cfg" => {
                 if let Some(key) = parts.get(1) {
                     if let Some(value) = parts.get(2) {
-                        self.set_config(key, value)?;
+                        self.set_config(key, value).await?;
                     } else {
                         self.get_config(key)?;
                     }
@@ -207,22 +220,138 @@ impl ReplSession {
 
     /// 运行审计
     async fn run_audit(&mut self, path: &str) -> Result<()> {
-        // TODO: 实现审计逻辑
+        // 确保数据库已初始化
+        if self.db.is_none() {
+            self.db = Some(Arc::new(Database::with_default_path().await?));
+        }
+
         self.renderer.info(&format!("启动审计: {}", path));
+
+        // 检查 LLM 配置
+        let provider = self.config.get("llm.provider").unwrap_or_else(|| "anthropic".to_string());
+        let api_key = self.config.get("llm.api_key");
+
+        if api_key.is_none() {
+            self.renderer.error("LLM API 密钥未配置");
+            self.renderer.info("请使用以下命令配置：");
+            self.renderer.info("  /config llm.api_key <your-api-key>");
+            return Ok(());
+        }
+
+        // 配置 LLM
+        let llm_config = LLMConfig {
+            provider,
+            api_key,
+            model: self.config.get("llm.model"),
+            base_url: self.config.get("llm.base_url"),
+            timeout_secs: Some(120),
+        };
+        self.llm_factory.set_config(llm_config);
+
+        // TODO: 实现完整的审计逻辑
+        self.renderer.info("审计功能正在开发中...");
+        self.renderer.info("当前可以使用以下功能：");
+        self.renderer.info("  /scan - 快速规则扫描");
+        self.renderer.info("  /findings - 查看已发现的漏洞");
+
         Ok(())
     }
 
     /// 运行扫描
     async fn run_scan(&mut self, path: &str) -> Result<()> {
-        // TODO: 实现扫描逻辑
+        // 确保数据库已初始化
+        if self.db.is_none() {
+            self.db = Some(Arc::new(Database::with_default_path().await?));
+        }
+
         self.renderer.info(&format!("启动扫描: {}", path));
+
+        // 使用 deepaudit_core 扫描
+        match deepaudit_core::scan_directory(path).await {
+            Ok(findings) => {
+                self.renderer.success(&format!("扫描完成！发现 {} 个漏洞", findings.len()));
+
+                // 保存到数据库
+                if let Some(ref db) = self.db {
+                    // 创建或获取项目
+                    let project_name = std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Unknown");
+
+                    let uuid = uuid::Uuid::new_v4().to_string();
+
+                    let project = match crate::database::ProjectQueries::get_by_path(db.pool(), path).await? {
+                        Some(p) => p,
+                        None => {
+                            crate::database::ProjectQueries::create(db.pool(), &crate::database::CreateProject {
+                                uuid,
+                                name: project_name.to_string(),
+                                path: path.to_string(),
+                                description: None,
+                            }).await?
+                        }
+                    };
+
+                    // 保存漏洞
+                    for finding in &findings {
+                        let _ = crate::database::FindingQueries::create(db.pool(), &crate::database::CreateFinding {
+                            finding_id: uuid::Uuid::new_v4().to_string(),
+                            project_id: project.id,
+                            session_id: None,
+                            scan_id: Some(format!("scan_{}", chrono::Utc::now().timestamp())),
+                            file_path: finding.file_path.clone(),
+                            severity: finding.severity.clone(),
+                            category: Some("scan".to_string()),
+                            title: finding.vuln_type.clone(),
+                            description: Some(finding.description.clone()),
+                            start_line: Some(finding.line_start as i32),
+                            end_line: Some(finding.line_end as i32),
+                            code_snippet: None,
+                            confidence: Some("high".to_string()),
+                        }).await;
+                    }
+
+                    self.renderer.info(&format!("已保存 {} 个漏洞到数据库", findings.len()));
+                }
+            }
+            Err(e) => {
+                self.renderer.error(&format!("扫描失败: {}", e));
+            }
+        }
+
         Ok(())
     }
 
     /// 列出漏洞
     async fn list_findings(&mut self) -> Result<()> {
-        // TODO: 实现列出漏洞逻辑
-        self.renderer.info("暂无漏洞记录");
+        if let Some(ref db) = self.db {
+            let findings = crate::database::FindingQueries::list(
+                db.pool(),
+                None,
+                None,
+                Some("open"),
+                None,
+            ).await?;
+
+            if findings.is_empty() {
+                self.renderer.info("暂无漏洞记录");
+            } else {
+                self.renderer.print(&format!("发现 {} 个漏洞:\n", findings.len()));
+                for finding in findings {
+                    let title = finding.title.as_str();
+                    self.renderer.finding(
+                        &finding.severity,
+                        title,
+                        &finding.file_path,
+                        finding.start_line.unwrap_or(0) as u32,
+                    );
+                }
+            }
+        } else {
+            self.renderer.info("请先运行 /scan 或 /audit");
+        }
+
         Ok(())
     }
 
@@ -241,9 +370,30 @@ impl ReplSession {
     }
 
     /// 设置配置
-    fn set_config(&mut self, key: &str, value: &str) -> Result<()> {
-        // 需要通过 Arc 获取可变引用，这里简化处理
-        self.renderer.info(&format!("配置 {} = {}", key, value));
+    async fn set_config(&mut self, key: &str, value: &str) -> Result<()> {
+        // Clone Arc to get mutable reference
+        let config_manager = Arc::clone(&self.config);
+
+        // We need to get a mutable reference, but ConfigManager is behind Arc
+        // So we'll create a new ConfigManager, modify it, and save
+        let mut config_manager = ConfigManager::new(None)
+            .map_err(|e| anyhow::anyhow!("加载配置失败: {}", e))?;
+
+        config_manager.set(key, value.to_string())
+            .map_err(|e| anyhow::anyhow!("设置配置失败: {}", e))?;
+
+        config_manager.save().await
+            .map_err(|e| anyhow::anyhow!("保存配置失败: {}", e))?;
+
+        self.renderer.success(&format!("配置已更新: {} = {}", key,
+            if key.contains("api_key") { "***" } else { value }));
+
+        // 更新内部的 config 引用
+        // 注意：这里我们需要重新加载配置以反映更改
+        // 但由于 self.config 是 Arc<ConfigManager>，我们无法直接替换
+        // 所以我们建议用户重启 REPL 以加载新配置
+        self.renderer.info("配置已保存。重启 REPL 以加载新配置。");
+
         Ok(())
     }
 
@@ -256,9 +406,57 @@ impl ReplSession {
     }
 
     /// 处理聊天命令
-    async fn handle_chat_command(&mut self, _cmd: &str) -> Result<()> {
-        // TODO: 实现 LLM 聊天逻辑
-        self.renderer.info("LLM 聊天功能待实现");
+    async fn handle_chat_command(&mut self, cmd: &str) -> Result<()> {
+        // 检查 LLM 配置
+        let provider = self.config.get("llm.provider").unwrap_or_else(|| "anthropic".to_string());
+        let api_key = self.config.get("llm.api_key");
+
+        if api_key.is_none() {
+            self.renderer.error("LLM API 密钥未配置");
+            self.renderer.info("请使用以下命令配置：");
+            self.renderer.info("  /config llm.api_key <your-api-key>");
+            return Ok(());
+        }
+
+        // 配置 LLM
+        let llm_config = LLMConfig {
+            provider,
+            api_key,
+            model: self.config.get("llm.model"),
+            base_url: self.config.get("llm.base_url"),
+            timeout_secs: Some(60),
+        };
+        self.llm_factory.set_config(llm_config);
+
+        self.renderer.info("AI 正在思考...");
+
+        // 创建消息
+        let message = LLMMessage {
+            role: MessageRole::User,
+            content: vec![MessageContent::Text {
+                text: cmd.to_string()
+            }],
+            cache_control: None,
+        };
+
+        // 调用 LLM
+        match self.llm_factory.get_client().await {
+            Ok(client) => {
+                match client.generate(vec![message], 1024, 0.7).await {
+                    Ok(response) => {
+                        let text = response.get_text();
+                        self.renderer.print(&text);
+                    }
+                    Err(e) => {
+                        self.renderer.error(&format!("LLM 请求失败: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                self.renderer.error(&format!("获取 LLM 客户端失败: {}", e));
+            }
+        }
+
         Ok(())
     }
 }

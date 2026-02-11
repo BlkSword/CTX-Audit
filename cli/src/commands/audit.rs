@@ -209,9 +209,144 @@ pub async fn execute(
 
     // 保存结果（如果指定了输出文件）
     if let Some(output_path) = output_path {
-        // TODO: 实现保存逻辑
-        renderer.info(&format!("结果已保存到: {}", output_path));
+        save_findings(&output_path, &all_findings, output_format, &mut renderer).await?;
     }
 
     Ok(())
 }
+
+/// 保存漏洞结果到文件
+async fn save_findings(
+    output_path: &str,
+    findings: &[FindingData],
+    format: &str,
+    renderer: &mut TerminalRenderer,
+) -> Result<()> {
+    let content = match format {
+        "json" => {
+            serde_json::to_string_pretty(findings)
+                .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?
+        }
+        "sarif" => {
+            to_sarif(findings)
+        }
+        "markdown" => {
+            to_markdown(findings)
+        }
+        _ => {
+            to_text(findings)
+        }
+    };
+
+    tokio::fs::write(output_path, content)
+        .await
+        .map_err(|e| miette::miette!("写入文件失败: {}", e))?;
+
+    renderer.info(&format!("结果已保存到: {}", output_path));
+    Ok(())
+}
+
+/// 转换为 SARIF 格式
+fn to_sarif(findings: &[FindingData]) -> String {
+    let sarif = serde_json::json!({
+        "version": "2.1.0",
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "CTX-Audit",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "informationUri": "https://github.com/ctx-audit/ctx-audit"
+                }
+            },
+            "results": findings.iter().map(|f| {
+                serde_json::json!({
+                    "ruleId": f.category.clone(),
+                    "level": severity_to_level(&f.severity),
+                    "message": {
+                        "text": f.title.clone().unwrap_or_else(|| f.category.clone())
+                    },
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": f.file_path.clone()
+                            },
+                            "region": {
+                                "startLine": f.start_line,
+                                "endLine": f.end_line.unwrap_or(f.start_line)
+                            }
+                        }
+                    }]
+                })
+            }).collect::<Vec<_>>()
+        }]
+    });
+
+    serde_json::to_string_pretty(&sarif).unwrap_or_default()
+}
+
+/// 转换为 Markdown 格式
+fn to_markdown(findings: &[FindingData]) -> String {
+    let mut md = String::from("# 审计报告\n\n");
+    md.push_str(&format!("**生成时间**: {}\n\n", chrono::Utc::now().to_rfc3339()));
+    md.push_str(&format!("**漏洞数量**: {}\n\n", findings.len()));
+
+    // 按严重程度分组
+    let mut by_severity = std::collections::HashMap::new();
+    for finding in findings {
+        by_severity
+            .entry(finding.severity.clone())
+            .or_insert_with(Vec::new)
+            .push(finding);
+    }
+
+    for severity in ["critical", "high", "medium", "low", "info"] {
+        if let Some(items) = by_severity.get(severity) {
+            md.push_str(&format!("## {} ({})\n\n", severity.to_uppercase(), items.len()));
+            for finding in items {
+                md.push_str(&format!("### {}\n\n", finding.category));
+                if let Some(title) = &finding.title {
+                    md.push_str(&format!("**标题**: {}\n\n", title));
+                }
+                md.push_str(&format!("**文件**: {}:{}\n\n", finding.file_path, finding.start_line));
+                md.push_str(&format!("**描述**: {}\n\n", finding.description));
+                if let Some(code) = &finding.code_snippet {
+                    md.push_str("**代码**:\n```");
+                    md.push_str(code);
+                    md.push_str("```\n\n");
+                }
+            }
+        }
+    }
+
+    md
+}
+
+/// 转换为文本格式
+fn to_text(findings: &[FindingData]) -> String {
+    let mut text = String::from("审计报告\n");
+    text.push_str(&format!("生成时间: {}\n", chrono::Utc::now().to_rfc3339()));
+    text.push_str(&format!("漏洞数量: {}\n\n", findings.len()));
+
+    for (i, finding) in findings.iter().enumerate() {
+        text.push_str(&format!("[{}] {} - {}\n", i + 1, finding.severity.to_uppercase(), finding.category));
+        text.push_str(&format!("    文件: {}:{}\n", finding.file_path, finding.start_line));
+        if let Some(title) = &finding.title {
+            text.push_str(&format!("    标题: {}\n", title));
+        }
+        text.push('\n');
+    }
+
+    text
+}
+
+/// SARIF 严重程度映射
+fn severity_to_level(severity: &str) -> &str {
+    match severity.to_lowercase().as_str() {
+        "critical" | "high" => "error",
+        "medium" => "warning",
+        "low" | "info" => "note",
+        _ => "none",
+    }
+}
+

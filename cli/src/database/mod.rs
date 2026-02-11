@@ -10,7 +10,7 @@ mod schema;
 mod migrations;
 mod queries;
 
-pub use models::{Finding, FindingStatus, Severity, AuditStatus, UpdateFinding};
+pub use models::{Finding, FindingStatus, Severity, AuditStatus, UpdateFinding, DbConversation, DbConversationMessage, CreateConversation, CreateConversationMessage, CreateProject, CreateFinding};
 pub use schema::*;
 pub use migrations::*;
 pub use queries::*;
@@ -112,6 +112,10 @@ impl Database {
             .await?;
 
         sqlx::query(include_str!("schema/symbols.sql"))
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query(include_str!("schema/conversations.sql"))
             .execute(&self.pool)
             .await?;
 

@@ -62,6 +62,15 @@ pub enum FileStatus {
     Unchanged,
 }
 
+/// 文件哈希值
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileHash {
+    /// MD5 哈希值
+    pub md5: String,
+    /// SHA256 哈希值
+    pub sha256: String,
+}
+
 /// 文件统计信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileStats {
@@ -133,6 +142,8 @@ pub struct ComparisonConfig {
     pub detect_renames: bool,
     /// 文件相似度阈值（用于重命名检测）
     pub rename_similarity_threshold: f32,
+    /// 是否显示二进制文件的哈希值
+    pub show_binary_hashes: bool,
 }
 
 impl Default for ComparisonConfig {
@@ -145,6 +156,7 @@ impl Default for ComparisonConfig {
             enable_syntax_highlight: true,
             detect_renames: true,
             rename_similarity_threshold: 0.8,
+            show_binary_hashes: false,
         }
     }
 }

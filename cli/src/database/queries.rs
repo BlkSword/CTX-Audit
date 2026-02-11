@@ -515,3 +515,178 @@ impl SymbolQueries {
         Ok(symbols)
     }
 }
+
+// ============================================================================
+// Conversation 查询
+// ============================================================================
+
+/// 对话会话查询
+pub struct ConversationQueries;
+
+impl ConversationQueries {
+    /// 创建对话会话
+    pub async fn create(
+        pool: &Pool<Sqlite>,
+        conversation: &CreateConversation,
+    ) -> Result<DbConversation> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let row = sqlx::query_as::<_, DbConversation>(
+            r#"
+            INSERT INTO conversations (id, title, project_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            RETURNING *
+            "#,
+        )
+        .bind(&conversation.id)
+        .bind(&conversation.title)
+        .bind(&conversation.project_path)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    /// 获取对话会话
+    pub async fn get_by_id(pool: &Pool<Sqlite>, id: &str) -> Result<Option<DbConversation>> {
+        let conv = sqlx::query_as::<_, DbConversation>(
+            "SELECT * FROM conversations WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(conv)
+    }
+
+    /// 列出所有对话会话
+    pub async fn list(pool: &Pool<Sqlite>, limit: Option<i32>) -> Result<Vec<DbConversation>> {
+        let query = if let Some(lim) = limit {
+            format!("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT {}", lim)
+        } else {
+            "SELECT * FROM conversations ORDER BY updated_at DESC".to_string()
+        };
+
+        let conversations = sqlx::query_as::<_, DbConversation>(&query)
+            .fetch_all(pool)
+            .await?;
+
+        Ok(conversations)
+    }
+
+    /// 根据项目路径列出对话会话
+    pub async fn list_by_project(pool: &Pool<Sqlite>, project_path: &str) -> Result<Vec<DbConversation>> {
+        let conversations = sqlx::query_as::<_, DbConversation>(
+            "SELECT * FROM conversations WHERE project_path = ? ORDER BY updated_at DESC"
+        )
+        .bind(project_path)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(conversations)
+    }
+
+    /// 更新对话会话
+    pub async fn update(
+        pool: &Pool<Sqlite>,
+        id: &str,
+        message_count: i32,
+        tokens_used: i32,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE conversations SET message_count = ?, tokens_used = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(message_count)
+        .bind(tokens_used)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 删除对话会话
+    pub async fn delete(pool: &Pool<Sqlite>, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM conversations WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// 添加消息
+    pub async fn add_message(
+        pool: &Pool<Sqlite>,
+        message: &CreateConversationMessage,
+    ) -> Result<DbConversationMessage> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let row = sqlx::query_as::<_, DbConversationMessage>(
+            r#"
+            INSERT INTO conversation_messages (id, conversation_id, role, content, is_tool_call, tool_name, timestamp, tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING *
+            "#,
+        )
+        .bind(&message.id)
+        .bind(&message.conversation_id)
+        .bind(&message.role)
+        .bind(&message.content)
+        .bind(message.is_tool_call)
+        .bind(&message.tool_name)
+        .bind(&now)
+        .bind(message.tokens)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    /// 获取对话的所有消息
+    pub async fn get_messages(
+        pool: &Pool<Sqlite>,
+        conversation_id: &str,
+    ) -> Result<Vec<DbConversationMessage>> {
+        let messages = sqlx::query_as::<_, DbConversationMessage>(
+            "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY timestamp ASC"
+        )
+        .bind(conversation_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(messages)
+    }
+
+    /// 搜索消息
+    pub async fn search_messages(
+        pool: &Pool<Sqlite>,
+        query: &str,
+    ) -> Result<Vec<DbConversationMessage>> {
+        let messages = sqlx::query_as::<_, DbConversationMessage>(
+            "SELECT * FROM conversation_messages WHERE content LIKE ? ORDER BY timestamp DESC"
+        )
+        .bind(format!("%{}%", query))
+        .fetch_all(pool)
+        .await?;
+
+        Ok(messages)
+    }
+
+    /// 统计对话消息数和总 token 数
+    pub async fn get_stats(
+        pool: &Pool<Sqlite>,
+        conversation_id: &str,
+    ) -> Result<(i32, i32)> {
+        let row = sqlx::query_as::<_, (i32, i32)>(
+            "SELECT COUNT(*) as msg_count, COALESCE(SUM(tokens), 0) as total_tokens FROM conversation_messages WHERE conversation_id = ?"
+        )
+        .bind(conversation_id)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(row)
+    }
+}

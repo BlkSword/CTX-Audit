@@ -438,7 +438,14 @@ LLM 配置:
 支持提供商:
   - Anthropic: claude-3-5-sonnet, claude-3-5-haiku
   - OpenAI: gpt-4, gpt-3.5-turbo
+  - OpenAI 兼容: 使用 "openai-compatible" + 自定义 base_url
   - Ollama: llama2, codellama, mistral
+
+自定义 AI 示例:
+  /config llm.provider openai-compatible
+  /config llm.base_url https://your-api-endpoint.com/v1
+  /config llm.api_key your-api-key
+  /config llm.model your-model-name
 "#.trim().to_string()
     }
 
@@ -500,8 +507,36 @@ LLM 配置:
 
     /// 查找符号
     async fn find_symbol(&self, symbol: String) -> Result<String, String> {
-        // TODO: 实现符号查询
-        Ok(format!("符号搜索功能开发中: {}", symbol))
+        // 获取数据库连接
+        let db = Database::with_default_path()
+            .await
+            .map_err(|e| format!("数据库连接失败: {}", e))?;
+
+        // 搜索符号（使用 project_id = 1 作为默认值）
+        let symbols = crate::database::SymbolQueries::search(
+            db.pool(),
+            1,
+            &symbol,
+        ).await
+        .map_err(|e| format!("符号搜索失败: {}", e))?;
+
+        if symbols.is_empty() {
+            return Ok(format!("未找到符号: {}", symbol));
+        }
+
+        // 格式化结果
+        let mut result = format!("找到 {} 个符号:\n\n", symbols.len());
+        for sym in &symbols {
+            result.push_str(&format!(
+                "  [{}] {} - {}:{}\n",
+                sym.symbol_type,
+                sym.symbol_name,
+                sym.file_path,
+                sym.line_number
+            ));
+        }
+
+        Ok(result)
     }
 
     /// 查找引用
@@ -531,8 +566,59 @@ LLM 配置:
 
     /// 列出漏洞
     async fn list_findings(&self) -> Result<String, String> {
-        // TODO: 实现漏洞列表查询
-        Ok("漏洞列表功能开发中...".to_string())
+        // 获取数据库连接
+        let db = Database::with_default_path()
+            .await
+            .map_err(|e| format!("数据库连接失败: {}", e))?;
+
+        // 获取漏洞列表
+        let findings = crate::database::FindingQueries::list(
+            db.pool(),
+            None,
+            None,
+            Some("open"),
+            None,
+        ).await
+        .map_err(|e| format!("获取漏洞列表失败: {}", e))?;
+
+        if findings.is_empty() {
+            return Ok("暂无漏洞记录".to_string());
+        }
+
+        // 按严重程度分组统计
+        let mut counts = std::collections::HashMap::new();
+        for finding in &findings {
+            *counts.entry(finding.severity.clone()).or_insert(0) += 1;
+        }
+
+        let mut result = format!("共发现 {} 个漏洞:\n\n", findings.len());
+
+        // 显示统计
+        for severity in ["critical", "high", "medium", "low", "info"] {
+            if let Some(count) = counts.get(severity) {
+                result.push_str(&format!("  [{}]: {} 个\n", severity.to_uppercase(), count));
+            }
+        }
+        result.push('\n');
+
+        // 显示最近的 10 个漏洞
+        result.push_str("最近的漏洞:\n");
+        for finding in findings.iter().take(10) {
+            let title = finding.title.as_str();
+            result.push_str(&format!(
+                "  [{}] {} - {}:{}\n",
+                finding.severity,
+                title,
+                finding.file_path,
+                finding.start_line.map(|l| l.to_string()).unwrap_or_default()
+            ));
+        }
+
+        if findings.len() > 10 {
+            result.push_str(&format!("\n... 还有 {} 个漏洞\n", findings.len() - 10));
+        }
+
+        Ok(result)
     }
 
     /// 导出漏洞
@@ -566,9 +652,10 @@ LLM 配置:
                 result.push_str("\n使用 /config <key> 查看具体配置\n");
                 result.push_str("使用 /config <key> <value> 设置配置\n");
                 result.push_str("\n常用配置键:\n");
-                result.push_str("  llm.provider      - LLM 提供商 (anthropic, openai, ollama)\n");
+                result.push_str("  llm.provider      - LLM 提供商 (anthropic, openai, openai-compatible, ollama)\n");
                 result.push_str("  llm.api_key       - API 密钥\n");
                 result.push_str("  llm.model         - 模型名称\n");
+                result.push_str("  llm.base_url      - API 基础 URL (openai-compatible 必需)\n");
 
                 Ok(result)
             }

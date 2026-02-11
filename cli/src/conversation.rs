@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 
-use crate::database::Database;
+use crate::database::{Database, DbConversation, DbConversationMessage, CreateConversation, CreateConversationMessage, ConversationQueries};
 use ctx_audit_llm::{LLMMessage, MessageRole};
 
 /// 对话会话
@@ -37,6 +37,28 @@ pub struct Conversation {
 
     /// Token 使用量
     pub tokens_used: u64,
+}
+
+impl From<DbConversation> for Conversation {
+    fn from(db: DbConversation) -> Self {
+        let created_at = DateTime::parse_from_rfc3339(&db.created_at)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+
+        let updated_at = DateTime::parse_from_rfc3339(&db.updated_at)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+
+        Self {
+            id: db.id,
+            title: db.title,
+            project_path: db.project_path,
+            created_at,
+            updated_at,
+            message_count: db.message_count as usize,
+            tokens_used: db.tokens_used as u64,
+        }
+    }
 }
 
 /// 对话消息
@@ -65,6 +87,25 @@ pub struct ConversationMessage {
 
     /// Token 数量（估算）
     pub tokens: u32,
+}
+
+impl From<DbConversationMessage> for ConversationMessage {
+    fn from(db: DbConversationMessage) -> Self {
+        let timestamp = DateTime::parse_from_rfc3339(&db.timestamp)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+
+        Self {
+            id: db.id,
+            conversation_id: db.conversation_id,
+            role: db.role,
+            content: db.content,
+            is_tool_call: db.is_tool_call,
+            tool_name: db.tool_name,
+            timestamp,
+            tokens: db.tokens as u32,
+        }
+    }
 }
 
 impl ConversationMessage {
@@ -186,22 +227,36 @@ impl ConversationManager {
         title: String,
         project_path: Option<String>,
     ) -> Result<Conversation, String> {
-        let conversation = Conversation {
-            id: uuid::Uuid::new_v4().to_string(),
+        let id = uuid::Uuid::new_v4().to_string();
+        let create = CreateConversation {
+            id: id.clone(),
             title,
             project_path,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            message_count: 0,
-            tokens_used: 0,
         };
 
         // 保存到数据库
         if self.config.enable_persistence {
-            // TODO: 实现数据库持久化
+            match ConversationQueries::create(self.db.pool(), &create).await {
+                Ok(db_conv) => {
+                    let conv: Conversation = db_conv.into();
+                    return Ok(conv);
+                }
+                Err(e) => {
+                    return Err(format!("创建会话失败: {}", e));
+                }
+            }
         }
 
-        Ok(conversation)
+        // 返回基本会话信息（不启用持久化时）
+        Ok(Conversation {
+            id: create.id,
+            title: create.title,
+            project_path: create.project_path,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            message_count: 0,
+            tokens_used: 0,
+        })
     }
 
     /// 获取当前会话
@@ -229,7 +284,37 @@ impl ConversationManager {
 
         // 保存到数据库
         if self.config.enable_persistence {
-            // TODO: 实现数据库持久化
+            let create_msg = CreateConversationMessage {
+                id: message.id.clone(),
+                conversation_id: conversation_id.to_string(),
+                role: message.role.clone(),
+                content: message.content.clone(),
+                is_tool_call: message.is_tool_call,
+                tool_name: message.tool_name.clone(),
+                tokens: message.tokens as i32,
+            };
+
+            if let Err(e) = ConversationQueries::add_message(self.db.pool(), &create_msg).await {
+                return Err(format!("保存消息失败: {}", e));
+            }
+
+            // 更新会话统计
+            let (msg_count, total_tokens) = match ConversationQueries::get_stats(self.db.pool(), conversation_id).await {
+                Ok(stats) => stats,
+                Err(e) => {
+                    tracing::error!("获取会话统计失败: {}", e);
+                    (0, 0)
+                }
+            };
+
+            if let Err(e) = ConversationQueries::update(
+                self.db.pool(),
+                conversation_id,
+                msg_count,
+                total_tokens,
+            ).await {
+                tracing::error!("更新会话统计失败: {}", e);
+            }
         }
 
         Ok(())
@@ -237,14 +322,36 @@ impl ConversationManager {
 
     /// 获取会话消息
     pub async fn get_messages(&self, conversation_id: &str) -> Vec<ConversationMessage> {
-        let cache = self.message_cache.read().await;
-
-        if let Some(messages) = cache.get(conversation_id) {
-            return messages.clone();
+        // 先检查缓存
+        {
+            let cache = self.message_cache.read().await;
+            if let Some(messages) = cache.get(conversation_id) {
+                return messages.clone();
+            }
         }
 
         // 从数据库加载
-        // TODO: 实现数据库加载
+        if self.config.enable_persistence {
+            match ConversationQueries::get_messages(self.db.pool(), conversation_id).await {
+                Ok(db_messages) => {
+                    let messages: Vec<ConversationMessage> = db_messages
+                        .into_iter()
+                        .map(|m| m.into())
+                        .collect();
+
+                    // 更新缓存
+                    let mut cache = self.message_cache.write().await;
+                    cache.insert(conversation_id.to_string(), messages.clone());
+
+                    return messages;
+                }
+                Err(e) => {
+                    tracing::error!("加载消息失败: {}", e);
+                    return Vec::new();
+                }
+            }
+        }
+
         Vec::new()
     }
 
@@ -270,16 +377,97 @@ impl ConversationManager {
         // 保留最近的 N 条消息
         let recent_messages = &messages[messages.len() - self.config.max_messages..];
 
-        // 如果还是太多，可以使用摘要
-        // TODO: 实现更智能的压缩策略
+        // 智能压缩策略：
+        // 1. 保留系统消息
+        // 2. 保留最近的用户消息
+        // 3. 如果有太多中间消息，使用摘要
+        let mut result = Vec::new();
 
-        recent_messages.to_vec()
+        // 首先添加系统消息
+        for msg in messages {
+            if matches!(msg.role, MessageRole::System) {
+                result.push(msg.clone());
+            }
+        }
+
+        // 然后添加最近的用户/助手消息
+        for msg in recent_messages {
+            if !matches!(msg.role, MessageRole::System) {
+                result.push(msg.clone());
+            }
+        }
+
+        // 估算总 token 数量
+        let total_tokens: usize = result.iter()
+            .map(|m| m.get_text().len() / 4)
+            .sum();
+
+        // 如果仍然超过限制，进一步裁剪
+        if total_tokens > self.config.max_tokens {
+            // 移除最早的非系统消息
+            let mut i = 0;
+            while i < result.len() {
+                if !matches!(result[i].role, MessageRole::System) {
+                    result.remove(i);
+                    let current_total: usize = result.iter()
+                        .map(|m| m.get_text().len() / 4)
+                        .sum();
+                    if current_total <= self.config.max_tokens {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        result
     }
 
     /// 列出所有会话
     pub async fn list_conversations(&self) -> Vec<Conversation> {
-        // TODO: 从数据库加载
-        Vec::new()
+        if !self.config.enable_persistence {
+            return Vec::new();
+        }
+
+        match ConversationQueries::list(self.db.pool(), Some(50)).await {
+            Ok(db_convs) => db_convs.into_iter().map(|c| c.into()).collect(),
+            Err(e) => {
+                tracing::error!("加载会话列表失败: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    /// 根据项目路径列出会话
+    pub async fn list_conversations_by_project(&self, project_path: &str) -> Vec<Conversation> {
+        if !self.config.enable_persistence {
+            return Vec::new();
+        }
+
+        match ConversationQueries::list_by_project(self.db.pool(), project_path).await {
+            Ok(db_convs) => db_convs.into_iter().map(|c| c.into()).collect(),
+            Err(e) => {
+                tracing::error!("加载会话列表失败: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    /// 获取会话详情
+    pub async fn get_conversation(&self, id: &str) -> Option<Conversation> {
+        if !self.config.enable_persistence {
+            return None;
+        }
+
+        match ConversationQueries::get_by_id(self.db.pool(), id).await {
+            Ok(Some(db_conv)) => Some(db_conv.into()),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::error!("加载会话失败: {}", e);
+                None
+            }
+        }
     }
 
     /// 删除会话
@@ -290,7 +478,9 @@ impl ConversationManager {
 
         // 从数据库删除
         if self.config.enable_persistence {
-            // TODO: 实现数据库删除
+            ConversationQueries::delete(self.db.pool(), id)
+                .await
+                .map_err(|e| format!("删除会话失败: {}", e))?;
         }
 
         Ok(())
@@ -308,25 +498,45 @@ impl ConversationManager {
 
     /// 搜索消息
     pub async fn search_messages(&self, query: &str) -> Vec<ConversationMessage> {
-        let cache = self.message_cache.read().await;
-        let mut results = Vec::new();
+        if !self.config.enable_persistence {
+            // 仅搜索缓存
+            let cache = self.message_cache.read().await;
+            let mut results = Vec::new();
 
-        for messages in cache.values() {
-            for msg in messages {
-                if msg.content.contains(query) {
-                    results.push(msg.clone());
+            for messages in cache.values() {
+                for msg in messages {
+                    if msg.content.contains(query) {
+                        results.push(msg.clone());
+                    }
+                }
+            }
+
+            results
+        } else {
+            // 搜索数据库
+            match ConversationQueries::search_messages(self.db.pool(), query).await {
+                Ok(db_messages) => db_messages.into_iter().map(|m| m.into()).collect(),
+                Err(e) => {
+                    tracing::error!("搜索消息失败: {}", e);
+                    Vec::new()
                 }
             }
         }
-
-        results
     }
 
     /// 获取统计信息
     pub async fn get_stats(&self) -> ConversationStats {
         let cache = self.message_cache.read().await;
 
-        let total_conversations = cache.len();
+        let total_conversations = if self.config.enable_persistence {
+            match ConversationQueries::list(self.db.pool(), None).await {
+                Ok(convs) => convs.len(),
+                Err(_) => 0,
+            }
+        } else {
+            cache.len()
+        };
+
         let total_messages: usize = cache.values().map(|v| v.len()).sum();
 
         ConversationStats {
@@ -334,6 +544,33 @@ impl ConversationManager {
             total_messages,
             active_conversation: self.current_conversation.read().await.is_some(),
         }
+    }
+
+    /// 从数据库加载并缓存所有会话的消息
+    pub async fn load_all_to_cache(&self) -> Result<(), String> {
+        if !self.config.enable_persistence {
+            return Ok(());
+        }
+
+        let conversations = ConversationQueries::list(self.db.pool(), None)
+            .await
+            .map_err(|e| format!("加载会话失败: {}", e))?;
+
+        for conv in conversations {
+            let messages = ConversationQueries::get_messages(self.db.pool(), &conv.id)
+                .await
+                .map_err(|e| format!("加载消息失败: {}", e))?;
+
+            let conv_messages: Vec<ConversationMessage> = messages
+                .into_iter()
+                .map(|m| m.into())
+                .collect();
+
+            let mut cache = self.message_cache.write().await;
+            cache.insert(conv.id, conv_messages);
+        }
+
+        Ok(())
     }
 }
 
@@ -426,7 +663,7 @@ impl ProjectContextInjector {
         // 获取文件的符号信息
         let symbols = self.db.symbol_queries()
             .await
-            .get_file_symbols(file_path)
+            .search(1, file_path)
             .await
             .map_err(|e| format!("获取符号失败: {}", e))?;
 

@@ -11,6 +11,10 @@ pub struct StreamRenderer {
     content: String,
     /// 显示的内容（用于打字机效果）
     displayed_content: String,
+    /// 显示的字符数（用于渐进式显示）
+    displayed_chars: usize,
+    /// 每次更新显示的字符数
+    chars_per_update: usize,
     /// 光标可见性
     cursor_visible: bool,
     /// 是否正在流式传输
@@ -27,6 +31,22 @@ impl StreamRenderer {
         Self {
             content: String::new(),
             displayed_content: String::new(),
+            displayed_chars: 0,
+            chars_per_update: 3, // 每次显示 3 个字符
+            cursor_visible: true,
+            is_streaming: false,
+            in_code_block: false,
+            code_block_lang: None,
+        }
+    }
+
+    /// 创建新的渲染器，指定每次更新显示的字符数
+    pub fn with_speed(chars_per_update: usize) -> Self {
+        Self {
+            content: String::new(),
+            displayed_content: String::new(),
+            displayed_chars: 0,
+            chars_per_update,
             cursor_visible: true,
             is_streaming: false,
             in_code_block: false,
@@ -161,9 +181,35 @@ impl StreamRenderer {
 
     /// 更新显示的内容（打字机效果）
     fn update_displayed_content(&mut self) {
-        // 简单实现：显示全部内容
-        // TODO: 实现渐进式显示
+        let target_len = self.content.chars().count();
+
+        // 渐进式增加显示的字符数
+        if self.displayed_chars < target_len {
+            self.displayed_chars = (self.displayed_chars + self.chars_per_update).min(target_len);
+        }
+
+        // 截取内容到显示的字符数
+        self.displayed_content = self.content
+            .chars()
+            .take(self.displayed_chars)
+            .collect();
+    }
+
+    /// 完成显示（立即显示全部内容）
+    pub fn finish_display(&mut self) {
+        self.displayed_chars = self.content.chars().count();
         self.displayed_content = self.content.clone();
+    }
+
+    /// 重置显示状态
+    pub fn reset_display(&mut self) {
+        self.displayed_chars = 0;
+        self.displayed_content.clear();
+    }
+
+    /// 检查是否已完成显示
+    pub fn is_display_complete(&self) -> bool {
+        self.displayed_chars >= self.content.chars().count()
     }
 
     /// 清空内容

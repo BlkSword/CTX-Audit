@@ -6,22 +6,22 @@
 //! 提供终端用户界面功能
 
 mod app;
-mod layout;
-mod theme;
-mod llm;
-mod keys;
-mod syntax;
 mod audit;
+mod keys;
+mod layout;
+mod llm;
+mod syntax;
+mod theme;
 
 pub mod panels;
 pub mod widgets;
 
 pub use app::*;
-pub use layout::*;
-pub use theme::*;
-pub use keys::*;
-pub use syntax::*;
 pub use audit::*;
+pub use keys::*;
+pub use layout::*;
+pub use syntax::*;
+pub use theme::*;
 
 use anyhow::Result;
 use crossterm::{
@@ -64,6 +64,7 @@ impl WindowsConsoleMode {
             extern "system" {
                 fn GetConsoleMode(handle: isize, mode: *mut u32) -> i32;
                 fn SetConsoleMode(handle: isize, mode: u32) -> i32;
+                fn FlushConsoleInputBuffer(handle: isize) -> i32;
             }
 
             // Windows 控制台模式标志
@@ -74,40 +75,44 @@ impl WindowsConsoleMode {
             const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
             const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
             const ENABLE_MOUSE_INPUT: u32 = 0x0010;
-            const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+
+            // 首先清空输入缓冲区，防止残留事件
+            FlushConsoleInputBuffer(handle);
 
             let mut mode: u32 = 0;
             if GetConsoleMode(handle, &mut mode) != 0 {
                 self.original_mode = Some(mode);
-                debug!("Saved original console mode: 0x{:08X}", mode);
+                debug!("Original console mode: 0x{:08X}", mode);
 
-                // 设置 raw mode - 禁用所有可能导致回显的标志
-                let raw_mode = (mode
-                    & !ENABLE_ECHO_INPUT           // 禁用回显
-                    & !ENABLE_LINE_INPUT           // 禁用行输入
-                    & !ENABLE_PROCESSED_INPUT      // 禁用处理过的输入
-                    & !ENABLE_QUICK_EDIT_MODE      // 禁用快速编辑模式
-                    ) | ENABLE_WINDOW_INPUT        // 启用窗口输入
-                    | ENABLE_VIRTUAL_TERMINAL_INPUT // 启用虚拟终端
-                    | ENABLE_EXTENDED_FLAGS        // 启用扩展标志
-                    | ENABLE_MOUSE_INPUT;          // 启用鼠标输入
+                // Raw mode: 完全禁用回显和行输入
+                let raw_mode = ENABLE_WINDOW_INPUT
+                    | ENABLE_VIRTUAL_TERMINAL_INPUT
+                    | ENABLE_EXTENDED_FLAGS
+                    | ENABLE_MOUSE_INPUT;
 
-                debug!("Setting raw console mode: 0x{:08X}", raw_mode);
+                debug!("Setting console mode: 0x{:08X} (ECHO={}, LINE={})",
+                    raw_mode,
+                    raw_mode & ENABLE_ECHO_INPUT != 0,
+                    raw_mode & ENABLE_LINE_INPUT != 0);
 
                 if SetConsoleMode(handle, raw_mode) == 0 {
-                    debug!("Warning: SetConsoleMode failed");
+                    debug!("SetConsoleMode failed");
+                    return Err(anyhow::anyhow!("Failed to set console mode"));
                 }
 
-                // 验证模式是否正确设置
+                // 再次清空输入缓冲区
+                FlushConsoleInputBuffer(handle);
+
+                // 验证
                 let mut verify_mode: u32 = 0;
                 if GetConsoleMode(handle, &mut verify_mode) != 0 {
                     debug!("Verified console mode: 0x{:08X}", verify_mode);
-                    if verify_mode & ENABLE_ECHO_INPUT != 0 {
-                        debug!("ERROR: ECHO is still enabled!");
-                    }
+                    let echo_enabled = verify_mode & ENABLE_ECHO_INPUT != 0;
+                    let line_enabled = verify_mode & ENABLE_LINE_INPUT != 0;
+                    debug!("ECHO_INPUT: {}, LINE_INPUT: {}", echo_enabled, line_enabled);
                 }
             } else {
-                debug!("ERROR: GetConsoleMode failed");
+                debug!("GetConsoleMode failed");
             }
         }
         Ok(())
@@ -132,8 +137,12 @@ struct WindowsConsoleMode;
 
 #[cfg(not(target_os = "windows"))]
 impl WindowsConsoleMode {
-    fn new() -> Self { Self }
-    fn set_raw_mode(&mut self) -> Result<()> { Ok(()) }
+    fn new() -> Self {
+        Self
+    }
+    fn set_raw_mode(&mut self) -> Result<()> {
+        Ok(())
+    }
     fn restore(&self) {}
 }
 
@@ -152,15 +161,14 @@ pub async fn run_tui() -> Result<()> {
     {
         // 先设置 Windows 控制台模式
         windows_console.set_raw_mode()?;
-
-        // 短暂延迟让模式生效
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // 延迟让模式生效
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
     // 然后启用 crossterm 的 raw mode
     enable_raw_mode()?;
 
-    // Windows: 最终验证并确保模式正确
+    // Windows: 确保模式正确 - crossterm 的 enable_raw_mode 可能会覆盖我们的设置
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::io::AsRawHandle;
@@ -172,38 +180,61 @@ pub async fn run_tui() -> Result<()> {
             extern "system" {
                 fn GetConsoleMode(handle: isize, mode: *mut u32) -> i32;
                 fn SetConsoleMode(handle: isize, mode: u32) -> i32;
+                fn FlushConsoleInputBuffer(handle: isize) -> i32;
             }
 
             const ENABLE_ECHO_INPUT: u32 = 0x0004;
-            const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+            const ENABLE_LINE_INPUT: u32 = 0x0002;
+            const ENABLE_WINDOW_INPUT: u32 = 0x0008;
+            const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
+            const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+            const ENABLE_MOUSE_INPUT: u32 = 0x0010;
 
-            let mut mode: u32 = 0;
-            if GetConsoleMode(handle, &mut mode) != 0 {
-                // 如果回显或快速编辑模式仍然启用，强制禁用
-                if mode & (ENABLE_ECHO_INPUT | ENABLE_QUICK_EDIT_MODE) != 0 {
-                    debug!("Echo or QuickEdit still enabled, forcing disable");
-                    let corrected = mode & !ENABLE_ECHO_INPUT & !ENABLE_QUICK_EDIT_MODE;
-                    SetConsoleMode(handle, corrected);
+            // 清空输入缓冲区，防止残留事件
+            FlushConsoleInputBuffer(handle);
 
-                    // 最终验证
-                    let mut final_mode: u32 = 0;
-                    if GetConsoleMode(handle, &mut final_mode) != 0 {
-                        debug!("Final console mode: 0x{:08X}", final_mode);
-                    }
+            // 确保回显和行输入被禁用
+            let desired_mode = ENABLE_WINDOW_INPUT
+                | ENABLE_VIRTUAL_TERMINAL_INPUT
+                | ENABLE_EXTENDED_FLAGS
+                | ENABLE_MOUSE_INPUT;
+
+            SetConsoleMode(handle, desired_mode);
+
+            // 再次清空输入缓冲区
+            FlushConsoleInputBuffer(handle);
+
+            debug!("Console mode set to: 0x{:08X}", desired_mode);
+
+            // 验证模式
+            let mut final_mode: u32 = 0;
+            if GetConsoleMode(handle, &mut final_mode) != 0 {
+                debug!("Verified console mode: 0x{:08X}", final_mode);
+                if final_mode & ENABLE_ECHO_INPUT != 0 {
+                    debug!("WARNING: ECHO_INPUT is still enabled!");
+                } else {
+                    debug!("ECHO_INPUT is disabled.");
+                }
+                if final_mode & ENABLE_LINE_INPUT != 0 {
+                    debug!("WARNING: LINE_INPUT is still enabled!");
+                } else {
+                    debug!("LINE_INPUT is disabled.");
                 }
             }
         }
+
+        // 额外延迟确保所有设置生效
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture
-    )?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+
+    // 清空屏幕确保没有残留
+    terminal.clear()?;
 
     // 运行应用主循环
     let res = app.run(&mut terminal);

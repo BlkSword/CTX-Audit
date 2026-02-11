@@ -7,7 +7,9 @@ use ratatui::{Frame, layout::Rect, style::{Color, Modifier, Style}, text::{Line,
 
 /// 漏洞列表面板
 pub struct FindingsPanel {
-    /// 漏洞列表
+    /// 原始漏洞列表（未过滤）
+    all_findings: Vec<FindingItem>,
+    /// 漏洞列表（已过滤）
     findings: Vec<FindingItem>,
     /// 选中索引
     selected: usize,
@@ -46,10 +48,52 @@ impl FindingsPanel {
     /// 创建新的漏洞列表面板
     pub fn new() -> Self {
         Self {
+            all_findings: Vec::new(),
             findings: Vec::new(),
             selected: 0,
             filter: FindingsFilter::default(),
         }
+    }
+
+    /// 设置漏洞列表
+    pub fn set_findings(&mut self, findings: Vec<FindingItem>) {
+        self.all_findings = findings;
+        self.apply_filter(self.filter.clone());
+    }
+
+    /// 应用过滤器
+    pub fn apply_filter(&mut self, filter: FindingsFilter) {
+        self.filter = filter.clone();
+        self.findings = self.all_findings.iter()
+            .filter(|finding| {
+                // 过滤严重程度
+                if let Some(ref severity) = filter.severity {
+                    if finding.severity.to_lowercase() != severity.to_lowercase() {
+                        return false;
+                    }
+                }
+
+                // 过滤状态
+                if let Some(ref status) = filter.status {
+                    if &finding.status != status {
+                        return false;
+                    }
+                }
+
+                // 过滤文件路径模式
+                if let Some(ref pattern) = filter.file_pattern {
+                    if !finding.file_path.contains(pattern) {
+                        return false;
+                    }
+                }
+
+                true
+            })
+            .cloned()
+            .collect();
+
+        // 重置选中索引
+        self.selected = 0;
     }
 
     /// 渲染面板
@@ -139,12 +183,6 @@ impl FindingsPanel {
         f.render_widget(list, rect);
     }
 
-    /// 设置漏洞列表
-    pub fn set_findings(&mut self, findings: Vec<FindingItem>) {
-        self.findings = findings;
-        self.selected = 0;
-    }
-
     /// 选择下一个
     pub fn select_next(&mut self) {
         if !self.findings.is_empty() {
@@ -162,10 +200,27 @@ impl FindingsPanel {
         self.findings.get(self.selected)
     }
 
-    /// 应用过滤器
-    pub fn apply_filter(&mut self, filter: FindingsFilter) {
-        self.filter = filter;
-        // TODO: 实现过滤逻辑
+    /// 获取所有漏洞（未过滤）
+    pub fn all_findings(&self) -> &[FindingItem] {
+        &self.all_findings
+    }
+
+    /// 获取当前过滤器
+    pub fn filter(&self) -> &FindingsFilter {
+        &self.filter
+    }
+
+    /// 添加单个漏洞
+    pub fn add_finding(&mut self, finding: FindingItem) {
+        self.all_findings.push(finding);
+        self.apply_filter(self.filter.clone());
+    }
+
+    /// 清除漏洞列表
+    pub fn clear(&mut self) {
+        self.all_findings.clear();
+        self.findings.clear();
+        self.selected = 0;
     }
 }
 
