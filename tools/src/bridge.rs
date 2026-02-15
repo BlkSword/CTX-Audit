@@ -246,6 +246,52 @@ impl ReadFileTool {
     pub fn new(project_path: String) -> Self {
         Self { project_path }
     }
+
+    /// 智能提取相对路径
+    /// 处理以下情况：
+    /// 1. 绝对路径包含项目目录 -> 提取相对部分
+    /// 2. 路径以项目目录名开头 -> 去除项目目录名
+    /// 3. 已经是相对路径 -> 直接返回
+    fn extract_relative_path(&self, file_path: &str) -> String {
+        let file_path = file_path.trim();
+
+        // 标准化路径分隔符
+        let normalized = file_path.replace('\\', "/");
+
+        // 获取项目目录名
+        let project_name = Path::new(&self.project_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        // 情况1: 如果是绝对路径且包含项目目录
+        if Path::new(file_path).is_absolute() {
+            // 尝试找到项目目录在路径中的位置
+            if let Some(pos) = normalized.find(&format!("/{}/", project_name)) {
+                let start = pos + project_name.len() + 2; // +2 for both slashes
+                if start < normalized.len() {
+                    return normalized[start..].to_string();
+                }
+            }
+            // 尝试直接提取项目目录后的部分
+            let project_with_slash = format!("{}/", project_name);
+            if let Some(pos) = normalized.find(&project_with_slash) {
+                let start = pos + project_with_slash.len();
+                if start < normalized.len() {
+                    return normalized[start..].to_string();
+                }
+            }
+        }
+
+        // 情况2: 路径以项目目录名开头 (如 "halo-2.21.9/src/main.rs")
+        let project_prefix = format!("{}/", project_name);
+        if normalized.starts_with(&project_prefix) {
+            return normalized[project_prefix.len()..].to_string();
+        }
+
+        // 情况3: 已经是相对路径，直接返回
+        file_path.to_string()
+    }
 }
 
 #[async_trait]
@@ -307,12 +353,14 @@ impl Tool for ReadFileTool {
         let start_line = input["start_line"].as_u64().map(|v| v as usize).unwrap_or(1);
         let end_line = input["end_line"].as_u64().map(|v| v as usize);
 
-        let full_path = Path::new(&self.project_path).join(file_path);
+        // 智能处理路径：提取相对于项目根目录的相对路径
+        let relative_path = self.extract_relative_path(file_path);
+        let full_path = Path::new(&self.project_path).join(&relative_path);
 
         // 读取文件
         let content = tokio::fs::read_to_string(&full_path)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("无法读取文件: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("无法读取文件 '{}': {}", relative_path, e)))?;
 
         // 处理行范围
         let lines: Vec<&str> = content.lines().collect();
@@ -547,10 +595,36 @@ impl Tool for ReportFindingTool {
             .unwrap_or("medium");
         let file_path = input["file_path"]
             .as_str()
-            .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
+            .or_else(|| input["file"].as_str())
+            .unwrap_or("unknown");
+
+        // 支持多种 line_number 格式：整数、字符串数字，默认为 0
         let line_number = input["line_number"]
             .as_u64()
-            .ok_or_else(|| ToolError::InvalidArgument("缺少或无效的 line_number 参数".to_string()))?;
+            .or_else(|| input["line_number"].as_str().and_then(|s| s.parse::<u64>().ok()))
+            .or_else(|| input["line"].as_u64())
+            .or_else(|| input["line"].as_str().and_then(|s| s.parse::<u64>().ok()))
+            .or_else(|| input["start_line"].as_u64())
+            .or_else(|| input["startLine"].as_u64())
+            .unwrap_or(0);
+
+        // 获取可选参数
+        let category = input["category"]
+            .as_str()
+            .or_else(|| input["type"].as_str())
+            .unwrap_or("other");
+        let code_snippet = input["code_snippet"]
+            .as_str()
+            .or_else(|| input["code"].as_str())
+            .map(|s| s.to_string());
+        let recommendation = input["recommendation"]
+            .as_str()
+            .or_else(|| input["fix"].as_str())
+            .map(|s| s.to_string());
+        let cwe_id = input["cwe_id"]
+            .as_str()
+            .or_else(|| input["cwe"].as_str())
+            .map(|s| s.to_string());
 
         // 创建漏洞数据
         let finding = FindingData {
@@ -558,13 +632,13 @@ impl Tool for ReportFindingTool {
             title: Some(title.to_string()),
             description: description.to_string(),
             severity: severity.to_string(),
-            category: "other".to_string(),
-            cwe_id: None,
+            category: category.to_string(),
+            cwe_id,
             file_path: file_path.to_string(),
             start_line: line_number as u32,
             end_line: None,
-            code_snippet: None,
-            recommendation: None,
+            code_snippet,
+            recommendation,
             status: "open".to_string(),
             verification_status: None,
             discovered_by: None,
@@ -653,7 +727,7 @@ pub async fn register_built_in_tools(
     }
 }
 
-/// 注册所有内置工具（包括 AST 工具）
+/// 注册所有内置工具（包括 AST 工具、写入工具、Shell 工具和搜索工具）
 pub async fn register_all_tools(
     registry: &Arc<ToolRegistry>,
     project_path: String,
@@ -662,8 +736,73 @@ pub async fn register_all_tools(
     // 先注册基础工具
     register_built_in_tools(registry, project_path.clone()).await;
 
-    // 如果提供了 AST 引擎，注册 AST 工具
+    // 注册写入工具
+    crate::write_tools::register_write_tools(registry, project_path.clone()).await;
+
+    // 注册 Shell 工具
+    crate::shell_tools::register_shell_tools(registry, project_path.clone()).await;
+
+    // 注册搜索工具
+    crate::search_tools::register_search_tools(registry, project_path.clone()).await;
+
+    // 如果提供了 AST 引擎，注册 AST 工具并自动索引项目
     if let Some(engine) = ast_engine {
+        // 先初始化仓库（这会初始化 query_engine）
+        engine.use_repository(&project_path);
+
+        // 自动索引项目以启用符号搜索
+        tracing::info!("自动索引项目以启用符号搜索...");
+        match engine.scan_project(&project_path) {
+            Ok(file_count) => {
+                tracing::info!("项目索引完成，共处理 {} 个文件", file_count);
+            }
+            Err(e) => {
+                tracing::warn!("项目索引失败: {}，符号搜索功能可能不可用", e);
+            }
+        }
         crate::ast_tools::register_ast_tools(registry, project_path, engine).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_relative_path_already_relative() {
+        let tool = ReadFileTool::new("D:\\project\\myproject".to_string());
+
+        // 已经是相对路径
+        assert_eq!(tool.extract_relative_path("src/main.rs"), "src/main.rs");
+        assert_eq!(tool.extract_relative_path("lib/utils.js"), "lib/utils.js");
+    }
+
+    #[test]
+    fn test_extract_relative_path_with_project_prefix() {
+        let tool = ReadFileTool::new("D:\\project\\myproject".to_string());
+
+        // 路径以项目目录名开头
+        assert_eq!(tool.extract_relative_path("myproject/src/main.rs"), "src/main.rs");
+        assert_eq!(tool.extract_relative_path("myproject/lib/utils.js"), "lib/utils.js");
+    }
+
+    #[test]
+    fn test_extract_relative_path_absolute() {
+        let tool = ReadFileTool::new("D:\\project\\myproject".to_string());
+
+        // 绝对路径包含项目目录
+        let result = tool.extract_relative_path("D:\\project\\myproject\\src\\main.rs");
+        assert!(result == "src/main.rs" || result == "src\\main.rs",
+            "Expected relative path, got: {}", result);
+    }
+
+    #[test]
+    fn test_extract_relative_path_windows_style() {
+        let tool = ReadFileTool::new("C:\\Users\\test\\halo-2.21.9".to_string());
+
+        // Windows 风格绝对路径
+        let result = tool.extract_relative_path("C:\\Users\\test\\halo-2.21.9\\src\\main.rs");
+        assert!(result.contains("src"),
+            "Expected path containing 'src', got: {}", result);
     }
 }

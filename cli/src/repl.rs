@@ -48,8 +48,16 @@ impl ReplSession {
             let _ = editor.load_history(&history_path);
         }
 
-        // 初始化 LLM 工厂
+        // 初始化 LLM 工厂 - 使用用户配置
         let llm_factory = Arc::new(LLMFactory::new());
+        let llm_config = config.config();
+        llm_factory.set_config(LLMConfig {
+            provider: llm_config.llm.provider.clone(),
+            api_key: llm_config.llm.api_key.clone(),
+            model: llm_config.llm.model.clone(),
+            base_url: llm_config.llm.base_url.clone(),
+            timeout_secs: Some(llm_config.llm.timeout_secs),
+        });
 
         Ok(Self {
             editor,

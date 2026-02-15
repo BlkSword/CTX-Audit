@@ -22,12 +22,12 @@ impl ASTEngine {
     }
 
     pub fn use_repository(&self, repo_path: &str) {
-        if let Ok(mut cache_manager) = self.cache_manager.try_lock() {
+        if let Ok(mut cache_manager) = self.cache_manager.lock() {
             cache_manager.use_repository(repo_path);
 
             // Load existing cache if available
             if let Some(cache_data) = cache_manager.load_cache() {
-                if let Ok(mut query_engine) = self.query_engine.try_lock() {
+                if let Ok(mut query_engine) = self.query_engine.lock() {
                     *query_engine = Some(QueryEngine::new(cache_data));
                 }
             } else {
@@ -37,7 +37,7 @@ impl ASTEngine {
                     class_map: std::collections::HashMap::new(),
                     build_time: chrono::Utc::now().to_rfc3339(),
                 };
-                if let Ok(mut query_engine) = self.query_engine.try_lock() {
+                if let Ok(mut query_engine) = self.query_engine.lock() {
                     *query_engine = Some(QueryEngine::new(cache_data));
                 }
             }
@@ -46,7 +46,7 @@ impl ASTEngine {
 
     /// 直接从 CacheData 初始化引擎（用于从数据库恢复）
     pub fn load_from_cache_data(&self, cache_data: CacheData) {
-        if let Ok(mut query_engine) = self.query_engine.try_lock() {
+        if let Ok(mut query_engine) = self.query_engine.lock() {
             *query_engine = Some(QueryEngine::new(cache_data));
         }
     }
@@ -76,18 +76,65 @@ impl ASTEngine {
             root_path.display()
         );
 
-        // Process files in parallel
-        let processed_files: Vec<_> = files_to_process
+        // Phase 1: Parse all files in parallel (no locking needed for parsing)
+        let parsed_results: Vec<_> = files_to_process
             .par_iter()
             .filter_map(|file_path| {
-                if let Err(e) = self.update_file(file_path) {
-                    log::error!("Error updating file {}: {}", file_path.display(), e);
-                    None
-                } else {
-                    Some(file_path.clone())
+                // Read file
+                let content = match std::fs::read_to_string(file_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::error!("Failed to read file {}: {}", file_path.display(), e);
+                        return None;
+                    }
+                };
+
+                // Parse file (create a new parser for each thread to avoid locking)
+                let mut local_parser = ASTParser::new();
+                match local_parser.parse_file(file_path, &content) {
+                    Ok(symbols) => {
+                        // Get mtime
+                        let mtime = std::fs::metadata(file_path)
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                            .unwrap_or(0);
+
+                        Some((file_path.clone(), symbols, mtime))
+                    }
+                    Err(e) => {
+                        log::error!("Failed to parse file {}: {}", file_path.display(), e);
+                        None
+                    }
                 }
             })
             .collect();
+
+        // Phase 2: Update cache serially (single lock acquisition)
+        let mut processed_count = 0;
+        {
+            let mut query_engine = self.query_engine.lock()
+                .map_err(|_| "Query engine lock poisoned")?;
+
+            if let Some(ref mut engine) = *query_engine {
+                for (file_path, symbols, mtime) in parsed_results {
+                    let file_path_str = file_path.to_string_lossy().to_string();
+                    let file_index = FileIndex { mtime, symbols };
+
+                    engine.cache.index.insert(file_path_str.clone(), file_index);
+
+                    // Update class map
+                    if let Some(idx) = engine.cache.index.get(&file_path_str) {
+                        for symbol in &idx.symbols {
+                            if matches!(symbol.kind, crate::ast::symbol::SymbolKind::Class) {
+                                engine.cache.class_map.insert(symbol.name.clone(), file_path_str.clone());
+                            }
+                        }
+                    }
+                    processed_count += 1;
+                }
+            }
+        }
 
         // Save cache
         if let Err(e) = self.save_cache() {
@@ -96,10 +143,10 @@ impl ASTEngine {
 
         log::info!(
             "Successfully processed {} out of {} files",
-            processed_files.len(),
+            processed_count,
             total_files
         );
-        Ok(processed_files.len())
+        Ok(processed_count)
     }
 
     pub fn update_file(&self, file_path: &Path) -> Result<(), String> {
@@ -109,52 +156,40 @@ impl ASTEngine {
             return Ok(());
         }
 
-        let cache_manager = self.cache_manager.try_lock()
-            .map_err(|_| "Cache manager lock poisoned")?;
-
-        // Check if file needs updating
-        let file_path_str = file_path.to_string_lossy().to_string();
-        let needs_update = if let Some(query_engine) = self.query_engine.try_lock()
-            .map_err(|_| "Query engine lock poisoned")?.as_ref() {
-            if let Some(file_index) = query_engine.cache.index.get(&file_path_str) {
-                cache_manager.is_file_changed(file_path, file_index.mtime)?
-            } else {
-                true
-            }
-        } else {
-            true
-        };
-
-        if !needs_update {
-            return Ok(());
-        }
-
-        // Read and parse file
+        // Read file
         let content = std::fs::read_to_string(file_path)
             .map_err(|e| format!("Failed to read file: {}", e))?;
 
+        // Parse file
         let symbols = {
-            let mut parser = self.parser.try_lock()
+            let mut parser = self.parser.lock()
                 .map_err(|_| "Parser lock poisoned")?;
             parser.parse_file(file_path, &content)?
         };
 
-        // Update cache
-        let mtime = cache_manager.get_file_mtime(file_path)?;
+        // Update cache (single lock acquisition)
+        let file_path_str = file_path.to_string_lossy().to_string();
+        let mtime = std::fs::metadata(file_path)
+            .map_err(|e| format!("Failed to get file metadata: {}", e))?
+            .modified()
+            .map_err(|e| format!("Failed to get mtime: {}", e))?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("Time error: {}", e))?
+            .as_secs();
+
         let file_index = FileIndex { mtime, symbols };
 
-        let mut query_engine = self.query_engine.try_lock()
+        let mut query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref mut engine) = *query_engine {
             engine.cache.index.insert(file_path_str.clone(), file_index);
 
             // Update class map
-            for symbol in &engine.cache.index[&file_path_str].symbols {
-                if matches!(symbol.kind, crate::ast::symbol::SymbolKind::Class) {
-                    engine
-                        .cache
-                        .class_map
-                        .insert(symbol.name.clone(), file_path_str.clone());
+            if let Some(idx) = engine.cache.index.get(&file_path_str) {
+                for symbol in &idx.symbols {
+                    if matches!(symbol.kind, crate::ast::symbol::SymbolKind::Class) {
+                        engine.cache.class_map.insert(symbol.name.clone(), file_path_str.clone());
+                    }
                 }
             }
         }
@@ -163,9 +198,9 @@ impl ASTEngine {
     }
 
     pub fn save_cache(&self) -> Result<(), String> {
-        let cache_manager = self.cache_manager.try_lock()
+        let cache_manager = self.cache_manager.lock()
             .map_err(|_| "Cache manager lock poisoned")?;
-        if let Some(query_engine) = self.query_engine.try_lock()
+        if let Some(query_engine) = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?.as_ref() {
             cache_manager.save_cache(&query_engine.cache)?;
         }
@@ -173,7 +208,7 @@ impl ASTEngine {
     }
 
     pub fn get_statistics(&self) -> Result<serde_json::Value, String> {
-        let query_engine = self.query_engine.try_lock()
+        let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             Ok(engine.get_statistics())
@@ -183,13 +218,13 @@ impl ASTEngine {
     }
 
     pub fn generate_report(&self, repository_path: &str) -> Result<serde_json::Value, String> {
-        let query_engine = self.query_engine.try_lock()
+        let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             let report = engine.generate_report(repository_path);
 
             // Save report to cache
-            let cache_manager = self.cache_manager.try_lock()
+            let cache_manager = self.cache_manager.lock()
                 .map_err(|_| "Cache manager lock poisoned")?;
             cache_manager.save_analysis_report(&report)?;
 
@@ -200,7 +235,7 @@ impl ASTEngine {
     }
 
     pub fn search_symbols(&self, query: &str) -> Result<Vec<Symbol>, String> {
-        let query_engine = self.query_engine.try_lock()
+        let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             let results = engine.search_symbols(query);
@@ -211,7 +246,7 @@ impl ASTEngine {
     }
 
     pub fn find_call_sites(&self, callee_name: &str) -> Result<Vec<Symbol>, String> {
-        let query_engine = self.query_engine.try_lock()
+        let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             let results = engine.find_call_sites(callee_name);
@@ -226,7 +261,7 @@ impl ASTEngine {
         entry: &str,
         max_depth: usize,
     ) -> Result<serde_json::Value, String> {
-        let query_engine = self.query_engine.try_lock()
+        let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             Ok(engine.get_call_graph(entry, max_depth))
@@ -236,7 +271,7 @@ impl ASTEngine {
     }
 
     pub fn get_file_structure(&self, file_path: &str) -> Result<Vec<Symbol>, String> {
-        let query_engine = self.query_engine.try_lock()
+        let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             let results = engine.get_file_structure(file_path);
@@ -247,7 +282,7 @@ impl ASTEngine {
     }
 
     pub fn get_class_hierarchy(&self, class_name: &str) -> Result<serde_json::Value, String> {
-        let query_engine = self.query_engine.try_lock()
+        let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             Ok(engine.get_class_hierarchy(class_name))
@@ -257,7 +292,7 @@ impl ASTEngine {
     }
 
     pub fn get_all_symbols(&self) -> Result<Vec<Symbol>, String> {
-        let query_engine = self.query_engine.try_lock()
+        let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             let mut all_symbols = Vec::new();
@@ -271,7 +306,7 @@ impl ASTEngine {
     }
 
     pub fn get_analysis_report(&self) -> Result<Option<serde_json::Value>, String> {
-        let cache_manager = self.cache_manager.try_lock()
+        let cache_manager = self.cache_manager.lock()
             .map_err(|_| "Cache manager lock poisoned")?;
         Ok(cache_manager.load_analysis_report())
     }
@@ -306,7 +341,7 @@ impl ASTEngine {
 
     fn remove_file_from_cache(&self, file_path: &Path) {
         let file_path_str = file_path.to_string_lossy().to_string();
-        if let Ok(mut query_engine) = self.query_engine.try_lock() {
+        if let Ok(mut query_engine) = self.query_engine.lock() {
             if let Some(ref mut engine) = *query_engine {
                 // Remove from index
                 if let Some(file_index) = engine.cache.index.remove(&file_path_str) {

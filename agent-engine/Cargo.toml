@@ -49,3 +49,6 @@ ctx-audit-llm = { workspace = true }
 
 # 工具系统
 ctx-audit-tools = { workspace = true }
+
+# 核心库（用于 RAG）
+deepaudit-core = { path = "../core" }

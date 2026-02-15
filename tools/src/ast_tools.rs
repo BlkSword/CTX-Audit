@@ -76,7 +76,16 @@ impl Tool for SearchSymbolTool {
 
         // 使用 AST 引擎搜索符号
         let symbols = self.ast_engine.search_symbols(query)
-            .map_err(|e| ToolError::ExecutionFailed(format!("符号搜索失败: {}", e)))?;
+            .map_err(|e| {
+                let error_msg = format!("{}", e);
+                if error_msg.contains("No cache loaded") || error_msg.contains("cache") {
+                    ToolError::ExecutionFailed(
+                        "符号索引未就绪。请先使用 index_project 工具索引项目，或使用 text_search 工具进行文本搜索。".to_string()
+                    )
+                } else {
+                    ToolError::ExecutionFailed(format!("符号搜索失败: {}", e))
+                }
+            })?;
 
         // 限制结果数量
         let symbols: Vec<_> = symbols.into_iter()

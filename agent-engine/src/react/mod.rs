@@ -10,5 +10,5 @@ pub mod executor;
 pub mod state;
 
 pub use parser::{ReactParser, ParseResult, ActionType};
-pub use executor::{ReactExecutor, ExecutionConfig, ExecutionEvent};
+pub use executor::{ReactExecutor, ExecutionConfig, ExecutionEvent, ReactExecutionResult};
 pub use state::{ReactState, ThoughtEntry, Observation};
