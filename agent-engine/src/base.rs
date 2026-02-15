@@ -287,4 +287,14 @@ pub trait Agent: Send + Sync {
 
     /// 执行 Agent 任务
     async fn execute(&self, context: AgentContext) -> AgentResult;
+
+    /// 执行 Agent 任务（带事件回调）
+    /// 默认实现忽略事件发送器，具体实现可以覆盖
+    async fn execute_with_events(
+        &self,
+        context: AgentContext,
+        _event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::ExecutionEvent>>,
+    ) -> AgentResult {
+        self.execute(context).await
+    }
 }

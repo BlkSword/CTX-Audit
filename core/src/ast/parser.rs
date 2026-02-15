@@ -3,6 +3,26 @@ use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser, Query};
 
+/// Safely truncate a string to a maximum byte length, respecting UTF-8 character boundaries.
+/// This prevents panics when the truncation point falls inside a multi-byte character.
+fn truncate_string_safe(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+
+    // Find the character boundary at or before max_bytes
+    let mut boundary = max_bytes;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+
+    if boundary == 0 {
+        return String::new();
+    }
+
+    format!("{}...", &s[..boundary])
+}
+
 pub struct ASTParser {
     parsers: HashMap<String, Parser>,
 }
@@ -120,7 +140,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 500 {
-                            format!("{}...", &code[..500])
+                            truncate_string_safe(&code, 497) // 497 + 3 for "..."
                         } else {
                             code
                         };
@@ -192,7 +212,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 300 {
-                            format!("{}...", &code[..300])
+                            truncate_string_safe(&code, 297) // 297 + 3 for "..."
                         } else {
                             code
                         };
@@ -226,7 +246,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 200 {
-                            format!("{}...", &code[..200])
+                            truncate_string_safe(&code, 197) // 197 + 3 for "..."
                         } else {
                             code
                         };
@@ -322,7 +342,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 200 {
-                            format!("{}...", &code[..200])
+                            truncate_string_safe(&code, 197) // 197 + 3 for "..."
                         } else {
                             code
                         };
@@ -348,7 +368,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 200 {
-                            format!("{}...", &code[..200])
+                            truncate_string_safe(&code, 197) // 197 + 3 for "..."
                         } else {
                             code
                         };
@@ -394,7 +414,7 @@ impl ASTParser {
                             let end_line = node.end_position().row + 1;
                             let code = content[node.byte_range()].to_string();
                             let code = if code.len() > 200 {
-                                format!("{}...", &code[..200])
+                                truncate_string_safe(&code, 197) // 197 + 3 for "..."
                             } else {
                                 code
                             };
@@ -478,7 +498,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 200 {
-                            format!("{}...", &code[..200])
+                            truncate_string_safe(&code, 197) // 197 + 3 for "..."
                         } else {
                             code
                         };
@@ -504,7 +524,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 200 {
-                            format!("{}...", &code[..200])
+                            truncate_string_safe(&code, 197) // 197 + 3 for "..."
                         } else {
                             code
                         };
@@ -538,7 +558,7 @@ impl ASTParser {
                             let end_line = node.end_position().row + 1;
                             let code = content[node.byte_range()].to_string();
                             let code = if code.len() > 200 {
-                                format!("{}...", &code[..200])
+                                truncate_string_safe(&code, 197) // 197 + 3 for "..."
                             } else {
                                 code
                             };
@@ -619,7 +639,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 200 {
-                            format!("{}...", &code[..200])
+                            truncate_string_safe(&code, 197) // 197 + 3 for "..."
                         } else {
                             code
                         };
@@ -645,7 +665,7 @@ impl ASTParser {
                         let end_line = node.end_position().row + 1;
                         let code = content[node.byte_range()].to_string();
                         let code = if code.len() > 200 {
-                            format!("{}...", &code[..200])
+                            truncate_string_safe(&code, 197) // 197 + 3 for "..."
                         } else {
                             code
                         };
@@ -691,7 +711,7 @@ impl ASTParser {
                             let end_line = node.end_position().row + 1;
                             let code = content[node.byte_range()].to_string();
                             let code = if code.len() > 200 {
-                                format!("{}...", &code[..200])
+                                truncate_string_safe(&code, 197) // 197 + 3 for "..."
                             } else {
                                 code
                             };
@@ -833,4 +853,56 @@ fn extract_last_name(node: &Node, content: &str) -> String {
 
     // Get the last part after splitting by dots
     text.split('.').last().unwrap_or(&text).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_string_safe_ascii() {
+        let s = "Hello, World!";
+        assert_eq!(truncate_string_safe(s, 100), "Hello, World!");
+        assert_eq!(truncate_string_safe(s, 5), "Hello...");
+    }
+
+    #[test]
+    fn test_truncate_string_safe_chinese() {
+        // Each Chinese character is 3 bytes in UTF-8
+        let s = "你好世界这是测试";
+        // Don't truncate
+        assert_eq!(truncate_string_safe(s, 100), s);
+        // Truncate at char boundary
+        let result = truncate_string_safe(s, 10); // Should be "你好世..." (9 bytes + 3)
+        assert!(result.starts_with("你好世"));
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_string_safe_mixed() {
+        // Mix of ASCII and Chinese
+        let s = "Hello你好World世界";
+        let result = truncate_string_safe(s, 10);
+        // Should not panic and should be valid UTF-8
+        assert!(result.is_char_boundary(result.len()));
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_string_safe_emoji() {
+        // Emoji is 4 bytes in UTF-8
+        let s = "Hello😀World🎉";
+        let result = truncate_string_safe(s, 8);
+        assert!(result.is_char_boundary(result.len()));
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_string_safe_tree_chars() {
+        // Special tree drawing characters
+        let s = "├── DataEase (10)";
+        let result = truncate_string_safe(s, 10);
+        assert!(result.is_char_boundary(result.len()));
+        assert!(result.ends_with("..."));
+    }
 }

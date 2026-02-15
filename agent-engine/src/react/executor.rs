@@ -131,6 +131,17 @@ impl ReactExecutor {
         self
     }
 
+    /// 克隆执行器并设置新的事件发送器
+    pub fn clone_with_event_tx(&self, tx: mpsc::UnboundedSender<ExecutionEvent>) -> Self {
+        Self {
+            llm: self.llm.clone(),
+            tool_registry: self.tool_registry.clone(),
+            parser: ReactParser::new(),
+            config: self.config.clone(),
+            event_tx: Some(tx),
+        }
+    }
+
     /// 执行 ReAct 循环
     pub async fn execute(
         &self,
@@ -308,17 +319,31 @@ impl ReactExecutor {
             input: input.clone(),
         });
 
-        // 获取工具
-        let tool = self
-            .tool_registry
-            .get_tool(tool_name)
-            .ok_or_else(|| format!("工具不存在: {}", tool_name))?;
+        // 获取工具 - 如果不存在，返回错误观察而不是失败
+        let tool = match self.tool_registry.get_tool(tool_name) {
+            Some(t) => t,
+            None => {
+                let error_msg = format!("工具不存在: {}", tool_name);
+                self.send_event(ExecutionEvent::ToolCallFailed {
+                    tool_name: tool_name.to_string(),
+                    error: error_msg.clone(),
+                });
+                return Ok(Observation::error(error_msg));
+            }
+        };
 
-        // 执行工具
-        let result = tool
-            .execute(input)
-            .await
-            .map_err(|e| format!("工具执行失败: {}", e))?;
+        // 执行工具 - 如果失败，返回错误观察而不是传播错误
+        let result = match tool.execute(input).await {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("工具执行失败: {}", e);
+                self.send_event(ExecutionEvent::ToolCallFailed {
+                    tool_name: tool_name.to_string(),
+                    error: error_msg.clone(),
+                });
+                return Ok(Observation::error(error_msg));
+            }
+        };
 
         let duration = start.elapsed().as_millis() as u64;
 
@@ -418,9 +443,18 @@ impl ReactExecutionResult {
         for thought in &self.state.thought_chain {
             if let Some(ref obs) = thought.observation {
                 if let Some(ref data) = obs.data {
+                    // 尝试从 "finding" 字段获取
                     if let Some(finding) = data.get("finding") {
                         if let Ok(f) = serde_json::from_value::<ctx_audit_tools::FindingData>(
                             finding.clone(),
+                        ) {
+                            findings.push(f);
+                        }
+                    }
+                    // 尝试从 "result" 字段获取（因为工具返回的是 {"result": {...}}）
+                    if let Some(result) = data.get("result") {
+                        if let Ok(f) = serde_json::from_value::<ctx_audit_tools::FindingData>(
+                            result.clone(),
                         ) {
                             findings.push(f);
                         }

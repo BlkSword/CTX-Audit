@@ -1,12 +1,14 @@
 // Copyright 2024 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// CLI 工具需要控制台输出，不要使用 windows 子系统
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
 mod config;
 mod database;
 mod output;
+mod report;
 mod repl;
 mod slash;
 mod terminal;
@@ -76,6 +78,10 @@ enum Commands {
         /// 输出文件路径
         #[arg(short, long)]
         output: Option<String>,
+
+        /// 显示详细的 LLM 过程（思考、工具调用、观察结果）
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     /// 快速规则扫描（批处理）
@@ -331,6 +337,7 @@ async fn main() -> Result<()> {
             max_iterations,
             skip_verification,
             output,
+            verbose,
         } => {
             commands::audit::execute(
                 path,
@@ -339,6 +346,7 @@ async fn main() -> Result<()> {
                 skip_verification,
                 output,
                 cli.output.as_str(),
+                verbose,
             )
             .await
         }

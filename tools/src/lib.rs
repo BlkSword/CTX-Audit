@@ -10,12 +10,18 @@ pub mod executor;
 pub mod bridge;
 pub mod external;
 pub mod ast_tools;
+pub mod write_tools;
+pub mod shell_tools;
+pub mod search_tools;
 
 // 重新导出常用类型
 pub use registry::{ToolRegistry, Tool};
 pub use executor::ToolExecutor;
 pub use bridge::{register_built_in_tools, register_all_tools};
 pub use ast_tools::register_ast_tools;
+pub use write_tools::register_write_tools;
+pub use shell_tools::register_shell_tools;
+pub use search_tools::register_search_tools;
 
 // 重新导出模型类型
 pub use bridge::{

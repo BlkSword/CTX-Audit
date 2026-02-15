@@ -22,33 +22,34 @@ impl AgentRegistry {
         Self { llm, tool_registry }
     }
 
-    /// 创建 Agent 实例
+    /// 创建 Agent 实例（使用 ReAct 执行器）
     pub fn create_agent(
         &self,
         agent_type: AgentType,
         config: AgentConfig,
     ) -> anyhow::Result<Arc<dyn Agent>> {
-        match agent_type {
-            AgentType::Orchestrator => Ok(Arc::new(crate::agents::OrchestratorAgent::new(
-                config,
-                self.llm.clone(),
-                self.tool_registry.clone(),
-            ))),
-            AgentType::Recon => Ok(Arc::new(crate::agents::ReconAgent::new(
-                config,
-                self.llm.clone(),
-                self.tool_registry.clone(),
-            ))),
-            AgentType::Analysis => Ok(Arc::new(crate::agents::AnalysisAgent::new(
-                config,
-                self.llm.clone(),
-                self.tool_registry.clone(),
-            ))),
-            AgentType::Verification => Ok(Arc::new(crate::agents::VerificationAgent::new(
-                config,
-                self.llm.clone(),
-                self.tool_registry.clone(),
-            ))),
-        }
+        // 使用 ReactAgentWrapper 创建真正执行 ReAct 循环的 Agent
+        Ok(crate::react_agent::create_agent_with_type(
+            agent_type,
+            config,
+            self.llm.clone(),
+            self.tool_registry.clone(),
+        ))
+    }
+
+    /// 创建带自定义提示词的 Agent
+    pub fn create_agent_with_prompt(
+        &self,
+        agent_type: AgentType,
+        config: AgentConfig,
+        custom_prompt: String,
+    ) -> anyhow::Result<Arc<dyn Agent>> {
+        Ok(crate::react_agent::create_agent_with_custom_prompt(
+            agent_type,
+            config,
+            self.llm.clone(),
+            self.tool_registry.clone(),
+            custom_prompt,
+        ))
     }
 }

@@ -1,26 +1,28 @@
 // Copyright 2024 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! ReAct 循环解析器
+//! ReAct 循环解析器（旧版）
 //!
 //! 解析 LLM 输出中的 Thought、Action、Action Input
+//!
+//! 注意：建议使用 react/parser.rs 中的新版 ReactParser
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use lazy_static::lazy_static;
 
 lazy_static! {
-    /// 匹配 Thought: 后的内容
-    static ref THOUGHT_REGEX: Regex = Regex::new(r"(?im)^\s*Thought\s*:?\s*(.*?)(?=\n(?:Action|Observation|Thought|$))").unwrap();
+    /// 匹配 Thought: 后的内容（到行尾）
+    static ref THOUGHT_REGEX: Regex = Regex::new(r"(?im)^\s*Thought\s*:?\s*(.+)$").unwrap();
 
-    /// 匹配 Action: 后的内容
-    static ref ACTION_REGEX: Regex = Regex::new(r"(?im)^\s*Action\s*:?\s*(.*?)(?=\n(?:Action Input|Observation|Thought|$))").unwrap();
+    /// 匹配 Action: 后的内容（到行尾）
+    static ref ACTION_REGEX: Regex = Regex::new(r"(?im)^\s*Action\s*:?\s*(.+)$").unwrap();
 
-    /// 匹配 Action Input: 后的内容
-    static ref ACTION_INPUT_REGEX: Regex = Regex::new(r"(?im)^\s*Action Input\s*:?\s*(.*?)(?=\n(?:Observation|Thought|Action|$))").unwrap();
+    /// 匹配 Action Input: 后的内容（到行尾或整个 JSON）
+    static ref ACTION_INPUT_REGEX: Regex = Regex::new(r"(?im)^\s*Action Input\s*:?\s*(.+)$").unwrap();
 
     /// 匹配 JSON 格式的 Action Input
-    static ref JSON_REGEX: Regex = Regex::new(r"\{.*\}").unwrap();
+    static ref JSON_REGEX: Regex = Regex::new(r"\{[^{}]*\}").unwrap();
 }
 
 /// ReAct 解析结果
@@ -217,11 +219,17 @@ pub fn is_finish_action(result: &ReactParseResult) -> bool {
 pub fn extract_final_answer(result: &ReactParseResult) -> Option<String> {
     if is_finish_action(result) {
         if let Some(input) = &result.action_input {
-            if let Some(result) = input.get("result") {
-                return Some(result.to_string());
+            if let Some(result_val) = input.get("result") {
+                if let Some(s) = result_val.as_str() {
+                    return Some(s.to_string());
+                }
+                return Some(result_val.to_string());
             }
-            if let Some(answer) = input.get("answer") {
-                return Some(answer.to_string());
+            if let Some(answer_val) = input.get("answer") {
+                if let Some(s) = answer_val.as_str() {
+                    return Some(s.to_string());
+                }
+                return Some(answer_val.to_string());
             }
             return Some(input.to_string());
         }
