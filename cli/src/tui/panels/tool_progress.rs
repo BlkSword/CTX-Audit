@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 工具执行进度面板
@@ -36,11 +36,11 @@ impl ToolExecutionStatus {
     /// 获取状态图标
     pub fn icon(&self) -> &str {
         match self {
-            ToolExecutionStatus::Pending => "⏳",
-            ToolExecutionStatus::Running => "⚙",
-            ToolExecutionStatus::Success => "✓",
-            ToolExecutionStatus::Failed => "✗",
-            ToolExecutionStatus::Timeout => "⏱",
+            ToolExecutionStatus::Pending => "[...]",
+            ToolExecutionStatus::Running => "[*]",
+            ToolExecutionStatus::Success => "[OK]",
+            ToolExecutionStatus::Failed => "[ERR]",
+            ToolExecutionStatus::Timeout => "[TIME]",
         }
     }
 
@@ -575,9 +575,9 @@ mod tests {
 
     #[test]
     fn test_status_icon_color() {
-        assert_eq!(ToolExecutionStatus::Running.icon(), "⚙");
+        assert_eq!(ToolExecutionStatus::Running.icon(), "[*]");
         assert_eq!(ToolExecutionStatus::Running.color(), Color::Yellow);
-        assert_eq!(ToolExecutionStatus::Success.icon(), "✓");
+        assert_eq!(ToolExecutionStatus::Success.icon(), "[OK]");
         assert_eq!(ToolExecutionStatus::Success.color(), Color::Green);
     }
 }

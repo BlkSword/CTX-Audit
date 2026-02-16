@@ -1,9 +1,9 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! audit 命令实现
 //!
-//! 启动 AI 审计，使用 Agent 引擎进行深度代码安全分析
+//! 使用专业安全审计框架进行深度代码安全分析
 
 use miette::Result;
 use std::sync::Arc;
@@ -12,7 +12,9 @@ use tokio::sync::mpsc;
 use crate::config::ConfigManager;
 use crate::terminal::{StreamEvent, StreamOutput, TerminalRenderer};
 use ctx_audit_agent_engine::{
-    AgentConfig, AgentContext, AgentRegistry, AgentType, ExecutionEvent, ExecutionStats, LLMConfig,
+    SecurityAuditState, AuditPhase, PhaseAwareExecutor, PhaseResult,
+    DeterministicPrescanner, PrescanConfig, ProjectInfoCollector,
+    ExecutionEvent, ExecutionConfig,
 };
 use ctx_audit_llm::LLMFactory;
 use ctx_audit_tools::FindingData;
@@ -39,12 +41,12 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> String {
     result
 }
 
-/// 执行 audit 命令
+/// 执行 audit 命令（使用新的专业审计框架）
 pub async fn execute(
     path: String,
-    audit_type: String,
-    max_iterations: u32,
-    skip_verification: bool,
+    _audit_type: String,
+    max_iterations: Option<u32>,
+    _skip_verification: bool,
     output_path: Option<String>,
     output_format: &str,
     verbose: bool,
@@ -62,12 +64,12 @@ pub async fn execute(
         return Err(miette::miette!("项目路径不存在"));
     }
 
-    renderer.info(&format!("开始审计: {}", path));
+    renderer.info(&format!("[安全] 开始专业安全审计: {}", path));
     if verbose {
-        renderer.info("详细模式已启用，将显示 LLM 思考过程");
+        renderer.info("[信息] 详细模式已启用");
     }
 
-    // 初始化 LLM 工厂 - 使用用户配置
+    // 初始化 LLM 工厂
     let llm_factory = LLMFactory::new();
     let llm_config = ctx_audit_llm::LLMConfig {
         provider: config.llm.provider.clone(),
@@ -86,7 +88,7 @@ pub async fn execute(
     // 初始化工具注册表
     let tool_registry = Arc::new(ToolRegistry::new());
 
-    // 初始化 AST 引擎（可选，使用临时缓存目录）
+    // 初始化 AST 引擎
     let cache_dir = std::env::temp_dir().join("ctx-audit-cache");
     let _ = std::fs::create_dir_all(&cache_dir);
     let ast_engine = Some(Arc::new(deepaudit_core::ASTEngine::new(
@@ -96,191 +98,265 @@ pub async fn execute(
     // 注册所有工具
     ctx_audit_tools::register_all_tools(&tool_registry, path.clone(), ast_engine).await;
 
-    // 创建 Agent 注册表
-    let agent_registry = AgentRegistry::new(llm, tool_registry.clone());
+    // 创建审计状态
+    let mut audit_state = SecurityAuditState::new(path.clone());
 
-    // 创建输出器
-    let mut stream_output = StreamOutput::new();
-
-    // 执行审计流程
-    let mut all_findings = Vec::new();
-
-    // 阶段 1: 侦察
-    stream_output.emit(&StreamEvent::AgentStart(AgentType::Recon));
-
-    let recon_agent = agent_registry
-        .create_agent(
-            AgentType::Recon,
-            AgentConfig {
-                agent_type: AgentType::Recon,
-                name: "Recon Agent".to_string(),
-                description: Some("项目结构分析".to_string()),
-                llm_config: LLMConfig::default(),
-                max_iterations: 10,
-                timeout_secs: Some(300),
-                extra: Default::default(),
-            },
-        )
-        .map_err(|e| miette::miette!("{}", e))?;
-
-    let recon_context = AgentContext {
-        project_id: uuid::Uuid::new_v4().to_string(),
-        project_path: path.clone(),
-        session_id: uuid::Uuid::new_v4().to_string(),
-        inherited_context: Default::default(),
-        user_context: Default::default(),
+    // 创建执行配置
+    let exec_config = ExecutionConfig {
+        max_iterations,
+        timeout_secs: Some(600),
+        enable_streaming: verbose,
+        temperature: 0.7,
+        max_tokens: 4096,
     };
 
-    // 执行侦察 Agent（带详细输出）
-    let recon_result = if verbose {
-        execute_agent_with_verbose(recon_agent, recon_context, &mut renderer).await
+    // 创建阶段感知执行器
+    let executor = PhaseAwareExecutor::new(llm, tool_registry, exec_config);
+
+    // 创建事件通道（用于详细输出）
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ExecutionEvent>();
+
+    // 启动事件处理任务
+    let event_handle = if verbose {
+        Some(tokio::spawn(async move {
+            use console::Style;
+            use std::io::{stdout, Write};
+
+            let dim_style = Style::new().dim();
+            let cyan_style = Style::new().cyan();
+            let green_style = Style::new().green();
+            let yellow_style = Style::new().yellow();
+
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    ExecutionEvent::IterationStart(iteration) => {
+                        let _ = writeln!(
+                            stdout(),
+                            "{}",
+                            cyan_style.apply_to(format!("  [迭代 {}]", iteration))
+                        );
+                    }
+                    ExecutionEvent::ThoughtComplete { iteration: _, thought, action } => {
+                        let _ = writeln!(
+                            stdout(),
+                            "{}",
+                            dim_style.apply_to(format!("    [思考] {}", truncate_utf8(&thought, 200)))
+                        );
+                        if let Some(action_name) = action {
+                            let _ = writeln!(
+                                stdout(),
+                                "{}",
+                                yellow_style.apply_to(format!("    [决定] {}", action_name))
+                            );
+                        }
+                    }
+                    ExecutionEvent::ToolCallStart { tool_name, input } => {
+                        let input_str = truncate_utf8(&input.to_string(), 100);
+                        let _ = writeln!(
+                            stdout(),
+                            "{}",
+                            cyan_style.apply_to(format!("    [工具] {}: {}", tool_name, input_str))
+                        );
+                    }
+                    ExecutionEvent::ToolCallComplete { tool_name, result, duration_ms } => {
+                        let status = if result.is_error { "[失败]" } else { "[成功]" };
+                        let _ = writeln!(
+                            stdout(),
+                            "{}",
+                            green_style.apply_to(format!(
+                                "    {} {} ({}ms)",
+                                status, tool_name, duration_ms
+                            ))
+                        );
+                    }
+                    ExecutionEvent::ToolCallFailed { tool_name, error } => {
+                        let _ = writeln!(
+                            stdout(),
+                            "{}",
+                            console::style(format!("    [错误] {}: {}", tool_name, error)).red()
+                        );
+                    }
+                    ExecutionEvent::StreamToken(token) => {
+                        print!("{}", dim_style.apply_to(&token));
+                        let _ = stdout().flush();
+                    }
+                    ExecutionEvent::Complete { iterations, tool_calls } => {
+                        let _ = writeln!(
+                            stdout(),
+                            "{}",
+                            green_style.apply_to(format!(
+                                "  [完成] {} 次迭代, {} 次工具调用",
+                                iterations, tool_calls
+                            ))
+                        );
+                    }
+                    ExecutionEvent::Failed(error) => {
+                        let _ = writeln!(
+                            stdout(),
+                            "{}",
+                            console::style(format!("  [失败] {}", error)).red()
+                        );
+                    }
+                }
+            }
+        }))
     } else {
-        recon_agent.execute(recon_context).await
+        None
     };
 
-    match recon_result.status {
-        ctx_audit_agent_engine::AgentStatus::Completed => {
-            stream_output.emit(&StreamEvent::AgentComplete(
-                AgentType::Recon,
-                recon_result.message.clone().unwrap_or_default(),
-            ));
+    // 创建带事件发送器的执行器
+    let mut executor = executor.with_event_tx(event_tx);
+
+    renderer.info("");
+    renderer.info("================================================");
+    renderer.info("           [阶段1] 项目初始化                   ");
+    renderer.info("================================================");
+
+    // 阶段 1: 初始化
+    let init_result = executor.execute_initialization(&mut audit_state).await;
+    print_phase_result(&init_result, &mut renderer);
+
+    renderer.info("");
+    renderer.info("================================================");
+    renderer.info("           [阶段2] 确定性扫描                   ");
+    renderer.info("================================================");
+
+    // 阶段 2: 确定性扫描
+    let scan_result = executor.execute_deterministic_scan(&mut audit_state).await;
+    print_phase_result(&scan_result, &mut renderer);
+
+    // 显示候选漏洞摘要
+    if !audit_state.vulnerability_candidates.is_empty() {
+        renderer.info("");
+        renderer.info(&format!(
+            "[信息] 发现 {} 个候选漏洞待验证",
+            audit_state.vulnerability_candidates.len()
+        ));
+
+        // 按严重程度统计
+        let mut by_severity: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for candidate in &audit_state.vulnerability_candidates {
+            *by_severity.entry(candidate.severity.as_str()).or_insert(0) += 1;
         }
-        ctx_audit_agent_engine::AgentStatus::Failed => {
-            stream_output.emit(&StreamEvent::AgentError(
-                AgentType::Recon,
-                recon_result.error.unwrap_or_default(),
-            ));
-        }
-        _ => {}
-    }
-
-    // 阶段 2: 分析
-    stream_output.emit(&StreamEvent::AgentStart(AgentType::Analysis));
-
-    let analysis_agent = agent_registry
-        .create_agent(
-            AgentType::Analysis,
-            AgentConfig {
-                agent_type: AgentType::Analysis,
-                name: "Analysis Agent".to_string(),
-                description: Some("漏洞分析".to_string()),
-                llm_config: LLMConfig::default(),
-                max_iterations,
-                timeout_secs: Some(600),
-                extra: Default::default(),
-            },
-        )
-        .map_err(|e| miette::miette!("{}", e))?;
-
-    let mut analysis_context = AgentContext {
-        project_id: uuid::Uuid::new_v4().to_string(),
-        project_path: path.clone(),
-        session_id: uuid::Uuid::new_v4().to_string(),
-        inherited_context: Default::default(),
-        user_context: Default::default(),
-    };
-
-    // 传递侦察结果
-    analysis_context
-        .inherited_context
-        .insert("recon_completed".to_string(), serde_json::json!(true));
-
-    // 执行分析 Agent（带详细输出）
-    let analysis_result = if verbose {
-        execute_agent_with_verbose(analysis_agent, analysis_context, &mut renderer).await
-    } else {
-        analysis_agent.execute(analysis_context).await
-    };
-
-    match analysis_result.status {
-        ctx_audit_agent_engine::AgentStatus::Completed => {
-            stream_output.emit(&StreamEvent::AgentComplete(
-                AgentType::Analysis,
-                analysis_result.message.clone().unwrap_or_default(),
-            ));
-
-            // 收集漏洞
-            for finding in &analysis_result.findings {
-                stream_output.emit(&StreamEvent::Finding(
-                    finding.severity.clone(),
-                    finding.title.clone().unwrap_or_default(),
-                    finding.file_path.clone(),
-                    finding.start_line,
-                ));
+        for severity in ["critical", "high", "medium", "low"] {
+            if let Some(&count) = by_severity.get(severity) {
+                renderer.info(&format!("   {}: {}", severity.to_uppercase(), count));
             }
-            all_findings = analysis_result.findings.clone();
-        }
-        ctx_audit_agent_engine::AgentStatus::Failed => {
-            stream_output.emit(&StreamEvent::AgentError(
-                AgentType::Analysis,
-                analysis_result.error.unwrap_or_default(),
-            ));
-        }
-        _ => {}
-    }
-
-    // 阶段 3: 验证（可选）
-    if !skip_verification && !all_findings.is_empty() {
-        stream_output.emit(&StreamEvent::AgentStart(AgentType::Verification));
-
-        let verification_agent = agent_registry
-            .create_agent(
-                AgentType::Verification,
-                AgentConfig {
-                    agent_type: AgentType::Verification,
-                    name: "Verification Agent".to_string(),
-                    description: Some("漏洞验证".to_string()),
-                    llm_config: LLMConfig::default(),
-                    max_iterations: 10,
-                    timeout_secs: Some(300),
-                    extra: Default::default(),
-                },
-            )
-            .map_err(|e| miette::miette!("{}", e))?;
-
-        let mut verification_context = AgentContext {
-            project_id: uuid::Uuid::new_v4().to_string(),
-            project_path: path.clone(),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            inherited_context: Default::default(),
-            user_context: Default::default(),
-        };
-
-        // 传递漏洞列表
-        let findings_json = serde_json::to_value(&all_findings).unwrap_or_default();
-        verification_context
-            .inherited_context
-            .insert("findings".to_string(), findings_json);
-
-        // 执行验证 Agent（带详细输出）
-        let verification_result = if verbose {
-            execute_agent_with_verbose(verification_agent, verification_context, &mut renderer)
-                .await
-        } else {
-            verification_agent.execute(verification_context).await
-        };
-
-        match verification_result.status {
-            ctx_audit_agent_engine::AgentStatus::Completed => {
-                stream_output.emit(&StreamEvent::AgentComplete(
-                    AgentType::Verification,
-                    verification_result.message.clone().unwrap_or_default(),
-                ));
-            }
-            ctx_audit_agent_engine::AgentStatus::Failed => {
-                stream_output.emit(&StreamEvent::AgentError(
-                    AgentType::Verification,
-                    verification_result.error.unwrap_or_default(),
-                ));
-            }
-            _ => {}
         }
     }
 
-    // 输出摘要
-    renderer.success(&format!("审计完成！共发现 {} 个漏洞", all_findings.len()));
+    renderer.info("");
+    renderer.info("================================================");
+    renderer.info("           [阶段3] 深度分析                     ");
+    renderer.info("================================================");
 
-    // 保存结果（如果指定了输出文件）
+    // 阶段 3: 深度分析
+    let analysis_result = executor.execute_deep_analysis(&mut audit_state).await;
+    print_phase_result(&analysis_result, &mut renderer);
+
+    renderer.info("");
+    renderer.info("================================================");
+    renderer.info("           [阶段4] 漏洞验证                     ");
+    renderer.info("================================================");
+
+    // 阶段 4: 验证
+    let verification_result = executor.execute_verification(&mut audit_state).await;
+    print_phase_result(&verification_result, &mut renderer);
+
+    renderer.info("");
+    renderer.info("================================================");
+    renderer.info("           [阶段5] 生成报告                     ");
+    renderer.info("================================================");
+
+    // 阶段 5: 报告
+    let report_result = executor.execute_reporting(&mut audit_state).await;
+    print_phase_result(&report_result, &mut renderer);
+
+    // 清理事件处理任务
+    if let Some(handle) = event_handle {
+        handle.abort();
+    }
+
+    // 转换确认的漏洞为 FindingData
+    let all_findings: Vec<FindingData> = audit_state.confirmed_vulnerabilities
+        .iter()
+        .map(|v| FindingData {
+            id: Some(v.id.clone()),
+            title: Some(v.vulnerability_type.clone()),
+            description: format!(
+                "来源: {}\n置信度: {:.0}%\n{}",
+                v.source,
+                v.confidence * 100.0,
+                v.code_snippet.as_deref().unwrap_or("")
+            ),
+            severity: v.severity.clone(),
+            category: v.vulnerability_type.clone(),
+            cwe_id: None,
+            file_path: v.file_path.clone(),
+            start_line: v.line as u32,
+            end_line: Some(v.line as u32),
+            code_snippet: v.code_snippet.clone(),
+            recommendation: None,
+            status: "confirmed".to_string(),
+            verification_status: Some(format!("{:?}", v.verification_status)),
+            discovered_by: Some(v.source.clone()),
+            extra: std::collections::HashMap::new(),
+        })
+        .collect();
+
+    // 输出最终摘要
+    renderer.info("");
+    renderer.info("================================================");
+    renderer.success(&format!(
+        "[完成] 审计完成！共发现 {} 个确认漏洞",
+        all_findings.len()
+    ));
+    renderer.info(&format!(
+        "[统计] LLM 调用 {} 次, 工具调用 {} 次, 分析文件 {} 个",
+        audit_state.stats.llm_calls,
+        audit_state.stats.tool_calls,
+        audit_state.stats.files_analyzed
+    ));
+    renderer.info("================================================");
+
+    // 显示漏洞摘要
+    if !all_findings.is_empty() {
+        renderer.info("");
+        renderer.info("[漏洞] 确认的漏洞:");
+
+        // 按严重程度分组显示
+        let mut by_severity: std::collections::HashMap<&str, Vec<&FindingData>> = std::collections::HashMap::new();
+        for finding in &all_findings {
+            by_severity.entry(&finding.severity).or_default().push(finding);
+        }
+
+        for severity in ["critical", "high", "medium", "low"] {
+            if let Some(findings) = by_severity.get(severity) {
+                let level = match severity {
+                    "critical" => "[!!!]",
+                    "high" => "[!!]",
+                    "medium" => "[!]",
+                    _ => "[*]",
+                };
+                renderer.info(&format!(
+                    "  {} {} ({}):",
+                    level,
+                    severity.to_uppercase(),
+                    findings.len()
+                ));
+                for finding in findings {
+                    renderer.info(&format!(
+                        "    - {}:{} - {}",
+                        finding.file_path,
+                        finding.start_line,
+                        finding.title.as_deref().unwrap_or(&finding.category)
+                    ));
+                }
+            }
+        }
+    }
+
+    // 保存结果
     if let Some(output_path) = output_path {
         save_findings(&output_path, &all_findings, output_format, &mut renderer).await?;
     }
@@ -288,117 +364,29 @@ pub async fn execute(
     Ok(())
 }
 
-/// 带 LLM 详细输出的 Agent 执行
-async fn execute_agent_with_verbose(
-    agent: std::sync::Arc<dyn ctx_audit_agent_engine::Agent>,
-    context: AgentContext,
-    _renderer: &mut TerminalRenderer,
-) -> ctx_audit_agent_engine::AgentResult {
-    use console::Style;
-    use std::io::{stdout, Write};
-
-    let dim_style = Style::new().dim();
-    let cyan_style = Style::new().cyan();
-    let green_style = Style::new().green();
-    let yellow_style = Style::new().yellow();
-
-    // 创建事件通道
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<ExecutionEvent>();
-
-    // 在后台线程中输出事件
-    tokio::spawn(async move {
-        let mut rx = event_rx;
-        while let Some(event) = rx.recv().await {
-            match event {
-                ExecutionEvent::IterationStart(iteration) => {
-                    let _ = writeln!(
-                        stdout(),
-                        "{}",
-                        cyan_style.apply_to(format!("  [迭代 {}]", iteration))
-                    );
-                }
-                ExecutionEvent::ThoughtComplete {
-                    iteration: _,
-                    thought,
-                    action,
-                } => {
-                    // 输出思考过程
-                    let _ = writeln!(
-                        stdout(),
-                        "{}",
-                        dim_style.apply_to(format!("    💭 思考: {}", thought))
-                    );
-                    if let Some(action_name) = action {
-                        let _ = writeln!(
-                            stdout(),
-                            "{}",
-                            yellow_style.apply_to(format!("    🎯 决定: {}", action_name))
-                        );
-                    }
-                }
-                ExecutionEvent::ToolCallStart { tool_name, input } => {
-                    let input_str = truncate_utf8(&input.to_string(), 200);
-                    let _ = writeln!(
-                        stdout(),
-                        "{}",
-                        cyan_style
-                            .apply_to(format!("    🔧 调用工具: {}({})", tool_name, input_str))
-                    );
-                }
-                ExecutionEvent::ToolCallComplete {
-                    tool_name,
-                    result,
-                    duration_ms,
-                } => {
-                    let status = if result.is_error { "❌" } else { "✅" };
-                    let result_preview = truncate_utf8(&result.text, 300);
-                    let _ = writeln!(
-                        stdout(),
-                        "{}",
-                        green_style.apply_to(format!(
-                            "    {} 工具结果 ({}ms): {}",
-                            status, duration_ms, result_preview
-                        ))
-                    );
-                }
-                ExecutionEvent::ToolCallFailed { tool_name, error } => {
-                    let _ = writeln!(
-                        stdout(),
-                        "{}",
-                        console::style(format!("    ❌ 工具失败: {} - {}", tool_name, error)).red()
-                    );
-                }
-                ExecutionEvent::StreamToken(token) => {
-                    // 流式输出 token（实时输出思考）
-                    print!("{}", dim_style.apply_to(&token));
-                    let _ = stdout().flush();
-                }
-                ExecutionEvent::Complete {
-                    iterations,
-                    tool_calls,
-                } => {
-                    let _ = writeln!(
-                        stdout(),
-                        "{}",
-                        green_style.apply_to(format!(
-                            "  ✓ 完成: {} 次迭代, {} 次工具调用",
-                            iterations, tool_calls
-                        ))
-                    );
-                }
-                ExecutionEvent::Failed(error) => {
-                    let _ = writeln!(
-                        stdout(),
-                        "{}",
-                        console::style(format!("  ✗ 失败: {}", error)).red()
-                    );
-                }
+/// 打印阶段结果
+fn print_phase_result(result: &PhaseResult, renderer: &mut TerminalRenderer) {
+    if result.success {
+        renderer.success(&format!("[OK] {} 完成 ({})", result.phase, format_duration(result.duration_ms)));
+        if !result.message.is_empty() {
+            for line in result.message.lines().take(10) {
+                renderer.info(&format!("   {}", line));
             }
         }
-    });
+    } else {
+        renderer.error(&format!("[ERR] {} 失败: {}", result.phase, result.message));
+    }
+}
 
-    // 执行 Agent
-    agent.execute_with_events(context, Some(event_tx)).await
+/// 格式化持续时间
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{:.1}m", ms as f64 / 60000.0)
+    }
 }
 
 /// 保存漏洞结果到文件
@@ -420,7 +408,7 @@ async fn save_findings(
         .await
         .map_err(|e| miette::miette!("写入文件失败: {}", e))?;
 
-    renderer.info(&format!("结果已保存到: {}", output_path));
+    renderer.info(&format!("[保存] 结果已保存到: {}", output_path));
     Ok(())
 }
 
@@ -465,7 +453,7 @@ fn to_sarif(findings: &[FindingData]) -> String {
 
 /// 转换为 Markdown 格式
 fn to_markdown(findings: &[FindingData]) -> String {
-    let mut md = String::from("# 审计报告\n\n");
+    let mut md = String::from("# 安全审计报告\n\n");
     md.push_str(&format!(
         "**生成时间**: {}\n\n",
         chrono::Utc::now().to_rfc3339()
@@ -499,9 +487,9 @@ fn to_markdown(findings: &[FindingData]) -> String {
                 ));
                 md.push_str(&format!("**描述**: {}\n\n", finding.description));
                 if let Some(code) = &finding.code_snippet {
-                    md.push_str("**代码**:\n```");
+                    md.push_str("**代码**:\n```\n");
                     md.push_str(code);
-                    md.push_str("```\n\n");
+                    md.push_str("\n```\n\n");
                 }
             }
         }
@@ -512,7 +500,7 @@ fn to_markdown(findings: &[FindingData]) -> String {
 
 /// 转换为文本格式
 fn to_text(findings: &[FindingData]) -> String {
-    let mut text = String::from("审计报告\n");
+    let mut text = String::from("安全审计报告\n");
     text.push_str(&format!("生成时间: {}\n", chrono::Utc::now().to_rfc3339()));
     text.push_str(&format!("漏洞数量: {}\n\n", findings.len()));
 

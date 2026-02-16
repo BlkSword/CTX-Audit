@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 // CLI 工具需要控制台输出，不要使用 windows 子系统
@@ -67,9 +67,9 @@ enum Commands {
         #[arg(short, long, default_value = "full")]
         audit_type: String,
 
-        /// 最大迭代次数
-        #[arg(short, long, default_value = "50")]
-        max_iterations: u32,
+        /// 最大迭代次数（不指定则无限制）
+        #[arg(short, long)]
+        max_iterations: Option<u32>,
 
         /// 跳过验证阶段
         #[arg(long)]

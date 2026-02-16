@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 代码查看面板
@@ -52,11 +52,11 @@ impl VulnerabilitySeverity {
     /// 获取图标
     pub fn icon(&self) -> &str {
         match self {
-            VulnerabilitySeverity::Critical => "🔴",
-            VulnerabilitySeverity::High => "🟠",
-            VulnerabilitySeverity::Medium => "🟡",
-            VulnerabilitySeverity::Low => "🔵",
-            VulnerabilitySeverity::Info => "⚪",
+            VulnerabilitySeverity::Critical => "[!!!]",
+            VulnerabilitySeverity::High => "[!!]",
+            VulnerabilitySeverity::Medium => "[!]",
+            VulnerabilitySeverity::Low => "[*]",
+            VulnerabilitySeverity::Info => "[i]",
         }
     }
 }
@@ -812,7 +812,7 @@ impl CodeViewPanel {
             let medium = stats.get(&VulnerabilitySeverity::Medium).unwrap_or(&0);
 
             title.push_str(&format!(
-                " | 🔴{} 🟠{} 🟡{} ",
+                " | [!!!]{} [!!]{} [!]{} ",
                 critical, high, medium
             ));
         }

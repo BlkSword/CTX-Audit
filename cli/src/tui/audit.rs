@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! TUI 审计集成
@@ -133,7 +133,7 @@ impl AuditManager {
                 name: "Recon Agent".to_string(),
                 description: Some("项目结构分析".to_string()),
                 llm_config: LLMConfig::default(),
-                max_iterations: 10,
+                max_iterations: None,
                 timeout_secs: Some(300),
                 extra: Default::default(),
             },
@@ -164,7 +164,7 @@ impl AuditManager {
                 name: "Analysis Agent".to_string(),
                 description: Some("漏洞分析".to_string()),
                 llm_config: LLMConfig::default(),
-                max_iterations: 50,
+                max_iterations: None,
                 timeout_secs: Some(600),
                 extra: Default::default(),
             },

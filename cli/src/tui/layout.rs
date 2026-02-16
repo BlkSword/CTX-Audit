@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! TUI 布局系统
@@ -240,12 +240,12 @@ impl AppLayout {
         };
 
         let text = vec![
-            Line::from("📁 项目文件"),
+            Line::from("[DIR] 项目文件"),
             Line::from(""),
-            Line::from("  📂 src/"),
-            Line::from("  📂 tests/"),
-            Line::from("  📄 README.md"),
-            Line::from("  📄 Cargo.toml"),
+            Line::from("  [DIR] src/"),
+            Line::from("  [DIR] tests/"),
+            Line::from("  [FILE] README.md"),
+            Line::from("  [FILE] Cargo.toml"),
         ];
 
         let paragraph = Paragraph::new(text)
@@ -288,7 +288,7 @@ impl AppLayout {
         // 渲染思考过程
         if !self.thoughts.is_empty() {
             lines.push(Line::from(Span::styled(
-                "💭 思考中...",
+                "[思考] 思考中...",
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC)
             )));
             for thought in &self.thoughts {
@@ -303,7 +303,7 @@ impl AppLayout {
         // 渲染工具调用
         if !self.tool_calls.is_empty() {
             lines.push(Line::from(Span::styled(
-                "🔧 工具调用",
+                "[工具] 工具调用",
                 Style::default().fg(Color::Magenta)
             )));
             for tc in &self.tool_calls {
@@ -318,7 +318,7 @@ impl AppLayout {
         // 渲染错误
         for error in &self.errors {
             lines.push(Line::from(vec![
-                Span::styled("✗ ", Style::default().fg(Color::Red)),
+                Span::styled("[ERR] ", Style::default().fg(Color::Red)),
                 Span::styled(error, Style::default().fg(Color::Red)),
             ]));
         }

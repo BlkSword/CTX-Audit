@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 报告导出模块
@@ -410,11 +410,11 @@ impl ReportExporter {
         md.push_str("## 漏洞统计\n\n");
         md.push_str("| 严重程度 | 数量 |\n");
         md.push_str("|----------|------|\n");
-        md.push_str(&format!("| 🔴 严重 | {} |\n", report.statistics.critical_count));
-        md.push_str(&format!("| 🟠 高危 | {} |\n", report.statistics.high_count));
-        md.push_str(&format!("| 🟡 中危 | {} |\n", report.statistics.medium_count));
-        md.push_str(&format!("| 🔵 低危 | {} |\n", report.statistics.low_count));
-        md.push_str(&format!("| ⚪ 信息 | {} |\n", report.statistics.info_count));
+        md.push_str(&format!("| [!!!] 严重 | {} |\n", report.statistics.critical_count));
+        md.push_str(&format!("| [!!] 高危 | {} |\n", report.statistics.high_count));
+        md.push_str(&format!("| [!] 中危 | {} |\n", report.statistics.medium_count));
+        md.push_str(&format!("| [*] 低危 | {} |\n", report.statistics.low_count));
+        md.push_str(&format!("| [i] 信息 | {} |\n", report.statistics.info_count));
         md.push_str(&format!("| **总计** | **{}** |\n", report.statistics.total_count));
         md.push_str("\n");
 

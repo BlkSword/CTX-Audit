@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! PoC (Proof of Concept) 生成器
@@ -211,7 +211,7 @@ def test_sql_injection():
     return results
 
 if __name__ == "__main__":
-    print("⚠️  警告: 此脚本仅用于授权的安全测试")
+    print("[!] 警告: 此脚本仅用于授权的安全测试")
     print("=" * 50)
 
     results = test_sql_injection()
@@ -222,7 +222,7 @@ if __name__ == "__main__":
 "#.to_string(),
             usage: "1. 修改 target_url 为目标地址\n2. 修改 param_name 为注入参数名\n3. 运行: python3 poc.py".to_string(),
             expected_result: "如果存在 SQL 注入漏洞，将显示 '存在漏洞' 并返回成功的 payload".to_string(),
-            safety_warning: "⚠️  仅在授权的测试环境中使用。未经授权的测试可能违反法律。".to_string(),
+            safety_warning: "[!] 仅在授权的测试环境中使用。未经授权的测试可能违反法律。".to_string(),
             requirements: vec!["Python 3.6+".to_string(), "requests 库".to_string()],
         };
         self.add_template(python_sql);
@@ -237,7 +237,7 @@ if __name__ == "__main__":
 # 漏洞 ID: {vuln_id}
 # 目标: {target_url}
 
-echo "⚠️  警告: 此脚本仅用于授权的安全测试"
+echo "[!] 警告: 此脚本仅用于授权的安全测试"
 echo "================================================"
 
 TARGET="{target_url}"
@@ -259,7 +259,7 @@ echo "[*] 测试完成"
 "#.to_string(),
             usage: "1. 设置 TARGET 为目标 URL\n2. 设置 PARAM 为注入参数\n3. 运行: chmod +x poc.sh && ./poc.sh".to_string(),
             expected_result: "如果存在漏洞，将输出 '可能存在 SQL 注入' 或 'UNION 注入可能可行'".to_string(),
-            safety_warning: "⚠️  仅在授权的测试环境中使用".to_string(),
+            safety_warning: "[!] 仅在授权的测试环境中使用".to_string(),
             requirements: vec!["curl".to_string(), "bash".to_string()],
         };
         self.add_template(curl_sql);
@@ -288,7 +288,7 @@ XSS Proof of Concept
 </head>
 <body>
     <div class="warning">
-        ⚠️ 警告: 此页面仅用于授权的安全测试
+        [!] 警告: 此页面仅用于授权的安全测试
     </div>
 
     <h1>XSS Payload 测试</h1>
@@ -327,7 +327,7 @@ XSS Proof of Concept
 "#.to_string(),
             usage: "1. 修改 target_url 为目标地址\n2. 在浏览器中打开此 HTML 文件\n3. 点击测试链接或手动复制 payload 到目标站点".to_string(),
             expected_result: "如果存在 XSS 漏洞，浏览器将执行 JavaScript 并弹出 alert 对话框".to_string(),
-            safety_warning: "⚠️  仅在隔离的测试环境中使用。XSS 可能影响其他用户。".to_string(),
+            safety_warning: "[!] 仅在隔离的测试环境中使用。XSS 可能影响其他用户。".to_string(),
             requirements: vec!["现代浏览器".to_string()],
         };
         self.add_template(html_xss);
@@ -393,7 +393,7 @@ def test_command_injection():
     return results
 
 if __name__ == "__main__":
-    print("⚠️  警告: 此脚本仅用于授权的安全测试")
+    print("[!] 警告: 此脚本仅用于授权的安全测试")
     print("=" * 50)
 
     results = test_command_injection()
@@ -402,7 +402,7 @@ if __name__ == "__main__":
 "#.to_string(),
             usage: "1. 修改 target_url 和 param_name\n2. 运行: python3 poc.py".to_string(),
             expected_result: "如果存在命令注入漏洞，响应时间将超过 5 秒".to_string(),
-            safety_warning: "⚠️  命令注入可能导致系统被完全控制。仅在授权的隔离环境中测试。".to_string(),
+            safety_warning: "[!] 命令注入可能导致系统被完全控制。仅在授权的隔离环境中测试。".to_string(),
             requirements: vec!["Python 3.6+".to_string(), "requests 库".to_string()],
         };
         self.add_template(python_cmd);
@@ -419,7 +419,7 @@ if __name__ == "__main__":
 # 漏洞 ID: {vuln_id}
 # 目标: {target_url}
 
-echo "⚠️  警告: 此脚本仅用于授权的安全测试"
+echo "[!] 警告: 此脚本仅用于授权的安全测试"
 echo "================================================"
 
 TARGET="{target_url}"
@@ -456,7 +456,7 @@ echo "[*] 测试完成"
 "#.to_string(),
             usage: "1. 设置 TARGET 和 PARAM\n2. 运行: chmod +x poc.sh && ./poc.sh".to_string(),
             expected_result: "如果存在路径遍历漏洞，将显示 /etc/passwd 或 win.ini 的内容".to_string(),
-            safety_warning: "⚠️  路径遍历可能导致敏感文件泄露。仅在授权环境中测试。".to_string(),
+            safety_warning: "[!] 路径遍历可能导致敏感文件泄露。仅在授权环境中测试。".to_string(),
             requirements: vec!["curl".to_string(), "bash".to_string()],
         };
         self.add_template(curl_path);
@@ -529,7 +529,7 @@ def test_ssrf():
     return results
 
 if __name__ == "__main__":
-    print("⚠️  警告: 此脚本仅用于授权的安全测试")
+    print("[!] 警告: 此脚本仅用于授权的安全测试")
     print("=" * 50)
 
     results = test_ssrf()
@@ -537,7 +537,7 @@ if __name__ == "__main__":
 "#.to_string(),
             usage: "1. 修改 target_url 和 param_name\n2. 运行: python3 poc.py".to_string(),
             expected_result: "如果存在 SSRF 漏洞，将能够访问内网资源或云元数据".to_string(),
-            safety_warning: "⚠️  SSRF 可能导致内网扫描和敏感信息泄露。仅在授权环境中测试。".to_string(),
+            safety_warning: "[!] SSRF 可能导致内网扫描和敏感信息泄露。仅在授权环境中测试。".to_string(),
             requirements: vec!["Python 3.6+".to_string(), "requests 库".to_string()],
         };
         self.add_template(python_ssrf);

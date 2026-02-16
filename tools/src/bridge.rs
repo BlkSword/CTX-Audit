@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 内置工具桥接
@@ -727,7 +727,7 @@ pub async fn register_built_in_tools(
     }
 }
 
-/// 注册所有内置工具（包括 AST 工具、写入工具、Shell 工具和搜索工具）
+/// 注册所有内置工具（包括 AST 工具、写入工具、Shell 工具、搜索工具、污点分析工具和模式检测工具）
 pub async fn register_all_tools(
     registry: &Arc<ToolRegistry>,
     project_path: String,
@@ -744,6 +744,12 @@ pub async fn register_all_tools(
 
     // 注册搜索工具
     crate::search_tools::register_search_tools(registry, project_path.clone()).await;
+
+    // 注册污点分析工具
+    crate::taint_tools::register_taint_tools(registry, project_path.clone()).await;
+
+    // 注册模式检测工具
+    crate::pattern_tools::register_pattern_tools(registry, project_path.clone()).await;
 
     // 如果提供了 AST 引擎，注册 AST 工具并自动索引项目
     if let Some(engine) = ast_engine {

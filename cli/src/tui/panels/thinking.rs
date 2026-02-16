@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! Agent 思考过程可视化面板
@@ -201,11 +201,11 @@ impl ThinkingPanel {
 
             // 迭代标题
             let icon = if thought.executing {
-                "⏳"
+                "[...]"
             } else if thought.completed {
-                "✓"
+                "[OK]"
             } else {
-                "💭"
+                "[?]"
             };
 
             let iteration_style = if is_selected {
@@ -244,7 +244,7 @@ impl ThinkingPanel {
                 if self.expanded || is_selected {
                     lines.push(Line::from(vec![
                         Span::raw("  "),
-                        Span::styled("▶ ", action_style),
+                        Span::styled("> ", action_style),
                         Span::styled(action, action_style),
                     ]));
 

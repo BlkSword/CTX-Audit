@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! ReAct 循环执行器
@@ -8,6 +8,7 @@
 use super::parser::{ActionType, ParseResult, ReactParser};
 use super::state::{Observation, ReactState, ThoughtEntry as ReactThoughtEntry};
 use crate::base::{AgentContext, ToolCallRecord};
+use crate::tool_recommender::ToolRecommender;
 use ctx_audit_llm::{LLMClient, LLMMessage, MessageRole};
 use ctx_audit_tools::{ToolRegistry, ToolResult};
 use futures::stream::StreamExt;
@@ -18,8 +19,8 @@ use tokio::sync::mpsc;
 /// 执行配置
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
-    /// 最大迭代次数
-    pub max_iterations: u32,
+    /// 最大迭代次数（None 表示无限制）
+    pub max_iterations: Option<u32>,
 
     /// 超时时间（秒）
     pub timeout_secs: Option<u64>,
@@ -37,7 +38,7 @@ pub struct ExecutionConfig {
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 50,
+            max_iterations: None,
             timeout_secs: Some(600),
             enable_streaming: true,
             temperature: 0.7,
@@ -107,6 +108,9 @@ pub struct ReactExecutor {
 
     /// 事件发送器
     event_tx: Option<mpsc::UnboundedSender<ExecutionEvent>>,
+
+    /// 工具推荐器
+    tool_recommender: ToolRecommender,
 }
 
 impl ReactExecutor {
@@ -122,6 +126,7 @@ impl ReactExecutor {
             parser: ReactParser::new(),
             config,
             event_tx: None,
+            tool_recommender: ToolRecommender::new(),
         }
     }
 
@@ -139,6 +144,7 @@ impl ReactExecutor {
             parser: ReactParser::new(),
             config: self.config.clone(),
             event_tx: Some(tx),
+            tool_recommender: ToolRecommender::new(),
         }
     }
 
@@ -389,7 +395,89 @@ impl ReactExecutor {
             }
         }
 
+        // 添加工具使用建议（如果迭代次数较多但未使用专业分析工具）
+        if let Some(suggestion) = self.suggest_next_tool(state) {
+            prompt.push_str(&format!("\n\n=== 建议下一步操作 ===\n{}\n", suggestion));
+        }
+
         prompt
+    }
+
+    /// 建议下一步工具使用
+    ///
+    /// 根据当前状态和已使用的工具，使用智能推荐系统建议最佳工具
+    fn suggest_next_tool(&self, state: &ReactState) -> Option<String> {
+        // 收集已使用的工具
+        let used_tools: Vec<String> = state.thought_chain.iter()
+            .filter_map(|t| t.action.clone())
+            .collect();
+
+        // 使用 ToolRecommender 进行智能推荐
+        if let Some(recommendation) = self.tool_recommender.recommend_by_iteration(state.iteration, &used_tools) {
+            let mut suggestion = format!("[建议] {}", recommendation.reason);
+
+            if let Some(ref params) = recommendation.suggested_params {
+                suggestion.push_str(&format!("\n建议参数: {}", serde_json::to_string(params).unwrap_or_default()));
+            }
+
+            suggestion.push_str(&format!("\n预期效果: {}", recommendation.expected_outcome));
+
+            return Some(suggestion);
+        }
+
+        // 检查是否已使用专业分析工具
+        let professional_tools = [
+            "trace_taint",
+            "detect_vulnerability_patterns",
+            "global_taint_analysis",
+            "batch_pattern_scan",
+        ];
+
+        let has_used_professional = used_tools.iter()
+            .any(|t| professional_tools.contains(&t.as_str()));
+
+        // 如果尚未使用专业工具，根据阶段提醒
+        if !has_used_professional {
+            match state.iteration {
+                1..=2 => {
+                    if !used_tools.contains(&"list_files".to_string()) {
+                        return Some("[建议] 先使用 list_files 了解项目结构，然后使用专业分析工具".to_string());
+                    }
+                }
+                3..=5 => {
+                    return Some("[强烈建议] 使用专业安全分析工具:\n\
+                        - trace_taint: 执行污点追踪，验证数据流\n\
+                        - detect_vulnerability_patterns: 检测已知漏洞模式\n\
+                        - global_taint_analysis: 跨文件污点分析".to_string());
+                }
+                _ => {
+                    return Some("[提醒] 尚未使用确定性分析工具，建议使用 trace_taint 或 detect_vulnerability_patterns 提高检测准确性".to_string());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// 获取工具推荐
+    pub fn get_tool_recommendations(&self) -> Vec<crate::tool_recommender::ToolRecommendation> {
+        // 返回通用推荐
+        vec![
+            crate::tool_recommender::ToolRecommendation {
+                tool_name: "trace_taint".to_string(),
+                priority: 9,
+                reason: "执行确定性污点分析".to_string(),
+                suggested_params: None,
+                expected_outcome: "发现污点传播路径".to_string(),
+            },
+            crate::tool_recommender::ToolRecommendation {
+                tool_name: "detect_vulnerability_patterns".to_string(),
+                priority: 8,
+                reason: "检测常见漏洞模式".to_string(),
+                suggested_params: None,
+                expected_outcome: "发现模式匹配的漏洞".to_string(),
+            },
+        ]
     }
 
     /// 发送事件

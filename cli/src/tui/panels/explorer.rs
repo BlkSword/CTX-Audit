@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 文件浏览器面板
@@ -55,9 +55,9 @@ impl ExplorerPanel {
 
                 let icon = if file.is_dir {
                     if file.is_expanded {
-                        "📂"
+                        "[DIR-]"
                     } else {
-                        "📁"
+                        "[DIR+]"
                     }
                 } else {
                     self.get_file_icon(&file.name)
@@ -226,27 +226,27 @@ impl ExplorerPanel {
             .unwrap_or("");
 
         match ext {
-            "rs" => "🦀",
-            "go" => "🐹",
-            "py" => "🐍",
-            "js" | "jsx" | "ts" | "tsx" => "📜",
-            "java" => "☕",
-            "cpp" | "cc" | "c" | "h" => "⚙",
-            "rb" => "💎",
-            "php" => "🐘",
-            "swift" => "🍎",
-            "kt" => "🤖",
-            "html" | "htm" => "🌐",
-            "css" | "scss" | "sass" => "🎨",
-            "json" => "📋",
-            "xml" => "📄",
-            "yaml" | "yml" => "⚙",
-            "md" => "📝",
-            "sql" => "🗄",
-            "sh" | "bash" => "🦪",
-            "toml" => "⚙",
-            "txt" => "📄",
-            _ => "📄",
+            "rs" => "[RS]",
+            "go" => "[GO]",
+            "py" => "[PY]",
+            "js" | "jsx" | "ts" | "tsx" => "[JS]",
+            "java" => "[JAVA]",
+            "cpp" | "cc" | "c" | "h" => "[C]",
+            "rb" => "[RB]",
+            "php" => "[PHP]",
+            "swift" => "[SWIFT]",
+            "kt" => "[KT]",
+            "html" | "htm" => "[HTML]",
+            "css" | "scss" | "sass" => "[CSS]",
+            "json" => "[JSON]",
+            "xml" => "[XML]",
+            "yaml" | "yml" => "[YAML]",
+            "md" => "[MD]",
+            "sql" => "[SQL]",
+            "sh" | "bash" => "[SH]",
+            "toml" => "[TOML]",
+            "txt" => "[TXT]",
+            _ => "[FILE]",
         }
     }
 
