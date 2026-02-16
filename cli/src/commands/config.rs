@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! config 命令实现
@@ -114,18 +114,18 @@ pub async fn validate(test_llm: bool) -> Result<()> {
     let model = config_manager.get("llm.model");
 
     match &provider {
-        Some(p) => renderer.print(&format!("  ✓ LLM 提供商: {}", p)),
-        None => renderer.warning("  ⚠ LLM 提供商未配置"),
+        Some(p) => renderer.print(&format!("  [OK] LLM 提供商: {}", p)),
+        None => renderer.warning("  [WARN] LLM 提供商未配置"),
     }
 
     match &api_key {
-        Some(_) => renderer.print("  ✓ API 密钥已配置"),
-        None => renderer.warning("  ⚠ API 密钥未配置"),
+        Some(_) => renderer.print("  [OK] API 密钥已配置"),
+        None => renderer.warning("  [WARN] API 密钥未配置"),
     }
 
     match &model {
-        Some(m) => renderer.print(&format!("  ✓ 模型: {}", m)),
-        None => renderer.warning("  ⚠ 模型未配置"),
+        Some(m) => renderer.print(&format!("  [OK] 模型: {}", m)),
+        None => renderer.warning("  [WARN] 模型未配置"),
     }
 
     if test_llm {

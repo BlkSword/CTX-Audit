@@ -25,6 +25,7 @@ pub use indexing::vector_store::VectorStoreError;
 // 代码分析
 pub use analysis::{
     TaintAnalyzer, TaintSource, TaintSink, TaintFlow, TaintResult,
+    EnhancedTaintAnalyzer, VariableTaint,
     DataFlowAnalysis, FlowGraph, FlowNode,
     ImportResolver, SymbolReference, CrossFileReference,
 };

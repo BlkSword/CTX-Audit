@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 多 Agent 状态面板
@@ -39,13 +39,13 @@ impl AgentExecutionStatus {
     /// 获取状态图标
     pub fn icon(&self) -> &str {
         match self {
-            AgentExecutionStatus::Idle => "○",
-            AgentExecutionStatus::Initializing => "◐",
-            AgentExecutionStatus::Running => "●",
-            AgentExecutionStatus::Thinking => "💭",
-            AgentExecutionStatus::ExecutingTool => "⚙",
-            AgentExecutionStatus::Completed => "✓",
-            AgentExecutionStatus::Failed => "✗",
+            AgentExecutionStatus::Idle => "o",
+            AgentExecutionStatus::Initializing => "~",
+            AgentExecutionStatus::Running => "*",
+            AgentExecutionStatus::Thinking => "[?]",
+            AgentExecutionStatus::ExecutingTool => "[*]",
+            AgentExecutionStatus::Completed => "[OK]",
+            AgentExecutionStatus::Failed => "[ERR]",
         }
     }
 
@@ -86,10 +86,10 @@ impl AgentType {
     /// 获取图标
     pub fn icon(&self) -> &str {
         match self {
-            AgentType::Orchestrator => "🎯",
-            AgentType::Recon => "🔍",
-            AgentType::Analysis => "🔬",
-            AgentType::Verification => "✅",
+            AgentType::Orchestrator => "[TGT]",
+            AgentType::Recon => "[SRCH]",
+            AgentType::Analysis => "[ANAL]",
+            AgentType::Verification => "[CHK]",
         }
     }
 }
@@ -359,7 +359,7 @@ impl AgentStatusPanel {
                     lines.push(Line::from(vec![
                         Span::raw("    "),
                         Span::styled(
-                            format!("❌ {}", truncate(error, 50)),
+                            format!("[ERR] {}", truncate(error, 50)),
                             Style::default().fg(Color::Red),
                         ),
                     ]));
@@ -405,8 +405,8 @@ impl AgentStatusPanel {
         let type_icon = agent.agent_type.icon().to_string();
         let display_name = format!("{:12}", agent.agent_type.display_name());
         let status_text = format!("{:12}", format!("{:?}", agent.status));
-        let tools = format!("🔧{}", agent.tools_executed);
-        let findings = format!("🔍{}", agent.findings_count);
+        let tools = format!("[TOOL]{}", agent.tools_executed);
+        let findings = format!("[FIND]{}", agent.findings_count);
         let duration = agent.format_duration();
 
         Line::from(vec![
@@ -544,8 +544,8 @@ mod tests {
 
     #[test]
     fn test_agent_execution_status_icon() {
-        assert_eq!(AgentExecutionStatus::Running.icon(), "●");
-        assert_eq!(AgentExecutionStatus::Completed.icon(), "✓");
-        assert_eq!(AgentExecutionStatus::Failed.icon(), "✗");
+        assert_eq!(AgentExecutionStatus::Running.icon(), "*");
+        assert_eq!(AgentExecutionStatus::Completed.icon(), "[OK]");
+        assert_eq!(AgentExecutionStatus::Failed.icon(), "[ERR]");
     }
 }

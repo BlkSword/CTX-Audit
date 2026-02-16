@@ -1,10 +1,11 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 污点分析引擎
 //!
 //! 追踪用户输入（污点源）到危险函数（污点汇）的数据流
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -209,6 +210,51 @@ pub enum FlowNodeType {
     FieldAccess,
     /// 数组索引
     IndexAccess,
+    /// 净化处理
+    Sanitized,
+    /// 普通语句
+    Statement,
+}
+
+/// 传播步骤 - 描述污点如何在代码中传播
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropagationStep {
+    /// 步骤类型
+    pub step_type: PropagationStepType,
+
+    /// 源变量
+    pub from_var: Option<String>,
+
+    /// 目标变量
+    pub to_var: Option<String>,
+
+    /// 行号
+    pub line: usize,
+
+    /// 代码片段
+    pub code_snippet: Option<String>,
+
+    /// 涉及的函数名（如果是函数调用）
+    pub function_name: Option<String>,
+}
+
+/// 传播步骤类型
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PropagationStepType {
+    /// 直接赋值
+    DirectAssignment,
+    /// 拼接赋值
+    ConcatAssignment,
+    /// 函数调用传播
+    CallPropagation,
+    /// 返回值传播
+    ReturnPropagation,
+    /// 字段访问传播
+    FieldPropagation,
+    /// 净化处理
+    Sanitization,
+    /// 解引用
+    Dereference,
 }
 
 /// 污点分析结果
@@ -783,6 +829,403 @@ impl TaintAnalyzer {
     /// 添加自定义净化函数
     pub fn add_sanitizer(&mut self, sanitizer: Sanitizer) {
         self.sanitizers.push(sanitizer);
+    }
+
+    /// 基于 AST 的污点追踪（增强版）
+    ///
+    /// 这个方法分析代码中的变量传播路径，追踪污点从源到汇的完整路径
+    pub fn analyze_with_propagation(&self, code: &str, file_path: &str, language: &str) -> Vec<TaintFlow> {
+        let mut flows = Vec::new();
+        let lines: Vec<&str> = code.lines().collect();
+
+        // 收集污点源和汇
+        let sources = self.find_sources(&lines, file_path, language);
+        let sinks = self.find_sinks(&lines, file_path, language);
+
+        // 为每个源提取被污染的变量名
+        for (source_loc, source_def) in &sources {
+            let tainted_vars = self.extract_tainted_variables(source_loc.line, &lines);
+
+            // 对每个汇点检查是否存在污点传播
+            for (sink_loc, sink_def) in &sinks {
+                if source_loc.line >= sink_loc.line {
+                    continue;
+                }
+
+                // 追踪变量传播
+                let propagation_steps = self.trace_variable_propagation(
+                    &tainted_vars,
+                    source_loc.line,
+                    sink_loc.line,
+                    &lines,
+                );
+
+                // 检查是否经过净化
+                let sanitized = self.check_sanitization_with_steps(&propagation_steps);
+
+                // 计算置信度
+                let confidence = self.calculate_confidence(
+                    &propagation_steps,
+                    sanitized,
+                    source_def,
+                    sink_def,
+                );
+
+                // 构建污点流路径
+                let path = self.build_flow_path(
+                    source_loc,
+                    sink_loc,
+                    &propagation_steps,
+                    file_path,
+                    &lines,
+                );
+
+                flows.push(TaintFlow {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    source: source_loc.clone(),
+                    sink: sink_loc.clone(),
+                    path,
+                    vulnerability_type: sink_def.vulnerability_type.clone(),
+                    severity: sink_def.severity,
+                    confidence,
+                });
+            }
+        }
+
+        flows
+    }
+
+    /// 从源位置提取被污染的变量名
+    fn extract_tainted_variables(&self, source_line: usize, lines: &[&str]) -> Vec<String> {
+        let mut vars = Vec::new();
+
+        if source_line == 0 || source_line > lines.len() {
+            return vars;
+        }
+
+        let line = lines[source_line - 1];
+
+        // 匹配赋值语句: var = tainted_source 或 var = func(tainted_source)
+        let assignment_patterns = [
+            // Python/JS/Ruby: var = source
+            r#"(\w+)\s*=\s*(?:request\.|req\.|\$_|process\.env|os\.environ|getenv)"#,
+            // Java: String var = request.getParameter
+            r#"(\w+)\s*=\s*(?:request\.getParameter|HttpServletRequest)"#,
+            // Go: var := r.FormValue
+            r#"(\w+)\s*:?=\s*(?:r\.FormValue|r\.URL\.Query)"#,
+            // Rust: let var = env::var
+            r#"let\s+(?:mut\s+)?(\w+)\s*=\s*(?:std::env::var|env!)"#,
+        ];
+
+        for pattern in &assignment_patterns {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if let Some(caps) = re.captures(line) {
+                    if let Some(var_name) = caps.get(1) {
+                        vars.push(var_name.as_str().to_string());
+                    }
+                }
+            }
+        }
+
+        // 如果没有匹配到变量名，尝试从函数参数中提取
+        if vars.is_empty() {
+            // 函数参数: func(user_input) 或 def func(user_input):
+            let param_pattern = r#"(?:def|function|func|fn)\s+\w+\s*\(([^)]+)\)"#;
+            if let Ok(re) = regex::Regex::new(param_pattern) {
+                if let Some(caps) = re.captures(line) {
+                    if let Some(params) = caps.get(1) {
+                        for param in params.as_str().split(',') {
+                            let param = param.trim()
+                                .split(':').next().unwrap_or("")
+                                .split('=').next().unwrap_or("")
+                                .trim();
+                            if !param.is_empty() && param != "self" && param != "this" {
+                                vars.push(param.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        vars
+    }
+
+    /// 追踪变量传播路径
+    fn trace_variable_propagation(
+        &self,
+        tainted_vars: &[String],
+        start_line: usize,
+        end_line: usize,
+        lines: &[&str],
+    ) -> Vec<PropagationStep> {
+        let mut steps = Vec::new();
+        let mut current_tainted: HashSet<String> = tainted_vars.iter().cloned().collect();
+
+        for line_num in start_line..=end_line {
+            if line_num == 0 || line_num > lines.len() {
+                continue;
+            }
+
+            let line = lines[line_num - 1];
+            let line_trimmed = line.trim();
+
+            // 跳过空行和注释
+            if line_trimmed.is_empty() || line_trimmed.starts_with("//") ||
+               line_trimmed.starts_with("#") || line_trimmed.starts_with("/*") {
+                continue;
+            }
+
+            // 检测赋值传播
+            if let Some(step) = self.detect_assignment_propagation(line_num, line_trimmed, &current_tainted) {
+                // 更新污染变量集合
+                if let Some(ref to_var) = step.to_var {
+                    current_tainted.insert(to_var.clone());
+                }
+                steps.push(step);
+            }
+
+            // 检测函数调用传播
+            if let Some(step) = self.detect_call_propagation(line_num, line_trimmed, &current_tainted) {
+                if let Some(ref to_var) = step.to_var {
+                    current_tainted.insert(to_var.clone());
+                }
+                steps.push(step);
+            }
+
+            // 检测净化处理
+            if self.is_sanitization_line(line_trimmed, &current_tainted) {
+                steps.push(PropagationStep {
+                    step_type: PropagationStepType::Sanitization,
+                    from_var: None,
+                    to_var: None,
+                    line: line_num,
+                    code_snippet: Some(line_trimmed.to_string()),
+                    function_name: self.extract_function_name(line_trimmed),
+                });
+            }
+        }
+
+        steps
+    }
+
+    /// 检测赋值传播
+    fn detect_assignment_propagation(
+        &self,
+        line_num: usize,
+        line: &str,
+        tainted_vars: &HashSet<String>,
+    ) -> Option<PropagationStep> {
+        // 匹配赋值语句
+        let assignment_pattern = r#"(\w+)\s*[:=]+\s*(.+)"#;
+        let re = regex::Regex::new(assignment_pattern).ok()?;
+
+        let caps = re.captures(line)?;
+        let to_var = caps.get(1)?.as_str().to_string();
+        let value = caps.get(2)?.as_str();
+
+        // 检查右侧是否包含污染变量
+        for tainted in tainted_vars {
+            if value.contains(tainted) {
+                let step_type = if value.contains('+') || value.contains("format!") ||
+                                   value.contains("f'") || value.contains("f\"") ||
+                                   value.contains("${") {
+                    PropagationStepType::ConcatAssignment
+                } else {
+                    PropagationStepType::DirectAssignment
+                };
+
+                return Some(PropagationStep {
+                    step_type,
+                    from_var: Some(tainted.clone()),
+                    to_var: Some(to_var),
+                    line: line_num,
+                    code_snippet: Some(line.to_string()),
+                    function_name: None,
+                });
+            }
+        }
+
+        None
+    }
+
+    /// 检测函数调用传播
+    fn detect_call_propagation(
+        &self,
+        line_num: usize,
+        line: &str,
+        tainted_vars: &HashSet<String>,
+    ) -> Option<PropagationStep> {
+        // 匹配变量 = 函数调用(...) 或 函数调用(...)
+        let call_pattern = r#"(?:(\w+)\s*[:=]+\s*)?(\w+)\s*\(([^)]*)\)"#;
+        let re = regex::Regex::new(call_pattern).ok()?;
+        let caps = re.captures(line)?;
+
+        let to_var = caps.get(1).map(|m| m.as_str().to_string());
+        let func_name = caps.get(2)?.as_str().to_string();
+        let args = caps.get(3)?.as_str();
+
+        // 检查参数中是否包含污染变量
+        for tainted in tainted_vars {
+            if args.contains(tainted) {
+                return Some(PropagationStep {
+                    step_type: PropagationStepType::CallPropagation,
+                    from_var: Some(tainted.clone()),
+                    to_var,
+                    line: line_num,
+                    code_snippet: Some(line.to_string()),
+                    function_name: Some(func_name),
+                });
+            }
+        }
+
+        None
+    }
+
+    /// 检查是否是净化行
+    fn is_sanitization_line(&self, line: &str, tainted_vars: &HashSet<String>) -> bool {
+        for sanitizer in &self.sanitizers {
+            if line.contains(&sanitizer.pattern) {
+                // 检查是否涉及污染变量
+                for tainted in tainted_vars {
+                    if line.contains(tainted) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// 提取函数名
+    fn extract_function_name(&self, line: &str) -> Option<String> {
+        let pattern = r#"(\w+)\s*\("#;
+        let re = regex::Regex::new(pattern).ok()?;
+        let caps = re.captures(line)?;
+        Some(caps.get(1)?.as_str().to_string())
+    }
+
+    /// 基于传播步骤检查净化
+    fn check_sanitization_with_steps(&self, steps: &[PropagationStep]) -> bool {
+        steps.iter().any(|step| step.step_type == PropagationStepType::Sanitization)
+    }
+
+    /// 计算置信度
+    fn calculate_confidence(
+        &self,
+        propagation_steps: &[PropagationStep],
+        sanitized: bool,
+        _source: &TaintSource,
+        sink: &TaintSink,
+    ) -> f32 {
+        let mut confidence = 0.8;
+
+        // 如果经过净化，降低置信度
+        if sanitized {
+            confidence *= 0.4;
+        }
+
+        // 根据传播路径长度调整
+        let path_length = propagation_steps.len();
+        if path_length > 5 {
+            // 传播路径过长，降低置信度
+            confidence *= 0.9;
+        } else if path_length == 0 {
+            // 没有中间传播，可能是误报
+            confidence *= 0.6;
+        }
+
+        // 根据漏洞类型调整
+        match sink.vulnerability_type {
+            VulnerabilityType::SqlInjection | VulnerabilityType::CommandInjection => {
+                // 高危漏洞，保持高置信度
+            }
+            VulnerabilityType::CrossSiteScripting => {
+                // XSS 可能有输出编码，略微降低
+                confidence *= 0.95;
+            }
+            _ => {}
+        }
+
+        (confidence * 100.0_f32).round() / 100.0_f32 // 保留两位小数
+    }
+
+    /// 构建污点流路径
+    fn build_flow_path(
+        &self,
+        source_loc: &FlowLocation,
+        sink_loc: &FlowLocation,
+        propagation_steps: &[PropagationStep],
+        file_path: &str,
+        lines: &[&str],
+    ) -> Vec<FlowNode> {
+        let mut path = Vec::new();
+
+        // 添加源节点
+        path.push(FlowNode {
+            node_type: FlowNodeType::Source,
+            file_path: file_path.to_string(),
+            line: source_loc.line,
+            symbol: source_loc.symbol.clone(),
+            code_snippet: source_loc.code_snippet.clone(),
+        });
+
+        // 添加传播节点
+        for step in propagation_steps {
+            let node_type = match step.step_type {
+                PropagationStepType::DirectAssignment | PropagationStepType::ConcatAssignment => {
+                    FlowNodeType::Assignment
+                }
+                PropagationStepType::CallPropagation => FlowNodeType::Call,
+                PropagationStepType::ReturnPropagation => FlowNodeType::Return,
+                PropagationStepType::FieldPropagation => FlowNodeType::FieldAccess,
+                PropagationStepType::Sanitization => FlowNodeType::Sanitized,
+                PropagationStepType::Dereference => FlowNodeType::IndexAccess,
+            };
+
+            let symbol = step.to_var.clone()
+                .or_else(|| step.function_name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            path.push(FlowNode {
+                node_type,
+                file_path: file_path.to_string(),
+                line: step.line,
+                symbol,
+                code_snippet: step.code_snippet.clone(),
+            });
+        }
+
+        // 添加汇节点
+        path.push(FlowNode {
+            node_type: FlowNodeType::Sink,
+            file_path: file_path.to_string(),
+            line: sink_loc.line,
+            symbol: sink_loc.symbol.clone(),
+            code_snippet: sink_loc.code_snippet.clone(),
+        });
+
+        path
+    }
+
+    /// 获取所有污点源的引用
+    pub fn sources(&self) -> &[TaintSource] {
+        &self.sources
+    }
+
+    /// 获取所有污点汇的引用
+    pub fn sinks(&self) -> &[TaintSink] {
+        &self.sinks
+    }
+
+    /// 消费分析器，返回污点源列表
+    pub fn into_sources(self) -> Vec<TaintSource> {
+        self.sources
+    }
+
+    /// 消费分析器，返回污点汇列表
+    pub fn into_sinks(self) -> Vec<TaintSink> {
+        self.sinks
     }
 }
 

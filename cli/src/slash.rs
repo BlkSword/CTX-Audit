@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 斜杠命令系统
@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::config::ConfigManager;
 use crate::database::Database;
-use ctx_audit_agent_engine::{AgentRegistry, AgentType, AgentConfig, LLMConfig, AgentContext};
+use ctx_audit_agent_engine::{AgentConfig, AgentContext, AgentRegistry, AgentType, LLMConfig};
 use ctx_audit_tools::ToolRegistry;
 
 /// 斜杠命令
@@ -26,9 +26,7 @@ pub enum SlashCommand {
     Clear,
 
     /// 审计
-    Audit {
-        path: Option<String>,
-    },
+    Audit { path: Option<String> },
 
     /// 扫描
     Scan {
@@ -43,20 +41,13 @@ pub enum SlashCommand {
     },
 
     /// 查找符号
-    Find {
-        symbol: String,
-    },
+    Find { symbol: String },
 
     /// 查找引用
-    Refs {
-        symbol: String,
-    },
+    Refs { symbol: String },
 
     /// 调用图
-    CallGraph {
-        entry: String,
-        depth: Option<usize>,
-    },
+    CallGraph { entry: String, depth: Option<usize> },
 
     /// 解释代码
     Explain {
@@ -65,9 +56,7 @@ pub enum SlashCommand {
     },
 
     /// 修复漏洞
-    Fix {
-        finding_id: Option<String>,
-    },
+    Fix { finding_id: Option<String> },
 
     /// 差异对比
     Diff {
@@ -76,9 +65,7 @@ pub enum SlashCommand {
     },
 
     /// 切换目录
-    Cd {
-        path: String,
-    },
+    Cd { path: String },
 
     /// 列出漏洞
     Findings,
@@ -102,15 +89,10 @@ pub enum SlashCommand {
     Continue,
 
     /// 索引项目
-    Index {
-        path: Option<String>,
-    },
+    Index { path: Option<String> },
 
     /// 自定义命令
-    Custom {
-        name: String,
-        args: Vec<String>,
-    },
+    Custom { name: String, args: Vec<String> },
 }
 
 /// 斜杠命令解析器
@@ -153,7 +135,9 @@ impl SlashCommandParser {
         }
 
         // 解析别名
-        let command = self.aliases.get(parts[0])
+        let command = self
+            .aliases
+            .get(parts[0])
             .map(|s| s.as_str())
             .unwrap_or(parts[0]);
 
@@ -166,29 +150,39 @@ impl SlashCommandParser {
                 Ok(SlashCommand::Audit { path })
             }
             "scan" => {
-                let path = parts.get(1).map(|s| s.to_string())
+                let path = parts
+                    .get(1)
+                    .map(|s| s.to_string())
                     .unwrap_or_else(|| ".".to_string());
                 let output = parts.get(2).map(|s| s.to_string());
                 Ok(SlashCommand::Scan { path, output })
             }
             "search" | "s" => {
-                let query = parts.get(1).map(|s| s.to_string())
+                let query = parts
+                    .get(1)
+                    .map(|s| s.to_string())
                     .ok_or_else(|| "缺少搜索查询".to_string())?;
                 let in_file = parts.get(2).map(|s| s.to_string());
                 Ok(SlashCommand::Search { query, in_file })
             }
             "find" | "f" => {
-                let symbol = parts.get(1).map(|s| s.to_string())
+                let symbol = parts
+                    .get(1)
+                    .map(|s| s.to_string())
                     .ok_or_else(|| "缺少符号名".to_string())?;
                 Ok(SlashCommand::Find { symbol })
             }
             "refs" => {
-                let symbol = parts.get(1).map(|s| s.to_string())
+                let symbol = parts
+                    .get(1)
+                    .map(|s| s.to_string())
                     .ok_or_else(|| "缺少符号名".to_string())?;
                 Ok(SlashCommand::Refs { symbol })
             }
             "callgraph" | "cg" => {
-                let entry = parts.get(1).map(|s| s.to_string())
+                let entry = parts
+                    .get(1)
+                    .map(|s| s.to_string())
                     .ok_or_else(|| "缺少入口函数".to_string())?;
                 let depth = parts.get(2).and_then(|s| s.parse().ok());
                 Ok(SlashCommand::CallGraph { entry, depth })
@@ -203,19 +197,25 @@ impl SlashCommandParser {
                 Ok(SlashCommand::Fix { finding_id })
             }
             "diff" => {
-                let file1 = parts.get(1).map(|s| s.to_string())
+                let file1 = parts
+                    .get(1)
+                    .map(|s| s.to_string())
                     .ok_or_else(|| "缺少文件路径".to_string())?;
                 let file2 = parts.get(2).map(|s| s.to_string());
                 Ok(SlashCommand::Diff { file1, file2 })
             }
             "cd" | "pwd" => {
-                let path = parts.get(1).map(|s| s.to_string())
+                let path = parts
+                    .get(1)
+                    .map(|s| s.to_string())
                     .unwrap_or_else(|| ".".to_string());
                 Ok(SlashCommand::Cd { path })
             }
             "findings" => Ok(SlashCommand::Findings),
             "export" => {
-                let format = parts.get(1).map(|s| s.to_string())
+                let format = parts
+                    .get(1)
+                    .map(|s| s.to_string())
                     .unwrap_or_else(|| "json".to_string());
                 let output = parts.get(2).map(|s| s.to_string());
                 Ok(SlashCommand::Export { format, output })
@@ -245,9 +245,24 @@ impl SlashCommandParser {
         let mut suggestions = Vec::new();
 
         let commands = vec![
-            "help", "quit", "clear", "audit", "scan", "search",
-            "find", "refs", "callgraph", "explain", "fix", "diff",
-            "cd", "findings", "export", "config", "history", "continue",
+            "help",
+            "quit",
+            "clear",
+            "audit",
+            "scan",
+            "search",
+            "find",
+            "refs",
+            "callgraph",
+            "explain",
+            "fix",
+            "diff",
+            "cd",
+            "findings",
+            "export",
+            "config",
+            "history",
+            "continue",
             "index",
         ];
 
@@ -314,18 +329,15 @@ impl SlashCommandExecutor {
     /// 执行命令
     pub async fn execute(&self, command: &SlashCommand) -> Result<String, String> {
         match command {
-            SlashCommand::Help => {
-                Ok(self.get_help_text())
-            }
-            SlashCommand::Quit => {
-                Ok("再见！".to_string())
-            }
+            SlashCommand::Help => Ok(self.get_help_text()),
+            SlashCommand::Quit => Ok("再见！".to_string()),
             SlashCommand::Clear => {
                 // 在 TUI 中会由调用者处理
                 Ok("屏幕已清除".to_string())
             }
             SlashCommand::Audit { path } => {
-                let project_path = path.clone()
+                let project_path = path
+                    .clone()
                     .or(self.current_project.clone())
                     .ok_or_else(|| "未指定项目路径".to_string())?;
 
@@ -342,52 +354,35 @@ impl SlashCommandExecutor {
             SlashCommand::Search { query, in_file } => {
                 self.search_code(query.clone(), in_file.clone()).await
             }
-            SlashCommand::Find { symbol } => {
-                self.find_symbol(symbol.clone()).await
-            }
-            SlashCommand::Refs { symbol } => {
-                self.find_references(symbol.clone()).await
-            }
+            SlashCommand::Find { symbol } => self.find_symbol(symbol.clone()).await,
+            SlashCommand::Refs { symbol } => self.find_references(symbol.clone()).await,
             SlashCommand::CallGraph { entry, depth } => {
                 self.get_call_graph(entry.clone(), *depth).await
             }
-            SlashCommand::Explain { file, line } => {
-                self.explain_code(file.clone(), *line).await
-            }
-            SlashCommand::Fix { finding_id } => {
-                self.fix_finding(finding_id.clone()).await
-            }
+            SlashCommand::Explain { file, line } => self.explain_code(file.clone(), *line).await,
+            SlashCommand::Fix { finding_id } => self.fix_finding(finding_id.clone()).await,
             SlashCommand::Diff { file1, file2 } => {
                 self.show_diff(file1.clone(), file2.clone()).await
             }
-            SlashCommand::Cd { path } => {
-                Ok(format!("切换到: {}", path))
-            }
-            SlashCommand::Findings => {
-                self.list_findings().await
-            }
+            SlashCommand::Cd { path } => Ok(format!("切换到: {}", path)),
+            SlashCommand::Findings => self.list_findings().await,
             SlashCommand::Export { format, output } => {
                 self.export_findings(&format, output.clone()).await
             }
             SlashCommand::Config { key, value } => {
                 self.handle_config(key.clone(), value.clone()).await
             }
-            SlashCommand::History => {
-                Ok("历史记录功能待实现".to_string())
-            }
-            SlashCommand::Continue => {
-                Ok("继续对话功能待实现".to_string())
-            }
+            SlashCommand::History => Ok("历史记录功能待实现".to_string()),
+            SlashCommand::Continue => Ok("继续对话功能待实现".to_string()),
             SlashCommand::Index { path } => {
-                let project_path = path.clone()
+                let project_path = path
+                    .clone()
                     .or(self.current_project.clone())
                     .ok_or_else(|| "未指定项目路径".to_string())?;
 
                 self.index_project(project_path).await
             }
-            SlashCommand::Custom { name, args } => {
-                Err(format!("未知命令: {}", name))
-            }
+            SlashCommand::Custom { name, args } => Err(format!("未知命令: {}", name)),
         }
     }
 
@@ -446,11 +441,17 @@ LLM 配置:
   /config llm.base_url https://your-api-endpoint.com/v1
   /config llm.api_key your-api-key
   /config llm.model your-model-name
-"#.trim().to_string()
+"#
+        .trim()
+        .to_string()
     }
 
     /// 运行审计
-    async fn run_audit(&self, agent_registry: &AgentRegistry, path: String) -> Result<String, String> {
+    async fn run_audit(
+        &self,
+        agent_registry: &AgentRegistry,
+        path: String,
+    ) -> Result<String, String> {
         // 创建审计上下文
         let context = AgentContext {
             project_id: uuid::Uuid::new_v4().to_string(),
@@ -461,36 +462,34 @@ LLM 配置:
         };
 
         // 创建 Analysis Agent
-        let agent = agent_registry.create_agent(
-            AgentType::Analysis,
-            AgentConfig {
-                agent_type: AgentType::Analysis,
-                name: "Analysis Agent".to_string(),
-                description: Some("代码安全审计".to_string()),
-                llm_config: LLMConfig::default(),
-                max_iterations: 50,
-                timeout_secs: Some(600),
-                extra: Default::default(),
-            },
-        ).map_err(|e| format!("创建 Agent 失败: {}", e))?;
+        let agent = agent_registry
+            .create_agent(
+                AgentType::Analysis,
+                AgentConfig {
+                    agent_type: AgentType::Analysis,
+                    name: "Analysis Agent".to_string(),
+                    description: Some("代码安全审计".to_string()),
+                    llm_config: LLMConfig::default(),
+                    max_iterations: None,
+                    timeout_secs: Some(600),
+                    extra: Default::default(),
+                },
+            )
+            .map_err(|e| format!("创建 Agent 失败: {}", e))?;
 
         // 执行审计
         let result = agent.execute(context).await;
 
         match result.status {
-            ctx_audit_agent_engine::AgentStatus::Completed => {
-                Ok(format!(
-                    "审计完成！\n\n消息: {}\n发现漏洞: {}",
-                    result.message.unwrap_or_default(),
-                    result.findings.len()
-                ))
-            }
+            ctx_audit_agent_engine::AgentStatus::Completed => Ok(format!(
+                "审计完成！\n\n消息: {}\n发现漏洞: {}",
+                result.message.unwrap_or_default(),
+                result.findings.len()
+            )),
             ctx_audit_agent_engine::AgentStatus::Failed => {
                 Err(format!("审计失败: {}", result.error.unwrap_or_default()))
             }
-            _ => {
-                Err("审计未正常完成".to_string())
-            }
+            _ => Err("审计未正常完成".to_string()),
         }
     }
 
@@ -513,12 +512,9 @@ LLM 配置:
             .map_err(|e| format!("数据库连接失败: {}", e))?;
 
         // 搜索符号（使用 project_id = 1 作为默认值）
-        let symbols = crate::database::SymbolQueries::search(
-            db.pool(),
-            1,
-            &symbol,
-        ).await
-        .map_err(|e| format!("符号搜索失败: {}", e))?;
+        let symbols = crate::database::SymbolQueries::search(db.pool(), 1, &symbol)
+            .await
+            .map_err(|e| format!("符号搜索失败: {}", e))?;
 
         if symbols.is_empty() {
             return Ok(format!("未找到符号: {}", symbol));
@@ -529,10 +525,7 @@ LLM 配置:
         for sym in &symbols {
             result.push_str(&format!(
                 "  [{}] {} - {}:{}\n",
-                sym.symbol_type,
-                sym.symbol_name,
-                sym.file_path,
-                sym.line_number
+                sym.symbol_type, sym.symbol_name, sym.file_path, sym.line_number
             ));
         }
 
@@ -550,7 +543,11 @@ LLM 配置:
     }
 
     /// 解释代码
-    async fn explain_code(&self, file: Option<String>, line: Option<usize>) -> Result<String, String> {
+    async fn explain_code(
+        &self,
+        file: Option<String>,
+        line: Option<usize>,
+    ) -> Result<String, String> {
         Ok(format!("解释代码: {:?}:{:?}", file, line))
     }
 
@@ -572,14 +569,10 @@ LLM 配置:
             .map_err(|e| format!("数据库连接失败: {}", e))?;
 
         // 获取漏洞列表
-        let findings = crate::database::FindingQueries::list(
-            db.pool(),
-            None,
-            None,
-            Some("open"),
-            None,
-        ).await
-        .map_err(|e| format!("获取漏洞列表失败: {}", e))?;
+        let findings =
+            crate::database::FindingQueries::list(db.pool(), None, None, Some("open"), None)
+                .await
+                .map_err(|e| format!("获取漏洞列表失败: {}", e))?;
 
         if findings.is_empty() {
             return Ok("暂无漏洞记录".to_string());
@@ -610,7 +603,10 @@ LLM 配置:
                 finding.severity,
                 title,
                 finding.file_path,
-                finding.start_line.map(|l| l.to_string()).unwrap_or_default()
+                finding
+                    .start_line
+                    .map(|l| l.to_string())
+                    .unwrap_or_default()
             ));
         }
 
@@ -622,14 +618,22 @@ LLM 配置:
     }
 
     /// 导出漏洞
-    async fn export_findings(&self, format: &str, output: Option<String>) -> Result<String, String> {
+    async fn export_findings(
+        &self,
+        format: &str,
+        output: Option<String>,
+    ) -> Result<String, String> {
         Ok(format!("导出为 {} 到 {:?}", format, output))
     }
 
     /// 处理配置
-    async fn handle_config(&self, key: Option<String>, value: Option<String>) -> Result<String, String> {
-        let mut config_manager = ConfigManager::new(None)
-            .map_err(|e| format!("加载配置失败: {}", e))?;
+    async fn handle_config(
+        &self,
+        key: Option<String>,
+        value: Option<String>,
+    ) -> Result<String, String> {
+        let mut config_manager =
+            ConfigManager::new(None).map_err(|e| format!("加载配置失败: {}", e))?;
 
         match (key, value) {
             (None, None) => {
@@ -673,19 +677,29 @@ LLM 配置:
                             Ok(format!("{}: {}", key, value))
                         }
                     }
-                    None => Ok(format!("{}: (未设置)", key))
+                    None => Ok(format!("{}: (未设置)", key)),
                 }
             }
             (Some(key), Some(value)) => {
                 // 设置配置
-                config_manager.set(&key, value.clone())
+                config_manager
+                    .set(&key, value.clone())
                     .map_err(|e| format!("设置失败: {}", e))?;
 
-                config_manager.save().await
+                config_manager
+                    .save()
+                    .await
                     .map_err(|e| format!("保存配置失败: {}", e))?;
 
-                Ok(format!("配置已更新: {} = {}", key,
-                    if key.contains("api_key") { "***" } else { &value }))
+                Ok(format!(
+                    "配置已更新: {} = {}",
+                    key,
+                    if key.contains("api_key") {
+                        "***"
+                    } else {
+                        &value
+                    }
+                ))
             }
         }
     }

@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! ReAct 循环状态管理
@@ -45,6 +45,12 @@ pub struct ReactState {
 
     /// 最后更新时间
     pub updated_at: DateTime<Utc>,
+
+    /// 连续空闲迭代次数（没有执行工具调用）
+    pub idle_iterations: u32,
+
+    /// 最大允许空闲迭代次数
+    pub max_idle_iterations: u32,
 }
 
 impl ReactState {
@@ -64,6 +70,8 @@ impl ReactState {
             completed_goals: Vec::new(),
             started_at: now,
             updated_at: now,
+            idle_iterations: 0,
+            max_idle_iterations: 3, // 默认3次空闲迭代后自动停止
         }
     }
 
@@ -75,6 +83,12 @@ impl ReactState {
 
     /// 添加思考条目
     pub fn add_thought(&mut self, thought: ThoughtEntry) {
+        // 检查是否是空闲迭代（没有执行工具调用）
+        if thought.action.is_none() {
+            self.idle_iterations += 1;
+        } else {
+            self.idle_iterations = 0;
+        }
         self.thought_chain.push(thought);
         self.updated_at = Utc::now();
     }
@@ -132,8 +146,21 @@ impl ReactState {
     }
 
     /// 是否应该继续
-    pub fn should_continue(&self, max_iterations: u32) -> bool {
-        !self.completed && !self.failed && self.iteration < max_iterations
+    pub fn should_continue(&self, max_iterations: Option<u32>) -> bool {
+        if self.completed || self.failed {
+            return false;
+        }
+        // 检查最大迭代次数限制
+        if let Some(max) = max_iterations {
+            if self.iteration >= max {
+                return false;
+            }
+        }
+        // 检查空闲迭代次数，防止无限空转
+        if self.idle_iterations >= self.max_idle_iterations {
+            return false;
+        }
+        true
     }
 
     /// 获取上下文摘要（用于 LLM 提示）

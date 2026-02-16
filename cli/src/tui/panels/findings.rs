@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 漏洞列表面板
@@ -132,19 +132,19 @@ impl FindingsPanel {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("[{}] ", match finding.status {
-                            FindingStatus::Open => "○",
-                            FindingStatus::Fixed => "✓",
-                            FindingStatus::Ignored => "⊘",
+                            FindingStatus::Open => "o",
+                            FindingStatus::Fixed => "[OK]",
+                            FindingStatus::Ignored => "[X]",
                         }),
                         Style::default().fg(Color::DarkGray)
                     ),
                     Span::styled(
                         format!("{} ", match finding.severity.to_lowercase().as_str() {
-                            "critical" => "⚠⚠",
-                            "high" => "⚠",
-                            "medium" => "⚠",
-                            "low" => "ℹ",
-                            _ => "?",
+                            "critical" => "[!!!]",
+                            "high" => "[!!]",
+                            "medium" => "[!]",
+                            "low" => "[i]",
+                            _ => "[?]",
                         }),
                         Style::default().fg(color)
                     ),

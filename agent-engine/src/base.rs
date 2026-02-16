@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! Agent 基础 Trait 定义
@@ -64,8 +64,8 @@ pub struct AgentConfig {
     /// LLM 配置
     pub llm_config: LLMConfig,
 
-    /// 最大迭代次数
-    pub max_iterations: u32,
+    /// 最大迭代次数（None 表示无限制）
+    pub max_iterations: Option<u32>,
 
     /// 超时时间（秒）
     pub timeout_secs: Option<u64>,
@@ -82,7 +82,7 @@ impl Default for AgentConfig {
             name: "default".to_string(),
             description: None,
             llm_config: LLMConfig::default(),
-            max_iterations: 50,
+            max_iterations: None,
             timeout_secs: None,
             extra: HashMap::new(),
         }

@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! CTX-Audit 工具系统
@@ -13,6 +13,8 @@ pub mod ast_tools;
 pub mod write_tools;
 pub mod shell_tools;
 pub mod search_tools;
+pub mod taint_tools;
+pub mod pattern_tools;
 
 // 重新导出常用类型
 pub use registry::{ToolRegistry, Tool};
@@ -22,6 +24,8 @@ pub use ast_tools::register_ast_tools;
 pub use write_tools::register_write_tools;
 pub use shell_tools::register_shell_tools;
 pub use search_tools::register_search_tools;
+pub use taint_tools::register_taint_tools;
+pub use pattern_tools::register_pattern_tools;
 
 // 重新导出模型类型
 pub use bridge::{

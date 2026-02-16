@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 代码分析模块
@@ -6,9 +6,37 @@
 //! 提供污点分析、数据流分析和跨文件分析能力
 
 pub mod taint;
+pub mod enhanced_taint;
 pub mod dataflow;
+pub mod enhanced_dataflow;
+pub mod cross_file;
+pub mod cache;
 pub mod imports;
 
-pub use taint::{TaintAnalyzer, TaintSource, TaintSink, TaintFlow, TaintResult};
-pub use dataflow::{DataFlowAnalysis, FlowFact, FlowGraph, FlowNode};
+pub use taint::{
+    TaintAnalyzer, TaintSource, TaintSink, TaintFlow, TaintResult,
+    FlowLocation, FlowNode, FlowNodeType, PropagationStep, PropagationStepType,
+    Severity, TaintCategory, VulnerabilityType,
+};
+pub use enhanced_taint::{
+    EnhancedTaintAnalyzer, VariableTaint, PropagationStep as EnhancedPropagationStep,
+    PropagationStepType as EnhancedPropagationStepType,
+};
+pub use dataflow::{DataFlowAnalysis, FlowFact, FlowGraph, FlowNode as DataFlowNode};
+pub use enhanced_dataflow::{
+    EnhancedFlowGraph, EnhancedFlowNode, EnhancedNodeType, ControlFlowEdge, EdgeType,
+};
+pub use cross_file::{
+    CallGraph, CallGraphNode, FunctionParameter,
+    CrossFileTaintAnalyzer, CrossFileTaintResult, CrossFileAnalysisStats,
+    InterproceduralTaintFlow, InterproceduralStep, InterproceduralStepType,
+};
+pub use cache::{
+    CacheEntry, CacheStats, MemoryCache,
+    AstCache, AstCacheEntry, CachedSymbol,
+    AnalysisCache, AnalysisCacheEntry,
+    TaintCache, TaintCacheEntry,
+    CacheManager, TotalCacheStats,
+    get_file_mtime, compute_file_hash,
+};
 pub use imports::{ImportResolver, SymbolReference, CrossFileReference};

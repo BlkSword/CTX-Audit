@@ -1,9 +1,9 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! CTX-Audit Agent Engine
 //!
-//! Multi-agent 系统实现，支持 Orchestrator、Recon、Analysis、Verification Agent
+//! 专业安全审计框架，实现阶段化、目标导向的审计流程
 
 pub mod agents;
 pub mod base;
@@ -20,6 +20,15 @@ pub mod registry;
 pub mod state;
 pub mod context;
 
+// 新模块
+pub mod audit_state;
+pub mod prescan;
+pub mod phase_executor;
+pub mod task_scheduler;
+pub mod audit_prompts;
+pub mod audit_chain;
+pub mod tool_recommender;
+
 // 重新导出常用类型
 pub use base::{Agent, AgentContext, AgentConfig, AgentResult, AgentType, AgentStatus};
 pub use base::{ExecutionStats, ThoughtEntry, ToolCallRecord, LLMConfig};
@@ -32,6 +41,16 @@ pub use react_agent::{
     create_analysis_agent, create_verification_agent,
 };
 
+// 新模块导出
+pub use audit_state::{
+    SecurityAuditState, AuditPhase, AnalysisTarget, TargetPriority, TargetType,
+    TargetStatus, VulnerabilityCandidate, VerificationStatus, ProjectInfo,
+};
+pub use prescan::{DeterministicPrescanner, PrescanConfig, PrescanResult, ProjectInfoCollector};
+pub use phase_executor::{PhaseAwareExecutor, PhaseResult};
+pub use task_scheduler::{TaskScheduler, ScheduledTask, TaskStatus};
+pub use audit_prompts::AuditPrompts;
+
 // 上下文管理
 pub use context::{RAGRetriever, RAGContext, IndexStats};
 
@@ -40,6 +59,16 @@ pub use fix::{RepairGenerator, RepairSuggestion, RepairStrategy, RepairTemplateL
 
 // PoC 生成
 pub use poc::{PoCGenerator, PoCResult, PoCTemplateLibrary, PoCContext};
+
+// 审计思维链
+pub use audit_chain::{
+    SecurityAuditChain, AuditThinkingPhase, VulnerabilityHypothesis, HypothesisStatus,
+    Evidence, EvidenceType, VerificationResult, VulnerabilityType, Severity,
+    CodeLocation, DataFlowStep, DataFlowStepType,
+};
+
+// 工具推荐
+pub use tool_recommender::{ToolRecommender, ToolRecommendation, ToolCombo};
 
 /// Agent 引擎版本
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -1,4 +1,4 @@
-// Copyright 2024 CTX-Audit
+// Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
 //! 终端渲染器
@@ -10,8 +10,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Write;
 use std::time::Duration;
 
-use ctx_audit_agent_engine::{AgentType, AgentStatus};
 use crate::database::Finding;
+use ctx_audit_agent_engine::{AgentStatus, AgentType};
 
 /// 终端渲染器
 pub struct TerminalRenderer {
@@ -81,12 +81,12 @@ impl TerminalRenderer {
     /// 打印 Agent 状态
     pub fn agent_status(&mut self, agent_type: &AgentType, status: &AgentStatus) {
         let icon = match status {
-            AgentStatus::Initializing => "⚙",
-            AgentStatus::Running => "▶",
-            AgentStatus::Completed => "✓",
-            AgentStatus::Paused => "⏸",
-            AgentStatus::Failed => "✗",
-            AgentStatus::Cancelled => "⏹",
+            AgentStatus::Initializing => "[*]",
+            AgentStatus::Running => ">",
+            AgentStatus::Completed => "[OK]",
+            AgentStatus::Paused => "||",
+            AgentStatus::Failed => "[ERR]",
+            AgentStatus::Cancelled => "[STOP]",
         };
 
         let status_str = match status {
@@ -125,11 +125,11 @@ impl TerminalRenderer {
     /// 打印漏洞发现
     pub fn finding(&mut self, severity: &str, title: &str, file_path: &str, line: u32) {
         let (icon, style) = match severity.to_lowercase().as_str() {
-            "critical" => ("⚠", Style::new().red().bold()),
-            "high" => ("⚠", Style::new().red()),
-            "medium" => ("⚠", Style::new().yellow()),
-            "low" => ("ℹ", Style::new().blue()),
-            _ => ("ℹ", Style::new().dim()),
+            "critical" => ("[!!!]", Style::new().red().bold()),
+            "high" => ("[!!]", Style::new().red()),
+            "medium" => ("[!]", Style::new().yellow()),
+            "low" => ("[*]", Style::new().blue()),
+            _ => ("[i]", Style::new().dim()),
         };
 
         let msg = format!(
@@ -147,11 +147,11 @@ impl TerminalRenderer {
     /// 打印漏洞（数据库模型）
     pub fn print_finding(&mut self, finding: &Finding) {
         let (icon, style) = match finding.severity.to_lowercase().as_str() {
-            "critical" => ("⚠", Style::new().red().bold()),
-            "high" => ("⚠", Style::new().red()),
-            "medium" => ("⚠", Style::new().yellow()),
-            "low" => ("ℹ", Style::new().blue()),
-            _ => ("ℹ", Style::new().dim()),
+            "critical" => ("[!!!]", Style::new().red().bold()),
+            "high" => ("[!!]", Style::new().red()),
+            "medium" => ("[!]", Style::new().yellow()),
+            "low" => ("[*]", Style::new().blue()),
+            _ => ("[i]", Style::new().dim()),
         };
 
         let location = if let Some(line) = finding.start_line {
@@ -254,7 +254,7 @@ impl TerminalRenderer {
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner} {msg}")
-                .unwrap()
+                .unwrap(),
         );
         pb.set_message(msg.to_string());
         pb.enable_steady_tick(Duration::from_millis(100));
@@ -287,10 +287,10 @@ impl LogLevel {
     fn as_str(&self) -> &str {
         match self {
             LogLevel::Debug => "D",
-            LogLevel::Info => "ℹ",
-            LogLevel::Success => "✓",
-            LogLevel::Warning => "⚠",
-            LogLevel::Error => "✗",
+            LogLevel::Info => "[i]",
+            LogLevel::Success => "[OK]",
+            LogLevel::Warning => "[WARN]",
+            LogLevel::Error => "[ERR]",
         }
     }
 
@@ -328,10 +328,12 @@ impl StreamOutput {
                 self.renderer.info(&format!("启动 {} Agent", agent_type));
             }
             StreamEvent::AgentComplete(agent_type, message) => {
-                self.renderer.success(&format!("{} Agent 完成: {}", agent_type, message));
+                self.renderer
+                    .success(&format!("{} Agent 完成: {}", agent_type, message));
             }
             StreamEvent::AgentError(agent_type, error) => {
-                self.renderer.error(&format!("{} Agent 失败: {}", agent_type, error));
+                self.renderer
+                    .error(&format!("{} Agent 失败: {}", agent_type, error));
             }
             StreamEvent::Thinking(agent_type, thought) => {
                 self.renderer.thinking(agent_type, thought);
