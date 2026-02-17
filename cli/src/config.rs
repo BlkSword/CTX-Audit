@@ -41,6 +41,7 @@ impl Default for Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
     /// 提供商 (anthropic, openai, openai-compatible, ollama)
+    #[serde(default = "default_provider")]
     pub provider: String,
 
     /// API 密钥
@@ -53,14 +54,22 @@ pub struct LLMConfig {
     pub base_url: Option<String>,
 
     /// 超时时间（秒）
+    #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
 
     /// 最大 tokens
+    #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
 
     /// 温度参数
+    #[serde(default = "default_temperature")]
     pub temperature: f32,
 }
+
+fn default_provider() -> String { "anthropic".to_string() }
+fn default_timeout() -> u64 { 120 }
+fn default_max_tokens() -> u32 { 4096 }
+fn default_temperature() -> f32 { 0.7 }
 
 impl Default for LLMConfig {
     fn default() -> Self {
@@ -83,13 +92,26 @@ pub struct ScanConfig {
     pub rules_dir: Option<PathBuf>,
 
     /// 并行线程数
+    #[serde(default = "default_threads")]
     pub threads: usize,
 
     /// 是否包含测试文件
+    #[serde(default)]
     pub include_tests: bool,
 
     /// 排除的目录模式
+    #[serde(default = "default_exclude_patterns")]
     pub exclude_patterns: Vec<String>,
+}
+
+fn default_threads() -> usize { 4 }
+fn default_exclude_patterns() -> Vec<String> {
+    vec![
+        "node_modules".to_string(),
+        "target".to_string(),
+        "vendor".to_string(),
+        ".git".to_string(),
+    ]
 }
 
 impl Default for ScanConfig {
@@ -112,14 +134,20 @@ impl Default for ScanConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
     /// 默认输出格式
+    #[serde(default = "default_format")]
     pub format: String,
 
     /// 是否显示颜色
+    #[serde(default = "default_color")]
     pub color: bool,
 
     /// 是否显示详细输出
+    #[serde(default)]
     pub verbose: bool,
 }
+
+fn default_format() -> String { "text".to_string() }
+fn default_color() -> bool { true }
 
 impl Default for OutputConfig {
     fn default() -> Self {
@@ -138,11 +166,16 @@ pub struct AdvancedConfig {
     pub cache_dir: Option<PathBuf>,
 
     /// 是否启用缓存
+    #[serde(default = "default_enable_cache")]
     pub enable_cache: bool,
 
     /// 日志级别
+    #[serde(default = "default_log_level")]
     pub log_level: String,
 }
+
+fn default_enable_cache() -> bool { true }
+fn default_log_level() -> String { "info".to_string() }
 
 impl Default for AdvancedConfig {
     fn default() -> Self {
@@ -184,16 +217,38 @@ impl ConfigManager {
     /// 从文件加载配置
     fn load_config(path: &Path) -> Option<Config> {
         if !path.exists() {
+            tracing::debug!("配置文件不存在: {:?}", path);
             return None;
         }
 
         // Use std::fs for synchronous file reading in this context
-        let content = std::fs::read_to_string(path).ok()?;
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("读取配置文件失败: {:?}", e);
+                return None;
+            }
+        };
+
         // 根据扩展名选择解析方式
-        let ext = path.extension()?.to_str()?;
+        let ext = match path.extension().and_then(|e| e.to_str()) {
+            Some(e) => e,
+            None => {
+                tracing::warn!("无法获取配置文件扩展名");
+                return None;
+            }
+        };
 
         match ext {
-            "toml" => toml::from_str(&content).ok(),
+            "toml" => {
+                match toml::from_str(&content) {
+                    Ok(config) => Some(config),
+                    Err(e) => {
+                        tracing::warn!("TOML 解析失败: {:?}", e);
+                        None
+                    }
+                }
+            }
             "yaml" | "yml" => serde_yaml::from_str(&content).ok(),
             "json" => serde_json::from_str(&content).ok(),
             _ => None,

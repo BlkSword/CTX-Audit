@@ -322,8 +322,7 @@ impl LLMClient for AnthropicClient {
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
                 while let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer.drain(..=newline_pos).collect::<String>();
-                    buffer = buffer[newline_pos + 1..].to_string();
+                    let line: String = buffer.drain(..=newline_pos).collect();
 
                     let line = line.trim();
                     if line.is_empty() || !line.starts_with("data:") {
@@ -419,8 +418,7 @@ impl LLMClient for AnthropicClient {
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
                 while let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer.drain(..=newline_pos).collect::<String>();
-                    buffer = buffer[newline_pos + 1..].to_string();
+                    let line: String = buffer.drain(..=newline_pos).collect();
 
                     let line = line.trim();
                     if line.is_empty() || !line.starts_with("data:") {
@@ -664,12 +662,33 @@ impl OpenAIClient {
             .build()
             .map_err(|e| LLMError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
 
+        // 智能 base_url 处理
+        let final_url = match base_url {
+            Some(url) => {
+                // 如果已经包含 /chat/completions，直接使用
+                if url.contains("/chat/completions") {
+                    url
+                }
+                // 如果以 /v4 或 /v1 结尾（智谱、DeepSeek 等），追加 /chat/completions
+                else if url.ends_with("/v4") || url.ends_with("/v1") {
+                    url + "/chat/completions"
+                }
+                // 如果 URL 以 / 结尾，去掉后再追加
+                else if url.ends_with('/') {
+                    url.trim_end_matches('/').to_string() + "/chat/completions"
+                }
+                // 否则直接追加
+                else {
+                    url + "/chat/completions"
+                }
+            }
+            None => "https://api.openai.com/v1/chat/completions".to_string(),
+        };
+
         Ok(Self {
             api_key,
             model: model.unwrap_or_else(|| "gpt-4".to_string()),
-            base_url: base_url
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string())
-                + "/chat/completions",
+            base_url: final_url,
             client,
         })
     }
@@ -949,8 +968,7 @@ impl LLMClient for OpenAIClient {
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
                 while let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer.drain(..=newline_pos).collect::<String>();
-                    buffer = buffer[newline_pos + 1..].to_string();
+                    let line: String = buffer.drain(..=newline_pos).collect();
 
                     let line = line.trim();
                     if line.is_empty() || !line.starts_with("data:") {
@@ -1054,8 +1072,7 @@ impl LLMClient for OpenAIClient {
                 buffer.push_str(&String::from_utf8_lossy(&chunk));
 
                 while let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer.drain(..=newline_pos).collect::<String>();
-                    buffer = buffer[newline_pos + 1..].to_string();
+                    let line: String = buffer.drain(..=newline_pos).collect();
 
                     let line = line.trim();
                     if line.is_empty() || !line.starts_with("data:") {
