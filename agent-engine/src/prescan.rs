@@ -645,7 +645,9 @@ impl ProjectInfoCollector {
             info.frameworks.push("Maven".to_string());
             info.project_type = Some("Java Application".to_string());
         }
-        if path.join("build.gradle").exists() || path.join("build.gradle.kts").exists() {
+        // Gradle: 检测 build.gradle 或 settings.gradle (多模块项目)
+        if path.join("build.gradle").exists() || path.join("build.gradle.kts").exists() ||
+           path.join("settings.gradle").exists() || path.join("settings.gradle.kts").exists() {
             info.tech_stack.push("Java".to_string());
             info.frameworks.push("Gradle".to_string());
             info.project_type = Some("Java Application".to_string());

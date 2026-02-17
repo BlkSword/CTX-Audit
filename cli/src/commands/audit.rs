@@ -14,7 +14,7 @@ use crate::terminal::{StreamEvent, StreamOutput, TerminalRenderer};
 use ctx_audit_agent_engine::{
     SecurityAuditState, AuditPhase, PhaseAwareExecutor, PhaseResult,
     DeterministicPrescanner, PrescanConfig, ProjectInfoCollector,
-    ExecutionEvent, ExecutionConfig,
+    ExecutionEvent, ExecutionConfig, SecurityAuditChain,
 };
 use ctx_audit_llm::LLMFactory;
 use ctx_audit_tools::FindingData;
@@ -356,10 +356,28 @@ pub async fn execute(
         }
     }
 
-    // 保存结果
-    if let Some(output_path) = output_path {
-        save_findings(&output_path, &all_findings, output_format, &mut renderer).await?;
-    }
+    // 自动生成报告文件
+    let report_timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let project_name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+    let default_output_path = format!("./{}_audit_{}.json", project_name, report_timestamp);
+    let final_output_path = output_path.unwrap_or(default_output_path);
+
+    // 生成完整报告
+    let full_report = generate_full_report(
+        &audit_state,
+        &all_findings,
+        executor.get_audit_chain(),
+        &path,
+    );
+
+    // 保存报告
+    save_full_report(&final_output_path, &full_report, &mut renderer).await?;
+
+    renderer.info("");
+    renderer.success(&format!("[报告] 已保存到: {}", final_output_path));
 
     Ok(())
 }
@@ -532,4 +550,101 @@ fn severity_to_level(severity: &str) -> &str {
         "low" | "info" => "note",
         _ => "none",
     }
+}
+
+/// 生成完整的审计报告
+fn generate_full_report(
+    state: &SecurityAuditState,
+    findings: &[FindingData],
+    audit_chain: &SecurityAuditChain,
+    project_path: &str,
+) -> serde_json::Value {
+    let completed_at = chrono::Utc::now();
+
+    serde_json::json!({
+        "meta": {
+            "tool": "CTX-Audit",
+            "version": env!("CARGO_PKG_VERSION"),
+            "generated_at": completed_at.to_rfc3339(),
+        },
+        "session": {
+            "id": state.session_id,
+            "project_path": project_path,
+            "started_at": state.started_at.to_rfc3339(),
+            "completed_at": completed_at.to_rfc3339(),
+            "duration_seconds": (completed_at - state.started_at).num_seconds(),
+        },
+        "project": {
+            "tech_stack": state.project_info.tech_stack,
+            "frameworks": state.project_info.frameworks,
+            "project_type": state.project_info.project_type,
+            "entry_points": state.project_info.entry_points,
+        },
+        "statistics": {
+            "files_scanned": state.stats.files_analyzed,
+            "llm_calls": state.stats.llm_calls,
+            "tool_calls": state.stats.tool_calls,
+            "total_candidates": state.vulnerability_candidates.len(),
+            "confirmed_vulnerabilities": findings.len(),
+            "false_positives": state.false_positives.len(),
+            "by_severity": {
+                "critical": findings.iter().filter(|f| f.severity == "critical").count(),
+                "high": findings.iter().filter(|f| f.severity == "high").count(),
+                "medium": findings.iter().filter(|f| f.severity == "medium").count(),
+                "low": findings.iter().filter(|f| f.severity == "low").count(),
+            },
+        },
+        "audit_chain": {
+            "phase": audit_chain.phase.display_name(),
+            "hypotheses_generated": audit_chain.stats.hypotheses_generated,
+            "hypotheses_confirmed": audit_chain.stats.confirmed_vulnerabilities,
+            "false_positives_excluded": audit_chain.stats.false_positives_excluded,
+            "evidence_collected": audit_chain.stats.evidence_collected,
+            "thought_iterations": audit_chain.stats.thought_iterations,
+        },
+        "vulnerabilities": findings.iter().map(|f| serde_json::json!({
+            "id": f.id,
+            "title": f.title,
+            "category": f.category,
+            "severity": f.severity,
+            "cwe_id": f.cwe_id,
+            "file_path": f.file_path,
+            "line": f.start_line,
+            "end_line": f.end_line,
+            "code_snippet": f.code_snippet,
+            "description": f.description,
+            "recommendation": f.recommendation,
+            "status": f.status,
+            "verification_status": f.verification_status,
+            "discovered_by": f.discovered_by,
+        })).collect::<Vec<_>>(),
+        "vulnerability_candidates": state.vulnerability_candidates.iter().map(|c| serde_json::json!({
+            "id": c.id,
+            "type": c.vulnerability_type,
+            "severity": c.severity,
+            "confidence": c.confidence,
+            "file_path": c.file_path,
+            "line": c.line,
+            "code_snippet": c.code_snippet,
+            "source": c.source,
+            "verification_status": format!("{:?}", c.verification_status),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// 保存完整报告到文件
+async fn save_full_report(
+    output_path: &str,
+    report: &serde_json::Value,
+    renderer: &mut TerminalRenderer,
+) -> Result<()> {
+    let content = serde_json::to_string_pretty(report)
+        .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?;
+
+    tokio::fs::write(output_path, content)
+        .await
+        .map_err(|e| miette::miette!("写入报告文件失败: {}", e))?;
+
+    renderer.info(&format!("[保存] 报告已保存到: {}", output_path));
+    Ok(())
 }
