@@ -186,6 +186,28 @@ pub enum VerificationStatus {
     NeedsMoreInfo,
 }
 
+/// LLM 验证结果
+///
+/// 由 LLM 对候选漏洞做出的最终判断结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LLMVerificationResult {
+    /// 候选漏洞 ID
+    pub candidate_id: String,
+
+    /// 验证状态
+    pub status: VerificationStatus,
+
+    /// 原始置信值（作为参考）
+    pub confidence_reference: f32,
+
+    /// 判断理由
+    pub reason: String,
+
+    /// 修复建议
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<String>,
+}
+
 /// 项目信息
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectInfo {
