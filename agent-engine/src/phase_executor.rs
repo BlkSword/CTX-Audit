@@ -556,88 +556,343 @@ impl PhaseAwareExecutor {
         message
     }
 
-    /// 执行验证阶段
+    /// 执行验证阶段 - 使用 LLM 做最终判断
     pub async fn execute_verification(&mut self, state: &mut SecurityAuditState) -> PhaseResult {
         let start = std::time::Instant::now();
         state.transition_to(AuditPhase::Verification);
 
         // 推进思维链到假设验证阶段
         self.audit_chain.record_thought(
-            "开始漏洞验证".to_string(),
-            format!("验证 {} 个假设", self.audit_chain.hypotheses.len()),
-            Some("交叉验证和置信度评估".to_string()),
+            "开始 LLM 漏洞验证".to_string(),
+            format!("使用 LLM 验证 {} 个候选漏洞", state.vulnerability_candidates.len()),
+            Some("置信值作为辅助参考，LLM 做最终判断".to_string()),
         );
 
-        // 获取高置信度的待验证候选
+        // 收集所有待验证的候选漏洞（不再按置信值过滤）
         let pending_candidates: Vec<_> = state.vulnerability_candidates
             .iter()
-            .filter(|c| c.verification_status == VerificationStatus::Pending && c.confidence >= 0.7)
+            .filter(|c| c.verification_status == VerificationStatus::Pending)
             .cloned()
             .collect();
 
+        let total_pending = pending_candidates.len();
         let mut confirmed = 0;
         let mut false_positives = 0;
+        let mut needs_review = 0;
 
-        if !pending_candidates.is_empty() {
-            self.send_event(ExecutionEvent::IterationStart(3));
+        if pending_candidates.is_empty() {
+            // 没有待验证的候选漏洞
+            self.audit_chain.advance_phase();
+            state.transition_to(AuditPhase::Reporting);
+            return PhaseResult {
+                phase: AuditPhase::Verification,
+                success: true,
+                message: "没有待验证的候选漏洞".to_string(),
+                targets_processed: 0,
+                findings_count: 0,
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
 
-            // 对高置信度候选进行快速验证
-            for candidate in pending_candidates {
-                // 计算综合置信度
-                let chain_confidence = self.audit_chain.calculate_hypothesis_confidence_by_location(
-                    &candidate.file_path,
-                    candidate.line
-                );
+        self.send_event(ExecutionEvent::IterationStart(3));
 
-                // 结合确定性扫描置信度和思维链置信度
-                let final_confidence = (candidate.confidence * 0.5 + chain_confidence * 0.5);
+        // 构建 LLM 验证请求
+        let system_prompt = self.prompts.get_llm_verification_prompt().to_string();
+        let user_message = self.prompts.build_llm_verification_message(
+            &pending_candidates,
+            &self.audit_chain.hypotheses,
+            &self.audit_chain.evidence,
+        );
 
-                // 根据最终置信度决定
-                if final_confidence >= 0.7 {
-                    state.confirm_vulnerability(&candidate.id);
-                    confirmed += 1;
+        // 创建 ReAct 执行器
+        let executor = ReactExecutor::new(
+            self.llm.clone(),
+            self.tool_registry.clone(),
+            self.config.clone(),
+        );
 
-                    // 更新假设状态
-                    for hypothesis in &mut self.audit_chain.hypotheses {
-                        if hypothesis.entry_point.file_path == candidate.file_path &&
-                           hypothesis.entry_point.start_line == candidate.line {
-                            hypothesis.mark_verified(final_confidence);
+        // 构建代理上下文
+        let agent_context = AgentContext {
+            project_id: state.session_id.clone(),
+            project_path: state.project_path.clone(),
+            session_id: state.session_id.clone(),
+            inherited_context: state.working_memory.clone(),
+            user_context: std::collections::HashMap::new(),
+        };
+
+        // 执行 LLM 验证
+        match executor.execute(&agent_context, &system_prompt, &user_message).await {
+            Ok(exec_result) => {
+                // 从 thought_chain 获取最后一个思考的输出
+                let llm_output = exec_result.state.thought_chain
+                    .last()
+                    .map(|t| {
+                        // 尝试获取 action_input 中的 JSON，否则使用 thought
+                        if let Some(ref input) = t.action_input {
+                            serde_json::to_string(input).unwrap_or_else(|_| t.thought.clone())
+                        } else {
+                            t.thought.clone()
                         }
-                    }
-                } else if final_confidence < 0.3 {
-                    state.mark_false_positive(&candidate.id, Some(format!("置信度过低: {:.2}", final_confidence)));
-                    false_positives += 1;
+                    })
+                    .unwrap_or_default();
 
-                    // 更新假设状态为误报
-                    for hypothesis in &mut self.audit_chain.hypotheses {
-                        if hypothesis.entry_point.file_path == candidate.file_path &&
-                           hypothesis.entry_point.start_line == candidate.line {
-                            hypothesis.mark_false_positive("置信度过低");
-                            self.audit_chain.stats.false_positives_excluded += 1;
+                // 解析 LLM 返回的验证结果
+                let verification_results = self.parse_verification_results(&llm_output);
+
+                if verification_results.is_empty() {
+                    tracing::warn!("LLM 未返回有效的验证结果，候选漏洞保持待验证状态");
+                    needs_review = total_pending;
+                } else {
+                    // 根据 LLM 判断更新状态
+                    for result in verification_results {
+                        match result.status {
+                            VerificationStatus::Confirmed => {
+                                state.confirm_vulnerability(&result.candidate_id);
+                                self.update_hypothesis_status(&result.candidate_id, HypothesisStatus::Confirmed);
+                                confirmed += 1;
+                                tracing::info!(
+                                    "LLM 确认漏洞 {}: {}",
+                                    result.candidate_id,
+                                    result.reason
+                                );
+                            }
+                            VerificationStatus::FalsePositive => {
+                                state.mark_false_positive(
+                                    &result.candidate_id,
+                                    Some(result.reason.clone())
+                                );
+                                self.update_hypothesis_status(&result.candidate_id, HypothesisStatus::FalsePositive);
+                                false_positives += 1;
+                                self.audit_chain.stats.false_positives_excluded += 1;
+                                tracing::info!(
+                                    "LLM 标记误报 {}: {}",
+                                    result.candidate_id,
+                                    result.reason
+                                );
+                            }
+                            VerificationStatus::LikelyFalsePositive => {
+                                // 可能误报，保留但标记
+                                if let Some(candidate) = state.vulnerability_candidates
+                                    .iter_mut()
+                                    .find(|c| c.id == result.candidate_id)
+                                {
+                                    candidate.verification_status = VerificationStatus::LikelyFalsePositive;
+                                    candidate.verification_result = Some(result.reason.clone());
+                                }
+                                needs_review += 1;
+                                tracing::info!(
+                                    "LLM 标记可能误报 {}: {}",
+                                    result.candidate_id,
+                                    result.reason
+                                );
+                            }
+                            VerificationStatus::NeedsMoreInfo | VerificationStatus::Pending => {
+                                // 需要更多信息，保持 Pending 状态
+                                needs_review += 1;
+                                tracing::info!(
+                                    "候选漏洞 {} 需要更多信息: {}",
+                                    result.candidate_id,
+                                    result.reason
+                                );
+                            }
                         }
                     }
                 }
-            }
 
-            self.send_event(ExecutionEvent::ThoughtComplete {
-                iteration: 3,
-                thought: format!("验证了 {} 个候选漏洞", confirmed + false_positives),
-                action: Some("verification".to_string()),
-            });
+                // 更新统计
+                state.stats.llm_calls += 1;
+
+                self.send_event(ExecutionEvent::ThoughtComplete {
+                    iteration: 3,
+                    thought: format!(
+                        "LLM 验证完成: {} 确认, {} 误报, {} 待审核",
+                        confirmed, false_positives, needs_review
+                    ),
+                    action: Some("llm_verification".to_string()),
+                });
+
+                self.send_event(ExecutionEvent::Complete {
+                    iterations: 1,
+                    tool_calls: 0,
+                });
+            }
+            Err(e) => {
+                // LLM 验证失败：保留为待验证状态，不做判断
+                tracing::warn!("LLM 验证失败，候选漏洞保持待验证状态: {}", e);
+                needs_review = total_pending;
+
+                self.send_event(ExecutionEvent::Failed(format!("LLM verification failed: {}", e)));
+            }
         }
 
         // 推进到结论阶段
         self.audit_chain.advance_phase();
-
         state.transition_to(AuditPhase::Reporting);
 
         PhaseResult {
             phase: AuditPhase::Verification,
             success: true,
-            message: format!("验证完成: {} 确认, {} 误报", confirmed, false_positives),
+            message: format!(
+                "LLM 验证完成: {} 确认, {} 误报, {} 待人工审核",
+                confirmed, false_positives, needs_review
+            ),
             targets_processed: confirmed + false_positives,
             findings_count: confirmed,
             duration_ms: start.elapsed().as_millis() as u64,
+        }
+    }
+
+    /// 解析 LLM 验证结果
+    fn parse_verification_results(&self, llm_output: &str) -> Vec<crate::audit_state::LLMVerificationResult> {
+        use crate::audit_state::LLMVerificationResult;
+
+        let mut results = Vec::new();
+
+        // 尝试从 LLM 输出中提取 JSON
+        if let Ok(json_values) = self.extract_json_results(llm_output) {
+            for json in json_values {
+                match serde_json::from_value::<LLMVerificationResult>(json) {
+                    Ok(result) => results.push(result),
+                    Err(e) => {
+                        tracing::debug!("解析验证结果失败: {}", e);
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
+    /// 从 LLM 输出中提取 JSON 结果
+    fn extract_json_results(&self, output: &str) -> Result<Vec<serde_json::Value>, String> {
+        let mut results = Vec::new();
+
+        // 方法 1: 尝试提取 ```json ``` 代码块
+        if let Some(json_blocks) = self.extract_json_code_blocks(output) {
+            for block in json_blocks {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&block) {
+                    self.collect_json_values(value, &mut results);
+                }
+            }
+        }
+
+        // 方法 2: 尝试解析 Action Input 中的 JSON
+        if results.is_empty() {
+            if let Some(action_input) = self.extract_action_input(output) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&action_input) {
+                    self.collect_json_values(value, &mut results);
+                }
+            }
+        }
+
+        // 方法 3: 尝试直接在整个输出中查找 JSON 对象
+        if results.is_empty() {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(output) {
+                self.collect_json_values(value, &mut results);
+            }
+        }
+
+        if results.is_empty() {
+            Err("未找到有效的 JSON 验证结果".to_string())
+        } else {
+            Ok(results)
+        }
+    }
+
+    /// 提取 ```json ``` 代码块
+    fn extract_json_code_blocks(&self, output: &str) -> Option<Vec<String>> {
+        let mut blocks = Vec::new();
+        let mut in_block = false;
+        let mut current_block = String::new();
+
+        for line in output.lines() {
+            if line.trim().starts_with("```json") {
+                in_block = true;
+                current_block.clear();
+            } else if line.trim() == "```" && in_block {
+                in_block = false;
+                if !current_block.trim().is_empty() {
+                    blocks.push(current_block.clone());
+                }
+            } else if in_block {
+                current_block.push_str(line);
+                current_block.push('\n');
+            }
+        }
+
+        if blocks.is_empty() {
+            None
+        } else {
+            Some(blocks)
+        }
+    }
+
+    /// 提取 Action Input 中的 JSON
+    fn extract_action_input(&self, output: &str) -> Option<String> {
+        // 查找 Action Input: 后面的内容
+        if let Some(start) = output.find("Action Input:") {
+            let remaining = &output[start + 12..];
+
+            // 查找 JSON 开始位置
+            if let Some(json_start) = remaining.find('{') {
+                // 简单的括号匹配
+                let mut depth = 0;
+                let mut json_end = json_start;
+
+                for (i, c) in remaining[json_start..].char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                json_end = json_start + i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                return Some(remaining[json_start..json_end].to_string());
+            }
+        }
+
+        None
+    }
+
+    /// 从 JSON 值中收集验证结果
+    fn collect_json_values(&self, value: serde_json::Value, results: &mut Vec<serde_json::Value>) {
+        match value {
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    self.collect_json_values(item, results);
+                }
+            }
+            serde_json::Value::Object(ref map) if map.contains_key("candidate_id") => {
+                results.push(value);
+            }
+            _ => {}
+        }
+    }
+
+    /// 更新假设状态
+    fn update_hypothesis_status(&mut self, candidate_id: &str, status: HypothesisStatus) {
+        // 查找对应的假设
+        for hypothesis in &mut self.audit_chain.hypotheses {
+            // 尝试通过 ID 或位置匹配
+            if hypothesis.id == candidate_id {
+                match status {
+                    HypothesisStatus::Confirmed => {
+                        hypothesis.mark_verified(1.0);
+                        self.audit_chain.stats.confirmed_vulnerabilities += 1;
+                    }
+                    HypothesisStatus::FalsePositive => {
+                        hypothesis.mark_false_positive("LLM 判断为误报");
+                    }
+                    _ => {}
+                }
+                break;
+            }
         }
     }
 

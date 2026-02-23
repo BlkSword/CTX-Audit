@@ -20,6 +20,9 @@ pub struct AuditPrompts {
     /// 验证阶段提示词
     pub verification: String,
 
+    /// LLM 验证阶段提示词（最终判断）
+    pub llm_verification: String,
+
     /// 报告阶段提示词
     pub reporting: String,
 
@@ -36,6 +39,7 @@ impl Default for AuditPrompts {
             initialization: INITIALIZATION_PROMPT.to_string(),
             deep_analysis: DEEP_ANALYSIS_PROMPT.to_string(),
             verification: VERIFICATION_PROMPT.to_string(),
+            llm_verification: LLM_VERIFICATION_PROMPT.to_string(),
             reporting: REPORTING_PROMPT.to_string(),
             react_system: REACT_SYSTEM_PROMPT.to_string(),
             vuln_templates: VulnerabilityPromptTemplates::default(),
@@ -173,6 +177,103 @@ impl AuditPrompts {
     /// 获取 ReAct 系统提示词
     pub fn get_react_system_prompt(&self) -> &str {
         &self.react_system
+    }
+
+    /// 获取 LLM 验证提示词
+    pub fn get_llm_verification_prompt(&self) -> &str {
+        &self.llm_verification
+    }
+
+    /// 构建 LLM 验证消息
+    ///
+    /// 包含所有候选漏洞的详细信息供 LLM 做最终判断
+    pub fn build_llm_verification_message(
+        &self,
+        candidates: &[crate::audit_state::VulnerabilityCandidate],
+        hypotheses: &[crate::audit_chain::VulnerabilityHypothesis],
+        evidences: &[crate::audit_chain::Evidence],
+    ) -> String {
+        let mut message = String::new();
+
+        message.push_str("# 待验证的候选漏洞\n\n");
+        message.push_str(&format!("共有 {} 个候选漏洞需要你做出最终判断。\n\n", candidates.len()));
+
+        for (i, candidate) in candidates.iter().enumerate() {
+            message.push_str(&format!("## 候选漏洞 {}: {}\n\n", i + 1, candidate.id));
+            message.push_str(&format!("- **类型**: {}\n", candidate.vulnerability_type));
+            message.push_str(&format!("- **严重程度**: {}\n", candidate.severity));
+            message.push_str(&format!("- **置信值**: {:.0}% (仅供参考)\n", candidate.confidence * 100.0));
+            message.push_str(&format!("- **来源**: {}\n", candidate.source));
+            message.push_str(&format!("- **位置**: `{}:{}`\n", candidate.file_path, candidate.line));
+
+            if let Some(ref code) = candidate.code_snippet {
+                message.push_str("\n**代码片段**:\n```\n");
+                message.push_str(code);
+                message.push_str("\n```\n");
+            }
+
+            if let Some(ref path) = candidate.propagation_path {
+                message.push_str("\n**污点传播路径**:\n");
+                for step in path {
+                    message.push_str(&format!(
+                        "  行 {}: `{}` - {}\n",
+                        step.line,
+                        step.symbol,
+                        step.code.as_deref().unwrap_or("")
+                    ));
+                }
+            }
+
+            // 添加相关假设信息
+            let related_hypotheses: Vec<_> = hypotheses
+                .iter()
+                .filter(|h| {
+                    h.entry_point.file_path == candidate.file_path &&
+                    h.entry_point.start_line == candidate.line
+                })
+                .collect();
+
+            if !related_hypotheses.is_empty() {
+                message.push_str("\n**相关假设**:\n");
+                for h in related_hypotheses {
+                    message.push_str(&format!(
+                        "- {} (状态: {:?}, 置信度: {:.0}%)\n",
+                        h.description,
+                        h.status,
+                        h.current_confidence * 100.0
+                    ));
+                }
+            }
+
+            // 添加相关证据
+            let related_evidences: Vec<_> = evidences
+                .iter()
+                .filter(|e| {
+                    e.location.file_path == candidate.file_path &&
+                    e.location.start_line == candidate.line
+                })
+                .collect();
+
+            if !related_evidences.is_empty() {
+                message.push_str("\n**相关证据**:\n");
+                for e in related_evidences {
+                    message.push_str(&format!(
+                        "- [{:?}] {} (支持度: {:.1})\n",
+                        e.evidence_type,
+                        e.content,
+                        e.support_score
+                    ));
+                }
+            }
+
+            message.push_str("\n---\n\n");
+        }
+
+        message.push_str("# 请根据以上信息做出判断\n\n");
+        message.push_str("记住：置信值只是参考，你需要根据代码分析、数据流验证和安全机制检查独立判断。\n");
+        message.push_str("请为每个候选漏洞输出 JSON 格式的判断结果。\n");
+
+        message
     }
 }
 
@@ -364,6 +465,74 @@ Action Input: {
   "confidence": 0.0-1.0,
   "recommendation": "修复建议（如适用）"
 }
+"#;
+
+/// LLM 验证阶段提示词 - 由 LLM 做最终判断
+const LLM_VERIFICATION_PROMPT: &str = r#"你是安全漏洞最终判断系统。
+
+## 任务
+
+根据候选漏洞的所有信息（包括置信值作为参考指标），做出最终判断。
+
+## 重要说明
+
+### 置信值的作用
+- 置信值由确定性工具（污点分析、模式检测等）计算得出，范围 0.0-1.0
+- **置信值仅供参考**，不是最终标准
+- 高置信值不代表一定是真实漏洞（可能存在净化逻辑、框架保护等）
+- 低置信值也不代表一定是误报（可能工具未能完全分析）
+- **你必须根据代码分析和证据独立判断**
+
+## 判断标准
+
+### 1. 代码分析
+- 是否存在真实的漏洞模式（如拼接 SQL、执行用户输入）
+- 危险函数的参数是否可控
+
+### 2. 数据流验证
+- 污点是否能从源头（用户输入）传播到危险函数
+- 传播路径是否完整
+
+### 3. 安全机制检查
+- 是否存在输入净化（如参数化查询、转义函数）
+- 是否存在验证逻辑（如白名单、类型检查）
+- 框架是否有内置保护（如 ORM、模板引擎自动转义）
+
+### 4. 可利用性评估
+- 攻击者能否实际触发该漏洞
+- 是否需要认证或特定权限
+- 是否有额外的安全层
+
+## 输出格式
+
+对于每个候选漏洞，你必须输出 JSON 格式的判断结果：
+
+```json
+{
+  "candidate_id": "候选漏洞的ID",
+  "status": "Confirmed|LikelyFalsePositive|FalsePositive|NeedsMoreInfo",
+  "confidence_reference": 原始置信值,
+  "reason": "详细判断理由，说明为什么做出这个判断",
+  "recommendation": "修复建议（如果确认是漏洞）"
+}
+```
+
+### 状态说明
+- **Confirmed**: 确认是真实漏洞，存在可利用的安全风险
+- **LikelyFalsePositive**: 可能是误报，但不确定，建议人工复核
+- **FalsePositive**: 确认是误报，存在有效的安全机制
+- **NeedsMoreInfo**: 需要更多信息才能判断
+
+## 批量处理
+
+如果有多个候选漏洞，请输出一个 JSON 数组：
+
+```json
+[
+  { "candidate_id": "...", "status": "...", ... },
+  { "candidate_id": "...", "status": "...", ... }
+]
+```
 "#;
 
 /// 报告阶段提示词
