@@ -1,91 +1,58 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! 多 Agent 系统
+//! 多 Agent 系统 - Coordinator-Specialist 架构
 //!
-//! 实现 Boss-Worker 架构，支持并行安全审计
+//! ## 架构特性
+//!
+//! - 共享任务列表 + 自我认领机制
+//! - Peer-to-Peer 消息系统 (Mailbox)
+//! - 任务依赖管理
+//! - 委派模式 (Delegation Mode)
+//! - 文件锁定机制
+//! - 动态优先级调整
+//! - 实时发现共享
+//!
+//! ## 使用方式
+//!
+//! ```rust,no_run
+//! use ctx_audit_agent_engine::multi_agent::{MultiAgentConfig, create_multi_agent_system};
+//!
+//! // 使用默认配置（Coordinator-Specialist 架构）
+//! let config = MultiAgentConfig::standard();
+//! let mut system = create_multi_agent_system(llm, tools, config).await.unwrap();
+//! system.start(project_path).await.unwrap();
+//! let report = system.audit(project_path, audit_state).await.unwrap();
+//! ```
 
 mod aggregator;
-mod boss;
 mod helpers;
 mod prompts;
 mod system;
 mod task;
 mod validator;
-mod worker;
 
-// 重新导出核心类型
+// Coordinator-Specialist 架构
+pub mod coordinator;
+
+// 重新导出核心类型（从 system.rs 重新导出）
 pub use system::{
-    AgentChannels, AuditReport, MultiAgentConfig, MultiAgentStats, MultiAgentSystem,
-    SpecialistConfig,
+    AuditReport, MultiAgentConfig, SpecialistConfig,
+    UnifiedAuditReport, UnifiedMultiAgentSystem, UnifiedSystemStats,
+    create_multi_agent_system,
+    // task 类型也从 system 导出，避免重复定义
+    AgentSpecialty, AuditTask, EndpointContext, FileContext, FollowUpRequest, FollowUpRequestType,
+    TaskContext, TaskPriority, TaskStatus, TaskType, WorkerResult, FindingData,
 };
 
-pub use task::{
-    AgentSpecialty, AuditTask, EndpointContext, FileContext, FollowUpRequest,
-    FollowUpRequestType, TaskContext, TaskPriority, TaskStatus, TaskType,
-};
-
-pub use boss::{BossAgent, BossConfig, BossCommandResult, FileInfo, ProjectOverview};
-
-pub use worker::{WorkerAgent, WorkerConfig, WorkerResult, WorkerStatus};
-
+// 重新导出复用的 Boss-Worker 组件
 pub use aggregator::{AggregatedFinding, AggregatedResults, AggregationStatistics, ExpertCoverage};
 
 pub use validator::{
-    ValidationStatus, ValidationStatistics, ValidationStrategy,
-    ValidatedFinding, ValidatedResults,
+    ValidatedFinding, ValidatedResults, ValidationStatistics, ValidationStatus, ValidationStrategy,
 };
 
 pub use prompts::{get_expert_name, get_expert_prompt};
-
-// BossCommand is defined in worker.rs, re-export it
-pub use worker::BossCommand;
-
-/// 多 Agent 系统预置配置
-pub mod presets {
-    use super::*;
-
-    /// 轻量级配置（适合小型项目）
-    pub fn lightweight() -> MultiAgentConfig {
-        MultiAgentConfig {
-            worker_count: 3,
-            specialist_config: SpecialistConfig {
-                sql_experts: 0,
-                xss_experts: 0,
-                auth_experts: 0,
-                business_logic_experts: 0,
-                crypto_experts: 0,
-                general_analysts: 3,
-            },
-            max_parallel_tasks: 2,
-            task_timeout_secs: 300,
-            boss_config: BossConfig::default(),
-        }
-    }
-
-    /// 标准配置（适合中型项目）
-    pub fn standard() -> MultiAgentConfig {
-        MultiAgentConfig::default()
-    }
-
-    /// 重量级配置（适合大型项目）
-    pub fn heavyweight() -> MultiAgentConfig {
-        MultiAgentConfig {
-            worker_count: 10,
-            specialist_config: SpecialistConfig {
-                sql_experts: 2,
-                xss_experts: 2,
-                auth_experts: 2,
-                business_logic_experts: 2,
-                crypto_experts: 1,
-                general_analysts: 1,
-            },
-            max_parallel_tasks: 8,
-            task_timeout_secs: 600,
-            boss_config: BossConfig::default(),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -105,17 +72,5 @@ mod tests {
         assert!(TaskPriority::Critical > TaskPriority::High);
         assert!(TaskPriority::High > TaskPriority::Medium);
         assert!(TaskPriority::Medium > TaskPriority::Low);
-    }
-
-    #[test]
-    fn test_presets() {
-        let lightweight = presets::lightweight();
-        assert_eq!(lightweight.worker_count, 3);
-
-        let standard = presets::standard();
-        assert_eq!(standard.worker_count, 6);
-
-        let heavyweight = presets::heavyweight();
-        assert_eq!(heavyweight.worker_count, 10);
     }
 }

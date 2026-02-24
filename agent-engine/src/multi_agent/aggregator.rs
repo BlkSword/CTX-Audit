@@ -4,8 +4,7 @@
 //! 结果聚合器
 
 use crate::multi_agent::helpers::{get_confidence, get_line_number, get_severity_enum, FindingCategory};
-use crate::multi_agent::task::AgentSpecialty;
-use crate::multi_agent::worker::WorkerResult;
+use crate::multi_agent::task::{AgentSpecialty, WorkerResult};
 use ctx_audit_tools::FindingData;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

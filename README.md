@@ -20,7 +20,7 @@
 
 ### 简介
 
-CTX-Audit 是一款 Rust 实现的专业代码安全审计终端工具，采用 **Multi-Agent Boss-Worker 并行架构**，融合了**传统静态分析**与**AI 智能分析**的能力：
+CTX-Audit 是一款 Rust 实现的专业代码安全审计终端工具，采用 **Multi-Agent Coordinator-Specialist 并行架构**，融合了**传统静态分析**与**AI 智能分析**的能力：
 
 ```bash
 # 一键深度审计（多专家并行分析）
@@ -33,10 +33,13 @@ ctx-audit audit ./myproject
 
 | 特性 | 描述 |
 |------|------|
-| **Boss-Worker 架构** | 中央调度 + 专业分工，支持 10 种安全专家并行分析 |
+| **Coordinator-Specialist 架构** | 共享任务列表 + P2P 消息系统 + 自我认领机制 |
 | **专家 Agent** | SQL注入、XSS、命令注入、路径遍历、SSRF、认证、业务逻辑、加密、配置、通用分析师 |
 | **结果聚合** | 位置去重、类型匹配、多专家共识验证 |
 | **交叉验证** | 4 种验证策略：单一专家、多专家共识、多样性专家、高置信优先 |
+| **任务依赖管理** | 支持任务间依赖关系和委派模式 |
+| **动态优先级** | 根据审计进展动态调整任务优先级 |
+| **文件锁定** | 防止多专家同时分析同一文件 |
 
 #### 语义理解引擎
 
@@ -204,23 +207,28 @@ ctx-audit audit ./project [OPTIONS]
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │                    Multi-Agent System                                │   │
 │  │  ┌─────────────┐   ┌──────────────┐   ┌─────────────────────────┐   │   │
-│  │  │ Boss Agent  │───│ Task Queue   │───│ Result Aggregator      │   │   │
-│  │  │ (调度中心)   │   │ (任务分发)    │   │ (去重+共识验证)         │   │   │
+│  │  │Coordinator │───│SharedTaskList│───│ Result Aggregator      │   │   │
+│  │  │(协调中心)   │   │(共享任务列表) │   │ (去重+共识验证)         │   │   │
 │  │  └─────────────┘   └──────────────┘   └─────────────────────────┘   │   │
-│  │                              │                                    │   │
-│  │         ┌────────────────────┼────────────────────┐               │   │
-│  │         ▼                    ▼                    ▼               │   │
-│  │  ┌──────────┐         ┌──────────┐         ┌──────────┐           │   │
-│  │  │SQL Expert│         │XSS Expert│         │Auth Expert│  ...     │   │
-│  │  │  Worker  │         │  Worker  │         │  Worker  │  (10种)   │   │
-│  │  └──────────┘         └──────────┘         └──────────┘           │   │
-│  │         │                    │                    │               │   │
-│  │         └────────────────────┼────────────────────┘               │   │
-│  │                              ▼                                    │   │
-│  │                    ┌──────────────────┐                           │   │
-│  │                    │ CrossValidator   │                           │   │
-│  │                    │ (交叉验证)        │                           │   │
-│  │                    └──────────────────┘                           │   │
+│  │         │                              │           │               │   │
+│  │         │         ┌────────────────────┼────────────────────┐       │   │
+│  │         │         ▼                    ▼                    ▼       │   │
+│  │         │  ┌──────────┐         ┌──────────┐         ┌──────────┐   │   │
+│  │         └─▶│SQL Expert│         │XSS Expert│         │Auth Expert│...│   │
+│  │            │Specialist│         │Specialist│         │Specialist│   │   │
+│  │            └──────────┘         └──────────┘         └──────────┘   │   │
+│  │                   ▲                    ▲                    ▲        │   │
+│  │                   └────────────────────┼────────────────────┘        │   │
+│  │                                        │                            │   │
+│  │                              ┌─────────┴─────────┐                   │   │
+│  │                              │   Mailbox (P2P)   │                   │   │
+│  │                              │  (消息传递系统)    │                   │   │
+│  │                              └───────────────────┘                   │   │
+│  │                                        │                            │   │
+│  │                              ┌─────────▼─────────┐                   │   │
+│  │                              │ CrossValidator   │                   │   │
+│  │                              │ (交叉验证)        │                   │   │
+│  │                              └──────────────────┘                   │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
@@ -488,10 +496,16 @@ CTX-Audit/
 │       └── indexing/           # 代码索引
 ├── agent-engine/               # Agent 引擎
 │   └── src/
-│       ├── multi_agent/        # Multi-Agent 系统
-│       │   ├── system.rs       # MultiAgentSystem
-│       │   ├── boss.rs         # BossAgent 调度中心
-│       │   ├── worker.rs       # WorkerAgent 执行者
+│       ├── multi_agent/        # Multi-Agent 系统 (Coordinator-Specialist)
+│       │   ├── system.rs       # 统一系统接口 (UnifiedMultiAgentSystem)
+│       │   ├── coordinator/    # Coordinator-Specialist 架构
+│       │   │   ├── mod.rs      # AuditTeamSystem
+│       │   │   ├── coordinator.rs  # Coordinator 协调器
+│       │   │   ├── specialist.rs    # Specialist 专家
+│       │   │   ├── shared_task_list.rs  # 共享任务列表
+│       │   │   ├── mailbox.rs     # P2P 消息系统
+│       │   │   ├── dynamic_priority.rs  # 动态优先级
+│       │   │   └── cross_validation.rs  # 交叉验证
 │       │   ├── task.rs         # AuditTask 任务定义
 │       │   ├── aggregator.rs   # ResultAggregator 聚合器
 │       │   ├── validator.rs    # CrossValidator 交叉验证
@@ -587,7 +601,7 @@ Apache License 2.0
 
 ### Introduction
 
-CTX-Audit is a professional code security audit terminal tool implemented in Rust, featuring a **Multi-Agent Boss-Worker Parallel Architecture** that combines **traditional static analysis** with **AI-powered intelligent analysis**:
+CTX-Audit is a professional code security audit terminal tool implemented in Rust, featuring a **Multi-Agent Coordinator-Specialist Parallel Architecture** that combines **traditional static analysis** with **AI-powered intelligent analysis**:
 
 ```bash
 # One-command deep audit (multi-expert parallel analysis)
@@ -600,10 +614,13 @@ ctx-audit audit ./myproject
 
 | Feature | Description |
 |---------|-------------|
-| **Boss-Worker Architecture** | Central orchestration + specialized workers, 10 expert types |
+| **Coordinator-Specialist Architecture** | Shared task list + P2P messaging + Self-claim mechanism |
 | **Expert Agents** | SQLi, XSS, Command Injection, Path Traversal, SSRF, Auth, BizLogic, Crypto, Config, General |
 | **Result Aggregation** | Location deduplication, type matching, multi-expert consensus |
 | **Cross Validation** | 4 strategies: SingleExpert, MultiExpertConsensus, DiverseExpertise, HighConfidenceFirst |
+| **Task Dependency** | Support for task dependencies and delegation mode |
+| **Dynamic Priority** | Dynamic task priority adjustment based on audit progress |
+| **File Locking** | Prevent multiple specialists from analyzing the same file |
 
 #### Semantic Understanding Engine
 

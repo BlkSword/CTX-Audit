@@ -25,7 +25,7 @@ use ctx_audit_llm::LLMClient;
 use ctx_audit_tools::ToolRegistry;
 
 // 新模块导入
-use crate::multi_agent::MultiAgentSystem;
+use crate::multi_agent::UnifiedMultiAgentSystem;
 use crate::multi_agent::MultiAgentConfig;
 use crate::semantic::SemanticUnderstandingEngine;
 use crate::analysis::{
@@ -82,7 +82,7 @@ pub struct PhaseAwareExecutor {
     // ========== 新模块集成 ==========
 
     /// 多 Agent 系统
-    multi_agent_system: Option<MultiAgentSystem>,
+    multi_agent_system: Option<UnifiedMultiAgentSystem>,
 
     /// 语义理解引擎
     semantic_engine: SemanticUnderstandingEngine,
@@ -139,7 +139,7 @@ impl PhaseAwareExecutor {
 
     /// 启用多 Agent 模式
     pub async fn with_multi_agent(mut self, config: MultiAgentConfig) -> Result<Self, String> {
-        let multi_agent = MultiAgentSystem::new(
+        let multi_agent = crate::multi_agent::create_multi_agent_system(
             self.llm.clone(),
             self.tool_registry.clone(),
             config,
@@ -1168,8 +1168,9 @@ impl PhaseAwareExecutor {
             // 运行多 Agent 审计
             let audit_report = multi_agent.audit(state.project_path.clone(), state.clone()).await?;
 
-            // 合并发现的漏洞（简化实现）
-            let finding_count = audit_report.total_findings;
+            // 使用新的 API 获取发现数量
+            let findings = audit_report.get_all_findings();
+            let finding_count = findings.len();
 
             let duration = start.elapsed();
 
@@ -1177,7 +1178,7 @@ impl PhaseAwareExecutor {
                 phase: AuditPhase::DeepAnalysis,
                 success: true,
                 message: format!("多 Agent 审计完成，发现 {} 个漏洞候选", finding_count),
-                targets_processed: audit_report.worker_results.len(),
+                targets_processed: finding_count, // 使用 finding 数量作为目标处理数
                 findings_count: finding_count,
                 duration_ms: duration.as_millis() as u64,
             })
