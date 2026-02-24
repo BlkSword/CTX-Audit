@@ -47,3 +47,5 @@ CLAUDE.md
 # Configuration (keep local config out of repo)
 .config/
 ctx-audit.toml
+
+docs/

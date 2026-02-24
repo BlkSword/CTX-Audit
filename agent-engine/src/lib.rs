@@ -29,6 +29,9 @@ pub mod audit_prompts;
 pub mod audit_chain;
 pub mod tool_recommender;
 
+// 多 Agent 系统
+pub mod multi_agent;
+
 // 重新导出常用类型
 pub use base::{Agent, AgentContext, AgentConfig, AgentResult, AgentType, AgentStatus};
 pub use base::{ExecutionStats, ThoughtEntry, ToolCallRecord, LLMConfig};
