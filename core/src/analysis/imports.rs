@@ -6,7 +6,7 @@
 //! 实现导入解析、符号解析和跨文件引用追踪
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// 导入解析器

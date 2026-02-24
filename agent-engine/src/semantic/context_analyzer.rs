@@ -267,11 +267,6 @@ impl ContextAwareAnalyzer {
             }
         }
 
-        // Java 注解 @xxx
-        if code.contains("@") && (code.contains("public class") || code.contains("public void")) {
-            // TODO: 实现 Java 注解提取
-        }
-
         decorators
     }
 

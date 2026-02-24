@@ -7,7 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 
 /// 流图节点
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,10 +5,8 @@
 //!
 //! 追踪用户输入（污点源）到危险函数（污点汇）的数据流
 
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashSet;
 
 /// 污点源 - 用户输入点
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,7 +498,7 @@ impl TaintAnalyzer {
         lines: &[&str],
         file_path: &str,
     ) -> Option<TaintFlow> {
-        let (source_loc, source_def) = source;
+        let (source_loc, _source_def) = source;
         let (sink_loc, sink_def) = sink;
 
         // 简化实现：如果源在汇之前，假设存在污点流
@@ -1157,7 +1155,7 @@ impl TaintAnalyzer {
         sink_loc: &FlowLocation,
         propagation_steps: &[PropagationStep],
         file_path: &str,
-        lines: &[&str],
+        _lines: &[&str],
     ) -> Vec<FlowNode> {
         let mut path = Vec::new();
 

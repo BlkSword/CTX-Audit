@@ -5,10 +5,8 @@
 //!
 //! 专业安全审计框架，实现阶段化、目标导向的审计流程
 
-pub mod agents;
 pub mod base;
 pub mod fix;
-pub mod graph_controller;
 pub mod llm_integration;
 pub mod message_bus;
 pub mod mod_file;
@@ -52,8 +50,7 @@ pub use registry::AgentRegistry;
 pub use react::executor::{ExecutionEvent, ExecutionConfig, ReactExecutor};
 pub use react_agent::{
     ReactAgentWrapper, AgentPrompts,
-    create_orchestrator_agent, create_recon_agent,
-    create_analysis_agent, create_verification_agent,
+    create_agent_with_type, create_agent_with_custom_prompt,
 };
 
 // 新模块导出

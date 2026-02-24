@@ -706,8 +706,8 @@ impl DiffEngine {
         &self,
         path_a: &Path,
         path_b: &Path,
-        is_binary_a: bool,
-        is_binary_b: bool,
+        _is_binary_a: bool,
+        _is_binary_b: bool,
     ) -> Result<FileDiff> {
         let metadata_a = fs::metadata(path_a)?;
         let metadata_b = fs::metadata(path_b)?;

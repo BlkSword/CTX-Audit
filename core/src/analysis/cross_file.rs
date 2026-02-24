@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::imports::{ImportResolver, SymbolReference, CrossFileReference};
-use super::taint::{TaintSource, TaintSink, TaintFlow, FlowLocation, FlowNode, FlowNodeType, Severity, VulnerabilityType};
+use super::imports::ImportResolver;
+use super::taint::{TaintSource, TaintSink, FlowLocation, Severity, VulnerabilityType};
 
 /// 函数调用图节点
 #[derive(Debug, Clone, Serialize, Deserialize)]
