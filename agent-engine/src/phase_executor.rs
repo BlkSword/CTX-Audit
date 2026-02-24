@@ -24,6 +24,16 @@ use crate::base::AgentContext;
 use ctx_audit_llm::LLMClient;
 use ctx_audit_tools::ToolRegistry;
 
+// 新模块导入
+use crate::multi_agent::MultiAgentSystem;
+use crate::multi_agent::MultiAgentConfig;
+use crate::semantic::SemanticUnderstandingEngine;
+use crate::analysis::{
+    BusinessLogicAnalyzer, GlobalFlowGraph, GitHistoryAnalyzer
+};
+use crate::verification::DualVerificationSystem;
+use crate::deterministic::{DeterministicExecutor, DeterministicConfig};
+
 /// 阶段执行结果
 #[derive(Debug, Clone)]
 pub struct PhaseResult {
@@ -68,6 +78,35 @@ pub struct PhaseAwareExecutor {
 
     /// 工具推荐器
     tool_recommender: ToolRecommender,
+
+    // ========== 新模块集成 ==========
+
+    /// 多 Agent 系统
+    multi_agent_system: Option<MultiAgentSystem>,
+
+    /// 语义理解引擎
+    semantic_engine: SemanticUnderstandingEngine,
+
+    /// 业务逻辑分析器
+    business_logic_analyzer: BusinessLogicAnalyzer,
+
+    /// 全局数据流图谱
+    global_flow_graph: Option<GlobalFlowGraph>,
+
+    /// Git 历史分析器
+    git_analyzer: Option<GitHistoryAnalyzer>,
+
+    /// 双重验证系统
+    dual_verification: Option<DualVerificationSystem>,
+
+    /// 确定性执行器
+    deterministic_executor: Option<DeterministicExecutor>,
+
+    /// 是否启用多 Agent 模式
+    enable_multi_agent: bool,
+
+    /// 是否启用确定性审计
+    enable_deterministic: bool,
 }
 
 impl PhaseAwareExecutor {
@@ -78,14 +117,66 @@ impl PhaseAwareExecutor {
         config: ExecutionConfig,
     ) -> Self {
         Self {
-            llm,
+            llm: llm.clone(),
             tool_registry,
             config,
             prompts: AuditPrompts::default(),
             event_tx: None,
             audit_chain: SecurityAuditChain::new(),
             tool_recommender: ToolRecommender::new(),
+            // 新模块初始化
+            multi_agent_system: None,
+            semantic_engine: SemanticUnderstandingEngine::new(),
+            business_logic_analyzer: BusinessLogicAnalyzer::new(),
+            global_flow_graph: None,
+            git_analyzer: None,
+            dual_verification: None,
+            deterministic_executor: None,
+            enable_multi_agent: false,
+            enable_deterministic: false,
         }
+    }
+
+    /// 启用多 Agent 模式
+    pub async fn with_multi_agent(mut self, config: MultiAgentConfig) -> Result<Self, String> {
+        let multi_agent = MultiAgentSystem::new(
+            self.llm.clone(),
+            self.tool_registry.clone(),
+            config,
+        ).await?;
+        self.multi_agent_system = Some(multi_agent);
+        self.enable_multi_agent = true;
+        Ok(self)
+    }
+
+    /// 启用确定性审计
+    pub fn with_deterministic(mut self, config: DeterministicConfig) -> Self {
+        self.deterministic_executor = Some(DeterministicExecutor::new(
+            self.llm.clone(),
+            config,
+        ));
+        self.enable_deterministic = true;
+        self
+    }
+
+    /// 启用全局数据流追踪
+    pub fn with_global_flow(mut self, project_path: String) -> Self {
+        self.global_flow_graph = Some(GlobalFlowGraph::new(project_path));
+        self
+    }
+
+    /// 启用 Git 历史分析
+    pub fn with_git_analysis(mut self, repo_path: String) -> Self {
+        self.git_analyzer = Some(GitHistoryAnalyzer::new(repo_path));
+        self
+    }
+
+    /// 启用双重验证
+    pub fn with_dual_verification(mut self) -> Self {
+        self.dual_verification = Some(DualVerificationSystem::new(
+            self.llm.clone()
+        ));
+        self
     }
 
     /// 设置事件发送器
@@ -1063,6 +1154,179 @@ impl PhaseAwareExecutor {
         if let Some(ref tx) = self.event_tx {
             let _ = tx.send(event);
         }
+    }
+
+    // ========== 新模块集成方法 ==========
+
+    /// 使用多 Agent 系统执行审计
+    pub async fn execute_multi_agent_audit(&mut self, state: &mut SecurityAuditState) -> Result<PhaseResult, String> {
+        if let Some(ref mut multi_agent) = self.multi_agent_system {
+            tracing::info!("使用多 Agent 系统执行审计");
+
+            let start = std::time::Instant::now();
+
+            // 运行多 Agent 审计
+            let audit_report = multi_agent.audit(state.project_path.clone(), state.clone()).await?;
+
+            // 合并发现的漏洞（简化实现）
+            let finding_count = audit_report.total_findings;
+
+            let duration = start.elapsed();
+
+            Ok(PhaseResult {
+                phase: AuditPhase::DeepAnalysis,
+                success: true,
+                message: format!("多 Agent 审计完成，发现 {} 个漏洞候选", finding_count),
+                targets_processed: audit_report.worker_results.len(),
+                findings_count: finding_count,
+                duration_ms: duration.as_millis() as u64,
+            })
+        } else {
+            Err("多 Agent 系统未初始化".to_string())
+        }
+    }
+
+    /// 使用语义理解引擎分析代码
+    pub async fn execute_semantic_analysis(&self, code: &str, file_path: &str) -> Result<crate::semantic::SemanticUnderstanding, String> {
+        use crate::semantic::SemanticContext;
+
+        let context = SemanticContext {
+            file_path: Some(file_path.to_string()),
+            function_name: None,
+            language: Some(self.detect_language(file_path)),
+            framework: self.detect_framework(code),
+            imports: vec![],
+            decorators: vec![],
+            extra: std::collections::HashMap::new(),
+        };
+
+        Ok(self.semantic_engine.understand_code(code, &context).await)
+    }
+
+    /// 执行业务逻辑分析
+    pub async fn execute_business_logic_analysis(&self, code: &str, file_path: &str) -> Vec<crate::analysis::BusinessLogicFinding> {
+        use crate::semantic::SemanticContext;
+
+        // 提取 API 端点
+        let endpoints = self.extract_api_endpoints(code, file_path);
+
+        // 创建语义上下文
+        let context = SemanticContext {
+            file_path: Some(file_path.to_string()),
+            function_name: None,
+            language: Some(self.detect_language(file_path)),
+            framework: self.detect_framework(code),
+            imports: vec![],
+            decorators: vec![],
+            extra: std::collections::HashMap::new(),
+        };
+
+        // 运行业务逻辑分析器（async）
+        let result = self.business_logic_analyzer.analyze(code, &context).await;
+
+        result.findings
+    }
+
+    /// 执行全局数据流分析
+    pub fn execute_global_flow_analysis(&mut self, project_path: &str) -> Result<crate::analysis::GlobalTaintResult, String> {
+        if let Some(ref mut graph) = self.global_flow_graph {
+            Ok(graph.build_taint_result())
+        } else {
+            Err("全局数据流图未初始化".to_string())
+        }
+    }
+
+    /// 执行 Git 历史"举一反三"分析
+    pub fn execute_git_learning_analysis(&self) -> Result<Vec<crate::analysis::SimilarVulnerabilityCandidate>, String> {
+        if let Some(ref analyzer) = self.git_analyzer {
+            // 提取漏洞修复记录
+            let fixes = analyzer.extract_vulnerability_fixes();
+
+            // 获取代码库文件
+            let files = self.collect_project_files()?;
+
+            // 查找相似未修复漏洞
+            let similar = analyzer.find_similar_unfixed_vulnerabilities(&fixes, &files);
+
+            Ok(similar)
+        } else {
+            Err("Git 分析器未初始化".to_string())
+        }
+    }
+
+    /// 使用双重验证系统验证漏洞
+    pub async fn execute_dual_verification(&self, candidate: &VulnerabilityCandidate) -> Result<crate::verification::EnhancedVerificationResult, String> {
+        if let Some(ref verifier) = self.dual_verification {
+            let context = crate::verification::VerificationContext {
+                language: self.detect_language(&candidate.file_path),
+                call_chain: vec![],
+                data_flow: vec![],
+                related_files: vec![],
+                framework_info: None,
+            };
+
+            Ok(verifier.verify(candidate, &context).await)
+        } else {
+            Err("双重验证系统未初始化".to_string())
+        }
+    }
+
+    /// 执行确定性审计
+    pub async fn execute_deterministic_audit(&mut self, state: &mut SecurityAuditState) -> Result<crate::deterministic::AuditReproducibility, String> {
+        if let Some(ref executor) = self.deterministic_executor {
+            Ok(executor.execute_deterministic_audit(state).await?)
+        } else {
+            Err("确定性执行器未初始化".to_string())
+        }
+    }
+
+    // ========== 辅助方法 ==========
+
+    /// 检测编程语言
+    fn detect_language(&self, file_path: &str) -> String {
+        if file_path.ends_with(".rs") {
+            "rust".to_string()
+        } else if file_path.ends_with(".py") {
+            "python".to_string()
+        } else if file_path.ends_with(".js") {
+            "javascript".to_string()
+        } else if file_path.ends_with(".ts") {
+            "typescript".to_string()
+        } else if file_path.ends_with(".java") {
+            "java".to_string()
+        } else if file_path.ends_with(".go") {
+            "go".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    /// 检测框架
+    fn detect_framework(&self, code: &str) -> Option<String> {
+        if code.contains("from django") || code.contains("django.") {
+            Some("Django".to_string())
+        } else if code.contains("from flask") || code.contains("Flask") {
+            Some("Flask".to_string())
+        } else if code.contains("express") || code.contains("require('express')") {
+            Some("Express".to_string())
+        } else if code.contains("@SpringBootApplication") || code.contains("org.springframework") {
+            Some("Spring".to_string())
+        } else {
+            None
+        }
+    }
+
+    /// 提取 API 端点
+    fn extract_api_endpoints(&self, code: &str, file_path: &str) -> Vec<crate::analysis::ApiEndpointInfo> {
+        // 简化实现：返回空列表
+        // 实际实现应该使用 AST 解析来提取端点信息
+        vec![]
+    }
+
+    /// 收集项目文件
+    fn collect_project_files(&self) -> Result<Vec<String>, String> {
+        // 简化实现：返回空列表
+        Ok(vec![])
     }
 }
 

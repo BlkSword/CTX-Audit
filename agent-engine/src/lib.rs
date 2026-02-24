@@ -32,6 +32,18 @@ pub mod tool_recommender;
 // 多 Agent 系统
 pub mod multi_agent;
 
+// 语义理解引擎
+pub mod semantic;
+
+// 业务逻辑分析
+pub mod analysis;
+
+// 双重验证系统
+pub mod verification;
+
+// 确定性审计
+pub mod deterministic;
+
 // 重新导出常用类型
 pub use base::{Agent, AgentContext, AgentConfig, AgentResult, AgentType, AgentStatus};
 pub use base::{ExecutionStats, ThoughtEntry, ToolCallRecord, LLMConfig};
