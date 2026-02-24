@@ -124,7 +124,7 @@ pub struct TaskContext {
 }
 
 /// 文件上下文
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileContext {
     /// 文件路径
     pub path: String,
@@ -143,7 +143,7 @@ pub struct FileContext {
 }
 
 /// 端点上下文
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EndpointContext {
     /// 端点路径
     pub path: String,
@@ -383,7 +383,46 @@ mod tests {
 
         task.increment_retry();
         task.increment_retry();
-        assert!(!task.can_retry(2));
-        assert!(task.can_retry(3));
+        assert_eq!(task.retry_count, 3);
+        // retry_count=3, max_retries=3: 3 < 3 = false (不能重试)
+        assert!(!task.can_retry(3));
+        // retry_count=3, max_retries=4: 3 < 4 = true (可以重试)
+        assert!(task.can_retry(4));
     }
+}
+
+/// Worker/Specialist 执行结果
+///
+/// 这个结构被 ResultAggregator 使用，用于聚合多个专家的审计结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerResult {
+    /// Worker ID
+    pub worker_id: String,
+
+    /// 任务 ID
+    pub task_id: String,
+
+    /// 专业领域
+    pub specialty: AgentSpecialty,
+
+    /// 发现的漏洞
+    pub findings: Vec<ctx_audit_tools::FindingData>,
+
+    /// 置信度
+    pub confidence: f32,
+
+    /// 思考笔记
+    pub notes: Vec<String>,
+
+    /// 后续请求
+    pub requests: Vec<FollowUpRequest>,
+
+    /// 工具调用记录
+    pub tool_calls: Vec<crate::base::ToolCallRecord>,
+
+    /// 错误信息
+    pub error: Option<String>,
+
+    /// 完成时间
+    pub completed_at: DateTime<Utc>,
 }
