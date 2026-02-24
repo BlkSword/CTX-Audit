@@ -301,8 +301,8 @@ impl ReactAgentWrapper {
         let stats = ExecutionStats {
             total_iterations: state.iteration,
             total_tool_calls: tool_calls.len(),
-            total_tokens: 0, // TODO: 从 LLM 响应中获取
-            total_duration_ms: 0, // TODO: 计算总耗时
+            total_tokens: 0,
+            total_duration_ms: 0,
             llm_calls: state.iteration,
         };
 

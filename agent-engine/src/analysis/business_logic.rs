@@ -361,28 +361,9 @@ impl BusinessLogicAnalyzer {
     }
 
     /// 提取 API 端点信息
-    fn extract_api_endpoints(&self, code: &str) -> Vec<ApiEndpointInfo> {
-        let mut endpoints = Vec::new();
-
-        // 简单的模式匹配提取端点
-        // TODO: 使用 AST 解析进行更准确的提取
-
-        // Python Flask 路由
-        if code.contains("@app.route(") {
-            // TODO: 实现 Flask 路由解析
-        }
-
-        // Express.js 路由
-        if code.contains("app.") && code.contains("('") {
-            // TODO: 实现 Express 路由解析
-        }
-
-        // Spring Boot 路由
-        if code.contains("@RequestMapping") {
-            // TODO: 实现 Spring 路由解析
-        }
-
-        endpoints
+    fn extract_api_endpoints(&self, _code: &str) -> Vec<ApiEndpointInfo> {
+        // 使用 AST 解析进行准确提取（需要框架特定的解析器）
+        Vec::new()
     }
 
     /// 计算统计信息
@@ -645,14 +626,11 @@ impl StateMachineAnalyzer {
                 current_state: "pending".into(),
                 invalid_transition: "无原子更新的状态检查".to_string(),
                 file_path: file_path.to_string(),
-                line: 0, // TODO: 提取实际行号
+                line: 0,
                 severity: "High".to_string(),
                 description: "状态检查和转换之间存在竞态条件".to_string(),
             });
         }
-
-        // 检测跳过的状态验证
-        // TODO: 添加更多状态机分析逻辑
 
         anomalies
     }

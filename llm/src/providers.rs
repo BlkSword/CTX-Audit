@@ -4,7 +4,7 @@
 //! LLM 提供商实现
 
 use async_trait::async_trait;
-use futures::{stream, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use serde_json::json;
 use std::pin::Pin;
 use std::time::Duration;
@@ -909,8 +909,8 @@ impl LLMClient for OpenAIClient {
     async fn generate_stream(
         &self,
         messages: Vec<LLMMessage>,
-        max_tokens: u32,
-        temperature: f32,
+        _max_tokens: u32,
+        _temperature: f32,
     ) -> Pin<Box<dyn Stream<Item = Result<LLMStreamChunk, LLMError>> + Send>> {
         let client = self.client.clone();
         let api_key = self.api_key.clone();
@@ -1442,12 +1442,12 @@ impl LLMClient for OllamaClient {
     async fn generate_stream_with_tools(
         &self,
         messages: Vec<LLMMessage>,
-        tools: Vec<ToolDefinition>,
-        max_tokens: u32,
-        temperature: f32,
+        _tools: Vec<ToolDefinition>,
+        _max_tokens: u32,
+        _temperature: f32,
     ) -> Pin<Box<dyn Stream<Item = Result<LLMStreamChunk, LLMError>> + Send>> {
         // Ollama 工具调用支持有限
-        self.generate_stream(messages, max_tokens, temperature).await
+        self.generate_stream(messages, _max_tokens, _temperature).await
     }
 
     fn model(&self) -> &str {

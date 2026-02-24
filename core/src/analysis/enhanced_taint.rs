@@ -7,7 +7,7 @@
 //! 追踪用户输入（污点源）到危险函数（污点汇）的数据流
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::taint::{TaintSource, TaintSink, TaintFlow, FlowLocation, FlowNode, FlowNodeType, Severity, VulnerabilityType};
 

@@ -8,8 +8,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use super::dataflow::{FlowFact, AnalysisDirection};
-
 /// 增强流图节点
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnhancedFlowNode {
