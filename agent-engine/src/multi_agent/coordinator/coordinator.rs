@@ -101,16 +101,11 @@ impl From<FindingSummary> for FindingData {
             description: summary.description,
             severity: summary.severity.to_lowercase(),
             category: "security".to_string(),
-            cwe_id: None,
             file_path: summary.location.clone(),
-            start_line: 0,
-            end_line: None,
-            code_snippet: None,
-            recommendation: None,
             status: "detected".to_string(),
-            verification_status: None,
-            discovered_by: None,
+            confidence: Some(summary.confidence),
             extra,
+            ..Default::default()
         }
     }
 }
@@ -170,6 +165,9 @@ pub struct Coordinator {
 
     /// 侦察结果
     reconnaissance_result: Option<ReconnaissanceResult>,
+
+    /// 已处理的协助请求 ID（防止重复处理）
+    processed_assistance_ids: std::collections::HashSet<String>,
 
     // ========== 复用 Boss-Worker 的核心组件 ==========
     /// 结果聚合器（复用 Boss-Worker）
@@ -238,6 +236,7 @@ impl Coordinator {
             priority_manager,
             project_path: None,
             reconnaissance_result: None,
+            processed_assistance_ids: std::collections::HashSet::new(),
             aggregator,
             validator,
         }
@@ -354,17 +353,33 @@ impl Coordinator {
 
     /// 等待侦察完成
     async fn wait_for_reconnaissance(&mut self) -> Result<()> {
+        let timeout = Duration::from_secs(60);
+        let start = std::time::Instant::now();
+
         loop {
+            if start.elapsed() > timeout {
+                tracing::warn!("[Coordinator] 侦察阶段超时 (60秒)");
+                break;
+            }
+
             let all_tasks = self.task_list.get_all_tasks().await;
-            let recon_done = all_tasks.iter()
+            let recon_tasks: Vec<_> = all_tasks.iter()
                 .filter(|t| t.task_type == TaskType::Reconnaissance)
+                .collect();
+
+            // 如果没有侦察任务，说明可能还没有被添加，或者已经被处理
+            if recon_tasks.is_empty() {
+                break;
+            }
+
+            let recon_done = recon_tasks.iter()
                 .all(|t| matches!(t.status, TaskStatus::Completed | TaskStatus::Failed));
 
             if recon_done {
                 break;
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
         // 模拟侦察结果 (实际应该从任务结果获取)
@@ -561,7 +576,13 @@ impl Coordinator {
         for msg in messages.iter() {
             if let super::mailbox::Message::Direct { from, content, .. } = msg {
                 if let super::mailbox::MessageContent::AssistanceRequest { task_id, reason, suggested_specialty } = content {
+                    // 跳过已处理的请求
+                    if self.processed_assistance_ids.contains(task_id) {
+                        continue;
+                    }
+
                     tracing::info!("[Coordinator] 来自 {} 的协助请求: {} - {}", from, task_id, reason);
+                    self.processed_assistance_ids.insert(task_id.clone());
 
                     // 根据请求类型分配给合适的 Specialist
                     if let Some(specialty_str) = suggested_specialty {

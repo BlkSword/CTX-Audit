@@ -4,12 +4,13 @@
 //! 输出格式化模块
 //!
 //! 支持多种输出格式：text, json, markdown, sarif
+//! SARIF 输出统一使用 deepaudit_core::sarif::SarifConverter
 
 use anyhow::Result;
-use serde_json;
 use std::io::Write;
 
 use ctx_audit_tools::FindingData;
+use deepaudit_core::sarif::{SarifConverter, FindingInput};
 
 /// 输出格式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,22 @@ impl OutputFormatter {
                 output.push_str(&format!("  建议: {}\n", rec));
             }
 
+            // 显示污点路径
+            if let Some(flows) = &finding.code_flows {
+                for flow in flows {
+                    if let Some(source) = flow.get("source") {
+                        if let Some(symbol) = source.get("symbol") {
+                            output.push_str(&format!("  污点源: {}\n", symbol));
+                        }
+                    }
+                    if let Some(sink) = flow.get("sink") {
+                        if let Some(symbol) = sink.get("symbol") {
+                            output.push_str(&format!("  污点汇: {}\n", symbol));
+                        }
+                    }
+                }
+            }
+
             output.push_str("\n");
         }
 
@@ -117,8 +134,12 @@ impl OutputFormatter {
                         output.push_str(&format!("- **CWE**: {}\n", cwe));
                     }
 
+                    if let Some(conf) = finding.confidence {
+                        output.push_str(&format!("- **置信度**: {:.0}%\n", conf * 100.0));
+                    }
+
                     if let Some(code) = &finding.code_snippet {
-                        output.push_str(&format!("\n```javascript\n{}\n```\n\n", code));
+                        output.push_str(&format!("\n```\n{}\n```\n\n", code));
                     }
 
                     if let Some(rec) = &finding.recommendation {
@@ -131,58 +152,36 @@ impl OutputFormatter {
         Ok(output)
     }
 
-    /// SARIF 格式
+    /// SARIF 格式 — 使用统一的 SarifConverter
     fn format_findings_sarif(findings: &[FindingData]) -> Result<String> {
-        use serde_json::json;
-
-        let sarif = json!({
-            "version": "2.1.0",
-            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-            "runs": [{
-                "tool": {
-                    "driver": {
-                        "name": "CTX-Audit",
-                        "version": env!("CARGO_PKG_VERSION"),
-                        "informationUri": "https://github.com/ctx-audit/ctx-audit",
-                        "rules": []
-                    }
-                },
-                "results": findings.iter().map(|f| {
-                    json!({
-                        "ruleId": f.cwe_id.as_ref().unwrap_or(&"generic".to_string()),
-                        "level": severity_to_level(f.severity.as_str()),
-                        "message": {
-                            "text": f.description
-                        },
-                        "locations": [{
-                            "physicalLocation": {
-                                "artifactLocation": {
-                                    "uri": f.file_path
-                                },
-                                "region": {
-                                    "startLine": f.start_line,
-                                    "endLine": f.end_line.unwrap_or(f.start_line)
-                                }
-                            }
-                        }]
-                    })
-                }).collect::<Vec<_>>()
-            }]
-        });
-
-        serde_json::to_string_pretty(&sarif).map_err(Into::into)
+        let converter = SarifConverter::new();
+        let inputs: Vec<FindingInput> = findings.iter().map(finding_to_input).collect();
+        converter.convert_to_json(&inputs).map_err(Into::into)
     }
 }
 
-/// 将严重程度转换为 SARIF 级别
-fn severity_to_level(severity: &str) -> &str {
-    match severity.to_lowercase().as_str() {
-        "critical" => "error",
-        "high" => "error",
-        "medium" => "warning",
-        "low" => "note",
-        "info" => "note",
-        _ => "warning",
+/// FindingData → FindingInput 转换
+pub fn finding_to_input(f: &FindingData) -> FindingInput {
+    FindingInput {
+        id: f.id.clone(),
+        title: f.title.clone(),
+        description: f.description.clone(),
+        severity: f.severity.clone(),
+        category: f.category.clone(),
+        cwe_id: f.cwe_id.clone(),
+        file_path: f.file_path.clone(),
+        start_line: f.start_line,
+        end_line: f.end_line,
+        start_column: f.start_column,
+        end_column: f.end_column,
+        code_snippet: f.code_snippet.clone(),
+        recommendation: f.recommendation.clone(),
+        status: f.status.clone(),
+        verification_status: f.verification_status.clone(),
+        discovered_by: f.discovered_by.clone(),
+        code_flows: None, // 将在 Phase 2 中通过 taint_flow_to_summary 填充
+        fix_suggestions: None,
+        confidence: f.confidence,
     }
 }
 

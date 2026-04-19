@@ -23,7 +23,7 @@ pub struct ReplSession {
     config: Arc<ConfigManager>,
 
     /// 当前项目路径
-    current_project: Option<String>,
+    pub current_project: Option<String>,
 
     /// 会话历史
     history: Vec<String>,
@@ -44,7 +44,7 @@ impl ReplSession {
         if let Some(history_path) = dirs::config_dir()
             .map(|dir| dir.join("ctx-audit").join("history.txt"))
         {
-            let _ = std::fs::create_dir_all(history_path.parent().unwrap());
+            let _ = std::fs::create_dir_all(history_path.parent().unwrap_or_else(|| std::path::Path::new("")));
             let _ = editor.load_history(&history_path);
         }
 
@@ -149,7 +149,7 @@ impl ReplSession {
             }
             "/exit" | "/quit" | "/q" => {
                 self.renderer.info("再见！");
-                std::process::exit(0);
+                return Ok(()); // 返回 Ok，允许 run() 中的历史保存和资源清理
             }
             "/project" | "/pwd" => {
                 if let Some(project) = &self.current_project {
@@ -160,8 +160,13 @@ impl ReplSession {
             }
             "/cd" => {
                 if let Some(path) = parts.get(1) {
-                    self.current_project = Some(path.to_string());
-                    self.renderer.success(&format!("项目路径设置为: {}", path));
+                    let project_path = std::path::Path::new(path);
+                    if project_path.exists() {
+                        self.current_project = Some(path.to_string());
+                        self.renderer.success(&format!("项目路径设置为: {}", path));
+                    } else {
+                        self.renderer.error(&format!("路径不存在: {}", path));
+                    }
                 } else {
                     self.renderer.error("用法: /cd <path>");
                 }
@@ -379,11 +384,7 @@ impl ReplSession {
 
     /// 设置配置
     async fn set_config(&mut self, key: &str, value: &str) -> Result<()> {
-        // Clone Arc to get mutable reference
-        let config_manager = Arc::clone(&self.config);
-
-        // We need to get a mutable reference, but ConfigManager is behind Arc
-        // So we'll create a new ConfigManager, modify it, and save
+        // ConfigManager 在 Arc 后面无法 &mut，创建新实例来修改并保存
         let mut config_manager = ConfigManager::new(None)
             .map_err(|e| anyhow::anyhow!("加载配置失败: {}", e))?;
 
@@ -395,11 +396,6 @@ impl ReplSession {
 
         self.renderer.success(&format!("配置已更新: {} = {}", key,
             if key.contains("api_key") { "***" } else { value }));
-
-        // 更新内部的 config 引用
-        // 注意：这里我们需要重新加载配置以反映更改
-        // 但由于 self.config 是 Arc<ConfigManager>，我们无法直接替换
-        // 所以我们建议用户重启 REPL 以加载新配置
         self.renderer.info("配置已保存。重启 REPL 以加载新配置。");
 
         Ok(())
@@ -408,8 +404,24 @@ impl ReplSession {
     /// 列出配置
     fn list_config(&mut self) -> Result<()> {
         self.renderer.print("当前配置:");
-        self.renderer.print("  llm.provider = anthropic");
-        self.renderer.print("  scan.threads = 4");
+        // 从实际配置中读取常用配置项
+        let keys = [
+            "llm.provider",
+            "llm.model",
+            "llm.api_key",
+            "llm.timeout_secs",
+            "scan.threads",
+        ];
+        for key in &keys {
+            if let Some(value) = self.config.get(key) {
+                let display_value = if key.contains("api_key") && value.len() > 8 {
+                    format!("{}***", &value[..8])
+                } else {
+                    value
+                };
+                self.renderer.print(&format!("  {} = {}", key, display_value));
+            }
+        }
         Ok(())
     }
 

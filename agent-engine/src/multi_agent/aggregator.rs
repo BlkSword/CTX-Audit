@@ -468,16 +468,11 @@ mod tests {
             description: "Test description".to_string(),
             severity: "high".to_string(),
             category: category.to_string(),
-            cwe_id: None,
             file_path: file_path.to_string(),
             start_line: line,
-            end_line: None,
             code_snippet: Some("code".to_string()),
-            recommendation: None,
-            status: "open".to_string(),
-            verification_status: None,
-            discovered_by: None,
             extra,
+            ..Default::default()
         }
     }
 

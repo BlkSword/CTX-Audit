@@ -1,0 +1,48 @@
+name: CTX-Audit Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install CTX-Audit
+        run: |
+          cargo install ctx-audit --git https://github.com/ctx-audit/ctx-audit || {
+            echo "CTX-Audit not yet published, building from source..."
+            cargo build --release
+            cp target/release/ctx-audit /usr/local/bin/
+          }
+
+      - name: Run Security Scan
+        run: |
+          ctx-audit scan . --output sarif --output-path results.sarif
+        env:
+          CTX_AUDIT_API_KEY: ${{ secrets.CTX_AUDIT_API_KEY }}
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+          category: ctx-audit
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ctx-audit-results
+          path: results.sarif
+          retention-days: 30

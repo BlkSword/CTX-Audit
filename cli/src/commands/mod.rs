@@ -9,3 +9,4 @@ pub mod chat;
 pub mod analyze;
 pub mod findings;
 pub mod config;
+pub mod watch;
