@@ -184,6 +184,31 @@ enum Commands {
         #[arg(short, long)]
         audit: bool,
     },
+
+    /// 守护模式：监听文件变更并增量扫描
+    ///
+    /// 持续监听项目文件变更，自动增量扫描并更新 SARIF 报告
+    Watch {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 严重程度过滤 (critical, high, medium, low)
+        #[arg(short, long)]
+        severity: Option<String>,
+
+        /// 输出格式
+        #[arg(short, long, default_value = "sarif")]
+        output: String,
+
+        /// SARIF 输出路径
+        #[arg(long, default_value = ".ctx-audit.sarif")]
+        output_path: String,
+
+        /// 忽略的目录（逗号分隔）
+        #[arg(long, default_value = "node_modules,.git,target,build,dist,__pycache__,vendor")]
+        ignore: String,
+    },
 }
 
 /// 漏洞管理子命令
@@ -426,6 +451,14 @@ async fn main() -> Result<()> {
                 tui::run_tui().await.map_err(|e| miette::miette!("{}", e))
             }
         }
+
+        Commands::Watch {
+            path,
+            severity,
+            output: _,
+            output_path,
+            ignore,
+        } => commands::watch::execute(path, severity, "sarif", output_path, ignore).await,
     }
 }
 

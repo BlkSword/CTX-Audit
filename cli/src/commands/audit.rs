@@ -19,6 +19,8 @@ use ctx_audit_agent_engine::{
 use ctx_audit_llm::LLMFactory;
 use ctx_audit_tools::FindingData;
 use ctx_audit_tools::ToolRegistry;
+use deepaudit_core::sarif::{SarifConverter, FindingInput, taint_flow_to_summary};
+use deepaudit_core::analysis::TaintAnalyzer;
 
 /// 安全地截断 UTF-8 字符串到指定字节长度
 fn truncate_utf8(s: &str, max_bytes: usize) -> String {
@@ -39,6 +41,27 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> String {
         result.push_str("...");
     }
     result
+}
+
+/// 从文件扩展名推断语言
+fn detect_language(file_path: &str) -> String {
+    let ext = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext {
+        "py" => "python",
+        "js" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "java" => "java",
+        "rs" => "rust",
+        "go" => "go",
+        "php" => "php",
+        "rb" => "ruby",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        _ => "unknown",
+    }.to_string()
 }
 
 /// 执行 audit 命令（使用新的专业审计框架）
@@ -225,6 +248,34 @@ pub async fn execute(
     let scan_result = executor.execute_deterministic_scan(&mut audit_state).await;
     print_phase_result(&scan_result, &mut renderer);
 
+    // ===== 新增：对候选漏洞执行污点追踪 =====
+    let taint_analyzer = TaintAnalyzer::new();
+    let mut taint_flow_map: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+
+    for candidate in &audit_state.vulnerability_candidates {
+        let full_path = std::path::Path::new(&path).join(&candidate.file_path);
+        if let Ok(code) = std::fs::read_to_string(&full_path) {
+            let language = detect_language(&candidate.file_path);
+            let flows = taint_analyzer.analyze_with_propagation(
+                &code, &candidate.file_path, &language,
+            );
+            if !flows.is_empty() {
+                let summaries: Vec<serde_json::Value> = flows.iter()
+                    .map(|f| serde_json::to_value(taint_flow_to_summary(f)).unwrap_or_default())
+                    .collect();
+                taint_flow_map.insert(candidate.id.clone(), summaries);
+            }
+        }
+    }
+
+    if !taint_flow_map.is_empty() {
+        renderer.info(&format!(
+            "[污点] 追踪到 {} 个候选漏洞的污点路径",
+            taint_flow_map.len()
+        ));
+    }
+
     // 显示候选漏洞摘要
     if !audit_state.vulnerability_candidates.is_empty() {
         renderer.info("");
@@ -277,30 +328,33 @@ pub async fn execute(
         handle.abort();
     }
 
-    // 转换确认的漏洞为 FindingData
+    // 转换确认的漏洞为 FindingData（附带污点路径）
     let all_findings: Vec<FindingData> = audit_state.confirmed_vulnerabilities
         .iter()
-        .map(|v| FindingData {
-            id: Some(v.id.clone()),
-            title: Some(v.vulnerability_type.clone()),
-            description: format!(
-                "来源: {}\n置信度: {:.0}%\n{}",
-                v.source,
-                v.confidence * 100.0,
-                v.code_snippet.as_deref().unwrap_or("")
-            ),
-            severity: v.severity.clone(),
-            category: v.vulnerability_type.clone(),
-            cwe_id: None,
-            file_path: v.file_path.clone(),
-            start_line: v.line as u32,
-            end_line: Some(v.line as u32),
-            code_snippet: v.code_snippet.clone(),
-            recommendation: None,
-            status: "confirmed".to_string(),
-            verification_status: Some(format!("{:?}", v.verification_status)),
-            discovered_by: Some(v.source.clone()),
-            extra: std::collections::HashMap::new(),
+        .map(|v| {
+            let code_flows = taint_flow_map.get(&v.id).cloned();
+            FindingData {
+                id: Some(v.id.clone()),
+                title: Some(v.vulnerability_type.clone()),
+                description: format!(
+                    "来源: {}\n置信度: {:.0}%\n{}",
+                    v.source,
+                    v.confidence * 100.0,
+                    v.code_snippet.as_deref().unwrap_or("")
+                ),
+                severity: v.severity.clone(),
+                category: v.vulnerability_type.clone(),
+                file_path: v.file_path.clone(),
+                start_line: v.line as u32,
+                end_line: Some(v.line as u32),
+                code_snippet: v.code_snippet.clone(),
+                status: "confirmed".to_string(),
+                verification_status: Some(format!("{:?}", v.verification_status)),
+                discovered_by: Some(v.source.clone()),
+                confidence: Some(v.confidence),
+                code_flows,
+                ..Default::default()
+            }
         })
         .collect();
 
@@ -345,11 +399,13 @@ pub async fn execute(
                     findings.len()
                 ));
                 for finding in findings {
+                    let flow_info = if finding.code_flows.is_some() { " [含污点路径]" } else { "" };
                     renderer.info(&format!(
-                        "    - {}:{} - {}",
+                        "    - {}:{} - {}{}",
                         finding.file_path,
                         finding.start_line,
-                        finding.title.as_deref().unwrap_or(&finding.category)
+                        finding.title.as_deref().unwrap_or(&finding.category),
+                        flow_info
                     ));
                 }
             }
@@ -362,19 +418,36 @@ pub async fn execute(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("project");
-    let default_output_path = format!("./{}_audit_{}.json", project_name, report_timestamp);
+
+    // 根据输出格式选择扩展名
+    let ext = match output_format {
+        "sarif" => "sarif",
+        "markdown" | "md" => "md",
+        _ => "json",
+    };
+    let default_output_path = format!("./{}_audit_{}.{}", project_name, report_timestamp, ext);
     let final_output_path = output_path.unwrap_or(default_output_path);
 
-    // 生成完整报告
-    let full_report = generate_full_report(
-        &audit_state,
-        &all_findings,
-        executor.get_audit_chain(),
-        &path,
-    );
-
-    // 保存报告
-    save_full_report(&final_output_path, &full_report, &mut renderer).await?;
+    // 生成报告
+    if output_format == "sarif" {
+        // 使用统一 SARIF 引擎
+        let converter = SarifConverter::new();
+        let inputs: Vec<FindingInput> = all_findings.iter().map(|f| crate::output::finding_to_input(f)).collect();
+        let sarif_json = converter.convert_to_json(&inputs)
+            .map_err(|e| miette::miette!("SARIF 生成失败: {}", e))?;
+        tokio::fs::write(&final_output_path, sarif_json)
+            .await
+            .map_err(|e| miette::miette!("写入文件失败: {}", e))?;
+    } else {
+        // 生成完整 JSON 报告（保持向后兼容）
+        let full_report = generate_full_report(
+            &audit_state,
+            &all_findings,
+            executor.get_audit_chain(),
+            &path,
+        );
+        save_full_report(&final_output_path, &full_report, &mut renderer).await?;
+    }
 
     renderer.info("");
     renderer.success(&format!("[报告] 已保存到: {}", final_output_path));
@@ -404,151 +477,6 @@ fn format_duration(ms: u64) -> String {
         format!("{:.1}s", ms as f64 / 1000.0)
     } else {
         format!("{:.1}m", ms as f64 / 60000.0)
-    }
-}
-
-/// 保存漏洞结果到文件
-async fn save_findings(
-    output_path: &str,
-    findings: &[FindingData],
-    format: &str,
-    renderer: &mut TerminalRenderer,
-) -> Result<()> {
-    let content = match format {
-        "json" => serde_json::to_string_pretty(findings)
-            .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?,
-        "sarif" => to_sarif(findings),
-        "markdown" => to_markdown(findings),
-        _ => to_text(findings),
-    };
-
-    tokio::fs::write(output_path, content)
-        .await
-        .map_err(|e| miette::miette!("写入文件失败: {}", e))?;
-
-    renderer.info(&format!("[保存] 结果已保存到: {}", output_path));
-    Ok(())
-}
-
-/// 转换为 SARIF 格式
-fn to_sarif(findings: &[FindingData]) -> String {
-    let sarif = serde_json::json!({
-        "version": "2.1.0",
-        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-        "runs": [{
-            "tool": {
-                "driver": {
-                    "name": "CTX-Audit",
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "informationUri": "https://github.com/ctx-audit/ctx-audit"
-                }
-            },
-            "results": findings.iter().map(|f| {
-                serde_json::json!({
-                    "ruleId": f.category.clone(),
-                    "level": severity_to_level(&f.severity),
-                    "message": {
-                        "text": f.title.clone().unwrap_or_else(|| f.category.clone())
-                    },
-                    "locations": [{
-                        "physicalLocation": {
-                            "artifactLocation": {
-                                "uri": f.file_path.clone()
-                            },
-                            "region": {
-                                "startLine": f.start_line,
-                                "endLine": f.end_line.unwrap_or(f.start_line)
-                            }
-                        }
-                    }]
-                })
-            }).collect::<Vec<_>>()
-        }]
-    });
-
-    serde_json::to_string_pretty(&sarif).unwrap_or_default()
-}
-
-/// 转换为 Markdown 格式
-fn to_markdown(findings: &[FindingData]) -> String {
-    let mut md = String::from("# 安全审计报告\n\n");
-    md.push_str(&format!(
-        "**生成时间**: {}\n\n",
-        chrono::Utc::now().to_rfc3339()
-    ));
-    md.push_str(&format!("**漏洞数量**: {}\n\n", findings.len()));
-
-    // 按严重程度分组
-    let mut by_severity = std::collections::HashMap::new();
-    for finding in findings {
-        by_severity
-            .entry(finding.severity.clone())
-            .or_insert_with(Vec::new)
-            .push(finding);
-    }
-
-    for severity in ["critical", "high", "medium", "low", "info"] {
-        if let Some(items) = by_severity.get(severity) {
-            md.push_str(&format!(
-                "## {} ({})\n\n",
-                severity.to_uppercase(),
-                items.len()
-            ));
-            for finding in items {
-                md.push_str(&format!("### {}\n\n", finding.category));
-                if let Some(title) = &finding.title {
-                    md.push_str(&format!("**标题**: {}\n\n", title));
-                }
-                md.push_str(&format!(
-                    "**文件**: {}:{}\n\n",
-                    finding.file_path, finding.start_line
-                ));
-                md.push_str(&format!("**描述**: {}\n\n", finding.description));
-                if let Some(code) = &finding.code_snippet {
-                    md.push_str("**代码**:\n```\n");
-                    md.push_str(code);
-                    md.push_str("\n```\n\n");
-                }
-            }
-        }
-    }
-
-    md
-}
-
-/// 转换为文本格式
-fn to_text(findings: &[FindingData]) -> String {
-    let mut text = String::from("安全审计报告\n");
-    text.push_str(&format!("生成时间: {}\n", chrono::Utc::now().to_rfc3339()));
-    text.push_str(&format!("漏洞数量: {}\n\n", findings.len()));
-
-    for (i, finding) in findings.iter().enumerate() {
-        text.push_str(&format!(
-            "[{}] {} - {}\n",
-            i + 1,
-            finding.severity.to_uppercase(),
-            finding.category
-        ));
-        text.push_str(&format!(
-            "    文件: {}:{}\n",
-            finding.file_path, finding.start_line
-        ));
-        if let Some(title) = &finding.title {
-            text.push_str(&format!("    标题: {}\n", title));
-        }
-        text.push('\n');
-    }
-
-    text
-}
-
-/// SARIF 严重程度映射
-fn severity_to_level(severity: &str) -> &str {
-    match severity.to_lowercase().as_str() {
-        "critical" | "high" => "error",
-        "medium" => "warning",
-        "low" | "info" => "note",
-        _ => "none",
     }
 }
 
@@ -617,6 +545,9 @@ fn generate_full_report(
             "status": f.status,
             "verification_status": f.verification_status,
             "discovered_by": f.discovered_by,
+            "confidence": f.confidence,
+            "code_flows": f.code_flows,
+            "fix_suggestions": f.fix_suggestions,
         })).collect::<Vec<_>>(),
         "vulnerability_candidates": state.vulnerability_candidates.iter().map(|c| serde_json::json!({
             "id": c.id,

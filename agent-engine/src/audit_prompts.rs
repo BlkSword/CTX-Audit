@@ -463,8 +463,22 @@ Action Input: {
   "status": "Confirmed/LikelyFalsePositive/FalsePositive/NeedsMoreInfo",
   "reason": "判断理由",
   "confidence": 0.0-1.0,
-  "recommendation": "修复建议（如适用）"
+  "recommendation": "修复建议（如适用）",
+  "fix_suggestions": [
+    {
+      "description": "修复描述",
+      "fix_type": "replacement",
+      "old_code": "有漏洞的代码片段",
+      "new_code": "修复后的代码片段"
+    }
+  ]
 }
+
+## fix_suggestions 说明
+如果确认漏洞存在（status 为 Confirmed），请提供 fix_suggestions：
+- fix_type: "replacement"（替换）、"wrap"（包装安全检查）、"remove"（删除危险代码）
+- old_code: 需要修改的原始代码片段
+- new_code: 修复后的代码片段
 "#;
 
 /// LLM 验证阶段提示词 - 由 LLM 做最终判断

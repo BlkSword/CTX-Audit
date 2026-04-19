@@ -217,6 +217,14 @@ pub struct FindingData {
     /// 结束行号
     pub end_line: Option<u32>,
 
+    /// 起始列号
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_column: Option<u32>,
+
+    /// 结束列号
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
+
     /// 代码片段
     pub code_snippet: Option<String>,
 
@@ -232,9 +240,48 @@ pub struct FindingData {
     /// 发现者
     pub discovered_by: Option<String>,
 
+    /// 污点路径（供 SARIF codeFlows 使用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_flows: Option<Vec<serde_json::Value>>,
+
+    /// 结构化修复建议（供 SARIF fixes 使用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_suggestions: Option<Vec<serde_json::Value>>,
+
+    /// 置信度 (0.0 - 1.0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+
     /// 额外信息
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl Default for FindingData {
+    fn default() -> Self {
+        Self {
+            id: None,
+            title: None,
+            description: String::new(),
+            severity: "medium".to_string(),
+            category: "other".to_string(),
+            cwe_id: None,
+            file_path: String::new(),
+            start_line: 0,
+            end_line: None,
+            start_column: None,
+            end_column: None,
+            code_snippet: None,
+            recommendation: None,
+            status: "open".to_string(),
+            verification_status: None,
+            discovered_by: None,
+            code_flows: None,
+            fix_suggestions: None,
+            confidence: None,
+            extra: HashMap::new(),
+        }
+    }
 }
 
 /// 读取文件工具
@@ -357,6 +404,24 @@ impl Tool for ReadFileTool {
         let relative_path = self.extract_relative_path(file_path);
         let full_path = Path::new(&self.project_path).join(&relative_path);
 
+        // 路径遍历验证：确保解析后的路径仍在项目目录内
+        {
+            let canonical_project = std::path::Path::new(&self.project_path).canonicalize()
+                .map_err(|e| ToolError::ExecutionFailed(format!("Invalid project path: {}", e)))?;
+            let check_path = if full_path.exists() {
+                full_path.canonicalize()
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Invalid path: {}", e)))?
+            } else if let Some(parent) = full_path.parent() {
+                parent.canonicalize()
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Invalid path: {}", e)))?
+            } else {
+                full_path.clone()
+            };
+            if !check_path.starts_with(&canonical_project) {
+                return Err(ToolError::ExecutionFailed("Path traversal detected: path escapes project directory".to_string()));
+            }
+        }
+
         // 读取文件
         let content = tokio::fs::read_to_string(&full_path)
             .await
@@ -446,6 +511,24 @@ impl Tool for ListFilesTool {
         let pattern = input["pattern"].as_str();
 
         let full_path = Path::new(&self.project_path).join(path);
+
+        // 路径遍历验证
+        {
+            let canonical_project = std::path::Path::new(&self.project_path).canonicalize()
+                .map_err(|e| ToolError::ExecutionFailed(format!("Invalid project path: {}", e)))?;
+            let check_path = if full_path.exists() {
+                full_path.canonicalize()
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Invalid path: {}", e)))?
+            } else if let Some(parent) = full_path.parent() {
+                parent.canonicalize()
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Invalid path: {}", e)))?
+            } else {
+                full_path.clone()
+            };
+            if !check_path.starts_with(&canonical_project) {
+                return Err(ToolError::ExecutionFailed("Path traversal detected: path escapes project directory".to_string()));
+            }
+        }
 
         let mut entries = tokio::fs::read_dir(&full_path)
             .await
@@ -636,13 +719,15 @@ impl Tool for ReportFindingTool {
             cwe_id,
             file_path: file_path.to_string(),
             start_line: line_number as u32,
-            end_line: None,
             code_snippet,
             recommendation,
-            status: "open".to_string(),
-            verification_status: None,
-            discovered_by: None,
-            extra: HashMap::new(),
+            fix_suggestions: input.get("fix_suggestions")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.clone()),
+            confidence: input.get("confidence")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32),
+            ..Default::default()
         };
 
         Ok(ToolResult::json(

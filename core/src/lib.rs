@@ -7,6 +7,8 @@ pub mod rules;
 mod diff;
 pub mod indexing;
 pub mod analysis;
+pub mod sarif;
+pub mod watcher;
 
 // 重新导出常用类型
 pub use ast::{ASTEngine, ASTParser, CacheData, CacheManager, FileIndex, QueryEngine, Symbol, SymbolKind};

@@ -9,6 +9,7 @@ use miette::Result;
 
 use crate::terminal::TerminalRenderer;
 use deepaudit_core::scan_directory;
+use deepaudit_core::sarif::{SarifConverter, FindingInput};
 
 /// 执行 scan 命令
 pub async fn execute(
@@ -127,43 +128,32 @@ async fn save_scan_results(
     Ok(())
 }
 
-/// 转换为 SARIF 格式
+/// 转换为 SARIF 格式 — 使用统一 SarifConverter
 fn to_sarif(findings: &[deepaudit_core::Finding]) -> String {
-    let sarif = serde_json::json!({
-        "version": "2.1.0",
-        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-        "runs": [{
-            "tool": {
-                "driver": {
-                    "name": "CTX-Audit",
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "informationUri": "https://github.com/ctx-audit/ctx-audit"
-                }
-            },
-            "results": findings.iter().map(|f| {
-                serde_json::json!({
-                    "ruleId": f.vuln_type.clone(),
-                    "level": severity_to_level(&f.severity),
-                    "message": {
-                        "text": f.description.clone()
-                    },
-                    "locations": [{
-                        "physicalLocation": {
-                            "artifactLocation": {
-                                "uri": f.file_path.clone()
-                            },
-                            "region": {
-                                "startLine": f.line_start,
-                                "endLine": f.line_end
-                            }
-                        }
-                    }]
-                })
-            }).collect::<Vec<_>>()
-        }]
-    });
+    let converter = SarifConverter::new();
+    let inputs: Vec<FindingInput> = findings.iter().map(|f| FindingInput {
+        id: Some(f.finding_id.clone()),
+        title: Some(f.vuln_type.clone()),
+        description: f.description.clone(),
+        severity: f.severity.clone(),
+        category: f.vuln_type.clone(),
+        cwe_id: None, // core::Finding 没有 cwe_id 字段
+        file_path: f.file_path.clone(),
+        start_line: f.line_start as u32,
+        end_line: Some(f.line_end as u32),
+        start_column: None,
+        end_column: None,
+        code_snippet: None,
+        recommendation: None,
+        status: "detected".to_string(),
+        verification_status: None,
+        discovered_by: Some(f.detector.clone()),
+        code_flows: None,
+        fix_suggestions: None,
+        confidence: None,
+    }).collect();
 
-    serde_json::to_string_pretty(&sarif).unwrap_or_default()
+    converter.convert_to_json(&inputs).unwrap_or_default()
 }
 
 /// 转换为 Markdown 格式
@@ -210,14 +200,3 @@ fn to_text(findings: &[deepaudit_core::Finding]) -> String {
 
     text
 }
-
-/// SARIF 严重程度映射
-fn severity_to_level(severity: &str) -> &str {
-    match severity.to_lowercase().as_str() {
-        "critical" | "high" => "error",
-        "medium" => "warning",
-        "low" | "info" => "note",
-        _ => "none",
-    }
-}
-

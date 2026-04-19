@@ -396,16 +396,11 @@ mod tests {
                 description: "Test description".to_string(),
                 severity: "high".to_string(),
                 category: "other".to_string(),
-                cwe_id: None,
                 file_path: "/test/file.rs".to_string(),
                 start_line: 10,
-                end_line: None,
                 code_snippet: Some("code".to_string()),
-                recommendation: None,
-                status: "open".to_string(),
-                verification_status: None,
-                discovered_by: None,
                 extra,
+                ..Default::default()
             },
             confirmed_by: (0..confirmations)
                 .map(|i| format!("worker-{}", i))
