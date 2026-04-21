@@ -58,24 +58,25 @@ impl LLMFactory {
     }
 
     /// 设置配置
-    pub fn set_config(&self, config: LLMConfig) {
-        *self.config.lock().unwrap() = config;
+    pub fn set_config(&self, config: LLMConfig) -> Result<(), LLMError> {
+        *self.config.lock().map_err(|e| LLMError::Unknown(format!("Lock poisoned: {}", e)))? = config;
         // 清除缓存的客户端
-        *self.client.lock().unwrap() = None;
+        *self.client.lock().map_err(|e| LLMError::Unknown(format!("Lock poisoned: {}", e)))? = None;
+        Ok(())
     }
 
     /// 获取客户端
     pub async fn get_client(&self) -> Result<Arc<dyn LLMClient>, LLMError> {
         // 检查是否有缓存的客户端
         {
-            let client = self.client.lock().unwrap();
+            let client = self.client.lock().map_err(|e| LLMError::Unknown(format!("Lock poisoned: {}", e)))?;
             if let Some(ref client) = *client {
                 return Ok(client.clone());
             }
         }
 
         // 创建新客户端
-        let config = self.config.lock().unwrap().clone();
+        let config = self.config.lock().map_err(|e| LLMError::Unknown(format!("Lock poisoned: {}", e)))?.clone();
         let client: Arc<dyn LLMClient> = match config.provider.as_str() {
             "anthropic" => Arc::new(AnthropicClient::new(
                 config.api_key.ok_or_else(|| {
@@ -115,7 +116,7 @@ impl LLMFactory {
         };
 
         // 缓存客户端
-        *self.client.lock().unwrap() = Some(client.clone());
+        *self.client.lock().map_err(|e| LLMError::Unknown(format!("Lock poisoned: {}", e)))? = Some(client.clone());
 
         Ok(client)
     }

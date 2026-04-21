@@ -124,10 +124,12 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
 
     /// 获取缓存值
     pub fn get(&self, key: &str) -> Option<T> {
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write()
+            .expect("cache lock poisoned - another thread panicked");
         stats.total_requests += 1;
 
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write()
+            .expect("cache lock poisoned - another thread panicked");
         if let Some(entry) = cache.get_mut(key) {
             if entry.is_expired(self.max_age_ms) {
                 cache.remove(key);
@@ -145,10 +147,12 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
 
     /// 获取缓存值（带文件修改检查）
     pub fn get_with_mtime(&self, key: &str, current_mtime: Option<u64>) -> Option<T> {
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write()
+            .expect("cache lock poisoned - another thread panicked");
         stats.total_requests += 1;
 
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write()
+            .expect("cache lock poisoned - another thread panicked");
         if let Some(entry) = cache.get_mut(key) {
             if entry.is_expired(self.max_age_ms) || entry.is_file_modified(current_mtime) {
                 cache.remove(key);
@@ -177,7 +181,8 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
         file_mtime: Option<u64>,
         file_hash: Option<String>,
     ) {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write()
+            .expect("cache lock poisoned - another thread panicked");
 
         // 如果超过最大条目数，删除最久未访问的条目
         if cache.len() >= self.max_entries {
@@ -187,7 +192,8 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
         let entry = CacheEntry::new(value, file_mtime, file_hash);
         cache.insert(key, entry);
 
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write()
+            .expect("cache lock poisoned - another thread panicked");
         stats.size = cache.len();
     }
 
@@ -209,34 +215,44 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
 
     /// 删除缓存条目
     pub fn remove(&self, key: &str) -> Option<T> {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write()
+            .expect("cache lock poisoned - another thread panicked");
         let entry = cache.remove(key)?;
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write()
+            .expect("cache lock poisoned - another thread panicked");
         stats.size = cache.len();
         Some(entry.value)
     }
 
     /// 清空缓存
     pub fn clear(&self) {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write()
+            .expect("cache lock poisoned - another thread panicked");
         cache.clear();
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write()
+            .expect("cache lock poisoned - another thread panicked");
         stats.size = 0;
     }
 
     /// 获取统计信息
     pub fn stats(&self) -> CacheStats {
-        self.stats.read().unwrap().clone()
+        self.stats.read()
+            .expect("cache lock poisoned - another thread panicked")
+            .clone()
     }
 
     /// 获取缓存大小
     pub fn len(&self) -> usize {
-        self.cache.read().unwrap().len()
+        self.cache.read()
+            .expect("cache lock poisoned - another thread panicked")
+            .len()
     }
 
     /// 检查缓存是否为空
     pub fn is_empty(&self) -> bool {
-        self.cache.read().unwrap().is_empty()
+        self.cache.read()
+            .expect("cache lock poisoned - another thread panicked")
+            .is_empty()
     }
 }
 

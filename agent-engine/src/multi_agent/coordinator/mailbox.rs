@@ -6,7 +6,7 @@
 //! 实现 Coordinator-Specialist 架构中的 Peer-to-Peer 消息传递。
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, broadcast};
 
@@ -151,7 +151,7 @@ pub struct Mailbox {
     broadcast_tx: broadcast::Sender<Message>,
 
     /// 消息历史 (可选，用于调试)
-    message_history: Arc<tokio::sync::RwLock<Vec<Message>>>,
+    message_history: Arc<tokio::sync::RwLock<VecDeque<Message>>>,
 }
 
 impl Mailbox {
@@ -162,7 +162,7 @@ impl Mailbox {
         Self {
             queues: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             broadcast_tx,
-            message_history: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            message_history: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
         }
     }
 
@@ -240,17 +240,17 @@ impl Mailbox {
     /// 记录消息历史
     async fn record_message(&self, msg: Message) {
         let mut history = self.message_history.write().await;
-        history.push(msg);
+        history.push_back(msg);
 
         // 限制历史大小
         if history.len() > 1000 {
-            history.remove(0);
+            history.pop_front(); // O(1) 操作
         }
     }
 
     /// 获取消息历史
     pub async fn get_message_history(&self) -> Vec<Message> {
-        self.message_history.read().await.clone()
+        self.message_history.read().await.iter().cloned().collect()
     }
 
     /// 获取已注册的 Specialist 列表

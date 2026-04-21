@@ -242,7 +242,7 @@ impl TerminalRenderer {
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .unwrap()
+                .expect("valid progress bar template")
                 .progress_chars("##>-"),
         );
         pb
@@ -254,7 +254,7 @@ impl TerminalRenderer {
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner} {msg}")
-                .unwrap(),
+                .expect("valid spinner template"),
         );
         pb.set_message(msg.to_string());
         pb.enable_steady_tick(Duration::from_millis(100));

@@ -362,6 +362,10 @@ impl ASTParser {
                 "function_definition" => {
                     if let Some(name_node) = node.child_by_field_name("name") {
                         let name = content[name_node.byte_range()].to_string();
+
+                        // Read the caller BEFORE pushing the function name onto the stack
+                        let caller = func_stack.last().cloned().unwrap_or_default();
+
                         func_stack.push(name.clone());
 
                         let start_line = node.start_position().row + 1;
@@ -386,10 +390,10 @@ impl ASTParser {
                                 serde_json::Value::String(class_name.clone()),
                             );
                         }
-                        if let Some(func_name) = func_stack.last() {
+                        if !caller.is_empty() {
                             metadata.insert(
                                 "callerFunction".to_string(),
-                                serde_json::Value::String(func_name.clone()),
+                                serde_json::Value::String(caller),
                             );
                         }
 
@@ -518,6 +522,10 @@ impl ASTParser {
                 "function_item" => {
                     if let Some(name_node) = node.child_by_field_name("name") {
                         let name = content[name_node.byte_range()].to_string();
+
+                        // Read the caller BEFORE pushing the function name onto the stack
+                        let caller = func_stack.last().cloned().unwrap_or_default();
+
                         func_stack.push(name.clone());
 
                         let start_line = node.start_position().row + 1;
@@ -530,10 +538,10 @@ impl ASTParser {
                         };
 
                         let mut metadata = HashMap::new();
-                        if let Some(func_name) = func_stack.last() {
+                        if !caller.is_empty() {
                             metadata.insert(
                                 "callerFunction".to_string(),
-                                serde_json::Value::String(func_name.clone()),
+                                serde_json::Value::String(caller),
                             );
                         }
 
@@ -659,6 +667,10 @@ impl ASTParser {
                 "function_declaration" | "method_definition" => {
                     if let Some(name_node) = node.child_by_field_name("name") {
                         let name = content[name_node.byte_range()].to_string();
+
+                        // Read the caller BEFORE pushing the function name onto the stack
+                        let caller = func_stack.last().cloned().unwrap_or_default();
+
                         func_stack.push(name.clone());
 
                         let start_line = node.start_position().row + 1;
@@ -683,10 +695,10 @@ impl ASTParser {
                                 serde_json::Value::String(class_name.clone()),
                             );
                         }
-                        if let Some(func_name) = func_stack.last() {
+                        if !caller.is_empty() {
                             metadata.insert(
                                 "callerFunction".to_string(),
-                                serde_json::Value::String(func_name.clone()),
+                                serde_json::Value::String(caller),
                             );
                         }
 

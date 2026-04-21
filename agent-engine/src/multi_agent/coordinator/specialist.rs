@@ -230,8 +230,8 @@ impl Specialist {
                     }
                 }
 
-                // 完成当前任务后，认领新任务
-                else => {
+                // 空闲时定期尝试认领任务（带 sleep 防止忙等待）
+                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
                     if self.current_task.is_none() && self.status == SpecialistStatus::Idle {
                         if let Some(task) = self.task_list.claim_task(
                             &self.id,
@@ -688,21 +688,8 @@ Action Input: {{"参数名": "参数值"}}
             })
             .collect();
 
-        // 如果没有从工具获取到发现，创建一个基本发现
-        let findings = if findings_from_tools.is_empty() {
-            vec![serde_json::json!({
-                "id": format!("finding-{}", task.id),
-                "title": format!("{} 分析完成", task.target),
-                "description": format!("已完成对 {:?} 类型的任务分析", task.task_type),
-                "severity": "Info",
-                "category": "analysis",
-                "file_path": task.target,
-                "start_line": 0,
-                "confidence": 0.5,
-            })]
-        } else {
-            findings_from_tools
-        };
+        // 没有发现时返回空列表，不创建虚假发现
+        let findings = findings_from_tools;
 
         TaskResult {
             findings,

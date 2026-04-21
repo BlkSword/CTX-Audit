@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use super::error::LLMError;
-use super::stream::{LLMStreamChunk, ToolCallDelta};
+use super::stream::{LLMStreamChunk, ToolCallDelta, Usage};
 
 // ============================================================================
 // 模型定义
@@ -157,26 +157,6 @@ pub struct ToolUse {
 
     /// 工具输入
     pub input: serde_json::Value,
-}
-
-/// 使用量统计
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Usage {
-    /// 输入 tokens
-    pub input_tokens: u32,
-
-    /// 输出 tokens
-    pub output_tokens: u32,
-
-    /// 总 tokens
-    pub total_tokens: u32,
-}
-
-impl Usage {
-    /// 获取总 tokens
-    pub fn total_tokens(&self) -> u32 {
-        self.total_tokens
-    }
 }
 
 // ============================================================================

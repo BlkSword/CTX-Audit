@@ -9,6 +9,19 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 
+/// Safely truncate a string slice to a maximum byte length, respecting UTF-8 character boundaries.
+/// This prevents panics when the truncation point falls inside a multi-byte character.
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut boundary = max_bytes;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
+}
+
 /// 代码块类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChunkType {
@@ -144,11 +157,7 @@ impl CodeChunk {
         language: &str,
     ) -> String {
         // 包含符号名、类型和代码内容的简化版本
-        let content_preview = if content.len() > 500 {
-            &content[..500]
-        } else {
-            content
-        };
+        let content_preview = safe_truncate(content, 500);
 
         format!(
             "{} {} in {}: {}",
@@ -418,6 +427,8 @@ impl CodeChunker {
         language: &str,
     ) -> Vec<(String, ChunkType, usize)> {
         let mut blocks = Vec::new();
+        // Track the indentation of the most recent class definition for Python
+        let mut current_class_indent: Option<usize> = None;
 
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
@@ -445,16 +456,22 @@ impl CodeChunker {
                     }
                 }
                 "python" => {
+                    let line_indent = line.len() - line.trim_start().len();
+
+                    // Update class indent tracking: if this line is at or below the class indent, we left the class
+                    if let Some(ci) = current_class_indent {
+                        if !trimmed.is_empty() && line_indent <= ci && !trimmed.starts_with("class ") {
+                            current_class_indent = None;
+                        }
+                    }
+
                     if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
                         let name = self.extract_python_function_name(trimmed);
-                        let chunk_type = if self.is_method(&lines[..i]) {
-                            ChunkType::Method
-                        } else {
-                            ChunkType::Function
-                        };
+                        let chunk_type = self.is_method(line, line_indent, current_class_indent);
                         blocks.push((name, chunk_type, i + 1));
                     } else if trimmed.starts_with("class ") {
                         let name = self.extract_python_class_name(trimmed);
+                        current_class_indent = Some(line_indent);
                         blocks.push((name, ChunkType::Class, i + 1));
                     }
                 }
@@ -705,9 +722,12 @@ impl CodeChunker {
             .to_string()
     }
 
-    fn is_method(&self, _lines_before: &[&str]) -> bool {
-        // 简单实现：检查前面是否有 class 定义（需要更复杂的实现）
-        false
+    /// Check if a Python function definition is a method (inside a class) based on indentation.
+    fn is_method(&self, line: &str, base_indent: usize, class_indent: Option<usize>) -> ChunkType {
+        match class_indent {
+            Some(ci) if base_indent > ci => ChunkType::Method,
+            _ => ChunkType::Function,
+        }
     }
 
     fn extract_js_function_name(&self, line: &str) -> String {

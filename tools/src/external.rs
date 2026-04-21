@@ -6,7 +6,7 @@
 //! 支持集成外部工具如 Semgrep、Bandit、Gitleaks 等
 
 use async_trait::async_trait;
-use std::process::Command;
+use tokio::process::Command;
 use std::sync::Arc;
 
 use crate::registry::{Tool, ToolRegistry};
@@ -85,15 +85,25 @@ impl Tool for ExternalTool {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 target 参数".to_string()))?;
 
+        // 验证 target 路径（防止路径遍历）
+        if target.contains("..") || target.starts_with('/') || target.starts_with('\\') {
+            return Err(ToolError::ExecutionFailed("Invalid target path: path traversal detected".to_string()));
+        }
+
         let mut cmd = Command::new(&self.config.command);
         cmd.args(&self.config.args_template);
+        cmd.kill_on_drop(true);
 
         // 添加目标
         cmd.arg(target);
 
-        // 添加额外参数
+        // 添加额外参数（验证参数名）
         if let Some(args) = input["args"].as_object() {
             for (key, value) in args {
+                // 验证参数名只包含安全字符
+                if !key.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') || key.is_empty() {
+                    return Err(ToolError::ExecutionFailed(format!("Invalid argument key: {}", key)));
+                }
                 if let Some(s) = value.as_str() {
                     cmd.arg(format!("--{}", key));
                     cmd.arg(s);
@@ -106,10 +116,14 @@ impl Tool for ExternalTool {
             cmd.current_dir(dir);
         }
 
-        // 执行命令
-        let output = cmd
-            .output()
-            .map_err(|e| ToolError::ExecutionFailed(format!("执行失败: {}", e)))?;
+        // 执行命令（带超时）
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            cmd.output()
+        )
+        .await
+        .map_err(|_| ToolError::ExecutionFailed("Command timed out (60s)".to_string()))?
+        .map_err(|e| ToolError::ExecutionFailed(format!("执行失败: {}", e)))?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();

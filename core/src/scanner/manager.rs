@@ -29,6 +29,7 @@ impl ScannerManager {
 
     pub async fn scan_directory(&self, root_path: &str) -> Vec<Finding> {
         let walker = ignore::WalkBuilder::new(root_path).build();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(16));
         let mut set = tokio::task::JoinSet::new();
 
         for result in walker {
@@ -36,8 +37,10 @@ impl ScannerManager {
                 if entry.file_type().map_or(false, |ft| ft.is_file()) {
                     let path = entry.path().to_path_buf();
                     let manager = self.clone();
+                    let permit = semaphore.clone().acquire_owned().await.unwrap();
 
                     set.spawn(async move {
+                        let _permit = permit;
                         if let Ok(content) = tokio::fs::read_to_string(&path).await {
                             manager.scan_file(&path, &content).await
                         } else {

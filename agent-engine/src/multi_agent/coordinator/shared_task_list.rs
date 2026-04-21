@@ -146,7 +146,19 @@ impl SharedTaskList {
         let mut queue = self.pending_queue.lock().await;
 
         // 查找匹配专业领域的任务
+        // 跟踪已检查数量，防止所有任务都被阻塞时无限循环
+        let mut checked_count = 0;
+        let original_len = queue.len();
+
         while let Some(entry) = queue.pop() {
+            checked_count += 1;
+
+            // 如果已经检查了队列中的所有任务都没有匹配，退出
+            if checked_count > original_len {
+                queue.push(entry);
+                break;
+            }
+
             let task_id = entry.task.id.clone();
 
             // 检查是否被阻塞

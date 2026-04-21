@@ -560,11 +560,30 @@ impl GitHistoryAnalyzer {
 
     /// 解析时间戳
     fn parse_timestamp(&self, timestamp: &str) -> i64 {
-        // 简化实现：返回当前时间
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+        // Git log --format="%ai" 输出格式: "2024-01-15 10:30:00 +0800"
+        let ts = timestamp.trim();
+
+        // 尝试解析 git 日期格式: "YYYY-MM-DD HH:MM:SS +ZZZZ"
+        if let Ok(dt) = chrono::DateTime::parse_from_str(
+            &format!("{} +0000", ts),
+            "%Y-%m-%d %H:%M:%S %z"
+        ) {
+            return dt.timestamp();
+        }
+
+        // 直接尝试原始格式（带时区）
+        if let Ok(dt) = chrono::DateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S %z") {
+            return dt.timestamp();
+        }
+
+        // 尝试 RFC 3339 格式
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+            return dt.timestamp();
+        }
+
+        // 所有解析都失败时返回 0
+        tracing::warn!("无法解析时间戳: {}", timestamp);
+        0
     }
 
     /// 将相似漏洞候选转换为 VulnerabilityCandidate

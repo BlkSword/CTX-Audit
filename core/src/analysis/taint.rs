@@ -5,6 +5,7 @@
 //!
 //! 追踪用户输入（污点源）到危险函数（污点汇）的数据流
 
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -356,6 +357,28 @@ impl std::fmt::Display for VulnerabilityType {
     }
 }
 
+/// Pre-compiled regex patterns for extracting tainted variables (Fix 8)
+static EXTRACT_PATTERNS: Lazy<Vec<regex::Regex>> = Lazy::new(|| {
+    [
+        // Python/JS/Ruby: var = source
+        r#"(\w+)\s*=\s*(?:request\.|req\.|\$_|process\.env|os\.environ|getenv)"#,
+        // Java: String var = request.getParameter
+        r#"(\w+)\s*=\s*(?:request\.getParameter|HttpServletRequest)"#,
+        // Go: var := r.FormValue
+        r#"(\w+)\s*:?=\s*(?:r\.FormValue|r\.URL\.Query)"#,
+        // Rust: let var = env::var
+        r#"let\s+(?:mut\s+)?(\w+)\s*=\s*(?:std::env::var|env!)"#,
+    ]
+    .iter()
+    .filter_map(|p| regex::Regex::new(p).ok())
+    .collect()
+});
+
+/// Pre-compiled regex for function parameter extraction (Fix 8)
+static PARAM_PATTERN: Lazy<Option<regex::Regex>> = Lazy::new(|| {
+    regex::Regex::new(r#"(?:def|function|func|fn)\s+\w+\s*\(([^)]+)\)"#).ok()
+});
+
 /// 污点分析器
 pub struct TaintAnalyzer {
     /// 污点源
@@ -626,9 +649,11 @@ impl TaintAnalyzer {
                 name: "SQL Execution".to_string(),
                 description: "SQL 查询执行".to_string(),
                 patterns: vec![
-                    "execute".to_string(),
-                    "exec".to_string(),
-                    "query".to_string(),
+                    ".execute(".to_string(),
+                    "execute(".to_string(),
+                    "exec(".to_string(),
+                    ".query(".to_string(),
+                    "query(".to_string(),
                     "cursor.execute".to_string(),
                     "connection.execute".to_string(),
                     "db.query".to_string(),
@@ -695,8 +720,6 @@ impl TaintAnalyzer {
                 patterns: vec![
                     "innerHTML".to_string(),
                     "document.write".to_string(),
-                    "echo".to_string(),
-                    "print".to_string(),
                     "Response.Write".to_string(),
                     "render_template".to_string(),
                     "res.write".to_string(),
@@ -714,6 +737,7 @@ impl TaintAnalyzer {
                 name: "HTTP Request".to_string(),
                 description: "外部 HTTP 请求".to_string(),
                 patterns: vec![
+                    ".fetch(".to_string(),
                     "fetch(".to_string(),
                     "axios".to_string(),
                     "requests.get".to_string(),
@@ -903,33 +927,19 @@ impl TaintAnalyzer {
 
         let line = lines[source_line - 1];
 
-        // 匹配赋值语句: var = tainted_source 或 var = func(tainted_source)
-        let assignment_patterns = [
-            // Python/JS/Ruby: var = source
-            r#"(\w+)\s*=\s*(?:request\.|req\.|\$_|process\.env|os\.environ|getenv)"#,
-            // Java: String var = request.getParameter
-            r#"(\w+)\s*=\s*(?:request\.getParameter|HttpServletRequest)"#,
-            // Go: var := r.FormValue
-            r#"(\w+)\s*:?=\s*(?:r\.FormValue|r\.URL\.Query)"#,
-            // Rust: let var = env::var
-            r#"let\s+(?:mut\s+)?(\w+)\s*=\s*(?:std::env::var|env!)"#,
-        ];
-
-        for pattern in &assignment_patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if let Some(caps) = re.captures(line) {
-                    if let Some(var_name) = caps.get(1) {
-                        vars.push(var_name.as_str().to_string());
-                    }
+        // Use pre-compiled regex patterns instead of compiling in loop (Fix 8)
+        for re in EXTRACT_PATTERNS.iter() {
+            if let Some(caps) = re.captures(line) {
+                if let Some(var_name) = caps.get(1) {
+                    vars.push(var_name.as_str().to_string());
                 }
             }
         }
 
         // 如果没有匹配到变量名，尝试从函数参数中提取
         if vars.is_empty() {
-            // 函数参数: func(user_input) 或 def func(user_input):
-            let param_pattern = r#"(?:def|function|func|fn)\s+\w+\s*\(([^)]+)\)"#;
-            if let Ok(re) = regex::Regex::new(param_pattern) {
+            // Use pre-compiled param pattern (Fix 8)
+            if let Some(ref re) = *PARAM_PATTERN {
                 if let Some(caps) = re.captures(line) {
                     if let Some(params) = caps.get(1) {
                         for param in params.as_str().split(',') {
@@ -1014,8 +1024,8 @@ impl TaintAnalyzer {
         line: &str,
         tainted_vars: &HashSet<String>,
     ) -> Option<PropagationStep> {
-        // 匹配赋值语句
-        let assignment_pattern = r#"(\w+)\s*[:=]+\s*(.+)"#;
+        // 匹配赋值语句 - fixed regex to not match == (Fix 9)
+        let assignment_pattern = r#"(\w+)\s*=\s*([^=].*)"#;
         let re = regex::Regex::new(assignment_pattern).ok()?;
 
         let caps = re.captures(line)?;

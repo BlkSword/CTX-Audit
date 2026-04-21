@@ -491,7 +491,7 @@ impl Tool for BatchPatternScanTool {
 
         // 分析每个文件
         for file_path in &files_to_analyze {
-            if let Ok(content) = std::fs::read_to_string(file_path) {
+            if let Ok(content) = tokio::fs::read_to_string(file_path).await {
                 let relative_path = file_path.strip_prefix(&self.project_path)
                     .unwrap_or(file_path)
                     .to_string_lossy()
