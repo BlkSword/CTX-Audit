@@ -20,12 +20,14 @@ pub async fn execute(path: Option<String>) -> Result<()> {
     let mut session = ReplSession::new(config).map_err(|e| miette::miette!("{}", e))?;
 
     // 设置项目路径（如果提供）
-    if let Some(p) = path {
+    if let Some(ref p) = path {
         // 验证路径
-        let project_path = std::path::Path::new(&p);
+        let project_path = std::path::Path::new(p);
         if !project_path.exists() {
             return Err(miette::miette!("项目路径不存在: {}", p));
         }
+        // 将路径设置到 session
+        session.current_project = Some(p.clone());
     }
 
     // 启动 REPL 循环

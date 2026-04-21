@@ -22,8 +22,8 @@ impl DiffEngine {
     pub fn compare(&self, request: ComparisonRequest) -> Result<ComparisonResult> {
         let start_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let file_diffs = if request.is_git_comparison {
             self.git_compare(&request)?
@@ -183,7 +183,10 @@ impl DiffEngine {
         let files_a_set: HashMap<String, PathBuf> = files_a
             .into_iter()
             .map(|p| {
-                let relative_path = p.strip_prefix(dir_a).unwrap().to_string_lossy().to_string();
+                let relative_path = p.strip_prefix(dir_a)
+                    .unwrap_or_else(|_| p.as_path())
+                    .to_string_lossy()
+                    .to_string();
                 (relative_path, p)
             })
             .collect();
@@ -191,7 +194,10 @@ impl DiffEngine {
         let files_b_set: HashMap<String, PathBuf> = files_b
             .into_iter()
             .map(|p| {
-                let relative_path = p.strip_prefix(dir_b).unwrap().to_string_lossy().to_string();
+                let relative_path = p.strip_prefix(dir_b)
+                    .unwrap_or_else(|_| p.as_path())
+                    .to_string_lossy()
+                    .to_string();
                 (relative_path, p)
             })
             .collect();

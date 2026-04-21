@@ -178,10 +178,14 @@ impl ASTEngine {
             .as_secs();
 
         let file_index = FileIndex { mtime, symbols };
+        let path = file_path_str.clone();
 
         let mut query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref mut engine) = *query_engine {
+            // Remove old entries from class_map for this file before adding new ones
+            engine.cache.class_map.retain(|_, v| *v != path);
+
             engine.cache.index.insert(file_path_str.clone(), file_index);
 
             // Update class map
@@ -218,14 +222,15 @@ impl ASTEngine {
     }
 
     pub fn generate_report(&self, repository_path: &str) -> Result<serde_json::Value, String> {
+        // Acquire cache_manager first, then query_engine to match save_cache lock order
+        let cache_manager = self.cache_manager.lock()
+            .map_err(|_| "Cache manager lock poisoned")?;
         let query_engine = self.query_engine.lock()
             .map_err(|_| "Query engine lock poisoned")?;
         if let Some(ref engine) = *query_engine {
             let report = engine.generate_report(repository_path);
 
             // Save report to cache
-            let cache_manager = self.cache_manager.lock()
-                .map_err(|_| "Cache manager lock poisoned")?;
             cache_manager.save_analysis_report(&report)?;
 
             Ok(report)
@@ -374,18 +379,23 @@ impl SecurityScanner {
                 let content = std::fs::read_to_string(file_path)
                     .map_err(|e| format!("Failed to read file: {}", e))?;
 
+                // Pre-compile all rule patterns before iterating
+                let compiled: Vec<_> = rules.iter()
+                    .filter_map(|rule| {
+                        regex::Regex::new(&rule.pattern).ok().map(|re| (re, rule))
+                    })
+                    .collect();
+
                 for (line_num, line) in content.lines().enumerate() {
-                    for rule in rules {
-                        if let Ok(re) = regex::Regex::new(&rule.pattern) {
-                            if re.is_match(line) {
-                                findings.push(SecurityFinding {
-                                    file: file_path.to_string_lossy().to_string(),
-                                    line: line_num + 1,
-                                    severity: rule.severity.clone(),
-                                    message: rule.message.clone(),
-                                    code: line.to_string(),
-                                });
-                            }
+                    for (re, rule) in &compiled {
+                        if re.is_match(line) {
+                            findings.push(SecurityFinding {
+                                file: file_path.to_string_lossy().to_string(),
+                                line: line_num + 1,
+                                severity: rule.severity.clone(),
+                                message: rule.message.clone(),
+                                code: line.to_string(),
+                            });
                         }
                     }
                 }

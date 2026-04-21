@@ -191,6 +191,14 @@ impl Tool for WriteFileTool {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 content 参数".to_string()))?;
 
+        // 检查文件大小限制 (10MB)
+        const MAX_WRITE_SIZE: usize = 10 * 1024 * 1024;
+        if content.len() > MAX_WRITE_SIZE {
+            return Err(ToolError::ExecutionFailed(
+                format!("Content too large: {} bytes (max: {} bytes)", content.len(), MAX_WRITE_SIZE)
+            ));
+        }
+
         let mode = input["mode"].as_str().unwrap_or("overwrite");
         let create_dirs = input["create_dirs"].as_bool().unwrap_or(true);
 

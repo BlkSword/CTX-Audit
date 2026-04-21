@@ -112,7 +112,7 @@ impl AuditCache {
 
         // 先检查内存缓存
         {
-            let mut cache = self.memory_cache.write().unwrap();
+            let mut cache = self.memory_cache.write().expect("cache lock poisoned - another thread panicked");
             if let Some(entry) = cache.get_mut(key) {
                 entry.access_count += 1;
                 entry.last_accessed = Utc::now();
@@ -121,13 +121,13 @@ impl AuditCache {
                 if let Some(expires_at) = entry.expires_at {
                     if Utc::now() > expires_at {
                         cache.remove(key);
-                        let mut stats = self.stats.write().unwrap();
+                        let mut stats = self.stats.write().expect("stats lock poisoned");
                         stats.misses += 1;
                         return None;
                     }
                 }
 
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().expect("stats lock poisoned");
                 stats.hits += 1;
                 return Some(entry.result.clone());
             }
@@ -136,7 +136,7 @@ impl AuditCache {
         // 检查持久化缓存
         if matches!(self.strategy, CacheStrategy::Persistent | CacheStrategy::Smart) {
             if let Some(result) = self.load_from_disk(key) {
-                let mut cache = self.memory_cache.write().unwrap();
+                let mut cache = self.memory_cache.write().expect("cache lock poisoned");
                 cache.insert(key.clone(), CacheEntry {
                     result: result.clone(),
                     created_at: Utc::now(),
@@ -145,14 +145,14 @@ impl AuditCache {
                     last_accessed: Utc::now(),
                 });
 
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().expect("stats lock poisoned");
                 stats.hits += 1;
                 stats.entries += 1;
                 return Some(result);
             }
         }
 
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write().expect("stats lock poisoned");
         stats.misses += 1;
         None
     }
@@ -175,7 +175,7 @@ impl AuditCache {
 
         // 写入内存缓存
         {
-            let mut cache = self.memory_cache.write().unwrap();
+            let mut cache = self.memory_cache.write().expect("cache lock poisoned");
             cache.insert(key.clone(), entry);
         }
 
@@ -184,13 +184,13 @@ impl AuditCache {
             self.save_to_disk(&key, &result);
         }
 
-        let mut stats = self.stats.write().unwrap();
-        stats.entries = self.memory_cache.read().unwrap().len();
+        let mut stats = self.stats.write().expect("stats lock poisoned");
+        stats.entries = self.memory_cache.read().expect("cache lock poisoned").len();
     }
 
     /// 清除缓存
     pub fn clear(&self) {
-        let mut cache = self.memory_cache.write().unwrap();
+        let mut cache = self.memory_cache.write().expect("cache lock poisoned");
         cache.clear();
 
         if matches!(self.strategy, CacheStrategy::Persistent | CacheStrategy::Smart) {
@@ -198,13 +198,13 @@ impl AuditCache {
             let _ = std::fs::create_dir_all(&self.cache_dir);
         }
 
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write().expect("stats lock poisoned");
         *stats = CacheStats::default();
     }
 
     /// 清除过期缓存
     pub fn clear_expired(&self) {
-        let mut cache = self.memory_cache.write().unwrap();
+        let mut cache = self.memory_cache.write().expect("cache lock poisoned");
         let now = Utc::now();
         let mut eviction_count = 0;
 
@@ -227,20 +227,20 @@ impl AuditCache {
         }
 
         // 更新统计信息
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write().expect("stats lock poisoned");
         stats.evictions += eviction_count;
         stats.entries = cache.len();
     }
 
     /// 获取统计信息
     pub fn stats(&self) -> CacheStats {
-        let stats = self.stats.read().unwrap();
+        let stats = self.stats.read().expect("stats lock poisoned");
         stats.clone()
     }
 
     /// 计算缓存命中率
     pub fn hit_rate(&self) -> f32 {
-        let stats = self.stats.read().unwrap();
+        let stats = self.stats.read().expect("stats lock poisoned");
         let total = stats.hits + stats.misses;
         if total == 0 {
             0.0
@@ -295,7 +295,7 @@ impl AuditCache {
 
     /// 清理旧缓存（LRU）
     pub fn evict_lru(&self, max_entries: usize) {
-        let mut cache = self.memory_cache.write().unwrap();
+        let mut cache = self.memory_cache.write().expect("cache lock poisoned");
 
         if cache.len() <= max_entries {
             return;
@@ -315,7 +315,7 @@ impl AuditCache {
         }
 
         // 更新统计信息
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self.stats.write().expect("stats lock poisoned");
         stats.evictions += eviction_count;
         stats.entries = cache.len();
     }

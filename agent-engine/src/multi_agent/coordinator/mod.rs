@@ -127,26 +127,18 @@ impl AuditTeamSystem {
             specialist.update_project_path(project_path.clone());
         }
 
-        // 注册所有 Specialists 到 Mailbox
-        for specialist in &self.specialists {
-            let _rx = self.mailbox.register_specialist(&specialist.id.clone()).await;
-        }
-
-        // 为每个 specialist 设置消息接收器
-        for specialist in &mut self.specialists {
-            let specialist_id = specialist.id.clone();
-            let rx = self.mailbox.register_specialist(&specialist_id).await;
-            specialist.set_message_receiver(rx);
-        }
-
-        // 启动所有 Specialists
+        // 注册所有 Specialists 到 Mailbox 并启动
+        // 每个 specialist 只注册一次，获取接收器后直接 spawn
         for specialist in &mut self.specialists {
             let specialist_id = specialist.id.clone();
             let spec_config = specialist.get_config().clone();
             let spec_specialty = specialist.specialty.clone();
 
-            // 创建新的 specialist 实例用于 spawn
-            let spawned_spec = Specialist::new(
+            // 注册到 Mailbox，获取消息接收器
+            let rx = self.mailbox.register_specialist(&specialist_id).await;
+
+            // 创建新的 specialist 实例用于 spawn，并设置消息接收器
+            let mut spawned_spec = Specialist::new(
                 specialist_id.clone(),
                 spec_specialty,
                 self.mailbox.clone(),
@@ -156,11 +148,11 @@ impl AuditTeamSystem {
                 self.tools.clone(),
                 project_path.clone(),
             );
+            spawned_spec.set_message_receiver(rx);
 
             tokio::spawn(async move {
                 tracing::info!("[{}] Specialist 启动", specialist_id);
-                let mut spec = spawned_spec;
-                let _ = spec.run().await;
+                let _ = spawned_spec.run().await;
             });
         }
 

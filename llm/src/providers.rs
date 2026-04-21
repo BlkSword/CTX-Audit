@@ -9,9 +9,9 @@ use serde_json::json;
 use std::pin::Pin;
 use std::time::Duration;
 
-use super::client::{LLMClient, LLMMessage, LLMResponse, MessageContent, ToolDefinition, Usage, ToolUse};
+use super::client::{LLMClient, LLMMessage, LLMResponse, MessageContent, ToolDefinition, ToolUse};
 use super::error::LLMError;
-use super::stream::{LLMStreamChunk, ToolCallDelta};
+use super::stream::{LLMStreamChunk, ToolCallDelta, Usage};
 
 // ============================================================================
 // Anthropic Claude 客户端
@@ -41,13 +41,14 @@ impl AnthropicClient {
         })
     }
 
-    /// 转换消息格式
+    /// 转换消息格式（跳过系统消息，系统消息通过单独参数传递）
     fn convert_messages(&self, messages: Vec<LLMMessage>) -> serde_json::Value {
         let converted: Vec<serde_json::Value> = messages
             .into_iter()
+            .filter(|msg| msg.role != super::client::MessageRole::System)
             .map(|msg| {
                 let role = match msg.role {
-                    super::client::MessageRole::System => "system",
+                    super::client::MessageRole::System => unreachable!(),
                     super::client::MessageRole::User => "user",
                     super::client::MessageRole::Assistant => "assistant",
                 };
@@ -79,6 +80,25 @@ impl AnthropicClient {
         json!(converted)
     }
 
+    /// 提取系统消息文本
+    fn extract_system_message(messages: &[LLMMessage]) -> Option<String> {
+        let system_texts: Vec<&str> = messages
+            .iter()
+            .filter(|msg| msg.role == super::client::MessageRole::System)
+            .filter_map(|msg| {
+                msg.content.iter().find_map(|c| match c {
+                    MessageContent::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .collect();
+        if system_texts.is_empty() {
+            None
+        } else {
+            Some(system_texts.join("\n"))
+        }
+    }
+
     /// 转换工具定义格式
     fn convert_tools(&self, tools: Vec<ToolDefinition>) -> Vec<serde_json::Value> {
         tools
@@ -102,12 +122,17 @@ impl AnthropicClient {
         temperature: f32,
         stream: bool,
     ) -> Result<reqwest::Response, LLMError> {
+        let system_text = Self::extract_system_message(&messages);
         let mut payload = json!({
             "model": self.model,
             "max_tokens": max_tokens,
             "messages": self.convert_messages(messages),
             "stream": stream
         });
+
+        if let Some(system) = system_text {
+            payload["system"] = json!(system);
+        }
 
         if let Some(temp) = self.temperature_to_option(temperature) {
             payload["temperature"] = json!(temp);
@@ -219,20 +244,33 @@ impl LLMClient for AnthropicClient {
         max_tokens: u32,
         temperature: f32,
     ) -> Result<LLMResponse, LLMError> {
-        let response = self
-            .send_request(messages, None, max_tokens, temperature, false)
-            .await?;
+        let max_retries = 3;
+        for attempt in 0..max_retries {
+            let response = self
+                .send_request(messages.clone(), None, max_tokens, temperature, false)
+                .await;
 
-        let status = response.status();
-        let response_text = response.text().await.map_err(|e| {
-            LLMError::RequestFailed(format!("Failed to read response body: {}", e))
-        })?;
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    let response_text = response.text().await.map_err(|e| {
+                        LLMError::RequestFailed(format!("Failed to read response body: {}", e))
+                    })?;
 
-        if !status.is_success() {
-            return Err(handle_anthropic_error(status, &response_text));
+                    if !status.is_success() {
+                        return Err(handle_anthropic_error(status, &response_text));
+                    }
+
+                    return self.parse_response(&response_text, self.model.clone());
+                }
+                Err(LLMError::RateLimited) if attempt < max_retries - 1 => {
+                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
-
-        self.parse_response(&response_text, self.model.clone())
+        Err(LLMError::RateLimited)
     }
 
     async fn generate_with_tools(
@@ -242,20 +280,33 @@ impl LLMClient for AnthropicClient {
         max_tokens: u32,
         temperature: f32,
     ) -> Result<LLMResponse, LLMError> {
-        let response = self
-            .send_request(messages, Some(tools), max_tokens, temperature, false)
-            .await?;
+        let max_retries = 3;
+        for attempt in 0..max_retries {
+            let response = self
+                .send_request(messages.clone(), Some(tools.clone()), max_tokens, temperature, false)
+                .await;
 
-        let status = response.status();
-        let response_text = response.text().await.map_err(|e| {
-            LLMError::RequestFailed(format!("Failed to read response body: {}", e))
-        })?;
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    let response_text = response.text().await.map_err(|e| {
+                        LLMError::RequestFailed(format!("Failed to read response body: {}", e))
+                    })?;
 
-        if !status.is_success() {
-            return Err(handle_anthropic_error(status, &response_text));
+                    if !status.is_success() {
+                        return Err(handle_anthropic_error(status, &response_text));
+                    }
+
+                    return self.parse_response(&response_text, self.model.clone());
+                }
+                Err(LLMError::RateLimited) if attempt < max_retries - 1 => {
+                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
-
-        self.parse_response(&response_text, self.model.clone())
+        Err(LLMError::RateLimited)
     }
 
     async fn generate_stream(
@@ -466,11 +517,15 @@ fn build_anthropic_payload(
     tools: Option<Vec<ToolDefinition>>,
     model: &str,
 ) -> Result<serde_json::Value, LLMError> {
+    // Extract system messages and filter them from the messages list
+    let system_text = AnthropicClient::extract_system_message(messages);
+
     let converted_messages: Vec<serde_json::Value> = messages
         .iter()
+        .filter(|msg| msg.role != super::client::MessageRole::System)
         .map(|msg| {
             let role = match msg.role {
-                super::client::MessageRole::System => "system",
+                super::client::MessageRole::System => unreachable!(),
                 super::client::MessageRole::User => "user",
                 super::client::MessageRole::Assistant => "assistant",
             };
@@ -505,6 +560,10 @@ fn build_anthropic_payload(
         "messages": converted_messages,
         "stream": true
     });
+
+    if let Some(system) = system_text {
+        payload["system"] = json!(system);
+    }
 
     if temperature > 0.0 {
         payload["temperature"] = json!(temperature as f64);
@@ -562,14 +621,13 @@ fn parse_anthropic_stream_event(event: &serde_json::Value) -> Option<LLMStreamCh
                     usage: None,
                 })
             } else if let Some(partial_json) = delta.get("partial_json").and_then(|j| j.as_str()) {
-                let index = event.get("index")?.as_u64()? as usize;
                 Some(LLMStreamChunk {
                     delta: String::new(),
                     done: false,
                     tool_call_delta: Some(ToolCallDelta {
                         id: None,
                         name: None,
-                        input_delta: if index == 0 { Some(partial_json.to_string()) } else { None },
+                        input_delta: Some(partial_json.to_string()),
                     }),
                     usage: None,
                 })
@@ -579,7 +637,7 @@ fn parse_anthropic_stream_event(event: &serde_json::Value) -> Option<LLMStreamCh
         }
         "message_delta" => {
             let usage = if let Some(usage_obj) = event.get("usage") {
-                Some(super::stream::Usage {
+                Some(Usage {
                     input_tokens: usage_obj.get("input_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
                     output_tokens: usage_obj.get("output_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
                     total_tokens: usage_obj.get("input_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32
@@ -602,11 +660,7 @@ fn parse_anthropic_stream_event(event: &serde_json::Value) -> Option<LLMStreamCh
 
 /// 处理 Anthropic 错误响应
 fn handle_anthropic_error(status: reqwest::StatusCode, body: &str) -> LLMError {
-    // 记录完整的错误响应以便调试
-    eprintln!("=== LLM API Error ===");
-    eprintln!("Status: {}", status);
-    eprintln!("Response: {}", body);
-    eprintln!("====================");
+    tracing::warn!("LLM API Error: status={}, body={}", status, body);
 
     if status.as_u16() == 401 {
         LLMError::AuthenticationFailed
@@ -710,7 +764,9 @@ impl OpenAIClient {
                     .iter()
                     .filter_map(|c| match c {
                         MessageContent::Text { text } => Some(text.as_str()),
-                        MessageContent::ToolResult { .. } => None,
+                        MessageContent::ToolResult { tool_use_id, content, .. } => {
+                            Some(content.as_str())
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -867,20 +923,33 @@ impl LLMClient for OpenAIClient {
         max_tokens: u32,
         temperature: f32,
     ) -> Result<LLMResponse, LLMError> {
-        let response = self
-            .send_request(messages, None, max_tokens, temperature, false)
-            .await?;
+        let max_retries = 3;
+        for attempt in 0..max_retries {
+            let response = self
+                .send_request(messages.clone(), None, max_tokens, temperature, false)
+                .await;
 
-        let status = response.status();
-        let response_text = response.text().await.map_err(|e| {
-            LLMError::RequestFailed(format!("Failed to read response body: {}", e))
-        })?;
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    let response_text = response.text().await.map_err(|e| {
+                        LLMError::RequestFailed(format!("Failed to read response body: {}", e))
+                    })?;
 
-        if !status.is_success() {
-            return Err(handle_openai_error(status, &response_text));
+                    if !status.is_success() {
+                        return Err(handle_openai_error(status, &response_text));
+                    }
+
+                    return self.parse_response(&response_text);
+                }
+                Err(LLMError::RateLimited) if attempt < max_retries - 1 => {
+                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
-
-        self.parse_response(&response_text)
+        Err(LLMError::RateLimited)
     }
 
     async fn generate_with_tools(
@@ -890,27 +959,40 @@ impl LLMClient for OpenAIClient {
         max_tokens: u32,
         temperature: f32,
     ) -> Result<LLMResponse, LLMError> {
-        let response = self
-            .send_request(messages, Some(tools), max_tokens, temperature, false)
-            .await?;
+        let max_retries = 3;
+        for attempt in 0..max_retries {
+            let response = self
+                .send_request(messages.clone(), Some(tools.clone()), max_tokens, temperature, false)
+                .await;
 
-        let status = response.status();
-        let response_text = response.text().await.map_err(|e| {
-            LLMError::RequestFailed(format!("Failed to read response body: {}", e))
-        })?;
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    let response_text = response.text().await.map_err(|e| {
+                        LLMError::RequestFailed(format!("Failed to read response body: {}", e))
+                    })?;
 
-        if !status.is_success() {
-            return Err(handle_openai_error(status, &response_text));
+                    if !status.is_success() {
+                        return Err(handle_openai_error(status, &response_text));
+                    }
+
+                    return self.parse_response(&response_text);
+                }
+                Err(LLMError::RateLimited) if attempt < max_retries - 1 => {
+                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
-
-        self.parse_response(&response_text)
+        Err(LLMError::RateLimited)
     }
 
     async fn generate_stream(
         &self,
         messages: Vec<LLMMessage>,
-        _max_tokens: u32,
-        _temperature: f32,
+        max_tokens: u32,
+        temperature: f32,
     ) -> Pin<Box<dyn Stream<Item = Result<LLMStreamChunk, LLMError>> + Send>> {
         let client = self.client.clone();
         let api_key = self.api_key.clone();
@@ -919,11 +1001,19 @@ impl LLMClient for OpenAIClient {
         let converted_messages = Self::convert_messages_static(messages);
 
         Box::pin(async_stream::stream! {
-            let payload = json!({
+            let mut payload = json!({
                 "model": model,
                 "messages": converted_messages,
                 "stream": true
             });
+
+            if max_tokens > 0 {
+                payload["max_tokens"] = json!(max_tokens);
+            }
+
+            if temperature > 0.0 {
+                payload["temperature"] = json!(temperature as f64);
+            }
 
             let response = match client
                 .post(&base_url)
@@ -1128,7 +1218,9 @@ impl OpenAIClient {
                     .iter()
                     .filter_map(|c| match c {
                         MessageContent::Text { text } => Some(text.as_str()),
-                        MessageContent::ToolResult { .. } => None,
+                        MessageContent::ToolResult { tool_use_id, content, .. } => {
+                            Some(content.as_str())
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -1174,18 +1266,19 @@ fn parse_openai_stream_event(event: &serde_json::Value) -> Option<LLMStreamChunk
     }
 
     if choices.get("finish_reason").is_some() {
-        if let Some(usage_obj) = event.get("usage") {
-            return Some(LLMStreamChunk {
-                delta: String::new(),
-                done: true,
-                tool_call_delta: None,
-                usage: Some(super::stream::Usage {
-                    input_tokens: usage_obj.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
-                    output_tokens: usage_obj.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
-                    total_tokens: usage_obj.get("total_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
-                }),
-            });
-        }
+        let usage = event.get("usage").map(|usage_obj| {
+            Usage {
+                input_tokens: usage_obj.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
+                output_tokens: usage_obj.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
+                total_tokens: usage_obj.get("total_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
+            }
+        });
+        return Some(LLMStreamChunk {
+            delta: String::new(),
+            done: true,
+            tool_call_delta: None,
+            usage,
+        });
     }
 
     None
@@ -1193,11 +1286,7 @@ fn parse_openai_stream_event(event: &serde_json::Value) -> Option<LLMStreamChunk
 
 /// 处理 OpenAI 错误响应
 fn handle_openai_error(status: reqwest::StatusCode, body: &str) -> LLMError {
-    // 记录完整的错误响应以便调试
-    eprintln!("=== LLM API Error ===");
-    eprintln!("Status: {}", status);
-    eprintln!("Response: {}", body);
-    eprintln!("====================");
+    tracing::warn!("LLM API Error: status={}, body={}", status, body);
 
     if status.as_u16() == 401 {
         LLMError::AuthenticationFailed
@@ -1290,16 +1379,24 @@ impl LLMClient for OllamaClient {
     async fn generate(
         &self,
         messages: Vec<LLMMessage>,
-        _max_tokens: u32,
-        _temperature: f32,
+        max_tokens: u32,
+        temperature: f32,
     ) -> Result<LLMResponse, LLMError> {
         let prompt = self.build_prompt(messages);
 
-        let payload = json!({
+        let mut payload = json!({
             "model": self.model,
             "prompt": prompt,
             "stream": false
         });
+
+        if max_tokens > 0 {
+            payload["max_tokens"] = json!(max_tokens);
+        }
+
+        if temperature > 0.0 {
+            payload["temperature"] = json!(temperature as f64);
+        }
 
         let response = self
             .client
@@ -1359,8 +1456,8 @@ impl LLMClient for OllamaClient {
     async fn generate_stream(
         &self,
         messages: Vec<LLMMessage>,
-        _max_tokens: u32,
-        _temperature: f32,
+        max_tokens: u32,
+        temperature: f32,
     ) -> Pin<Box<dyn Stream<Item = Result<LLMStreamChunk, LLMError>> + Send>> {
         let client = self.client.clone();
         let base_url = self.base_url.clone();
@@ -1368,11 +1465,19 @@ impl LLMClient for OllamaClient {
         let prompt = Self::build_prompt_static(messages);
 
         Box::pin(async_stream::stream! {
-            let payload = json!({
+            let mut payload = json!({
                 "model": model,
                 "prompt": prompt,
                 "stream": true
             });
+
+            if max_tokens > 0 {
+                payload["max_tokens"] = json!(max_tokens);
+            }
+
+            if temperature > 0.0 {
+                payload["temperature"] = json!(temperature as f64);
+            }
 
             let response = match client
                 .post(&base_url)
@@ -1402,6 +1507,7 @@ impl LLMClient for OllamaClient {
             }
 
             let mut bytes = response.bytes_stream();
+            let mut buffer = String::new();
 
             while let Some(chunk_result) = bytes.next().await {
                 let chunk = match chunk_result {
@@ -1412,27 +1518,33 @@ impl LLMClient for OllamaClient {
                     }
                 };
 
-                let json_str = String::from_utf8_lossy(&chunk);
-                if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                    if let Some(done) = json_response.get("done").and_then(|d| d.as_bool()) {
-                        if done {
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].trim().to_string();
+                    buffer = buffer[pos + 1..].to_string();
+                    if line.is_empty() { continue; }
+                    if let Ok(json_response) = serde_json::from_str::<serde_json::Value>(&line) {
+                        if let Some(done) = json_response.get("done").and_then(|d| d.as_bool()) {
+                            if done {
+                                yield Ok(LLMStreamChunk {
+                                    delta: String::new(),
+                                    done: true,
+                                    tool_call_delta: None,
+                                    usage: None,
+                                });
+                                return;
+                            }
+                        }
+
+                        if let Some(response) = json_response.get("response").and_then(|r| r.as_str()) {
                             yield Ok(LLMStreamChunk {
-                                delta: String::new(),
-                                done: true,
+                                delta: response.to_string(),
+                                done: false,
                                 tool_call_delta: None,
                                 usage: None,
                             });
-                            return;
                         }
-                    }
-
-                    if let Some(response) = json_response.get("response").and_then(|r| r.as_str()) {
-                        yield Ok(LLMStreamChunk {
-                            delta: response.to_string(),
-                            done: false,
-                            tool_call_delta: None,
-                            usage: None,
-                        });
                     }
                 }
             }
@@ -1443,11 +1555,11 @@ impl LLMClient for OllamaClient {
         &self,
         messages: Vec<LLMMessage>,
         _tools: Vec<ToolDefinition>,
-        _max_tokens: u32,
-        _temperature: f32,
+        max_tokens: u32,
+        temperature: f32,
     ) -> Pin<Box<dyn Stream<Item = Result<LLMStreamChunk, LLMError>> + Send>> {
         // Ollama 工具调用支持有限
-        self.generate_stream(messages, _max_tokens, _temperature).await
+        self.generate_stream(messages, max_tokens, temperature).await
     }
 
     fn model(&self) -> &str {
