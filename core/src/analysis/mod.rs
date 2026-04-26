@@ -9,6 +9,7 @@ pub mod taint;
 pub mod enhanced_taint;
 pub mod dataflow;
 pub mod enhanced_dataflow;
+pub mod ast_taint;
 pub mod cross_file;
 pub mod cache;
 pub mod imports;
@@ -22,6 +23,7 @@ pub use enhanced_taint::{
     EnhancedTaintAnalyzer, VariableTaint, PropagationStep as EnhancedPropagationStep,
     PropagationStepType as EnhancedPropagationStepType,
 };
+pub use ast_taint::AstTaintAnalyzer;
 pub use dataflow::{DataFlowAnalysis, FlowFact, FlowGraph, FlowNode as DataFlowNode};
 pub use enhanced_dataflow::{
     EnhancedFlowGraph, EnhancedFlowNode, EnhancedNodeType, ControlFlowEdge, EdgeType,

@@ -31,6 +31,7 @@ pub use indexing::vector_store::VectorStoreError;
 pub use analysis::{
     TaintAnalyzer, TaintSource, TaintSink, TaintFlow, TaintResult,
     EnhancedTaintAnalyzer, VariableTaint,
+    AstTaintAnalyzer,
     DataFlowAnalysis, FlowGraph, FlowNode,
     ImportResolver, SymbolReference, CrossFileReference,
 };
