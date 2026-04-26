@@ -172,3 +172,85 @@ pub struct Field {
     pub modifiers: Vec<String>,
     pub metadata: HashMap<String, serde_json::Value>,
 }
+
+// ============================================================
+// AST 细粒度提取类型（用于污点分析）
+// ============================================================
+
+/// AST 节点位置信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeInfo {
+    pub line: usize,
+    pub column: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
+}
+
+/// 赋值语句信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Assignment {
+    /// 左值变量名
+    pub target: String,
+    /// 左值 AST 节点位置
+    pub target_node: NodeInfo,
+    /// 右值表达式文本
+    pub source_expr: String,
+    /// 右值表达式中引用的变量
+    pub source_vars: Vec<String>,
+    /// 行号（1-based）
+    pub line: usize,
+    /// 列号（0-based）
+    pub column: usize,
+}
+
+/// 函数调用参数信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArgInfo {
+    /// 参数文本
+    pub text: String,
+    /// 参数中引用的变量名
+    pub referenced_vars: Vec<String>,
+}
+
+/// 函数调用信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallInfo {
+    /// 被调函数名
+    pub callee: String,
+    /// 参数列表
+    pub arguments: Vec<ArgInfo>,
+    /// 行号（1-based）
+    pub line: usize,
+    /// 列号（0-based）
+    pub column: usize,
+    /// 是否是方法调用（obj.method()）
+    pub is_method: bool,
+    /// 方法调用的接收者（obj.method() 中的 obj）
+    pub receiver: Option<String>,
+}
+
+/// 返回语句信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReturnInfo {
+    /// 返回表达式文本
+    pub expr: String,
+    /// 表达式中引用的变量
+    pub referenced_vars: Vec<String>,
+    /// 行号（1-based）
+    pub line: usize,
+}
+
+/// 函数体信息（用于按函数粒度分析）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionBody {
+    /// 函数名
+    pub name: String,
+    /// 函数参数名列表
+    pub params: Vec<String>,
+    /// 函数体起始行
+    pub start_line: usize,
+    /// 函数体结束行
+    pub end_line: usize,
+    /// 函数体代码文本
+    pub body_text: String,
+}

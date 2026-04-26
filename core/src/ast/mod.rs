@@ -8,4 +8,7 @@ pub use cache::{CacheData, CacheManager, FileIndex};
 pub use engine::ASTEngine;
 pub use parser::ASTParser;
 pub use query::QueryEngine;
-pub use symbol::{Symbol, SymbolKind};
+pub use symbol::{
+    Symbol, SymbolKind,
+    NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody,
+};
