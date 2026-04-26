@@ -1,4 +1,6 @@
-use crate::ast::symbol::{Field, Symbol, SymbolKind};
+use crate::ast::symbol::{
+    ArgInfo, Assignment, CallInfo, Field, FunctionBody, NodeInfo, ReturnInfo, Symbol, SymbolKind,
+};
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser, Query};
@@ -796,6 +798,403 @@ impl ASTParser {
         // In a real scenario, you'd want to implement language-specific parsers
         Ok(symbols)
     }
+
+    // ============================================================
+    // 细粒度 AST 提取方法（用于污点分析）
+    // ============================================================
+
+    /// 提取文件中的所有赋值语句
+    pub fn extract_assignments(&mut self, file_path: &Path, content: &str) -> Vec<Assignment> {
+        let ext = file_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+
+        let parser = match self.parsers.get_mut(&ext) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        let tree = match parser.parse(content, None) {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+
+        let root = tree.root_node();
+        let mut assignments = Vec::new();
+        Self::collect_assignments_generic(&root, content, &mut assignments);
+        assignments
+    }
+
+    /// 提取文件中的所有函数调用
+    pub fn extract_calls(&mut self, file_path: &Path, content: &str) -> Vec<CallInfo> {
+        let ext = file_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+
+        let parser = match self.parsers.get_mut(&ext) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        let tree = match parser.parse(content, None) {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+
+        let root = tree.root_node();
+        let mut calls = Vec::new();
+        Self::collect_calls_recursive(&root, content, &mut calls);
+        calls
+    }
+
+    /// 提取文件中的所有返回语句
+    pub fn extract_returns(&mut self, file_path: &Path, content: &str) -> Vec<ReturnInfo> {
+        let ext = file_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+
+        let parser = match self.parsers.get_mut(&ext) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        let tree = match parser.parse(content, None) {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+
+        let root = tree.root_node();
+        let mut returns = Vec::new();
+        Self::collect_returns_recursive(&root, content, &mut returns);
+        returns
+    }
+
+    /// 提取文件中的所有函数体（按函数粒度）
+    pub fn extract_function_bodies(&mut self, file_path: &Path, content: &str) -> Vec<FunctionBody> {
+        let ext = file_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+
+        let parser = match self.parsers.get_mut(&ext) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        let tree = match parser.parse(content, None) {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+
+        let root = tree.root_node();
+        let mut bodies = Vec::new();
+        Self::collect_function_bodies_recursive(&root, content, &mut bodies);
+        bodies
+    }
+
+    fn collect_assignments_generic(
+        node: &Node,
+        content: &str,
+        results: &mut Vec<Assignment>,
+    ) {
+        let kind = node.kind();
+        if matches!(
+            kind,
+            "assignment_expression" | "assignment" | "augmented_assignment"
+        ) {
+            if let Some(lhs) = node.child_by_field_name("left") {
+                if let Some(rhs) = node.child_by_field_name("right") {
+                    let target = content[lhs.byte_range()].to_string();
+                    let source_expr = content[rhs.byte_range()].to_string();
+                    let source_vars = Self::collect_identifiers(&rhs, content);
+
+                    results.push(Assignment {
+                        target,
+                        target_node: NodeInfo {
+                            line: lhs.start_position().row + 1,
+                            column: lhs.start_position().column,
+                            byte_start: lhs.start_byte(),
+                            byte_end: lhs.end_byte(),
+                        },
+                        source_expr,
+                        source_vars,
+                        line: node.start_position().row + 1,
+                        column: node.start_position().column,
+                    });
+                }
+            }
+        }
+
+        // let 声明（Rust/Go）
+        if matches!(kind, "let_declaration" | "let_statement" | "short_var_declaration") {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                if let Some(value) = node.child_by_field_name("value") {
+                    let target = content[pattern.byte_range()].to_string();
+                    let source_expr = content[value.byte_range()].to_string();
+                    let source_vars = Self::collect_identifiers(&value, content);
+
+                    results.push(Assignment {
+                        target,
+                        target_node: NodeInfo {
+                            line: pattern.start_position().row + 1,
+                            column: pattern.start_position().column,
+                            byte_start: pattern.start_byte(),
+                            byte_end: pattern.end_byte(),
+                        },
+                        source_expr,
+                        source_vars,
+                        line: node.start_position().row + 1,
+                        column: node.start_position().column,
+                    });
+                }
+            }
+        }
+
+        // 递归遍历子节点
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::collect_assignments_generic(&child, content, results);
+        }
+    }
+
+    fn collect_calls_recursive(node: &Node, content: &str, results: &mut Vec<CallInfo>) {
+        let kind = node.kind();
+        if matches!(
+            kind,
+            "call_expression" | "call" | "method_invocation" | "function_call"
+        ) {
+            let func_node = node.child_by_field_name("function")
+                .or_else(|| node.child_by_field_name("name"));
+
+            let args_node = node.child_by_field_name("arguments");
+
+            if let Some(func_node) = func_node {
+                let callee_text = content[func_node.byte_range()].to_string();
+                let (is_method, receiver, callee_name) =
+                    Self::parse_callee(&func_node, &callee_text, content);
+
+                let arguments = if let Some(args_node) = args_node {
+                    Self::parse_arguments(&args_node, content)
+                } else {
+                    Vec::new()
+                };
+
+                results.push(CallInfo {
+                    callee: callee_name,
+                    arguments,
+                    line: node.start_position().row + 1,
+                    column: node.start_position().column,
+                    is_method,
+                    receiver,
+                });
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::collect_calls_recursive(&child, content, results);
+        }
+    }
+
+    fn parse_callee(
+        func_node: &Node,
+        callee_text: &str,
+        content: &str,
+    ) -> (bool, Option<String>, String) {
+        let kind = func_node.kind();
+
+        if kind == "member_expression" || kind == "attribute" || kind == "field_expression" {
+            if let Some(obj) = func_node.child_by_field_name("object") {
+                if let Some(prop) = func_node.child_by_field_name("field") {
+                    let receiver = content[obj.byte_range()].to_string();
+                    let method = content[prop.byte_range()].to_string();
+                    return (true, Some(receiver), method);
+                }
+            }
+        }
+
+        (false, None, callee_text.to_string())
+    }
+
+    fn parse_arguments(args_node: &Node, content: &str) -> Vec<ArgInfo> {
+        let mut args = Vec::new();
+        let mut cursor = args_node.walk();
+        for child in args_node.children(&mut cursor) {
+            let kind = child.kind();
+            if kind == "(" || kind == ")" || kind == "," || kind == "argument_list" {
+                continue;
+            }
+            let text = content[child.byte_range()].to_string();
+            if text.is_empty() || text == "(" || text == ")" {
+                continue;
+            }
+            let referenced_vars = Self::collect_identifiers(&child, content);
+            args.push(ArgInfo {
+                text,
+                referenced_vars,
+            });
+        }
+        args
+    }
+
+    fn collect_returns_recursive(node: &Node, content: &str, results: &mut Vec<ReturnInfo>) {
+        let kind = node.kind();
+        if matches!(kind, "return_statement" | "return") {
+            let expr = content[node.byte_range()].to_string();
+            let referenced_vars = Self::collect_identifiers(node, content);
+            results.push(ReturnInfo {
+                expr,
+                referenced_vars,
+                line: node.start_position().row + 1,
+            });
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::collect_returns_recursive(&child, content, results);
+        }
+    }
+
+    fn collect_function_bodies_recursive(
+        node: &Node,
+        content: &str,
+        results: &mut Vec<FunctionBody>,
+    ) {
+        let kind = node.kind();
+        let is_function = matches!(
+            kind,
+            "function_declaration"
+                | "function"
+                | "function_definition"
+                | "method_declaration"
+                | "function_item"
+                | "method_definition"
+                | "arrow_function"
+                | "generator_function_declaration"
+        );
+
+        if is_function {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = content[name_node.byte_range()].to_string();
+                let params = if let Some(params_node) = node.child_by_field_name("parameters") {
+                    Self::extract_param_names(&params_node, content)
+                } else {
+                    Vec::new()
+                };
+
+                let body_node = node.child_by_field_name("body");
+                let (start_line, end_line, body_text) = if let Some(body) = body_node {
+                    (
+                        body.start_position().row + 1,
+                        body.end_position().row + 1,
+                        content[body.byte_range()].to_string(),
+                    )
+                } else {
+                    (
+                        node.start_position().row + 1,
+                        node.end_position().row + 1,
+                        content[node.byte_range()].to_string(),
+                    )
+                };
+
+                results.push(FunctionBody {
+                    name,
+                    params,
+                    start_line,
+                    end_line,
+                    body_text,
+                });
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::collect_function_bodies_recursive(&child, content, results);
+        }
+    }
+
+    fn extract_param_names(params_node: &Node, content: &str) -> Vec<String> {
+        let mut params = Vec::new();
+        let mut cursor = params_node.walk();
+        for child in params_node.children(&mut cursor) {
+            let kind = child.kind();
+            if matches!(
+                kind,
+                "identifier"
+                    | "typed_identifier"
+                    | "parameter"
+                    | "simple_parameter"
+                    | "default_parameter"
+                    | "identifier_pattern"
+                    | "required_parameter"
+                    | "optional_parameter"
+                    | "rest_parameter"
+                    | "pattern"
+            ) {
+                let name = child
+                    .child_by_field_name("name")
+                    .map(|n| content[n.byte_range()].to_string())
+                    .unwrap_or_else(|| {
+                        let text = content[child.byte_range()].to_string();
+                        text.split(':').next().unwrap_or(&text).trim().to_string()
+                    });
+
+                if !name.is_empty() && name != "self" && name != "this" {
+                    params.push(name);
+                }
+            }
+        }
+        params
+    }
+
+    /// 从 AST 节点中收集所有标识符（变量引用）
+    fn collect_identifiers(node: &Node, content: &str) -> Vec<String> {
+        let mut vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        Self::collect_identifiers_inner(node, content, &mut vars, &mut seen);
+        vars
+    }
+
+    fn collect_identifiers_inner(
+        node: &Node,
+        content: &str,
+        vars: &mut Vec<String>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        let kind = node.kind();
+        if matches!(
+            kind,
+            "identifier"
+                | "identifier_pattern"
+                | "variable_name"
+                | "property_identifier"
+                | "field_identifier"
+        ) {
+            let name = content[node.byte_range()].to_string();
+            let keywords = [
+                "true", "false", "null", "None", "undefined", "self", "this",
+                "super", "class", "function", "return", "if", "else", "for",
+                "while", "let", "const", "var", "new", "typeof", "instanceof",
+                "async", "await", "import", "export", "from", "as",
+            ];
+            if !keywords.contains(&name.as_str()) && !seen.contains(&name) {
+                seen.insert(name.clone());
+                vars.push(name);
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::collect_identifiers_inner(&child, content, vars, seen);
+        }
+    }
 }
 
 fn extract_java_field(node: &Node, content: &str) -> Result<Field, String> {
@@ -866,6 +1265,7 @@ fn extract_last_name(node: &Node, content: &str) -> String {
     // Get the last part after splitting by dots
     text.split('.').last().unwrap_or(&text).to_string()
 }
+
 
 #[cfg(test)]
 mod tests {

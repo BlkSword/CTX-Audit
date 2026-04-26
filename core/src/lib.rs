@@ -11,7 +11,10 @@ pub mod sarif;
 pub mod watcher;
 
 // 重新导出常用类型
-pub use ast::{ASTEngine, ASTParser, CacheData, CacheManager, FileIndex, QueryEngine, Symbol, SymbolKind};
+pub use ast::{
+    ASTEngine, ASTParser, CacheData, CacheManager, FileIndex, QueryEngine, Symbol, SymbolKind,
+    NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody,
+};
 pub use diff::DiffEngine;
 pub use scanner::{Finding, Scanner, scan_directory};
 pub use scanner::manager::ScannerManager;
