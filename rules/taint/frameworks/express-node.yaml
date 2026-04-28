@@ -1,0 +1,167 @@
+kind: taint-rules
+name: "Express / Node.js Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "express_request_body"
+    name: "Express Request Body"
+    description: "HTTP request body, query, and parameters"
+    patterns:
+      - "req.body"
+      - "req.query"
+      - "req.params"
+      - "req.headers"
+      - "req.cookies"
+      - "req.get("
+      - "req.header("
+      - "req.param("
+    languages: ["javascript", "typescript"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "node_process_input"
+    name: "Node.js Process Input"
+    description: "Command-line arguments and environment variables"
+    patterns:
+      - "process.argv"
+      - "process.env"
+      - "process.stdin"
+    languages: ["javascript", "typescript"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "node_file_input"
+    name: "Node.js File Input"
+    description: "File system read operations"
+    patterns:
+      - "fs.readFile"
+      - "fs.readFileSync"
+      - "fs.read"
+      - "createReadStream"
+    languages: ["javascript", "typescript"]
+    severity: "Medium"
+    category: "FileInput"
+    ast_patterns: []
+
+sinks:
+  - id: "node_eval"
+    name: "Node.js eval"
+    description: "Dynamic code evaluation"
+    patterns:
+      - "eval("
+      - "new Function("
+      - "vm.runInContext"
+      - "vm.runInNewContext"
+      - "vm.runInThisContext"
+      - "vm.compileFunction"
+      - "vm.Script"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "node_child_process"
+    name: "Node.js Child Process"
+    description: "System command execution via child_process"
+    patterns:
+      - "child_process.exec"
+      - "child_process.execSync"
+      - "child_process.spawn"
+      - "child_process.execFile"
+      - "child_process.fork"
+      - "exec("
+      - "execSync("
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "node_html_output"
+    name: "Node.js HTML Response"
+    description: "Direct HTML output without escaping"
+    patterns:
+      - "res.send("
+      - "res.write("
+      - "res.end("
+      - "response.write("
+      - "innerHTML"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "High"
+    cwe_id: "CWE-79"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "node_file_write"
+    name: "Node.js File Write"
+    description: "File write with user-controlled paths or content"
+    patterns:
+      - "fs.writeFile"
+      - "fs.writeFileSync"
+      - "fs.appendFile"
+      - "fs.createWriteStream"
+      - "fs.open"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "node_http_request"
+    name: "Node.js HTTP Request (SSRF)"
+    description: "Outbound HTTP requests with user-controlled URLs"
+    patterns:
+      - "http.request"
+      - "https.request"
+      - "fetch("
+      - "axios.get"
+      - "axios.post"
+      - "request("
+      - "urllib.request"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "node_mongodb_query"
+    name: "MongoDB Query (NoSQL Injection)"
+    description: "MongoDB operations with user-controlled query objects"
+    patterns:
+      - "collection.find"
+      - "collection.findOne"
+      - "collection.update"
+      - "collection.remove"
+      - "collection.aggregate"
+      - "db.collection"
+      - "$where"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "SqlInjection"
+    severity: "High"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "encodeURIComponent"
+    description: "URI component encoding"
+  - pattern: "validator.escape"
+    description: "validator.js HTML escape"
+  - pattern: "DOMPurify.sanitize"
+    description: "DOMPurify HTML sanitizer"
+  - pattern: "sanitize-html"
+    description: "sanitize-html library"
+  - pattern: "escapeHtml"
+    description: "HTML entity escaping"
+  - pattern: "mongo-sanitize"
+    description: "MongoDB query sanitizer"
+  - pattern: "express-mongo-sanitize"
+    description: "Express MongoDB sanitizer middleware"

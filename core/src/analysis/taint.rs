@@ -7,7 +7,7 @@
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// 污点源 - 用户输入点
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +32,11 @@ pub struct TaintSource {
 
     /// 类别
     pub category: TaintCategory,
+
+    /// AST 匹配模式（可选，用于精确匹配）
+    /// 例如: "member_expression[object=req,property=body]"
+    #[serde(default)]
+    pub ast_patterns: Vec<AstPattern>,
 }
 
 impl TaintSource {
@@ -45,6 +50,7 @@ impl TaintSource {
             languages: vec!["*".to_string()],
             severity: Severity::High,
             category: TaintCategory::UserInput,
+            ast_patterns: Vec::new(),
         }
     }
 
@@ -94,6 +100,10 @@ pub struct TaintSink {
 
     /// 敏感参数索引（从 0 开始）
     pub sensitive_params: Vec<usize>,
+
+    /// AST 匹配模式（可选，用于精确匹配）
+    #[serde(default)]
+    pub ast_patterns: Vec<AstPattern>,
 }
 
 impl TaintSink {
@@ -108,7 +118,8 @@ impl TaintSink {
             vulnerability_type: vuln_type,
             severity: Severity::High,
             cwe_id: None,
-            sensitive_params: vec![0], // 默认第一个参数敏感
+            sensitive_params: vec![0],
+            ast_patterns: Vec::new(),
         }
     }
 
@@ -254,6 +265,33 @@ pub enum PropagationStepType {
     Sanitization,
     /// 解引用
     Dereference,
+}
+
+/// 污点分析结果
+/// AST 节点匹配模式
+///
+/// 用于精确匹配 tree-sitter AST 节点，替代纯文本 pattern 匹配。
+/// 例如匹配 `req.body` 可以指定 node_type=member_expression, properties={object: "req", property: "body"}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AstPattern {
+    /// AST 节点类型（如 "call_expression", "member_expression", "identifier"）
+    pub node_type: String,
+
+    /// 节点的 name 字段值（如函数名、变量名）
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// 属性匹配（如 object="req", property="body"）
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
+
+    /// 父节点类型约束（如只在 assignment_expression 的右值中匹配）
+    #[serde(default)]
+    pub parent_type: Option<String>,
+
+    /// 语言限制（如 ["javascript", "typescript"]，空数组表示所有语言）
+    #[serde(default)]
+    pub languages: Vec<String>,
 }
 
 /// 污点分析结果
@@ -602,6 +640,7 @@ impl TaintAnalyzer {
                 languages: vec!["*".to_string()],
                 severity: Severity::High,
                 category: TaintCategory::UserInput,
+                ast_patterns: vec![],
             },
             // 文件读取
             TaintSource {
@@ -620,6 +659,7 @@ impl TaintAnalyzer {
                 languages: vec!["*".to_string()],
                 severity: Severity::Medium,
                 category: TaintCategory::FileInput,
+                ast_patterns: vec![],
             },
             // 环境变量
             TaintSource {
@@ -636,6 +676,7 @@ impl TaintAnalyzer {
                 languages: vec!["*".to_string()],
                 severity: Severity::Medium,
                 category: TaintCategory::Environment,
+                ast_patterns: vec![],
             },
         ]
     }
@@ -664,6 +705,7 @@ impl TaintAnalyzer {
                 severity: Severity::Critical,
                 cwe_id: Some("CWE-89".to_string()),
                 sensitive_params: vec![0],
+                ast_patterns: vec![],
             },
             // 命令执行
             TaintSink {
@@ -687,6 +729,7 @@ impl TaintAnalyzer {
                 severity: Severity::Critical,
                 cwe_id: Some("CWE-78".to_string()),
                 sensitive_params: vec![0],
+                ast_patterns: vec![],
             },
             // 文件路径操作
             TaintSink {
@@ -711,6 +754,7 @@ impl TaintAnalyzer {
                 severity: Severity::High,
                 cwe_id: Some("CWE-22".to_string()),
                 sensitive_params: vec![0],
+                ast_patterns: vec![],
             },
             // HTML 输出
             TaintSink {
@@ -730,6 +774,7 @@ impl TaintAnalyzer {
                 severity: Severity::High,
                 cwe_id: Some("CWE-79".to_string()),
                 sensitive_params: vec![0],
+                ast_patterns: vec![],
             },
             // SSRF
             TaintSink {
@@ -753,6 +798,7 @@ impl TaintAnalyzer {
                 severity: Severity::High,
                 cwe_id: Some("CWE-918".to_string()),
                 sensitive_params: vec![0],
+                ast_patterns: vec![],
             },
             // eval
             TaintSink {
@@ -772,6 +818,7 @@ impl TaintAnalyzer {
                 severity: Severity::Critical,
                 cwe_id: Some("CWE-94".to_string()),
                 sensitive_params: vec![0],
+                ast_patterns: vec![],
             },
         ]
     }

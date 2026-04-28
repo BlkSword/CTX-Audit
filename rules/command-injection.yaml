@@ -4,5 +4,10 @@ description: 检测命令注入风险：用户输入直接用于命令执行
 id: command-injection
 language: all
 name: Command Injection Detection
+owasp: "A03:2021-Injection"
+remediation: "使用参数化的命令执行 API；避免在 subprocess 中使用 shell=True；对所有用户输入进行严格验证和白名单过滤后再传入命令执行函数。"
+references:
+  - "https://owasp.org/www-community/attacks/Command_Injection"
+  - "https://cwe.mitre.org/data/definitions/78.html"
 pattern: (?i)(Runtime\.getRuntime\(\)\.exec|ProcessBuilder|exec\(|system\(|popen\(|shell_exec\(|passthru\(|eval\s*\(|`[^`]+`)\s*\(.*\+|exec\s*\(\s*['"][^'"]*\$)
 severity: critical

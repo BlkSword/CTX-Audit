@@ -3,6 +3,7 @@
 
 pub mod manager;
 pub mod regex_scanner;
+pub mod sca_scanner;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -67,13 +68,30 @@ pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
     // 创建正则扫描器
     let regex_scanner = regex_scanner::RegexScanner::new();
 
+    // 创建 SCA 依赖扫描器
+    let sca_scanner = sca_scanner::ScaScanner::new();
+
     // 使用 ignore 库遍历目录
     for entry in Walk::new(path) {
         if let Ok(entry) = entry {
             let path = entry.path();
 
-            // 只扫描支持的文件类型
-            if path.is_file() && is_supported_file(path) {
+            if !path.is_file() {
+                continue;
+            }
+
+            // 依赖文件：使用 SCA 扫描器
+            if sca_scanner::is_dependency_file(path) {
+                if let Ok(content) = fs::read_to_string(path).await {
+                    let path_buf = path.to_path_buf();
+                    let sca_findings = sca_scanner.scan_file(&path_buf, &content).await;
+                    findings.extend(sca_findings);
+                }
+                continue;
+            }
+
+            // 代码文件：使用正则 + 规则扫描
+            if is_supported_file(path) {
                 if let Ok(content) = fs::read_to_string(path).await {
                     let path_buf = path.to_path_buf();
 

@@ -1,0 +1,203 @@
+kind: taint-rules
+name: "Generic Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "http_request"
+    name: "HTTP Request"
+    description: "HTTP request parameters from various frameworks and languages"
+    patterns:
+      - "request.args"
+      - "request.form"
+      - "request.GET"
+      - "request.POST"
+      - "req.body"
+      - "req.query"
+      - "req.params"
+      - "$_GET"
+      - "$_POST"
+      - "$_REQUEST"
+      - "getParameter"
+      - "process.argv"
+      - "sys.argv"
+      - "os.Args"
+      - "env::args"
+      - "formData.get"
+      - "formData.getAll"
+      - "formData.entries"
+      - "request.text"
+      - "request.json"
+      - "request.formData"
+      - "cookies().get"
+      - "headers().get"
+      - "searchParams.get"
+    languages: ["*"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "file_input"
+    name: "File Input"
+    description: "Content read from files"
+    patterns:
+      - "readFile"
+      - "read()"
+      - "readlines"
+      - "fs.read"
+      - "f.read"
+      - "File.read"
+      - "std::fs::read"
+    languages: ["*"]
+    severity: "Medium"
+    category: "FileInput"
+    ast_patterns: []
+
+  - id: "env_input"
+    name: "Environment Variable"
+    description: "Environment variables that may contain sensitive data"
+    patterns:
+      - "process.env"
+      - "os.environ"
+      - "System.getenv"
+      - "std::env::var"
+      - "getenv"
+    languages: ["*"]
+    severity: "Medium"
+    category: "Environment"
+    ast_patterns: []
+
+sinks:
+  - id: "sql_exec"
+    name: "SQL Execution"
+    description: "SQL query execution functions"
+    patterns:
+      - ".execute("
+      - "execute("
+      - ".query("
+      - "query("
+      - "cursor.execute"
+      - "db.query"
+      - "db.execute"
+    languages: ["*"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "cmd_exec"
+    name: "Command Execution"
+    description: "System command execution functions"
+    patterns:
+      - "exec("
+      - "system("
+      - "shell_exec"
+      - "subprocess"
+      - "os.system"
+      - "Runtime.exec"
+      - "Command::new"
+      - "child_process"
+    languages: ["*"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "file_path"
+    name: "File Path"
+    description: "File system operations with user-controlled paths"
+    patterns:
+      - "open("
+      - "fopen"
+      - "readFile"
+      - "writeFile"
+      - "fs.open"
+    languages: ["*"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "html_output"
+    name: "HTML Output"
+    description: "Direct HTML output that may lead to XSS"
+    patterns:
+      - "innerHTML"
+      - "document.write"
+      - "res.write"
+      - "res.send"
+    languages: ["*"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "High"
+    cwe_id: "CWE-79"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "http_request"
+    name: "HTTP Request"
+    description: "Outbound HTTP requests (SSRF risk)"
+    patterns:
+      - "fetch("
+      - "axios"
+      - "requests.get"
+      - "requests.post"
+    languages: ["*"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "eval"
+    name: "Code Evaluation"
+    description: "Dynamic code evaluation functions"
+    patterns:
+      - "eval("
+      - "Function("
+      - "__import__"
+      - "compile("
+    languages: ["*"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "deserialization"
+    name: "Unsafe Deserialization"
+    description: "Insecure deserialization including React RSC Flight protocol"
+    patterns:
+      - "parseModel"
+      - "resolveModel"
+      - "parseModelString"
+      - "JSON.parse"
+      - "deserialize"
+      - "unserialize"
+      - "objectMapper.readValue"
+      - "pickle.loads"
+    languages: ["*"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "escape"
+    description: "Generic escape function"
+  - pattern: "sanitize"
+    description: "Generic sanitize function"
+  - pattern: "htmlspecialchars"
+    description: "PHP HTML entity encoding"
+  - pattern: "parameterized"
+    description: "Parameterized query"
+  - pattern: "prepare"
+    description: "Prepared statement"
+  - pattern: "parameterize"
+    description: "Parameterize function"
+  - pattern: "encode"
+    description: "Encoding function"
+  - pattern: "validate"
+    description: "Validation function"

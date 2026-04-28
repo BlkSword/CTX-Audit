@@ -54,6 +54,67 @@ impl AstTaintAnalyzer {
         }
     }
 
+    /// 从 YAML 目录创建分析器（替代默认硬编码定义）
+    ///
+    /// 如果目录存在且包含 taint-rules YAML 文件，使用加载的定义。
+    /// 否则回退到默认硬编码定义。
+    pub fn from_yaml_dir(dir: &Path) -> anyhow::Result<Self> {
+        let loaded = crate::rules::taint_loader::load_taint_rules_from_dir(dir)?;
+
+        if loaded.sources.is_empty() && loaded.sinks.is_empty() {
+            tracing::info!("No taint rules found in {:?}, using defaults", dir);
+            return Ok(Self::new());
+        }
+
+        tracing::info!(
+            "Loaded {} sources, {} sinks, {} sanitizers from {:?}",
+            loaded.sources.len(),
+            loaded.sinks.len(),
+            loaded.sanitizer_patterns.len(),
+            dir,
+        );
+
+        Ok(Self {
+            sources: loaded.sources,
+            sinks: loaded.sinks,
+            sanitizer_patterns: loaded.sanitizer_patterns,
+            ast_parser: ASTParser::new(),
+        })
+    }
+
+    /// Builder: 替换所有污点源
+    pub fn with_sources(mut self, sources: Vec<TaintSource>) -> Self {
+        self.sources = sources;
+        self
+    }
+
+    /// Builder: 替换所有污点汇
+    pub fn with_sinks(mut self, sinks: Vec<TaintSink>) -> Self {
+        self.sinks = sinks;
+        self
+    }
+
+    /// Builder: 替换所有净化函数模式
+    pub fn with_sanitizers(mut self, patterns: Vec<String>) -> Self {
+        self.sanitizer_patterns = patterns;
+        self
+    }
+
+    /// 追加额外的污点源（不覆盖现有定义）
+    pub fn add_sources(&mut self, sources: Vec<TaintSource>) {
+        self.sources.extend(sources);
+    }
+
+    /// 追加额外的污点汇
+    pub fn add_sinks(&mut self, sinks: Vec<TaintSink>) {
+        self.sinks.extend(sinks);
+    }
+
+    /// 追加额外的净化函数模式
+    pub fn add_sanitizers(&mut self, patterns: Vec<String>) {
+        self.sanitizer_patterns.extend(patterns);
+    }
+
     /// 分析单个文件，返回所有检测到的污点流
     pub fn analyze_file(&mut self, file_path: &Path, content: &str) -> Vec<TaintFlow> {
         let mut all_flows = Vec::new();
@@ -620,6 +681,11 @@ impl AstTaintAnalyzer {
                 "req.body", "req.query", "req.params",
                 "$_GET", "$_POST", "$_REQUEST",
                 "getParameter", "process.argv", "sys.argv", "os.Args", "env::args",
+                // React RSC / Next.js Server Action sources
+                "formData.get", "formData.getAll", "formData.entries",
+                "request.text", "request.json", "request.formData",
+                "cookies().get", "headers().get",
+                "searchParams.get",
             ]),
             TaintSource::new("file_input", "File Input", vec![
                 "readFile", "read()", "readlines", "fs.read", "f.read",
@@ -635,7 +701,7 @@ impl AstTaintAnalyzer {
         vec![
             TaintSink::new("sql_exec", "SQL Execution", vec![
                 ".execute(", "execute(", ".query(", "query(",
-                "cursor.execute", "db.query",
+                "cursor.execute", "db.query", "db.execute",
             ], VulnerabilityType::SqlInjection).with_cwe("CWE-89"),
             TaintSink::new("cmd_exec", "Command Execution", vec![
                 "exec(", "system(", "shell_exec", "subprocess",
@@ -653,6 +719,12 @@ impl AstTaintAnalyzer {
             TaintSink::new("eval", "Code Evaluation", vec![
                 "eval(", "Function(", "__import__", "compile(",
             ], VulnerabilityType::CodeInjection).with_cwe("CWE-94"),
+            // 不安全的反序列化（覆盖 React RSC / Flight 协议场景）
+            TaintSink::new("deserialization", "Unsafe Deserialization", vec![
+                "parseModel", "resolveModel", "parseModelString",
+                "JSON.parse", "deserialize", "unserialize",
+                "objectMapper.readValue", "pickle.loads",
+            ], VulnerabilityType::InsecureDeserialization).with_cwe("CWE-502"),
         ]
     }
 
@@ -741,5 +813,37 @@ result = execute(name)
         let flows = analyzer.analyze_code(code, &path, "safe_func");
 
         assert!(flows.is_empty(), "Should not report false positive for non-tainted data");
+    }
+
+    #[test]
+    fn test_deserialization_sink_detection() {
+        // 模拟 React RSC 场景：formData.get → parseModel → eval
+        let code = r#"payload = formData.get('data')
+result = parseModel(payload)
+output = eval(result)"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("test.tsx");
+        let flows = analyzer.analyze_code(code, &path, "serverAction");
+
+        // 应该检测到反序列化 + eval 两条路径
+        assert!(!flows.is_empty(), "Should detect deserialization or eval sink: found {} flows", flows.len());
+
+        // 至少有一个 eval sink
+        let eval_flows: Vec<_> = flows.iter()
+            .filter(|f| matches!(f.vulnerability_type, VulnerabilityType::CodeInjection))
+            .collect();
+        assert!(!eval_flows.is_empty(), "Should detect eval sink");
+    }
+
+    #[test]
+    fn test_rsc_formdata_source() {
+        // 验证 formData.get 被识别为 source
+        let code = r#"userInput = formData.get('name')
+db.execute(userInput)"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("test.tsx");
+        let flows = analyzer.analyze_code(code, &path, "action");
+
+        assert!(!flows.is_empty(), "Should detect formData.get as taint source");
     }
 }

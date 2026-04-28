@@ -6,7 +6,7 @@
 //! 提供函数调用图构建、跨文件污点传播和模块依赖分析
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use super::imports::ImportResolver;
@@ -289,6 +289,54 @@ pub enum InterproceduralStepType {
     Assignment,
     /// 污点汇
     Sink,
+}
+
+/// 函数摘要 — 一个函数对污点传播的"签名"
+///
+/// 描述函数如何将参数的污点传播到返回值或内部 sink，
+/// 使得调用者不需要重新分析函数体。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionSummary {
+    /// 函数唯一标识 (file_path:func_name:start_line)
+    pub func_id: String,
+
+    /// 函数名
+    pub func_name: String,
+
+    /// 文件路径
+    pub file_path: String,
+
+    /// 参数索引到是否影响返回值的映射
+    /// (param_index, affects_return)
+    pub taint_propagation: Vec<(usize, bool)>,
+
+    /// 从参数直接到达的 sink
+    pub direct_sinks: Vec<SinkReachability>,
+
+    /// 函数体摘要哈希（用于缓存失效）
+    pub body_hash: Option<String>,
+}
+
+/// Sink 可达性：描述某个参数可以到达哪个 sink
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SinkReachability {
+    /// Sink 名称（如 "eval", "execute"）
+    pub sink_name: String,
+
+    /// 从哪个参数传播而来
+    pub from_param: usize,
+
+    /// 是否经过净化
+    pub sanitized: bool,
+
+    /// 净化函数名
+    pub sanitizer: Option<String>,
+
+    /// 到达 sink 的行号
+    pub sink_line: usize,
+
+    /// 漏洞类型
+    pub vuln_type: VulnerabilityType,
 }
 
 /// 跨文件分析统计
@@ -823,6 +871,191 @@ impl Default for CrossFileTaintAnalyzer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl CrossFileTaintAnalyzer {
+    /// 计算项目中所有函数的摘要（自底向上）
+    ///
+    /// 返回 HashMap: func_id → FunctionSummary
+    /// 利用调用图做拓扑排序，先计算叶子函数再计算调用者
+    pub fn compute_function_summaries(
+        &mut self,
+        project_path: &Path,
+    ) -> HashMap<String, FunctionSummary> {
+        // 1. 构建调用图
+        let source_files = self.collect_source_files(project_path);
+        for file_path in &source_files {
+            self.build_call_graph_for_file(file_path);
+        }
+
+        // 2. 拓扑排序（近似：按被调用次数排序）
+        let sorted_funcs = self.topological_sort();
+
+        // 3. 逐个计算摘要
+        let mut summaries = HashMap::new();
+        for func_id in sorted_funcs {
+            if let Some(summary) = self.compute_single_summary(&func_id) {
+                summaries.insert(func_id, summary);
+            }
+        }
+
+        summaries
+    }
+
+    /// 拓扑排序（简化版：按调用深度排序，叶子函数优先）
+    fn topological_sort(&self) -> Vec<String> {
+        let mut in_degree: HashMap<&String, usize> = HashMap::new();
+        for (id, node) in &self.call_graph.nodes {
+            in_degree.insert(id, node.calls.len());
+        }
+
+        let mut queue: VecDeque<&String> = in_degree.iter()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(&id, _)| id)
+            .collect();
+
+        let mut result = Vec::new();
+        while let Some(func_id) = queue.pop_front() {
+            result.push(func_id.clone());
+            if let Some(node) = self.call_graph.nodes.get(func_id) {
+                for caller in &node.called_by {
+                    if let Some(deg) = in_degree.get_mut(caller) {
+                        *deg = deg.saturating_sub(1);
+                        if *deg == 0 {
+                            queue.push_back(caller);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 加上可能有环的剩余节点
+        for id in self.call_graph.nodes.keys() {
+            if !result.contains(id) {
+                result.push(id.clone());
+            }
+        }
+
+        result
+    }
+
+    /// 计算单个函数的摘要
+    fn compute_single_summary(&self, func_id: &str) -> Option<FunctionSummary> {
+        let node = self.call_graph.nodes.get(func_id)?;
+
+        let mut taint_propagation = Vec::new();
+        let mut direct_sinks = Vec::new();
+
+        // 分析每个参数是否可能到达 sink
+        for (param_idx, param) in node.parameters.iter().enumerate() {
+            if param.may_be_tainted {
+                // 如果参数标记为可能的污点源，记录传播信息
+                // 简化实现：假设所有 tainted 参数都可能影响返回值
+                taint_propagation.push((param_idx, true));
+
+                // 检查函数体内是否有直接调用 sink
+                for call in &node.calls {
+                    if self.is_taint_sink(call) {
+                        direct_sinks.push(SinkReachability {
+                            sink_name: call.clone(),
+                            from_param: param_idx,
+                            sanitized: false,
+                            sanitizer: None,
+                            sink_line: 0, // 精确行号需要更深层分析
+                            vuln_type: self.infer_vuln_type(call),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 如果函数是污点源，所有参数都标记为可能传播
+        if node.is_taint_source {
+            for (idx, _param) in node.parameters.iter().enumerate() {
+                if !taint_propagation.iter().any(|(i, _)| *i == idx) {
+                    taint_propagation.push((idx, true));
+                }
+            }
+        }
+
+        Some(FunctionSummary {
+            func_id: func_id.to_string(),
+            func_name: node.name.clone(),
+            file_path: node.file_path.clone(),
+            taint_propagation,
+            direct_sinks,
+            body_hash: None,
+        })
+    }
+
+    /// 从 sink 函数名推断漏洞类型
+    fn infer_vuln_type(&self, func_name: &str) -> VulnerabilityType {
+        let lower = func_name.to_lowercase();
+        if lower.contains("exec") || lower.contains("system") || lower.contains("spawn") {
+            VulnerabilityType::CommandInjection
+        } else if lower.contains("query") || lower.contains("execute") || lower.contains("sql") {
+            VulnerabilityType::SqlInjection
+        } else if lower.contains("eval") || lower.contains("function") {
+            VulnerabilityType::CodeInjection
+        } else if lower.contains("open") || lower.contains("read") || lower.contains("write") {
+            VulnerabilityType::PathTraversal
+        } else if lower.contains("fetch") || lower.contains("request") {
+            VulnerabilityType::ServerSideRequestForgery
+        } else if lower.contains("deserialize") || lower.contains("parse") {
+            VulnerabilityType::InsecureDeserialization
+        } else {
+            VulnerabilityType::Generic
+        }
+    }
+
+    /// 利用已有的函数摘要做跨函数污点传播
+    ///
+    /// 当分析到调用 `callee(tainted_var)` 时，
+    /// 查找 callee 的摘要，判断参数污点是否传播到返回值或内部 sink
+    pub fn propagate_with_summary(
+        &self,
+        summaries: &HashMap<String, FunctionSummary>,
+        callee_name: &str,
+        arg_tainted: &[bool],
+    ) -> SummaryPropagationResult {
+        let mut result = SummaryPropagationResult {
+            return_tainted: false,
+            sinks_reached: Vec::new(),
+        };
+
+        // 查找匹配的摘要
+        let summary = summaries.values().find(|s| {
+            s.func_name == callee_name ||
+            s.func_id.contains(callee_name)
+        });
+
+        if let Some(summary) = summary {
+            for (param_idx, affects_return) in &summary.taint_propagation {
+                if *param_idx < arg_tainted.len() && arg_tainted[*param_idx] {
+                    if *affects_return {
+                        result.return_tainted = true;
+                    }
+                    // 添加该参数到达的 sink
+                    for sink in &summary.direct_sinks {
+                        if sink.from_param == *param_idx {
+                            result.sinks_reached.push(sink.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+/// 函数摘要传播结果
+#[derive(Debug, Clone)]
+pub struct SummaryPropagationResult {
+    /// 返回值是否被污点影响
+    pub return_tainted: bool,
+    /// 到达的 sink 列表
+    pub sinks_reached: Vec<SinkReachability>,
 }
 
 #[cfg(test)]

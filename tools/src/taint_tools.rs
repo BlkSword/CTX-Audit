@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::registry::{Tool, ToolRegistry};
 use crate::bridge::{ToolCategory, ToolDefinition, ToolParameter, ToolParameterType, ToolResult, ToolError};
 
-use deepaudit_core::{TaintAnalyzer, EnhancedTaintAnalyzer};
+use deepaudit_core::{TaintAnalyzer, EnhancedTaintAnalyzer, AstTaintAnalyzer};
 
 /// 污点追踪工具
 ///
@@ -116,12 +116,16 @@ impl Tool for TraceTaintTool {
                 properties: None,
             })
             .add_parameter(ToolParameter {
-                name: "enhanced".to_string(),
-                param_type: ToolParameterType::Boolean,
-                description: "是否使用增强污点分析（基于变量追踪，默认 true）".to_string(),
+                name: "engine".to_string(),
+                param_type: ToolParameterType::String,
+                description: "污点分析引擎: \"ast\" (基于AST,默认), \"enhanced\" (变量追踪), \"basic\" (基础文本)".to_string(),
                 required: false,
-                default: Some(serde_json::json!(true)),
-                enum_values: None,
+                default: Some(serde_json::json!("ast")),
+                enum_values: Some(vec![
+                    serde_json::json!("ast"),
+                    serde_json::json!("enhanced"),
+                    serde_json::json!("basic"),
+                ]),
                 format: None,
                 items: None,
                 properties: None,
@@ -133,8 +137,8 @@ impl Tool for TraceTaintTool {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
 
-        // 是否使用增强分析（默认 true）
-        let use_enhanced = input["enhanced"].as_bool().unwrap_or(true);
+        // 选择分析引擎（默认 "ast"）
+        let engine = input["engine"].as_str().unwrap_or("ast").to_lowercase();
 
         // 构建完整路径
         let full_path = Path::new(&self.project_path).join(file_path);
@@ -147,15 +151,23 @@ impl Tool for TraceTaintTool {
         // 推断语言
         let language = Self::infer_language(file_path);
 
-        // 执行污点分析
-        let flows = if use_enhanced {
-            // 使用增强的污点分析器（基于变量追踪）
-            let analyzer = EnhancedTaintAnalyzer::new();
-            analyzer.analyze(&content, file_path, language)
-        } else {
-            // 使用基础污点分析器
-            let analyzer = TaintAnalyzer::new();
-            analyzer.analyze(&content, file_path, language)
+        // 根据引擎类型执行污点分析
+        let flows = match engine.as_str() {
+            "ast" => {
+                // 基于 AST 的污点分析（tree-sitter + CFG + worklist）
+                let mut analyzer = AstTaintAnalyzer::new();
+                analyzer.analyze_file(&full_path, &content)
+            }
+            "enhanced" => {
+                // 增强的污点分析器（基于变量追踪）
+                let analyzer = EnhancedTaintAnalyzer::new();
+                analyzer.analyze(&content, file_path, language)
+            }
+            _ => {
+                // 基础文本匹配污点分析器
+                let analyzer = TaintAnalyzer::new();
+                analyzer.analyze(&content, file_path, language)
+            }
         };
 
         // 过滤漏洞类型
@@ -321,8 +333,8 @@ impl Tool for GlobalTaintAnalysisTool {
             return Ok(ToolResult::text("未找到符合条件的文件".to_string()));
         }
 
-        // 创建污点分析器
-        let analyzer = TaintAnalyzer::new();
+        // 创建基于 AST 的污点分析器
+        let mut analyzer = AstTaintAnalyzer::new();
         let mut all_flows = Vec::new();
 
         // 分析每个文件
@@ -333,8 +345,7 @@ impl Tool for GlobalTaintAnalysisTool {
                     .to_string_lossy()
                     .to_string();
 
-                let language = TraceTaintTool::infer_language(&relative_path);
-                let flows = analyzer.analyze(&content, &relative_path, language);
+                let flows = analyzer.analyze_file(file_path, &content);
                 all_flows.extend(flows);
             }
         }

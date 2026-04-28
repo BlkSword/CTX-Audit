@@ -17,7 +17,7 @@ pub mod imports;
 pub use taint::{
     TaintAnalyzer, TaintSource, TaintSink, TaintFlow, TaintResult,
     FlowLocation, FlowNode, FlowNodeType, PropagationStep, PropagationStepType,
-    Severity, TaintCategory, VulnerabilityType,
+    Severity, TaintCategory, VulnerabilityType, AstPattern,
 };
 pub use enhanced_taint::{
     EnhancedTaintAnalyzer, VariableTaint, PropagationStep as EnhancedPropagationStep,
@@ -32,6 +32,7 @@ pub use cross_file::{
     CallGraph, CallGraphNode, FunctionParameter,
     CrossFileTaintAnalyzer, CrossFileTaintResult, CrossFileAnalysisStats,
     InterproceduralTaintFlow, InterproceduralStep, InterproceduralStepType,
+    FunctionSummary, SinkReachability, SummaryPropagationResult,
 };
 pub use cache::{
     CacheEntry, CacheStats, MemoryCache,

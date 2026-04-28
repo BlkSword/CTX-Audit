@@ -4,5 +4,10 @@ description: 检测路径遍历风险：用户输入直接用于文件路径操�
 id: path-traversal
 language: all
 name: Path Traversal Detection
+owasp: "A01:2021-Broken Access Control"
+remediation: "对用户提供的文件路径进行规范化处理（realpath）；验证路径是否在允许的目录范围内；使用白名单限制可访问的文件名。"
+references:
+  - "https://owasp.org/www-community/attacks/Path_Traversal"
+  - "https://cwe.mitre.org/data/definitions/22.html"
 pattern: (?i)(new\s+File\(|FileInputStream|FileReader|FileWriter|FileOutputStream|Files\.read|Files\.write|Path\.of|Paths\.get|open\(|fopen\(|readfile\(|file_get_contents\(|include|require).*\+|File\s*\(.*request|path\s*=\s*.*request|filename\s*=\s*.*request
 severity: high

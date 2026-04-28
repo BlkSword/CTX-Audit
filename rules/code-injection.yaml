@@ -4,5 +4,10 @@ description: 检测代码注入风险：动态代码执行
 id: code-injection
 language: all
 name: Code Injection Detection
+owasp: "A03:2021-Injection"
+remediation: "避免使用 eval()、new Function() 等动态代码执行函数；使用白名单验证所有用户输入；对于模板引擎，使用沙箱环境执行。"
+references:
+  - "https://owasp.org/www-community/attacks/Code_Injection"
+  - "https://cwe.mitre.org/data/definitions/94.html"
 pattern: (?i)(eval\s*\(|exec\s*\(|Function\s*\(|setTimeout\s*\(\s*['"]|setInterval\s*\(\s*['"]|new\s+Function|vm\.runInNewContext|vm\.runInThisContext|vm\.runInContext|child_process\.exec|spawn|execSync|execFile|Runtime\.getRuntime\(\)\.exec|ProcessBuilder|GroovyShell|ScriptEngineManager|ScriptEngine|invokeMethod|invoke|createScript|eval\$\{|@eval|<%.*eval|%>)
 severity: critical
