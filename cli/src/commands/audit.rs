@@ -20,7 +20,7 @@ use ctx_audit_llm::LLMFactory;
 use ctx_audit_tools::FindingData;
 use ctx_audit_tools::ToolRegistry;
 use deepaudit_core::sarif::{SarifConverter, FindingInput, taint_flow_to_summary};
-use deepaudit_core::analysis::TaintAnalyzer;
+use deepaudit_core::AstTaintAnalyzer;
 
 /// 安全地截断 UTF-8 字符串到指定字节长度
 fn truncate_utf8(s: &str, max_bytes: usize) -> String {
@@ -249,17 +249,14 @@ pub async fn execute(
     print_phase_result(&scan_result, &mut renderer);
 
     // ===== 新增：对候选漏洞执行污点追踪 =====
-    let taint_analyzer = TaintAnalyzer::new();
+    let mut ast_taint_analyzer = AstTaintAnalyzer::new();
     let mut taint_flow_map: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
 
     for candidate in &audit_state.vulnerability_candidates {
         let full_path = std::path::Path::new(&path).join(&candidate.file_path);
         if let Ok(code) = std::fs::read_to_string(&full_path) {
-            let language = detect_language(&candidate.file_path);
-            let flows = taint_analyzer.analyze_with_propagation(
-                &code, &candidate.file_path, &language,
-            );
+            let flows = ast_taint_analyzer.analyze_file(&full_path, &code);
             if !flows.is_empty() {
                 let summaries: Vec<serde_json::Value> = flows.iter()
                     .map(|f| serde_json::to_value(taint_flow_to_summary(f)).unwrap_or_default())

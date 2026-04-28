@@ -19,9 +19,12 @@ pub use diff::DiffEngine;
 pub use scanner::{Finding, Scanner, scan_directory};
 pub use scanner::manager::ScannerManager;
 pub use scanner::regex_scanner::RegexScanner;
+pub use scanner::sca_scanner::ScaScanner;
 
 // 规则系统
 pub use rules::{loader::load_rules_from_dir, model::Rule, scanner::RuleScanner};
+pub use rules::taint_model::TaintRuleSet;
+pub use rules::taint_loader::load_taint_rules_from_dir;
 
 // 索引系统
 pub use indexing::{CodeChunk, CodeChunker, ChunkType, ChunkConfig, VectorStore, SearchResult};

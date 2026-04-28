@@ -1,0 +1,140 @@
+kind: taint-rules
+name: "React / Next.js Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "react_formdata"
+    name: "React FormData"
+    description: "FormData entries from server actions or form submissions"
+    patterns:
+      - "formData.get"
+      - "formData.getAll"
+      - "formData.entries"
+      - "formData.has"
+      - "formData.values"
+    languages: ["javascript", "typescript"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns:
+      - node_type: "call_expression"
+        name: "get"
+        properties:
+          object: "formData"
+        languages: ["javascript", "typescript"]
+
+  - id: "nextjs_cookies"
+    name: "Next.js Cookies"
+    description: "Cookie values from next/headers"
+    patterns:
+      - "cookies().get"
+      - "cookies().getAll"
+    languages: ["javascript", "typescript"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "nextjs_headers"
+    name: "Next.js Headers"
+    description: "Request header values from next/headers"
+    patterns:
+      - "headers().get"
+    languages: ["javascript", "typescript"]
+    severity: "Medium"
+    category: "NetworkInput"
+    ast_patterns: []
+
+  - id: "nextjs_search_params"
+    name: "Next.js Search Params"
+    description: "URL search parameters in page components"
+    patterns:
+      - "searchParams.get"
+      - "searchParams.getAll"
+    languages: ["javascript", "typescript"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "nextjs_request_body"
+    name: "Next.js Request Body"
+    description: "Request body from NextRequest or NextResponse"
+    patterns:
+      - "request.text"
+      - "request.json"
+      - "request.formData"
+      - "req.jsonBody"
+    languages: ["javascript", "typescript"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+sinks:
+  - id: "react_dangerously_set_inner_html"
+    name: "dangerouslySetInnerHTML"
+    description: "React prop that injects raw HTML — primary XSS vector"
+    patterns:
+      - "dangerouslySetInnerHTML"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "Critical"
+    cwe_id: "CWE-79"
+    sensitive_params: [0]
+    ast_patterns:
+      - node_type: "jsx_attribute"
+        name: "dangerouslySetInnerHTML"
+        languages: ["javascript", "typescript"]
+
+  - id: "react_parse_model"
+    name: "React parseModel (RSC Flight)"
+    description: "React RSC Flight protocol model parsing — deserialization risk (CVE-2025-55182)"
+    patterns:
+      - "parseModel"
+      - "resolveModel"
+      - "parseModelString"
+      - "resolveModelString"
+      - "parseModelFrom"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "react_eval"
+    name: "eval in React"
+    description: "Dynamic code execution in React components or server actions"
+    patterns:
+      - "eval("
+      - "new Function("
+      - "vm.runInContext"
+      - "vm.runInNewContext"
+      - "vm.compileFunction"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "nextjs_dynamic_import"
+    name: "Dynamic Import with User Input"
+    description: "Dynamic import() with user-controlled path"
+    patterns:
+      - "import("
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "CodeInjection"
+    severity: "High"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "DOMPurify.sanitize"
+    description: "DOMPurify HTML sanitizer"
+  - pattern: "sanitizeHtml"
+    description: "sanitize-html library"
+  - pattern: "escapeHtml"
+    description: "HTML entity escaping"
+  - pattern: "encodeURI"
+    description: "URI encoding"
+  - pattern: "encodeURIComponent"
+    description: "URI component encoding"

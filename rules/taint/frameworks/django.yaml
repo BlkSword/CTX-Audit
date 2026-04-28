@@ -1,0 +1,151 @@
+kind: taint-rules
+name: "Django Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "django_request_get_post"
+    name: "Django GET/POST Parameters"
+    description: "HTTP GET and POST parameters from Django request object"
+    patterns:
+      - "request.GET"
+      - "request.POST"
+      - "request.GET.get"
+      - "request.POST.get"
+      - "request.GET.getlist"
+      - "request.POST.getlist"
+      - "request.GET.items"
+      - "request.POST.items"
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "django_request_body"
+    name: "Django Request Body"
+    description: "Raw request body data"
+    patterns:
+      - "request.body"
+      - "request.data"
+      - "request.FILES"
+      - "request.FILES.get"
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "django_request_meta"
+    name: "Django Request META"
+    description: "HTTP headers and metadata from request.META"
+    patterns:
+      - "request.META"
+      - "request.META.get"
+      - "request.META.get('HTTP_"
+      - "META.get('CONTENT_TYPE"
+    languages: ["python"]
+    severity: "Medium"
+    category: "NetworkInput"
+    ast_patterns: []
+
+  - id: "django_url_params"
+    name: "Django URL Parameters"
+    description: "URL path parameters from URL conf"
+    patterns:
+      - "kwargs.get"
+      - "kwargs["
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+sinks:
+  - id: "django_raw_sql"
+    name: "Django Raw SQL"
+    description: "Raw SQL query execution in Django ORM"
+    patterns:
+      - ".raw("
+      - ".extra("
+      - "cursor.execute"
+      - "connection.cursor"
+      - "RawSQL("
+    languages: ["python"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "django_template_unsafe"
+    name: "Django Unsafe Template Output"
+    description: "Marking content as safe bypasses auto-escaping"
+    patterns:
+      - "mark_safe"
+      - "SafeString"
+      - "|safe"
+      - "{% autoescape off %}"
+    languages: ["python"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "High"
+    cwe_id: "CWE-79"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "django_os_command"
+    name: "Django OS Command"
+    description: "OS command execution in Django views"
+    patterns:
+      - "os.system"
+      - "subprocess.call"
+      - "subprocess.Popen"
+      - "subprocess.run"
+      - "os.popen"
+    languages: ["python"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "django_file_operations"
+    name: "Django File Operations"
+    description: "File operations with user-controlled paths"
+    patterns:
+      - "open("
+      - "default_storage.open"
+      - "default_storage.save"
+      - "File("
+    languages: ["python"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "django_pickle"
+    name: "Django Pickle Deserialization"
+    description: "Pickle deserialization of untrusted data"
+    patterns:
+      - "pickle.loads"
+      - "pickle.load"
+      - "cPickle.loads"
+      - "yaml.load"
+      - "yaml.unsafe_load"
+    languages: ["python"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "escape"
+    description: "Django HTML escape"
+  - pattern: "bleach.clean"
+    description: "Bleach HTML sanitizer"
+  - pattern: "strip_tags"
+    description: "Django strip_tags"
+  - pattern: "mark_for_escaping"
+    description: "Django conditional escape"
+  - pattern: "validate_slug"
+    description: "Django slug validator"
+  - pattern: "clean"
+    description: "Django form field clean method"

@@ -4,5 +4,10 @@ description: 检测不安全的加密算法：使用弱加密算法如DES、RC4�
 id: weak-encryption
 language: all
 name: Weak Encryption Algorithm
+owasp: "A02:2021-Cryptographic Failures"
+remediation: "使用 AES-256-GCM 或 ChaCha20-Poly1305 替代 DES/RC4/Blowfish；避免 ECB 模式；使用经过审计的加密库（如 libsodium、WebCrypto API）。"
+references:
+  - "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/09-Testing_for_Weak_Cryptography"
+  - "https://cwe.mitre.org/data/definitions/327.html"
 pattern: (?i)(Cipher\.getInstance|SecretKeySpec|KeyGenerator|createCipher|encrypt|decrypt).*['"](DES|RC4|RC2|Blowfish|ECB|None|PKCS5Padding)['"]
 severity: high

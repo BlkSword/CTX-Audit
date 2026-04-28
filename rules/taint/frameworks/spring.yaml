@@ -1,0 +1,156 @@
+kind: taint-rules
+name: "Spring / Java Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "spring_request_param"
+    name: "Spring @RequestParam"
+    description: "HTTP request parameters via Spring annotations"
+    patterns:
+      - "@RequestParam"
+      - "@PathVariable"
+      - "@RequestHeader"
+      - "@CookieValue"
+      - "getParameter"
+      - "getParameterValues"
+      - "getQueryString"
+    languages: ["java"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "spring_request_body"
+    name: "Spring @RequestBody"
+    description: "Deserialized request body via Spring annotations"
+    patterns:
+      - "@RequestBody"
+      - "getInputStream"
+      - "getReader"
+    languages: ["java"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "spring_http_session"
+    name: "Spring HTTP Session"
+    description: "Session attributes that may be user-controlled"
+    patterns:
+      - "getSession"
+      - "@SessionAttribute"
+      - "getAttribute"
+    languages: ["java"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+sinks:
+  - id: "spring_jdbc_query"
+    name: "Spring JDBC Query"
+    description: "JDBC query execution with potential SQL injection"
+    patterns:
+      - "JdbcTemplate.query"
+      - "JdbcTemplate.update"
+      - "JdbcTemplate.execute"
+      - "nativeQuery"
+      - "createQuery"
+      - "createNativeQuery"
+      - "Statement.execute"
+      - "PreparedStatement.execute"
+    languages: ["java"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "spring_runtime_exec"
+    name: "Java Runtime Exec"
+    description: "System command execution"
+    patterns:
+      - "Runtime.getRuntime().exec"
+      - "ProcessBuilder"
+      - "ProcessBuilder.start"
+    languages: ["java"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "spring_script_engine"
+    name: "Java Script Engine Eval"
+    description: "Script engine dynamic code evaluation"
+    patterns:
+      - "ScriptEngine.eval"
+      - "ScriptEngineManager"
+      - "GroovyShell.evaluate"
+      - "GroovyShell.parse"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "spring_file_operations"
+    name: "Java File Operations"
+    description: "File operations with user-controlled paths"
+    patterns:
+      - "new FileInputStream"
+      - "new FileOutputStream"
+      - "new File("
+      - "Files.readAllLines"
+      - "Files.write"
+      - "Paths.get"
+    languages: ["java"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "spring_deserialization"
+    name: "Java Insecure Deserialization"
+    description: "Java native deserialization of untrusted data"
+    patterns:
+      - "ObjectInputStream"
+      - "readObject"
+      - "readUnshared"
+      - "XMLDecoder"
+      - "XStream"
+      - "fromXML"
+    languages: ["java"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "spring_ssti"
+    name: "Spring Template Injection"
+    description: "Spring SpEL or template expression evaluation"
+    patterns:
+      - "SpelExpressionParser"
+      - "parseExpression"
+      - "ExpressionParser"
+      - "getValue"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "PreparedStatement"
+    description: "Java prepared statements"
+  - pattern: "ParameterizedPreparedStatementCreator"
+    description: "Spring parameterized statement"
+  - pattern: "ESAPI.encoder"
+    description: "OWASP ESAPI encoding"
+  - pattern: "StringEscapeUtils"
+    description: "Apache Commons text escaping"
+  - pattern: "encodeForSQL"
+    description: "ESAPI SQL encoding"
+  - pattern: "validate"
+    description: "Generic validation"
