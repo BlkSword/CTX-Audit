@@ -1,8 +1,13 @@
 category: session-management
 cwe: CWE-614
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "设置 Secure 标志（仅 HTTPS）; 设置 HttpOnly 标志; 使用 SameSite 属性; 配置合理的 Cookie 过期时间。"
+references:
+  - "https://owasp.org/www-community/controls/SecureCookie"
+  - "https://cwe.mitre.org/data/definitions/614.html"
 description: 检测不安全的Cookie设置：缺少Secure或HttpOnly标志
 id: insecure-cookie
 language: all
 name: Insecure Cookie Configuration
-pattern: (?i)(setCookie|cookie|Cookie|set_header.*Set-Cookie|response\.addCookie)(?!.*\bSecure\b|.*\bHttpOnly\b|.*\bSameSite\b)
+pattern: (?i)(setCookie\s*\(|res\.cookie\s*\(|response\.addCookie\s*\(|res\.setHeader\s*\(\s*['\"]Set-Cookie['\"])
 severity: medium

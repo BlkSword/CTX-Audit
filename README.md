@@ -8,6 +8,7 @@
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-227%20passed-brightgreen?style=flat-square)]()
 
 [中文](#中文) | [English](#english)
 
@@ -50,6 +51,9 @@ ctx-audit config set llm.api_key your-api-key
 # 快速规则扫描（不需要 LLM）
 ctx-audit scan ./myproject
 
+# 深度扫描（加入 AST 污点分析 + 置信度评分）
+ctx-audit scan ./myproject --deep
+
 # 深度 AI 审计（Rust 静态分析 + LLM 验证）
 ctx-audit audit ./myproject --verbose
 
@@ -61,7 +65,7 @@ ctx-audit watch ./myproject
 
 #### `scan` — 快速规则扫描
 
-基于正则模式匹配的快速扫描，不需要 LLM，完全本地运行。
+多引擎并行扫描：语言感知正则规则 + SCA 依赖漏洞检测 + 可选 AST 污点分析。
 
 ```bash
 ctx-audit scan ./project [OPTIONS]
@@ -72,6 +76,25 @@ OPTIONS:
   -o, --output <文件>       输出文件路径
   -t, --threads <N>         并行扫描线程数 (默认: 4)
   -r, --rules <目录>        自定义规则目录
+      --deep                启用深度扫描 (AST 污点分析 + 置信度评分 + 去重)
+```
+
+**扫描引擎**：
+
+| 引擎 | 说明 | 速度 |
+|------|------|------|
+| RuleScanner | 语言感知正则规则（YAML，多语言模式） | 快 |
+| RegexScanner | 硬编码模式检测 | 快 |
+| SCAScanner | 依赖漏洞检测（OSV API） | 中 |
+| AstTaintScanner | AST 污点分析（`--deep` 模式） | 慢 |
+
+**输出格式**（全局 `-o` 参数）：
+
+```bash
+ctx-audit -o json scan ./project -o results.json      # JSON
+ctx-audit -o sarif scan ./project -o results.sarif     # SARIF 2.1.0
+ctx-audit -o markdown scan ./project -o report.md      # Markdown
+ctx-audit -o text scan ./project -o report.txt          # 纯文本 (默认)
 ```
 
 #### `audit` — 深度 AI 审计
@@ -180,10 +203,13 @@ CTX-Audit 生成符合 **SARIF 2.1.0** 标准的输出，可被以下工具直�
 
 ```bash
 # 扫描 → SARIF
-ctx-audit scan ./project --output report.sarif
+ctx-audit -o sarif scan ./project -o report.sarif
 
-# 审计 → SARIF（含污点路径和修复建议）
-ctx-audit audit ./project --output report.sarif
+# 深度扫描 → SARIF（含 AST 污点路径和置信度）
+ctx-audit -o sarif scan ./project --deep -o report.sarif
+
+# 审计 → SARIF（含 LLM 验证和修复建议）
+ctx-audit -o sarif audit ./project -o report.sarif
 
 # 守护模式 → 持续更新 SARIF
 ctx-audit watch ./project --output_path .ctx-audit.sarif
@@ -207,7 +233,7 @@ jobs:
       - name: Install CTX-Audit
         run: cargo install ctx-audit
       - name: Run Scan
-        run: ctx-audit scan . --output results.sarif
+        run: ctx-audit -o sarif scan . --deep -o results.sarif
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -237,7 +263,8 @@ GitHub 会在 PR 代码审查界面自动显示漏洞标注。
 │                                                              │
 │  SecurityAuditChain (假设驱动审计)                            │
 │  ReAct Loop (推理-行动循环)                                   │
-│  ToolRecommender (阶段感知工具推荐)                           │
+│  DualVerification (LLM + 确定性引擎交叉验证)                  │
+│  ContextAwareAnalyzer (框架感知语义分析)                      │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
@@ -248,9 +275,13 @@ GitHub 会在 PR 代码审查界面自动显示漏洞标注。
 │  │ (2.1.0 完整) │  │ (Source→Sink) │  │ (tree-sitter 12+) │  │
 │  └─────────────┘  └──────────────┘  └───────────────────┘  │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │ FileWatcher  │  │ Scanner       │  │ Rule Engine       │  │
-│  │ (守护进程)   │  │ (正则/模式)    │  │ (YAML 规则)       │  │
+│  │ SCA 扫描器   │  │ Scanner       │  │ Rule Engine       │  │
+│  │ (OSV API)   │  │ (多语言正则)  │  │ (YAML 多语言规则)  │  │
 │  └─────────────┘  └──────────────┘  └───────────────────┘  │
+│  ┌─────────────┐  ┌──────────────┐                          │
+│  │ FileWatcher  │  │ 去重+评分     │                          │
+│  │ (增量扫描)   │  │ (置信度系统)  │                          │
+│  └─────────────┘  └──────────────┘                          │
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
@@ -269,29 +300,104 @@ GitHub 会在 PR 代码审查界面自动显示漏洞标注。
 ┌──────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────┐   ┌──────────┐
 │  初始化  │──▶│ 确定性扫描   │──▶│  深度分析    │──▶│   验证   │──▶│   报告   │
 │          │   │              │   │              │   │          │   │          │
-│ 项目信息 │   │ 污点路径     │   │ Multi-Agent  │   │ 双重     │   │ SARIF    │
-│ 技术栈   │   │ 模式检测     │   │ 语义理解     │   │ 交叉     │   │ JSON     │
-│ 攻击面   │   │              │   │              │   │ LLM      │   │ Markdown │
-│          │   │     ▼        │   │              │   │ 最终判断 │   │ 修复建议 │
-│          │   │ codeFlows    │   │              │   │          │   │          │
-│          │   │ 富化         │   │              │   │          │   │          │
+│ 项目信息 │   │ AST 污点分析 │   │ Multi-Agent  │   │ 双重     │   │ SARIF    │
+│ 技术栈   │   │ 语言感知规则 │   │ 语义理解     │   │ 交叉     │   │ JSON     │
+│ 攻击面   │   │ SCA 依赖检测 │   │              │   │ LLM+Det  │   │ Markdown │
+│          │   │ 置信度评分   │   │              │   │ 最终判断 │   │ 修复建议 │
+│          │   │ 去重合并     │   │              │   │          │   │          │
 └──────────┘   └──────────────┘   └──────────────┘   └──────────┘   └──────────┘
 ```
 
-### 支持的漏洞类型
+### 检测能力
+
+#### 代码漏洞检测
 
 | 漏洞类型 | 严重程度 | CWE | 检测方式 |
 |----------|----------|-----|----------|
-| SQL 注入 | Critical | CWE-89 | 污点分析 + LLM |
-| 命令注入 | Critical | CWE-78 | 污点分析 + LLM |
-| 代码注入 | Critical | CWE-94 | 污点分析 + LLM |
-| 路径遍历 | High | CWE-22 | 污点分析 + LLM |
+| SQL 注入 | Critical | CWE-89 | AST 污点分析 + LLM |
+| 命令注入 | Critical | CWE-78 | 多语言规则 + 污点分析 |
+| 代码注入 | Critical | CWE-94 | 多语言规则 + 污点分析 |
+| 路径遍历 | High | CWE-22 | 多语言规则 + 污点分析 |
 | XSS | High | CWE-79 | 污点分析 + LLM |
 | SSRF | High | CWE-918 | 污点分析 + LLM |
-| 不安全反序列化 | High | CWE-502 | 模式匹配 + LLM |
-| LDAP 注入 | Medium | CWE-90 | 模式匹配 |
-| 日志注入 | Medium | CWE-93 | 模式匹配 |
-| 开放重定向 | Medium | CWE-601 | 模式匹配 |
+| 不安全反序列化 | Critical | CWE-502 | 多语言规则 (Java/Python/PHP) |
+| CSRF | Medium | CWE-352 | Spring 注解检测 |
+| XXE | Critical | CWE-611 | Java XML 解析器检测 |
+| 开放重定向 | Medium | CWE-601 | 多语言规则 |
+| 弱加密 | High | CWE-327 | Java 加密 API 检测 |
+| 不安全 Cookie | Medium | CWE-614 | HTTP Set-Cookie 检测 |
+| 硬编码密码 | High | CWE-259 | 通用模式匹配 |
+| 敏感信息泄露 | High | CWE-200 | 通用模式匹配 |
+| 日志注入 | Medium | CWE-117 | 多语言规则 |
+| 调试信息泄露 | Info | CWE-215 | 多语言规则 |
+
+#### 依赖漏洞检测 (SCA)
+
+通过 OSV API (osv.dev) 查询已知漏洞依赖，支持：
+
+| 生态 | 文件 | 说明 |
+|------|------|------|
+| npm | `package.json` | Node.js 依赖 |
+| PyPI | `requirements.txt` | Python 依赖 |
+| crates.io | `Cargo.lock` | Rust 依赖 |
+| Go | `go.sum` | Go 模块依赖 |
+
+#### 框架感知规则
+
+| 框架 | Sources | Sinks | Sanitizers |
+|------|---------|-------|------------|
+| React/Next.js | formData, cookies, headers, searchParams | dangerouslySetInnerHTML, eval | DOMPurify, sanitizeHtml |
+| Django | request.GET/POST/META, get_object_or_404 | raw(), extra(), mark_safe | bleach.clean, strip_tags |
+| Spring | @RequestParam, @PathVariable, @RequestBody | JdbcTemplate, Runtime.exec | PreparedStatement |
+| Express/Node | req.body/query/params/headers | eval, child_process.exec | validator.escape |
+
+### 真实项目验证
+
+对 Halo (Java/Spring Boot 博客平台, 1233 Java 文件) 的扫描结果：
+
+| 指标 | 值 |
+|------|-----|
+| 扫描耗时 | ~4 秒 |
+| 总发现 | 94 个 |
+| SCA 依赖漏洞 | 22 个 (axios, dompurify, lodash 等) |
+| 代码漏洞 | 72 个 (反序列化、CSRF、硬编码密码等) |
+| 误报率 | ~20% |
+| 输出格式 | JSON / SARIF 2.1.0 / Markdown / Text |
+
+### 规则系统
+
+规则以 YAML 文件定义，支持单语言和多语言模式：
+
+```yaml
+# 单语言规则
+id: ldap-injection
+language: java
+pattern: (?i)(DirContext|InitialDirContext).*filter
+severity: high
+
+# 多语言规则
+id: code-injection
+language: all
+patterns:
+  - language: java
+    pattern: (?i)(ScriptEngineManager|GroovyShell|Runtime\.getRuntime)
+  - language: javascript
+    pattern: (?i)(eval\s*\(|new\s+Function\s*\(|vm\.runIn)
+  - language: python
+    pattern: (?i)(eval\s*\(|exec\s*\(|__import__)
+severity: critical
+```
+
+**规则元数据**：
+
+```yaml
+id: sql-injection
+owasp: "A03:2021-Injection"
+remediation: "使用参数化查询，避免字符串拼接 SQL"
+references:
+  - "https://owasp.org/www-community/attacks/SQL_Injection"
+  - "https://cwe.mitre.org/data/definitions/89.html"
+```
 
 ### 项目结构
 
@@ -301,8 +407,8 @@ CTX-Audit/
 │   └── src/
 │       ├── commands/            # 命令实现
 │       │   ├── audit.rs         # 深度 AI 审计
-│       │   ├── scan.rs          # 快速规则扫描
-│       │   ├── watch.rs         # 守护模式
+│       │   ├── scan.rs          # 快速规则扫描 + --deep 模式
+│       │   ├── watch.rs         # 守护模式（增量扫描）
 │       │   ├── chat.rs          # REPL 对话
 │       │   └── ...
 │       ├── tui/                 # 终端 UI (ratatui)
@@ -312,21 +418,35 @@ CTX-Audit/
 ├── core/                        # 核心分析库
 │   └── src/
 │       ├── sarif/               # SARIF 2.1.0 引擎
-│       │   ├── types.rs         # 完整 SARIF 类型定义
-│       │   ├── converter.rs     # FindingData/TaintFlow → SARIF
-│       │   └── rules.rs         # 内置 CWE 规则注册表
 │       ├── watcher/             # 文件监听与增量扫描
-│       │   ├── mod.rs           # FileWatcher
+│       │   ├── mod.rs           # FileWatcher + 增量 AST 污点分析
 │       │   └── delta.rs         # Content Hash 变更检测
-│       ├── analysis/            # 污点分析、数据流
-│       ├── ast/                 # AST 引擎 (tree-sitter)
-│       ├── scanner/             # 模式扫描器
+│       ├── analysis/            # 污点分析
+│       │   ├── ast_taint.rs     # AST 污点分析器 (核心引擎)
+│       │   ├── taint.rs         # Source/Sink/Flow 数据结构
+│       │   ├── enhanced_taint.rs # 增强污点分析
+│       │   ├── cross_file.rs    # 跨文件污点分析
+│       │   └── data_flow.rs     # 数据流分析
+│       ├── ast/                 # AST 引擎 (tree-sitter 12+ 语言)
+│       ├── scanner/             # 扫描器
+│       │   ├── mod.rs           # scan_directory + scan_directory_deep + 去重
+│       │   ├── regex_scanner.rs # 硬编码正则扫描
+│       │   ├── sca_scanner.rs   # SCA 依赖扫描 (OSV API)
+│       │   └── manager.rs       # 扫描器管理
+│       ├── rules/               # 规则系统
+│       │   ├── model.rs         # Rule + LanguagePattern 数据模型
+│       │   ├── scanner.rs       # 语言感知规则扫描器
+│       │   ├── loader.rs        # YAML 规则加载
+│       │   ├── taint_model.rs   # 污点规则 YAML 模型
+│       │   └── taint_loader.rs  # 污点规则加载
 │       └── indexing/            # 代码索引 & RAG
 │
 ├── agent-engine/                # 多 Agent 编排
 │   └── src/
 │       ├── multi_agent/         # Coordinator-Specialist 系统
-│       ├── audit_prompts.rs     # LLM 提示词模板
+│       ├── verification/        # 双重交叉验证 (LLM + 确定性)
+│       ├── semantic/            # 框架感知语义分析
+│       ├── audit_chain.rs       # 假设驱动审计链
 │       ├── phase_executor.rs    # 五阶段审计执行器
 │       └── react/               # ReAct 推理循环
 │
@@ -341,6 +461,16 @@ CTX-Audit/
 │       ├── taint_tools.rs       # 污点分析工具
 │       ├── ast_tools.rs         # AST 查询工具
 │       └── pattern_tools.rs     # 模式检测工具
+│
+├── rules/                       # YAML 规则文件
+│   ├── *.yaml                   # 17 条检测规则 (多语言模式)
+│   └── taint/                   # 污点分析规则
+│       ├── generic-taint.yaml   # 通用污点规则
+│       └── frameworks/          # 框架特定规则
+│           ├── react-nextjs.yaml
+│           ├── django.yaml
+│           ├── spring.yaml
+│           └── express-node.yaml
 │
 └── .github/workflows/           # CI/CD 模板
     └── ctx-audit.yml            # GitHub Actions SARIF 上传
@@ -393,7 +523,7 @@ ctx-audit [全局选项] <命令>
 ```bash
 cargo build                    # 开发构建
 cargo build --release          # Release 构建
-cargo test                     # 运行测试
+cargo test --workspace --lib   # 运行测试 (227 tests)
 cargo clippy                   # 代码检查
 cargo fmt                      # 格式化
 
@@ -428,6 +558,7 @@ cargo build --release
 
 ctx-audit config set llm.api_key your-api-key    # Required for deep audit
 ctx-audit scan ./myproject                         # Quick scan (no LLM)
+ctx-audit scan ./myproject --deep                  # Deep scan (AST taint analysis)
 ctx-audit audit ./myproject --verbose              # Deep AI audit
 ctx-audit watch ./myproject                        # Continuous monitoring
 ```
@@ -436,24 +567,34 @@ ctx-audit watch ./myproject                        # Continuous monitoring
 
 | Command | Description |
 |---------|-------------|
-| `scan <path>` | Quick pattern-based scan (no LLM needed) |
-| `audit <path>` | Deep AI audit (5 phases, Rust + LLM) |
-| `watch <path>` | Continuous monitoring with SARIF output |
+| `scan <path>` | Multi-engine scan: language-aware rules + SCA + optional AST taint (`--deep`) |
+| `audit <path>` | Deep AI audit (5 phases, Rust + LLM dual verification) |
+| `watch <path>` | Continuous monitoring with incremental SARIF output |
 | `chat [path]` | Interactive REPL with AI analyst |
 | `analyze <file>` | Single file deep analysis |
 | `findings <action>` | Vulnerability management (list/view/update/export) |
 | `ui [path]` | Terminal UI (ratatui) |
 | `config <action>` | Configuration management |
 
+### Detection Capabilities
+
+| Category | CWE | Method |
+|----------|-----|--------|
+| Code/Command/SQL Injection | CWE-94/78/89 | Multi-lang rules + AST taint analysis |
+| Path Traversal | CWE-22 | Multi-lang rules + taint source matching |
+| Deserialization | CWE-502 | Multi-lang rules (Java/Python/PHP) |
+| CSRF, XXE | CWE-352/611 | Framework-aware detection |
+| SCA (Dependency Vulns) | - | OSV API (npm/PyPI/crates.io/Go) |
+| Hardcoded Secrets | CWE-259/200 | Pattern matching |
+| XSS, SSRF | CWE-79/918 | AST taint analysis + LLM |
+
 ### SARIF Output
 
-CTX-Audit generates **SARIF 2.1.0** compliant output with:
-- **`codeFlows`**: Taint propagation path (source → steps → sink)
-- **`fixes`**: Structured fix suggestions (old_code → new_code)
-- **`rules`**: Built-in CWE metadata (CWE-89, 78, 22, 79, 918, 94)
-- **`properties`**: Confidence, discovery source, verification status
+SARIF 2.1.0 compliant with `codeFlows`, `fixes`, `rules`, and confidence scores. Consumable by VS Code, GitHub Code Scanning, and any SARIF tool.
 
-Consumable by VS Code, Cursor, GitHub Code Scanning, Claude Code, and any SARIF-compatible tool.
+### Validation
+
+Scanned **Halo** (Java/Spring Boot, 1233 files): 94 findings in ~4s, ~20% FP rate, 22 real SCA vulnerabilities detected.
 
 ### CI/CD Integration
 
@@ -469,7 +610,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo install ctx-audit
-      - run: ctx-audit scan . --output results.sarif
+      - run: ctx-audit -o sarif scan . --deep -o results.sarif
       - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif

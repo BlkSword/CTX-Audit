@@ -55,6 +55,8 @@ impl Scanner for RegexScanner {
                         description: format!("Found potential {} at line {}", vuln_type, i + 1),
                         analysis_trail: None,
                         llm_output: None,
+                        confidence: None,
+                        corroboration_count: None,
                     });
                 }
             }

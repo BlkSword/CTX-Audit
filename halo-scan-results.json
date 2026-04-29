@@ -1,0 +1,4280 @@
+扫描报告
+生成时间: 2026-04-29T12:27:50.164801300+00:00
+漏洞数量: 1069
+
+[1] HIGH - SCA:GHSA-f23m-r3pf-42rh
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: lodash-es@4.17.21 — GHSA-f23m-r3pf-42rh  []
+
+[2] HIGH - SCA:GHSA-r5fr-rjxr-66jc
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: lodash-es@4.17.21 — GHSA-r5fr-rjxr-66jc  []
+
+[3] HIGH - SCA:GHSA-xxjr-mmjv-4gpg
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: lodash-es@4.17.21 — GHSA-xxjr-mmjv-4gpg  []
+
+[4] HIGH - SCA:GHSA-3p68-rc4w-qgx5
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: axios@1.12.2 — GHSA-3p68-rc4w-qgx5  []
+
+[5] HIGH - SCA:GHSA-43fc-jf86-j433
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: axios@1.12.2 — GHSA-43fc-jf86-j433  []
+
+[6] HIGH - SCA:GHSA-fvcv-3m26-pcqx
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: axios@1.12.2 — GHSA-fvcv-3m26-pcqx  []
+
+[7] HIGH - SCA:GHSA-39q2-94rc-95cp
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-39q2-94rc-95cp  []
+
+[8] HIGH - SCA:GHSA-cj63-jhhr-wcxv
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-cj63-jhhr-wcxv  []
+
+[9] HIGH - SCA:GHSA-cjmm-f4jc-qw8r
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-cjmm-f4jc-qw8r  []
+
+[10] HIGH - SCA:GHSA-crv5-9vww-q3g8
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-crv5-9vww-q3g8  []
+
+[11] HIGH - SCA:GHSA-h7mw-gpvr-xq4m
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-h7mw-gpvr-xq4m  []
+
+[12] HIGH - SCA:GHSA-h8r8-wccr-v5f2
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-h8r8-wccr-v5f2  []
+
+[13] HIGH - SCA:GHSA-v2wj-7wpq-c8vv
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-v2wj-7wpq-c8vv  []
+
+[14] HIGH - SCA:GHSA-v8jm-5vwx-cfxm
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-v8jm-5vwx-cfxm  []
+
+[15] HIGH - SCA:GHSA-v9jr-rg53-9pgp
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-v9jr-rg53-9pgp  []
+
+[16] HIGH - SCA:GHSA-vhxf-7vqr-mrjg
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: dompurify@3.2.2 — GHSA-vhxf-7vqr-mrjg  []
+
+[17] HIGH - SCA:GHSA-qx2v-qp2m-jg93
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\package.json:1
+    描述: Vulnerable dependency: postcss@8.5.6 — GHSA-qx2v-qp2m-jg93  []
+
+[18] HIGH - SCA:GHSA-6rw7-vpxm-498p
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\package.json:1
+    描述: Vulnerable dependency: qs@6.14.0 — GHSA-6rw7-vpxm-498p  []
+
+[19] HIGH - SCA:GHSA-w7fw-mjwx-w883
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\package.json:1
+    描述: Vulnerable dependency: qs@6.14.0 — GHSA-w7fw-mjwx-w883  []
+
+[20] HIGH - SCA:GHSA-8452-54wp-rmv6
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\package.json:1
+    描述: Vulnerable dependency: storybook@10.0.8 — GHSA-8452-54wp-rmv6  []
+
+[21] HIGH - SCA:GHSA-mjf5-7g4m-gx5w
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\package.json:1
+    描述: Vulnerable dependency: storybook@10.0.8 — GHSA-mjf5-7g4m-gx5w  []
+
+[22] HIGH - SCA:GHSA-w5hq-g745-h8pq
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\package.json:1
+    描述: Vulnerable dependency: uuid@13.0.0 — GHSA-w5hq-g745-h8pq  []
+
+[23] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\content\AbstractContentService.java:43
+    描述: Found potential TODO Comment at line 43
+
+[24] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\twofactor\totp\DefaultTotpAuthService.java:46
+    描述: Found potential Hardcoded Password at line 46
+
+[25] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\service\ThemeServiceImpl.java:171
+    描述: Found potential TODO Comment at line 171
+
+[26] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\content\PostIntegrationTests.java:34
+    描述: Found potential Hardcoded Password at line 34
+
+[27] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\EmailVerificationCodeTest.java:38
+    描述: Found potential Hardcoded Password at line 38
+
+[28] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\UserEndpointIntegrationTest.java:32
+    描述: Found potential Hardcoded Password at line 32
+
+[29] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:67
+    描述: Found potential Hardcoded Password at line 67
+
+[30] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:89
+    描述: Found potential Hardcoded Password at line 89
+
+[31] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:90
+    描述: Found potential Hardcoded Password at line 90
+
+[32] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:107
+    描述: Found potential Hardcoded Password at line 107
+
+[33] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:119
+    描述: Found potential Hardcoded Password at line 119
+
+[34] HIGH - Hardcoded Password
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\pat\PatTest.java:22
+    描述: Found potential Hardcoded Password at line 22
+
+[35] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\components\AttachmentGroupBadge.vue:60
+    描述: Found potential TODO Comment at line 60
+
+[36] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\components\AttachmentGroupBadge.vue:125
+    描述: Found potential TODO Comment at line 125
+
+[37] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\components\preview\ThemePreviewModal.vue:239
+    描述: Found potential TODO Comment at line 239
+
+[38] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\roles\RoleList.vue:254
+    描述: Found potential TODO Comment at line 254
+
+[39] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\settings\SystemSettings.vue:67
+    描述: Found potential TODO Comment at line 67
+
+[40] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\eslint.config.ts:18
+    描述: Found potential TODO Comment at line 18
+
+[41] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\gap-cursor\index.ts:69
+    描述: Found potential TODO Comment at line 69
+
+[42] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\gap-cursor\index.ts:194
+    描述: Found potential TODO Comment at line 194
+
+[43] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\image\index.ts:342
+    描述: Found potential TODO Comment at line 342
+
+[44] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\upload\index.ts:91
+    描述: Found potential TODO Comment at line 91
+
+[45] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\components\preview\UrlPreviewModal.vue:65
+    描述: Found potential TODO Comment at line 65
+
+[46] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:8
+    描述: Found potential TODO Comment at line 8
+
+[47] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:425
+    描述: Found potential TODO Comment at line 425
+
+[48] LOW - TODO Comment
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\vite\library-external.ts:90
+    描述: Found potential TODO Comment at line 90
+
+[49] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\api\src\main\java\run\halo\app\infra\utils\JsonParseException.java:27
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[50] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\api\src\main\java\run\halo\app\infra\utils\JsonParseException.java:28
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[51] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\api\src\main\java\run\halo\app\security\LoginHandlerEnhancer.java:20
+    描述: 检测代码注入风险：动态代码执行
+
+[52] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\api\src\main\java\run\halo\app\security\LoginHandlerEnhancer.java:28
+    描述: 检测代码注入风险：动态代码执行
+
+[53] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\api\src\test\java\run\halo\app\extension\controller\ExtensionWatcherTest.java:144
+    描述: 检测代码注入风险：动态代码执行
+
+[54] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\api\src\test\java\run\halo\app\extension\indexer\DefaultIndexEngineTest.java:25
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[55] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\api\src\test\java\run\halo\app\extension\indexer\LabelIndexImplTest.java:18
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[56] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\api-docs\openapi\v3_0\aggregated.json:17159
+    描述: 检测代码注入风险：动态代码执行
+
+[57] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\api-docs\openapi\v3_0\apis_extension.api_v1alpha1.json:10408
+    描述: 检测代码注入风险：动态代码执行
+
+[58] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\attachment\endpoint\AttachmentEndpoint.java:80
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[59] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\attachment\thumbnail\DefaultLocalThumbnailService.java:99
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[60] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\attachment\thumbnail\DefaultLocalThumbnailService.java:162
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[61] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\attachment\thumbnail\ThumbnailResourceTransformer.java:38
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[62] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\endpoint\console\PluginEndpoint.java:524
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[63] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\endpoint\console\PluginEndpoint.java:541
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[64] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\endpoint\console\UserEndpoint.java:344
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[65] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\endpoint\console\UserEndpoint.java:517
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[66] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\endpoint\console\UserEndpoint.java:579
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[67] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\endpoint\uc\AttachmentUcEndpoint.java:206
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[68] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\reconciler\PluginReconciler.java:17
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[69] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\reconciler\PluginReconciler.java:365
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[70] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\reconciler\PluginReconciler.java:365
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[71] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\reconciler\PluginReconciler.java:365
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[72] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\user\service\DefaultRoleService.java:171
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[73] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\core\user\service\DefaultRoleService.java:172
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[74] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\extension\indexer\DefaultIndicesInitializer.java:69
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[75] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\extension\ReactiveExtensionClientImpl.java:278
+    描述: 检测代码注入风险：动态代码执行
+
+[76] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\extension\router\ExtensionCompositeRouterFunction.java:27
+    描述: 检测代码注入风险：动态代码执行
+
+[77] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\infra\DefaultInitializationStateGetter.java:49
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[78] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\infra\ui\ProxyFilter.java:49
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[79] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\infra\ui\ProxyFilter.java:50
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[80] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\infra\ui\ProxyFilter.java:87
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[81] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\infra\utils\VersionUtils.java:22
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[82] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\infra\utils\VersionUtils.java:24
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[83] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\migration\impl\MigrationServiceImpl.java:13
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[84] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\migration\impl\MigrationServiceImpl.java:96
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[85] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\migration\impl\MigrationServiceImpl.java:96
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[86] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\AggregatedRouterFunction.java:23
+    描述: 检测代码注入风险：动态代码执行
+
+[87] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\DefaultPluginApplicationContextFactory.java:202
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[88] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\DefaultSpringPlugin.java:65
+    描述: 检测代码注入风险：动态代码执行
+
+[89] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\extensionpoint\ExtensionDefinition.java:15
+    描述: 检测代码注入风险：动态代码执行
+
+[90] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\PluginAutoConfiguration.java:64
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[91] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\PluginRequestMappingHandlerMapping.java:60
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[92] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\PluginRequestMappingHandlerMapping.java:61
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[93] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\resources\ReverseProxyRouterFunctionFactory.java:68
+    描述: 检测代码注入风险：动态代码执行
+
+[94] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\resources\ReverseProxyRouterFunctionFactory.java:71
+    描述: 检测代码注入风险：动态代码执行
+
+[95] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\resources\ReverseProxyRouterFunctionFactory.java:141
+    描述: 检测代码注入风险：动态代码执行
+
+[96] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\SpringExtensionFactory.java:91
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[97] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\plugin\SpringExtensionFactory.java:92
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[98] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\search\lucene\LuceneSearchEngine.java:12
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[99] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\search\lucene\LuceneSearchEngine.java:461
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[100] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\search\lucene\LuceneSearchEngine.java:463
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[101] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\impl\RsaKeyService.java:66
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[102] MEDIUM - CWE-330
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\rememberme\PersistentTokenBasedRememberMeServices.java:99
+    描述: 检测不安全的随机数生成：使用弱随机数生成器
+
+[103] MEDIUM - CWE-532
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\rememberme\PersistentTokenBasedRememberMeServices.java:133
+    描述: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+
+[104] MEDIUM - CWE-532
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\rememberme\PersistentTokenBasedRememberMeServices.java:146
+    描述: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+
+[105] MEDIUM - CWE-532
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\rememberme\PersistentTokenBasedRememberMeServices.java:153
+    描述: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+
+[106] MEDIUM - CWE-532
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\rememberme\PersistentTokenBasedRememberMeServices.java:214
+    描述: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+
+[107] MEDIUM - CWE-532
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\rememberme\PersistentTokenBasedRememberMeServices.java:218
+    描述: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+
+[108] MEDIUM - CWE-532
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\rememberme\TokenBasedRememberMeServices.java:287
+    描述: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+
+[109] MEDIUM - CWE-532
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\token\NonPatJwtAuthenticationConverter.java:25
+    描述: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+
+[110] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\twofactor\totp\DefaultTotpAuthService.java:46
+    描述: Detects hardcoded passwords in code.
+
+[111] HIGH - CWE-601
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authentication\twofactor\TwoFactorAuthenticationEntryPoint.java:26
+    描述: 检测不安全的重定向：基于用户输入的开放重定向
+
+[112] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authorization\RequestInfoAuthorizationManager.java:30
+    描述: 检测代码注入风险：动态代码执行
+
+[113] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\authorization\RequestInfoFactory.java:93
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[114] MEDIUM - CWE-650
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\CorsConfigurer.java:50
+    描述: 检测不安全的HTTP方法：允许危险的HTTP方法
+
+[115] MEDIUM - CWE-532
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\device\DeviceServiceImpl.java:200
+    描述: 检测敏感信息记录到日志：密码、密钥等敏感信息被记录
+
+[116] HIGH - CWE-601
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\HaloRedirectAuthenticationSuccessHandler.java:16
+    描述: 检测不安全的重定向：基于用户输入的开放重定向
+
+[117] HIGH - CWE-601
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\HaloRedirectAuthenticationSuccessHandler.java:38
+    描述: 检测不安全的重定向：基于用户输入的开放重定向
+
+[118] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\HaloServerRequestCache.java:97
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[119] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\LogoutSecurityConfigurer.java:87
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[120] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\security\preauth\PreAuthLoginEndpoint.java:60
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[121] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\finders\vo\MenuVo.java:48
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[122] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\finders\vo\MenuVo.java:57
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[123] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\finders\vo\MenuVo.java:59
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[124] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\finders\vo\VisualizableTreeNode.java:17
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[125] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\finders\vo\VisualizableTreeNode.java:27
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[126] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\finders\vo\VisualizableTreeNode.java:29
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[127] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\ArchiveRouteFactory.java:59
+    描述: 检测代码注入风险：动态代码执行
+
+[128] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\ArchiveRouteFactory.java:62
+    描述: 检测代码注入风险：动态代码执行
+
+[129] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\ArchiveRouteFactory.java:88
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[130] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\AuthorPostsRouteFactory.java:59
+    描述: 检测代码注入风险：动态代码执行
+
+[131] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\AuthorPostsRouteFactory.java:62
+    描述: 检测代码注入风险：动态代码执行
+
+[132] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\AuthorPostsRouteFactory.java:92
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[133] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\CategoriesRouteFactory.java:34
+    描述: 检测代码注入风险：动态代码执行
+
+[134] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\CategoriesRouteFactory.java:37
+    描述: 检测代码注入风险：动态代码执行
+
+[135] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\CategoryPostRouteFactory.java:68
+    描述: 检测代码注入风险：动态代码执行
+
+[136] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\CategoryPostRouteFactory.java:71
+    描述: 检测代码注入风险：动态代码执行
+
+[137] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\CategoryPostRouteFactory.java:113
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[138] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\IndexRouteFactory.java:54
+    描述: 检测代码注入风险：动态代码执行
+
+[139] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\IndexRouteFactory.java:57
+    描述: 检测代码注入风险：动态代码执行
+
+[140] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\IndexRouteFactory.java:73
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[141] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\PostRouteFactory.java:77
+    描述: 检测代码注入风险：动态代码执行
+
+[142] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\PostRouteFactory.java:80
+    描述: 检测代码注入风险：动态代码执行
+
+[143] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\PostRouteFactory.java:83
+    描述: 检测代码注入风险：动态代码执行
+
+[144] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\PostRouteFactory.java:100
+    描述: 检测代码注入风险：动态代码执行
+
+[145] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\TagPostRouteFactory.java:67
+    描述: 检测代码注入风险：动态代码执行
+
+[146] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\TagPostRouteFactory.java:70
+    描述: 检测代码注入风险：动态代码执行
+
+[147] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\TagPostRouteFactory.java:74
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[148] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\TagsRouteFactory.java:36
+    描述: 检测代码注入风险：动态代码执行
+
+[149] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\factories\TagsRouteFactory.java:39
+    描述: 检测代码注入风险：动态代码执行
+
+[150] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\SinglePageRoute.java:91
+    描述: 检测代码注入风险：动态代码执行
+
+[151] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\SinglePageRoute.java:118
+    描述: 检测代码注入风险：动态代码执行
+
+[152] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\SinglePageRoute.java:149
+    描述: 检测代码注入风险：动态代码执行
+
+[153] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\SinglePageRoute.java:99
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[154] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\java\run\halo\app\theme\router\ThemeCompositeRouterFunction.java:119
+    描述: 检测代码注入风险：动态代码执行
+
+[155] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[156] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[157] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[158] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[159] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[160] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[161] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[162] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[163] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[164] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[165] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[166] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[167] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[168] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[169] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[170] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[171] HIGH - CWE-22
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\halo-tracker.js:1
+    描述: 检测路径遍历风险：用户输入直接用于文件路径操作
+
+[172] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\js\main.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[173] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\js\main.js:81
+    描述: 检测代码注入风险：动态代码执行
+
+[174] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\js\main.js:84
+    描述: 检测代码注入风险：动态代码执行
+
+[175] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\static\styles\main.css:217
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[176] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\gateway_fragments\common.html:19
+    描述: 检测代码注入风险：动态代码执行
+
+[177] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\gateway_fragments\common.html:21
+    描述: 检测代码注入风险：动态代码执行
+
+[178] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\gateway_fragments\common.html:153
+    描述: 检测代码注入风险：动态代码执行
+
+[179] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\gateway_fragments\common.html:157
+    描述: 检测代码注入风险：动态代码执行
+
+[180] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\gateway_fragments\password_reset_email_reset.html:33
+    描述: 检测代码注入风险：动态代码执行
+
+[181] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\gateway_fragments\signup.html:124
+    描述: 检测代码注入风险：动态代码执行
+
+[182] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\gateway_fragments\signup.html:128
+    描述: 检测代码注入风险：动态代码执行
+
+[183] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\gateway_fragments\signup.html:142
+    描述: 检测代码注入风险：动态代码执行
+
+[184] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\setup.html:145
+    描述: 检测代码注入风险：动态代码执行
+
+[185] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\main\resources\templates\setup.html:149
+    描述: 检测代码注入风险：动态代码执行
+
+[186] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\content\PostIntegrationTests.java:34
+    描述: Detects hardcoded passwords in code.
+
+[187] HIGH - CWE-200
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\content\PostIntegrationTests.java:34
+    描述: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
+
+[188] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\attachment\endpoint\PolicyEndpointTest.java:51
+    描述: 检测代码注入风险：动态代码执行
+
+[189] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\attachment\thumbnail\DefaultThumbnailServiceTest.java:86
+    描述: 检测代码注入风险：动态代码执行
+
+[190] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\attachment\thumbnail\DefaultThumbnailServiceTest.java:108
+    描述: 检测代码注入风险：动态代码执行
+
+[191] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\EmailVerificationCodeTest.java:63
+    描述: 检测代码注入风险：动态代码执行
+
+[192] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\EmailVerificationCodeTest.java:38
+    描述: Detects hardcoded passwords in code.
+
+[193] HIGH - CWE-200
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\EmailVerificationCodeTest.java:38
+    描述: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
+
+[194] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:88
+    描述: 检测代码注入风险：动态代码执行
+
+[195] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:109
+    描述: 检测代码注入风险：动态代码执行
+
+[196] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:134
+    描述: 检测代码注入风险：动态代码执行
+
+[197] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:153
+    描述: 检测代码注入风险：动态代码执行
+
+[198] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:168
+    描述: 检测代码注入风险：动态代码执行
+
+[199] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:187
+    描述: 检测代码注入风险：动态代码执行
+
+[200] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:231
+    描述: 检测代码注入风险：动态代码执行
+
+[201] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:269
+    描述: 检测代码注入风险：动态代码执行
+
+[202] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PluginEndpointTest.java:347
+    描述: 检测代码注入风险：动态代码执行
+
+[203] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\PostEndpointTest.java:56
+    描述: 检测代码注入风险：动态代码执行
+
+[204] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\SinglePageEndpointTest.java:42
+    描述: 检测代码注入风险：动态代码执行
+
+[205] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\TagEndpointTest.java:43
+    描述: 检测代码注入风险：动态代码执行
+
+[206] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\TagEndpointTest.java:56
+    描述: 检测代码注入风险：动态代码执行
+
+[207] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\TagEndpointTest.java:76
+    描述: 检测代码注入风险：动态代码执行
+
+[208] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\UserEndpointIntegrationTest.java:32
+    描述: Detects hardcoded passwords in code.
+
+[209] HIGH - CWE-200
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\UserEndpointIntegrationTest.java:32
+    描述: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
+
+[210] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\console\UserEndpointTest.java:77
+    描述: 检测代码注入风险：动态代码执行
+
+[211] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\theme\CategoryQueryEndpointTest.java:50
+    描述: 检测代码注入风险：动态代码执行
+
+[212] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\theme\CommentFinderEndpointTest.java:75
+    描述: 检测代码注入风险：动态代码执行
+
+[213] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\theme\MenuQueryEndpointTest.java:50
+    描述: 检测代码注入风险：动态代码执行
+
+[214] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\theme\PluginQueryEndpointTest.java:36
+    描述: 检测代码注入风险：动态代码执行
+
+[215] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\theme\PostQueryEndpointTest.java:51
+    描述: 检测代码注入风险：动态代码执行
+
+[216] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\theme\SinglePageQueryEndpointTest.java:42
+    描述: 检测代码注入风险：动态代码执行
+
+[217] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\theme\ThumbnailEndpointTest.java:36
+    描述: 检测代码注入风险：动态代码执行
+
+[218] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\uc\AnnotationSettingEndpointTest.java:47
+    描述: 检测代码注入风险：动态代码执行
+
+[219] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\endpoint\uc\UcUserPreferenceEndpointTest.java:52
+    描述: 检测代码注入风险：动态代码执行
+
+[220] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\extension\attachment\endpoint\AttachmentEndpointTest.java:44
+    描述: 检测代码注入风险：动态代码执行
+
+[221] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\core\user\service\impl\DefaultAttachmentServiceTest.java:64
+    描述: 检测代码注入风险：动态代码执行
+
+[222] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\extension\router\ExtensionRouterFunctionFactoryTest.java:72
+    描述: 检测代码注入风险：动态代码执行
+
+[223] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:36
+    描述: 检测代码注入风险：动态代码执行
+
+[224] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:52
+    描述: 检测代码注入风险：动态代码执行
+
+[225] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:72
+    描述: 检测代码注入风险：动态代码执行
+
+[226] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:89
+    描述: 检测代码注入风险：动态代码执行
+
+[227] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:109
+    描述: 检测代码注入风险：动态代码执行
+
+[228] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:128
+    描述: 检测代码注入风险：动态代码执行
+
+[229] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:144
+    描述: 检测代码注入风险：动态代码执行
+
+[230] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:165
+    描述: 检测代码注入风险：动态代码执行
+
+[231] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\DefaultReactiveUrlDataBufferFetcherTest.java:184
+    描述: 检测代码注入风险：动态代码执行
+
+[232] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\SystemStateTest.java:21
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[233] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\infra\SystemStateTest.java:25
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[234] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\notification\endpoint\UserNotificationPreferencesEndpointTest.java:47
+    描述: 检测代码注入风险：动态代码执行
+
+[235] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\PathPrefixPredicateTest.java:42
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[236] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\PathPrefixPredicateTest.java:43
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[237] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\PathPrefixPredicateTest.java:44
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[238] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\plugin\DefaultPluginRouterFunctionRegistryTest.java:28
+    描述: 检测代码注入风险：动态代码执行
+
+[239] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\plugin\HaloPluginManagerTest.java:45
+    描述: 检测代码注入风险：动态代码执行
+
+[240] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\plugin\HaloPluginManagerTest.java:57
+    描述: 检测代码注入风险：动态代码执行
+
+[241] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\plugin\resources\ReverseProxyRouterFunctionFactoryTest.java:63
+    描述: 检测代码注入风险：动态代码执行
+
+[242] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\plugin\resources\ReverseProxyRouterFunctionFactoryTest.java:87
+    描述: 检测代码注入风险：动态代码执行
+
+[243] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\plugin\resources\ReverseProxyRouterFunctionFactoryTest.java:107
+    描述: 检测代码注入风险：动态代码执行
+
+[244] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\plugin\SpringComponentsFinderTest.java:42
+    描述: 检测代码注入风险：动态代码执行
+
+[245] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\plugin\SpringComponentsFinderTest.java:49
+    描述: 检测代码注入风险：动态代码执行
+
+[246] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\search\IndexEndpointTest.java:38
+    描述: 检测代码注入风险：动态代码执行
+
+[247] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\search\IndicesEndpointTest.java:33
+    描述: 检测代码注入风险：动态代码执行
+
+[248] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:67
+    描述: Detects hardcoded passwords in code.
+
+[249] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:89
+    描述: Detects hardcoded passwords in code.
+
+[250] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:90
+    描述: Detects hardcoded passwords in code.
+
+[251] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:107
+    描述: Detects hardcoded passwords in code.
+
+[252] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:119
+    描述: Detects hardcoded passwords in code.
+
+[253] HIGH - CWE-200
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:90
+    描述: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
+
+[254] HIGH - CWE-200
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\LoginAuthenticationConverterTest.java:107
+    描述: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
+
+[255] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\login\PublicKeyRouteBuilderTest.java:28
+    描述: 检测代码注入风险：动态代码执行
+
+[256] HIGH - CWE-259
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\pat\PatTest.java:22
+    描述: Detects hardcoded passwords in code.
+
+[257] HIGH - CWE-200
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\security\authentication\pat\PatTest.java:22
+    描述: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
+
+[258] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\dialect\ContentTemplateHeadProcessorIntegrationTest.java:149
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[259] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\dialect\GeneratorMetaProcessorTest.java:54
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[260] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\endpoint\ThemeEndpointTest.java:91
+    描述: 检测代码注入风险：动态代码执行
+
+[261] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\finders\impl\CategoryFinderImplTest.java:380
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[262] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\finders\impl\MenuFinderImplTest.java:69
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[263] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\router\factories\RouteFactoryTestSuite.java:60
+    描述: 检测代码注入风险：动态代码执行
+
+[264] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\router\PreviewRouterFunctionTest.java:71
+    描述: 检测代码注入风险：动态代码执行
+
+[265] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\router\SinglePageRouteTest.java:87
+    描述: 检测代码注入风险：动态代码执行
+
+[266] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\router\SinglePageRouteTest.java:119
+    描述: 检测代码注入风险：动态代码执行
+
+[267] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\theme\router\SinglePageRouteTest.java:123
+    描述: 检测代码注入风险：动态代码执行
+
+[268] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\XForwardHeaderTest.java:29
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[269] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\XForwardHeaderTest.java:38
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[270] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\XForwardHeaderTest.java:47
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[271] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\application\src\test\java\run\halo\app\XForwardHeaderTest.java:48
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[272] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\main.ts:54
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[273] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\main.ts:59
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[274] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\AttachmentList.vue:148
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[275] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\components\AttachmentGroupEditingModal.vue:79
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[276] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\components\AttachmentListItem.vue:73
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[277] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\components\AttachmentPolicyEditingModal.vue:234
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[278] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\components\AttachmentSelectorModal.vue:63
+    描述: 检测代码注入风险：动态代码执行
+
+[279] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\components\AttachmentSelectorModal.vue:69
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[280] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\components\DisplayNameEditForm.vue:47
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[281] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\attachments\composables\use-attachment.ts:178
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[282] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\CommentList.vue:136
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[283] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\CommentList.vue:191
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[284] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\components\CommentEditor.vue:40
+    描述: 检测代码注入风险：动态代码执行
+
+[285] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\components\CommentListItem.vue:87
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[286] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\components\CommentListItem.vue:132
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[287] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\components\ReplyCreationModal.vue:53
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[288] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\components\ReplyListItem.vue:77
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[289] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\composables\use-content-provider-extension-point.ts:26
+    描述: 检测代码注入风险：动态代码执行
+
+[290] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\comments\composables\use-subject-ref.ts:68
+    描述: 检测代码注入风险：动态代码执行
+
+[291] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\pages\components\SinglePageSettingModal.vue:146
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[292] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\pages\components\SinglePageSettingModal.vue:195
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[293] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\pages\components\SinglePageSettingModal.vue:224
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[294] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\pages\composables\use-page-update-mutate.ts:36
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[295] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\pages\SinglePageEditor.vue:189
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[296] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\pages\SinglePageEditor.vue:247
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[297] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\categories\CategoryList.vue:54
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[298] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\categories\components\CategoryEditingModal.vue:147
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[299] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\categories\components\CategoryListItem.vue:52
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[300] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\categories\components\__tests__\CategoryEditingModal.spec.ts:9
+    描述: 检测代码注入风险：动态代码执行
+
+[301] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\categories\components\__tests__\CategoryEditingModal.spec.ts:14
+    描述: 检测代码注入风险：动态代码执行
+
+[302] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\components\PostSettingModal.vue:149
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[303] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\components\PostSettingModal.vue:179
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[304] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\components\PostSettingModal.vue:197
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[305] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\composables\use-post-update-mutate.ts:36
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[306] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\PostEditor.vue:222
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[307] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\PostEditor.vue:285
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[308] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\tags\components\TagEditingModal.vue:107
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[309] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\tags\composables\use-post-tag.ts:87
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[310] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\contents\posts\tags\composables\use-post-tag.ts:116
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[311] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\dashboard\components\WidgetConfigFormModal.vue:31
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[312] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\dashboard\composables\use-dashboard-extension-point.ts:23
+    描述: 检测代码注入风险：动态代码执行
+
+[313] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\dashboard\composables\use-dashboard-extension-point.ts:32
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[314] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\dashboard\DashboardDesigner.vue:262
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[315] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\dashboard\widgets\presets\comments\CommentItem.vue:57
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[316] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\dashboard\widgets\presets\core\quick-action\composables\use-dashboard-extension-point.ts:24
+    描述: 检测代码注入风险：动态代码执行
+
+[317] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\dashboard\widgets\presets\core\quick-action\composables\use-dashboard-extension-point.ts:33
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[318] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\menus\components\MenuEditingModal.vue:71
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[319] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\menus\components\MenuItemEditingModal.vue:130
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[320] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\menus\components\MenuList.vue:186
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[321] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\menus\components\MenuList.vue:220
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[322] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\menus\Menus.vue:163
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[323] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\menus\utils\__tests__\index.spec.ts:122
+    描述: 检测代码注入风险：动态代码执行
+
+[324] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\menus\utils\__tests__\index.spec.ts:186
+    描述: 检测代码注入风险：动态代码执行
+
+[325] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\components\list-tabs\RemoteDownload.vue:46
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[326] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\components\operation\UninstallOperationItem.vue:64
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[327] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\components\ThemeListItem.vue:73
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[328] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\components\ThemeListModal.vue:115
+    描述: 检测代码注入风险：动态代码执行
+
+[329] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\components\ThemeListModal.vue:123
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[330] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\composables\use-theme.ts:67
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[331] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\composables\use-theme.ts:94
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[332] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\composables\use-theme.ts:157
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[333] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\composables\use-theme.ts:166
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[334] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\composables\use-theme.ts:221
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[335] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\composables\use-theme.ts:210
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[336] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\ThemeDetail.vue:38
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[337] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\interface\themes\ThemeDetail.vue:71
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[338] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\auth-providers\AuthProviderDetail.vue:160
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[339] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\auth-providers\AuthProviderDetail.vue:134
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[340] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\auth-providers\components\AuthProviderListItem.vue:50
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[341] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\backup\Backups.vue:55
+    描述: 检测代码注入风险：动态代码执行
+
+[342] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\backup\Backups.vue:61
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[343] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\overview\Overview.vue:191
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[344] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\components\installation-tabs\LocalUpload.vue:73
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[345] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\components\installation-tabs\RemoteDownload.vue:64
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[346] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\components\installation-tabs\RemoteDownload.vue:90
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[347] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\components\PluginInstallationModal.vue:96
+    描述: 检测代码注入风险：动态代码执行
+
+[348] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\components\PluginInstallationModal.vue:104
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[349] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\components\tabs\Detail.vue:352
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[350] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\composables\use-plugin.ts:413
+    描述: 检测代码注入风险：动态代码执行
+
+[351] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\composables\use-plugin.ts:286
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[352] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\composables\use-plugin.ts:312
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[353] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\plugins\PluginList.vue:62
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[354] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\roles\components\RoleEditingModal.vue:220
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[355] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\roles\RoleDetail.vue:256
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[356] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\roles\RoleList.vue:184
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[357] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\settings\tabs\Setting.vue:65
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[358] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\tools\Tools.vue:35
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[359] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\components\GrantPermissionModal.vue:37
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[360] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\components\GrantPermissionModal.vue:78
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[361] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\components\RolesView.vue:88
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[362] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\components\UserCreationModal.vue:59
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[363] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\components\UserEditingModal.vue:67
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[364] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\components\UserListItem.vue:53
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[365] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\components\UserPasswordChangeModal.vue:56
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[366] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\composables\use-user.ts:49
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[367] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\UserDetail.vue:84
+    描述: 检测代码注入风险：动态代码执行
+
+[368] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\UserDetail.vue:90
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[369] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\modules\system\users\UserDetail.vue:123
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[370] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\router\guards\permission.ts:57
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[371] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\console-src\stores\theme.ts:24
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[372] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1-alpha-uc-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[373] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1-alpha-uc-api.ts:81
+    描述: 检测代码注入风险：动态代码执行
+
+[374] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1-alpha-uc-api.ts:94
+    描述: 检测代码注入风险：动态代码执行
+
+[375] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1-alpha-uc-api.ts:102
+    描述: 检测代码注入风险：动态代码执行
+
+[376] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[377] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[378] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[379] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[380] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[381] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[382] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[383] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[384] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\annotation-setting-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[385] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[386] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[387] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[388] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[389] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[390] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[391] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[392] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[393] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[394] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-console-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[395] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-console-api.ts:277
+    描述: 检测代码注入风险：动态代码执行
+
+[396] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-console-api.ts:290
+    描述: 检测代码注入风险：动态代码执行
+
+[397] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-console-api.ts:309
+    描述: 检测代码注入风险：动态代码执行
+
+[398] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-console-api.ts:323
+    描述: 检测代码注入风险：动态代码执行
+
+[399] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-console-api.ts:337
+    描述: 检测代码注入风险：动态代码执行
+
+[400] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-console-api.ts:345
+    描述: 检测代码注入风险：动态代码执行
+
+[401] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-uc-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[402] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-uc-api.ts:287
+    描述: 检测代码注入风险：动态代码执行
+
+[403] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-uc-api.ts:304
+    描述: 检测代码注入风险：动态代码执行
+
+[404] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-uc-api.ts:318
+    描述: 检测代码注入风险：动态代码执行
+
+[405] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-uc-api.ts:337
+    描述: 检测代码注入风险：动态代码执行
+
+[406] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-uc-api.ts:351
+    描述: 检测代码注入风险：动态代码执行
+
+[407] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\attachment-v1alpha1-uc-api.ts:359
+    描述: 检测代码注入风险：动态代码执行
+
+[408] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[409] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[410] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[411] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[412] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[413] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[414] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[415] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[416] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[417] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-console-api.ts:31
+    描述: 检测代码注入风险：动态代码执行
+
+[418] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-console-api.ts:158
+    描述: 检测代码注入风险：动态代码执行
+
+[419] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-console-api.ts:171
+    描述: 检测代码注入风险：动态代码执行
+
+[420] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-console-api.ts:183
+    描述: 检测代码注入风险：动态代码执行
+
+[421] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-console-api.ts:194
+    描述: 检测代码注入风险：动态代码执行
+
+[422] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\auth-provider-v1alpha1-console-api.ts:202
+    描述: 检测代码注入风险：动态代码执行
+
+[423] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[424] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[425] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[426] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[427] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[428] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[429] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[430] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[431] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\backup-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[432] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[433] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[434] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[435] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[436] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[437] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[438] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[439] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[440] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[441] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-public-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[442] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-public-api.ts:210
+    描述: 检测代码注入风险：动态代码执行
+
+[443] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-public-api.ts:227
+    描述: 检测代码注入风险：动态代码执行
+
+[444] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-public-api.ts:239
+    描述: 检测代码注入风险：动态代码执行
+
+[445] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-public-api.ts:256
+    描述: 检测代码注入风险：动态代码执行
+
+[446] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\category-v1alpha1-public-api.ts:264
+    描述: 检测代码注入风险：动态代码执行
+
+[447] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[448] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[449] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[450] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[451] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[452] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[453] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[454] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[455] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[456] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-console-api.ts:37
+    描述: 检测代码注入风险：动态代码执行
+
+[457] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-console-api.ts:212
+    描述: 检测代码注入风险：动态代码执行
+
+[458] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-console-api.ts:225
+    描述: 检测代码注入风险：动态代码执行
+
+[459] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-console-api.ts:238
+    描述: 检测代码注入风险：动态代码执行
+
+[460] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-console-api.ts:257
+    描述: 检测代码注入风险：动态代码执行
+
+[461] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-console-api.ts:265
+    描述: 检测代码注入风险：动态代码执行
+
+[462] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-public-api.ts:41
+    描述: 检测代码注入风险：动态代码执行
+
+[463] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-public-api.ts:319
+    描述: 检测代码注入风险：动态代码执行
+
+[464] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-public-api.ts:332
+    描述: 检测代码注入风险：动态代码执行
+
+[465] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-public-api.ts:345
+    描述: 检测代码注入风险：动态代码执行
+
+[466] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-public-api.ts:357
+    描述: 检测代码注入风险：动态代码执行
+
+[467] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-public-api.ts:371
+    描述: 检测代码注入风险：动态代码执行
+
+[468] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-public-api.ts:391
+    描述: 检测代码注入风险：动态代码执行
+
+[469] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\comment-v1alpha1-public-api.ts:399
+    描述: 检测代码注入风险：动态代码执行
+
+[470] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[471] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[472] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[473] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[474] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[475] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[476] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[477] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[478] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\config-map-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[479] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[480] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[481] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[482] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[483] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[484] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[485] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[486] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[487] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\counter-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[488] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[489] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[490] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[491] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[492] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[493] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[494] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[495] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[496] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[497] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-uc-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[498] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-uc-api.ts:115
+    描述: 检测代码注入风险：动态代码执行
+
+[499] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-uc-api.ts:127
+    描述: 检测代码注入风险：动态代码执行
+
+[500] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-uc-api.ts:139
+    描述: 检测代码注入风险：动态代码执行
+
+[501] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\device-v1alpha1-uc-api.ts:147
+    描述: 检测代码注入风险：动态代码执行
+
+[502] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[503] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[504] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[505] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[506] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[507] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[508] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[509] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[510] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-definition-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[511] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[512] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[513] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[514] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[515] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[516] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[517] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[518] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[519] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\extension-point-definition-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[520] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[521] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[522] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[523] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[524] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[525] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[526] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[527] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[528] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\group-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[529] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\index-v1alpha1-public-api.ts:31
+    描述: 检测代码注入风险：动态代码执行
+
+[530] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\index-v1alpha1-public-api.ts:80
+    描述: 检测代码注入风险：动态代码执行
+
+[531] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\index-v1alpha1-public-api.ts:93
+    描述: 检测代码注入风险：动态代码执行
+
+[532] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\index-v1alpha1-public-api.ts:101
+    描述: 检测代码注入风险：动态代码执行
+
+[533] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\indices-v1alpha1-console-api.ts:27
+    描述: 检测代码注入风险：动态代码执行
+
+[534] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\indices-v1alpha1-console-api.ts:72
+    描述: 检测代码注入风险：动态代码执行
+
+[535] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\indices-v1alpha1-console-api.ts:84
+    描述: 检测代码注入风险：动态代码执行
+
+[536] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\indices-v1alpha1-console-api.ts:92
+    描述: 检测代码注入风险：动态代码执行
+
+[537] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[538] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[539] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[540] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[541] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[542] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[543] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[544] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[545] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-item-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[546] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[547] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[548] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[549] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[550] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[551] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[552] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[553] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[554] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[555] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-public-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[556] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-public-api.ts:115
+    描述: 检测代码注入风险：动态代码执行
+
+[557] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-public-api.ts:128
+    描述: 检测代码注入风险：动态代码执行
+
+[558] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-public-api.ts:139
+    描述: 检测代码注入风险：动态代码执行
+
+[559] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\menu-v1alpha1-public-api.ts:147
+    描述: 检测代码注入风险：动态代码执行
+
+[560] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\metrics-v1alpha1-public-api.ts:31
+    描述: 检测代码注入风险：动态代码执行
+
+[561] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\metrics-v1alpha1-public-api.ts:168
+    描述: 检测代码注入风险：动态代码执行
+
+[562] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\metrics-v1alpha1-public-api.ts:181
+    描述: 检测代码注入风险：动态代码执行
+
+[563] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\metrics-v1alpha1-public-api.ts:193
+    描述: 检测代码注入风险：动态代码执行
+
+[564] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\metrics-v1alpha1-public-api.ts:205
+    描述: 检测代码注入风险：动态代码执行
+
+[565] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\metrics-v1alpha1-public-api.ts:213
+    描述: 检测代码注入风险：动态代码执行
+
+[566] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\migration-v1alpha1-console-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[567] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\migration-v1alpha1-console-api.ts:180
+    描述: 检测代码注入风险：动态代码执行
+
+[568] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\migration-v1alpha1-console-api.ts:194
+    描述: 检测代码注入风险：动态代码执行
+
+[569] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\migration-v1alpha1-console-api.ts:205
+    描述: 检测代码注入风险：动态代码执行
+
+[570] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\migration-v1alpha1-console-api.ts:220
+    描述: 检测代码注入风险：动态代码执行
+
+[571] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\migration-v1alpha1-console-api.ts:228
+    描述: 检测代码注入风险：动态代码执行
+
+[572] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[573] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[574] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[575] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[576] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[577] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[578] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[579] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[580] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-template-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[581] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[582] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[583] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[584] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[585] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[586] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[587] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[588] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[589] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[590] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-public-api.ts:27
+    描述: 检测代码注入风险：动态代码执行
+
+[591] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-public-api.ts:83
+    描述: 检测代码注入风险：动态代码执行
+
+[592] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-public-api.ts:97
+    描述: 检测代码注入风险：动态代码执行
+
+[593] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-public-api.ts:105
+    描述: 检测代码注入风险：动态代码执行
+
+[594] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:37
+    描述: 检测代码注入风险：动态代码执行
+
+[595] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:334
+    描述: 检测代码注入风险：动态代码执行
+
+[596] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:348
+    描述: 检测代码注入风险：动态代码执行
+
+[597] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:360
+    描述: 检测代码注入风险：动态代码执行
+
+[598] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:377
+    描述: 检测代码注入风险：动态代码执行
+
+[599] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:390
+    描述: 检测代码注入风险：动态代码执行
+
+[600] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[601] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:416
+    描述: 检测代码注入风险：动态代码执行
+
+[602] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notification-v1alpha1-uc-api.ts:424
+    描述: 检测代码注入风险：动态代码执行
+
+[603] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[604] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[605] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[606] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[607] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[608] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[609] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[610] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[611] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-descriptor-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[612] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-console-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[613] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-console-api.ts:168
+    描述: 检测代码注入风险：动态代码执行
+
+[614] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-console-api.ts:181
+    描述: 检测代码注入风险：动态代码执行
+
+[615] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-console-api.ts:194
+    描述: 检测代码注入风险：动态代码执行
+
+[616] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-console-api.ts:206
+    描述: 检测代码注入风险：动态代码执行
+
+[617] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-console-api.ts:214
+    描述: 检测代码注入风险：动态代码执行
+
+[618] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-uc-api.ts:27
+    描述: 检测代码注入风险：动态代码执行
+
+[619] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-uc-api.ts:123
+    描述: 检测代码注入风险：动态代码执行
+
+[620] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-uc-api.ts:136
+    描述: 检测代码注入风险：动态代码执行
+
+[621] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-uc-api.ts:149
+    描述: 检测代码注入风险：动态代码执行
+
+[622] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\notifier-v1alpha1-uc-api.ts:157
+    描述: 检测代码注入风险：动态代码执行
+
+[623] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[624] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[625] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[626] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[627] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[628] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[629] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[630] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[631] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[632] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[633] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:281
+    描述: 检测代码注入风险：动态代码执行
+
+[634] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:294
+    描述: 检测代码注入风险：动态代码执行
+
+[635] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:306
+    描述: 检测代码注入风险：动态代码执行
+
+[636] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:318
+    描述: 检测代码注入风险：动态代码执行
+
+[637] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[638] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[639] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[640] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\personal-access-token-v1alpha1-uc-api.ts:361
+    描述: 检测代码注入风险：动态代码执行
+
+[641] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[642] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[643] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[644] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[645] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[646] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[647] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[648] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[649] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[650] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:41
+    描述: 检测代码注入风险：动态代码执行
+
+[651] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:659
+    描述: 检测代码注入风险：动态代码执行
+
+[652] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:673
+    描述: 检测代码注入风险：动态代码执行
+
+[653] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:684
+    描述: 检测代码注入风险：动态代码执行
+
+[654] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:695
+    描述: 检测代码注入风险：动态代码执行
+
+[655] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:707
+    描述: 检测代码注入风险：动态代码执行
+
+[656] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:719
+    描述: 检测代码注入风险：动态代码执行
+
+[657] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:733
+    描述: 检测代码注入风险：动态代码执行
+
+[658] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:745
+    描述: 检测代码注入风险：动态代码执行
+
+[659] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:763
+    描述: 检测代码注入风险：动态代码执行
+
+[660] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:775
+    描述: 检测代码注入风险：动态代码执行
+
+[661] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:787
+    描述: 检测代码注入风险：动态代码执行
+
+[662] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:800
+    描述: 检测代码注入风险：动态代码执行
+
+[663] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:815
+    描述: 检测代码注入风险：动态代码执行
+
+[664] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:828
+    描述: 检测代码注入风险：动态代码执行
+
+[665] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-console-api.ts:836
+    描述: 检测代码注入风险：动态代码执行
+
+[666] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-public-api.ts:27
+    描述: 检测代码注入风险：动态代码执行
+
+[667] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-public-api.ts:76
+    描述: 检测代码注入风险：动态代码执行
+
+[668] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-public-api.ts:89
+    描述: 检测代码注入风险：动态代码执行
+
+[669] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\plugin-v1alpha1-public-api.ts:97
+    描述: 检测代码注入风险：动态代码执行
+
+[670] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-alpha1-console-api.ts:27
+    描述: 检测代码注入风险：动态代码执行
+
+[671] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-alpha1-console-api.ts:131
+    描述: 检测代码注入风险：动态代码执行
+
+[672] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-alpha1-console-api.ts:145
+    描述: 检测代码注入风险：动态代码执行
+
+[673] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-alpha1-console-api.ts:159
+    描述: 检测代码注入风险：动态代码执行
+
+[674] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-alpha1-console-api.ts:167
+    描述: 检测代码注入风险：动态代码执行
+
+[675] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[676] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[677] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[678] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[679] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[680] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[681] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[682] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[683] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-template-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[684] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[685] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[686] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[687] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[688] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[689] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[690] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[691] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[692] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\policy-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[693] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[694] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[695] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[696] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[697] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[698] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[699] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[700] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[701] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[702] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:41
+    描述: 检测代码注入风险：动态代码执行
+
+[703] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:662
+    描述: 检测代码注入风险：动态代码执行
+
+[704] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:676
+    描述: 检测代码注入风险：动态代码执行
+
+[705] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:688
+    描述: 检测代码注入风险：动态代码执行
+
+[706] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:701
+    描述: 检测代码注入风险：动态代码执行
+
+[707] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:713
+    描述: 检测代码注入风险：动态代码执行
+
+[708] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:725
+    描述: 检测代码注入风险：动态代码执行
+
+[709] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:737
+    描述: 检测代码注入风险：动态代码执行
+
+[710] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:756
+    描述: 检测代码注入风险：动态代码执行
+
+[711] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:770
+    描述: 检测代码注入风险：动态代码执行
+
+[712] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:782
+    描述: 检测代码注入风险：动态代码执行
+
+[713] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:795
+    描述: 检测代码注入风险：动态代码执行
+
+[714] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:807
+    描述: 检测代码注入风险：动态代码执行
+
+[715] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:820
+    描述: 检测代码注入风险：动态代码执行
+
+[716] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:833
+    描述: 检测代码注入风险：动态代码执行
+
+[717] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-console-api.ts:841
+    描述: 检测代码注入风险：动态代码执行
+
+[718] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-public-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[719] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-public-api.ts:185
+    描述: 检测代码注入风险：动态代码执行
+
+[720] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-public-api.ts:198
+    描述: 检测代码注入风险：动态代码执行
+
+[721] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-public-api.ts:210
+    描述: 检测代码注入风险：动态代码执行
+
+[722] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-public-api.ts:226
+    描述: 检测代码注入风险：动态代码执行
+
+[723] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-public-api.ts:234
+    描述: 检测代码注入风险：动态代码执行
+
+[724] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[725] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:459
+    描述: 检测代码注入风险：动态代码执行
+
+[726] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:472
+    描述: 检测代码注入风险：动态代码执行
+
+[727] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:484
+    描述: 检测代码注入风险：动态代码执行
+
+[728] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:497
+    描述: 检测代码注入风险：动态代码执行
+
+[729] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:516
+    描述: 检测代码注入风险：动态代码执行
+
+[730] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:528
+    描述: 检测代码注入风险：动态代码执行
+
+[731] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:540
+    描述: 检测代码注入风险：动态代码执行
+
+[732] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:552
+    描述: 检测代码注入风险：动态代码执行
+
+[733] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:565
+    描述: 检测代码注入风险：动态代码执行
+
+[734] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:578
+    描述: 检测代码注入风险：动态代码执行
+
+[735] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\post-v1alpha1-uc-api.ts:586
+    描述: 检测代码注入风险：动态代码执行
+
+[736] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[737] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[738] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[739] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[740] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[741] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[742] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[743] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[744] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-type-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[745] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[746] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[747] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[748] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[749] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[750] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[751] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[752] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[753] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reason-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[754] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[755] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[756] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[757] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[758] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[759] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[760] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[761] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[762] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\remember-me-token-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[763] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[764] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[765] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[766] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[767] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[768] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[769] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[770] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[771] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[772] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-console-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[773] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-console-api.ts:106
+    描述: 检测代码注入风险：动态代码执行
+
+[774] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-console-api.ts:124
+    描述: 检测代码注入风险：动态代码执行
+
+[775] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reply-v1alpha1-console-api.ts:132
+    描述: 检测代码注入风险：动态代码执行
+
+[776] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[777] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[778] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[779] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[780] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[781] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[782] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[783] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[784] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\reverse-proxy-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[785] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[786] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[787] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[788] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[789] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[790] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[791] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[792] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[793] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-binding-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[794] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[795] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[796] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[797] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[798] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[799] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[800] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[801] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[802] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\role-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[803] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[804] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[805] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[806] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[807] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[808] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[809] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[810] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[811] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\secret-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[812] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[813] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[814] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[815] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[816] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[817] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[818] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[819] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[820] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\setting-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[821] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[822] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[823] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[824] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[825] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[826] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[827] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[828] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[829] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[830] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:43
+    描述: 检测代码注入风险：动态代码执行
+
+[831] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:577
+    描述: 检测代码注入风险：动态代码执行
+
+[832] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:591
+    描述: 检测代码注入风险：动态代码执行
+
+[833] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:603
+    描述: 检测代码注入风险：动态代码执行
+
+[834] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:616
+    描述: 检测代码注入风险：动态代码执行
+
+[835] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:628
+    描述: 检测代码注入风险：动态代码执行
+
+[836] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:640
+    描述: 检测代码注入风险：动态代码执行
+
+[837] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:652
+    描述: 检测代码注入风险：动态代码执行
+
+[838] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:672
+    描述: 检测代码注入风险：动态代码执行
+
+[839] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:684
+    描述: 检测代码注入风险：动态代码执行
+
+[840] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:697
+    描述: 检测代码注入风险：动态代码执行
+
+[841] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:710
+    描述: 检测代码注入风险：动态代码执行
+
+[842] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:723
+    描述: 检测代码注入风险：动态代码执行
+
+[843] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-console-api.ts:731
+    描述: 检测代码注入风险：动态代码执行
+
+[844] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-public-api.ts:31
+    描述: 检测代码注入风险：动态代码执行
+
+[845] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-public-api.ts:142
+    描述: 检测代码注入风险：动态代码执行
+
+[846] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-public-api.ts:155
+    描述: 检测代码注入风险：动态代码执行
+
+[847] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-public-api.ts:171
+    描述: 检测代码注入风险：动态代码执行
+
+[848] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\single-page-v1alpha1-public-api.ts:179
+    描述: 检测代码注入风险：动态代码执行
+
+[849] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[850] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[851] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[852] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[853] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[854] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[855] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[856] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[857] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[858] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-uc-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[859] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-uc-api.ts:90
+    描述: 检测代码注入风险：动态代码执行
+
+[860] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-uc-api.ts:105
+    描述: 检测代码注入风险：动态代码执行
+
+[861] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\snapshot-v1alpha1-uc-api.ts:113
+    描述: 检测代码注入风险：动态代码执行
+
+[862] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[863] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[864] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[865] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[866] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[867] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[868] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[869] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[870] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\subscription-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[871] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-config-v1alpha1-console-api.ts:27
+    描述: 检测代码注入风险：动态代码执行
+
+[872] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-config-v1alpha1-console-api.ts:121
+    描述: 检测代码注入风险：动态代码执行
+
+[873] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-config-v1alpha1-console-api.ts:134
+    描述: 检测代码注入风险：动态代码执行
+
+[874] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-config-v1alpha1-console-api.ts:147
+    描述: 检测代码注入风险：动态代码执行
+
+[875] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-config-v1alpha1-console-api.ts:155
+    描述: 检测代码注入风险：动态代码执行
+
+[876] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-console-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[877] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-console-api.ts:74
+    描述: 检测代码注入风险：动态代码执行
+
+[878] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-console-api.ts:86
+    描述: 检测代码注入风险：动态代码执行
+
+[879] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-console-api.ts:94
+    描述: 检测代码注入风险：动态代码执行
+
+[880] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-public-api.ts:31
+    描述: 检测代码注入风险：动态代码执行
+
+[881] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-public-api.ts:156
+    描述: 检测代码注入风险：动态代码执行
+
+[882] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-public-api.ts:168
+    描述: 检测代码注入风险：动态代码执行
+
+[883] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-public-api.ts:179
+    描述: 检测代码注入风险：动态代码执行
+
+[884] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-public-api.ts:191
+    描述: 检测代码注入风险：动态代码执行
+
+[885] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\system-v1alpha1-public-api.ts:199
+    描述: 检测代码注入风险：动态代码执行
+
+[886] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[887] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[888] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[889] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[890] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[891] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[892] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[893] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[894] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[895] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-console-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[896] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-console-api.ts:104
+    描述: 检测代码注入风险：动态代码执行
+
+[897] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-console-api.ts:122
+    描述: 检测代码注入风险：动态代码执行
+
+[898] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-console-api.ts:130
+    描述: 检测代码注入风险：动态代码执行
+
+[899] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-public-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[900] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-public-api.ts:210
+    描述: 检测代码注入风险：动态代码执行
+
+[901] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-public-api.ts:228
+    描述: 检测代码注入风险：动态代码执行
+
+[902] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-public-api.ts:240
+    描述: 检测代码注入风险：动态代码执行
+
+[903] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-public-api.ts:256
+    描述: 检测代码注入风险：动态代码执行
+
+[904] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\tag-v1alpha1-public-api.ts:264
+    描述: 检测代码注入风险：动态代码执行
+
+[905] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[906] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[907] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[908] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[909] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[910] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[911] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[912] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[913] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[914] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:39
+    描述: 检测代码注入风险：动态代码执行
+
+[915] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:618
+    描述: 检测代码注入风险：动态代码执行
+
+[916] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:631
+    描述: 检测代码注入风险：动态代码执行
+
+[917] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:642
+    描述: 检测代码注入风险：动态代码执行
+
+[918] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:654
+    描述: 检测代码注入风险：动态代码执行
+
+[919] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:666
+    描述: 检测代码注入风险：动态代码执行
+
+[920] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:677
+    描述: 检测代码注入风险：动态代码执行
+
+[921] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:689
+    描述: 检测代码注入风险：动态代码执行
+
+[922] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:701
+    描述: 检测代码注入风险：动态代码执行
+
+[923] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:717
+    描述: 检测代码注入风险：动态代码执行
+
+[924] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:729
+    描述: 检测代码注入风险：动态代码执行
+
+[925] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:741
+    描述: 检测代码注入风险：动态代码执行
+
+[926] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:754
+    描述: 检测代码注入风险：动态代码执行
+
+[927] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:767
+    描述: 检测代码注入风险：动态代码执行
+
+[928] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:780
+    描述: 检测代码注入风险：动态代码执行
+
+[929] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\theme-v1alpha1-console-api.ts:788
+    描述: 检测代码注入风险：动态代码执行
+
+[930] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\thumbnail-v1alpha1-public-api.ts:27
+    描述: 检测代码注入风险：动态代码执行
+
+[931] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\thumbnail-v1alpha1-public-api.ts:91
+    描述: 检测代码注入风险：动态代码执行
+
+[932] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\thumbnail-v1alpha1-public-api.ts:106
+    描述: 检测代码注入风险：动态代码执行
+
+[933] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\thumbnail-v1alpha1-public-api.ts:114
+    描述: 检测代码注入风险：动态代码执行
+
+[934] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:35
+    描述: 检测代码注入风险：动态代码执行
+
+[935] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:281
+    描述: 检测代码注入风险：动态代码执行
+
+[936] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:294
+    描述: 检测代码注入风险：动态代码执行
+
+[937] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:306
+    描述: 检测代码注入风险：动态代码执行
+
+[938] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:318
+    描述: 检测代码注入风险：动态代码执行
+
+[939] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:330
+    描述: 检测代码注入风险：动态代码执行
+
+[940] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[941] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:352
+    描述: 检测代码注入风险：动态代码执行
+
+[942] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\two-factor-auth-v1alpha1-uc-api.ts:360
+    描述: 检测代码注入风险：动态代码执行
+
+[943] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[944] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[945] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[946] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[947] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[948] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[949] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[950] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[951] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[952] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-uc-api.ts:29
+    描述: 检测代码注入风险：动态代码执行
+
+[953] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-uc-api.ts:78
+    描述: 检测代码注入风险：动态代码执行
+
+[954] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-uc-api.ts:91
+    描述: 检测代码注入风险：动态代码执行
+
+[955] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-connection-v1alpha1-uc-api.ts:99
+    描述: 检测代码注入风险：动态代码执行
+
+[956] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-preference-v1alpha1-uc-api.ts:27
+    描述: 检测代码注入风险：动态代码执行
+
+[957] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-preference-v1alpha1-uc-api.ts:123
+    描述: 检测代码注入风险：动态代码执行
+
+[958] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-preference-v1alpha1-uc-api.ts:136
+    描述: 检测代码注入风险：动态代码执行
+
+[959] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-preference-v1alpha1-uc-api.ts:149
+    描述: 检测代码注入风险：动态代码执行
+
+[960] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-preference-v1alpha1-uc-api.ts:157
+    描述: 检测代码注入风险：动态代码执行
+
+[961] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:33
+    描述: 检测代码注入风险：动态代码执行
+
+[962] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:316
+    描述: 检测代码注入风险：动态代码执行
+
+[963] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:329
+    描述: 检测代码注入风险：动态代码执行
+
+[964] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:341
+    描述: 检测代码注入风险：动态代码执行
+
+[965] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:353
+    描述: 检测代码注入风险：动态代码执行
+
+[966] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:369
+    描述: 检测代码注入风险：动态代码执行
+
+[967] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:382
+    描述: 检测代码注入风险：动态代码执行
+
+[968] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:395
+    描述: 检测代码注入风险：动态代码执行
+
+[969] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-api.ts:403
+    描述: 检测代码注入风险：动态代码执行
+
+[970] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:47
+    描述: 检测代码注入风险：动态代码执行
+
+[971] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:730
+    描述: 检测代码注入风险：动态代码执行
+
+[972] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:744
+    描述: 检测代码注入风险：动态代码执行
+
+[973] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:756
+    描述: 检测代码注入风险：动态代码执行
+
+[974] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:768
+    描述: 检测代码注入风险：动态代码执行
+
+[975] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:780
+    描述: 检测代码注入风险：动态代码执行
+
+[976] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:792
+    描述: 检测代码注入风险：动态代码执行
+
+[977] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:804
+    描述: 检测代码注入风险：动态代码执行
+
+[978] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:815
+    描述: 检测代码注入风险：动态代码执行
+
+[979] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:827
+    描述: 检测代码注入风险：动态代码执行
+
+[980] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:839
+    描述: 检测代码注入风险：动态代码执行
+
+[981] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:852
+    描述: 检测代码注入风险：动态代码执行
+
+[982] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:870
+    描述: 检测代码注入风险：动态代码执行
+
+[983] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:882
+    描述: 检测代码注入风险：动态代码执行
+
+[984] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:894
+    描述: 检测代码注入风险：动态代码执行
+
+[985] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:907
+    描述: 检测代码注入风险：动态代码执行
+
+[986] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:919
+    描述: 检测代码注入风险：动态代码执行
+
+[987] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\api\user-v1alpha1-console-api.ts:927
+    描述: 检测代码注入风险：动态代码执行
+
+[988] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:26
+    描述: 检测代码注入风险：动态代码执行
+
+[989] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:32
+    描述: 检测代码注入风险：动态代码执行
+
+[990] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:41
+    描述: 检测代码注入风险：动态代码执行
+
+[991] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:47
+    描述: 检测代码注入风险：动态代码执行
+
+[992] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:56
+    描述: 检测代码注入风险：动态代码执行
+
+[993] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:88
+    描述: 检测代码注入风险：动态代码执行
+
+[994] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:94
+    描述: 检测代码注入风险：动态代码执行
+
+[995] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:104
+    描述: 检测代码注入风险：动态代码执行
+
+[996] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\common.ts:108
+    描述: 检测代码注入风险：动态代码执行
+
+[997] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\api-client\src\models\extension-definition.ts:24
+    描述: 检测代码注入风险：动态代码执行
+
+[998] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\src\components\button\__tests__\Button.spec.ts:85
+    描述: 检测代码注入风险：动态代码执行
+
+[999] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\src\components\button\__tests__\Button.spec.ts:111
+    描述: 检测代码注入风险：动态代码执行
+
+[1000] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\src\components\dialog\Dialog.vue:71
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1001] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\src\components\menu\__tests__\Menu.spec.tsx:53
+    描述: 检测代码注入风险：动态代码执行
+
+[1002] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\src\components\space\__tests__\Space.spec.ts:7
+    描述: 检测代码注入风险：动态代码执行
+
+[1003] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\src\components\space\__tests__\Space.spec.ts:11
+    描述: 检测代码注入风险：动态代码执行
+
+[1004] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\src\components\space\__tests__\Space.spec.ts:25
+    描述: 检测代码注入风险：动态代码执行
+
+[1005] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\components\src\components\space\__tests__\Space.spec.ts:37
+    描述: 检测代码注入风险：动态代码执行
+
+[1006] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\console-shared\index.js:1
+    描述: 检测代码注入风险：动态代码执行
+
+[1007] LOW - CWE-489
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\align\index.ts:73
+    描述: Detects usage of console.log which should not be in production code.
+
+[1008] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\align\index.ts:73
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1009] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\code-block\code-block.ts:397
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[1010] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\range-selection\range-selection.ts:165
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1011] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\smart-scroll\index.ts:169
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1012] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\extensions\upload\index.ts:134
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1013] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\utils\clipboard.ts:34
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1014] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\utils\filter-duplicate-extensions.ts:19
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1015] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\utils\filter-duplicate-extensions.ts:28
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1016] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\utils\upload.ts:153
+    描述: 检测代码注入风险：动态代码执行
+
+[1017] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\utils\upload.ts:156
+    描述: 检测代码注入风险：动态代码执行
+
+[1018] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\editor\src\utils\upload.ts:214
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1019] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\plugin\types\attachment-selector.ts:73
+    描述: 检测代码注入风险：动态代码执行
+
+[1020] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\plugin\types\dashboard-widget.ts:275
+    描述: 检测代码注入风险：动态代码执行
+
+[1021] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\plugin\types\list-operation.ts:72
+    描述: 检测代码注入风险：动态代码执行
+
+[1022] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\plugin\types\list-operation.ts:20
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1023] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\plugin\types\ui-plugin-entry.ts:37
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1024] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\stores\index.ts:35
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1025] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\stores\index.ts:36
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1026] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\stores\index.ts:84
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1027] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\stores\index.ts:85
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1028] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\shared\src\stores\index.ts:86
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1029] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\packages\ui-plugin-bundler-kit\src\utils\halo-plugin.ts:6
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[1030] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\components\editor\DefaultEditor.vue:240
+    描述: 检测代码注入风险：动态代码执行
+
+[1031] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\components\form\AnnotationsForm.vue:51
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1032] MEDIUM - CWE-330
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\components\menu\MenuLoading.vue:15
+    描述: 检测不安全的随机数生成：使用弱随机数生成器
+
+[1033] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\components\upload\UppyUpload.vue:81
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[1034] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\components\upload\UppyUpload.vue:101
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[1035] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\components\user-avatar\UserAvatarCropper.vue:138
+    描述: 检测代码注入风险：动态代码执行
+
+[1036] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\composables\use-editor-extension-points.ts:38
+    描述: 检测代码注入风险：动态代码执行
+
+[1037] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\composables\use-editor-extension-points.ts:42
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1038] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\composables\use-role.ts:75
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1039] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\composables\use-route-menu-generator.ts:43
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1040] HIGH - CWE-200
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\constants\annotations.ts:29
+    描述: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
+
+[1041] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\array\renderers\select.ts:15
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1042] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\array\renderers\select.ts:22
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1043] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\array\renderers\select.ts:28
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1044] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\array\renderers\select.ts:54
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1045] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\list\features\lists.ts:4
+    描述: 检测代码注入风险：动态代码执行
+
+[1046] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\repeater\features\repeats.ts:4
+    描述: 检测代码注入风险：动态代码执行
+
+[1047] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:295
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1048] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:319
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1049] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:326
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1050] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:332
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1051] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:429
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1052] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:468
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1053] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\formkit\inputs\select\SelectMain.vue:700
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1054] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\locales\index.ts:74
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1055] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\locales\index.ts:77
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1056] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\locales\index.ts:103
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1057] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\setup\setupModules.ts:74
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1058] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\utils\load-style.ts:2
+    描述: 检测代码注入风险：动态代码执行
+
+[1059] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\src\utils\role.ts:14
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[1060] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\main.ts:48
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1061] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\main.ts:51
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1062] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\modules\contents\attachments\components\AttachmentSelectorModal.vue:63
+    描述: 检测代码注入风险：动态代码执行
+
+[1063] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\modules\contents\attachments\components\AttachmentSelectorModal.vue:69
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1064] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\modules\profile\components\PasswordChangeModal.vue:46
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1065] CRITICAL - CWE-502
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\modules\profile\components\PersonalAccessTokenCreationModal.vue:325
+    描述: 检测不安全的反序列化：使用不安全的反序列化方法
+
+[1066] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\modules\profile\components\ProfileEditingModal.vue:61
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1067] CRITICAL - CWE-94
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\modules\profile\Profile.vue:94
+    描述: 检测代码注入风险：动态代码执行
+
+[1068] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\modules\profile\Profile.vue:100
+    描述: 检测调试信息泄露：包含调试信息的代码
+
+[1069] LOW - CWE-215
+    文件: C:/Users/wfshenm/Downloads/halo-main\ui\uc-src\router\guards\permission.ts:33
+    描述: 检测调试信息泄露：包含调试信息的代码
+

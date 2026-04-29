@@ -1,5 +1,10 @@
 category: information-disclosure
 cwe: CWE-200
+owasp: "A01:2021-Broken Access Control"
+remediation: "不在源代码中硬编码敏感信息; 使用 .gitignore 排除配置文件; 定期扫描代码库中的敏感数据泄露。"
+references:
+  - "https://owasp.org/www-community/vulnerabilities/Information_exposure"
+  - "https://cwe.mitre.org/data/definitions/200.html"
 description: 检测敏感信息泄露：硬编码的API密钥、令牌、凭证
 id: sensitive-info-leak
 language: all

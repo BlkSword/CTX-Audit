@@ -1,8 +1,19 @@
 category: information-disclosure
 cwe: CWE-215
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "在生产环境禁用调试模式; 配置错误页面不显示堆栈跟踪; 使用环境变量控制调试开关。"
+references:
+  - "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing"
+  - "https://cwe.mitre.org/data/definitions/200.html"
 description: 检测调试信息泄露：包含调试信息的代码
 id: debug-info-leak
 language: all
 name: Debug Information Disclosure
-pattern: (?i)(console\.log|console\.debug|console\.warn|console\.error|print|println|debugger|debug\.print|System\.out\.print|System\.err\.print|trace|alert\(|console\.trace|console\.table|console\.dir)
-severity: low
+patterns:
+  - language: javascript
+    pattern: (?i)(debugger\s*;)
+  - language: java
+    pattern: (?i)(\.printStackTrace\s*\(\)|System\.(out|err)\.(print|println)\s*\()
+  - language: python
+    pattern: (?i)(breakpoint\s*\(\)|pdb\.set_trace\s*\(\)|ipdb\.set_trace\s*\(\))
+severity: info

@@ -9,6 +9,7 @@ use miette::Result;
 
 use crate::terminal::TerminalRenderer;
 use deepaudit_core::scan_directory;
+use deepaudit_core::scan_directory_deep;
 use deepaudit_core::sarif::{SarifConverter, FindingInput};
 
 /// 执行 scan 命令
@@ -20,6 +21,7 @@ pub async fn execute(
     output_path: Option<String>,
     threads: usize,
     output_format: &str,
+    deep: bool,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -30,7 +32,8 @@ pub async fn execute(
         return Err(miette::miette!("项目路径不存在"));
     }
 
-    renderer.info(&format!("开始扫描: {}", path));
+    let mode = if deep { "深度扫描" } else { "快速扫描" };
+    renderer.info(&format!("{}: {}", mode, path));
 
     // 加载规则
     if let Some(rules_path) = rules_dir {
@@ -42,7 +45,11 @@ pub async fn execute(
     pb.set_message("正在扫描...");
 
     // 执行扫描
-    let findings_result = scan_directory(&path).await;
+    let findings_result = if deep {
+        scan_directory_deep(&path).await
+    } else {
+        scan_directory(&path).await
+    };
 
     pb.finish_with_message("扫描完成");
 

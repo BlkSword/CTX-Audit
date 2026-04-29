@@ -1,0 +1,1168 @@
+[
+  {
+    "finding_id": "b0c7dab9-793a-4ff4-9a87-9e523c2188c1",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\search\\lucene\\LuceneSearchEngine.java",
+    "line_start": 461,
+    "line_end": 461,
+    "detector": "RegexRule: unsafe-deserialization",
+    "vuln_type": "CWE-502",
+    "severity": "critical",
+    "description": "检测不安全的反序列化：使用不安全的反序列化方法",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "744907fb-38b0-4bd3-986e-402e31a90d3c",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\editor\\src\\extensions\\image\\index.ts",
+    "line_start": 342,
+    "line_end": 342,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 342",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "af3ee73d-c3c0-4e30-bd40-eae16e1137eb",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-cjmm-f4jc-qw8r",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-cjmm-f4jc-qw8r  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-cjmm-f4jc-qw8r",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "09057c16-5dbc-480a-bde8-8bf336741bef",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 89,
+    "line_end": 89,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "37057bad-40b2-49c5-b586-0b760cc99f7b",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\editor\\src\\extensions\\upload\\index.ts",
+    "line_start": 91,
+    "line_end": 91,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 91",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "e86edf0c-c6ae-45fd-b409-4389b6ce4998",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\pat\\PatTest.java",
+    "line_start": 22,
+    "line_end": 22,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "5fd920c5-0fa6-4224-9bfd-a875c84815dd",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\pat\\PatTest.java",
+    "line_start": 22,
+    "line_end": 22,
+    "detector": "RegexRule: sensitive-info-leak",
+    "vuln_type": "CWE-200",
+    "severity": "high",
+    "description": "检测敏感信息泄露：硬编码的API密钥、令牌、凭证",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b873f05f-920c-4557-8c61-a0d58054c7a9",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\console-src\\modules\\system\\overview\\Overview.vue",
+    "line_start": 191,
+    "line_end": 191,
+    "detector": "ASTRule: no-console-log",
+    "vuln_type": "CWE-489",
+    "severity": "low",
+    "description": "Detects usage of console.log which should not be in production code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "7f04f8e8-df84-4ccb-9c9b-e94550b9be9d",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\core\\endpoint\\console\\UserEndpointIntegrationTest.java",
+    "line_start": 32,
+    "line_end": 32,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "86cd4158-0117-495c-b6d0-66db962f21a4",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\TokenBasedRememberMeServices.java",
+    "line_start": 287,
+    "line_end": 287,
+    "detector": "RegexRule: sensitive-log-data",
+    "vuln_type": "CWE-532",
+    "severity": "medium",
+    "description": "检测敏感信息记录到日志：密码、密钥等敏感信息被记录",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "cacf1547-104f-420f-bf9c-63f7b641a2cb",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\src\\constants\\annotations.ts",
+    "line_start": 29,
+    "line_end": 29,
+    "detector": "RegexRule: sensitive-info-leak",
+    "vuln_type": "CWE-200",
+    "severity": "high",
+    "description": "检测敏感信息泄露：硬编码的API密钥、令牌、凭证",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "6eeab102-17c5-4b38-943a-cc81fd2bc5f3",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-fvcv-3m26-pcqx",
+    "severity": "high",
+    "description": "Vulnerable dependency: axios@1.12.2 — GHSA-fvcv-3m26-pcqx  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: axios@1.12.2",
+      "Vulnerability: GHSA-fvcv-3m26-pcqx",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "c3de7f86-e439-4805-b8a6-7f44a726cc66",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\editor\\src\\extensions\\gap-cursor\\index.ts",
+    "line_start": 69,
+    "line_end": 69,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 69",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "3d79f8e3-bd3a-4253-b211-7ab484b4569f",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-v9jr-rg53-9pgp",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-v9jr-rg53-9pgp  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-v9jr-rg53-9pgp",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b036e3b2-9aac-431f-a5fe-c40365df3df9",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\plugin\\PluginRequestMappingHandlerMappingTest.java",
+    "line_start": 270,
+    "line_end": 270,
+    "detector": "RegexRule: csrf-detection",
+    "vuln_type": "CWE-352",
+    "severity": "medium",
+    "description": "检测CSRF风险：缺少CSRF保护的表单或API端点",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "fdd855c1-b378-4a90-92fe-47110646db3b",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\device\\DeviceCookieResolverImpl.java",
+    "line_start": 29,
+    "line_end": 29,
+    "detector": "RegexRule: insecure-cookie",
+    "vuln_type": "CWE-614",
+    "severity": "medium",
+    "description": "检测不安全的Cookie设置：缺少Secure或HttpOnly标志",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "5e40d9cf-695d-42e2-b9d4-179832db8e1d",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\content\\PostIntegrationTests.java",
+    "line_start": 34,
+    "line_end": 34,
+    "detector": "RegexRule: sensitive-info-leak",
+    "vuln_type": "CWE-200",
+    "severity": "high",
+    "description": "检测敏感信息泄露：硬编码的API密钥、令牌、凭证",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "540a344d-f977-484e-99b9-bc3d4661734f",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\infra\\exception\\handlers\\I18nExceptionTest.java",
+    "line_start": 176,
+    "line_end": 176,
+    "detector": "RegexRule: csrf-detection",
+    "vuln_type": "CWE-352",
+    "severity": "medium",
+    "description": "检测CSRF风险：缺少CSRF保护的表单或API端点",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "3bb74c8d-9a6d-447a-ba18-94d6144d3143",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\plugin\\PluginRequestMappingHandlerMappingTest.java",
+    "line_start": 280,
+    "line_end": 280,
+    "detector": "RegexRule: csrf-detection",
+    "vuln_type": "CWE-352",
+    "severity": "medium",
+    "description": "检测CSRF风险：缺少CSRF保护的表单或API端点",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "8e671dd3-213d-4ed1-acb8-077cd278fafe",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 90,
+    "line_end": 90,
+    "detector": "RegexRule: sensitive-info-leak",
+    "vuln_type": "CWE-200",
+    "severity": "high",
+    "description": "检测敏感信息泄露：硬编码的API密钥、令牌、凭证",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b9095bd5-a25b-49fa-a988-b76a24e0535b",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\editor\\src\\extensions\\align\\index.ts",
+    "line_start": 73,
+    "line_end": 73,
+    "detector": "ASTRule: no-console-log",
+    "vuln_type": "CWE-489",
+    "severity": "low",
+    "description": "Detects usage of console.log which should not be in production code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "0749ba16-8636-4290-a813-09544c057c8f",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\PersistentTokenBasedRememberMeServices.java",
+    "line_start": 218,
+    "line_end": 218,
+    "detector": "RegexRule: sensitive-log-data",
+    "vuln_type": "CWE-532",
+    "severity": "medium",
+    "description": "检测敏感信息记录到日志：密码、密钥等敏感信息被记录",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "bbaa390d-6692-46c9-a2ef-785f8f0686c0",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\src\\components\\menu\\MenuLoading.vue",
+    "line_start": 15,
+    "line_end": 15,
+    "detector": "RegexRule: insecure-random",
+    "vuln_type": "CWE-330",
+    "severity": "medium",
+    "description": "检测不安全的随机数生成：使用弱随机数生成器",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "59d38f89-4486-4d9a-a179-41a0a657f7c7",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-cj63-jhhr-wcxv",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-cj63-jhhr-wcxv  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-cj63-jhhr-wcxv",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "46725b8d-9528-44a4-9510-0fff2726f5fc",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\components\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-mjf5-7g4m-gx5w",
+    "severity": "high",
+    "description": "Vulnerable dependency: storybook@10.0.8 — GHSA-mjf5-7g4m-gx5w  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: storybook@10.0.8",
+      "Vulnerability: GHSA-mjf5-7g4m-gx5w",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "75ca8b3f-b025-45f0-915f-61e22a1d90b4",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\PathPrefixPredicateTest.java",
+    "line_start": 43,
+    "line_end": 43,
+    "detector": "RegexRule: debug-info-leak",
+    "vuln_type": "CWE-215",
+    "severity": "info",
+    "description": "检测调试信息泄露：包含调试信息的代码",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "6cc3dab3-6454-483b-8c4c-ed0f60ec2192",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\console-src\\modules\\interface\\themes\\components\\preview\\ThemePreviewModal.vue",
+    "line_start": 239,
+    "line_end": 239,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 239",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "3d3fccaa-203f-4d70-97bd-1673be983a51",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\src\\components\\preview\\UrlPreviewModal.vue",
+    "line_start": 65,
+    "line_end": 65,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 65",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "f73eadc2-e186-4b5d-8ed6-27d1af4c507f",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-qx2v-qp2m-jg93",
+    "severity": "high",
+    "description": "Vulnerable dependency: postcss@8.5.6 — GHSA-qx2v-qp2m-jg93  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: postcss@8.5.6",
+      "Vulnerability: GHSA-qx2v-qp2m-jg93",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "959dc05f-064f-40f3-a596-843fff6197e6",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 107,
+    "line_end": 107,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 107",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "9a880932-5ae0-4714-b98f-677304df146b",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-h8r8-wccr-v5f2",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-h8r8-wccr-v5f2  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-h8r8-wccr-v5f2",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "e6728595-093f-4a83-a2ee-6867601deac5",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\PersistentTokenBasedRememberMeServices.java",
+    "line_start": 233,
+    "line_end": 233,
+    "detector": "RegexRule: insecure-cookie",
+    "vuln_type": "CWE-614",
+    "severity": "medium",
+    "description": "检测不安全的Cookie设置：缺少Secure或HttpOnly标志",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "bc092739-4ff8-4ddf-b4b0-45c3248731ac",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\content\\PostIntegrationTests.java",
+    "line_start": 34,
+    "line_end": 34,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "01a8f6f0-6b74-4eec-8b74-8c8df352c4f4",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\device\\DeviceServiceImpl.java",
+    "line_start": 62,
+    "line_end": 62,
+    "detector": "RegexRule: insecure-cookie",
+    "vuln_type": "CWE-614",
+    "severity": "medium",
+    "description": "检测不安全的Cookie设置：缺少Secure或HttpOnly标志",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "e71dcdca-cf8f-4f0a-89a6-5ee20b4cf4d3",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\infra\\exception\\handlers\\I18nExceptionTest.java",
+    "line_start": 141,
+    "line_end": 141,
+    "detector": "RegexRule: csrf-detection",
+    "vuln_type": "CWE-352",
+    "severity": "medium",
+    "description": "检测CSRF风险：缺少CSRF保护的表单或API端点",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b2cab2bc-5a3a-487d-ba10-8a11c3ec8bf2",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 90,
+    "line_end": 90,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "a58d0564-39fe-4770-9861-cad4d2837af5",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 119,
+    "line_end": 119,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "6d801c0c-526e-4e97-b52c-19dfdc0e3628",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\core\\endpoint\\console\\EmailVerificationCodeTest.java",
+    "line_start": 38,
+    "line_end": 38,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "69a58d0f-7e9f-4706-b8f5-abb719b53cc2",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\content\\AbstractContentService.java",
+    "line_start": 43,
+    "line_end": 43,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 43",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "bf7a3cbc-138a-48ba-8136-ebc2b37e7306",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\twofactor\\totp\\DefaultTotpAuthService.java",
+    "line_start": 46,
+    "line_end": 46,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "a9cc86c4-1bce-431f-9f25-906d23178406",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\PersistentTokenBasedRememberMeServices.java",
+    "line_start": 146,
+    "line_end": 146,
+    "detector": "RegexRule: sensitive-log-data",
+    "vuln_type": "CWE-532",
+    "severity": "medium",
+    "description": "检测敏感信息记录到日志：密码、密钥等敏感信息被记录",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "fb8f1bb7-d196-40bb-8c83-fe4daa741421",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 67,
+    "line_end": 67,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 67",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b94705bc-b48d-4aa6-9b67-72a0d63e6924",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\PersistentTokenBasedRememberMeServices.java",
+    "line_start": 153,
+    "line_end": 153,
+    "detector": "RegexRule: sensitive-log-data",
+    "vuln_type": "CWE-532",
+    "severity": "medium",
+    "description": "检测敏感信息记录到日志：密码、密钥等敏感信息被记录",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "77fd6def-853e-4113-8da8-f7a412223d37",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\PathPrefixPredicateTest.java",
+    "line_start": 44,
+    "line_end": 44,
+    "detector": "RegexRule: debug-info-leak",
+    "vuln_type": "CWE-215",
+    "severity": "info",
+    "description": "检测调试信息泄露：包含调试信息的代码",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "985f57fa-101b-4a29-aad0-3c5306e27fea",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\pat\\PatTest.java",
+    "line_start": 22,
+    "line_end": 22,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 22",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "453d96f9-37d1-4ead-a157-49dec2918737",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\console-src\\modules\\system\\roles\\RoleList.vue",
+    "line_start": 254,
+    "line_end": 254,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 254",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "d72868f3-36e8-4ec9-b38c-efd7029399b9",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-r5fr-rjxr-66jc",
+    "severity": "high",
+    "description": "Vulnerable dependency: lodash-es@4.17.21 — GHSA-r5fr-rjxr-66jc  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: lodash-es@4.17.21",
+      "Vulnerability: GHSA-r5fr-rjxr-66jc",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "3000899b-b35d-4089-a45a-6dd5ba413e69",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\PersistentTokenBasedRememberMeServices.java",
+    "line_start": 133,
+    "line_end": 133,
+    "detector": "RegexRule: sensitive-log-data",
+    "vuln_type": "CWE-532",
+    "severity": "medium",
+    "description": "检测敏感信息记录到日志：密码、密钥等敏感信息被记录",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "9944fcb3-d3c9-4af1-b6df-242849c17021",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-v2wj-7wpq-c8vv",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-v2wj-7wpq-c8vv  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-v2wj-7wpq-c8vv",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "9e2bc637-2b78-4dda-a32e-e53e16f06e01",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\content\\PostIntegrationTests.java",
+    "line_start": 34,
+    "line_end": 34,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 34",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "ac6d01f8-1f4c-4568-97fc-17f08ea7fb70",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 90,
+    "line_end": 90,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 90",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "2202fb0d-d60a-480a-b41c-c82c126f38e7",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\editor\\src\\extensions\\gap-cursor\\index.ts",
+    "line_start": 194,
+    "line_end": 194,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 194",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b5956119-6a31-43c2-8a94-978fc75a023e",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\core\\endpoint\\console\\EmailVerificationCodeTest.java",
+    "line_start": 38,
+    "line_end": 38,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 38",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "fc6bec05-5a68-4f3a-96f4-a22d5254033c",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\shared\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-w5hq-g745-h8pq",
+    "severity": "high",
+    "description": "Vulnerable dependency: uuid@13.0.0 — GHSA-w5hq-g745-h8pq  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: uuid@13.0.0",
+      "Vulnerability: GHSA-w5hq-g745-h8pq",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "2b0df884-d128-41d4-8031-bf0489211e74",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-43fc-jf86-j433",
+    "severity": "high",
+    "description": "Vulnerable dependency: axios@1.12.2 — GHSA-43fc-jf86-j433  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: axios@1.12.2",
+      "Vulnerability: GHSA-43fc-jf86-j433",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "26342862-ebd2-4285-b420-1b1ee6c7c34e",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\core\\endpoint\\console\\UserEndpointIntegrationTest.java",
+    "line_start": 32,
+    "line_end": 32,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 32",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "0acf7c0b-3db9-447b-99ee-84dd05254140",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\console-src\\modules\\system\\settings\\SystemSettings.vue",
+    "line_start": 67,
+    "line_end": 67,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 67",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "06a47a42-66a6-4240-98d9-9e44b63af807",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\src\\formkit\\inputs\\select\\SelectMain.vue",
+    "line_start": 8,
+    "line_end": 8,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 8",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "a9e92ec9-21b7-46bc-ad4e-d0517bdd04f9",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\theme\\service\\ThemeServiceImpl.java",
+    "line_start": 171,
+    "line_end": 171,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 171",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "08645eb2-6add-407d-ac95-8dad84d4250f",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\src\\vite\\library-external.ts",
+    "line_start": 90,
+    "line_end": 90,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 90",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "7dc0ddb8-ab24-4014-b043-4a306128b95d",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\search\\lucene\\LuceneSearchEngine.java",
+    "line_start": 463,
+    "line_end": 463,
+    "detector": "RegexRule: unsafe-deserialization",
+    "vuln_type": "CWE-502",
+    "severity": "critical",
+    "description": "检测不安全的反序列化：使用不安全的反序列化方法",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "6a87f284-8b26-48f9-b859-bc2fa676bcc3",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\PersistentTokenBasedRememberMeServices.java",
+    "line_start": 214,
+    "line_end": 214,
+    "detector": "RegexRule: sensitive-log-data",
+    "vuln_type": "CWE-532",
+    "severity": "medium",
+    "description": "检测敏感信息记录到日志：密码、密钥等敏感信息被记录",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "d1b36540-a3fe-4f56-9af7-a1d91ee06523",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\TokenBasedRememberMeServices.java",
+    "line_start": 297,
+    "line_end": 297,
+    "detector": "RegexRule: insecure-cookie",
+    "vuln_type": "CWE-614",
+    "severity": "medium",
+    "description": "检测不安全的Cookie设置：缺少Secure或HttpOnly标志",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "f0fa989d-a27f-4b6a-a865-71d2b4ba6a74",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\device\\DeviceCookieResolver.java",
+    "line_start": 12,
+    "line_end": 12,
+    "detector": "RegexRule: insecure-cookie",
+    "vuln_type": "CWE-614",
+    "severity": "medium",
+    "description": "检测不安全的Cookie设置：缺少Secure或HttpOnly标志",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "8b0e8b84-3f34-457d-a246-5d60c2da0ea9",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\components\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-8452-54wp-rmv6",
+    "severity": "high",
+    "description": "Vulnerable dependency: storybook@10.0.8 — GHSA-8452-54wp-rmv6  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: storybook@10.0.8",
+      "Vulnerability: GHSA-8452-54wp-rmv6",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "3cd0ecef-53a4-4433-b979-9d9dc56598ae",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\console-src\\modules\\contents\\attachments\\components\\AttachmentGroupBadge.vue",
+    "line_start": 125,
+    "line_end": 125,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 125",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "5d20d18e-3026-448e-959b-e5ba1d0216a3",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\device\\DeviceServiceImpl.java",
+    "line_start": 200,
+    "line_end": 200,
+    "detector": "RegexRule: sensitive-log-data",
+    "vuln_type": "CWE-532",
+    "severity": "medium",
+    "description": "检测敏感信息记录到日志：密码、密钥等敏感信息被记录",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "526f97ed-2842-4c04-912c-a6ef69b36df7",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\core\\endpoint\\console\\UserEndpointIntegrationTest.java",
+    "line_start": 32,
+    "line_end": 32,
+    "detector": "RegexRule: sensitive-info-leak",
+    "vuln_type": "CWE-200",
+    "severity": "high",
+    "description": "检测敏感信息泄露：硬编码的API密钥、令牌、凭证",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "c18d1a06-7464-4e97-bd44-15074034eb7a",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\api-client\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-6rw7-vpxm-498p",
+    "severity": "high",
+    "description": "Vulnerable dependency: qs@6.14.0 — GHSA-6rw7-vpxm-498p  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: qs@6.14.0",
+      "Vulnerability: GHSA-6rw7-vpxm-498p",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "4ae71618-868c-4ab8-af2c-377aeb4101c4",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\token\\NonPatJwtAuthenticationConverter.java",
+    "line_start": 25,
+    "line_end": 25,
+    "detector": "RegexRule: sensitive-log-data",
+    "vuln_type": "CWE-532",
+    "severity": "medium",
+    "description": "检测敏感信息记录到日志：密码、密钥等敏感信息被记录",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "e574642e-a824-46ad-9c7a-fa14317b7cbb",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\twofactor\\totp\\DefaultTotpAuthService.java",
+    "line_start": 46,
+    "line_end": 46,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 46",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "ca601efb-faaf-4d05-9c94-6a34c397f548",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\eslint.config.ts",
+    "line_start": 18,
+    "line_end": 18,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 18",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "4b33b7fc-10cf-4b89-a9c5-805ce050e4f6",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\src\\formkit\\inputs\\select\\SelectMain.vue",
+    "line_start": 425,
+    "line_end": 425,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 425",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "ef6b0bab-0838-4d29-bba3-a4a902d1f05d",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\core\\endpoint\\console\\EmailVerificationCodeTest.java",
+    "line_start": 38,
+    "line_end": 38,
+    "detector": "RegexRule: sensitive-info-leak",
+    "vuln_type": "CWE-200",
+    "severity": "high",
+    "description": "检测敏感信息泄露：硬编码的API密钥、令牌、凭证",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "dcbbbf0d-fe33-4f3f-beb8-c79721a2803d",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-h7mw-gpvr-xq4m",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-h7mw-gpvr-xq4m  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-h7mw-gpvr-xq4m",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "4341af1a-2028-4455-b7c7-1127bad93d39",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-39q2-94rc-95cp",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-39q2-94rc-95cp  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-39q2-94rc-95cp",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "09795ac3-53ab-4f1e-ab3c-86f89f3c849b",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\PathPrefixPredicateTest.java",
+    "line_start": 33,
+    "line_end": 33,
+    "detector": "RegexRule: csrf-detection",
+    "vuln_type": "CWE-352",
+    "severity": "medium",
+    "description": "检测CSRF风险：缺少CSRF保护的表单或API端点",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "f687c607-0a85-49f3-accd-5d296d2bbbc2",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 119,
+    "line_end": 119,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 119",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "767bc595-7f74-4555-8be9-e3b0a9827e8c",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\PathPrefixPredicateTest.java",
+    "line_start": 42,
+    "line_end": 42,
+    "detector": "RegexRule: debug-info-leak",
+    "vuln_type": "CWE-215",
+    "severity": "info",
+    "description": "检测调试信息泄露：包含调试信息的代码",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "232e3d70-4e2b-4691-a4c6-855a2655406c",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\authentication\\rememberme\\TokenBasedRememberMeServices.java",
+    "line_start": 239,
+    "line_end": 239,
+    "detector": "RegexRule: insecure-cookie",
+    "vuln_type": "CWE-614",
+    "severity": "medium",
+    "description": "检测不安全的Cookie设置：缺少Secure或HttpOnly标志",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b68cb1a2-7faf-46c3-90fa-9b7531ef7646",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\plugin\\PluginRequestMappingHandlerMappingTest.java",
+    "line_start": 301,
+    "line_end": 301,
+    "detector": "RegexRule: csrf-detection",
+    "vuln_type": "CWE-352",
+    "severity": "medium",
+    "description": "检测CSRF风险：缺少CSRF保护的表单或API端点",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "4523a9eb-6aee-41c1-a72d-f19d0efc3b33",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-3p68-rc4w-qgx5",
+    "severity": "high",
+    "description": "Vulnerable dependency: axios@1.12.2 — GHSA-3p68-rc4w-qgx5  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: axios@1.12.2",
+      "Vulnerability: GHSA-3p68-rc4w-qgx5",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "dd3f3050-67a8-410d-80c8-1a4283088d9d",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 67,
+    "line_end": 67,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "dcad85cc-f851-4160-8432-7491727b4df5",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-vhxf-7vqr-mrjg",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-vhxf-7vqr-mrjg  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-vhxf-7vqr-mrjg",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "52afc8aa-df7d-4b1a-9855-d8e5263a7c5d",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 107,
+    "line_end": 107,
+    "detector": "RegexRule: no-hardcoded-passwords",
+    "vuln_type": "CWE-259",
+    "severity": "high",
+    "description": "Detects hardcoded passwords in code.",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b5be6372-81cd-4b62-bcca-0bfc11030bd2",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-f23m-r3pf-42rh",
+    "severity": "high",
+    "description": "Vulnerable dependency: lodash-es@4.17.21 — GHSA-f23m-r3pf-42rh  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: lodash-es@4.17.21",
+      "Vulnerability: GHSA-f23m-r3pf-42rh",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "e8b7be73-8ca2-426e-ba6d-754508ba070d",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-crv5-9vww-q3g8",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-crv5-9vww-q3g8  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-crv5-9vww-q3g8",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "be9c7234-e413-4589-a491-dd08c57dceee",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 107,
+    "line_end": 107,
+    "detector": "RegexRule: sensitive-info-leak",
+    "vuln_type": "CWE-200",
+    "severity": "high",
+    "description": "检测敏感信息泄露：硬编码的API密钥、令牌、凭证",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "017dfe93-c3e0-4634-85dd-ce9fdb0b1724",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\test\\java\\run\\halo\\app\\security\\authentication\\login\\LoginAuthenticationConverterTest.java",
+    "line_start": 89,
+    "line_end": 89,
+    "detector": "RegexScanner",
+    "vuln_type": "Hardcoded Password",
+    "severity": "high",
+    "description": "Found potential Hardcoded Password at line 89",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "e2db23c2-e421-47a2-9bf2-17a6ad69eef9",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\console-src\\modules\\contents\\attachments\\components\\AttachmentGroupBadge.vue",
+    "line_start": 60,
+    "line_end": 60,
+    "detector": "RegexScanner",
+    "vuln_type": "TODO Comment",
+    "severity": "low",
+    "description": "Found potential TODO Comment at line 60",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "672d4ccc-d771-48e2-9cb4-c2bf5e6b5599",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\application\\src\\main\\java\\run\\halo\\app\\security\\CorsConfigurer.java",
+    "line_start": 50,
+    "line_end": 50,
+    "detector": "RegexRule: unsafe-http-methods",
+    "vuln_type": "CWE-650",
+    "severity": "medium",
+    "description": "检测不安全的HTTP方法：允许危险的HTTP方法",
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "e869e0f8-2ad0-4a62-8594-a39e9870cf2a",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\packages\\api-client\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-w7fw-mjwx-w883",
+    "severity": "high",
+    "description": "Vulnerable dependency: qs@6.14.0 — GHSA-w7fw-mjwx-w883  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: qs@6.14.0",
+      "Vulnerability: GHSA-w7fw-mjwx-w883",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "b0835a63-db98-4b04-9251-f2a8cca53230",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-xxjr-mmjv-4gpg",
+    "severity": "high",
+    "description": "Vulnerable dependency: lodash-es@4.17.21 — GHSA-xxjr-mmjv-4gpg  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: lodash-es@4.17.21",
+      "Vulnerability: GHSA-xxjr-mmjv-4gpg",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  },
+  {
+    "finding_id": "93f6b39c-e558-416b-b05f-28344f863dae",
+    "file_path": "C:/Users/wfshenm/Downloads/halo-main\\ui\\package.json",
+    "line_start": 1,
+    "line_end": 1,
+    "detector": "SCAScanner",
+    "vuln_type": "SCA:GHSA-v8jm-5vwx-cfxm",
+    "severity": "high",
+    "description": "Vulnerable dependency: dompurify@3.2.2 — GHSA-v8jm-5vwx-cfxm  []",
+    "analysis_trail": [
+      "Ecosystem: npm",
+      "Package: dompurify@3.2.2",
+      "Vulnerability: GHSA-v8jm-5vwx-cfxm",
+      "Summary: "
+    ],
+    "confidence": 0.5
+  }
+]

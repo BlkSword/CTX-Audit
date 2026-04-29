@@ -1,5 +1,10 @@
 category: injection
 cwe: CWE-90
+owasp: "A03:2021-Injection"
+remediation: "使用参数化 LDAP 查询; 对用户输入进行 LDAP 特殊字符转义; 使用白名单验证输入。"
+references:
+  - "https://owasp.org/www-community/attacks/LDAP_injection"
+  - "https://cwe.mitre.org/data/definitions/90.html"
 description: 检测LDAP注入风险：用户输入直接用于LDAP查询
 id: ldap-injection
 language: java

@@ -111,6 +111,10 @@ enum Commands {
         /// 并行扫描线程数
         #[arg(short, long, default_value = "4")]
         threads: usize,
+
+        /// 启用深度扫描（AST 污点分析）
+        #[arg(long)]
+        deep: bool,
     },
 
     /// REPL 对话模式
@@ -383,6 +387,7 @@ async fn main() -> Result<()> {
             pattern,
             output,
             threads,
+            deep,
         } => {
             commands::scan::execute(
                 path,
@@ -392,6 +397,7 @@ async fn main() -> Result<()> {
                 output,
                 threads,
                 cli.output.as_str(),
+                deep,
             )
             .await
         }

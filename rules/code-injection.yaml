@@ -9,5 +9,13 @@ remediation: "避免使用 eval()、new Function() 等动态代码执行函数�
 references:
   - "https://owasp.org/www-community/attacks/Code_Injection"
   - "https://cwe.mitre.org/data/definitions/94.html"
-pattern: (?i)(eval\s*\(|exec\s*\(|Function\s*\(|setTimeout\s*\(\s*['"]|setInterval\s*\(\s*['"]|new\s+Function|vm\.runInNewContext|vm\.runInThisContext|vm\.runInContext|child_process\.exec|spawn|execSync|execFile|Runtime\.getRuntime\(\)\.exec|ProcessBuilder|GroovyShell|ScriptEngineManager|ScriptEngine|invokeMethod|invoke|createScript|eval\$\{|@eval|<%.*eval|%>)
+patterns:
+  - language: javascript
+    pattern: (?i)(eval\s*\(|new\s+Function\s*\(|setTimeout\s*\(\s*['"]|setInterval\s*\(\s*['"]|vm\.runInNewContext|vm\.runInThisContext|vm\.runInContext|child_process\.exec\s*\()
+  - language: python
+    pattern: (?i)(eval\s*\(|exec\s*\(|__import__\s*\(|compile\s*\()
+  - language: java
+    pattern: (?i)(ScriptEngineManager|GroovyShell|ScriptEngine\.eval|Runtime\.getRuntime\(\)\.exec|ProcessBuilder)
+  - language: php
+    pattern: (?i)(eval\s*\(|assert\s*\(|create_function\s*\(|preg_replace\s*\(.*/[a-z]*e[a-z]*['"])
 severity: critical

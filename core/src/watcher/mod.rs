@@ -16,6 +16,10 @@ use std::time::Instant;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::taint::TaintFlow;
+use crate::scanner::Finding;
+use crate::AstTaintAnalyzer;
+
 /// 守护模式配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatcherConfig {
@@ -214,6 +218,97 @@ impl FileWatcher {
             .collect()
     }
 
+    /// 增量扫描：只分析变更的文件
+    ///
+    /// 使用 AstTaintAnalyzer 对变更文件进行污点分析，
+    /// 返回新发现的漏洞（不会重新分析未变更的文件）。
+    pub fn incremental_scan(
+        &mut self,
+        delta: &DeltaResult,
+    ) -> IncrementalScanResult {
+        let start = Instant::now();
+
+        // 获取变更的源码文件
+        let changed_source_files = self.get_changed_source_files(delta);
+
+        if changed_source_files.is_empty() {
+            return IncrementalScanResult {
+                scanned_files: 0,
+                taint_flows: Vec::new(),
+                findings: Vec::new(),
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+
+        let mut analyzer = AstTaintAnalyzer::new();
+        let mut all_flows: Vec<TaintFlow> = Vec::new();
+        let mut all_findings: Vec<Finding> = Vec::new();
+
+        // 分析变更文件
+        for file_path in &changed_source_files {
+            if let Ok(content) = std::fs::read_to_string(file_path) {
+                let file_str = file_path.to_string_lossy().to_string();
+
+                // AST 污点分析
+                let flows = analyzer.analyze_file(file_path, &content);
+
+                // 转换为 Finding 格式
+                for flow in &flows {
+                    all_findings.push(Finding {
+                        finding_id: flow.id.clone(),
+                        file_path: file_str.clone(),
+                        line_start: flow.source.line,
+                        line_end: flow.sink.line,
+                        detector: "AstTaintAnalyzer".to_string(),
+                        vuln_type: format!("{:?}", flow.vulnerability_type),
+                        severity: format!("{:?}", flow.severity),
+                        description: format!(
+                            "{:?}: {} -> {}",
+                            flow.vulnerability_type,
+                            flow.source.symbol,
+                            flow.sink.symbol,
+                        ),
+                        analysis_trail: Some(
+                            flow.path.iter().map(|n| {
+                                format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
+                            }).collect()
+                        ),
+                        llm_output: None,
+                        confidence: None,
+                        corroboration_count: None,
+                    });
+                }
+
+                all_flows.extend(flows);
+            }
+        }
+
+        let duration = start.elapsed().as_millis() as u64;
+        let scanned = changed_source_files.len();
+
+        tracing::info!(
+            "[Watcher] 增量扫描完成: {} 个文件, {} 条污点流, {} 个发现, 耗时 {}ms",
+            scanned,
+            all_flows.len(),
+            all_findings.len(),
+            duration,
+        );
+
+        self.emit(WatchEvent::IncrementalScanComplete {
+            scanned_files: scanned,
+            new_findings: all_findings.len(),
+            removed_findings: delta.deleted_files.len(),
+            duration_ms: duration,
+        });
+
+        IncrementalScanResult {
+            scanned_files: scanned,
+            taint_flows: all_flows,
+            findings: all_findings,
+            duration_ms: duration,
+        }
+    }
+
     /// 获取项目路径
     pub fn project_path(&self) -> &str {
         &self.config.project_path
@@ -242,4 +337,17 @@ pub fn is_source_file(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|ext| source_extensions.contains(&ext))
         .unwrap_or(false)
+}
+
+/// 增量扫描结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncrementalScanResult {
+    /// 扫描的文件数
+    pub scanned_files: usize,
+    /// 污点流（AST 引擎）
+    pub taint_flows: Vec<TaintFlow>,
+    /// 发现的漏洞（Finding 格式）
+    pub findings: Vec<Finding>,
+    /// 耗时（毫秒）
+    pub duration_ms: u64,
 }

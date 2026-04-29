@@ -185,26 +185,6 @@ impl ContextAwareAnalyzer {
         boundaries
     }
 
-    /// 判断是否为安全装饰器
-    fn is_security_decorator(&self, decorator: &str) -> bool {
-        let security_decorators = [
-            "login_required",
-            "permission_required",
-            "require_http_methods",
-            "csrf_protect",
-            "authorize",
-            "secured",
-            "pre_authorize",
-            "crossorigin",
-            "authentication_required",
-        ];
-
-        let decorator_lower = decorator.to_lowercase();
-        security_decorators
-            .iter()
-            .any(|&sec| decorator_lower.contains(&sec.replace('_', "")))
-    }
-
     /// 检查是否有显式安全检查
     fn has_explicit_security_checks(&self, code: &str) -> bool {
         let security_patterns = [
@@ -240,10 +220,13 @@ impl ContextAwareAnalyzer {
         }
 
         // 从代码特征推断
+        if code.contains("from django") || code.contains("import django") {
+            return Some("django".to_string());
+        }
         if code.contains("@login_required") && code.contains("django") {
             return Some("django".to_string());
         }
-        if code.contains("from flask") {
+        if code.contains("from flask") || code.contains("import flask") {
             return Some("flask".to_string());
         }
         if code.contains("require('express')") {
@@ -268,6 +251,28 @@ impl ContextAwareAnalyzer {
         }
 
         decorators
+    }
+
+    /// 判断装饰器是否是安全相关的
+    pub fn is_security_decorator(&self, decorator: &str) -> bool {
+        let security_decorators = [
+            "@login_required",
+            "@permission_required",
+            "@auth_required",
+            "@roles_required",
+            "@requires_auth",
+            "@authenticated",
+            "@authorized",
+            "@require_http_methods",
+            "@csrf_protect",
+            "@ensure_csrf_cookie",
+            "@xframe_options_sameorigin",
+            "@secure_page",
+            "@jwt_required",
+            "@require_admin",
+        ];
+
+        security_decorators.iter().any(|&sec| decorator.starts_with(sec))
     }
 
     /// 分析框架特定的安全问题

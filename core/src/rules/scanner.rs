@@ -25,7 +25,7 @@ impl RuleScanner {
     pub fn new(rules: Vec<Rule>) -> Self {
         let mut compiled_rules = Vec::new();
         for rule in rules {
-            // Priority: Query (AST) > Pattern (Regex)
+            // Priority: Query (AST) > patterns (multi-lang) > Pattern (Regex)
             if let Some(query_str) = &rule.query {
                 if let Some(lang) = get_language_for_rule(&rule.language) {
                     match Query::new(&lang, query_str) {
@@ -45,6 +45,27 @@ impl RuleScanner {
                         "Unsupported language for Tree-sitter rule {}: {}",
                         rule.id, rule.language
                     );
+                }
+            } else if let Some(patterns) = &rule.patterns {
+                // 多语言模式：为每个 LanguagePattern 创建独立的编译规则
+                for lp in patterns {
+                    if let Ok(regex) = Regex::new(&lp.pattern) {
+                        // 创建一条带特定语言的副本
+                        let mut lang_rule = rule.clone();
+                        lang_rule.language = lp.language.clone();
+                        lang_rule.pattern = Some(lp.pattern.clone());
+                        lang_rule.patterns = None; // 避免重复展开
+                        compiled_rules.push(CompiledRule {
+                            rule: lang_rule,
+                            matcher: RuleMatcher::Regex(regex),
+                            language: None,
+                        });
+                    } else {
+                        eprintln!(
+                            "Invalid regex pattern for rule {} ({}): {}",
+                            rule.id, lp.language, lp.pattern
+                        );
+                    }
                 }
             } else if let Some(pattern) = &rule.pattern {
                 if let Ok(regex) = Regex::new(pattern) {
@@ -157,6 +178,8 @@ fn create_finding(
         description: rule.description.clone(),
         analysis_trail: None,
         llm_output: None,
+        confidence: None,
+        corroboration_count: None,
     }
 }
 
@@ -180,7 +203,7 @@ fn rule_matches_extension(language: &str, extension: &str) -> bool {
     match language.to_lowercase().as_str() {
         "python" => extension == "py",
         "javascript" | "typescript" => {
-            ["js", "jsx", "ts", "tsx", "mjs", "cjs"].contains(&extension)
+            ["js", "jsx", "ts", "tsx", "mjs", "cjs", "vue"].contains(&extension)
         }
         "rust" => extension == "rs",
         "go" => extension == "go",

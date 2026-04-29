@@ -1,8 +1,19 @@
 category: injection
 cwe: CWE-117
+owasp: "A09:2021-Security Logging and Monitoring Failures"
+remediation: "对写入日志的用户输入进行净化; 使用结构化日志格式; 防止 CRLF 注入（过滤 \\r\\n 字符）。"
+references:
+  - "https://owasp.org/www-community/attacks/Log_Injection"
+  - "https://cwe.mitre.org/data/definitions/117.html"
 description: 检测日志注入风险：用户输入未经过滤直接写入日志
 id: log-injection
 language: all
 name: Log Injection Detection
-pattern: (?i)(logger\.|log\.|Logger\.|console\.log|console\.error|print|println|printf|System\.out\.print|System\.err\.print).*\+.*request|.*log.*\+.*user|.*log.*\+.*input|.*log.*\+.*param
+patterns:
+  - language: java
+    pattern: (?i)(log\.(info|debug|warn|error)|logger\.(info|debug|warn|error)).*\+.*(request|param|input|user)
+  - language: javascript
+    pattern: (?i)(console\.(log|error|warn)).*\+.*(req\.|request|param|input)
+  - language: python
+    pattern: (?i)(logger\.(info|debug|warning|error)|log\.(info|debug|warning)).*\+.*(request|param|input)
 severity: medium
