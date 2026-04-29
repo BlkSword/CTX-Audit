@@ -9,5 +9,13 @@ remediation: "使用参数化的命令执行 API；避免在 subprocess 中使�
 references:
   - "https://owasp.org/www-community/attacks/Command_Injection"
   - "https://cwe.mitre.org/data/definitions/78.html"
-pattern: (?i)(Runtime\.getRuntime\(\)\.exec|ProcessBuilder|exec\(|system\(|popen\(|shell_exec\(|passthru\(|eval\s*\(|`[^`]+`)\s*\(.*\+|exec\s*\(\s*['"][^'"]*\$)
+patterns:
+  - language: java
+    pattern: (?i)(Runtime\.getRuntime\(\)\.exec\s*\(|ProcessBuilder\s*\()
+  - language: javascript
+    pattern: (?i)(child_process\.exec\s*\(|child_process\.execSync\s*\(|child_process\.spawn\s*\(|require\s*\(\s*['\"]child_process['\"]\s*\))
+  - language: python
+    pattern: (?i)(subprocess\.(call|run|Popen)\s*\(|os\.system\s*\(|os\.popen\s*\()
+  - language: php
+    pattern: (?i)(shell_exec\s*\(|passthru\s*\(|popen\s*\(|system\s*\(|exec\s*\()
 severity: critical

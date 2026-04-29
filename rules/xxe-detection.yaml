@@ -2,12 +2,12 @@ category: injection
 cwe: CWE-611
 description: 检测XXE风险：不安全的XML解析器配置
 id: xxe-detection
-language: all
+language: java
 name: XXE Detection
 owasp: "A05:2021-Security Misconfiguration"
 remediation: "禁用 XML 外部实体：setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true)；使用白名单验证 XML 输入；升级到安全的 XML 解析库。"
 references:
   - "https://owasp.org/www-community/attacks/XXE"
   - "https://cwe.mitre.org/data/definitions/611.html"
-pattern: (?i)(DocumentBuilderFactory|SAXParser|XMLReader|XmlReader|XmlDocument|XmlTextReader|XDocument|XmlParser|XmlParse|parseXml|loadXml).*(?!\bsetFeature\b.*\bexternal-general-entities\b.*false|setFeature.*external-parameter-entities.*false|setFeature.*disallow-doctype-decl.*true|expandEntityReferences.*false)
+pattern: (?i)(DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLReaderFactory\.createXMLReader|javax\.xml\.parsers\.SAXParser|TransformerFactory\.newInstance|SchemaFactory\.newInstance)
 severity: critical

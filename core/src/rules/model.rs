@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+/// 语言特定模式 — 允许一条规则对不同语言使用不同正则
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct LanguagePattern {
+    pub language: String,
+    pub pattern: String,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Rule {
     pub id: String,
@@ -9,6 +16,9 @@ pub struct Rule {
     pub language: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
+    /// 多语言模式列表（优先于 pattern）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patterns: Option<Vec<LanguagePattern>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

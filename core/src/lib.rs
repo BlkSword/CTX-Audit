@@ -16,7 +16,7 @@ pub use ast::{
     NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody,
 };
 pub use diff::DiffEngine;
-pub use scanner::{Finding, Scanner, scan_directory};
+pub use scanner::{Finding, Scanner, scan_directory, scan_directory_deep};
 pub use scanner::manager::ScannerManager;
 pub use scanner::regex_scanner::RegexScanner;
 pub use scanner::sca_scanner::ScaScanner;
@@ -37,6 +37,7 @@ pub use analysis::{
     AstTaintAnalyzer,
     DataFlowAnalysis, FlowGraph, FlowNode,
     ImportResolver, SymbolReference, CrossFileReference,
+    FunctionSummary, CrossFileTaintAnalyzer,
 };
 
 pub mod error {

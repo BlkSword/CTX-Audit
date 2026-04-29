@@ -9,5 +9,11 @@ remediation: "避免对不可信数据进行反序列化；使用安全的序列
 references:
   - "https://owasp.org/www-community/vulnerabilities/Deserialization_of_untrusted_data"
   - "https://cwe.mitre.org/data/definitions/502.html"
-pattern: (?i)(ObjectInputStream|readObject|readUnshared|XMLDecoder|XStream|Yaml\.load|pickle\.loads|pickle\.load|marshal\.loads|marshal\.load|unpickle|unserialize|json\.decode|JSON\.parse|MessagePack\.unpack|protobuf\.ParseFromString|\.Deserialize|\.FromBinary|\.ParseFrom)
+patterns:
+  - language: java
+    pattern: (?i)(ObjectInputStream\s*\(|readObject\s*\(|readUnshared\s*\(|XMLDecoder\s*\(|XStream\s*\()
+  - language: python
+    pattern: (?i)(pickle\.loads?\s*\(|marshal\.loads?\s*\(|yaml\.load\s*\(|yaml\.unsafe_load\s*\()
+  - language: php
+    pattern: (?i)(unserialize\s*\()
 severity: critical

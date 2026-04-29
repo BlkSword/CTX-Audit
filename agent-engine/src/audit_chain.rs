@@ -315,7 +315,7 @@ pub enum HypothesisStatus {
 }
 
 /// 证据类型
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum EvidenceType {
     /// 代码模式匹配
     PatternMatch,

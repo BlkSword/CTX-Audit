@@ -107,18 +107,30 @@ pub async fn execute(
                     }
                 }
 
-                // 增量扫描（当前简化为全量重扫描）
-                // TODO: Phase 2 中实现真正的增量扫描
+                // 增量扫描（使用 AstTaintAnalyzer 分析变更文件）
                 renderer.info(&format!(
-                    "[Watch] 检测到 {} 个源码文件变更，重新扫描...",
+                    "[Watch] 检测到 {} 个源码文件变更，执行增量扫描...",
                     changed_count
                 ));
 
-                let new_findings = run_scan(&path, &severity).await;
-                let new_count = new_findings.len();
+                let incremental_result = watcher.incremental_scan(&delta);
+                let incremental_count = incremental_result.findings.len();
+
+                // 先执行全量扫描获取基线
+                let full_findings = run_scan(&path, &severity).await;
+
+                // 合并增量结果：保留未变更文件的 findings，替换变更文件的
+                let changed_set: std::collections::HashSet<String> = changed_source_files.iter()
+                    .filter_map(|p| p.to_str().map(|s| s.to_string()))
+                    .collect();
+                let mut merged_findings: Vec<_> = full_findings.into_iter()
+                    .filter(|f| !changed_set.contains(&f.file_path))
+                    .collect();
+                merged_findings.extend(incremental_result.findings.clone());
+                let new_count = merged_findings.len();
 
                 // 更新 SARIF
-                generate_and_save_sarif(&new_findings, watcher.sarif_output_path())
+                generate_and_save_sarif(&merged_findings, watcher.sarif_output_path())
                     .await
                     .map_err(|e| miette::miette!("SARIF 更新失败: {}", e))?;
 

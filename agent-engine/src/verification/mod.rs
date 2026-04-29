@@ -13,6 +13,7 @@ pub use dual_verification::{
     EnhancedVerificationResult, Judgment, SelfQuestioningResult,
     FinalConclusion, ConfidenceRecord, ConclusionType,
     VerificationContext, FrameworkInfo,
+    TaintFlowEvidence, TaintPointInfo,
 };
 pub use self_questioner::{
     SelfQuestioner, ContradictionEvidence,

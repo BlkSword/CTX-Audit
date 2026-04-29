@@ -1,8 +1,19 @@
 category: security-misconfiguration
 cwe: CWE-601
+owasp: "A01:2021-Broken Access Control"
+remediation: "使用白名单验证重定向目标 URL; 不直接使用用户输入作为重定向地址; 使用相对路径或内部路由。"
+references:
+  - "https://owasp.org/www-community/attacks/Open_redirect"
+  - "https://cwe.mitre.org/data/definitions/601.html"
 description: 检测不安全的重定向：基于用户输入的开放重定向
 id: unsafe-redirect
 language: all
 name: Unsafe Redirect Detection
-pattern: (?i)(response\.sendRedirect|header\s*\(\s*['"]Location|location\.href|window\.location|response\.redirect|redirect\(|\.forward\().*\+|redirect.*request\.|sendRedirect.*request\.|Location.*request\.
+patterns:
+  - language: java
+    pattern: (?i)(sendRedirect\s*\(|\.forward\s*\().*(?:request|param|input)
+  - language: javascript
+    pattern: (?i)(location\.href\s*=|window\.location\s*=|response\.redirect\s*\().*(?:req\.|request|param|input)
+  - language: python
+    pattern: (?i)(redirect\s*\(|HttpResponseRedirect\s*\().*(?:request|param|input)
 severity: high

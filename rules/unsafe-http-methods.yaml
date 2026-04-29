@@ -1,8 +1,13 @@
 category: security-misconfiguration
 cwe: CWE-650
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "禁用不必要的 HTTP 方法（如 TRACE、DELETE、PUT）; 仅允许 GET 和 POST（必要时加 HEAD）; 配置 Web 服务器限制 HTTP 方法。"
+references:
+  - "https://owasp.org/www-community/attacks/HTTP_Method_Tampering"
+  - "https://cwe.mitre.org/data/definitions/650.html"
 description: 检测不安全的HTTP方法：允许危险的HTTP方法
 id: unsafe-http-methods
-language: all
+language: java
 name: Unsafe HTTP Methods Detection
 pattern: (?i)(@RequestMapping.*method.*=.*RequestMethod\.(PUT|DELETE|TRACE|OPTIONS|PATCH)|allowMethods|allowedMethods|httpMethodAllowed|httpMethodsAllowed).*(PUT|DELETE|TRACE|OPTIONS|PATCH)
 severity: medium

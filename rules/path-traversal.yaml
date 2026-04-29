@@ -9,5 +9,13 @@ remediation: "对用户提供的文件路径进行规范化处理（realpath）�
 references:
   - "https://owasp.org/www-community/attacks/Path_Traversal"
   - "https://cwe.mitre.org/data/definitions/22.html"
-pattern: (?i)(new\s+File\(|FileInputStream|FileReader|FileWriter|FileOutputStream|Files\.read|Files\.write|Path\.of|Paths\.get|open\(|fopen\(|readfile\(|file_get_contents\(|include|require).*\+|File\s*\(.*request|path\s*=\s*.*request|filename\s*=\s*.*request
+patterns:
+  - language: java
+    pattern: (?i)(new\s+File\s*\(|FileInputStream\s*\(|Path\.of\s*\(|Paths\.get\s*\().*(?:request|param|input|user)
+  - language: javascript
+    pattern: (?i)(readFile|writeFile|readFileSync|writeFileSync|fs\.open\s*\().*(?:req\.|request|param|input|user)
+  - language: python
+    pattern: (?i)(open\s*\(|read_file\s*\(|file_get_contents\s*\().*(?:request|param|input|user)
+  - language: php
+    pattern: (?i)(fopen\s*\(|readfile\s*\(|file_get_contents\s*\(|include\s*\(|require\s*\().*(?:\$_GET|\$_POST|\$_REQUEST|request|input)
 severity: high

@@ -1,8 +1,13 @@
 category: authentication
 cwe: CWE-352
+owasp: "A01:2021-Broken Access Control"
+remediation: "使用 CSRF Token 并验证; 设置 SameSite Cookie 属性; 使用框架内置的 CSRF 防护机制。"
+references:
+  - "https://owasp.org/www-community/attacks/csrf"
+  - "https://cwe.mitre.org/data/definitions/352.html"
 description: 检测CSRF风险：缺少CSRF保护的表单或API端点
 id: csrf-detection
-language: all
+language: java
 name: CSRF Detection
-pattern: (?i)(@PostMapping|@RequestMapping|form.*action|\.post\(|\.ajax\(|fetch\(|XMLHttpRequest).*(?!\bcsrf\b|\btoken\b|\b_csrf\b|\bX-CSRF\b|\bXSRF\b)
+pattern: (?i)@(PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*\(
 severity: medium

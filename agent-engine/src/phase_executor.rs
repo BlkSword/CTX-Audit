@@ -1361,16 +1361,28 @@ impl PhaseAwareExecutor {
     /// 使用双重验证系统验证漏洞
     pub async fn execute_dual_verification(&self, candidate: &VulnerabilityCandidate) -> Result<crate::verification::EnhancedVerificationResult, String> {
         if let Some(ref verifier) = self.dual_verification {
+            // 从审计链中收集该候选的污点分析证据
+            let taint_evidence = self.collect_taint_evidence_for_candidate(candidate);
+
             let context = crate::verification::VerificationContext {
                 language: self.detect_language(&candidate.file_path),
                 call_chain: vec![],
                 data_flow: vec![],
                 related_files: vec![],
                 framework_info: None,
-                taint_flow_evidence: None,
+                taint_flow_evidence: taint_evidence.clone(),
             };
 
-            Ok(verifier.verify(candidate, &context).await)
+            // 如果有确定性污点证据，使用交叉验证
+            if let Some(ref evidence) = taint_evidence {
+                Ok(verifier.verify_with_taint_evidence(
+                    candidate,
+                    &context,
+                    Some(evidence.confidence),
+                ).await)
+            } else {
+                Ok(verifier.verify(candidate, &context).await)
+            }
         } else {
             Err("双重验证系统未初始化".to_string())
         }
@@ -1386,6 +1398,59 @@ impl PhaseAwareExecutor {
     }
 
     // ========== 辅助方法 ==========
+
+    /// 从审计链收集候选漏洞的污点分析证据
+    fn collect_taint_evidence_for_candidate(
+        &self,
+        candidate: &VulnerabilityCandidate,
+    ) -> Option<crate::verification::TaintFlowEvidence> {
+        // 在审计链的假设中查找匹配的假设
+        let hypothesis = self.audit_chain.hypotheses.iter()
+            .find(|h| {
+                h.entry_point.file_path == candidate.file_path
+                    && h.entry_point.start_line == candidate.line
+            })?;
+
+        // 查找该假设的污点流证据
+        let taint_evidence = self.audit_chain.evidence.iter()
+            .filter(|e| e.hypothesis_id == hypothesis.id && e.evidence_type == EvidenceType::TaintFlow)
+            .collect::<Vec<_>>();
+
+        if taint_evidence.is_empty() {
+            return None;
+        }
+
+        // 从证据构建 TaintFlowEvidence
+        let source_info = taint_evidence.iter()
+            .find(|e| e.location.start_line <= candidate.line)
+            .map(|e| crate::verification::TaintPointInfo {
+                file_path: e.location.file_path.clone(),
+                line: e.location.start_line,
+                symbol: e.content.split(':').next().unwrap_or("").trim().to_string(),
+                code_snippet: e.location.snippet.clone(),
+            });
+
+        let sink_info = taint_evidence.iter()
+            .find(|e| e.location.start_line >= candidate.line)
+            .map(|e| crate::verification::TaintPointInfo {
+                file_path: e.location.file_path.clone(),
+                line: e.location.start_line,
+                symbol: e.content.split(':').next().unwrap_or("").trim().to_string(),
+                code_snippet: e.location.snippet.clone(),
+            });
+
+        match (source_info, sink_info) {
+            (Some(source), Some(sink)) => Some(crate::verification::TaintFlowEvidence {
+                source,
+                sink,
+                propagation_summary: hypothesis.data_flow.iter()
+                    .map(|s| format!("{:?}: {}", s.step_type, s.variable))
+                    .collect(),
+                confidence: hypothesis.current_confidence,
+            }),
+            _ => None,
+        }
+    }
 
     /// 检测编程语言
     fn detect_language(&self, file_path: &str) -> String {

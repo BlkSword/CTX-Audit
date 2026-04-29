@@ -50,12 +50,14 @@ struct OsvBatchResponse {
 
 #[derive(Debug, Deserialize)]
 struct OsvVulnResult {
+    #[serde(default)]
     vulns: Vec<OsvVulnerability>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OsvVulnerability {
     id: String,
+    #[serde(default)]
     summary: String,
     #[serde(default)]
     severity: Option<Vec<OsvSeverity>>,
@@ -351,20 +353,28 @@ impl ScaScanner {
             .unwrap_or_else(|| "high".to_string());
 
         let aliases = vuln.aliases.join(", ");
+        // 当 summary 为空时，用 vuln.id 作为替代描述
+        let summary_text = if vuln.summary.is_empty() {
+            format!("({})", vuln.id)
+        } else {
+            vuln.summary.clone()
+        };
         let description = format!(
-            "Vulnerable dependency: {}@{} — {} {} [{}]",
+            "Vulnerable dependency: {}@{} — {}",
             dep.name,
             dep.version,
-            vuln.id,
-            vuln.summary,
-            aliases,
+            summary_text,
         );
 
         let trail = vec![
             format!("Ecosystem: {}", dep.ecosystem),
             format!("Package: {}@{}", dep.name, dep.version),
             format!("Vulnerability: {}", vuln.id),
-            format!("Summary: {}", vuln.summary),
+            if vuln.summary.is_empty() {
+                format!("See: https://osv.dev/vulnerability/{}", vuln.id)
+            } else {
+                format!("Summary: {}", vuln.summary)
+            },
         ];
 
         Finding {
@@ -378,6 +388,8 @@ impl ScaScanner {
             description,
             analysis_trail: Some(trail),
             llm_output: None,
+            confidence: None,
+            corroboration_count: None,
         }
     }
 }
