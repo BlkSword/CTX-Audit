@@ -595,8 +595,13 @@ impl Specialist {
     fn build_system_prompt(&self, task: &AuditTask) -> String {
         let expert_prompt = get_expert_prompt(&self.specialty);
 
+        // 注入框架特定的污点规则知识
+        let taint_knowledge = self.build_taint_knowledge_section();
+
         format!(
             r#"你是 {}，专门负责安全代码审计。
+
+{}
 
 {}
 
@@ -621,10 +626,80 @@ Action Input: {{"参数名": "参数值"}}
 可用工具将动态提供。"#,
             self.specialty,
             expert_prompt,
+            taint_knowledge,
             task.task_type,
             task.target,
             task.priority
         )
+    }
+
+    /// 构建框架特定的污点规则知识
+    fn build_taint_knowledge_section(&self) -> String {
+        use deepaudit_core::load_taint_rules_from_dir;
+
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+        let rules_dir = std::path::Path::new(&manifest_dir)
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("rules").join("taint"));
+
+        let rules_dir = match rules_dir {
+            Some(d) if d.exists() => d,
+            _ => {
+                let alt = std::path::Path::new(&self.project_path)
+                    .join("rules").join("taint");
+                if alt.exists() { alt } else { return String::new() }
+            }
+        };
+
+        let loaded = match load_taint_rules_from_dir(&rules_dir) {
+            Ok(l) if !l.sources.is_empty() || !l.sinks.is_empty() => l,
+            _ => return String::new(),
+        };
+
+        let mut section = String::from("\n## 框架特定的污点规则知识\n\n");
+
+        // 所有专家都获取 source 知识
+        if !loaded.sources.is_empty() {
+            section.push_str("### 重点关注的用户输入源\n");
+            for source in &loaded.sources {
+                section.push_str(&format!(
+                    "- **{}**: {} (模式: {})\n",
+                    source.name,
+                    source.description,
+                    source.patterns.join(", "),
+                ));
+            }
+            section.push('\n');
+        }
+
+        // 根据专家领域过滤相关的 sinks
+        let relevant_sinks: Vec<_> = loaded.sinks.iter().filter(|sink| {
+            let vuln_type = format!("{:?}", sink.vulnerability_type).to_lowercase();
+            match self.specialty {
+                AgentSpecialty::SqlInjectionExpert => vuln_type.contains("sql"),
+                AgentSpecialty::XssExpert => vuln_type.contains("xss") || vuln_type.contains("script"),
+                AgentSpecialty::CommandInjectionExpert => vuln_type.contains("command"),
+                AgentSpecialty::PathTraversalExpert => vuln_type.contains("path") || vuln_type.contains("traversal"),
+                AgentSpecialty::SsrfExpert => vuln_type.contains("ssrf") || vuln_type.contains("request"),
+                AgentSpecialty::CryptoExpert => vuln_type.contains("crypto") || vuln_type.contains("weak"),
+                _ => true,
+            }
+        }).collect();
+
+        if !relevant_sinks.is_empty() {
+            section.push_str("### 重点关注的危险函数\n");
+            for sink in relevant_sinks {
+                section.push_str(&format!(
+                    "- **{}**: {} (模式: {})\n",
+                    sink.name,
+                    sink.description,
+                    sink.patterns.join(", "),
+                ));
+            }
+        }
+
+        section
     }
 
     /// 构建用户消息

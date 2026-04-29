@@ -339,6 +339,7 @@ impl PhaseAwareExecutor {
         // 对每个候选漏洞文件运行 AstTaintAnalyzer，将 taint flow 作为证据注入
         let mut taint_evidence_count = 0usize;
         let mut ast_analyzer = AstTaintAnalyzer::new();
+        let mut pending_evidence: Vec<Evidence> = Vec::new();
         {
             // 收集去重的文件路径
             let files: std::collections::HashSet<&str> = state.vulnerability_candidates
@@ -352,88 +353,87 @@ impl PhaseAwareExecutor {
                     let flows = ast_analyzer.analyze_file(&full_path, &code);
 
                     for flow in &flows {
-                        // 查找匹配的假设
-                        let matching_hypothesis = self.audit_chain.hypotheses.iter_mut()
-                            .find(|h| {
-                                h.entry_point.file_path == *file_path
-                                    && (h.entry_point.start_line == flow.source.line
-                                        || h.sink_point.start_line == flow.sink.line)
-                            });
+                        // 查找匹配的假设并更新数据流
+                        let matched_hyp_id = {
+                            self.audit_chain.hypotheses.iter_mut()
+                                .find(|h| {
+                                    h.entry_point.file_path == *file_path
+                                        && (h.entry_point.start_line == flow.source.line
+                                            || h.sink_point.start_line == flow.sink.line)
+                                })
+                                .map(|hypothesis| {
+                                    // 添加数据流步骤
+                                    hypothesis.add_data_flow_step(DataFlowStep {
+                                        step_type: DataFlowStepType::Source,
+                                        location: CodeLocation::new(flow.source.file_path.clone(), flow.source.line),
+                                        variable: flow.source.symbol.clone(),
+                                        code: flow.source.code_snippet.clone(),
+                                        description: format!("污点源: {}", flow.source.symbol),
+                                    });
 
-                        if let Some(hypothesis) = matching_hypothesis {
-                            // 添加 source 证据
-                            let source_evidence = Evidence::new(
-                                &hypothesis.id,
-                                EvidenceType::TaintFlow,
-                                CodeLocation::new(flow.source.file_path.clone(), flow.source.line),
-                                format!(
-                                    "污点源: {} ({}:{})",
-                                    flow.source.symbol,
-                                    flow.source.file_path,
-                                    flow.source.line,
-                                ),
-                            ).with_support(0.7).with_source("AstTaintAnalyzer");
+                                    hypothesis.add_data_flow_step(DataFlowStep {
+                                        step_type: DataFlowStepType::Sink,
+                                        location: CodeLocation::new(flow.sink.file_path.clone(), flow.sink.line),
+                                        variable: flow.sink.symbol.clone(),
+                                        code: flow.sink.code_snippet.clone(),
+                                        description: format!("污点汇: {}", flow.sink.symbol),
+                                    });
 
-                            hypothesis.add_data_flow_step(DataFlowStep {
-                                step_type: DataFlowStepType::Source,
-                                location: CodeLocation::new(flow.source.file_path.clone(), flow.source.line),
-                                variable: flow.source.symbol.clone(),
-                                code: flow.source.code_snippet.clone(),
-                                description: format!("污点源: {}", flow.source.symbol),
-                            });
+                                    for node in &flow.path {
+                                        hypothesis.add_data_flow_step(DataFlowStep {
+                                            step_type: match node.node_type {
+                                                deepaudit_core::analysis::FlowNodeType::Source => DataFlowStepType::Source,
+                                                deepaudit_core::analysis::FlowNodeType::Sink => DataFlowStepType::Sink,
+                                                deepaudit_core::analysis::FlowNodeType::Call => DataFlowStepType::ParameterPass,
+                                                deepaudit_core::analysis::FlowNodeType::Return => DataFlowStepType::ReturnValue,
+                                                _ => DataFlowStepType::Assignment,
+                                            },
+                                            location: CodeLocation::new(flow.source.file_path.clone(), node.line),
+                                            variable: node.symbol.clone(),
+                                            code: node.code_snippet.clone(),
+                                            description: format!("传播: {}", node.symbol),
+                                        });
+                                    }
 
-                            // 添加 sink 证据
-                            let sink_evidence = Evidence::new(
-                                &hypothesis.id,
-                                EvidenceType::TaintFlow,
-                                CodeLocation::new(flow.sink.file_path.clone(), flow.sink.line),
-                                format!(
-                                    "污点汇: {} ({}:{})",
-                                    flow.sink.symbol,
-                                    flow.sink.file_path,
-                                    flow.sink.line,
-                                ),
-                            ).with_support(0.8).with_source("AstTaintAnalyzer");
+                                    // 提升置信度
+                                    let new_confidence = (hypothesis.current_confidence + 0.15).min(1.0);
+                                    hypothesis.update_confidence(
+                                        new_confidence - hypothesis.current_confidence,
+                                        "AST 污点分析确认了数据流路径",
+                                    );
 
-                            hypothesis.add_data_flow_step(DataFlowStep {
-                                step_type: DataFlowStepType::Sink,
-                                location: CodeLocation::new(flow.sink.file_path.clone(), flow.sink.line),
-                                variable: flow.sink.symbol.clone(),
-                                code: flow.sink.code_snippet.clone(),
-                                description: format!("污点汇: {}", flow.sink.symbol),
-                            });
+                                    hypothesis.id.clone()
+                                })
+                        };
 
-                            // 添加传播路径步骤
-                            for node in &flow.path {
-                                hypothesis.add_data_flow_step(DataFlowStep {
-                                    step_type: match node.node_type {
-                                        deepaudit_core::analysis::FlowNodeType::Source => DataFlowStepType::Source,
-                                        deepaudit_core::analysis::FlowNodeType::Sink => DataFlowStepType::Sink,
-                                        deepaudit_core::analysis::FlowNodeType::Sanitizer => DataFlowStepType::Sanitization,
-                                        _ => DataFlowStepType::Assignment,
-                                    },
-                                    location: CodeLocation::new(flow.source.file_path.clone(), node.line),
-                                    variable: node.symbol.clone(),
-                                    code: node.code_snippet.clone(),
-                                    description: format!("传播: {}", node.symbol),
-                                });
-                            }
-
-                            // 将证据添加到审计链
-                            self.audit_chain.add_evidence(source_evidence);
-                            self.audit_chain.add_evidence(sink_evidence);
-                            taint_evidence_count += 2;
-
-                            // 提升有 taint flow 的假设置信度
-                            let new_confidence = (hypothesis.current_confidence + 0.15).min(1.0);
-                            hypothesis.update_confidence(
-                                new_confidence - hypothesis.current_confidence,
-                                "AST 污点分析确认了数据流路径",
+                        if let Some(hyp_id) = matched_hyp_id {
+                            // 收集证据（稍后添加以避免借用冲突）
+                            pending_evidence.push(
+                                Evidence::new(
+                                    &hyp_id,
+                                    EvidenceType::TaintFlow,
+                                    CodeLocation::new(flow.source.file_path.clone(), flow.source.line),
+                                    format!("污点源: {} ({}:{})", flow.source.symbol, flow.source.file_path, flow.source.line),
+                                ).with_support(0.7).with_source("AstTaintAnalyzer")
                             );
+                            pending_evidence.push(
+                                Evidence::new(
+                                    &hyp_id,
+                                    EvidenceType::TaintFlow,
+                                    CodeLocation::new(flow.sink.file_path.clone(), flow.sink.line),
+                                    format!("污点汇: {} ({}:{})", flow.sink.symbol, flow.sink.file_path, flow.sink.line),
+                                ).with_support(0.8).with_source("AstTaintAnalyzer")
+                            );
+                            taint_evidence_count += 2;
                         }
                     }
                 }
             }
+        }
+
+        // 批量添加证据到审计链
+        for evidence in pending_evidence {
+            self.audit_chain.add_evidence(evidence);
         }
 
         let message = format!(
@@ -1367,6 +1367,7 @@ impl PhaseAwareExecutor {
                 data_flow: vec![],
                 related_files: vec![],
                 framework_info: None,
+                taint_flow_evidence: None,
             };
 
             Ok(verifier.verify(candidate, &context).await)
