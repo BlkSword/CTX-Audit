@@ -5,6 +5,7 @@
 pub mod business_logic;
 pub mod global_flow;
 pub mod git_history;
+pub mod token_budget;
 
 pub use business_logic::{
     BusinessLogicAnalyzer,

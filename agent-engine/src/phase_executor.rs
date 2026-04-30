@@ -22,6 +22,7 @@ use crate::tool_recommender::ToolRecommender;
 use crate::react::executor::{ExecutionConfig, ExecutionEvent, ReactExecutor};
 use crate::base::AgentContext;
 use ctx_audit_llm::LLMClient;
+use ctx_audit_llm::{ModelRouter, TaskType, TaskAwareClient};
 use ctx_audit_tools::ToolRegistry;
 use deepaudit_core::AstTaintAnalyzer;
 
@@ -100,6 +101,9 @@ pub struct PhaseAwareExecutor {
     /// 双重验证系统
     dual_verification: Option<DualVerificationSystem>,
 
+    /// Multi-LLM 模型路由器
+    model_router: Option<Arc<ModelRouter>>,
+
     /// 确定性执行器
     deterministic_executor: Option<DeterministicExecutor>,
 
@@ -132,6 +136,7 @@ impl PhaseAwareExecutor {
             global_flow_graph: None,
             git_analyzer: None,
             dual_verification: None,
+            model_router: None,
             deterministic_executor: None,
             enable_multi_agent: false,
             enable_deterministic: false,
@@ -178,6 +183,24 @@ impl PhaseAwareExecutor {
             self.llm.clone()
         ));
         self
+    }
+
+    /// 启用 Multi-LLM 模型路由
+    pub fn with_model_router(mut self, router: ModelRouter) -> Self {
+        self.model_router = Some(Arc::new(router));
+        self
+    }
+
+    /// 获取指定任务类型的最优 LLM 客户端
+    fn llm_for_task(&self, task: TaskType) -> Arc<dyn LLMClient> {
+        if let Some(ref router) = self.model_router {
+            let router = router.clone();
+            let fallback = self.llm.clone();
+            // 使用 TaskAwareClient 包装，它会异步解析最优模型
+            Arc::new(TaskAwareClient::new(router, task, fallback))
+        } else {
+            self.llm.clone()
+        }
     }
 
     /// 设置事件发送器
@@ -436,15 +459,70 @@ impl PhaseAwareExecutor {
             self.audit_chain.add_evidence(evidence);
         }
 
+        // === 攻击面映射 + 业务逻辑分析 ===
+        let mut bl_findings_count = 0usize;
+        let attack_surface = deepaudit_core::AttackSurfaceMapper::map_project(
+            std::path::Path::new(&state.project_path)
+        );
+        tracing::info!(
+            "[AttackSurface] {} 个入口点, {} 个高风险文件, {} 个未认证入口",
+            attack_surface.stats.total_entry_points,
+            attack_surface.stats.high_risk_file_count,
+            attack_surface.stats.unauthenticated_count,
+        );
+
+        if !attack_surface.entry_points.is_empty() {
+            let bl_result = self.business_logic_analyzer
+                .analyze_with_attack_surface(&attack_surface, &state.project_path)
+                .await;
+
+            for finding in &bl_result.findings {
+                bl_findings_count += 1;
+
+                let candidate = VulnerabilityCandidate {
+                    id: format!("bl-{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+                    file_path: finding.location.split(':').next().unwrap_or("").to_string(),
+                    line: finding.location.split(':').nth(1)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0),
+                    vulnerability_type: finding.finding_type.clone(),
+                    severity: finding.severity.to_lowercase(),
+                    confidence: 0.7,
+                    source: "BusinessLogicAnalyzer".to_string(),
+                    code_snippet: None,
+                    verification_status: VerificationStatus::Pending,
+                    verification_result: None,
+                    propagation_path: None,
+                };
+                state.add_vulnerability_candidate(candidate);
+
+                let entry_point = CodeLocation::new(
+                    finding.location.split(':').next().unwrap_or("").to_string(),
+                    finding.location.split(':').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0),
+                );
+                let vuln_type = self.parse_vulnerability_type(&finding.finding_type);
+                let mut hypothesis = VulnerabilityHypothesis::new(vuln_type, entry_point.clone(), entry_point);
+                hypothesis.initial_confidence = 0.7;
+                hypothesis.current_confidence = 0.7;
+                self.audit_chain.add_hypothesis(hypothesis);
+            }
+
+            tracing::info!("[BusinessLogic] 发现 {} 个业务逻辑问题", bl_findings_count);
+        }
+
+        state.attack_surface = Some(attack_surface);
+
         let message = format!(
-            "确定性扫描完成\n扫描文件: {}\n候选漏洞: {}\n用户输入点: {}\n敏感调用: {}\n分析目标: {}\n生成假设: {}\nAST污点证据: {}",
+            "确定性扫描完成\n扫描文件: {}\n候选漏洞: {}\n用户输入点: {}\n敏感调用: {}\n分析目标: {}\n生成假设: {}\nAST污点证据: {}\n业务逻辑发现: {}\n攻击面入口点: {}",
             scan_result.files_scanned,
-            scan_result.candidates_found,
+            state.vulnerability_candidates.len(),
             scan_result.input_points_found,
             scan_result.sensitive_calls_found,
             state.pending_targets.len(),
             self.audit_chain.hypotheses.len(),
             taint_evidence_count,
+            bl_findings_count,
+            state.attack_surface.as_ref().map(|a| a.stats.total_entry_points).unwrap_or(0),
         );
 
         // 推进思维链到证据收集阶段
@@ -528,9 +606,9 @@ impl PhaseAwareExecutor {
         // 构建假设上下文
         let hypotheses_context = self.build_hypotheses_context();
 
-        // 创建 ReAct 执行器
+        // 创建 ReAct 执行器（深度分析阶段使用工具调用模型）
         let executor = ReactExecutor::new(
-            self.llm.clone(),
+            self.llm_for_task(TaskType::ToolUse),
             self.tool_registry.clone(),
             self.config.clone(),
         );
@@ -770,9 +848,9 @@ impl PhaseAwareExecutor {
             .collect();
 
         let total_pending = pending_candidates.len();
-        let mut confirmed = 0;
-        let mut false_positives = 0;
-        let mut needs_review = 0;
+        let mut confirmed: usize = 0;
+        let mut false_positives: usize = 0;
+        let mut needs_review: usize = 0;
 
         if pending_candidates.is_empty() {
             // 没有待验证的候选漏洞
@@ -798,9 +876,9 @@ impl PhaseAwareExecutor {
             &self.audit_chain.evidence,
         );
 
-        // 创建 ReAct 执行器
+        // 创建 ReAct 执行器（验证阶段使用深度推理模型）
         let executor = ReactExecutor::new(
-            self.llm.clone(),
+            self.llm_for_task(TaskType::DeepReasoning),
             self.tool_registry.clone(),
             self.config.clone(),
         );
@@ -916,6 +994,148 @@ impl PhaseAwareExecutor {
                 needs_review = total_pending;
 
                 self.send_event(ExecutionEvent::Failed(format!("LLM verification failed: {}", e)));
+            }
+        }
+
+        // === 双重验证（LLM + 确定性引擎交叉验证） ===
+        if self.dual_verification.is_some() && confirmed > 0 {
+            let confirmed_candidates: Vec<_> = state.vulnerability_candidates
+                .iter()
+                .filter(|c| c.verification_status == VerificationStatus::Confirmed)
+                .cloned()
+                .collect();
+
+            let mut dual_confirmed = 0usize;
+            let mut dual_rejected = 0usize;
+
+            for candidate in &confirmed_candidates {
+                match self.execute_dual_verification(candidate, &state.project_path).await {
+                    Ok(result) => {
+                        match result.final_conclusion.conclusion_type {
+                            crate::verification::ConclusionType::Confirmed => {
+                                dual_confirmed += 1;
+                                self.audit_chain.record_thought(
+                                    format!("双重验证确认: {}", candidate.id),
+                                    format!("LLM + 确定性引擎交叉验证通过，置信度 {:.2}", result.final_conclusion.confidence),
+                                    None,
+                                );
+                            }
+                            crate::verification::ConclusionType::FalsePositive => {
+                                dual_rejected += 1;
+                                state.mark_false_positive(&candidate.id, Some("双重验证推翻".to_string()));
+                                self.update_hypothesis_status(&candidate.id, HypothesisStatus::FalsePositive);
+                                self.audit_chain.stats.false_positives_excluded += 1;
+                                confirmed -= 1;
+                                tracing::info!("双重验证推翻 LLM 确认: {}", candidate.id);
+                            }
+                            _ => {
+                                self.audit_chain.record_thought(
+                                    format!("双重验证待定: {}", candidate.id),
+                                    "双重验证无法确认，保留 LLM 判断".to_string(),
+                                    None,
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("双重验证执行失败 ({}): {}", candidate.id, e);
+                    }
+                }
+            }
+
+            if dual_confirmed > 0 || dual_rejected > 0 {
+                tracing::info!(
+                    "[DualVerification] 交叉验证: {} 确认, {} 推翻",
+                    dual_confirmed, dual_rejected
+                );
+            }
+        }
+
+        // === AutoFix 生成：为已确认漏洞生成修复建议 ===
+        let confirmed_for_fix: Vec<_> = state.vulnerability_candidates
+            .iter()
+            .filter(|c| c.verification_status == VerificationStatus::Confirmed)
+            .cloned()
+            .collect();
+
+        if !confirmed_for_fix.is_empty() {
+            let autofix_llm = self.llm_for_task(TaskType::CodeGeneration);
+            let autofix_gen = crate::fix::LlmAutoFixGenerator::new(autofix_llm);
+            let mut fix_count = 0usize;
+
+            for candidate in &confirmed_for_fix {
+                let taint_summary: Option<Vec<crate::fix::TaintStepSummary>> = candidate
+                    .propagation_path
+                    .as_ref()
+                    .map(|path| path.iter().map(|s| crate::fix::TaintStepSummary {
+                        line: s.line,
+                        symbol: s.symbol.clone(),
+                        step_type: s.code.as_deref().unwrap_or("").to_string(),
+                    }).collect());
+
+                let result = autofix_gen.generate_fix(
+                    &candidate.id,
+                    &candidate.vulnerability_type,
+                    &candidate.file_path,
+                    candidate.line,
+                    candidate.code_snippet.as_deref().unwrap_or(""),
+                    taint_summary.as_deref(),
+                    &self.detect_language(&candidate.file_path),
+                ).await;
+
+                if result.success {
+                    fix_count += 1;
+                    self.audit_chain.record_thought(
+                        format!("AutoFix: {}", candidate.id),
+                        format!("生成 {} 个修复建议", result.suggestions.len()),
+                        None,
+                    );
+                }
+            }
+
+            if fix_count > 0 {
+                tracing::info!("[AutoFix] 为 {} 个确认漏洞生成了修复建议", fix_count);
+            }
+        }
+
+        // === PoC 生成：为已确认漏洞生成复现步骤 ===
+        let confirmed_for_poc: Vec<_> = state.vulnerability_candidates
+            .iter()
+            .filter(|c| c.verification_status == VerificationStatus::Confirmed)
+            .collect();
+
+        if !confirmed_for_poc.is_empty() {
+            let poc_gen = crate::poc::PoCGenerator::new();
+            let mut poc_count = 0usize;
+
+            for candidate in &confirmed_for_poc {
+                let language = self.detect_language(&candidate.file_path);
+
+                // 从污点路径推断参数名
+                let param_name = candidate.propagation_path
+                    .as_ref()
+                    .and_then(|p| p.first())
+                    .map(|s| s.symbol.clone())
+                    .unwrap_or_else(|| "input".to_string());
+
+                let context = crate::poc::PoCContext::new()
+                    .with_vuln_id(&candidate.id)
+                    .with_target(&format!("http://target/{}", candidate.file_path.replace('\\', "/")))
+                    .with_param(&param_name)
+                    .with_language(&language);
+
+                if let Some(poc) = poc_gen.generate(&candidate.vulnerability_type, &candidate.id, &context) {
+                    poc_count += 1;
+                    self.audit_chain.record_thought(
+                        format!("PoC: {}", candidate.id),
+                        format!("生成 {} 复现代码 ({})", candidate.vulnerability_type, language),
+                        None,
+                    );
+                }
+            }
+
+            if poc_count > 0 {
+                tracing::info!("[PoC] 为 {} 个确认漏洞生成了复现代码", poc_count);
             }
         }
 
@@ -1359,16 +1579,35 @@ impl PhaseAwareExecutor {
     }
 
     /// 使用双重验证系统验证漏洞
-    pub async fn execute_dual_verification(&self, candidate: &VulnerabilityCandidate) -> Result<crate::verification::EnhancedVerificationResult, String> {
+    pub async fn execute_dual_verification(&self, candidate: &VulnerabilityCandidate, project_path: &str) -> Result<crate::verification::EnhancedVerificationResult, String> {
         if let Some(ref verifier) = self.dual_verification {
             // 从审计链中收集该候选的污点分析证据
             let taint_evidence = self.collect_taint_evidence_for_candidate(candidate);
 
+            // 使用 ContextAssembler 构建跨文件上下文
+            let file_context = deepaudit_core::ContextAssembler::from_project(
+                std::path::Path::new(project_path)
+            ).assemble_context(&candidate.file_path);
+
+            let call_chain: Vec<String> = file_context.callers.iter()
+                .map(|c| format!("{}:{} ({})", c.file_path, c.line, c.function_name))
+                .collect();
+
+            let data_flow: Vec<String> = file_context.trust_boundaries.iter()
+                .map(|tb| format!("{}:{} [{}]", tb.function_name, tb.line, tb.input_type))
+                .collect();
+
+            let related_files: Vec<String> = file_context.callees.iter()
+                .filter_map(|c| c.file_path.clone())
+                .chain(file_context.callers.iter().map(|c| c.file_path.clone()))
+                .filter(|f| f != &candidate.file_path)
+                .collect();
+
             let context = crate::verification::VerificationContext {
                 language: self.detect_language(&candidate.file_path),
-                call_chain: vec![],
-                data_flow: vec![],
-                related_files: vec![],
+                call_chain,
+                data_flow,
+                related_files,
                 framework_info: None,
                 taint_flow_evidence: taint_evidence.clone(),
             };

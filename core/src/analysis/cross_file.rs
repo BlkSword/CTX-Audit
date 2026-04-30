@@ -1058,6 +1058,182 @@ pub struct SummaryPropagationResult {
     pub sinks_reached: Vec<SinkReachability>,
 }
 
+// ── 上下文组装器 ──────────────────────────────────────────
+
+/// 文件上下文信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileContext {
+    /// 目标文件路径
+    pub file_path: String,
+    /// 调用此文件函数的 callers
+    pub callers: Vec<CallerInfo>,
+    /// 此文件调用的外部函数 callees
+    pub callees: Vec<CalleeInfo>,
+    /// 信任边界（外部输入点）
+    pub trust_boundaries: Vec<TrustBoundaryInfo>,
+    /// 上游是否有验证逻辑
+    pub upstream_validation: Vec<String>,
+}
+
+/// 调用者信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallerInfo {
+    pub function_name: String,
+    pub file_path: String,
+    pub line: usize,
+}
+
+/// 被调用者信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalleeInfo {
+    pub function_name: String,
+    pub file_path: Option<String>,
+    pub is_external: bool,
+}
+
+/// 信任边界信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustBoundaryInfo {
+    pub function_name: String,
+    pub line: usize,
+    pub input_type: String,
+}
+
+/// 上下文组装器 — 为指定文件构建跨文件上下文
+pub struct ContextAssembler {
+    /// 调用图
+    call_graph: CallGraph,
+}
+
+impl ContextAssembler {
+    /// 从调用图创建
+    pub fn new(call_graph: CallGraph) -> Self {
+        Self { call_graph }
+    }
+
+    /// 从项目路径直接构建
+    pub fn from_project(project_path: &Path) -> Self {
+        let mut analyzer = CrossFileTaintAnalyzer::new();
+        let _ = analyzer.analyze_project(project_path);
+        Self {
+            call_graph: analyzer.call_graph,
+        }
+    }
+
+    /// 为指定文件组装上下文
+    pub fn assemble_context(&self, file_path: &str) -> FileContext {
+        let file_str = file_path.replace('\\', "/");
+
+        // 1. 找到该文件中的所有函数
+        let file_funcs = self.call_graph.file_functions
+            .get(&file_str)
+            .cloned()
+            .unwrap_or_default();
+
+        // 2. 收集 callers（谁调用了这个文件的函数）
+        let mut callers = Vec::new();
+        for func_id in &file_funcs {
+            if let Some(node) = self.call_graph.nodes.get(func_id) {
+                for caller_id in &node.called_by {
+                    if let Some(caller) = self.call_graph.nodes.get(caller_id) {
+                        // 排除同文件的调用
+                        if caller.file_path != file_str {
+                            callers.push(CallerInfo {
+                                function_name: caller.name.clone(),
+                                file_path: caller.file_path.clone(),
+                                line: caller.start_line,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. 收集 callees（这个文件调用了哪些外部函数）
+        let mut callees = Vec::new();
+        for func_id in &file_funcs {
+            if let Some(node) = self.call_graph.nodes.get(func_id) {
+                for callee_id in &node.calls {
+                    if let Some(callee) = self.call_graph.nodes.get(callee_id) {
+                        callees.push(CalleeInfo {
+                            function_name: callee.name.clone(),
+                            file_path: if callee.is_external {
+                                None
+                            } else {
+                                Some(callee.file_path.clone())
+                            },
+                            is_external: callee.is_external,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 4. 识别信任边界（外部输入点）
+        let mut trust_boundaries = Vec::new();
+        for func_id in &file_funcs {
+            if let Some(node) = self.call_graph.nodes.get(func_id) {
+                if node.is_taint_source {
+                    trust_boundaries.push(TrustBoundaryInfo {
+                        function_name: node.name.clone(),
+                        line: node.start_line,
+                        input_type: "external_input".to_string(),
+                    });
+                }
+                // 检查参数是否可能是污点
+                for param in &node.parameters {
+                    if param.may_be_tainted {
+                        trust_boundaries.push(TrustBoundaryInfo {
+                            function_name: format!("{}({})", node.name, param.name),
+                            line: node.start_line,
+                            input_type: format!("param:{}", param.name),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 5. 检测上游验证
+        let mut upstream_validation = Vec::new();
+        for caller in &callers {
+            if let Some(caller_funcs) = self.call_graph.file_functions.get(&caller.file_path) {
+                for cfunc_id in caller_funcs {
+                    if let Some(cfunc) = self.call_graph.nodes.get(cfunc_id) {
+                        // 检查验证相关函数名
+                        let name_lower = cfunc.name.to_lowercase();
+                        if name_lower.contains("validate")
+                            || name_lower.contains("sanitize")
+                            || name_lower.contains("check")
+                            || name_lower.contains("verify")
+                            || name_lower.contains("auth")
+                        {
+                            upstream_validation.push(format!(
+                                "{}:{} ({})",
+                                caller.file_path,
+                                cfunc.start_line,
+                                cfunc.name,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        FileContext {
+            file_path: file_str,
+            callers,
+            callees,
+            trust_boundaries,
+            upstream_validation,
+        }
+    }
+
+    /// 获取调用图引用
+    pub fn call_graph(&self) -> &CallGraph {
+        &self.call_graph
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

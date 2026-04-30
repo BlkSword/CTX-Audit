@@ -6,8 +6,10 @@
 //! 提供漏洞修复建议和代码生成
 
 mod repair_generator;
+mod llm_autofix;
 
 pub use repair_generator::{
     RepairGenerator, RepairSuggestion, RepairStrategy, RepairTemplate, RepairTemplateLibrary,
     RepairConfig,
 };
+pub use llm_autofix::{LlmAutoFixGenerator, AutoFixResult, TaintStepSummary};

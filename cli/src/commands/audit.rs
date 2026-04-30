@@ -17,6 +17,7 @@ use ctx_audit_agent_engine::{
     ExecutionEvent, ExecutionConfig, SecurityAuditChain,
 };
 use ctx_audit_llm::LLMFactory;
+use ctx_audit_llm::ModelRouter;
 use ctx_audit_tools::FindingData;
 use ctx_audit_tools::ToolRegistry;
 use deepaudit_core::sarif::{SarifConverter, FindingInput, taint_flow_to_summary};
@@ -134,7 +135,20 @@ pub async fn execute(
     };
 
     // 创建阶段感知执行器
-    let executor = PhaseAwareExecutor::new(llm, tool_registry, exec_config);
+    let mut executor = PhaseAwareExecutor::new(llm.clone(), tool_registry, exec_config);
+
+    // 启用 Multi-LLM 模型路由（按任务类型选择最优模型）
+    if let Ok(router) = ModelRouter::from_single_config(
+        &config.llm.provider,
+        config.llm.api_key.as_deref(),
+        config.llm.model.as_deref(),
+        config.llm.base_url.as_deref(),
+    ) {
+        executor = executor.with_model_router(router);
+    }
+
+    // 启用双重验证
+    executor = executor.with_dual_verification();
 
     // 创建事件通道（用于详细输出）
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ExecutionEvent>();

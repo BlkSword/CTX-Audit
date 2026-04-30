@@ -11,6 +11,7 @@ pub mod stream;
 pub mod providers;
 pub mod factory;
 pub mod embedding;
+pub mod router;
 
 // 重新导出常用类型
 pub use client::{LLMClient, StreamHandler, BatchRequestHandler, BatchRequest};
@@ -19,6 +20,7 @@ pub use error::LLMError;
 pub use stream::{LLMStreamChunk, ToolCallDelta, Usage};
 pub use providers::{AnthropicClient, OpenAIClient, OllamaClient};
 pub use factory::{LLMFactory, LLMConfig};
+pub use router::{ModelRouter, RouterConfig, TaskType, ModelSpec, TaskAwareClient};
 
 // 嵌入生成
 pub use embedding::{

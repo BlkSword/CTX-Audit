@@ -13,6 +13,7 @@ pub mod ast_taint;
 pub mod cross_file;
 pub mod cache;
 pub mod imports;
+pub mod attack_surface;
 
 pub use taint::{
     TaintAnalyzer, TaintSource, TaintSink, TaintFlow, TaintResult,
@@ -33,6 +34,7 @@ pub use cross_file::{
     CrossFileTaintAnalyzer, CrossFileTaintResult, CrossFileAnalysisStats,
     InterproceduralTaintFlow, InterproceduralStep, InterproceduralStepType,
     FunctionSummary, SinkReachability, SummaryPropagationResult,
+    ContextAssembler, FileContext, CallerInfo, CalleeInfo, TrustBoundaryInfo,
 };
 pub use cache::{
     CacheEntry, CacheStats, MemoryCache,
@@ -43,3 +45,7 @@ pub use cache::{
     get_file_mtime, compute_file_hash,
 };
 pub use imports::{ImportResolver, SymbolReference, CrossFileReference};
+pub use attack_surface::{
+    AttackSurfaceMapper, AttackSurface, AttackSurfaceStats,
+    EntryPoint, EntryType, TrustBoundary,
+};

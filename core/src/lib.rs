@@ -16,7 +16,7 @@ pub use ast::{
     NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody,
 };
 pub use diff::DiffEngine;
-pub use scanner::{Finding, Scanner, scan_directory, scan_directory_deep};
+pub use scanner::{Finding, Scanner, ScanResult, scan_directory, scan_directory_deep, scan_directory_with_attack_surface};
 pub use scanner::manager::ScannerManager;
 pub use scanner::regex_scanner::RegexScanner;
 pub use scanner::sca_scanner::ScaScanner;
@@ -38,6 +38,9 @@ pub use analysis::{
     DataFlowAnalysis, FlowGraph, FlowNode,
     ImportResolver, SymbolReference, CrossFileReference,
     FunctionSummary, CrossFileTaintAnalyzer,
+    ContextAssembler, FileContext, CallerInfo, CalleeInfo, TrustBoundaryInfo,
+    AttackSurfaceMapper, AttackSurface, AttackSurfaceStats,
+    EntryPoint, EntryType, TrustBoundary,
 };
 
 pub mod error {

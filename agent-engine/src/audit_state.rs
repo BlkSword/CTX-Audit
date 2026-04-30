@@ -298,6 +298,9 @@ pub struct SecurityAuditState {
     /// 工作记忆 - 存储重要发现供后续参考
     pub working_memory: HashMap<String, serde_json::Value>,
 
+    /// 攻击面映射结果（确定性扫描阶段填充）
+    pub attack_surface: Option<deepaudit_core::AttackSurface>,
+
     /// 分析上下文 - 累积的发现
     pub analysis_context: AnalysisContext,
 
@@ -410,6 +413,7 @@ impl SecurityAuditState {
             confirmed_vulnerabilities: Vec::new(),
             false_positives: Vec::new(),
             working_memory: HashMap::new(),
+            attack_surface: None,
             analysis_context: AnalysisContext::default(),
             stats: AuditStats::default(),
         }
