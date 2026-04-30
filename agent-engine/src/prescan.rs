@@ -105,6 +105,15 @@ impl DeterministicPrescanner {
             self.scan_file(file_path, state, &mut result);
         }
 
+        // 确定性过滤：移除明显的误报（第三方库、配置占位符、TODO）
+        let before = state.vulnerability_candidates.len();
+        let filter = crate::verification::dual_verification::DeterministicFilter::new();
+        state.vulnerability_candidates = filter.filter(std::mem::take(&mut state.vulnerability_candidates));
+        let filtered = before - state.vulnerability_candidates.len();
+        if filtered > 0 {
+            tracing::info!("[DeterministicFilter] 过滤掉 {} 个明显误报，保留 {} 个候选", filtered, state.vulnerability_candidates.len());
+        }
+
         // 根据扫描结果生成分析目标
         self.generate_analysis_targets(state);
 

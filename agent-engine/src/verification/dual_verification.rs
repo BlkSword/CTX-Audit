@@ -552,3 +552,162 @@ pub struct ConfidenceRecord {
     /// 时间戳
     pub timestamp: DateTime<Utc>,
 }
+
+// ── 确定性过滤器 ──────────────────────────────────────────
+
+/// Triage 管道中的确定性过滤规则
+///
+/// 在调用 LLM 之前，零成本过滤明显的误报
+pub struct DeterministicFilter {
+    /// 测试文件路径模式
+    test_patterns: Vec<String>,
+}
+
+impl DeterministicFilter {
+    pub fn new() -> Self {
+        let test_patterns = vec![
+            "test".to_string(),
+            "tests".to_string(),
+            "spec".to_string(),
+            "__tests__".to_string(),
+            "Test".to_string(),
+            "Mock".to_string(),
+        ];
+        Self { test_patterns }
+    }
+
+    /// 过滤候选漏洞
+    pub fn filter(&self, candidates: Vec<VulnerabilityCandidate>) -> Vec<VulnerabilityCandidate> {
+        candidates
+            .into_iter()
+            .filter(|c| !self.should_filter(c))
+            .map(|mut c| {
+                // 降级测试文件中的发现
+                if self.is_test_file(&c.file_path) {
+                    c.severity = "info".to_string();
+                }
+                c
+            })
+            .collect()
+    }
+
+    fn should_filter(&self, candidate: &VulnerabilityCandidate) -> bool {
+        // 1. 第三方库代码 — 跳过 node_modules、vendor 等
+        if candidate.file_path.contains("node_modules/")
+            || candidate.file_path.contains("/vendor/")
+            || candidate.file_path.contains("/.gradle/")
+            || candidate.file_path.contains("/target/")
+        {
+            return true;
+        }
+
+        // 2. 配置占位符 — 如 ${PASSWORD}、<password>
+        let code = candidate.code_snippet.as_deref().unwrap_or("");
+        if code.contains("${")
+            || code.contains("<")
+        {
+            // 如果代码包含模板占位符，可能是配置文件而非实际硬编码
+            let desc_lower = candidate.source.to_lowercase();
+            if desc_lower.contains("password") && code.contains("${") {
+                return true;
+            }
+        }
+
+        // 3. TODO 注释 — 不报告
+        if candidate.vulnerability_type.contains("TODO") {
+            return true;
+        }
+
+        false
+    }
+
+    fn is_test_file(&self, file_path: &str) -> bool {
+        // 检查文件名
+        let file_name = file_path.rsplit('/').next().unwrap_or(file_path);
+        if file_name.starts_with("test_")
+            || file_name.starts_with("Test")
+            || file_name.ends_with("_test.rs")
+            || file_name.ends_with("Test.java")
+            || file_name.ends_with(".spec.ts")
+            || file_name.ends_with(".test.ts")
+            || file_name.ends_with(".test.js")
+        {
+            return true;
+        }
+
+        // 检查路径中包含测试目录
+        for pattern in &self.test_patterns {
+            if file_path.contains(&format!("/{}/", pattern))
+                || file_path.contains(&format!("\\{}\\", pattern))
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+impl Default for DeterministicFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use crate::audit_state::VerificationStatus;
+
+    fn make_candidate(file_path: &str, vuln_type: &str, code_snippet: &str) -> VulnerabilityCandidate {
+        VulnerabilityCandidate {
+            id: "test".to_string(),
+            file_path: file_path.to_string(),
+            line: 1,
+            vulnerability_type: vuln_type.to_string(),
+            severity: "high".to_string(),
+            confidence: 0.8,
+            source: "test".to_string(),
+            code_snippet: Some(code_snippet.to_string()),
+            verification_status: VerificationStatus::Pending,
+            verification_result: None,
+            propagation_path: None,
+        }
+    }
+
+    #[test]
+    fn test_filter_node_modules() {
+        let filter = DeterministicFilter::new();
+        let candidates = vec![
+            make_candidate("node_modules/lodash/index.js", "XSS", "eval(x)"),
+            make_candidate("src/app.js", "XSS", "eval(x)"),
+        ];
+        let result = filter.filter(candidates);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].file_path, "src/app.js");
+    }
+
+    #[test]
+    fn test_downgrade_test_file() {
+        let filter = DeterministicFilter::new();
+        let candidates = vec![
+            make_candidate("src/test/java/UserTest.java", "SQLi", "query"),
+        ];
+        let result = filter.filter(candidates);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].severity, "info");
+    }
+
+    #[test]
+    fn test_filter_config_placeholder() {
+        let filter = DeterministicFilter::new();
+        let candidates = vec![
+            make_candidate("config.yml", "Hardcoded", "password: ${DB_PASS}"),
+        ];
+        // 配置文件中的占位符不应该被过滤（不在 node_modules/vendor 中）
+        // 但如果 description 包含 password + 模板占位符，则会被过滤
+        let result = filter.filter(candidates);
+        // 这里 file_path 不包含 node_modules/vendor，所以不过滤
+        assert_eq!(result.len(), 1);
+    }
+}

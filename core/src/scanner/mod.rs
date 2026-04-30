@@ -46,11 +46,43 @@ pub trait Scanner: Send + Sync {
 /// 便捷的 scan_directory 函数（用于web-backend）
 pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
     use ignore::Walk;
-    use tokio::fs;
+
+    // 先运行攻击面映射
+    let attack_surface = crate::analysis::attack_surface::AttackSurfaceMapper::map_project(
+        std::path::Path::new(path)
+    );
+    tracing::info!(
+        "[AttackSurface] 发现 {} 个入口点, {} 个高风险文件, {} 个未认证入口",
+        attack_surface.stats.total_entry_points,
+        attack_surface.stats.high_risk_file_count,
+        attack_surface.stats.unauthenticated_count,
+    );
 
     let mut findings = Vec::new();
 
-    // 加载规则
+    // 从攻击面生成未认证端点发现
+    for ep in &attack_surface.entry_points {
+        if !ep.auth_required && ep.entry_type == crate::analysis::attack_surface::EntryType::HttpEndpoint {
+            findings.push(Finding {
+                finding_id: format!("attack-surface-unauth-{}", ep.line),
+                file_path: ep.file_path.clone(),
+                line_start: ep.line,
+                line_end: ep.line,
+                detector: "AttackSurfaceMapper".to_string(),
+                vuln_type: "UnauthenticatedEndpoint".to_string(),
+                severity: "high".to_string(),
+                description: format!(
+                    "{} {} 端点未配置认证保护",
+                    ep.http_method.as_deref().unwrap_or("?"),
+                    ep.route.as_deref().unwrap_or("?")
+                ),
+                analysis_trail: None,
+                llm_output: None,
+                confidence: Some(ep.risk_score),
+                corroboration_count: None,
+            });
+        }
+    }
     let rules_path = std::path::Path::new("rules");
     let rules = if rules_path.exists() {
         match crate::rules::loader::load_rules_from_dir(rules_path) {
@@ -145,6 +177,23 @@ pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
     }
 
     Ok(findings)
+}
+
+/// 带攻击面信息的扫描结果
+pub struct ScanResult {
+    pub findings: Vec<Finding>,
+    pub attack_surface: crate::analysis::attack_surface::AttackSurface,
+}
+
+/// 扫描目录并返回完整结果（含攻击面）
+pub async fn scan_directory_with_attack_surface(path: &str) -> Result<ScanResult, String> {
+    let attack_surface = crate::analysis::attack_surface::AttackSurfaceMapper::map_project(
+        std::path::Path::new(path)
+    );
+
+    let findings = scan_directory(path).await?;
+
+    Ok(ScanResult { findings, attack_surface })
 }
 
 /// 深度扫描：在基础扫描后对候选文件运行 AST 污点分析

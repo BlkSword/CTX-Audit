@@ -9,6 +9,23 @@ use crate::semantic::SemanticContext;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// 从代码行中提取路由路径
+fn extract_route_from_line(line: &str) -> Option<String> {
+    // 尝试双引号
+    if let Some(start) = line.find('"') {
+        if let Some(end) = line[start + 1..].find('"') {
+            return Some(line[start + 1..start + 1 + end].to_string());
+        }
+    }
+    // 尝试单引号
+    if let Some(start) = line.find('\'') {
+        if let Some(end) = line[start + 1..].find('\'') {
+            return Some(line[start + 1..start + 1 + end].to_string());
+        }
+    }
+    None
+}
+
 /// 业务逻辑分析器
 pub struct BusinessLogicAnalyzer {
     /// 权限模型识别器
@@ -293,8 +310,8 @@ impl BusinessLogicAnalyzer {
     ) -> BusinessLogicAnalysisResult {
         let mut findings = Vec::new();
 
-        // 1. API 端点分析
-        let endpoints = self.extract_api_endpoints(code);
+        // 1. API 端点分析（从代码文本中提取基础端点信息）
+        let endpoints = Self::extract_endpoints_from_code(code, context.file_path.as_deref().unwrap_or(""));
 
         // 2. IDOR 检测
         let idor_findings = self.detect_idor(&endpoints, code);
@@ -360,10 +377,173 @@ impl BusinessLogicAnalyzer {
         }
     }
 
-    /// 提取 API 端点信息
-    fn extract_api_endpoints(&self, _code: &str) -> Vec<ApiEndpointInfo> {
-        // 使用 AST 解析进行准确提取（需要框架特定的解析器）
-        Vec::new()
+    /// 提取 API 端点信息（从攻击面映射结果转换）
+    pub fn endpoints_from_attack_surface(
+        entry_points: &[deepaudit_core::EntryPoint],
+    ) -> Vec<ApiEndpointInfo> {
+        entry_points
+            .iter()
+            .filter(|ep| ep.entry_type == deepaudit_core::EntryType::HttpEndpoint)
+            .map(|ep| ApiEndpointInfo {
+                path: ep.route.clone().unwrap_or_default(),
+                method: ep.http_method.clone().unwrap_or("GET".to_string()),
+                controller: ep.function_name.clone().unwrap_or_default(),
+                file_path: ep.file_path.clone(),
+                line: ep.line,
+                auth_required: ep.auth_required,
+                resource_id_param: Self::extract_resource_id_param(ep.route.as_deref()),
+            })
+            .collect()
+    }
+
+    /// 从路由中提取资源 ID 参数名
+    fn extract_resource_id_param(route: Option<&str>) -> Option<String> {
+        let route = route?;
+        // Spring: {id}, @PathVariable
+        if let Some(start) = route.find('{') {
+            if let Some(end) = route[start..].find('}') {
+                let param = &route[start + 1..start + end];
+                return Some(param.to_string());
+            }
+        }
+        // Express: :id
+        for segment in route.split('/') {
+            if segment.starts_with(':') {
+                return Some(segment[1..].to_string());
+            }
+        }
+        // Django: <int:id> or <id>
+        if route.contains('<') && route.contains('>') {
+            if let Some(start) = route.find('<') {
+                if let Some(end) = route[start..].find('>') {
+                    let inner = &route[start + 1..start + end];
+                    let name = inner.split(':').last().unwrap_or(inner);
+                    return Some(name.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// 基于攻击面映射进行完整业务逻辑分析
+    pub async fn analyze_with_attack_surface(
+        &self,
+        attack_surface: &deepaudit_core::AttackSurface,
+        project_path: &str,
+    ) -> BusinessLogicAnalysisResult {
+        let mut findings = Vec::new();
+
+        let endpoints = Self::endpoints_from_attack_surface(&attack_surface.entry_points);
+
+        // 收集每个端点文件的代码并分析
+        let mut analyzed_files: HashSet<String> = HashSet::new();
+        for ep in &attack_surface.entry_points {
+            if analyzed_files.contains(&ep.file_path) {
+                continue;
+            }
+            analyzed_files.insert(ep.file_path.clone());
+
+            if let Ok(code) = std::fs::read_to_string(&ep.file_path) {
+                let context = SemanticContext {
+                    file_path: Some(ep.file_path.clone()),
+                    function_name: ep.function_name.clone(),
+                    language: None,
+                    framework: None,
+                    imports: Vec::new(),
+                    decorators: Vec::new(),
+                    extra: HashMap::new(),
+                };
+
+                let mut result = self.analyze(&code, &context).await;
+                findings.append(&mut result.findings);
+            }
+        }
+
+        // 额外：检测未认证端点
+        for ep in &attack_surface.entry_points {
+            if !ep.auth_required && ep.entry_type == deepaudit_core::EntryType::HttpEndpoint {
+                findings.push(BusinessLogicFinding {
+                    finding_type: "UnauthenticatedEndpoint".to_string(),
+                    severity: "High".to_string(),
+                    location: format!("{}:{}", ep.file_path, ep.line),
+                    description: format!(
+                        "端点 {} {} 未配置认证保护",
+                        ep.http_method.as_deref().unwrap_or("?"),
+                        ep.route.as_deref().unwrap_or("?")
+                    ),
+                    remediation: "为该端点添加认证中间件或注解".to_string(),
+                });
+            }
+        }
+
+        let statistics = self.calculate_statistics(&findings);
+
+        BusinessLogicAnalysisResult {
+            findings,
+            api_endpoints: endpoints,
+            statistics,
+        }
+    }
+
+    /// 从代码中提取端点信息（基于正则匹配，简化版）
+    fn extract_endpoints_from_code(code: &str, file_path: &str) -> Vec<ApiEndpointInfo> {
+        let mut endpoints = Vec::new();
+
+        for (line_num, line) in code.lines().enumerate() {
+            let trimmed = line.trim();
+
+            // Spring: @GetMapping("/path")
+            if trimmed.contains("@GetMapping") || trimmed.contains("@PostMapping")
+                || trimmed.contains("@RequestMapping") || trimmed.contains("@DeleteMapping")
+                || trimmed.contains("@PutMapping") || trimmed.contains("@PatchMapping")
+            {
+                let method = if trimmed.contains("Get") { "GET" }
+                    else if trimmed.contains("Post") { "POST" }
+                    else if trimmed.contains("Put") { "PUT" }
+                    else if trimmed.contains("Delete") { "DELETE" }
+                    else if trimmed.contains("Patch") { "PATCH" }
+                    else { "GET" };
+
+                let route = extract_route_from_line(trimmed);
+                let resource_param = Self::extract_resource_id_param(route.as_deref());
+
+                endpoints.push(ApiEndpointInfo {
+                    path: route.unwrap_or_default(),
+                    method: method.to_string(),
+                    controller: String::new(),
+                    file_path: file_path.to_string(),
+                    line: line_num + 1,
+                    auth_required: false,
+                    resource_id_param: resource_param,
+                });
+            }
+
+            // Express: app.get('/path')
+            if (trimmed.contains("app.get(") || trimmed.contains("app.post(")
+                || trimmed.contains("router.get(") || trimmed.contains("router.post("))
+            {
+                let method = if trimmed.contains(".get(") { "GET" }
+                    else if trimmed.contains(".post(") { "POST" }
+                    else if trimmed.contains(".put(") { "PUT" }
+                    else if trimmed.contains(".delete(") { "DELETE" }
+                    else { "GET" };
+
+                let route = extract_route_from_line(trimmed);
+                let resource_param = Self::extract_resource_id_param(route.as_deref());
+
+                endpoints.push(ApiEndpointInfo {
+                    path: route.unwrap_or_default(),
+                    method: method.to_string(),
+                    controller: String::new(),
+                    file_path: file_path.to_string(),
+                    line: line_num + 1,
+                    auth_required: trimmed.contains("auth"),
+                    resource_id_param: resource_param,
+                });
+            }
+        }
+
+        endpoints
     }
 
     /// 计算统计信息

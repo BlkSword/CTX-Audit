@@ -186,41 +186,87 @@ impl AuditPrompts {
 
     /// 构建 LLM 验证消息
     ///
-    /// 包含所有候选漏洞的详细信息供 LLM 做最终判断
+    /// 包含所有候选漏洞的详细信息供 LLM 做最终判断。
+    /// 使用 token 预算控制上下文大小。
     pub fn build_llm_verification_message(
         &self,
         candidates: &[crate::audit_state::VulnerabilityCandidate],
         hypotheses: &[crate::audit_chain::VulnerabilityHypothesis],
         evidences: &[crate::audit_chain::Evidence],
     ) -> String {
-        let mut message = String::new();
+        use crate::analysis::token_budget::{TokenBudget, prioritize_candidates, DetailLevel};
 
+        let budget = TokenBudget::default();
+
+        // 优先级排序：有 taint 证据的优先，高置信度优先
+        let prioritized = prioritize_candidates(
+            candidates,
+            &budget,
+            |c| c.confidence,
+            |c| c.propagation_path.is_some(),
+        );
+
+        let mut message = String::new();
         message.push_str("# 待验证的候选漏洞\n\n");
         message.push_str(&format!("共有 {} 个候选漏洞需要你做出最终判断。\n\n", candidates.len()));
 
-        for (i, candidate) in candidates.iter().enumerate() {
-            message.push_str(&format!("## 候选漏洞 {}: {}\n\n", i + 1, candidate.id));
+        for p in &prioritized {
+            let candidate = &candidates[p.original_idx];
+            let i = p.original_idx + 1;
+
+            message.push_str(&format!("## 候选漏洞 {}: {}\n\n", i, candidate.id));
             message.push_str(&format!("- **类型**: {}\n", candidate.vulnerability_type));
             message.push_str(&format!("- **严重程度**: {}\n", candidate.severity));
             message.push_str(&format!("- **置信值**: {:.0}% (仅供参考)\n", candidate.confidence * 100.0));
             message.push_str(&format!("- **来源**: {}\n", candidate.source));
             message.push_str(&format!("- **位置**: `{}:{}`\n", candidate.file_path, candidate.line));
 
-            if let Some(ref code) = candidate.code_snippet {
-                message.push_str("\n**代码片段**:\n```\n");
-                message.push_str(code);
-                message.push_str("\n```\n");
-            }
+            // 根据优先级决定上下文详细程度
+            match p.detail_level {
+                DetailLevel::FullContext | DetailLevel::Standard => {
+                    if let Some(ref code) = candidate.code_snippet {
+                        message.push_str("\n**代码片段**:\n```\n");
+                        // 对于 Standard 级别，截断过长的代码片段
+                        let max_chars = if p.detail_level == DetailLevel::Standard {
+                            budget.max_context_chars_per_file / 3
+                        } else {
+                            code.len()
+                        };
+                        let truncated = if code.len() > max_chars {
+                            &code[..max_chars]
+                        } else {
+                            code.as_str()
+                        };
+                        message.push_str(truncated);
+                        if code.len() > max_chars {
+                            message.push_str("\n... (truncated for token budget)");
+                        }
+                        message.push_str("\n```\n");
+                    }
 
-            if let Some(ref path) = candidate.propagation_path {
-                message.push_str("\n**污点传播路径**:\n");
-                for step in path {
-                    message.push_str(&format!(
-                        "  行 {}: `{}` - {}\n",
-                        step.line,
-                        step.symbol,
-                        step.code.as_deref().unwrap_or("")
-                    ));
+                    if let Some(ref path) = candidate.propagation_path {
+                        message.push_str("\n**污点传播路径**:\n");
+                        for step in path {
+                            message.push_str(&format!(
+                                "  行 {}: `{}` - {}\n",
+                                step.line,
+                                step.symbol,
+                                step.code.as_deref().unwrap_or("")
+                            ));
+                        }
+                    }
+                }
+                DetailLevel::SummaryOnly => {
+                    message.push_str("\n**上下文**: (低优先级，仅提供摘要)\n");
+                    if let Some(ref code) = candidate.code_snippet {
+                        let summary: Vec<&str> = code.lines().take(5).collect();
+                        message.push_str("```\n");
+                        message.push_str(&summary.join("\n"));
+                        if code.lines().count() > 5 {
+                            message.push_str("\n... (summary)");
+                        }
+                        message.push_str("\n```\n");
+                    }
                 }
             }
 
