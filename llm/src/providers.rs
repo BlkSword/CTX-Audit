@@ -30,6 +30,8 @@ impl AnthropicClient {
     pub fn new(api_key: String, model: Option<String>) -> Result<Self, LLMError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
+            .danger_accept_invalid_certs(true)
+            .no_proxy()
             .build()
             .map_err(|e| LLMError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
 
@@ -712,7 +714,9 @@ impl OpenAIClient {
         base_url: Option<String>,
     ) -> Result<Self, LLMError> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(600))
+            .danger_accept_invalid_certs(true)
+            .no_proxy()
             .build()
             .map_err(|e| LLMError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
 
@@ -805,6 +809,7 @@ impl OpenAIClient {
         temperature: f32,
         stream: bool,
     ) -> Result<reqwest::Response, LLMError> {
+        tracing::warn!("[OpenAI send_request] model={}, stream={}, tools={}", self.model, stream, tools.is_some());
         let mut payload = json!({
             "model": self.model,
             "messages": self.convert_messages(messages),
@@ -841,7 +846,12 @@ impl OpenAIClient {
         let content = if let Some(choices) = json_response.get("choices").and_then(|c| c.as_array()) {
             if let Some(choice) = choices.first() {
                 if let Some(msg) = choice.get("message") {
-                    if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
+                    // 优先取 content，如果为空则取 reasoning_content（GLM 模型推理输出）
+                    let text = msg.get("content")
+                        .and_then(|c| c.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| msg.get("reasoning_content").and_then(|c| c.as_str()));
+                    if let Some(text) = text {
                         vec![MessageContent::Text {
                             text: text.to_string(),
                         }]
@@ -1015,6 +1025,8 @@ impl LLMClient for OpenAIClient {
                 payload["temperature"] = json!(temperature as f64);
             }
 
+            tracing::debug!("[OpenAI Stream] model={}, url={}, payload_len={}", payload["model"], base_url, payload.to_string().len());
+
             let response = match client
                 .post(&base_url)
                 .header("authorization", format!("Bearer {}", api_key))
@@ -1116,6 +1128,8 @@ impl LLMClient for OpenAIClient {
             }
 
             if temperature > 0.0 {
+
+            tracing::warn!("[OpenAI StreamWithTools] model={}, url={}", payload["model"], base_url);
                 payload["temperature"] = json!(temperature as f64);
             }
 
@@ -1255,13 +1269,45 @@ fn parse_openai_stream_event(event: &serde_json::Value) -> Option<LLMStreamChunk
     let choices = event.get("choices")?.as_array()?.first()?;
 
     if let Some(delta) = choices.get("delta") {
-        if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
+        // 标准内容或 GLM reasoning_content（推理输出）
+        let text = delta.get("content")
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| delta.get("reasoning_content").and_then(|c| c.as_str()));
+        if let Some(text) = text {
             return Some(LLMStreamChunk {
                 delta: text.to_string(),
                 done: false,
                 tool_call_delta: None,
                 usage: None,
             });
+        }
+
+        // tool_calls 增量解析
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+            if let Some(first_call) = tool_calls.first() {
+                let id = first_call.get("id").and_then(|i| i.as_str()).map(|s| s.to_string());
+                let name = first_call.get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string());
+                let input_delta = first_call.get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|a| a.as_str())
+                    .map(|s| s.to_string());
+                if id.is_some() || name.is_some() || input_delta.is_some() {
+                    return Some(LLMStreamChunk {
+                        delta: String::new(),
+                        done: false,
+                        tool_call_delta: Some(ToolCallDelta {
+                            id,
+                            name,
+                            input_delta,
+                        }),
+                        usage: None,
+                    });
+                }
+            }
         }
     }
 
@@ -1336,6 +1382,8 @@ impl OllamaClient {
     pub fn new(model: Option<String>, base_url: String) -> Result<Self, LLMError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
+            .danger_accept_invalid_certs(true)
+            .no_proxy()
             .build()
             .map_err(|e| LLMError::ConfigError(format!("Failed to create HTTP client: {}", e)))?;
 

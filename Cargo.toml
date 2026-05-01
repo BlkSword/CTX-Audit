@@ -52,7 +52,7 @@ crossterm = "0.27"
 rustyline = "14"
 
 # HTTP 客户端
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "gzip", "deflate", "brotli"] }
 
 # 文件遍历
 ignore = "0.4"

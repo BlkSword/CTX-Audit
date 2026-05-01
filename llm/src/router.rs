@@ -172,10 +172,10 @@ impl ModelRouter {
             .ok_or_else(|| LLMError::ConfigError("API key required for ModelRouter".into()))?
             .to_string();
 
-        let model_name = model.unwrap_or("claude-sonnet-4-6");
+        let model_name = model.unwrap_or("gpt-4");
 
         // 如果用户指定了一个具体模型，所有任务都用它（向后兼容）
-        let default_spec = ModelSpec {
+        let user_spec = ModelSpec {
             provider: provider.to_string(),
             model: model_name.to_string(),
             api_key: Some(key.clone()),
@@ -184,22 +184,11 @@ impl ModelRouter {
 
         let mut config = RouterConfig::default();
 
-        // 用用户的 provider/api_key/base_url 覆盖所有任务模型
-        let user_spec = ModelSpec {
-            provider: provider.to_string(),
-            model: model_name.to_string(),
-            api_key: Some(key.clone()),
-            base_url: base_url.map(|s| s.to_string()),
-        };
+        config.default_model = user_spec.clone();
 
-        config.default_model = default_spec;
-
-        // 用用户配置更新所有已有条目的 provider/api_key/base_url
-        // 但保留各任务类型的 model 差异（如 classification 用 haiku）
+        // 用用户配置更新所有已有条目
         for spec in config.task_models.values_mut() {
-            spec.provider = user_spec.provider.clone();
-            spec.api_key = user_spec.api_key.clone();
-            spec.base_url = user_spec.base_url.clone();
+            *spec = user_spec.clone();
         }
 
         Ok(Self::new(config, key))
