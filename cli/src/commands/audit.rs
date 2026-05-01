@@ -436,7 +436,11 @@ pub async fn execute(
         "markdown" | "md" => "md",
         _ => "json",
     };
-    let default_output_path = format!("./{}_audit_{}.{}", project_name, report_timestamp, ext);
+
+    // 报告统一存放到 .ctx-audit/reports/ 目录
+    let report_dir = ".ctx-audit/reports";
+    let _ = tokio::fs::create_dir_all(report_dir).await;
+    let default_output_path = format!("{}/{}_audit_{}.{}", report_dir, project_name, report_timestamp, ext);
     let final_output_path = output_path.unwrap_or(default_output_path);
 
     // 生成报告

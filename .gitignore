@@ -49,3 +49,4 @@ CLAUDE.md
 ctx-audit.toml
 
 docs/
+.ctx-audit/

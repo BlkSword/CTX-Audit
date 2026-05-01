@@ -111,6 +111,11 @@ async fn save_scan_results(
     format: &str,
     renderer: &mut TerminalRenderer,
 ) -> miette::Result<()> {
+    // 确保输出目录存在
+    if let Some(parent) = std::path::Path::new(output_path).parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+
     let content = match format {
         "json" => {
             serde_json::to_string_pretty(findings)
