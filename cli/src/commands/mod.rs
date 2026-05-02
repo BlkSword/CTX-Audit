@@ -9,3 +9,5 @@ pub mod findings;
 pub mod config;
 pub mod watch;
 pub mod daemon;
+pub mod mcp;
+pub mod rules;

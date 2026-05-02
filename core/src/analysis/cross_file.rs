@@ -387,19 +387,27 @@ impl CrossFileTaintAnalyzer {
         let source_files = self.collect_source_files(project_path);
         stats.files_analyzed = source_files.len();
 
-        // 2. 构建调用图
+        // 2. 构建调用图（逐文件提取函数节点和内部调用）
         for file_path in &source_files {
             self.build_call_graph_for_file(file_path);
         }
+
+        // 3. 跨文件调用解析：将裸函数名匹配到已知函数节点
+        self.resolve_cross_file_calls();
+
         stats.total_functions = self.call_graph.nodes.len();
         stats.taint_sources = self.call_graph.taint_sources.len();
         stats.taint_sinks = self.call_graph.taint_sinks.len();
 
-        // 3. 查找跨文件污点流
+        // 4. 查找跨文件污点流
         let taint_flows = self.find_interprocedural_taint_flows();
         stats.taint_flows = taint_flows.len();
         stats.cross_file_flows = taint_flows.iter()
-            .filter(|f| f.interprocedural_path.len() > 1)
+            .filter(|f| {
+                // 跨文件 = source 和 sink 在不同文件，或路径跨多个文件
+                f.source.file_path != f.sink.file_path
+                    || f.interprocedural_path.len() > 1
+            })
             .count();
 
         CrossFileTaintResult {
@@ -407,6 +415,49 @@ impl CrossFileTaintAnalyzer {
             call_graph: self.call_graph.clone(),
             taint_flows,
             stats,
+        }
+    }
+
+    /// 跨文件调用解析
+    ///
+    /// extract_function_calls 返回裸函数名（如 "execute"），
+    /// 而 add_call 需要完整 ID（如 "src/db.py:execute"）。
+    /// 此方法做第二轮匹配，将每个节点的裸函数名与所有已知节点名字匹配。
+    fn resolve_cross_file_calls(&mut self) {
+        // 构建 name → Vec<func_id> 索引
+        let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();
+        for (id, node) in &self.call_graph.nodes {
+            name_to_ids
+                .entry(node.name.clone())
+                .or_default()
+                .push(id.clone());
+        }
+
+        // 收集需要添加的跨文件调用关系
+        let mut cross_calls: Vec<(String, String)> = Vec::new();
+
+        for (caller_id, node) in &self.call_graph.nodes {
+            for bare_name in &node.calls {
+                // 如果裸名不包含 ':' 说明未被解析为完整 ID
+                if bare_name.contains(':') {
+                    continue;
+                }
+                if let Some(callee_ids) = name_to_ids.get(bare_name) {
+                    for callee_id in callee_ids {
+                        // 只添加跨文件调用（同文件的已在 build_call_graph_for_file 中处理）
+                        let callee_file = self.call_graph.nodes.get(callee_id)
+                            .map(|n| n.file_path.as_str())
+                            .unwrap_or("");
+                        if callee_file != node.file_path {
+                            cross_calls.push((caller_id.clone(), callee_id.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        for (caller_id, callee_id) in cross_calls {
+            self.call_graph.add_call(&caller_id, &callee_id);
         }
     }
 
@@ -640,10 +691,11 @@ impl CrossFileTaintAnalyzer {
                         };
 
                         if !name.is_empty() {
+                            let may_be_tainted = Self::param_may_be_tainted(&name);
                             params.push(FunctionParameter {
                                 name: name.to_string(),
                                 param_type,
-                                may_be_tainted: false,
+                                may_be_tainted,
                             });
                         }
                     }
@@ -755,6 +807,19 @@ impl CrossFileTaintAnalyzer {
             "rb" => "ruby",
             _ => "unknown",
         }
+    }
+
+    /// 检查参数名是否可能是污点（基于常见命名模式）
+    fn param_may_be_tainted(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        const TAINT_PARAM_NAMES: &[&str] = &[
+            "req", "request", "ctx", "context", "input", "data", "payload",
+            "query", "params", "body", "form", "user_input", "user",
+            "id", "name", "url", "path", "file", "filename", "command",
+            "cmd", "sql", "html", "xml", "json", "token", "key",
+            "password", "secret", "msg", "message", "content",
+        ];
+        TAINT_PARAM_NAMES.iter().any(|p| lower == *p || lower.contains(p))
     }
 
     /// 检查是否是污点源
@@ -1336,5 +1401,142 @@ mod tests {
         assert!(analyzer.is_taint_sink("executeQuery"));
         assert!(analyzer.is_taint_sink("system"));
         assert!(!analyzer.is_taint_sink("format"));
+    }
+
+    #[test]
+    fn test_param_may_be_tainted() {
+        assert!(CrossFileTaintAnalyzer::param_may_be_tainted("req"));
+        assert!(CrossFileTaintAnalyzer::param_may_be_tainted("input"));
+        assert!(CrossFileTaintAnalyzer::param_may_be_tainted("user_input"));
+        assert!(CrossFileTaintAnalyzer::param_may_be_tainted("payload"));
+        assert!(!CrossFileTaintAnalyzer::param_may_be_tainted("index"));
+        assert!(!CrossFileTaintAnalyzer::param_may_be_tainted("count"));
+    }
+
+    #[test]
+    fn test_cross_file_taint_flow_detection() {
+        // 创建临时项目目录
+        let tmp_dir = std::env::temp_dir().join("ctx_audit_cross_file_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        // source.py: 获取用户输入的函数 + 跨文件调用 execute_query
+        let source_code = r#"
+def get_user_input(request):
+    user_id = request.args.get('id')
+    return user_id
+
+def handle_request(request):
+    user_input = get_user_input(request)
+    execute_query(user_input)
+"#;
+        // sink.py: 包含执行数据库查询的函数
+        let sink_code = r#"
+def execute_query(query):
+    cursor.execute(query)
+"#;
+
+        std::fs::write(tmp_dir.join("source.py"), source_code).unwrap();
+        std::fs::write(tmp_dir.join("sink.py"), sink_code).unwrap();
+
+        let mut analyzer = CrossFileTaintAnalyzer::new();
+        let result = analyzer.analyze_project(&tmp_dir);
+
+        // 验证调用图被构建
+        assert!(result.stats.files_analyzed >= 2, "Should analyze at least 2 files, got {}", result.stats.files_analyzed);
+        assert!(result.stats.total_functions >= 3, "Should find at least 3 functions, got {}", result.stats.total_functions);
+
+        // 验证 taint sources 和 sinks 被识别
+        // get_user_input 包含 "get" → is_taint_source
+        // execute_query 包含 "execute" → is_taint_sink
+        assert!(result.stats.taint_sources > 0, "Should find taint sources, got {}", result.stats.taint_sources);
+        assert!(result.stats.taint_sinks > 0, "Should find taint sinks, got {}", result.stats.taint_sinks);
+
+        // 验证跨文件调用关系被解析
+        // handle_request (source.py) 调用 execute_query (sink.py) → 应建立跨文件调用边
+        let has_cross_file_calls = result.call_graph.nodes.values()
+            .any(|n| n.calls.iter().any(|c| {
+                if let Some(callee) = result.call_graph.nodes.get(c) {
+                    callee.file_path != n.file_path
+                } else {
+                    false
+                }
+            }));
+        assert!(has_cross_file_calls, "Should resolve cross-file call relationships");
+
+        // 验证检测到 taint 流（source → sink 路径）
+        assert!(result.stats.taint_flows > 0, "Should detect taint flows from source to sink, got {}", result.stats.taint_flows);
+
+        // 清理
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_cross_file_same_language_javascript() {
+        let tmp_dir = std::env::temp_dir().join("ctx_audit_cross_file_js_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let handler_code = r#"
+function handleRequest(req) {
+    const userInput = req.query.input;
+    return processInput(userInput);
+}
+"#;
+        let processor_code = r#"
+function processInput(data) {
+    return executeCommand(data);
+}
+
+function executeCommand(cmd) {
+    exec(cmd);
+}
+"#;
+
+        std::fs::write(tmp_dir.join("handler.js"), handler_code).unwrap();
+        std::fs::write(tmp_dir.join("processor.js"), processor_code).unwrap();
+
+        let mut analyzer = CrossFileTaintAnalyzer::new();
+        let result = analyzer.analyze_project(&tmp_dir);
+
+        assert!(result.stats.files_analyzed >= 2);
+        assert!(result.stats.taint_sources > 0, "handleRequest should be identified as taint source");
+        assert!(result.stats.taint_sinks > 0, "executeCommand should be identified as taint sink");
+
+        // handlerRequest calls processInput (cross-file)
+        let has_cross = result.call_graph.nodes.values()
+            .any(|n| n.calls.iter().any(|c| {
+                result.call_graph.nodes.get(c)
+                    .map(|callee| callee.file_path != n.file_path)
+                    .unwrap_or(false)
+            }));
+        assert!(has_cross, "Should resolve cross-file JS call relationships");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_function_summaries() {
+        let tmp_dir = std::env::temp_dir().join("ctx_audit_summary_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let code = r#"
+def get_user(request):
+    user_id = request.args.get('id')
+    return user_id
+
+def query_user(user_id):
+    cursor.execute(user_id)
+"#;
+        std::fs::write(tmp_dir.join("users.py"), code).unwrap();
+
+        let mut analyzer = CrossFileTaintAnalyzer::new();
+        let summaries = analyzer.compute_function_summaries(&tmp_dir);
+
+        // get_user 是 taint source，应该有摘要
+        assert!(!summaries.is_empty(), "Should compute function summaries");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

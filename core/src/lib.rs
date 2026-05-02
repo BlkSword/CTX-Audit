@@ -16,7 +16,7 @@ pub use ast::{
     NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody,
 };
 pub use diff::DiffEngine;
-pub use scanner::{Finding, Scanner, ScanResult, scan_directory, scan_directory_deep, scan_directory_with_attack_surface};
+pub use scanner::{Finding, Scanner, ScanResult, scan_directory, scan_directory_deep, scan_directory_with_attack_surface, scan_directory_with_rules, scan_directory_deep_with_rules};
 pub use scanner::manager::ScannerManager;
 pub use scanner::regex_scanner::RegexScanner;
 pub use scanner::sca_scanner::ScaScanner;

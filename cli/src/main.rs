@@ -175,6 +175,19 @@ enum Commands {
         #[arg(long)]
         daemon: bool,
     },
+
+    /// MCP Server 模式（AI agent 集成）
+    ///
+    /// 启动 MCP 协议服务器，通过 stdio 暴露安全分析能力给 AI agent（如 Claude Code）
+    Mcp,
+
+    /// 规则管理
+    ///
+    /// 列出、验证自定义检测规则
+    Rules {
+        #[command(subcommand)]
+        action: RulesAction,
+    },
 }
 
 /// 漏洞管理子命令
@@ -311,6 +324,24 @@ enum DaemonAction {
     Stop,
 }
 
+/// 规则管理子命令
+#[derive(Subcommand, Debug)]
+enum RulesAction {
+    /// 列出所有规则
+    List {
+        /// 自定义规则目录
+        #[arg(short, long)]
+        rules: Option<String>,
+    },
+
+    /// 验证规则文件
+    Validate {
+        /// 规则目录
+        #[arg(short, long)]
+        rules: Option<String>,
+    },
+}
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
@@ -407,6 +438,16 @@ async fn main() -> Result<()> {
             ignore,
             daemon,
         } => commands::watch::execute(path, severity, "sarif", output_path, ignore, daemon).await,
+
+        Commands::Mcp => {
+            commands::mcp::run_mcp_server().await
+                .map_err(|e| miette::miette!("MCP server error: {}", e))
+        }
+
+        Commands::Rules { action } => match action {
+            RulesAction::List { rules } => commands::rules::list(rules).await,
+            RulesAction::Validate { rules } => commands::rules::validate(rules).await,
+        },
     }
 }
 
@@ -423,9 +464,11 @@ fn init_logging(cli: &Cli) {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
 
+    // MCP 模式：日志只写 stderr，不能写 stdout（stdout 用于 JSON-RPC）
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
 }
 

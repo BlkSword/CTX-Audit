@@ -51,8 +51,38 @@ pub trait Scanner: Send + Sync {
     async fn scan_file(&self, path: &PathBuf, content: &str) -> Vec<Finding>;
 }
 
+/// 规则目录搜索顺序：
+/// 1. 用户指定目录（--rules 参数）
+/// 2. 项目级目录 `<project>/.ctx-audit/rules/`
+/// 3. 内置规则目录 `rules/`
+fn resolve_rules_dir(project_path: &str, custom_dir: Option<&str>) -> Option<std::path::PathBuf> {
+    // 1. 用户指定
+    if let Some(dir) = custom_dir {
+        let p = std::path::Path::new(dir);
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+    }
+    // 2. 项目级
+    let project_rules = std::path::Path::new(project_path).join(".ctx-audit/rules");
+    if project_rules.exists() {
+        return Some(project_rules);
+    }
+    // 3. 内置
+    let builtin = std::path::Path::new("rules");
+    if builtin.exists() {
+        return Some(builtin.to_path_buf());
+    }
+    None
+}
+
 /// 便捷的 scan_directory 函数（用于web-backend）
 pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
+    scan_directory_with_rules(path, None).await
+}
+
+/// 带自定义规则目录的扫描
+pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> Result<Vec<Finding>, String> {
     use ignore::Walk;
 
     // 先运行攻击面映射
@@ -91,18 +121,24 @@ pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
             });
         }
     }
-    let rules_path = std::path::Path::new("rules");
-    let rules = if rules_path.exists() {
-        match crate::rules::loader::load_rules_from_dir(rules_path) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Failed to load rules: {}, using only RegexScanner", e);
-                vec![]
+    let rules = match resolve_rules_dir(path, rules_dir) {
+        Some(rules_path) => {
+            tracing::info!("加载规则: {}", rules_path.display());
+            match crate::rules::loader::load_rules_from_dir(&rules_path) {
+                Ok(r) => {
+                    tracing::info!("加载了 {} 条规则", r.len());
+                    r
+                }
+                Err(e) => {
+                    tracing::warn!("规则加载失败: {}, 仅使用 RegexScanner", e);
+                    vec![]
+                }
             }
         }
-    } else {
-        eprintln!("Rules directory not found, using only RegexScanner");
-        vec![]
+        None => {
+            tracing::info!("未找到规则目录，仅使用 RegexScanner");
+            vec![]
+        }
     };
 
     // 创建规则扫描器
@@ -279,8 +315,13 @@ pub async fn scan_directory_with_attack_surface(path: &str) -> Result<ScanResult
 ///
 /// 仅对有候选发现的文件运行 AstTaintAnalyzer，用于验证和提升置信度。
 pub async fn scan_directory_deep(path: &str) -> Result<Vec<Finding>, String> {
+    scan_directory_deep_with_rules(path, None).await
+}
+
+/// 带自定义规则目录的深度扫描
+pub async fn scan_directory_deep_with_rules(path: &str, rules_dir: Option<&str>) -> Result<Vec<Finding>, String> {
     // 先执行基础扫描
-    let mut findings = scan_directory(path).await?;
+    let mut findings = scan_directory_with_rules(path, rules_dir).await?;
 
     if findings.is_empty() {
         return Ok(findings);
