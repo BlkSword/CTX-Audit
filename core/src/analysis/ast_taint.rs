@@ -116,6 +116,21 @@ impl AstTaintAnalyzer {
         self
     }
 
+    /// 获取污点源定义
+    pub fn sources(&self) -> &[TaintSource] {
+        &self.sources
+    }
+
+    /// 获取污点汇定义
+    pub fn sinks(&self) -> &[TaintSink] {
+        &self.sinks
+    }
+
+    /// 获取净化函数模式
+    pub fn sanitizer_patterns(&self) -> &[String] {
+        &self.sanitizer_patterns
+    }
+
     /// 追加额外的污点源（不覆盖现有定义）
     pub fn add_sources(&mut self, sources: Vec<TaintSource>) {
         self.sources.extend(sources);

@@ -17,7 +17,7 @@
 
 ## CTX-Audit 是什么
 
-CTX-Audit 是一个基于 Rust 的代码安全分析守护进程。它将确定性分析引擎（AST 污点分析、模式匹配、SCA）以常驻后台服务的形式运行，通过 IPC 为 CLI、IDE、AI agent 等消费者提供高性能安全分析能力。
+CTX-Audit 是一个基于 Rust 的代码安全分析守护进程。它将确定性分析引擎（AST 污点分析、跨文件追踪、模式匹配、SCA）以常驻后台服务的形式运行，通过 IPC 为 CLI、IDE、AI agent 等消费者提供高性能安全分析能力。
 
 **核心设计**：引擎常驻内存，AST 索引和扫描结果缓存复用。重复扫描利用 content-hash 增量检测，无变更时 **1ms** 返回结果。
 
@@ -27,9 +27,10 @@ CTX-Audit 是一个基于 Rust 的代码安全分析守护进程。它将确定�
 │   scan/analyze/   │                   │                              │
 │   watch/findings  │                   │   AST 索引 (tree-sitter)     │
 ├───────────────────┤                   │   污点分析 (Source→Sink)     │
-│   IDE 插件 (未来)  │                   │   模式匹配 (Regex + Rules)  │
-├───────────────────┤                   │   SCA 扫描 (OSV API)        │
-│   AI Agent (未来)  │                   │   增量缓存 (content hash)   │
+│   IDE 插件 (未来)  │                   │   跨文件污点追踪             │
+├───────────────────┤                   │   模式匹配 (Regex + Rules)  │
+│   AI Agent (MCP)  │                   │   SCA 扫描 (OSV API)        │
+│   Claude Code     │                   │   增量缓存 (content hash)   │
 └───────────────────┘                   └──────────────────────────────┘
 ```
 
@@ -43,6 +44,7 @@ cargo build --release
 # 直接使用（无需守护进程）
 ctx-audit scan ./myproject                    # 快速扫描
 ctx-audit scan ./myproject --deep             # 深度扫描（AST 污点分析）
+ctx-audit scan ./myproject --deep --rules ./my-rules/  # 自定义规则
 ctx-audit analyze ./src/main.rs --symbols     # 单文件分析
 ctx-audit watch ./myproject                   # 持续监控
 
@@ -52,6 +54,9 @@ ctx-audit scan ./myproject --daemon           # 通过守护进程扫描（首�
 ctx-audit scan ./myproject --daemon           # 再次扫描（增量，1ms 返回）
 ctx-audit analyze ./src/main.rs --daemon      # 通过守护进程分析
 ctx-audit daemon stop                         # 停止守护进程
+
+# AI Agent 集成（MCP Server）
+ctx-audit mcp                                 # 启动 MCP Server（stdio JSON-RPC）
 ```
 
 ## 命令
@@ -64,9 +69,10 @@ ctx-audit scan ./project [OPTIONS]
 OPTIONS:
   -s, --severity <级别>     按严重程度过滤 (critical, high, medium, low, info)
   -p, --pattern <模式>      按文件模式过滤 (如 *.py)
+  -r, --rules <目录>        自定义规则目录
   -o, --output <文件>       输出文件路径
   -t, --threads <N>         并行线程数 (默认: 4)
-      --deep                启用深度扫描 (AST 污点分析)
+      --deep                启用深度扫描 (AST 污点分析 + 跨文件追踪)
       --daemon              通过守护进程执行（增量缓存）
 ```
 
@@ -76,8 +82,9 @@ OPTIONS:
 |------|------|
 | RuleScanner | 语言感知正则规则（YAML，多语言模式） |
 | RegexScanner | 硬编码模式检测（密码、密钥等） |
-| SCAScanner | 依赖漏洞检测（OSV API） |
+| SCAScanner | 依赖漏洞检测（OSV API，本地缓存 24h） |
 | AstTaintScanner | AST 污点分析（`--deep` 模式） |
+| CrossFileTaintAnalyzer | 跨文件/跨过程污点追踪（`--deep` 模式） |
 
 **输出格式**：
 
@@ -124,7 +131,63 @@ ctx-audit daemon status                      # 查询状态
 ctx-audit daemon stop                        # 停止
 ```
 
-守护进程启动后常驻后台，维护 AST 索引和扫描缓存。通过 TCP IPC（127.0.0.1:19527）与 CLI 通信。
+守护进程特性：
+- **增量缓存**：content-hash 变更检测，无变更时 1ms 返回
+- **心跳检测**：定期写入心跳文件，CLI 自动检测存活状态
+- **自动重连**：CLI 指数退避重连，daemon 崩溃后自动恢复
+- **优雅降级**：`--daemon` 连接失败时自动 fallback 到本地扫描
+- **进程锁**：PID 文件 + 端口探测，防止多实例
+- **Panic 自恢复**：panic hook 自动重启
+
+### `mcp` — AI Agent 集成
+
+```bash
+ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
+```
+
+通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **11 个工具**：
+
+**粗粒度工具**：
+
+| 工具 | 说明 |
+|------|------|
+| `security_scan` | 扫描项目，支持 deep/severity/pattern 过滤 |
+| `scan_file` | 分析单个文件，返回语言/符号/污点流 |
+| `daemon_status` | 查询守护进程状态 |
+
+**细粒度工具（原子化接口）**：
+
+| 工具 | 说明 |
+|------|------|
+| `get_taint_path` | 获取 source→sink 的完整污点传播路径 |
+| `get_data_flow` | 追踪指定变量的定义、使用和传播 |
+| `check_sanitizer` | 检查函数是否匹配已知净化器模式 |
+| `list_sources` | 列出文件中所有污点源 |
+| `list_sinks` | 列出文件中所有污点汇 |
+| `cross_file_analysis` | 运行跨文件污点分析（调用图 + 函数摘要） |
+| `get_call_graph` | 获取项目函数调用图 |
+
+Claude Code 配置示例（`.claude/settings.json`）：
+
+```json
+{
+  "mcpServers": {
+    "ctx-audit": {
+      "command": "ctx-audit",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### `rules` — 规则管理
+
+```bash
+ctx-audit rules list                          # 列出所有已加载的规则
+ctx-audit rules list --rules ./my-rules/      # 列出指定目录的规则
+ctx-audit rules validate                      # 验证规则文件格式
+ctx-audit rules validate --rules ./my-rules/  # 验证指定目录
+```
 
 ### `findings` — 漏洞管理
 
@@ -153,24 +216,69 @@ ctx-audit config list
 | 命令注入 | Critical | CWE-78 | 多语言规则 + 污点分析 |
 | 代码注入 | Critical | CWE-94 | 多语言规则 + 污点分析 |
 | 路径遍历 | High | CWE-22 | 多语言规则 + 污点分析 |
-| XSS | High | CWE-79 | 污点分析 |
+| XSS（反射型/存储型） | High | CWE-79 | 污点分析 |
 | SSRF | High | CWE-918 | 污点分析 |
 | 不安全反序列化 | Critical | CWE-502 | 多语言规则 |
+| JWT 安全问题 | High | — | 规则匹配 |
+| ReDoS（正则 DoS） | Medium | CWE-1333 | 规则匹配 |
+| XXE | High | CWE-611 | 规则匹配 |
+| 开放重定向 | Medium | CWE-601 | 规则匹配 |
 | 硬编码密码 | High | CWE-259 | 模式匹配 |
 | 敏感信息泄露 | High | CWE-200 | 模式匹配 |
+| 缓冲区溢出 | Critical | CWE-120 | C/C++ 规则 |
+| 格式化字符串 | High | CWE-134 | C/C++ 规则 |
+
+### 跨文件污点追踪
+
+`--deep` 模式启用跨文件、跨过程分析：
+
+- **调用图构建**：自动提取项目函数节点和调用关系
+- **跨文件解析**：将裸函数名匹配到全局函数，建立跨文件调用边
+- **函数摘要**：自底向上计算每个函数的污点传播签名
+- **路径追踪**：DFS 查找 source→sink 的跨文件调用路径
+- **上下文组装**：识别 callers、callees、信任边界
+
+支持 12 种语言：Python, JavaScript, TypeScript, Java, Rust, Go, C, C++, PHP, Ruby, JSX, TSX。
 
 ### 依赖漏洞 (SCA)
 
-通过 OSV API 查询已知漏洞依赖：npm (`package.json`)、PyPI (`requirements.txt`)、crates.io (`Cargo.lock`)、Go (`go.sum`)。
+通过 OSV API 查询已知漏洞依赖：npm (`package.json`)、PyPI (`requirements.txt`)、crates.io (`Cargo.lock`)、Go (`go.sum`)。查询结果本地缓存 24h，减少网络请求。
+
+### 误报控制
+
+| 机制 | 说明 |
+|------|------|
+| 置信度评分 | 每条 finding 附带 confidence (0.0-1.0) |
+| Sanitizer 识别 | 30+ 净化函数模式，降低已净化路径置信度 |
+| 参数化查询检测 | 区分字符串拼接 SQL vs 参数化查询 |
+| 基线抑制 | `.ctx-audit/baseline.json` 记录已确认/已忽略的 finding |
+| 上下文感知 | 测试文件和配置目录中的匹配降低置信度 |
 
 ### 框架感知规则
 
 | 框架 | Sources | Sinks |
 |------|---------|-------|
-| React/Next.js | formData, cookies, headers | dangerouslySetInnerHTML, eval |
-| Django | request.GET/POST | raw(), extra() |
+| React/Next.js | formData, cookies, headers, searchParams | dangerouslySetInnerHTML, eval, parseModel |
+| Django | request.GET/POST/args | raw(), extra() |
 | Spring | @RequestParam | JdbcTemplate, Runtime.exec |
-| Express/Node | req.body/query | eval, child_process.exec |
+| Express/Node | req.body/query/params | eval, child_process.exec |
+| Laravel | Request::input, $request->get | DB::raw, DB::select |
+| Rails | params[], request.env | eval, system, send_file |
+
+## 自定义规则
+
+CTX-Audit 支持用户编写自定义 YAML 规则，放置在 `.ctx-audit/rules/` 目录中。
+
+**两种规则类型**：
+
+1. **Pattern Rules** — 基于正则的代码模式匹配（如 `rules/command-injection.yaml`）
+2. **Taint Rules** — 定义污点源、汇和净化函数（如 `rules/taint/generic-taint.yaml`）
+
+**规则优先级**：`--rules` 参数 > `.ctx-audit/rules/` > 内置 `rules/`
+
+**Daemon 热加载**：守护进程每 30 秒检测规则目录变更，自动重新加载。
+
+详细编写指南见 [`docs/custom-rules.md`](docs/custom-rules.md) | [`docs/custom-rules-en.md`](docs/custom-rules-en.md)。
 
 ## 增量扫描原理
 
@@ -195,16 +303,31 @@ ctx-audit config list
 ```
 daemon/                   # 守护进程
 ├── src/protocol.rs       # IPC 协议 (NDJSON over TCP)
-├── src/server.rs         # TCP 服务器，多客户端并发
-├── src/engine.rs         # 分析引擎协调 + 增量缓存
+├── src/server.rs         # TCP 服务器，心跳检测，多客户端并发
+├── src/engine.rs         # 分析引擎协调 + 增量缓存 + 跨文件分析
 ├── src/state.rs          # 项目状态管理
-└── src/client.rs         # IPC 客户端
+├── src/client.rs         # IPC 客户端（指数退避重连）
+└── src/main.rs           # 守护进程入口（PID 锁 + panic 自恢复）
 
 core/                     # 确定性分析引擎
-├── ast/                  # AST 引擎 (tree-sitter, 12+ 语言)
-├── analysis/             # 污点分析 (AST taint, cross-file, data flow)
-├── scanner/              # 扫描器 (regex, rules, SCA)
+├── ast/                  # AST 引擎 (tree-sitter, 12+ 语言, 增量 mtime 索引)
+├── analysis/             # 分析模块
+│   ├── taint.rs          # 污点分析核心（Source/Sink/Flow 类型）
+│   ├── ast_taint.rs      # AST 污点分析器（CFG + worklist 算法）
+│   ├── cross_file.rs     # 跨文件分析（调用图 + 函数摘要 + 上下文组装）
+│   ├── enhanced_dataflow.rs  # 增强数据流分析
+│   ├── attack_surface.rs # 攻击面映射
+│   └── imports.rs        # 导入解析
+├── scanner/              # 扫描器
+│   ├── regex_scanner.rs  # 正则扫描
+│   ├── sca_scanner.rs    # SCA 扫描（OSV API + 本地缓存）
+│   └── manager.rs        # 扫描器管理
 ├── rules/                # YAML 规则系统
+│   ├── model.rs          # Rule/RuleSet 数据模型
+│   ├── taint_model.rs    # TaintRuleSet 数据模型
+│   ├── loader.rs         # 规则加载器
+│   ├── taint_loader.rs   # 污点规则加载器
+│   └── scanner.rs        # RuleScanner
 ├── sarif/                # SARIF 2.1.0 输出
 ├── watcher/              # 文件监听 + 变更检测
 └── indexing/             # 代码索引
@@ -216,14 +339,32 @@ tools/                    # 工具集
 └── search_tools.rs       # 代码搜索工具
 
 cli/                      # 命令行客户端
-├── commands/scan.rs       # 扫描命令
-├── commands/analyze.rs    # 分析命令
-├── commands/watch.rs      # 监控命令
-├── commands/daemon.rs     # 守护进程管理
-└── commands/findings.rs   # 漏洞管理
+├── commands/scan.rs      # 扫描命令
+├── commands/analyze.rs   # 分析命令
+├── commands/watch.rs     # 监控命令
+├── commands/daemon.rs    # 守护进程管理
+├── commands/mcp.rs       # MCP Server（11 个工具）
+├── commands/rules.rs     # 规则管理
+└── commands/findings.rs  # 漏洞管理
+
+rules/                    # 内置规则（37 个 YAML 文件）
+├── *.yaml                # 模式规则（25 个）
+└── taint/                # 污点规则
+    ├── generic-taint.yaml          # 通用污点规则
+    └── frameworks/                 # 框架特定规则
+        ├── react-nextjs.yaml
+        ├── django.yaml
+        ├── spring.yaml
+        └── express-node.yaml
+
+docs/                     # 文档
+├── custom-rules.md       # 自定义规则编写指南（中文）
+└── custom-rules-en.md    # Custom Rules Guide (English)
 ```
 
 ## CI/CD 集成
+
+### GitHub Actions
 
 ```yaml
 # .github/workflows/security-scan.yml
@@ -243,14 +384,38 @@ jobs:
           sarif_file: results.sarif
 ```
 
+### 自定义规则集成
+
+```bash
+# 项目级自定义规则
+mkdir -p .ctx-audit/rules/
+cp my-custom-rule.yaml .ctx-audit/rules/
+
+# 扫描时自动加载
+ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
+```
+
 ## 开发
 
 ```bash
 cargo build --release        # 构建（ctx-audit + ctx-audit-daemon）
-cargo test --workspace       # 运行测试
+cargo test --workspace       # 运行测试（123 个测试）
 cargo fmt                    # 格式化
 cargo clippy                 # 代码检查
 ```
+
+## 项目状态
+
+| 维度 | 状态 |
+|------|------|
+| AST 污点分析 | CFG + worklist 算法，12 语言，30+ sanitizer |
+| 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找 |
+| 模式匹配规则 | 37 个 YAML 规则，覆盖 7 类注入 + 6 语言 |
+| SCA 扫描 | OSV API，4 个生态，本地缓存 |
+| MCP 集成 | 11 个工具（3 粗粒度 + 7 细粒度 + 1 状态查询） |
+| 自定义规则 | YAML 格式，daemon 热加载 |
+| 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
+| 测试覆盖 | 123 个测试 |
 
 ## 许可证
 

@@ -59,7 +59,12 @@ pub struct AnalysisEngine {
     ast_engines: RwLock<HashMap<String, Arc<deepaudit_core::ASTEngine>>>,
     /// 扫描缓存: project_path → ProjectScanCache
     scan_caches: RwLock<HashMap<String, RwLock<ProjectScanCache>>>,
+    /// 规则加载时间戳：rules_dir → (load_time, rule_count)
+    rules_cache: RwLock<HashMap<String, (std::time::Instant, usize)>>,
 }
+
+/// 规则热重载检查间隔
+const RULES_RELOAD_INTERVAL_SECS: u64 = 30;
 
 /// 增量扫描输出
 pub struct ScanOutput {
@@ -75,6 +80,7 @@ impl AnalysisEngine {
         Self {
             ast_engines: RwLock::new(HashMap::new()),
             scan_caches: RwLock::new(HashMap::new()),
+            rules_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -211,11 +217,24 @@ impl AnalysisEngine {
 
     /// 全量扫描（首次或强制）
     async fn full_scan(&self, path: &str, deep: bool, start: Instant) -> Result<ScanOutput> {
+        // 检测规则目录（项目级 > 内置）
+        let project_rules = Path::new(path).join(".ctx-audit/rules");
+        let builtin_rules = Path::new("rules");
+        let rules_dir = if project_rules.exists() {
+            Some(project_rules.to_string_lossy().to_string())
+        } else if builtin_rules.exists() {
+            Some(builtin_rules.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        self.log_rules_status(path, rules_dir.as_deref()).await;
+
         let findings = if deep {
-            deepaudit_core::scan_directory_deep(path).await
+            deepaudit_core::scan_directory_deep_with_rules(path, rules_dir.as_deref()).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         } else {
-            deepaudit_core::scan_directory(path).await
+            deepaudit_core::scan_directory_with_rules(path, rules_dir.as_deref()).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         };
 
@@ -511,6 +530,75 @@ impl AnalysisEngine {
         }
     }
 
+    // ── 跨文件污点分析 ──────────────────────────────
+
+    pub fn cross_file_analysis(&self, project_path: &str) -> Result<serde_json::Value> {
+        let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+        let result = analyzer.analyze_project(std::path::Path::new(project_path));
+
+        let summaries = analyzer.compute_function_summaries(std::path::Path::new(project_path));
+
+        let cross_file_flows: Vec<serde_json::Value> = result.taint_flows.iter()
+            .filter(|f| f.source.file_path != f.sink.file_path)
+            .map(|f| json!({
+                "id": f.id,
+                "source": {
+                    "file": f.source.file_path,
+                    "line": f.source.line,
+                    "symbol": f.source.symbol,
+                },
+                "sink": {
+                    "file": f.sink.file_path,
+                    "line": f.sink.line,
+                    "symbol": f.sink.symbol,
+                },
+                "vulnerability_type": format!("{:?}", f.vulnerability_type),
+                "severity": format!("{:?}", f.severity),
+                "confidence": f.confidence,
+                "path_steps": f.interprocedural_path.iter().map(|s| json!({
+                    "type": format!("{:?}", s.step_type),
+                    "file": s.file_path,
+                    "function": s.function_name,
+                    "line": s.line,
+                    "variable": s.variable,
+                })).collect::<Vec<_>>(),
+            }))
+            .collect();
+
+        let summary_list: Vec<serde_json::Value> = summaries.values().map(|s| json!({
+            "func_id": s.func_id,
+            "func_name": s.func_name,
+            "file_path": s.file_path,
+            "taint_propagation": s.taint_propagation.iter().map(|(idx, affects_return)| {
+                json!({"param_index": idx, "affects_return": affects_return})
+            }).collect::<Vec<_>>(),
+            "direct_sinks": s.direct_sinks.iter().map(|sk| json!({
+                "sink_name": sk.sink_name,
+                "from_param": sk.from_param,
+                "sanitized": sk.sanitized,
+                "vuln_type": format!("{:?}", sk.vuln_type),
+            })).collect::<Vec<_>>(),
+        })).collect();
+
+        Ok(json!({
+            "project_path": result.project_path,
+            "stats": {
+                "files_analyzed": result.stats.files_analyzed,
+                "total_functions": result.stats.total_functions,
+                "taint_sources": result.stats.taint_sources,
+                "taint_sinks": result.stats.taint_sinks,
+                "total_flows": result.stats.taint_flows,
+                "cross_file_flows": result.stats.cross_file_flows,
+            },
+            "cross_file_flows": cross_file_flows,
+            "function_summaries": summary_list,
+            "call_graph": {
+                "nodes": result.call_graph.nodes.len(),
+                "entry_points": result.call_graph.entry_points.len(),
+            },
+        }))
+    }
+
     // ── 缓存统计 ─────────────────────────────────────
 
     pub async fn cache_stats(&self) -> (usize, usize) {
@@ -518,6 +606,33 @@ impl AnalysisEngine {
         let ast_count = self.ast_engines.read().await.len();
         let scan_count = caches.len();
         (ast_count, scan_count)
+    }
+
+    /// 规则热重载状态日志（带缓存去重）
+    async fn log_rules_status(&self, project_path: &str, rules_dir: Option<&str>) {
+        let rules_cache = self.rules_cache.read().await;
+        let key = rules_dir.unwrap_or("none");
+        let now = std::time::Instant::now();
+        let should_log = match rules_cache.get(key) {
+            Some((last_time, _)) => now.duration_since(*last_time).as_secs() > RULES_RELOAD_INTERVAL_SECS,
+            None => true,
+        };
+        drop(rules_cache);
+
+        if should_log {
+            if let Some(dir) = rules_dir {
+                match deepaudit_core::rules::loader::load_rules_from_dir(dir) {
+                    Ok(rules) => {
+                        tracing::info!("规则加载: {} 条规则 from {}", rules.len(), dir);
+                        let mut cache = self.rules_cache.write().await;
+                        cache.insert(key.to_string(), (now, rules.len()));
+                    }
+                    Err(e) => tracing::warn!("规则加载失败: {}", e),
+                }
+            } else {
+                tracing::info!("未找到规则目录，使用内置 RegexScanner");
+            }
+        }
     }
 }
 

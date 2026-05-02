@@ -282,6 +282,16 @@ async fn handle_request(
             }
         }
 
+        Request::CrossFileAnalysis { path } => {
+            match engine.cross_file_analysis(&path) {
+                Ok(result) => Response::CrossFileTaintResult { result },
+                Err(e) => Response::Error {
+                    code: "cross_file_failed".to_string(),
+                    message: e.to_string(),
+                },
+            }
+        }
+
         Request::WatchStart { path, ignore_patterns: _ } => {
             // Phase 4: 守护进程内部文件监控
             Response::WatchStarted { path }

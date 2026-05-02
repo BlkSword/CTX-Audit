@@ -10,6 +10,8 @@ use miette::Result;
 use crate::terminal::TerminalRenderer;
 use deepaudit_core::scan_directory;
 use deepaudit_core::scan_directory_deep;
+use deepaudit_core::scan_directory_with_rules;
+use deepaudit_core::scan_directory_deep_with_rules;
 use deepaudit_core::sarif::{SarifConverter, FindingInput};
 
 /// 执行 scan 命令
@@ -38,12 +40,13 @@ pub async fn execute(
         return scan_via_daemon(path, severity, pattern, output_path, output_format, deep, &mut renderer).await;
     }
 
-    scan_local(path, severity, pattern, output_path, output_format, deep, &mut renderer).await
+    scan_local(path, rules_dir, severity, pattern, output_path, output_format, deep, &mut renderer).await
 }
 
 /// 本地扫描（直接调用 core）
 async fn scan_local(
     path: String,
+    rules_dir: Option<String>,
     severity: Option<String>,
     pattern: Option<String>,
     output_path: Option<String>,
@@ -54,14 +57,19 @@ async fn scan_local(
     let mode = if deep { "深度扫描" } else { "快速扫描" };
     renderer.info(&format!("{}: {}", mode, path));
 
+    if let Some(ref r) = rules_dir {
+        renderer.info(&format!("自定义规则目录: {}", r));
+    }
+
     // 创建进度条
     let pb = renderer.progress_bar(100);
     pb.set_message("正在扫描...");
 
+    let rules_ref = rules_dir.as_deref();
     let findings_result = if deep {
-        scan_directory_deep(&path).await
+        scan_directory_deep_with_rules(&path, rules_ref).await
     } else {
-        scan_directory(&path).await
+        scan_directory_with_rules(&path, rules_ref).await
     };
 
     pb.finish_with_message("扫描完成");
@@ -239,7 +247,7 @@ async fn scan_via_daemon(
         Err(e) => {
             renderer.warning(&format!("连接守护进程失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, severity, pattern, output_path, output_format, deep, renderer).await;
+            return scan_local(path, None, severity, pattern, output_path, output_format, deep, renderer).await;
         }
     };
 
@@ -253,7 +261,7 @@ async fn scan_via_daemon(
             pb.finish_with_message("守护进程扫描失败");
             renderer.warning(&format!("守护进程扫描失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, severity, pattern, output_path, output_format, deep, renderer).await;
+            return scan_local(path, None, severity, pattern, output_path, output_format, deep, renderer).await;
         }
     };
 

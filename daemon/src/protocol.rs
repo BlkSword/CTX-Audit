@@ -49,6 +49,9 @@ pub enum Request {
     /// 获取调用图
     GetCallGraph { entry: String, depth: Option<usize> },
 
+    /// 跨文件污点分析
+    CrossFileAnalysis { path: String },
+
     /// 启动文件监控
     WatchStart { path: String, ignore_patterns: Vec<String> },
 
@@ -92,6 +95,9 @@ pub enum Response {
 
     /// 调用图结果
     CallGraphResult { graph: serde_json::Value },
+
+    /// 跨文件污点分析结果
+    CrossFileTaintResult { result: serde_json::Value },
 
     /// 监控已启动
     WatchStarted { path: String },
