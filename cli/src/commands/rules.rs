@@ -8,6 +8,8 @@
 use miette::Result;
 
 use crate::terminal::TerminalRenderer;
+use deepaudit_core::rules::loader::load_rules_from_dir;
+use deepaudit_core::rules::model::{Rule, RuleSet};
 
 /// 列出所有加载的规则
 pub async fn list(rules_dir: Option<String>) -> Result<()> {
@@ -31,7 +33,7 @@ pub async fn list(rules_dir: Option<String>) -> Result<()> {
 
         renderer.info(&format!("规则目录: {}", dir));
 
-        match deepaudit_core::rules::loader::load_rules_from_dir(path) {
+        match load_rules_from_dir(path) {
             Ok(rules) => {
                 renderer.info(&format!("  加载了 {} 条规则", rules.len()));
                 for rule in &rules {
@@ -105,8 +107,8 @@ pub async fn validate(rules_dir: Option<String>) -> Result<()> {
 
         let file_name = file_path.file_name().unwrap_or_default().to_string_lossy();
 
-        if serde_yaml::from_str::<deepaudit_core::rules::model::RuleSet>(&content).is_ok()
-            || serde_yaml::from_str::<deepaudit_core::rules::model::Rule>(&content).is_ok()
+        if serde_yaml::from_str::<RuleSet>(&content).is_ok()
+            || serde_yaml::from_str::<Rule>(&content).is_ok()
             || content.contains("kind: taint-rules")  // taint rules have different schema
         {
             renderer.success(&format!("  ✓ {}", file_name));

@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use tokio::fs;
 use chrono::{DateTime, Utc};
 
-use deepaudit_core::{ASTEngine, CacheData};
+use deepaudit_core::{ASTEngine, CacheData, SymbolKind};
 use crate::database::Database;
 
 /// 项目索引状态
@@ -271,7 +271,7 @@ impl IndexManager {
 
         for symbol in symbols {
             match symbol.kind {
-                deepaudit_core::SymbolKind::Class | deepaudit_core::SymbolKind::Interface => {
+                SymbolKind::Class | SymbolKind::Interface => {
                     classes.push(SymbolItem {
                         name: symbol.name.clone(),
                         line: symbol.start_line,
@@ -279,7 +279,7 @@ impl IndexManager {
                         doc: symbol.code.chars().take(100).collect(),
                     });
                 }
-                deepaudit_core::SymbolKind::Function | deepaudit_core::SymbolKind::Method => {
+                SymbolKind::Function | SymbolKind::Method => {
                     functions.push(SymbolItem {
                         name: symbol.name.clone(),
                         line: symbol.start_line,
