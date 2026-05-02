@@ -1,0 +1,19 @@
+category: dos
+cwe: CWE-1333
+description: 检测正则表达式拒绝服务（ReDoS）风险：包含灾难性回溯的正则模式
+id: redos-detection
+language: all
+name: Regular Expression Denial of Service (ReDoS) Detection
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "避免使用嵌套量词（如 (a+)+）；使用原子组或占有量词；限制正则匹配超时；使用安全正则库或静态分析工具检测危险模式。"
+references:
+  - "https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS"
+  - "https://cwe.mitre.org/data/definitions/1333.html"
+patterns:
+  - language: javascript
+    pattern: '(?:\((?:[^)]*\+|\*)\)\+|\((?:[^)]*\+|\*)\)\*|\(\?:[^)]*[+*][^)]*[+*]\))'
+  - language: python
+    pattern: '(?:\((?:[^)]*\+|\*)\)\+|\((?:[^)]*\+|\*)\)\*|\(\?:[^)]*[+*][^)]*[+*]\))'
+  - language: java
+    pattern: '(?:\((?:[^)]*\+|\*)\)\+|\((?:[^)]*\+|\*)\)\*)'
+severity: medium

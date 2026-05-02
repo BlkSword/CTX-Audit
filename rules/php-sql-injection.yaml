@@ -1,0 +1,19 @@
+category: injection
+cwe: CWE-89
+description: 检测 PHP SQL 注入风险：用户输入直接拼接到 SQL 查询中
+id: php-sql-injection
+language: php
+name: PHP SQL Injection Detection
+owasp: "A03:2021-Injection"
+patterns:
+  - language: php
+    pattern: '(?i)(mysql_query\s*\(|mysqli_query\s*\(|mysqli->query\s*\(|PDO::query\s*\(|->exec\s*\().*\$_(GET|POST|REQUEST|COOKIE)'
+  - language: php
+    pattern: '(?i)(SELECT|INSERT|UPDATE|DELETE|DROP).*\.\s*\$_(GET|POST|REQUEST|COOKIE)'
+  - language: php
+    pattern: '(?i)(WHERE|VALUES|SET).*\$_(GET|POST|REQUEST|COOKIE)'
+severity: critical
+remediation: "使用 PDO 预处理语句（prepare + bindParam）；使用 Laravel Eloquent / Query Builder；对所有用户输入进行白名单验证。"
+references:
+  - "https://owasp.org/www-community/attacks/SQL_Injection"
+  - "https://www.php.net/manual/en/pdo.prepared-statements.php"

@@ -10,6 +10,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use rayon::prelude::*;
 
+/// 基线文件结构：记录已忽略的 findings
+#[derive(Debug, Deserialize)]
+struct Baseline {
+    /// key = "file_path:line_start:vuln_type" → value = reason
+    #[serde(default)]
+    ignored: std::collections::HashMap<String, String>,
+}
+
 /// 漏洞发现结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
@@ -110,11 +118,16 @@ pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
     // 创建 SCA 依赖扫描器
     let sca_scanner = sca_scanner::ScaScanner::new();
 
-    // 收集所有文件路径（用于并行处理）
-    let mut code_files: Vec<(std::path::PathBuf, String)> = Vec::new();
-    let mut dep_files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    // 收集文件路径（不预读内容，按需读取）
+    /// 最大文件大小 10MB
+    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    /// 内存预算：所有文件内容总量上限 500MB
+    const MEMORY_BUDGET_BYTES: usize = 500 * 1024 * 1024;
 
-    // 使用 ignore 库遍历目录，收集文件
+    let mut code_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut dep_files: Vec<std::path::PathBuf> = Vec::new();
+
+    // 使用 ignore 库遍历目录，收集文件路径
     for entry in Walk::new(path) {
         if let Ok(entry) = entry {
             let path = entry.path();
@@ -123,56 +136,122 @@ pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
                 continue;
             }
 
-            if let Ok(content) = std::fs::read_to_string(path) {
-                let path_buf = path.to_path_buf();
-
-                if sca_scanner::is_dependency_file(path) {
-                    dep_files.push((path_buf, content));
-                } else if is_supported_file(path) {
-                    code_files.push((path_buf, content));
+            // 文件大小检查
+            if let Ok(meta) = std::fs::metadata(path) {
+                if meta.len() > MAX_FILE_SIZE {
+                    continue;
                 }
+            }
+
+            let path_buf = path.to_path_buf();
+
+            if sca_scanner::is_dependency_file(path) {
+                dep_files.push(path_buf);
+            } else if is_supported_file(path) {
+                code_files.push(path_buf);
             }
         }
     }
 
-    // SCA 扫描（异步，按顺序处理依赖文件）
-    for (path_buf, content) in &dep_files {
-        let sca_findings = sca_scanner.scan_file(path_buf, content).await;
-        findings.extend(sca_findings);
+    // SCA 扫描（按需读取依赖文件）
+    for path_buf in &dep_files {
+        if let Ok(content) = std::fs::read_to_string(path_buf) {
+            let sca_findings = sca_scanner.scan_file(path_buf, &content).await;
+            findings.extend(sca_findings);
+        }
     }
 
-    // 代码文件并行扫描（使用 rayon）
-    // 在进入 rayon 之前捕获 Tokio Handle（rayon 线程没有 runtime 上下文）
+    // 代码文件并行扫描（使用 rayon，按需读取 + 内存预算控制）
     let rt_handle = tokio::runtime::Handle::current();
 
-    let code_findings: Vec<Vec<Finding>> = code_files
-        .par_iter()
-        .map(|(path_buf, content)| {
-            let mut file_findings = Vec::new();
+    // 分批处理以控制内存
+    let batch_size = 100; // 每批最多 100 个文件
+    let mut total_bytes_read: usize = 0;
 
-            // 正则扫描（通过捕获的 Handle 调用）
-            let regex_results = rt_handle.block_on(regex_scanner.scan_file(path_buf, content));
-            file_findings.extend(regex_results);
-
-            file_findings
-        })
-        .collect();
-
-    for mut batch in code_findings {
-        findings.append(&mut batch);
-    }
-
-    // 规则扫描（如果存在规则）— 同样使用捕获的 Handle
-    if let Some(ref scanner) = rule_scanner {
-        let rule_findings: Vec<Vec<Finding>> = code_files
+    for chunk in code_files.chunks(batch_size) {
+        let code_findings: Vec<Vec<Finding>> = chunk
             .par_iter()
-            .map(|(path_buf, content)| {
-                rt_handle.block_on(scanner.scan_file(path_buf, content))
+            .map(|path_buf| {
+                let content = match std::fs::read_to_string(path_buf) {
+                    Ok(c) => c,
+                    Err(_) => return Vec::new(),
+                };
+
+                let mut file_findings = Vec::new();
+
+                // 正则扫描
+                let regex_results = rt_handle.block_on(regex_scanner.scan_file(path_buf, &content));
+                file_findings.extend(regex_results);
+
+                // 规则扫描（同一文件，内容已加载，不重复读）
+                if let Some(ref scanner) = rule_scanner {
+                    let rule_results = rt_handle.block_on(scanner.scan_file(path_buf, &content));
+                    file_findings.extend(rule_results);
+                }
+
+                file_findings
             })
             .collect();
 
-        for mut batch in rule_findings {
+        // 更新内存计数（近似）
+        total_bytes_read += chunk.len() * 10_000; // 估算
+        if total_bytes_read > MEMORY_BUDGET_BYTES {
+            tracing::warn!(
+                "内存预算接近上限 ({}MB)，停止扫描剩余文件",
+                total_bytes_read / 1024 / 1024
+            );
+            break;
+        }
+
+        for mut batch in code_findings {
             findings.append(&mut batch);
+        }
+    }
+
+    // 上下文感知过滤：降低测试文件和配置目录中 findings 的置信度
+    for finding in &mut findings {
+        let fp = finding.file_path.to_lowercase().replace('\\', "/");
+        let is_test = fp.contains("/test") || fp.contains("/tests/") || fp.contains("/__tests__/")
+            || fp.contains("/spec/") || fp.ends_with("_test.go") || fp.ends_with("_test.rs")
+            || fp.ends_with("_test.py") || fp.ends_with(".test.js") || fp.ends_with(".test.ts")
+            || fp.ends_with(".spec.js") || fp.ends_with(".spec.ts");
+        let is_config = fp.contains("/config/") || fp.contains("/.env") || fp.contains("/migrations/")
+            || fp.ends_with("dockerfile") || fp.ends_with(".toml") || fp.ends_with(".yaml")
+            || fp.ends_with(".yml") || fp.ends_with(".json");
+        let is_example = fp.contains("/example") || fp.contains("/demo") || fp.contains("/sample");
+
+        if is_test || is_example {
+            // 测试/示例文件中的发现降低严重程度
+            finding.confidence = Some(finding.confidence.unwrap_or(0.7) * 0.3);
+        } else if is_config {
+            // 配置文件中的发现降低置信度（配置中硬编码密码可能是预期的）
+            if finding.vuln_type.contains("Password") || finding.vuln_type.contains("password") {
+                finding.confidence = Some(finding.confidence.unwrap_or(0.7) * 0.5);
+            }
+        }
+
+        // 为没有置信度的 findings 设置默认值
+        if finding.confidence.is_none() {
+            finding.confidence = Some(match finding.detector.as_str() {
+                "SCAScanner" => 0.9,
+                "RuleScanner" => 0.7,
+                "RegexScanner" => 0.5,
+                "AttackSurfaceMapper" => 0.6,
+                _ => 0.5,
+            });
+        }
+    }
+
+    // 基线抑制：加载已确认/忽略的 findings
+    let baseline_path = std::path::Path::new(".ctx-audit/baseline.json");
+    if baseline_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(baseline_path) {
+            if let Ok(baseline) = serde_json::from_str::<Baseline>(&content) {
+                findings.retain(|f| {
+                    let key = format!("{}:{}:{}", f.file_path, f.line_start, f.vuln_type);
+                    !baseline.ignored.contains_key(&key)
+                });
+            }
         }
     }
 
@@ -275,6 +354,41 @@ pub async fn scan_directory_deep(path: &str) -> Result<Vec<Finding>, String> {
     }
 
     findings.extend(taint_findings);
+
+    // 跨文件污点分析
+    let cross_file_result = crate::analysis::cross_file::CrossFileTaintAnalyzer::new()
+        .analyze_project(std::path::Path::new(path));
+
+    if !cross_file_result.taint_flows.is_empty() {
+        tracing::info!(
+            "[CrossFileTaint] 发现 {} 个跨文件污点流",
+            cross_file_result.taint_flows.len()
+        );
+        for flow in &cross_file_result.taint_flows {
+            let intermediate: Vec<String> = flow.interprocedural_path.iter()
+                .map(|s| format!("{}:{}", s.file_path, s.line))
+                .collect();
+            findings.push(Finding {
+                finding_id: flow.id.clone(),
+                file_path: flow.source.file_path.clone(),
+                line_start: flow.source.line,
+                line_end: flow.sink.line,
+                detector: "CrossFileTaintAnalyzer".to_string(),
+                vuln_type: format!("{:?}", flow.vulnerability_type),
+                severity: format!("{:?}", flow.severity).to_lowercase(),
+                description: format!(
+                    "Cross-file taint: {}:{} → {}:{} (via {})",
+                    flow.source.symbol, flow.source.line,
+                    flow.sink.symbol, flow.sink.line,
+                    intermediate.join(" → ")
+                ),
+                analysis_trail: Some(intermediate),
+                llm_output: None,
+                confidence: Some(flow.confidence),
+                corroboration_count: None,
+            });
+        }
+    }
 
     // 去重
     findings = deduplicate_findings(findings);

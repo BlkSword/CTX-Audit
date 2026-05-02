@@ -1,0 +1,22 @@
+category: security-misconfiguration
+cwe: CWE-502
+description: 检测 Laravel 框架特定安全问题
+id: laravel-security
+language: php
+name: Laravel Security Issues
+owasp: "A05:2021-Security Misconfiguration"
+patterns:
+  - language: php
+    pattern: '(?i)APP_DEBUG\s*=\s*true'
+  - language: php
+    pattern: '(?i)APP_KEY\s*=\s*$'
+  - language: php
+    pattern: '(?i)DB_PASSWORD\s*=\s*(?!(env\())[^$\s]'
+  - language: php
+    pattern: '(?i)::raw\s*\(\s*.*request::'
+  - language: php
+    pattern: '(?i)DB::(select|statement|unprepared)\s*\(\s*.*\$request'
+severity: high
+remediation: "生产环境关闭 APP_DEBUG；APP_KEY 使用 php artisan key:generate 生成；数据库密码使用 env() 读取；使用 Eloquent 或 Query Builder 替代原始 SQL。"
+references:
+  - "https://laravel.com/docs/security"

@@ -1,0 +1,25 @@
+category: injection
+cwe: CWE-79
+description: 检测跨站脚本攻击（XSS）风险：用户输入未经转义直接输出到 HTML
+id: xss-detection
+language: all
+name: Cross-Site Scripting (XSS) Detection
+owasp: "A03:2021-Injection"
+remediation: "对输出到 HTML 的用户输入进行转义；使用框架自带的转义机制（React 的 JSX 自动转义）；使用 Content-Security-Policy 头；避免使用 innerHTML、document.write 等直接 DOM 操作。"
+references:
+  - "https://owasp.org/www-community/attacks/xss/"
+  - "https://cwe.mitre.org/data/definitions/79.html"
+patterns:
+  - language: javascript
+    pattern: '(?i)(\.innerHTML\s*=|document\.write\s*\(|dangerouslySetInnerHTML|\.outerHTML\s*=)'
+  - language: javascript
+    pattern: '(?i)(\.html\s*\(\s*[^)]*\$(|\.html\s*\(\s*req\.|\.html\s*\(\s*params)'
+  - language: python
+    pattern: '(?i)(render_template_string\s*\(|Markup\s*\(|\|safe\b)'
+  - language: java
+    pattern: '(?i)(\.print\s*\(\s*request|\.println\s*\(\s*request|getWriter\(\)\.write\s*\(\s*request)'
+  - language: php
+    pattern: '(?i)(echo\s+\$_(GET|POST|REQUEST)|print\s+\$_(GET|POST|REQUEST)|\?\>\s*<\?=\s*\$_)'
+  - language: typescript
+    pattern: '(?i)(\.innerHTML\s*=|document\.write\s*\(|dangerouslySetInnerHTML)'
+severity: high

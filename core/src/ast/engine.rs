@@ -57,9 +57,8 @@ impl ASTEngine {
             return Err(format!("Path '{}' does not exist", root_path.display()));
         }
 
-        // Collect all files to process
+        // 收集所有源文件
         let mut files_to_process = Vec::new();
-
         for entry in Walk::new(&root_path) {
             if let Ok(entry) = entry {
                 let path = entry.path();
@@ -70,47 +69,78 @@ impl ASTEngine {
         }
 
         let total_files = files_to_process.len();
-        log::info!(
-            "Found {} files to scan in {}",
-            total_files,
-            root_path.display()
-        );
 
-        // Phase 1: Parse all files in parallel (no locking needed for parsing)
-        let parsed_results: Vec<_> = files_to_process
+        // 增量索引：读取缓存，检查 mtime 跳过未变更文件
+        let (cached_count, changed_files) = {
+            let query_engine = self.query_engine.lock()
+                .map_err(|_| "Query engine lock poisoned")?;
+
+            let mut cached = 0;
+            let mut changed = Vec::new();
+
+            if let Some(ref engine) = *query_engine {
+                for file_path in &files_to_process {
+                    let file_str = file_path.to_string_lossy().to_string();
+                    let current_mtime = std::fs::metadata(file_path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                        .unwrap_or(0);
+
+                    if let Some(cached_idx) = engine.cache.index.get(&file_str) {
+                        if cached_idx.mtime == current_mtime && current_mtime > 0 {
+                            // mtime 未变，跳过
+                            cached += 1;
+                            continue;
+                        }
+                    }
+                    changed.push(file_path.clone());
+                }
+            } else {
+                // 无缓存，全部需要解析
+                changed = files_to_process.clone();
+            }
+
+            (cached, changed)
+        };
+
+        if cached_count > 0 {
+            log::info!(
+                "增量索引: {} 个文件缓存命中，{} 个需要重新解析",
+                cached_count, changed_files.len()
+            );
+        }
+
+        if changed_files.is_empty() {
+            log::info!("所有 {} 个文件索引均有效，无需重新解析", total_files);
+            return Ok(0);
+        }
+
+        // 并行解析变更文件
+        let parsed_results: Vec<_> = changed_files
             .par_iter()
             .filter_map(|file_path| {
-                // Read file
                 let content = match std::fs::read_to_string(file_path) {
                     Ok(c) => c,
-                    Err(e) => {
-                        log::error!("Failed to read file {}: {}", file_path.display(), e);
-                        return None;
-                    }
+                    Err(_) => return None,
                 };
 
-                // Parse file (create a new parser for each thread to avoid locking)
                 let mut local_parser = ASTParser::new();
                 match local_parser.parse_file(file_path, &content) {
                     Ok(symbols) => {
-                        // Get mtime
                         let mtime = std::fs::metadata(file_path)
                             .ok()
                             .and_then(|m| m.modified().ok())
                             .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
                             .unwrap_or(0);
-
                         Some((file_path.clone(), symbols, mtime))
                     }
-                    Err(e) => {
-                        log::error!("Failed to parse file {}: {}", file_path.display(), e);
-                        None
-                    }
+                    Err(_) => None,
                 }
             })
             .collect();
 
-        // Phase 2: Update cache serially (single lock acquisition)
+        // 更新缓存
         let mut processed_count = 0;
         {
             let mut query_engine = self.query_engine.lock()
@@ -123,7 +153,6 @@ impl ASTEngine {
 
                     engine.cache.index.insert(file_path_str.clone(), file_index);
 
-                    // Update class map
                     if let Some(idx) = engine.cache.index.get(&file_path_str) {
                         for symbol in &idx.symbols {
                             if matches!(symbol.kind, crate::ast::symbol::SymbolKind::Class) {
@@ -136,15 +165,14 @@ impl ASTEngine {
             }
         }
 
-        // Save cache
+        // 保存缓存
         if let Err(e) = self.save_cache() {
             log::error!("Failed to save cache: {}", e);
         }
 
         log::info!(
-            "Successfully processed {} out of {} files",
-            processed_count,
-            total_files
+            "索引完成: {}/{} 文件重新解析，{} 文件缓存命中",
+            processed_count, total_files, cached_count
         );
         Ok(processed_count)
     }

@@ -1,0 +1,23 @@
+category: authentication
+cwe: CWE-327
+description: 检测 JWT 安全问题：算法 none、弱密钥、硬编码密钥
+id: jwt-security
+language: all
+name: JWT Security Issues Detection
+owasp: "A02:2021-Cryptographic Failures"
+remediation: "使用强密钥（至少 256 位）；禁止 algorithm none；使用成熟的 JWT 库并验证算法；不要硬编码密钥，使用环境变量或密钥管理服务。"
+references:
+  - "https://owasp.org/www-project-web-security-testing-guide/"
+  - "https://cwe.mitre.org/data/definitions/327.html"
+patterns:
+  - language: javascript
+    pattern: '(?i)(algorithm\s*:\s*[''"]none[''"]|jwt\.sign\s*\([^,]*,\s*[''"][^''"]{0,20}[''"]|jwt\.verify\s*\([^,]*,\s*[''"][^''"]{0,20}[''"])'
+  - language: python
+    pattern: '(?i)(algorithm\s*=\s*[''"]none[''"]|jwt\.encode\s*\([^,]*,\s*[''"][^''"]{0,20}[''"]|jwt\.decode\s*\([^)]*algorithms\s*=\s*\[\s*[''"]none[''"])'
+  - language: java
+    pattern: '(?i)(Algorithm\.none|setSigningKey\s*\(\s*"[^"]{0,20}"|parser\(\)\.setSigningKey\s*\(\s*")'
+  - language: python
+    pattern: '(?i)(SECRET_KEY\s*=\s*[''"][^''"]{0,32}[''"]|JWT_SECRET\s*=\s*[''"][^''"]{0,32}[''"])'
+  - language: javascript
+    pattern: '(?i)(JWT_SECRET\s*=\s*[''"][^''"]{0,32}[''"]|secret\s*:\s*[''"][^''"]{0,32}[''"].*jwt)'
+severity: high

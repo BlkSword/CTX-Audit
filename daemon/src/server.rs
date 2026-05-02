@@ -57,6 +57,13 @@ impl Server {
         // 写 PID 文件
         write_pid_file(&self.addr)?;
 
+        // 启动心跳任务
+        let heartbeat_handle = spawn_heartbeat_task(
+            self.state.clone(),
+            self.engine.clone(),
+            self.shutdown.clone(),
+        );
+
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {
@@ -84,8 +91,10 @@ impl Server {
             }
         }
 
-        // 清理 PID 文件
+        // 清理
+        let _ = heartbeat_handle.await;
         let _ = std::fs::remove_file(pid_file_path());
+        let _ = std::fs::remove_file(heartbeat_file_path());
         info!("守护进程已停止");
         Ok(())
     }
@@ -287,6 +296,66 @@ async fn handle_request(
 /// PID 文件路径
 fn pid_file_path() -> std::path::PathBuf {
     std::path::Path::new(".ctx-audit/daemon.pid").to_path_buf()
+}
+
+/// 心跳文件路径
+pub fn heartbeat_file_path() -> std::path::PathBuf {
+    std::path::Path::new(".ctx-audit/heartbeat.json").to_path_buf()
+}
+
+/// 心跳间隔（秒）
+const HEARTBEAT_INTERVAL_SECS: u64 = 5;
+
+/// 写入心跳文件（在 async 上下文中调用）
+async fn write_heartbeat_async(state: &DaemonState, engine: &AnalysisEngine) {
+    let path = heartbeat_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let (ast_count, scan_count) = engine.cache_stats().await;
+    let content = serde_json::json!({
+        "pid": state.pid,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "version": crate::VERSION,
+        "uptime_secs": state.uptime_secs(),
+        "cache_stats": {
+            "ast_entries": ast_count,
+            "scan_entries": scan_count,
+        },
+    });
+    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&content).unwrap_or_default()) {
+        debug!("心跳写入失败: {}", e);
+    }
+}
+
+/// 启动心跳后台任务
+pub fn spawn_heartbeat_task(
+    state: Arc<DaemonState>,
+    engine: Arc<AnalysisEngine>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let interval = tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {
+                    write_heartbeat_async(&state, &engine).await;
+                }
+                _ = shutdown_rx.changed() => {
+                    // 退出前写最后一次心跳（标记为 shutting_down）
+                    let path = heartbeat_file_path();
+                    let content = serde_json::json!({
+                        "pid": state.pid,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                        "status": "shutting_down",
+                    });
+                    let _ = std::fs::write(&path, serde_json::to_string_pretty(&content).unwrap_or_default());
+                    info!("心跳任务已停止");
+                    break;
+                }
+            }
+        }
+    })
 }
 
 /// 写 PID 文件
