@@ -3,7 +3,7 @@
 
 //! 配置管理
 //!
-//! 管理应用配置，包括 LLM API 密钥、规则路径等
+//! 管理应用配置，包括扫描规则路径、输出格式等
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -13,9 +13,6 @@ use tokio::fs;
 /// 应用配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// LLM 配置
-    pub llm: LLMConfig,
-
     /// 扫描配置
     pub scan: ScanConfig,
 
@@ -29,58 +26,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            llm: LLMConfig::default(),
             scan: ScanConfig::default(),
             output: OutputConfig::default(),
             advanced: AdvancedConfig::default(),
-        }
-    }
-}
-
-/// LLM 配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LLMConfig {
-    /// 提供商 (anthropic, openai, openai-compatible, ollama)
-    #[serde(default = "default_provider")]
-    pub provider: String,
-
-    /// API 密钥
-    pub api_key: Option<String>,
-
-    /// 模型名称
-    pub model: Option<String>,
-
-    /// API 基础 URL
-    pub base_url: Option<String>,
-
-    /// 超时时间（秒）
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
-
-    /// 最大 tokens
-    #[serde(default = "default_max_tokens")]
-    pub max_tokens: u32,
-
-    /// 温度参数
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
-}
-
-fn default_provider() -> String { "anthropic".to_string() }
-fn default_timeout() -> u64 { 120 }
-fn default_max_tokens() -> u32 { 4096 }
-fn default_temperature() -> f32 { 0.7 }
-
-impl Default for LLMConfig {
-    fn default() -> Self {
-        Self {
-            provider: "anthropic".to_string(),
-            api_key: None,
-            model: None,
-            base_url: None,
-            timeout_secs: 120,
-            max_tokens: 4096,
-            temperature: 0.7,
         }
     }
 }
@@ -201,7 +149,6 @@ impl ConfigManager {
     pub fn new(config_path: Option<PathBuf>) -> anyhow::Result<Self> {
         let config_path = config_path
             .or_else(|| {
-                // 尝试默认位置
                 dirs::config_dir().map(|dir| dir.join("ctx-audit").join("config.toml"))
             })
             .context("无法确定配置文件路径")?;
@@ -221,7 +168,6 @@ impl ConfigManager {
             return None;
         }
 
-        // Use std::fs for synchronous file reading in this context
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
@@ -230,7 +176,6 @@ impl ConfigManager {
             }
         };
 
-        // 根据扩展名选择解析方式
         let ext = match path.extension().and_then(|e| e.to_str()) {
             Some(e) => e,
             None => {
@@ -267,16 +212,13 @@ impl ConfigManager {
 
     /// 保存配置
     pub async fn save(&self) -> anyhow::Result<()> {
-        // 确保目录存在
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent).await?;
         }
 
-        // 序列化配置
         let content = toml::to_string_pretty(&self.config)
             .context("序列化配置失败")?;
 
-        // 写入文件
         fs::write(&self.config_path, content)
             .await
             .context("写入配置文件失败")?;
@@ -287,13 +229,6 @@ impl ConfigManager {
     /// 获取配置值
     pub fn get(&self, key: &str) -> Option<String> {
         match key {
-            "llm.provider" => Some(self.config.llm.provider.clone()),
-            "llm.api_key" => self.config.llm.api_key.clone(),
-            "llm.model" => self.config.llm.model.clone(),
-            "llm.base_url" => self.config.llm.base_url.clone(),
-            "llm.timeout" => Some(self.config.llm.timeout_secs.to_string()),
-            "llm.max_tokens" => Some(self.config.llm.max_tokens.to_string()),
-            "llm.temperature" => Some(self.config.llm.temperature.to_string()),
             "scan.threads" => Some(self.config.scan.threads.to_string()),
             "scan.include_tests" => Some(self.config.scan.include_tests.to_string()),
             "output.format" => Some(self.config.output.format.clone()),
@@ -308,25 +243,6 @@ impl ConfigManager {
     /// 设置配置值
     pub fn set(&mut self, key: &str, value: String) -> anyhow::Result<()> {
         match key {
-            "llm.provider" => self.config.llm.provider = value,
-            "llm.api_key" => self.config.llm.api_key = Some(value),
-            "llm.model" => self.config.llm.model = Some(value),
-            "llm.base_url" => self.config.llm.base_url = Some(value),
-            "llm.timeout" => {
-                self.config.llm.timeout_secs = value
-                    .parse()
-                    .context("无效的超时时间")?;
-            }
-            "llm.max_tokens" => {
-                self.config.llm.max_tokens = value
-                    .parse()
-                    .context("无效的 max_tokens")?;
-            }
-            "llm.temperature" => {
-                self.config.llm.temperature = value
-                    .parse()
-                    .context("无效的 temperature")?;
-            }
             "scan.threads" => {
                 self.config.scan.threads = value
                     .parse()
@@ -362,9 +278,8 @@ impl ConfigManager {
     /// 删除配置值（恢复默认）
     pub fn remove(&mut self, key: &str) -> anyhow::Result<()> {
         match key {
-            "llm.api_key" => self.config.llm.api_key = None,
-            "llm.model" => self.config.llm.model = None,
-            "llm.base_url" => self.config.llm.base_url = None,
+            "scan.rules_dir" => self.config.scan.rules_dir = None,
+            "advanced.cache_dir" => self.config.advanced.cache_dir = None,
             _ => anyhow::bail!("无法重置配置键: {}", key),
         }
         Ok(())

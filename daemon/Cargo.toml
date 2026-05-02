@@ -1,0 +1,46 @@
+[package]
+name = "ctx-audit-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Security analysis daemon for CTX-Audit"
+
+[[bin]]
+name = "ctx-audit-daemon"
+path = "src/main.rs"
+
+[lib]
+name = "ctx_audit_daemon"
+path = "src/lib.rs"
+
+[dependencies]
+# Internal
+deepaudit-core = { workspace = true }
+ctx-audit-tools = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# CLI (for daemon binary)
+clap = { workspace = true, features = ["derive"] }

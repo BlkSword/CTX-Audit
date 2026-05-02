@@ -11,7 +11,6 @@ use std::io::Write;
 use std::time::Duration;
 
 use crate::database::Finding;
-use ctx_audit_agent_engine::{AgentStatus, AgentType};
 
 /// 终端渲染器
 pub struct TerminalRenderer {
@@ -76,50 +75,6 @@ impl TerminalRenderer {
     /// 打印调试消息
     pub fn debug(&mut self, text: &str) {
         self.log(LogLevel::Debug, text);
-    }
-
-    /// 打印 Agent 状态
-    pub fn agent_status(&mut self, agent_type: &AgentType, status: &AgentStatus) {
-        let icon = match status {
-            AgentStatus::Initializing => "[*]",
-            AgentStatus::Running => ">",
-            AgentStatus::Completed => "[OK]",
-            AgentStatus::Paused => "||",
-            AgentStatus::Failed => "[ERR]",
-            AgentStatus::Cancelled => "[STOP]",
-        };
-
-        let status_str = match status {
-            AgentStatus::Initializing => "初始化中",
-            AgentStatus::Running => "运行中",
-            AgentStatus::Completed => "已完成",
-            AgentStatus::Paused => "已暂停",
-            AgentStatus::Failed => "失败",
-            AgentStatus::Cancelled => "已取消",
-        };
-
-        self.info(&format!("{} {}: {}", icon, agent_type, status_str));
-    }
-
-    /// 打印思考过程
-    pub fn thinking(&mut self, _agent_type: &AgentType, thought: &str) {
-        if self.use_colors {
-            let style = Style::new().dim();
-            let _ = writeln!(
-                &mut self.term,
-                "  {} {}",
-                style.apply_to("Thinking:"),
-                style.apply_to(thought)
-            );
-        } else {
-            let _ = writeln!(&mut self.term, "  Thinking: {}", thought);
-        }
-    }
-
-    /// 打印工具调用
-    pub fn tool_call(&mut self, tool_name: &str, input: &serde_json::Value) {
-        let input_str = serde_json::to_string(input).unwrap_or_default();
-        self.info(&format!("  → {} with: {}", tool_name, input_str));
     }
 
     /// 打印漏洞发现
@@ -304,81 +259,4 @@ impl LogLevel {
             LogLevel::Error => Style::new().red().bold(),
         }
     }
-}
-
-/// 流式输出器
-///
-/// 用于实时输出 Agent 执行过程
-pub struct StreamOutput {
-    renderer: TerminalRenderer,
-}
-
-impl StreamOutput {
-    /// 创建新的流式输出器
-    pub fn new() -> Self {
-        Self {
-            renderer: TerminalRenderer::new(),
-        }
-    }
-
-    /// 输出事件
-    pub fn emit(&mut self, event: &StreamEvent) {
-        match event {
-            StreamEvent::AgentStart(agent_type) => {
-                self.renderer.info(&format!("启动 {} Agent", agent_type));
-            }
-            StreamEvent::AgentComplete(agent_type, message) => {
-                self.renderer
-                    .success(&format!("{} Agent 完成: {}", agent_type, message));
-            }
-            StreamEvent::AgentError(agent_type, error) => {
-                self.renderer
-                    .error(&format!("{} Agent 失败: {}", agent_type, error));
-            }
-            StreamEvent::Thinking(agent_type, thought) => {
-                self.renderer.thinking(agent_type, thought);
-            }
-            StreamEvent::ToolCall(tool_name, input) => {
-                self.renderer.tool_call(tool_name, input);
-            }
-            StreamEvent::Finding(severity, title, file_path, line) => {
-                self.renderer.finding(severity, title, file_path, *line);
-            }
-            StreamEvent::Progress(agent_type, progress, message) => {
-                self.renderer
-                    .info(&format!("{}: {}% - {}", agent_type, progress, message));
-            }
-        }
-    }
-}
-
-impl Default for StreamOutput {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// 流式事件
-#[derive(Debug)]
-pub enum StreamEvent {
-    /// Agent 开始
-    AgentStart(AgentType),
-
-    /// Agent 完成
-    AgentComplete(AgentType, String),
-
-    /// Agent 错误
-    AgentError(AgentType, String),
-
-    /// 思考过程
-    Thinking(AgentType, String),
-
-    /// 工具调用
-    ToolCall(String, serde_json::Value),
-
-    /// 漏洞发现
-    Finding(String, String, String, u32),
-
-    /// 进度更新
-    Progress(AgentType, u8, String),
 }

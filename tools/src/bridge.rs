@@ -812,7 +812,7 @@ pub async fn register_built_in_tools(
     }
 }
 
-/// 注册所有内置工具（包括 AST 工具、写入工具、Shell 工具、搜索工具、污点分析工具和模式检测工具）
+/// 注册所有内置工具（包括 AST 工具、搜索工具、污点分析工具和模式检测工具）
 pub async fn register_all_tools(
     registry: &Arc<ToolRegistry>,
     project_path: String,
@@ -820,12 +820,6 @@ pub async fn register_all_tools(
 ) {
     // 先注册基础工具
     register_built_in_tools(registry, project_path.clone()).await;
-
-    // 注册写入工具
-    crate::write_tools::register_write_tools(registry, project_path.clone()).await;
-
-    // 注册 Shell 工具
-    crate::shell_tools::register_shell_tools(registry, project_path.clone()).await;
 
     // 注册搜索工具
     crate::search_tools::register_search_tools(registry, project_path.clone()).await;
@@ -838,10 +832,8 @@ pub async fn register_all_tools(
 
     // 如果提供了 AST 引擎，注册 AST 工具并自动索引项目
     if let Some(engine) = ast_engine {
-        // 先初始化仓库（这会初始化 query_engine）
         engine.use_repository(&project_path);
 
-        // 自动索引项目以启用符号搜索
         tracing::info!("自动索引项目以启用符号搜索...");
         match engine.scan_project(&project_path) {
             Ok(file_count) => {

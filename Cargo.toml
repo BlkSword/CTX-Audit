@@ -3,8 +3,7 @@ resolver = "2"
 members = [
     "cli",
     "core",
-    "agent-engine",
-    "llm",
+    "daemon",
     "tools",
 ]
 
@@ -62,13 +61,9 @@ walkdir = "2.4"
 similar = { version = "2.5", features = ["text", "inline", "bytes"] }
 
 # 优先级队列
-priority-queue = "2.0"
-
-# 异步通道
-async-channel = "2.0"
+# priority-queue = "2.0"  # only used by agent-engine
 
 # 内部包
 deepaudit-core = { path = "core" }
-ctx-audit-agent-engine = { path = "agent-engine" }
-ctx-audit-llm = { path = "llm" }
 ctx-audit-tools = { path = "tools" }
+ctx-audit-daemon = { path = "daemon" }

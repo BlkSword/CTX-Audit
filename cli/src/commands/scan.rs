@@ -22,6 +22,7 @@ pub async fn execute(
     threads: usize,
     output_format: &str,
     deep: bool,
+    daemon: bool,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -30,6 +31,11 @@ pub async fn execute(
     if !project_path.exists() {
         renderer.error(&format!("项目路径不存在: {}", path));
         return Err(miette::miette!("项目路径不存在"));
+    }
+
+    // 守护进程模式
+    if daemon {
+        return scan_via_daemon(path, severity, pattern, output_path, output_format, deep, &mut renderer).await;
     }
 
     let mode = if deep { "深度扫描" } else { "快速扫描" };
@@ -211,4 +217,102 @@ fn to_text(findings: &[deepaudit_core::Finding]) -> String {
     }
 
     text
+}
+
+/// 通过守护进程执行扫描
+async fn scan_via_daemon(
+    path: String,
+    severity: Option<String>,
+    pattern: Option<String>,
+    output_path: Option<String>,
+    output_format: &str,
+    deep: bool,
+    renderer: &mut TerminalRenderer,
+) -> Result<()> {
+    let mut client = ctx_audit_daemon::client::DaemonClient::connect().await
+        .map_err(|e| miette::miette!("连接守护进程失败: {} (使用 'ctx-audit daemon start' 启动)", e))?;
+
+    renderer.info(&format!("通过守护进程扫描: {}", path));
+    let pb = renderer.progress_bar(100);
+    pb.set_message("扫描中...");
+
+    let response = client.scan(path.clone(), deep, severity.clone(), pattern.clone()).await
+        .map_err(|e| miette::miette!("扫描请求失败: {}", e))?;
+
+    pb.finish_with_message("扫描完成");
+
+    match response {
+        ctx_audit_daemon::protocol::Response::ScanResult { findings, duration_ms, files_scanned } => {
+            renderer.success(&format!(
+                "扫描完成！发现 {} 个问题 (耗时 {}ms, 扫描 {} 个文件)",
+                findings.len(), duration_ms, files_scanned
+            ));
+
+            for finding in &findings {
+                if let (Some(sev), Some(title), Some(file), Some(line)) = (
+                    finding.get("severity").and_then(|v| v.as_str()),
+                    finding.get("vuln_type").and_then(|v| v.as_str()),
+                    finding.get("file_path").and_then(|v| v.as_str()),
+                    finding.get("line_start").and_then(|v| v.as_u64()),
+                ) {
+                    renderer.finding(sev, title, file, line as u32);
+                }
+            }
+
+            if let Some(output_path) = output_path {
+                // 将 JSON values 转回 Finding 结构用于格式化输出
+                let parsed_findings: Vec<deepaudit_core::Finding> = findings.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
+
+                if let Some(parent) = std::path::Path::new(&output_path).parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+
+                let content = match output_format {
+                    "sarif" => {
+                        let converter = deepaudit_core::sarif::SarifConverter::new();
+                        let inputs: Vec<deepaudit_core::sarif::FindingInput> = parsed_findings.iter().map(|f| deepaudit_core::sarif::FindingInput {
+                            id: Some(f.finding_id.clone()),
+                            title: Some(f.vuln_type.clone()),
+                            description: f.description.clone(),
+                            severity: f.severity.clone(),
+                            category: f.vuln_type.clone(),
+                            cwe_id: None,
+                            file_path: f.file_path.clone(),
+                            start_line: f.line_start as u32,
+                            end_line: Some(f.line_end as u32),
+                            start_column: None,
+                            end_column: None,
+                            code_snippet: None,
+                            recommendation: None,
+                            status: "detected".to_string(),
+                            verification_status: None,
+                            discovered_by: Some(f.detector.clone()),
+                            code_flows: None,
+                            fix_suggestions: None,
+                            confidence: None,
+                        }).collect();
+                        converter.convert_to_json(&inputs).unwrap_or_default()
+                    }
+                    "markdown" => to_markdown(&parsed_findings),
+                    "json" => serde_json::to_string_pretty(&findings)
+                        .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?,
+                    _ => to_text(&parsed_findings),
+                };
+                tokio::fs::write(&output_path, content).await
+                    .map_err(|e| miette::miette!("写入文件失败: {}", e))?;
+                renderer.info(&format!("结果已保存到: {}", output_path));
+            }
+        }
+        ctx_audit_daemon::protocol::Response::Error { message, .. } => {
+            renderer.error(&format!("扫描失败: {}", message));
+            return Err(miette::miette!("扫描失败: {}", message));
+        }
+        _ => {
+            renderer.error("意外的响应类型");
+        }
+    }
+
+    Ok(())
 }
