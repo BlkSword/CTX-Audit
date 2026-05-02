@@ -8,25 +8,35 @@
 use miette::Result;
 
 use crate::terminal::TerminalRenderer;
-use ctx_audit_daemon::client::DaemonClient;
+use ctx_audit_daemon::client::{DaemonClient, HeartbeatStatus};
 use ctx_audit_daemon::protocol::Response;
 
 /// 启动守护进程
 pub async fn start(project: Option<String>) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
-    // 检查是否已在运行
-    if DaemonClient::is_running().await {
-        renderer.warning("守护进程已在运行");
-        // 查询状态
-        show_status(&mut renderer).await?;
-        return Ok(());
-    }
-
-    // 清理旧的 PID 文件
-    let pid_path = std::path::Path::new(".ctx-audit/daemon.pid");
-    if pid_path.exists() {
-        let _ = std::fs::remove_file(pid_path);
+    // 先查心跳文件判断状态
+    match DaemonClient::check_heartbeat() {
+        HeartbeatStatus::Alive { pid, .. } => {
+            // 心跳正常，确认 TCP 可连
+            if DaemonClient::is_running().await {
+                renderer.warning(&format!("守护进程已在运行 (PID: {})", pid));
+                show_status(&mut renderer).await?;
+                return Ok(());
+            }
+            // 心跳正常但 TCP 连不上 → daemon 可能僵死，清理残留
+            renderer.warning(&format!("检测到残留心跳 (PID: {})，清理中...", pid));
+            DaemonClient::cleanup_stale_files();
+        }
+        HeartbeatStatus::Stale { pid, .. } => {
+            renderer.warning(&format!("检测到过期心跳 (PID: {})，daemon 可能已崩溃，清理残留文件", pid));
+            DaemonClient::cleanup_stale_files();
+        }
+        HeartbeatStatus::ShuttingDown => {
+            renderer.warning("守护进程正在关闭中，稍后重试");
+            return Ok(());
+        }
+        HeartbeatStatus::NoHeartbeat => {}
     }
 
     renderer.info("正在启动安全分析守护进程...");
@@ -77,7 +87,7 @@ pub async fn start(project: Option<String>) -> Result<()> {
         }
     }
 
-    // 等待守护进程就绪
+    // 等待守护进程就绪（优先用心跳文件检测）
     renderer.info("等待守护进程就绪...");
     for i in 0..20 {
         tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
@@ -99,6 +109,34 @@ pub async fn start(project: Option<String>) -> Result<()> {
 /// 查询守护进程状态
 pub async fn status() -> Result<()> {
     let mut renderer = TerminalRenderer::new();
+
+    // 先通过心跳文件快速判断
+    match DaemonClient::check_heartbeat() {
+        HeartbeatStatus::Alive { pid, version, uptime_secs, age_secs, .. } => {
+            renderer.success(&format!(
+                "心跳正常 (PID: {}, v{}, 运行 {}秒, 心跳 {}秒前)",
+                pid, version, uptime_secs, age_secs
+            ));
+        }
+        HeartbeatStatus::Stale { pid, age_secs, .. } => {
+            renderer.warning(&format!(
+                "心跳过期 (PID: {}, {}秒前) — daemon 可能已崩溃",
+                pid, age_secs
+            ));
+            renderer.info("尝试 TCP 连接确认...");
+        }
+        HeartbeatStatus::ShuttingDown => {
+            renderer.warning("守护进程正在关闭中");
+            return Ok(());
+        }
+        HeartbeatStatus::NoHeartbeat => {
+            renderer.warning("守护进程未运行（无心跳文件）");
+            renderer.info("使用 'ctx-audit daemon start' 启动");
+            return Ok(());
+        }
+    }
+
+    // TCP 连接获取详细状态
     show_status(&mut renderer).await
 }
 
@@ -106,8 +144,8 @@ async fn show_status(renderer: &mut TerminalRenderer) -> Result<()> {
     let mut client = match DaemonClient::connect().await {
         Ok(c) => c,
         Err(_) => {
-            renderer.warning("守护进程未运行");
-            renderer.info("使用 'ctx-audit daemon start' 启动");
+            renderer.warning("无法连接守护进程（TCP 连接失败）");
+            renderer.info("守护进程可能已崩溃，残留文件可通过 'ctx-audit daemon start' 自动清理");
             return Ok(());
         }
     };
@@ -148,10 +186,26 @@ async fn show_status(renderer: &mut TerminalRenderer) -> Result<()> {
 pub async fn stop() -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
+    // 先查心跳
+    match DaemonClient::check_heartbeat() {
+        HeartbeatStatus::NoHeartbeat | HeartbeatStatus::ShuttingDown => {
+            renderer.warning("守护进程未运行");
+            DaemonClient::cleanup_stale_files();
+            return Ok(());
+        }
+        HeartbeatStatus::Stale { pid, .. } => {
+            renderer.warning(&format!("守护进程心跳已过期 (PID: {})，清理残留文件", pid));
+            DaemonClient::cleanup_stale_files();
+            return Ok(());
+        }
+        HeartbeatStatus::Alive { .. } => {}
+    }
+
     let mut client = match DaemonClient::connect().await {
         Ok(c) => c,
         Err(_) => {
-            renderer.warning("守护进程未运行");
+            renderer.warning("无法连接守护进程，清理残留文件");
+            DaemonClient::cleanup_stale_files();
             return Ok(());
         }
     };

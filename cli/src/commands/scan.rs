@@ -38,19 +38,26 @@ pub async fn execute(
         return scan_via_daemon(path, severity, pattern, output_path, output_format, deep, &mut renderer).await;
     }
 
+    scan_local(path, severity, pattern, output_path, output_format, deep, &mut renderer).await
+}
+
+/// 本地扫描（直接调用 core）
+async fn scan_local(
+    path: String,
+    severity: Option<String>,
+    pattern: Option<String>,
+    output_path: Option<String>,
+    output_format: &str,
+    deep: bool,
+    renderer: &mut TerminalRenderer,
+) -> Result<()> {
     let mode = if deep { "深度扫描" } else { "快速扫描" };
     renderer.info(&format!("{}: {}", mode, path));
-
-    // 加载规则
-    if let Some(rules_path) = rules_dir {
-        renderer.info(&format!("加载规则: {}", rules_path));
-    }
 
     // 创建进度条
     let pb = renderer.progress_bar(100);
     pb.set_message("正在扫描...");
 
-    // 执行扫描
     let findings_result = if deep {
         scan_directory_deep(&path).await
     } else {
@@ -68,7 +75,7 @@ pub async fn execute(
     };
 
     // 过滤严重程度
-    let filtered_findings = if let Some(sev) = severity {
+    let filtered_findings = if let Some(sev) = &severity {
         findings
             .into_iter()
             .filter(|f| f.severity.to_lowercase() == sev.to_lowercase())
@@ -78,16 +85,15 @@ pub async fn execute(
     };
 
     // 过滤文件模式
-    let filtered_findings = if let Some(pat) = pattern {
+    let filtered_findings = if let Some(pat) = &pattern {
         filtered_findings
             .into_iter()
-            .filter(|f| f.file_path.contains(&pat))
+            .filter(|f| f.file_path.contains(pat.as_str()))
             .collect()
     } else {
         filtered_findings
     };
 
-    // 输出结果
     for finding in &filtered_findings {
         renderer.finding(
             &finding.severity,
@@ -102,9 +108,8 @@ pub async fn execute(
         filtered_findings.len()
     ));
 
-    // 保存结果（如果指定了输出文件）
     if let Some(output_path) = output_path {
-        save_scan_results(&output_path, &filtered_findings, output_format, &mut renderer).await?;
+        save_scan_results(&output_path, &filtered_findings, output_format, renderer).await?;
     }
 
     Ok(())
@@ -219,7 +224,7 @@ fn to_text(findings: &[deepaudit_core::Finding]) -> String {
     text
 }
 
-/// 通过守护进程执行扫描
+/// 通过守护进程执行扫描（带优雅降级）
 async fn scan_via_daemon(
     path: String,
     severity: Option<String>,
@@ -229,15 +234,28 @@ async fn scan_via_daemon(
     deep: bool,
     renderer: &mut TerminalRenderer,
 ) -> Result<()> {
-    let mut client = ctx_audit_daemon::client::DaemonClient::connect().await
-        .map_err(|e| miette::miette!("连接守护进程失败: {} (使用 'ctx-audit daemon start' 启动)", e))?;
+    let mut client = match ctx_audit_daemon::client::DaemonClient::connect_with_retry().await {
+        Ok(c) => c,
+        Err(e) => {
+            renderer.warning(&format!("连接守护进程失败: {}", e));
+            renderer.info("降级为本地扫描模式...");
+            return scan_local(path, severity, pattern, output_path, output_format, deep, renderer).await;
+        }
+    };
 
     renderer.info(&format!("通过守护进程扫描: {}", path));
     let pb = renderer.progress_bar(100);
     pb.set_message("扫描中...");
 
-    let response = client.scan(path.clone(), deep, severity.clone(), pattern.clone()).await
-        .map_err(|e| miette::miette!("扫描请求失败: {}", e))?;
+    let response = match client.scan(path.clone(), deep, severity.clone(), pattern.clone()).await {
+        Ok(r) => r,
+        Err(e) => {
+            pb.finish_with_message("守护进程扫描失败");
+            renderer.warning(&format!("守护进程扫描失败: {}", e));
+            renderer.info("降级为本地扫描模式...");
+            return scan_local(path, severity, pattern, output_path, output_format, deep, renderer).await;
+        }
+    };
 
     pb.finish_with_message("扫描完成");
 

@@ -1,0 +1,16 @@
+category: security-misconfiguration
+cwe: CWE-22
+description: 检测 Ruby/Rails 路径遍历风险
+id: rails-path-traversal
+language: ruby
+name: Rails Path Traversal Detection
+owasp: "A01:2021-Broken Access Control"
+patterns:
+  - language: ruby
+    pattern: '(?i)(File\.(read|open|write)\s*\(.*params|IO\.read\s*\(.*params|send_file\s*\(.*params)'
+  - language: ruby
+    pattern: '(?i)(Dir\[.*params|Dir\.glob\s*\(.*params|File\.expand_path\s*\(.*params)'
+severity: high
+remediation: "使用 Rails safe Pathname/Path API；验证和规范化文件路径；使用白名单限制可访问的文件目录；使用 config.action_dispatch.rescue_responses 处理路径遍历。"
+references:
+  - "https://guides.rubyonrails.org/security.html#path-traversal"

@@ -7,7 +7,7 @@
 //! 通过 OSV API (osv.dev) 查询已知漏洞依赖。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,23 @@ struct OsvSeverity {
     score: String,
 }
 
+/// SCA 缓存条目
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedScaResult {
+    /// 缓存时间（Unix timestamp）
+    cached_at: i64,
+    /// 漏洞列表（序列化的 JSON）
+    vulns: Vec<CachedVuln>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedVuln {
+    id: String,
+    summary: String,
+    severity: Option<String>,
+    aliases: Vec<String>,
+}
+
 // ── SCA 扫描器 ──────────────────────────────────────────
 
 /// SCA 依赖扫描器
@@ -87,6 +104,49 @@ impl ScaScanner {
                 .build()
                 .unwrap_or_default(),
         }
+    }
+
+    /// SCA 缓存文件路径
+    fn cache_path() -> PathBuf {
+        Path::new(".ctx-audit/cache/sca_cache.json").to_path_buf()
+    }
+
+    /// 缓存 TTL：24 小时
+    const CACHE_TTL_SECS: u64 = 24 * 3600;
+
+    /// 加载缓存
+    fn load_cache() -> HashMap<String, CachedScaResult> {
+        let path = Self::cache_path();
+        if !path.exists() {
+            return HashMap::new();
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return HashMap::new(),
+        };
+        serde_json::from_str(&content).unwrap_or_default()
+    }
+
+    /// 保存缓存
+    fn save_cache(cache: &HashMap<String, CachedScaResult>) {
+        let path = Self::cache_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(content) = serde_json::to_string_pretty(cache) {
+            let _ = std::fs::write(&path, content);
+        }
+    }
+
+    /// 生成缓存键
+    fn cache_key(dep: &Dependency) -> String {
+        format!("{}:{}:{}", dep.ecosystem, dep.name, dep.version)
+    }
+
+    /// 清理过期缓存
+    fn prune_expired(cache: &mut HashMap<String, CachedScaResult>) {
+        let now = chrono::Utc::now().timestamp();
+        cache.retain(|_, v| now - v.cached_at < Self::CACHE_TTL_SECS as i64);
     }
 
     /// 解析 package.json
@@ -422,10 +482,66 @@ impl Scanner for ScaScanner {
             filename,
         );
 
-        let vuln_results = self.query_osv(&deps).await;
-        let file_path_str = path.to_string_lossy().to_string();
+        // 加载缓存，分离已缓存和未缓存的依赖
+        let mut cache = Self::load_cache();
+        Self::prune_expired(&mut cache);
+        let now = chrono::Utc::now().timestamp();
 
-        let findings: Vec<Finding> = vuln_results
+        let mut cached_results: Vec<(Dependency, Vec<OsvVulnerability>)> = Vec::new();
+        let mut uncached_deps: Vec<Dependency> = Vec::new();
+
+        for dep in &deps {
+            let key = Self::cache_key(dep);
+            if let Some(cached) = cache.get(&key) {
+                // 从缓存恢复漏洞
+                let vulns: Vec<OsvVulnerability> = cached.vulns.iter().map(|cv| {
+                    OsvVulnerability {
+                        id: cv.id.clone(),
+                        summary: cv.summary.clone(),
+                        severity: cv.severity.as_ref().map(|s| {
+                            vec![OsvSeverity { score_type: "CVSS_V3".into(), score: s.clone() }]
+                        }),
+                        aliases: cv.aliases.clone(),
+                    }
+                }).collect();
+                cached_results.push((dep.clone(), vulns));
+            } else {
+                uncached_deps.push(dep.clone());
+            }
+        }
+
+        // 查询未缓存的依赖
+        let mut new_results = if !uncached_deps.is_empty() {
+            tracing::info!("SCA: Querying OSV for {} uncached deps", uncached_deps.len());
+            self.query_osv(&uncached_deps).await
+        } else {
+            Vec::new()
+        };
+
+        // 缓存新结果
+        for (dep, vulns) in &new_results {
+            let key = Self::cache_key(dep);
+            let cached_vulns: Vec<CachedVuln> = vulns.iter().map(|v| {
+                let severity = v.severity.as_ref().and_then(|s| s.first()).map(|s| s.score.clone());
+                CachedVuln {
+                    id: v.id.clone(),
+                    summary: v.summary.clone(),
+                    severity,
+                    aliases: v.aliases.clone(),
+                }
+            }).collect();
+            cache.insert(key, CachedScaResult { cached_at: now, vulns: cached_vulns });
+        }
+
+        if !cache.is_empty() {
+            Self::save_cache(&cache);
+        }
+
+        // 合并结果
+        cached_results.append(&mut new_results);
+
+        let file_path_str = path.to_string_lossy().to_string();
+        let findings: Vec<Finding> = cached_results
             .iter()
             .flat_map(|(dep, vulns)| {
                 vulns.iter().map(|v| self.vuln_to_finding(dep, v, &file_path_str))

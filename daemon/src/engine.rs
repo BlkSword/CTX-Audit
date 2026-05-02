@@ -110,7 +110,10 @@ impl AnalysisEngine {
         }
 
         let caches = self.scan_caches.read().await;
-        let cache = caches.get(path).expect("just created");
+        let cache = match caches.get(path) {
+            Some(c) => c,
+            None => anyhow::bail!("扫描缓存初始化失败"),
+        };
         let mut cache = cache.write().await;
 
         // 检测变更
@@ -266,13 +269,24 @@ impl AnalysisEngine {
             return Ok(vec![]);
         }
 
-        // 对变更文件使用 RegexScanner + RuleScanner
+        /// 最大文件大小 10MB，超过则跳过
+        const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
         let regex_scanner = deepaudit_core::RegexScanner::new();
         let mut all_findings = Vec::new();
 
         for file_path in files {
             if !file_path.exists() {
                 continue;
+            }
+            // 文件大小检查
+            match std::fs::metadata(file_path) {
+                Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+                    tracing::warn!("跳过大文件 ({}MB): {:?}", meta.len() / 1024 / 1024, file_path);
+                    continue;
+                }
+                Err(_) => continue,
+                _ => {}
             }
             let content = match std::fs::read_to_string(file_path) {
                 Ok(c) => c,
@@ -428,7 +442,8 @@ impl AnalysisEngine {
             }
         }
 
-        let cache_dir = std::env::temp_dir().join("ctx-audit-cache");
+        // 使用项目级缓存目录，而非 temp
+        let cache_dir = std::path::Path::new(project_path).join(".ctx-audit/cache/ast");
         let _ = std::fs::create_dir_all(&cache_dir);
         let engine = Arc::new(deepaudit_core::ASTEngine::new(
             cache_dir.to_string_lossy().as_ref(),

@@ -1,0 +1,18 @@
+category: injection
+cwe: CWE-79
+description: 检测 Ruby/Rails XSS 风险：未转义输出用户输入
+id: rails-xss
+language: ruby
+name: Rails XSS Detection
+owasp: "A03:2021-Injection"
+patterns:
+  - language: ruby
+    pattern: '(?i)(raw\s*\(.*params|html_safe.*params|\.html_safe\s*$)'
+  - language: ruby
+    pattern: '(?i)content_tag\s*\([^)]*params[^)]*\)\s*(do|\{)'
+  - language: ruby
+    pattern: '(?i)render\s+(inline|text)\s*:.*params'
+severity: high
+remediation: "使用 ERB 自动转义（<%= %> 默认转义）；避免使用 raw() 包裹用户输入；避免使用 html_safe 处理不可信数据。"
+references:
+  - "https://guides.rubyonrails.org/security.html#cross-site-scripting-xss"

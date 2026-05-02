@@ -1,0 +1,16 @@
+category: injection
+cwe: CWE-78
+description: 检测 PHP 命令注入风险：用户输入传入系统命令执行函数
+id: php-command-injection
+language: php
+name: PHP Command Injection Detection
+owasp: "A03:2021-Injection"
+patterns:
+  - language: php
+    pattern: '(?i)(exec\s*\(|system\s*\(|passthru\s*\(|shell_exec\s*\(|popen\s*\(|proc_open\s*\().*\$_(GET|POST|REQUEST|COOKIE|SERVER)'
+  - language: php
+    pattern: '(?i)(backtick_operator|`.*\$_(GET|POST|REQUEST))'
+severity: critical
+remediation: "使用 escapeshellarg() / escapeshellcmd() 转义参数；优先使用 PHP 内置函数替代 shell 命令；使用白名单验证输入。"
+references:
+  - "https://www.php.net/manual/en/function.escapeshellarg.php"

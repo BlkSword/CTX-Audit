@@ -304,6 +304,15 @@ impl AstTaintAnalyzer {
     ) {
         let lines: Vec<&str> = code.lines().collect();
 
+        // 上下文感知：检测代码中是否使用了框架请求对象变量名
+        let request_aliases = ["req", "request", "ctx", "context", "c", "conn", "w", "res", "response", "input"];
+        let mut detected_aliases: Vec<&str> = Vec::new();
+        for alias in &request_aliases {
+            if code.contains(alias) {
+                detected_aliases.push(alias);
+            }
+        }
+
         // 在整个代码中查找污点源
         for (line_idx, line) in lines.iter().enumerate() {
             let line_num = line_idx + 1;
@@ -475,6 +484,18 @@ impl AstTaintAnalyzer {
 
                 let taint_info = state.get(tainted_var.as_str()).unwrap();
 
+                // 数据类型推断：检查是否使用了参数化查询
+                let code_line = &node.code;
+                let is_parameterized = self.is_parameterized_query(&call.callee, code_line);
+                if is_parameterized {
+                    // 参数化查询：标记为已净化而非报告漏洞
+                    if let Some(info) = state.get_mut(tainted_var.as_str()) {
+                        info.sanitized = true;
+                        info.sanitizer = Some("parameterized_query".to_string());
+                    }
+                    return None;
+                }
+
                 // 构建污点流
                 return Some(self.build_taint_flow(
                     taint_info,
@@ -629,6 +650,51 @@ impl AstTaintAnalyzer {
         self.sanitizer_patterns.iter().any(|p| callee.contains(p))
     }
 
+    /// 数据类型推断：检测是否使用了参数化查询模式
+    fn is_parameterized_query(&self, callee: &str, code_line: &str) -> bool {
+        let callee_lower = callee.to_lowercase();
+        let code_lower = code_line.to_lowercase();
+
+        // 参数化查询 API（使用 ? 或命名参数占位符）
+        let param_apis = [
+            "prepare", "bind_param", "bindparam", "bind_value",
+            "execute(", "addparam", "setstring", "setint",
+            "parameterized", "parameterize",
+        ];
+        for api in &param_apis {
+            if callee_lower.contains(api) {
+                return true;
+            }
+        }
+
+        // 检查代码行是否使用占位符（? 或 %s 但不是字符串拼接）
+        if code_lower.contains("?") && !code_lower.contains(" + ") && !code_lower.contains(".format(") {
+            return true;
+        }
+
+        // Python f-string SQL 检测（负面模式：如果用了 f-string 则不安全）
+        if code_lower.contains("f\"") || code_lower.contains("f'") {
+            // f-string 拼接 SQL — 不安全
+            if callee_lower.contains("execute") || callee_lower.contains("query") {
+                return false;
+            }
+        }
+
+        // ORM 安全方法
+        let safe_orm = [
+            ".where(", ".filter(", ".find(", ".find_by(",
+            ".create(", ".build(", ".new(",
+            "activerecord", ".save(", ".update(",
+        ];
+        for safe in &safe_orm {
+            if callee_lower.contains(safe) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn extract_var_from_source(&self, line: &str) -> Option<String> {
         let line = line.trim();
 
@@ -746,14 +812,27 @@ impl AstTaintAnalyzer {
 
     fn default_sanitizers() -> Vec<String> {
         vec![
-            "escape".to_string(),
-            "sanitize".to_string(),
-            "htmlspecialchars".to_string(),
-            "parameterized".to_string(),
-            "prepare".to_string(),
-            "parameterize".to_string(),
-            "encode".to_string(),
-            "validate".to_string(),
+            "escape".into(),
+            "sanitize".into(),
+            "htmlspecialchars".into(),
+            "htmlentities".into(),
+            "parameterized".into(),
+            "prepare".into(),
+            "parameterize".into(),
+            "encode".into(),
+            "encodeURI".into(),
+            "encodeURIComponent".into(),
+            "escapeHtml".into(),
+            "DOMPurify".into(),
+            "bleach".into(),
+            "markupsafe".into(),
+            "validate".into(),
+            "whitelist".into(),
+            "allowlist".into(),
+            "bind_param".into(),
+            "bindParam".into(),
+            "real_escape_string".into(),
+            "escape_string".into(),
         ]
     }
 }

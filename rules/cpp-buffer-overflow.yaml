@@ -1,0 +1,21 @@
+category: injection
+cwe: CWE-787
+description: 检测 C/C++ 缓冲区溢出风险：不安全字符串操作和数组越界
+id: cpp-buffer-overflow
+language: cpp
+name: C/C++ Buffer Overflow Detection
+owasp: "A04:2021-Insecure Design"
+patterns:
+  - language: c
+    pattern: '(?i)(strcpy\s*\(|strcat\s*\(|gets\s*\(|sprintf\s*\(|vsprintf\s*\()'
+  - language: cpp
+    pattern: '(?i)(strcpy\s*\(|strcat\s*\(|gets\s*\(|sprintf\s*\(|vsprintf\s*\()'
+  - language: c
+    pattern: '(?i)memcpy\s*\([^,]+,\s*[^,]+,\s*strlen\s*\('
+  - language: cpp
+    pattern: '(?i)memcpy\s*\([^,]+,\s*[^,]+,\s*strlen\s*\('
+severity: critical
+remediation: "使用 strncpy/strncat 替代 strcpy/strcat（指定长度）；使用 snprintf 替代 sprintf；使用 fgets 替代 gets；优先使用 C++ std::string。"
+references:
+  - "https://owasp.org/www-community/vulnerabilities/Buffer_Overflow"
+  - "https://cwe.mitre.org/data/definitions/787.html"

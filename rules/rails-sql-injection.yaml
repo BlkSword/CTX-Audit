@@ -1,0 +1,18 @@
+category: injection
+cwe: CWE-89
+description: 检测 Ruby/Rails SQL 注入风险
+id: rails-sql-injection
+language: ruby
+name: Rails SQL Injection Detection
+owasp: "A03:2021-Injection"
+patterns:
+  - language: ruby
+    pattern: '(?i)(\.where\s*\(\s*["\'].*#\{.*params|\.where\s*\(\s*params|\.find_by_sql\s*\(\s*.*params)'
+  - language: ruby
+    pattern: '(?i)(Model\.find_by_sql\s*\(|connection\.execute\s*\(|connection\.select_all\s*\().*params'
+  - language: ruby
+    pattern: '(?i)\.order\s*\(\s*params|\.limit\s*\(\s*params|\.pluck\s*\(\s*params'
+severity: critical
+remediation: "使用参数化查询（.where(field: ?, value)）；使用 ActiveRecord 安全方法；避免将 params 直接拼接到 SQL 字符串中。"
+references:
+  - "https://guides.rubyonrails.org/security.html#sql-injection"

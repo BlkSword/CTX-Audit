@@ -1,0 +1,16 @@
+category: security-misconfiguration
+cwe: CWE-94
+description: 检测 PHP 不安全反序列化：unserialize 使用用户输入
+id: php-unsafe-deserialization
+language: php
+name: PHP Unsafe Deserialization
+owasp: "A08:2021-Software and Data Integrity Failures"
+patterns:
+  - language: php
+    pattern: '(?i)unserialize\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)'
+  - language: php
+    pattern: '(?i)unserialize\s*\(\s*\$'
+severity: critical
+remediation: "使用 json_decode 替代 unserialize；如必须使用，设置 allowed_classes 选项；避免反序列化用户可控数据。"
+references:
+  - "https://owasp.org/www-community/vulnerabilities/PHP_Object_Injection"
