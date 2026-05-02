@@ -8,6 +8,8 @@
 use miette::Result;
 
 use crate::terminal::TerminalRenderer;
+use ctx_audit_daemon::client::DaemonClient;
+use ctx_audit_daemon::protocol::{Request, Response};
 
 /// 执行 analyze 命令
 pub async fn execute(
@@ -98,12 +100,12 @@ async fn analyze_via_daemon(
     output_format: &str,
     renderer: &mut TerminalRenderer,
 ) -> Result<()> {
-    let mut client = ctx_audit_daemon::client::DaemonClient::connect().await
+    let mut client = DaemonClient::connect().await
         .map_err(|e| miette::miette!("连接守护进程失败: {} (使用 'ctx-audit daemon start' 启动)", e))?;
 
     renderer.info(&format!("通过守护进程分析: {}", file));
 
-    let response = client.send_request(ctx_audit_daemon::protocol::Request::Analyze {
+    let response = client.send_request(Request::Analyze {
         file_path: file.clone(),
         start_line: Some(start_line),
         end_line,
@@ -112,7 +114,7 @@ async fn analyze_via_daemon(
     }).await.map_err(|e| miette::miette!("分析请求失败: {}", e))?;
 
     match response {
-        ctx_audit_daemon::protocol::Response::AnalysisResult { content } => {
+        Response::AnalysisResult { content } => {
             match output_format {
                 "json" => {
                     let json = serde_json::to_string_pretty(&content)
@@ -167,7 +169,7 @@ async fn analyze_via_daemon(
                 }
             }
         }
-        ctx_audit_daemon::protocol::Response::Error { message, .. } => {
+        Response::Error { message, .. } => {
             renderer.error(&format!("分析失败: {}", message));
             return Err(miette::miette!("分析失败: {}", message));
         }

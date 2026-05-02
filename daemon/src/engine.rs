@@ -231,10 +231,10 @@ impl AnalysisEngine {
         self.log_rules_status(path, rules_dir.as_deref()).await;
 
         let findings = if deep {
-            deepaudit_core::scan_directory_deep_with_rules(path, rules_dir.as_deref()).await
+            deepaudit_core::scan_directory_deep_with_rules(path, rules_dir.as_deref(), None).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         } else {
-            deepaudit_core::scan_directory_with_rules(path, rules_dir.as_deref()).await
+            deepaudit_core::scan_directory_with_rules(path, rules_dir.as_deref(), None).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         };
 

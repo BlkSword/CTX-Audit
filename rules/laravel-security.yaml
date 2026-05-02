@@ -11,7 +11,7 @@ patterns:
   - language: php
     pattern: '(?i)APP_KEY\s*=\s*$'
   - language: php
-    pattern: '(?i)DB_PASSWORD\s*=\s*(?!(env\())[^$\s]'
+    pattern: '(?i)DB_PASSWORD\s*=\s*[a-zA-Z0-9]+'
   - language: php
     pattern: '(?i)::raw\s*\(\s*.*request::'
   - language: php

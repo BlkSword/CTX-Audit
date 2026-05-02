@@ -1,0 +1,7 @@
+id: todo-comment
+name: TODO Comment
+description: Detect TODO/FIXME/HACK/XXX comments that may indicate unfinished security work
+severity: low
+language: all
+pattern: "(?i)(TODO|FIXME|HACK|XXX)\\b"
+category: code-quality

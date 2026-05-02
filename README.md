@@ -72,6 +72,7 @@ OPTIONS:
   -r, --rules <目录>        自定义规则目录
   -o, --output <文件>       输出文件路径
   -t, --threads <N>         并行线程数 (默认: 4)
+  -e, --exclude <模式>      排除目录或文件（逗号分隔，如 test,*.min.js,.json）
       --deep                启用深度扫描 (AST 污点分析 + 跨文件追踪)
       --daemon              通过守护进程执行（增量缓存）
 ```
@@ -80,8 +81,7 @@ OPTIONS:
 
 | 引擎 | 说明 |
 |------|------|
-| RuleScanner | 语言感知正则规则（YAML，多语言模式） |
-| RegexScanner | 硬编码模式检测（密码、密钥等） |
+| RuleScanner | 语言感知正则规则（YAML，多语言模式，33 条内置规则） |
 | SCAScanner | 依赖漏洞检测（OSV API，本地缓存 24h） |
 | AstTaintScanner | AST 污点分析（`--deep` 模式） |
 | CrossFileTaintAnalyzer | 跨文件/跨过程污点追踪（`--deep` 模式） |
@@ -145,7 +145,7 @@ ctx-audit daemon stop                        # 停止
 ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 ```
 
-通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **11 个工具**：
+通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **10 个工具**：
 
 **粗粒度工具**：
 
@@ -248,11 +248,24 @@ ctx-audit config list
 
 | 机制 | 说明 |
 |------|------|
+| 同行去重 | 同一 file:line 的多个扫描器发现自动合并，取最高 severity |
+| 测试目录过滤 | 自动跳过 test/tests/spec 目录的攻击面发现 |
+| 黑名单排除 | `--exclude` 支持目录名、文件模式 (`*.min.js`)、后缀 (`.json`) |
 | 置信度评分 | 每条 finding 附带 confidence (0.0-1.0) |
 | Sanitizer 识别 | 30+ 净化函数模式，降低已净化路径置信度 |
 | 参数化查询检测 | 区分字符串拼接 SQL vs 参数化查询 |
 | 基线抑制 | `.ctx-audit/baseline.json` 记录已确认/已忽略的 finding |
-| 上下文感知 | 测试文件和配置目录中的匹配降低置信度 |
+| 上下文感知 | 测试文件和配置目录中的匹配自动降低置信度 |
+
+**默认排除列表**：`node_modules`, `.git`, `target`, `build`, `dist`, `vendor`, `*.min.js`, `*.min.css`, `*.map` 等。
+
+```bash
+# 排除示例
+ctx-audit scan ./project --exclude "test,example"           # 排除目录
+ctx-audit scan ./project --exclude "*.test.ts,*.spec.js"    # 排除文件模式
+ctx-audit scan ./project --exclude ".json,.lock"            # 排除后缀
+ctx-audit scan ./project --exclude "test,*.min.js,.env.*"   # 混合使用
+```
 
 ### 框架感知规则
 
@@ -347,8 +360,8 @@ cli/                      # 命令行客户端
 ├── commands/rules.rs     # 规则管理
 └── commands/findings.rs  # 漏洞管理
 
-rules/                    # 内置规则（37 个 YAML 文件）
-├── *.yaml                # 模式规则（25 个）
+rules/                    # 内置规则（38 个 YAML 文件）
+├── *.yaml                # 模式规则（26 个）
 └── taint/                # 污点规则
     ├── generic-taint.yaml          # 通用污点规则
     └── frameworks/                 # 框架特定规则
@@ -410,9 +423,9 @@ cargo clippy                 # 代码检查
 |------|------|
 | AST 污点分析 | CFG + worklist 算法，12 语言，30+ sanitizer |
 | 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找 |
-| 模式匹配规则 | 37 个 YAML 规则，覆盖 7 类注入 + 6 语言 |
+| 模式匹配规则 | 38 个 YAML 规则，覆盖 7 类注入 + 6 语言 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存 |
-| MCP 集成 | 11 个工具（3 粗粒度 + 7 细粒度 + 1 状态查询） |
+| MCP 集成 | 10 个工具（3 粗粒度 + 7 细粒度 + 1 状态查询） |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
 | 测试覆盖 | 123 个测试 |

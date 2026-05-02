@@ -10,6 +10,23 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use rayon::prelude::*;
 
+/// 默认排除列表（目录 + 文件模式）
+const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
+    // 目录
+    "node_modules", ".git", "target", "build", "dist", "vendor",
+    "__pycache__", ".gradle", ".idea", ".vscode", ".cache",
+    "bower_components", ".next", ".nuxt", "coverage", ".cache",
+    // 文件
+    "*.min.js", "*.min.css", "*.bundle.js", "*.chunk.js",
+    "*.map", ".env.*",
+];
+
+/// 测试目录标识（用于降低置信度，不排除扫描）
+const TEST_DIR_MARKERS: &[&str] = &[
+    "/test/", "/tests/", "/__tests__/", "/spec/",
+    "\\test\\", "\\tests\\", "\\__tests__\\", "\\spec\\",
+];
+
 /// 基线文件结构：记录已忽略的 findings
 #[derive(Debug, Deserialize)]
 struct Baseline {
@@ -76,14 +93,142 @@ fn resolve_rules_dir(project_path: &str, custom_dir: Option<&str>) -> Option<std
     None
 }
 
+/// 判断路径是否匹配排除规则
+///
+/// 排除规则支持两种形式：
+/// - 目录名：`test`、`node_modules` → 匹配路径中包含 `/test/`、`/node_modules/`
+/// - 文件模式：`*.test.ts`、`*.spec.js`、`*_test.go` → 匹配文件名后缀
+/// - 后缀模式：`.json`、`.lock` → 匹配文件扩展名
+fn is_excluded(path: &std::path::Path, exclude_patterns: &[String]) -> bool {
+    let path_str = path.to_string_lossy().replace('\\', "/");
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    for pattern in exclude_patterns {
+        let pat = pattern.trim();
+        if pat.is_empty() {
+            continue;
+        }
+
+        // 文件模式：以 * 或 ? 开头，或包含通配符
+        if pat.contains('*') || pat.contains('?') {
+            // glob 模式匹配文件名
+            if glob_match(pat, file_name) {
+                return true;
+            }
+            // 也匹配完整路径中的模式如 test/**
+            if glob_match(pat, &path_str) {
+                return true;
+            }
+            continue;
+        }
+
+        // 后缀模式：以 . 开头（如 .json, .lock）
+        if pat.starts_with('.') {
+            if file_name.ends_with(pat) {
+                return true;
+            }
+            continue;
+        }
+
+        // 目录名：匹配路径中的目录段
+        let dir_pattern = format!("/{}/", pat.trim_matches('/'));
+        if path_str.contains(&dir_pattern) {
+            return true;
+        }
+        if path_str.starts_with(&format!("{}/", pat.trim_matches('/'))) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 简易 glob 匹配（支持 * 和 ? 通配符）
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    glob_match_impl(&p, &t, 0, 0)
+}
+
+fn glob_match_impl(pattern: &[char], text: &[char], pi: usize, ti: usize) -> bool {
+    if pi == pattern.len() && ti == text.len() {
+        return true;
+    }
+    if pi == pattern.len() {
+        return false;
+    }
+    match pattern[pi] {
+        '*' => {
+            // * 匹配 0 个或多个字符
+            for i in ti..=text.len() {
+                if glob_match_impl(pattern, text, pi + 1, i) {
+                    return true;
+                }
+            }
+            false
+        }
+        '?' => {
+            if ti < text.len() {
+                glob_match_impl(pattern, text, pi + 1, ti + 1)
+            } else {
+                false
+            }
+        }
+        c => {
+            if ti < text.len() && text[ti] == c {
+                glob_match_impl(pattern, text, pi + 1, ti + 1)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// 判断路径是否在测试目录中
+fn is_test_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    for marker in TEST_DIR_MARKERS {
+        if normalized.contains(marker) {
+            return true;
+        }
+    }
+    false
+}
+
+/// severity 排序值
+fn severity_rank(s: &str) -> u8 {
+    match s.to_lowercase().as_str() {
+        "critical" => 5,
+        "high" => 4,
+        "medium" => 3,
+        "low" => 2,
+        "info" => 1,
+        _ => 0,
+    }
+}
+
 /// 便捷的 scan_directory 函数（用于web-backend）
 pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
-    scan_directory_with_rules(path, None).await
+    scan_directory_with_rules(path, None, None).await
 }
 
 /// 带自定义规则目录的扫描
-pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> Result<Vec<Finding>, String> {
+pub async fn scan_directory_with_rules(
+    path: &str,
+    rules_dir: Option<&str>,
+    exclude_dirs: Option<Vec<String>>,
+) -> Result<Vec<Finding>, String> {
     use ignore::Walk;
+
+    // 合并默认排除 + 用户排除
+    let mut excludes: Vec<String> = DEFAULT_EXCLUDE_PATTERNS.iter().map(|s| s.to_string()).collect();
+    if let Some(user_excludes) = exclude_dirs {
+        for dir in user_excludes {
+            let trimmed = dir.trim();
+            if !trimmed.is_empty() && !excludes.contains(&trimmed.to_string()) {
+                excludes.push(trimmed.to_string());
+            }
+        }
+    }
 
     // 先运行攻击面映射
     let attack_surface = crate::analysis::attack_surface::AttackSurfaceMapper::map_project(
@@ -98,9 +243,17 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
 
     let mut findings = Vec::new();
 
-    // 从攻击面生成未认证端点发现
+    // 从攻击面生成未认证端点发现（过滤 test 目录）
     for ep in &attack_surface.entry_points {
         if !ep.auth_required && ep.entry_type == crate::analysis::attack_surface::EntryType::HttpEndpoint {
+            // 跳过测试目录中的端点
+            if is_test_path(&ep.file_path) {
+                continue;
+            }
+            // 跳过排除目录中的端点
+            if is_excluded(std::path::Path::new(&ep.file_path), &excludes) {
+                continue;
+            }
             findings.push(Finding {
                 finding_id: format!("attack-surface-unauth-{}", ep.line),
                 file_path: ep.file_path.clone(),
@@ -130,13 +283,13 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
                     r
                 }
                 Err(e) => {
-                    tracing::warn!("规则加载失败: {}, 仅使用 RegexScanner", e);
+                    tracing::warn!("规则加载失败: {}", e);
                     vec![]
                 }
             }
         }
         None => {
-            tracing::info!("未找到规则目录，仅使用 RegexScanner");
+            tracing::info!("未找到规则目录");
             vec![]
         }
     };
@@ -148,27 +301,26 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
         None
     };
 
-    // 创建正则扫描器
-    let regex_scanner = regex_scanner::RegexScanner::new();
-
     // 创建 SCA 依赖扫描器
     let sca_scanner = sca_scanner::ScaScanner::new();
 
-    // 收集文件路径（不预读内容，按需读取）
-    /// 最大文件大小 10MB
+    // 收集文件路径
     const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
-    /// 内存预算：所有文件内容总量上限 500MB
     const MEMORY_BUDGET_BYTES: usize = 500 * 1024 * 1024;
 
     let mut code_files: Vec<std::path::PathBuf> = Vec::new();
     let mut dep_files: Vec<std::path::PathBuf> = Vec::new();
 
-    // 使用 ignore 库遍历目录，收集文件路径
     for entry in Walk::new(path) {
         if let Ok(entry) = entry {
             let path = entry.path();
 
             if !path.is_file() {
+                continue;
+            }
+
+            // 排除目录过滤
+            if is_excluded(path, &excludes) {
                 continue;
             }
 
@@ -189,7 +341,7 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
         }
     }
 
-    // SCA 扫描（按需读取依赖文件）
+    // SCA 扫描
     for path_buf in &dep_files {
         if let Ok(content) = std::fs::read_to_string(path_buf) {
             let sca_findings = sca_scanner.scan_file(path_buf, &content).await;
@@ -197,11 +349,10 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
         }
     }
 
-    // 代码文件并行扫描（使用 rayon，按需读取 + 内存预算控制）
+    // 代码文件并行扫描
     let rt_handle = tokio::runtime::Handle::current();
 
-    // 分批处理以控制内存
-    let batch_size = 100; // 每批最多 100 个文件
+    let batch_size = 100;
     let mut total_bytes_read: usize = 0;
 
     for chunk in code_files.chunks(batch_size) {
@@ -215,11 +366,7 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
 
                 let mut file_findings = Vec::new();
 
-                // 正则扫描
-                let regex_results = rt_handle.block_on(regex_scanner.scan_file(path_buf, &content));
-                file_findings.extend(regex_results);
-
-                // 规则扫描（同一文件，内容已加载，不重复读）
+                // 规则扫描
                 if let Some(ref scanner) = rule_scanner {
                     let rule_results = rt_handle.block_on(scanner.scan_file(path_buf, &content));
                     file_findings.extend(rule_results);
@@ -229,8 +376,7 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
             })
             .collect();
 
-        // 更新内存计数（近似）
-        total_bytes_read += chunk.len() * 10_000; // 估算
+        total_bytes_read += chunk.len() * 10_000;
         if total_bytes_read > MEMORY_BUDGET_BYTES {
             tracing::warn!(
                 "内存预算接近上限 ({}MB)，停止扫描剩余文件",
@@ -244,41 +390,30 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
         }
     }
 
-    // 上下文感知过滤：降低测试文件和配置目录中 findings 的置信度
+    // 上下文感知过滤
     for finding in &mut findings {
         let fp = finding.file_path.to_lowercase().replace('\\', "/");
         let is_test = fp.contains("/test") || fp.contains("/tests/") || fp.contains("/__tests__/")
             || fp.contains("/spec/") || fp.ends_with("_test.go") || fp.ends_with("_test.rs")
             || fp.ends_with("_test.py") || fp.ends_with(".test.js") || fp.ends_with(".test.ts")
             || fp.ends_with(".spec.js") || fp.ends_with(".spec.ts");
-        let is_config = fp.contains("/config/") || fp.contains("/.env") || fp.contains("/migrations/")
-            || fp.ends_with("dockerfile") || fp.ends_with(".toml") || fp.ends_with(".yaml")
-            || fp.ends_with(".yml") || fp.ends_with(".json");
         let is_example = fp.contains("/example") || fp.contains("/demo") || fp.contains("/sample");
 
         if is_test || is_example {
-            // 测试/示例文件中的发现降低严重程度
             finding.confidence = Some(finding.confidence.unwrap_or(0.7) * 0.3);
-        } else if is_config {
-            // 配置文件中的发现降低置信度（配置中硬编码密码可能是预期的）
-            if finding.vuln_type.contains("Password") || finding.vuln_type.contains("password") {
-                finding.confidence = Some(finding.confidence.unwrap_or(0.7) * 0.5);
-            }
         }
 
-        // 为没有置信度的 findings 设置默认值
         if finding.confidence.is_none() {
             finding.confidence = Some(match finding.detector.as_str() {
                 "SCAScanner" => 0.9,
                 "RuleScanner" => 0.7,
-                "RegexScanner" => 0.5,
                 "AttackSurfaceMapper" => 0.6,
                 _ => 0.5,
             });
         }
     }
 
-    // 基线抑制：加载已确认/忽略的 findings
+    // 基线抑制
     let baseline_path = std::path::Path::new(".ctx-audit/baseline.json");
     if baseline_path.exists() {
         if let Ok(content) = std::fs::read_to_string(baseline_path) {
@@ -290,6 +425,9 @@ pub async fn scan_directory_with_rules(path: &str, rules_dir: Option<&str>) -> R
             }
         }
     }
+
+    // 去重
+    findings = deduplicate_findings(findings);
 
     Ok(findings)
 }
@@ -312,16 +450,18 @@ pub async fn scan_directory_with_attack_surface(path: &str) -> Result<ScanResult
 }
 
 /// 深度扫描：在基础扫描后对候选文件运行 AST 污点分析
-///
-/// 仅对有候选发现的文件运行 AstTaintAnalyzer，用于验证和提升置信度。
 pub async fn scan_directory_deep(path: &str) -> Result<Vec<Finding>, String> {
-    scan_directory_deep_with_rules(path, None).await
+    scan_directory_deep_with_rules(path, None, None).await
 }
 
 /// 带自定义规则目录的深度扫描
-pub async fn scan_directory_deep_with_rules(path: &str, rules_dir: Option<&str>) -> Result<Vec<Finding>, String> {
+pub async fn scan_directory_deep_with_rules(
+    path: &str,
+    rules_dir: Option<&str>,
+    exclude_dirs: Option<Vec<String>>,
+) -> Result<Vec<Finding>, String> {
     // 先执行基础扫描
-    let mut findings = scan_directory_with_rules(path, rules_dir).await?;
+    let mut findings = scan_directory_with_rules(path, rules_dir, exclude_dirs).await?;
 
     if findings.is_empty() {
         return Ok(findings);
@@ -333,14 +473,13 @@ pub async fn scan_directory_deep_with_rules(path: &str, rules_dir: Option<&str>)
         .map(|f| f.file_path.clone())
         .collect();
 
-    // AST 污点分析（仅处理候选文件）
+    // AST 污点分析
     let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
     let mut taint_findings: Vec<Finding> = Vec::new();
 
     for file_path_str in &candidate_files {
         let file_path = std::path::Path::new(file_path_str);
 
-        // 仅分析 tree-sitter 支持的语言
         if !is_ast_supported_file(file_path) {
             continue;
         }
@@ -354,19 +493,23 @@ pub async fn scan_directory_deep_with_rules(path: &str, rules_dir: Option<&str>)
                     format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
                 }).collect();
 
+                let vuln_name = format!("{}", flow.vulnerability_type);
+
                 taint_findings.push(Finding {
                     finding_id: flow.id.clone(),
                     file_path: file_str,
                     line_start: flow.source.line,
                     line_end: flow.sink.line,
                     detector: "AstTaintScanner".to_string(),
-                    vuln_type: format!("{:?}", flow.vulnerability_type),
+                    vuln_type: vuln_name.clone(),
                     severity: format!("{:?}", flow.severity).to_lowercase(),
                     description: format!(
-                        "AST taint flow: {:?} {} -> {}",
-                        flow.vulnerability_type,
+                        "{}: {} → {} ({}→{})",
+                        vuln_name,
                         flow.source.symbol,
                         flow.sink.symbol,
+                        flow.source.line,
+                        flow.sink.line,
                     ),
                     analysis_trail: Some(trail),
                     llm_output: None,
@@ -386,10 +529,8 @@ pub async fn scan_directory_deep_with_rules(path: &str, rules_dir: Option<&str>)
     for finding in &mut findings {
         let key = (finding.file_path.clone(), finding.line_start);
         if taint_file_lines.contains(&key) {
-            // Regex + AST 同时确认
             finding.confidence = Some(0.9);
         } else {
-            // 仅 Regex
             finding.confidence = Some(0.5);
         }
     }
@@ -409,16 +550,20 @@ pub async fn scan_directory_deep_with_rules(path: &str, rules_dir: Option<&str>)
             let intermediate: Vec<String> = flow.interprocedural_path.iter()
                 .map(|s| format!("{}:{}", s.file_path, s.line))
                 .collect();
+
+            let vuln_name = format!("{}", flow.vulnerability_type);
+
             findings.push(Finding {
                 finding_id: flow.id.clone(),
                 file_path: flow.source.file_path.clone(),
                 line_start: flow.source.line,
                 line_end: flow.sink.line,
                 detector: "CrossFileTaintAnalyzer".to_string(),
-                vuln_type: format!("{:?}", flow.vulnerability_type),
+                vuln_type: vuln_name.clone(),
                 severity: format!("{:?}", flow.severity).to_lowercase(),
                 description: format!(
-                    "Cross-file taint: {}:{} → {}:{} (via {})",
+                    "{}: {}:{} → {}:{} (via {})",
+                    vuln_name,
                     flow.source.symbol, flow.source.line,
                     flow.sink.symbol, flow.sink.line,
                     intermediate.join(" → ")
@@ -437,7 +582,7 @@ pub async fn scan_directory_deep_with_rules(path: &str, rules_dir: Option<&str>)
     Ok(findings)
 }
 
-/// 判断文件是否支持 AST 分析（tree-sitter 支持的语言）
+/// 判断文件是否支持 AST 分析
 fn is_ast_supported_file(path: &std::path::Path) -> bool {
     if let Some(ext) = path.extension() {
         let ext = ext.to_str().unwrap_or("");
@@ -451,18 +596,18 @@ fn is_ast_supported_file(path: &std::path::Path) -> bool {
     }
 }
 
-/// 去重发现：按 (file_path, line_start, vuln_type) 分组
+/// 去重发现：按 (file_path, line_start) 分组，同一行合并为一条
 fn deduplicate_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
     if findings.is_empty() {
         return findings;
     }
 
-    // 按 (file_path, line_start, vuln_type) 分组
-    let mut groups: std::collections::HashMap<(String, usize, String), Vec<usize>> =
+    // 按 (file_path, line_start) 分组
+    let mut groups: std::collections::HashMap<(String, usize), Vec<usize>> =
         std::collections::HashMap::new();
 
     for (i, f) in findings.iter().enumerate() {
-        let key = (f.file_path.clone(), f.line_start, f.vuln_type.clone());
+        let key = (f.file_path.clone(), f.line_start);
         groups.entry(key).or_default().push(i);
     }
 
@@ -471,30 +616,80 @@ fn deduplicate_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
 
     for (_key, indices) in groups {
         if indices.len() == 1 {
-            // 唯一发现，直接保留
             let idx = indices[0];
             if !deduped_indices.contains(&idx) {
                 deduped_indices.insert(idx);
                 result.push(findings[idx].clone());
             }
         } else {
-            // 多个发现合并：保留信息最丰富的
-            let best_idx = *indices.iter().max_by_key(|&&idx| {
-                let f = &findings[idx];
-                let trail_len = f.analysis_trail.as_ref().map(|t| t.len()).unwrap_or(0);
-                trail_len
-            }).unwrap();
-
-            let mut merged = findings[best_idx].clone();
-            merged.corroboration_count = Some(indices.len());
-            merged.confidence = Some(
-                merged.confidence.unwrap_or(0.5).min(0.5 + 0.1 * indices.len() as f32).min(1.0)
-            );
+            // 多个发现合并：取最高 severity，合并 detector，最长的 description
+            let mut best_severity = "info".to_string();
+            let mut best_vuln_type = String::new();
+            let mut detectors = Vec::new();
+            let mut best_confidence: f32 = 0.0;
+            let mut best_description = String::new();
+            let mut best_trail: Option<Vec<String>> = None;
+            let mut best_id = String::new();
+            let mut best_end = 0usize;
 
             for &idx in &indices {
+                let f = &findings[idx];
+                detectors.push(f.detector.clone());
+
+                if severity_rank(&f.severity) > severity_rank(&best_severity) {
+                    best_severity = f.severity.clone();
+                }
+
+                // 优先选择 CWE 编号（更具体）而非通用名称
+                let current_len = best_vuln_type.len();
+                if f.vuln_type.starts_with("CWE-") && !best_vuln_type.starts_with("CWE-") {
+                    best_vuln_type = f.vuln_type.clone();
+                } else if !f.vuln_type.starts_with("CWE-") && current_len == 0 {
+                    best_vuln_type = f.vuln_type.clone();
+                } else if f.vuln_type.len() > current_len {
+                    best_vuln_type = f.vuln_type.clone();
+                }
+
+                if f.confidence.unwrap_or(0.0) > best_confidence {
+                    best_confidence = f.confidence.unwrap_or(0.0);
+                }
+
+                if f.description.len() > best_description.len() {
+                    best_description = f.description.clone();
+                }
+
+                if f.analysis_trail.as_ref().map(|t| t.len()).unwrap_or(0)
+                    > best_trail.as_ref().map(|t| t.len()).unwrap_or(0)
+                {
+                    best_trail = f.analysis_trail.clone();
+                }
+
+                if f.line_end > best_end {
+                    best_end = f.line_end;
+                    best_id = f.finding_id.clone();
+                }
+
                 deduped_indices.insert(idx);
             }
-            result.push(merged);
+
+            // 去重 detector 列表
+            detectors.sort();
+            detectors.dedup();
+
+            result.push(Finding {
+                finding_id: best_id,
+                file_path: findings[indices[0]].file_path.clone(),
+                line_start: findings[indices[0]].line_start,
+                line_end: best_end,
+                detector: detectors.join("+"),
+                vuln_type: best_vuln_type,
+                severity: best_severity,
+                description: best_description,
+                analysis_trail: best_trail,
+                llm_output: None,
+                confidence: Some(best_confidence.min(0.5 + 0.1 * indices.len() as f32).min(1.0)),
+                corroboration_count: Some(indices.len()),
+            });
         }
     }
 

@@ -13,7 +13,7 @@ patterns:
   - language: javascript
     pattern: '(?i)(\.innerHTML\s*=|document\.write\s*\(|dangerouslySetInnerHTML|\.outerHTML\s*=)'
   - language: javascript
-    pattern: '(?i)(\.html\s*\(\s*[^)]*\$(|\.html\s*\(\s*req\.|\.html\s*\(\s*params)'
+    pattern: '(?i)\.html\s*\(\s*[^)]*\$|\.html\s*\(\s*req\.|\.html\s*\(\s*params'
   - language: python
     pattern: '(?i)(render_template_string\s*\(|Markup\s*\(|\|safe\b)'
   - language: java

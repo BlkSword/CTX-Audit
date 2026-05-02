@@ -9,6 +9,8 @@ use miette::Result;
 use std::time::Duration;
 
 use crate::terminal::TerminalRenderer;
+use ctx_audit_daemon::client::DaemonClient;
+use ctx_audit_daemon::protocol::Response;
 use deepaudit_core::watcher::{FileWatcher, WatcherConfig, WatchEvent, is_source_file};
 use deepaudit_core::scan_directory;
 use deepaudit_core::sarif::{SarifConverter, FindingInput};
@@ -228,13 +230,13 @@ async fn watch_via_daemon(
     }
 
     // 确保守护进程运行
-    if !ctx_audit_daemon::client::DaemonClient::is_running().await {
+    if !DaemonClient::is_running().await {
         renderer.info("守护进程未运行，正在启动...");
         crate::commands::daemon::start(None).await?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    let mut client = ctx_audit_daemon::client::DaemonClient::connect().await
+    let mut client = DaemonClient::connect().await
         .map_err(|e| miette::miette!("连接守护进程失败: {}", e))?;
 
     renderer.info(&format!("[Watch] 通过守护进程监控: {}", path));
@@ -256,7 +258,7 @@ async fn watch_via_daemon(
         ).await;
 
         match response {
-            Ok(ctx_audit_daemon::protocol::Response::ScanResult { findings, duration_ms, .. }) => {
+            Ok(Response::ScanResult { findings, duration_ms, .. }) => {
                 let count = findings.len() as i64;
 
                 if count != last_count {
@@ -313,7 +315,7 @@ async fn watch_via_daemon(
                 renderer.error(&format!("[Watch] 扫描失败: {}", e));
                 // 尝试重连
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                if let Ok(c) = ctx_audit_daemon::client::DaemonClient::connect().await {
+                if let Ok(c) = DaemonClient::connect().await {
                     client = c;
                 }
             }

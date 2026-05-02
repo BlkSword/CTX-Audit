@@ -7,7 +7,7 @@ name: Rails SQL Injection Detection
 owasp: "A03:2021-Injection"
 patterns:
   - language: ruby
-    pattern: '(?i)(\.where\s*\(\s*["\'].*#\{.*params|\.where\s*\(\s*params|\.find_by_sql\s*\(\s*.*params)'
+    pattern: "(?i)(\\.where\\s*\\(\\s*[\"'].*#\\{.*params|\\.where\\s*\\(\\s*params|\\.find_by_sql\\s*\\(\\s*.*params)"
   - language: ruby
     pattern: '(?i)(Model\.find_by_sql\s*\(|connection\.execute\s*\(|connection\.select_all\s*\().*params'
   - language: ruby
