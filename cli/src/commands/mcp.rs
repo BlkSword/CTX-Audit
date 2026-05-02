@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
+use ctx_audit_daemon::client::DaemonClient;
+use ctx_audit_daemon::protocol::{Request, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -369,7 +371,7 @@ async fn tool_scan_file(args: &Value) -> Value {
 }
 
 async fn tool_daemon_status() -> Value {
-    match ctx_audit_daemon::client::DaemonClient::connect().await {
+    match DaemonClient::connect().await {
         Ok(mut client) => {
             let ping_resp = client.ping().await;
             let status_resp = client.status().await;
@@ -377,11 +379,11 @@ async fn tool_daemon_status() -> Value {
             let mut info = serde_json::Map::new();
             info.insert("running".into(), serde_json::json!(true));
 
-            if let Ok(ctx_audit_daemon::protocol::Response::Pong { version, uptime_secs }) = ping_resp {
+            if let Ok(Response::Pong { version, uptime_secs }) = ping_resp {
                 info.insert("version".into(), serde_json::json!(version));
                 info.insert("uptime_secs".into(), serde_json::json!(uptime_secs));
             }
-            if let Ok(ctx_audit_daemon::protocol::Response::StatusInfo { pid, loaded_projects, cache_stats, .. }) = status_resp {
+            if let Ok(Response::StatusInfo { pid, loaded_projects, cache_stats, .. }) = status_resp {
                 info.insert("pid".into(), serde_json::json!(pid));
                 info.insert("projects".into(), serde_json::json!(loaded_projects));
                 info.insert("cache".into(), serde_json::json!({
@@ -805,8 +807,8 @@ async fn try_daemon_analyze(
     end_line: Option<usize>,
     show_symbols: bool,
 ) -> Option<serde_json::Map<String, Value>> {
-    let mut client = ctx_audit_daemon::client::DaemonClient::connect().await.ok()?;
-    let response = client.send_request(ctx_audit_daemon::protocol::Request::Analyze {
+    let mut client = DaemonClient::connect().await.ok()?;
+    let response = client.send_request(Request::Analyze {
         file_path: file_path.to_string(),
         start_line,
         end_line,
@@ -815,7 +817,7 @@ async fn try_daemon_analyze(
     }).await.ok()?;
 
     match response {
-        ctx_audit_daemon::protocol::Response::AnalysisResult { content } => {
+        Response::AnalysisResult { content } => {
             if let Value::Object(map) = content { Some(map) } else { None }
         }
         _ => None,
@@ -823,13 +825,13 @@ async fn try_daemon_analyze(
 }
 
 async fn try_daemon_cross_file(project_path: &str) -> Option<Value> {
-    let mut client = ctx_audit_daemon::client::DaemonClient::connect().await.ok()?;
-    let response = client.send_request(ctx_audit_daemon::protocol::Request::CrossFileAnalysis {
+    let mut client = DaemonClient::connect().await.ok()?;
+    let response = client.send_request(Request::CrossFileAnalysis {
         path: project_path.to_string(),
     }).await.ok()?;
 
     match response {
-        ctx_audit_daemon::protocol::Response::CrossFileTaintResult { result } => {
+        Response::CrossFileTaintResult { result } => {
             Some(text_response(&serde_json::to_string_pretty(&result).unwrap_or_default()))
         }
         _ => None,
@@ -837,20 +839,20 @@ async fn try_daemon_cross_file(project_path: &str) -> Option<Value> {
 }
 
 async fn try_daemon_call_graph(project_path: &str, entry: &str, depth: usize) -> Option<Value> {
-    let mut client = ctx_audit_daemon::client::DaemonClient::connect().await.ok()?;
+    let mut client = DaemonClient::connect().await.ok()?;
 
     // Try to load project first
-    let _ = client.send_request(ctx_audit_daemon::protocol::Request::LoadProject {
+    let _ = client.send_request(Request::LoadProject {
         path: project_path.to_string(),
     }).await;
 
-    let response = client.send_request(ctx_audit_daemon::protocol::Request::GetCallGraph {
+    let response = client.send_request(Request::GetCallGraph {
         entry: entry.to_string(),
         depth: Some(depth),
     }).await.ok()?;
 
     match response {
-        ctx_audit_daemon::protocol::Response::CallGraphResult { graph } => {
+        Response::CallGraphResult { graph } => {
             Some(text_response(&serde_json::to_string_pretty(&graph).unwrap_or_default()))
         }
         _ => None,

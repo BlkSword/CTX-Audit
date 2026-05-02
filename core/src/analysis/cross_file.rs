@@ -1056,21 +1056,67 @@ impl CrossFileTaintAnalyzer {
     /// 从 sink 函数名推断漏洞类型
     fn infer_vuln_type(&self, func_name: &str) -> VulnerabilityType {
         let lower = func_name.to_lowercase();
-        if lower.contains("exec") || lower.contains("system") || lower.contains("spawn") {
-            VulnerabilityType::CommandInjection
-        } else if lower.contains("query") || lower.contains("execute") || lower.contains("sql") {
-            VulnerabilityType::SqlInjection
-        } else if lower.contains("eval") || lower.contains("function") {
-            VulnerabilityType::CodeInjection
-        } else if lower.contains("open") || lower.contains("read") || lower.contains("write") {
-            VulnerabilityType::PathTraversal
-        } else if lower.contains("fetch") || lower.contains("request") {
-            VulnerabilityType::ServerSideRequestForgery
-        } else if lower.contains("deserialize") || lower.contains("parse") {
-            VulnerabilityType::InsecureDeserialization
-        } else {
-            VulnerabilityType::Generic
+
+        if lower.contains("exec") || lower.contains("system") || lower.contains("spawn")
+            || lower.contains("runtime") || lower.contains("processbuilder")
+            || lower.contains("shell_exec") || lower.contains("passthru")
+        {
+            return VulnerabilityType::CommandInjection;
         }
+
+        if lower.contains("query") || lower.contains("sql") || lower.contains("cursor")
+            || lower.contains("jdbctemplate") || lower.contains("statement")
+            || lower.contains("preparedstatement") || lower.contains("database")
+        {
+            return VulnerabilityType::SqlInjection;
+        }
+
+        if lower.contains("eval") || lower.contains("compile") || lower.contains("scriptengine")
+            || lower.contains("groovyshell") || lower.contains("__import__")
+        {
+            return VulnerabilityType::CodeInjection;
+        }
+
+        if (lower.contains("open") && !lower.contains("response"))
+            || lower.contains("readfile") || lower.contains("writefile")
+            || lower.contains("fileinputstream") || lower.contains("fileoutputstream")
+        {
+            return VulnerabilityType::PathTraversal;
+        }
+
+        if lower.contains("fetch") || lower.contains("httpclient") || lower.contains("urlconnection")
+            || lower.contains("resttemplate") || lower.contains("webclient")
+            || lower.contains("sendrequest")
+        {
+            return VulnerabilityType::ServerSideRequestForgery;
+        }
+
+        if lower.contains("innerhtml") || lower.contains("document.write")
+            || lower.contains("getwriter") || lower.contains("dangerouslysetinnerhtml")
+        {
+            return VulnerabilityType::CrossSiteScripting;
+        }
+
+        if lower.contains("deserialize") || lower.contains("readobject")
+            || lower.contains("objectinputstream") || lower.contains("readvalue")
+            || lower.contains("pickle") || lower.contains("unserialize")
+        {
+            return VulnerabilityType::InsecureDeserialization;
+        }
+
+        if lower.contains("redirect") || lower.contains("sendredirect") {
+            return VulnerabilityType::OpenRedirect;
+        }
+
+        if lower.contains("ldap") {
+            return VulnerabilityType::LdapInjection;
+        }
+
+        if lower.contains("request") {
+            return VulnerabilityType::ServerSideRequestForgery;
+        }
+
+        VulnerabilityType::Generic
     }
 
     /// 利用已有的函数摘要做跨函数污点传播

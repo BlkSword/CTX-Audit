@@ -76,6 +76,10 @@ enum Commands {
         #[arg(short, long, default_value = "4")]
         threads: usize,
 
+        /// 排除的目录（逗号分隔，如 test,node_modules,dist）
+        #[arg(short, long, default_value = "")]
+        exclude: String,
+
         /// 启用深度扫描（AST 污点分析）
         #[arg(long)]
         deep: bool,
@@ -360,6 +364,7 @@ async fn main() -> Result<()> {
             pattern,
             output,
             threads,
+            exclude,
             deep,
             daemon,
         } => {
@@ -373,6 +378,7 @@ async fn main() -> Result<()> {
                 cli.output.as_str(),
                 deep,
                 daemon,
+                exclude,
             )
             .await
         }

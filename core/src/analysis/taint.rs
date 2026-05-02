@@ -390,7 +390,7 @@ impl std::fmt::Display for VulnerabilityType {
             VulnerabilityType::InsecureDeserialization => write!(f, "Insecure Deserialization"),
             VulnerabilityType::LogInjection => write!(f, "Log Injection"),
             VulnerabilityType::OpenRedirect => write!(f, "Open Redirect"),
-            VulnerabilityType::Generic => write!(f, "Generic"),
+            VulnerabilityType::Generic => write!(f, "Potential Security Issue"),
         }
     }
 }

@@ -22,7 +22,7 @@ pub fn load_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<Vec<Rule>> {
                     } else if let Ok(rule) = serde_yaml::from_str::<Rule>(&content) {
                         rules.push(rule);
                     } else {
-                        eprintln!("Failed to parse rule file: {:?}", path);
+                        tracing::debug!("Skipping non-pattern-rule file: {:?}", path);
                     }
                 }
             }

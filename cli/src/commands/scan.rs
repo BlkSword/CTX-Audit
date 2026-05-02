@@ -8,6 +8,8 @@
 use miette::Result;
 
 use crate::terminal::TerminalRenderer;
+use ctx_audit_daemon::client::DaemonClient;
+use ctx_audit_daemon::protocol::Response;
 use deepaudit_core::scan_directory;
 use deepaudit_core::scan_directory_deep;
 use deepaudit_core::scan_directory_with_rules;
@@ -25,6 +27,7 @@ pub async fn execute(
     output_format: &str,
     deep: bool,
     daemon: bool,
+    exclude: String,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -35,12 +38,19 @@ pub async fn execute(
         return Err(miette::miette!("项目路径不存在"));
     }
 
+    // 解析排除目录
+    let exclude_dirs: Vec<String> = exclude
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     // 守护进程模式
     if daemon {
         return scan_via_daemon(path, severity, pattern, output_path, output_format, deep, &mut renderer).await;
     }
 
-    scan_local(path, rules_dir, severity, pattern, output_path, output_format, deep, &mut renderer).await
+    scan_local(path, rules_dir, severity, pattern, output_path, output_format, deep, exclude_dirs, &mut renderer).await
 }
 
 /// 本地扫描（直接调用 core）
@@ -52,6 +62,7 @@ async fn scan_local(
     output_path: Option<String>,
     output_format: &str,
     deep: bool,
+    exclude_dirs: Vec<String>,
     renderer: &mut TerminalRenderer,
 ) -> Result<()> {
     let mode = if deep { "深度扫描" } else { "快速扫描" };
@@ -66,10 +77,11 @@ async fn scan_local(
     pb.set_message("正在扫描...");
 
     let rules_ref = rules_dir.as_deref();
+    let exclude_opt = if exclude_dirs.is_empty() { None } else { Some(exclude_dirs) };
     let findings_result = if deep {
-        scan_directory_deep_with_rules(&path, rules_ref).await
+        scan_directory_deep_with_rules(&path, rules_ref, exclude_opt).await
     } else {
-        scan_directory_with_rules(&path, rules_ref).await
+        scan_directory_with_rules(&path, rules_ref, exclude_opt).await
     };
 
     pb.finish_with_message("扫描完成");
@@ -242,12 +254,12 @@ async fn scan_via_daemon(
     deep: bool,
     renderer: &mut TerminalRenderer,
 ) -> Result<()> {
-    let mut client = match ctx_audit_daemon::client::DaemonClient::connect_with_retry().await {
+    let mut client = match DaemonClient::connect_with_retry().await {
         Ok(c) => c,
         Err(e) => {
             renderer.warning(&format!("连接守护进程失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, pattern, output_path, output_format, deep, renderer).await;
+            return scan_local(path, None, severity, pattern, output_path, output_format, deep, vec![], renderer).await;
         }
     };
 
@@ -261,14 +273,14 @@ async fn scan_via_daemon(
             pb.finish_with_message("守护进程扫描失败");
             renderer.warning(&format!("守护进程扫描失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, pattern, output_path, output_format, deep, renderer).await;
+            return scan_local(path, None, severity, pattern, output_path, output_format, deep, vec![], renderer).await;
         }
     };
 
     pb.finish_with_message("扫描完成");
 
     match response {
-        ctx_audit_daemon::protocol::Response::ScanResult { findings, duration_ms, files_scanned } => {
+        Response::ScanResult { findings, duration_ms, files_scanned } => {
             renderer.success(&format!(
                 "扫描完成！发现 {} 个问题 (耗时 {}ms, 扫描 {} 个文件)",
                 findings.len(), duration_ms, files_scanned
@@ -331,7 +343,7 @@ async fn scan_via_daemon(
                 renderer.info(&format!("结果已保存到: {}", output_path));
             }
         }
-        ctx_audit_daemon::protocol::Response::Error { message, .. } => {
+        Response::Error { message, .. } => {
             renderer.error(&format!("扫描失败: {}", message));
             return Err(miette::miette!("扫描失败: {}", message));
         }

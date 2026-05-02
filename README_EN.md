@@ -72,6 +72,7 @@ OPTIONS:
   -r, --rules <dir>         Custom rules directory
   -o, --output <file>       Output file path
   -t, --threads <N>         Number of parallel threads (default: 4)
+  -e, --exclude <patterns>  Exclude dirs/files (comma-separated, e.g. test,*.min.js,.json)
       --deep                Enable deep scan (AST taint + cross-file analysis)
       --daemon              Execute via daemon (incremental cache)
 ```
@@ -80,8 +81,7 @@ OPTIONS:
 
 | Engine | Description |
 |--------|-------------|
-| RuleScanner | Language-aware regex rules (YAML, multi-language patterns) |
-| RegexScanner | Hardcoded pattern detection (passwords, keys, etc.) |
+| RuleScanner | Language-aware regex rules (YAML, multi-language patterns, 33 built-in rules) |
 | SCAScanner | Dependency vulnerability detection (OSV API, 24h local cache) |
 | AstTaintScanner | AST taint analysis (`--deep` mode) |
 | CrossFileTaintAnalyzer | Cross-file / interprocedural taint tracking (`--deep` mode) |
@@ -145,7 +145,7 @@ Daemon features:
 ctx-audit mcp    # Start MCP Server (stdio JSON-RPC)
 ```
 
-Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **11 tools**:
+Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **10 tools**:
 
 **Coarse-grained tools**:
 
@@ -248,11 +248,24 @@ Queries known vulnerable dependencies via OSV API: npm (`package.json`), PyPI (`
 
 | Mechanism | Description |
 |-----------|-------------|
+| Same-line dedup | Multiple scanner hits on same file:line auto-merged, highest severity kept |
+| Test directory filter | Attack surface findings in test/tests/spec dirs auto-skipped |
+| Blacklist exclusion | `--exclude` supports directory names, file patterns (`*.min.js`), suffixes (`.json`) |
 | Confidence scoring | Each finding includes confidence (0.0-1.0) |
 | Sanitizer recognition | 30+ sanitizer patterns reduce confidence on sanitized paths |
 | Parameterized query detection | Distinguishes string-concatenated SQL from parameterized queries |
 | Baseline suppression | `.ctx-audit/baseline.json` records confirmed/ignored findings |
 | Context-awareness | Reduced confidence for matches in test files and config dirs |
+
+**Default exclusion list**: `node_modules`, `.git`, `target`, `build`, `dist`, `vendor`, `*.min.js`, `*.min.css`, `*.map`, etc.
+
+```bash
+# Exclusion examples
+ctx-audit scan ./project --exclude "test,example"           # Exclude directories
+ctx-audit scan ./project --exclude "*.test.ts,*.spec.js"    # Exclude file patterns
+ctx-audit scan ./project --exclude ".json,.lock"            # Exclude suffixes
+ctx-audit scan ./project --exclude "test,*.min.js,.env.*"   # Mixed usage
+```
 
 ### Framework-Aware Rules
 
@@ -347,8 +360,8 @@ cli/                      # Command-line client
 ├── commands/rules.rs     # Rule management
 └── commands/findings.rs  # Vulnerability management
 
-rules/                    # Built-in rules (37 YAML files)
-├── *.yaml                # Pattern rules (25 files)
+rules/                    # Built-in rules (38 YAML files)
+├── *.yaml                # Pattern rules (26 files)
 └── taint/                # Taint rules
     ├── generic-taint.yaml          # Generic taint rules
     └── frameworks/                 # Framework-specific rules
@@ -410,9 +423,9 @@ cargo clippy                 # Lint
 |-----------|--------|
 | AST Taint Analysis | CFG + worklist algorithm, 12 languages, 30+ sanitizers |
 | Cross-file Tracking | Call graph + function summaries + DFS path finding |
-| Pattern Matching | 37 YAML rules covering 7 injection types + 6 languages |
+| Pattern Matching | 38 YAML rules covering 7 injection types + 6 languages |
 | SCA Scanner | OSV API, 4 ecosystems, local cache |
-| MCP Integration | 11 tools (3 coarse-grained + 7 fine-grained + 1 status) |
+| MCP Integration | 10 tools (3 coarse-grained + 7 fine-grained + 1 status) |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
 | Test Coverage | 123 tests |
