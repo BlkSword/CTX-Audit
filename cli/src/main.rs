@@ -1,31 +1,24 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-// CLI 工具需要控制台输出，不要使用 windows 子系统
-// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 mod commands;
 mod config;
 mod database;
 mod output;
 mod report;
-mod repl;
-mod slash;
 mod terminal;
-mod tui;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use miette::{Result, IntoDiagnostic};
-use miette::Context;
 
-/// CTX-Audit - AI 驱动的代码安全审计工具
+/// CTX-Audit - 安全分析守护进程工具包
 ///
-/// 一个强大的代码安全审计 CLI 工具，支持 AI 辅助分析和规则扫描。
+/// 基于确定性分析引擎的代码安全分析工具
 #[derive(Parser, Debug)]
 #[command(name = "ctx-audit")]
 #[command(author = "CTX-Audit Contributors")]
 #[command(version = VERSION)]
-#[command(about = "AI-powered code security audit tool", long_about = None)]
+#[command(about = "Security analysis daemon toolkit", long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     /// 启用详细输出
@@ -55,35 +48,6 @@ struct Cli {
 /// CLI 子命令
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// 启动 AI 审计（交互式）
-    ///
-    /// 使用 AI Agent 进行深度代码安全分析
-    Audit {
-        /// 项目路径
-        #[arg(value_name = "PATH")]
-        path: String,
-
-        /// 审计类型 (full, quick, incremental)
-        #[arg(short, long, default_value = "full")]
-        audit_type: String,
-
-        /// 最大迭代次数（不指定则无限制）
-        #[arg(short, long)]
-        max_iterations: Option<u32>,
-
-        /// 跳过验证阶段
-        #[arg(long)]
-        skip_verification: bool,
-
-        /// 输出文件路径
-        #[arg(short, long)]
-        output: Option<String>,
-
-        /// 显示详细的 LLM 过程（思考、工具调用、观察结果）
-        #[arg(short, long)]
-        verbose: bool,
-    },
-
     /// 快速规则扫描（批处理）
     ///
     /// 使用预定义规则快速扫描代码
@@ -115,20 +79,15 @@ enum Commands {
         /// 启用深度扫描（AST 污点分析）
         #[arg(long)]
         deep: bool,
-    },
 
-    /// REPL 对话模式
-    ///
-    /// 进入交互式对话界面
-    Chat {
-        /// 项目路径（可选）
-        #[arg(value_name = "PATH")]
-        path: Option<String>,
+        /// 通过守护进程执行
+        #[arg(long)]
+        daemon: bool,
     },
 
     /// 深度分析单个文件
     ///
-    /// 对单个文件进行详细的 AI 分析
+    /// 对单个文件进行详细的 AST 分析和污点追踪
     Analyze {
         /// 文件路径
         #[arg(value_name = "FILE")]
@@ -149,6 +108,10 @@ enum Commands {
         /// 显示符号信息
         #[arg(long)]
         symbols: bool,
+
+        /// 通过守护进程执行
+        #[arg(long)]
+        daemon: bool,
     },
 
     /// 管理漏洞发现
@@ -176,17 +139,12 @@ enum Commands {
         shell: String,
     },
 
-    /// 启动 TUI（终端用户界面）
+    /// 守护进程管理
     ///
-    /// 进入交互式 TUI 界面
-    Ui {
-        /// 项目路径（可选）
-        #[arg(value_name = "PATH")]
-        path: Option<String>,
-
-        /// 自动开始审计
-        #[arg(short, long)]
-        audit: bool,
+    /// 启动、查询或停止安全分析守护进程
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
     },
 
     /// 守护模式：监听文件变更并增量扫描
@@ -212,6 +170,10 @@ enum Commands {
         /// 忽略的目录（逗号分隔）
         #[arg(long, default_value = "node_modules,.git,target,build,dist,__pycache__,vendor")]
         ignore: String,
+
+        /// 通过守护进程执行
+        #[arg(long)]
+        daemon: bool,
     },
 }
 
@@ -291,7 +253,7 @@ enum ConfigAction {
         #[arg(value_name = "KEY")]
         key: Option<String>,
 
-        /// 显示敏感信息（如 API 密钥）
+        /// 显示敏感信息
         #[arg(long)]
         reveal: bool,
     },
@@ -322,11 +284,7 @@ enum ConfigAction {
     },
 
     /// 验证配置
-    Validate {
-        /// 测试 LLM 连接
-        #[arg(long)]
-        test_llm: bool,
-    },
+    Validate,
 
     /// 重置为默认配置
     Reset {
@@ -336,50 +294,34 @@ enum ConfigAction {
     },
 }
 
+/// 守护进程管理子命令
+#[derive(Subcommand, Debug)]
+enum DaemonAction {
+    /// 启动守护进程
+    Start {
+        /// 预加载的项目路径
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+
+    /// 查询守护进程状态
+    Status,
+
+    /// 停止守护进程
+    Stop,
+}
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // 检查命令类型以决定日志策略
-    let is_tui_command = matches!(cli.command, Commands::Ui { .. });
-    let is_chat_command = matches!(cli.command, Commands::Chat { .. });
-
     // 初始化日志
-    // - TUI 模式: 完全禁用日志（避免干扰界面渲染）
-    // - Chat 模式: 只显示 warn 和 error 级别（避免干扰交互）
-    // - 其他模式: 正常初始化日志
-    if !is_tui_command {
-        if is_chat_command {
-            init_logging_chat_only();
-        } else {
-            init_logging(&cli);
-        }
-    }
+    init_logging(&cli);
 
     // 执行命令
     match cli.command {
-        Commands::Audit {
-            path,
-            audit_type,
-            max_iterations,
-            skip_verification,
-            output,
-            verbose,
-        } => {
-            commands::audit::execute(
-                path,
-                audit_type,
-                max_iterations,
-                skip_verification,
-                output,
-                cli.output.as_str(),
-                verbose,
-            )
-            .await
-        }
-
         Commands::Scan {
             path,
             rules,
@@ -388,6 +330,7 @@ async fn main() -> Result<()> {
             output,
             threads,
             deep,
+            daemon,
         } => {
             commands::scan::execute(
                 path,
@@ -398,11 +341,10 @@ async fn main() -> Result<()> {
                 threads,
                 cli.output.as_str(),
                 deep,
+                daemon,
             )
             .await
         }
-
-        Commands::Chat { path } => commands::chat::execute(path).await,
 
         Commands::Analyze {
             file,
@@ -410,8 +352,9 @@ async fn main() -> Result<()> {
             end_line,
             ast,
             symbols,
+            daemon,
         } => {
-            commands::analyze::execute(file, start_line, end_line, ast, symbols, cli.output.as_str())
+            commands::analyze::execute(file, start_line, end_line, ast, symbols, cli.output.as_str(), daemon)
                 .await
         }
 
@@ -441,7 +384,7 @@ async fn main() -> Result<()> {
             ConfigAction::Set { key, value } => commands::config::set(key, value).await,
             ConfigAction::Remove { key } => commands::config::remove(key).await,
             ConfigAction::List { verbose } => commands::config::list(verbose).await,
-            ConfigAction::Validate { test_llm } => commands::config::validate(test_llm).await,
+            ConfigAction::Validate => commands::config::validate().await,
             ConfigAction::Reset { confirm } => commands::config::reset(confirm).await,
         },
 
@@ -450,13 +393,11 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::Ui { path, audit: _ } => {
-            if let Some(p) = path {
-                tui::run_tui_audit(p).await.map_err(|e| miette::miette!("{}", e))
-            } else {
-                tui::run_tui().await.map_err(|e| miette::miette!("{}", e))
-            }
-        }
+        Commands::Daemon { action } => match action {
+            DaemonAction::Start { project } => commands::daemon::start(project).await,
+            DaemonAction::Status => commands::daemon::status().await,
+            DaemonAction::Stop => commands::daemon::stop().await,
+        },
 
         Commands::Watch {
             path,
@@ -464,7 +405,8 @@ async fn main() -> Result<()> {
             output: _,
             output_path,
             ignore,
-        } => commands::watch::execute(path, severity, "sarif", output_path, ignore).await,
+            daemon,
+        } => commands::watch::execute(path, severity, "sarif", output_path, ignore, daemon).await,
     }
 }
 
@@ -487,18 +429,6 @@ fn init_logging(cli: &Cli) {
         .init();
 }
 
-/// 初始化日志系统（仅用于 Chat/REPL 模式）
-/// 只显示警告和错误，避免干扰用户交互
-fn init_logging_chat_only() {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
-        .init();
-}
-
 /// 生成 Shell 自动补全脚本
 fn generate_completion(shell: &str) {
     let mut cmd = Cli::command();
@@ -506,38 +436,25 @@ fn generate_completion(shell: &str) {
 
     match shell {
         "bash" => {
-            println!(
-                "# Bash completion for {}",
-                name
-            );
+            println!("# Bash completion for {}", name);
             println!("# Add to ~/.bashrc or ~/.bash_completion");
             println!();
             println!("eval \"$({} --completion bash)\"", name);
-            // 实际生成由 clap 自动处理
         }
         "zsh" => {
-            println!(
-                "# Zsh completion for {}",
-                name
-            );
+            println!("# Zsh completion for {}", name);
             println!("# Add to ~/.zshrc");
             println!();
             println!("eval \"$({} --completion zsh)\"", name);
         }
         "fish" => {
-            println!(
-                "# Fish completion for {}",
-                name
-            );
+            println!("# Fish completion for {}", name);
             println!("# Add to ~/.config/fish/completions/{}.fish", name);
             println!();
             println!("{} --completion fish | source", name);
         }
         "powershell" | "pwsh" => {
-            println!(
-                "# PowerShell completion for {}",
-                name
-            );
+            println!("# PowerShell completion for {}", name);
             println!("# Add to PowerShell profile");
             println!();
             println!("Invoke-Expression -Command (& '{}' --completion powershell) | Out-String", name);

@@ -21,7 +21,12 @@ pub async fn execute(
     output_format: &str,
     output_path: String,
     ignore: String,
+    daemon: bool,
 ) -> Result<()> {
+    if daemon {
+        return watch_via_daemon(path, severity, output_format.to_string(), output_path, ignore).await;
+    }
+
     let mut renderer = TerminalRenderer::new();
 
     // 验证项目路径
@@ -201,4 +206,117 @@ async fn generate_and_save_sarif(
     let sarif_json = converter.convert_to_json(&inputs)?;
     tokio::fs::write(output_path, sarif_json).await?;
     Ok(())
+}
+
+/// 通过守护进程的增量扫描实现 watch 模式
+///
+/// 利用 daemon 的 content-hash 缓存，每次轮询自动增量扫描。
+/// 无变更时 1ms 返回，有变更时只扫描变更文件。
+async fn watch_via_daemon(
+    path: String,
+    severity: Option<String>,
+    output_format: String,
+    output_path: String,
+    _ignore: String,
+) -> Result<()> {
+    let mut renderer = TerminalRenderer::new();
+
+    let project_path = std::path::Path::new(&path);
+    if !project_path.exists() {
+        renderer.error(&format!("项目路径不存在: {}", path));
+        return Err(miette::miette!("项目路径不存在"));
+    }
+
+    // 确保守护进程运行
+    if !ctx_audit_daemon::client::DaemonClient::is_running().await {
+        renderer.info("守护进程未运行，正在启动...");
+        crate::commands::daemon::start(None).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    let mut client = ctx_audit_daemon::client::DaemonClient::connect().await
+        .map_err(|e| miette::miette!("连接守护进程失败: {}", e))?;
+
+    renderer.info(&format!("[Watch] 通过守护进程监控: {}", path));
+    renderer.info(&format!("[Watch] 输出: {} ({})", output_path, output_format));
+    renderer.info("[Watch] 按 Ctrl+C 停止");
+
+    // 初始扫描
+    let mut last_count: i64 = -1;
+    let check_interval = std::time::Duration::from_secs(3);
+
+    loop {
+        tokio::time::sleep(check_interval).await;
+
+        let response = client.scan(
+            path.clone(),
+            false,
+            severity.clone(),
+            None,
+        ).await;
+
+        match response {
+            Ok(ctx_audit_daemon::protocol::Response::ScanResult { findings, duration_ms, .. }) => {
+                let count = findings.len() as i64;
+
+                if count != last_count {
+                    let diff = if last_count >= 0 { count - last_count } else { count };
+                    let diff_str = if diff > 0 { format!("+{}", diff) } else { format!("{}", diff) };
+
+                    renderer.success(&format!(
+                        "[Watch] 扫描完成: {} 个漏洞 ({}) — 耗时 {}ms",
+                        count, diff_str, duration_ms
+                    ));
+
+                    // 保存结果
+                    let content = match output_format.as_str() {
+                        "sarif" => {
+                            let converter = deepaudit_core::sarif::SarifConverter::new();
+                            let inputs: Vec<deepaudit_core::sarif::FindingInput> = findings.iter()
+                                .filter_map(|f| serde_json::from_value(f.clone()).ok())
+                                .map(|f: deepaudit_core::Finding| deepaudit_core::sarif::FindingInput {
+                                    id: Some(f.finding_id),
+                                    title: Some(f.vuln_type.clone()),
+                                    description: f.description,
+                                    severity: f.severity,
+                                    category: f.vuln_type,
+                                    cwe_id: None,
+                                    file_path: f.file_path,
+                                    start_line: f.line_start as u32,
+                                    end_line: Some(f.line_end as u32),
+                                    start_column: None,
+                                    end_column: None,
+                                    code_snippet: None,
+                                    recommendation: None,
+                                    status: "detected".to_string(),
+                                    verification_status: None,
+                                    discovered_by: Some(f.detector),
+                                    code_flows: None,
+                                    fix_suggestions: None,
+                                    confidence: None,
+                                }).collect();
+                            converter.convert_to_json(&inputs).unwrap_or_default()
+                        }
+                        "json" => serde_json::to_string_pretty(&findings).unwrap_or_default(),
+                        _ => serde_json::to_string_pretty(&findings).unwrap_or_default(),
+                    };
+
+                    if let Err(e) = tokio::fs::write(&output_path, &content).await {
+                        renderer.error(&format!("[Watch] 写入失败: {}", e));
+                    }
+
+                    last_count = count;
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                renderer.error(&format!("[Watch] 扫描失败: {}", e));
+                // 尝试重连
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if let Ok(c) = ctx_audit_daemon::client::DaemonClient::connect().await {
+                    client = c;
+                }
+            }
+        }
+    }
 }
