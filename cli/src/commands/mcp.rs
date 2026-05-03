@@ -14,6 +14,14 @@ use ctx_audit_daemon::protocol::{Request, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use deepaudit_core::scanning::{Finding, scan_directory, scan_directory_deep};
+use deepaudit_core::ast_api::ASTParser;
+use deepaudit_core::taint::{AstTaintAnalyzer, CrossFileTaintAnalyzer};
+use deepaudit_core::attack_surface::{AttackSurfaceMapper, AttackSurface, RiskPatternScanner, RiskPatternMatch};
+use deepaudit_core::rules::model::Rule;
+use deepaudit_core::rules::taint_model::TaintRuleSet;
+use deepaudit_core::rules::model::RuleSet;
+
 // ── MCP Protocol Types ──────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -338,9 +346,9 @@ async fn tool_security_scan(args: &Value) -> Value {
     let pattern = args.get("pattern").and_then(|v| v.as_str()).map(String::from);
 
     let result = if deep {
-        deepaudit_core::scan_directory_deep(path).await
+        scan_directory_deep(path).await
     } else {
-        deepaudit_core::scan_directory(path).await
+        scan_directory(path).await
     };
 
     match result {
@@ -426,7 +434,7 @@ async fn tool_scan_file(args: &Value) -> Value {
             result.insert("total_lines".into(), serde_json::json!(code.lines().count()));
 
             // Taint analysis
-            let mut taint_analyzer = deepaudit_core::AstTaintAnalyzer::new();
+            let mut taint_analyzer = AstTaintAnalyzer::new();
             let flows = taint_analyzer.analyze_file(path, &code);
             if !flows.is_empty() {
                 result.insert("taint_flows".into(), serde_json::json!(
@@ -499,7 +507,7 @@ async fn tool_get_taint_path(args: &Value) -> Value {
         Err(e) => return error_response(&format!("Failed to read file: {}", e)),
     };
 
-    let mut analyzer = deepaudit_core::AstTaintAnalyzer::new();
+    let mut analyzer = AstTaintAnalyzer::new();
     let mut flows = analyzer.analyze_file(path, &code);
 
     // Apply filters
@@ -569,7 +577,7 @@ async fn tool_get_data_flow(args: &Value) -> Value {
         Err(e) => return error_response(&format!("Failed to read file: {}", e)),
     };
 
-    let mut parser = deepaudit_core::ASTParser::new();
+    let mut parser = ASTParser::new();
     let path_buf = std::path::PathBuf::from(file_path);
 
     // Extract assignments and calls
@@ -608,7 +616,7 @@ async fn tool_get_data_flow(args: &Value) -> Value {
         .collect();
 
     // Check if variable is tainted
-    let mut taint_analyzer = deepaudit_core::AstTaintAnalyzer::new();
+    let mut taint_analyzer = AstTaintAnalyzer::new();
     let flows = taint_analyzer.analyze_file(path, &code);
     let taint_status: Vec<Value> = flows.iter()
         .filter(|f| f.source.symbol == variable || f.path.iter().any(|n| n.symbol == variable))
@@ -643,7 +651,7 @@ async fn tool_check_sanitizer(args: &Value) -> Value {
         None => return error_response("Missing required parameter: func_name"),
     };
 
-    let analyzer = deepaudit_core::AstTaintAnalyzer::new();
+    let analyzer = AstTaintAnalyzer::new();
 
     // Check against sanitizer patterns
     let matches: Vec<Value> = analyzer.sanitizer_patterns().iter()
@@ -688,7 +696,7 @@ async fn tool_list_sources(args: &Value) -> Value {
         Err(e) => return error_response(&format!("Failed to read file: {}", e)),
     };
 
-    let analyzer = deepaudit_core::AstTaintAnalyzer::new();
+    let analyzer = AstTaintAnalyzer::new();
     let mut detected_sources: Vec<Value> = Vec::new();
 
     for (line_idx, line) in code.lines().enumerate() {
@@ -738,7 +746,7 @@ async fn tool_list_sinks(args: &Value) -> Value {
         Err(e) => return error_response(&format!("Failed to read file: {}", e)),
     };
 
-    let analyzer = deepaudit_core::AstTaintAnalyzer::new();
+    let analyzer = AstTaintAnalyzer::new();
     let mut detected_sinks: Vec<Value> = Vec::new();
 
     for (line_idx, line) in code.lines().enumerate() {
@@ -786,7 +794,7 @@ async fn tool_cross_file_analysis(args: &Value) -> Value {
     }
 
     // Local fallback
-    let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+    let mut analyzer = CrossFileTaintAnalyzer::new();
     let result = analyzer.analyze_project(std::path::Path::new(project_path));
 
     let cross_file_flows: Vec<Value> = result.taint_flows.iter()
@@ -840,7 +848,7 @@ async fn tool_get_call_graph(args: &Value) -> Value {
     }
 
     // Local fallback: build call graph from CrossFileTaintAnalyzer
-    let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+    let mut analyzer = CrossFileTaintAnalyzer::new();
     let result = analyzer.analyze_project(std::path::Path::new(project_path));
 
     let nodes: Vec<Value> = result.call_graph.nodes.values()
@@ -957,7 +965,7 @@ fn get_sanitizer_descriptions() -> Vec<(String, String)> {
                         continue;
                     }
                     if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(rule_set) = serde_yaml::from_str::<deepaudit_core::TaintRuleSet>(&content) {
+                        if let Ok(rule_set) = serde_yaml::from_str::<TaintRuleSet>(&content) {
                             for san in &rule_set.sanitizers {
                                 result.push((san.pattern.clone(), san.description.clone()));
                             }
@@ -989,7 +997,7 @@ fn text_response(text: &str) -> Value {
 
 // ── Formatting ──────────────────────────────────────────
 
-fn format_security_findings(findings: &[deepaudit_core::Finding]) -> String {
+fn format_security_findings(findings: &[Finding]) -> String {
     if findings.is_empty() {
         return "No security vulnerabilities found.".to_string();
     }
@@ -1088,7 +1096,7 @@ async fn tool_get_attack_surface(args: &Value) -> Value {
         return error_response(&format!("Project path not found: {}", project_path));
     }
 
-    let surface = deepaudit_core::AttackSurfaceMapper::map_project(path);
+    let surface = AttackSurfaceMapper::map_project(path);
 
     // 过滤低风险入口点
     let filtered_entries: Vec<Value> = surface.entry_points.iter()
@@ -1170,10 +1178,10 @@ async fn tool_analyze_risk_patterns(args: &Value) -> Value {
     }
 
     // 获取攻击面
-    let surface = deepaudit_core::AttackSurfaceMapper::map_project(path);
+    let surface = AttackSurfaceMapper::map_project(path);
 
     // 创建风险模式扫描器
-    let mut scanner = deepaudit_core::RiskPatternScanner::new(path);
+    let mut scanner = RiskPatternScanner::new(path);
 
     // 可选: 过滤特定 pattern IDs
     let requested_ids: Option<Vec<String>> = args.get("pattern_ids")
@@ -1281,9 +1289,9 @@ async fn tool_add_custom_rule(args: &Value) -> Value {
     match rule_type {
         "pattern" => {
             // 尝试解析为 RuleSet 或单个 Rule
-            let validation_result = if let Ok(rs) = serde_yaml::from_value::<deepaudit_core::RuleSet>(yaml_value.clone()) {
+            let validation_result = if let Ok(rs) = serde_yaml::from_value::<RuleSet>(yaml_value.clone()) {
                 Ok((rs.name.clone(), rs.rules.len(), "ruleset"))
-            } else if let Ok(rule) = serde_yaml::from_value::<deepaudit_core::Rule>(yaml_value.clone()) {
+            } else if let Ok(rule) = serde_yaml::from_value::<Rule>(yaml_value.clone()) {
                 // 验证必填字段
                 if rule.id.is_empty() {
                     return error_response("Pattern rule missing required field: id");
@@ -1312,7 +1320,7 @@ async fn tool_add_custom_rule(args: &Value) -> Value {
             }
         }
         "taint" => {
-            match serde_yaml::from_value::<deepaudit_core::TaintRuleSet>(yaml_value.clone()) {
+            match serde_yaml::from_value::<TaintRuleSet>(yaml_value.clone()) {
                 Ok(ts) => {
                     if ts.kind != "taint-rules" {
                         return error_response(&format!(

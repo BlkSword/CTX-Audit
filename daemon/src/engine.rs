@@ -20,9 +20,9 @@ use std::time::Instant;
 use anyhow::Result;
 use tokio::sync::RwLock;
 
-use deepaudit_core::Finding;
-use deepaudit_core::Scanner;
-use deepaudit_core::RegexScanner;
+use deepaudit_core::ast_api::{ASTEngine, ASTParser, QueryEngine, Symbol};
+use deepaudit_core::scanning::{Finding, Scanner, RegexScanner, scan_directory_deep_with_rules, scan_directory_with_rules};
+use deepaudit_core::taint::{AstTaintAnalyzer, TaintFlow, CrossFileTaintAnalyzer};
 use deepaudit_core::watcher::{FileSnapshot, DeltaResult};
 
 // ────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ struct ProjectScanCache {
 
 pub struct AnalysisEngine {
     /// AST 索引引擎: project_path → ASTEngine
-    ast_engines: RwLock<HashMap<String, Arc<deepaudit_core::ASTEngine>>>,
+    ast_engines: RwLock<HashMap<String, Arc<ASTEngine>>>,
     /// 扫描缓存: project_path → ProjectScanCache
     scan_caches: RwLock<HashMap<String, RwLock<ProjectScanCache>>>,
     /// 规则加载时间戳：rules_dir → (load_time, rule_count)
@@ -231,10 +231,10 @@ impl AnalysisEngine {
         self.log_rules_status(path, rules_dir.as_deref()).await;
 
         let findings = if deep {
-            deepaudit_core::scan_directory_deep_with_rules(path, rules_dir.as_deref(), None).await
+            scan_directory_deep_with_rules(path, rules_dir.as_deref(), None).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         } else {
-            deepaudit_core::scan_directory_with_rules(path, rules_dir.as_deref(), None).await
+            scan_directory_with_rules(path, rules_dir.as_deref(), None).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         };
 
@@ -291,7 +291,7 @@ impl AnalysisEngine {
         /// 最大文件大小 10MB，超过则跳过
         const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
-        let regex_scanner = deepaudit_core::RegexScanner::new();
+        let regex_scanner = RegexScanner::new();
         let mut all_findings = Vec::new();
 
         for file_path in files {
@@ -319,7 +319,7 @@ impl AnalysisEngine {
 
         // 如果 deep 模式，对有 findings 的文件做 taint 分析
         if deep && !all_findings.is_empty() {
-            let mut taint_analyzer = deepaudit_core::AstTaintAnalyzer::new();
+            let mut taint_analyzer = AstTaintAnalyzer::new();
             let files_with_findings: std::collections::HashSet<String> = all_findings.iter()
                 .map(|f| f.file_path.clone())
                 .collect();
@@ -357,10 +357,10 @@ impl AnalysisEngine {
 
     // ── 污点追踪 ──────────────────────────────────────
 
-    pub fn trace_taint(&self, file_path: &str) -> Result<Vec<deepaudit_core::TaintFlow>> {
+    pub fn trace_taint(&self, file_path: &str) -> Result<Vec<TaintFlow>> {
         let path = Path::new(file_path);
         let code = std::fs::read_to_string(path)?;
-        let mut analyzer = deepaudit_core::AstTaintAnalyzer::new();
+        let mut analyzer = AstTaintAnalyzer::new();
         let flows = analyzer.analyze_file(path, &code);
         Ok(flows)
     }
@@ -408,7 +408,7 @@ impl AnalysisEngine {
         result.insert("language".to_string(), json!(language));
 
         if show_symbols {
-            let mut parser = deepaudit_core::ASTParser::new();
+            let mut parser = ASTParser::new();
             match parser.parse_file(path, &code) {
                 Ok(_tree) => {
                     let calls = parser.extract_calls(path, &code);
@@ -426,14 +426,14 @@ impl AnalysisEngine {
         }
 
         if show_ast {
-            let mut parser = deepaudit_core::ASTParser::new();
+            let mut parser = ASTParser::new();
             match parser.parse_file(path, &code) {
                 Ok(_) => result.insert("ast_parsed".to_string(), json!(true)),
                 Err(e) => result.insert("ast_error".to_string(), json!(e)),
             };
         }
 
-        let mut taint_analyzer = deepaudit_core::AstTaintAnalyzer::new();
+        let mut taint_analyzer = AstTaintAnalyzer::new();
         let taint_flows = taint_analyzer.analyze_file(path, &code);
         result.insert("taint_flow_count".to_string(), json!(taint_flows.len()));
         if !taint_flows.is_empty() {
@@ -464,7 +464,7 @@ impl AnalysisEngine {
         // 使用项目级缓存目录，而非 temp
         let cache_dir = std::path::Path::new(project_path).join(".ctx-audit/cache/ast");
         let _ = std::fs::create_dir_all(&cache_dir);
-        let engine = Arc::new(deepaudit_core::ASTEngine::new(
+        let engine = Arc::new(ASTEngine::new(
             cache_dir.to_string_lossy().as_ref(),
         ));
         engine.use_repository(project_path);
@@ -533,7 +533,7 @@ impl AnalysisEngine {
     // ── 跨文件污点分析 ──────────────────────────────
 
     pub fn cross_file_analysis(&self, project_path: &str) -> Result<serde_json::Value> {
-        let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+        let mut analyzer = CrossFileTaintAnalyzer::new();
         let result = analyzer.analyze_project(std::path::Path::new(project_path));
 
         let summaries = analyzer.compute_function_summaries(std::path::Path::new(project_path));
