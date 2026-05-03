@@ -13,8 +13,12 @@ pub mod ast_taint;
 pub mod cross_file;
 pub mod cache;
 pub mod imports;
+pub mod alias;
+pub mod async_flow;
 pub mod attack_surface;
 
+pub use alias::{AccessPath, AliasMap};
+pub use async_flow::{CallbackTaintHint, CallbackHintType, detect_callback_hints};
 pub use taint::{
     TaintAnalyzer, TaintSource, TaintSink, TaintFlow, TaintResult,
     FlowLocation, FlowNode, FlowNodeType, PropagationStep, PropagationStepType,

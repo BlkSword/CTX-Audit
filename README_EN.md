@@ -240,6 +240,23 @@ ctx-audit config list
 
 Supports 12 languages: Python, JavaScript, TypeScript, Java, Rust, Go, C, C++, PHP, Ruby, JSX, TSX.
 
+### Dynamic Language Smart Tracking
+
+Taint tracking enhancements for Python, JavaScript, and TypeScript that solve "taint chain breaks" in dynamic languages:
+
+| Feature | Description |
+|---------|-------------|
+| AccessPath | Tracks variables as dotted paths (e.g., `req.body.name`) instead of flat strings |
+| AliasMap | Resolves variable aliases: `const y = x` inherits x's taint state |
+| Destructuring | `const { body } = req` → body inherits req.body's taint |
+| Property Access | `const x = obj.prop` → x aliases obj.prop |
+| await Expression | `const data = await resp.json()` → taint propagation continues |
+| Promise Chains | `.then(data => eval(data))` → data inherits chain's taint |
+| Callback Hints | `.forEach(item => ...)` and `.map(x => ...)` → parameter inherits taint |
+| TypeScript Types | `(req: HttpRequest)` → auto-identifies req as taint source |
+| Module Exports | `module.exports.handler = fn` and `exports.processData = fn` detection |
+| CommonJS Destructuring | `const { body } = require('express')` → named symbol extraction |
+
 ### Dependency Vulnerabilities (SCA)
 
 Queries known vulnerable dependencies via OSV API: npm (`package.json`), PyPI (`requirements.txt`), crates.io (`Cargo.lock`), Go (`go.sum`). Results cached locally for 24h to reduce network requests.
@@ -329,6 +346,8 @@ core/                     # Deterministic analysis engine
 │   ├── ast_taint.rs      # AST taint analyzer (CFG + worklist algorithm)
 │   ├── cross_file.rs     # Cross-file analysis (call graph + function summaries)
 │   ├── enhanced_dataflow.rs  # Enhanced data flow analysis
+│   ├── alias.rs          # AccessPath + AliasMap (dynamic language tracking)
+│   ├── async_flow.rs     # Promise chain + callback taint hints
 │   ├── attack_surface.rs # Attack surface mapping
 │   └── imports.rs        # Import resolution
 ├── scanner/              # Scanners
@@ -412,7 +431,7 @@ ctx-audit scan ./myproject --deep    # Automatically loads .ctx-audit/rules/
 
 ```bash
 cargo build --release        # Build (ctx-audit + ctx-audit-daemon)
-cargo test --workspace       # Run tests (123 tests)
+cargo test --workspace       # Run tests (155 tests)
 cargo fmt                    # Format
 cargo clippy                 # Lint
 ```
@@ -422,13 +441,15 @@ cargo clippy                 # Lint
 | Dimension | Status |
 |-----------|--------|
 | AST Taint Analysis | CFG + worklist algorithm, 12 languages, 30+ sanitizers |
+| Dynamic Language Tracking | AccessPath + AliasMap + destructuring + property access + await + Promise chains |
 | Cross-file Tracking | Call graph + function summaries + DFS path finding |
+| TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
 | Pattern Matching | 38 YAML rules covering 7 injection types + 6 languages |
 | SCA Scanner | OSV API, 4 ecosystems, local cache |
 | MCP Integration | 10 tools (3 coarse-grained + 7 fine-grained + 1 status) |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
-| Test Coverage | 123 tests |
+| Test Coverage | 155 tests |
 
 ## License
 

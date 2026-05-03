@@ -10,7 +10,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use crate::ast::parser::ASTParser;
-use crate::ast::symbol::{Assignment, CallInfo, FunctionBody};
+use crate::ast::symbol::{Assignment, CallInfo, FunctionBody, TypedParam};
+use crate::analysis::alias::{AliasMap, AccessPath, detect_all_aliases};
+use crate::analysis::async_flow::{self, CallbackTaintHint};
 use crate::analysis::enhanced_dataflow::{EdgeType, EnhancedFlowGraph, EnhancedNodeType};
 use crate::analysis::taint::{
     FlowLocation, FlowNode, FlowNodeType, PropagationStep, PropagationStepType, Severity,
@@ -153,14 +155,29 @@ impl AstTaintAnalyzer {
         // 1. 提取函数体（按函数粒度分析）
         let functions = self.ast_parser.extract_function_bodies(file_path, content);
 
+        // 2. 检测 Promise 链和回调模式
+        let callback_hints = async_flow::detect_callback_hints(content);
+
         if functions.is_empty() {
             // 如果没有提取到函数，对整个文件做分析
-            let flows = self.analyze_code(content, file_path, "");
+            let flows = self.analyze_code(content, file_path, "", &[], &callback_hints);
             all_flows.extend(flows);
         } else {
             // 按函数逐个分析
             for func in &functions {
-                let flows = self.analyze_code(&func.body_text, file_path, &func.name);
+                // 匹配此函数的回调提示
+                let func_hints: Vec<CallbackTaintHint> = callback_hints.iter()
+                    .filter(|h| h.callback_start_line >= func.start_line && h.callback_start_line <= func.end_line)
+                    .cloned()
+                    .collect();
+
+                let flows = self.analyze_code(
+                    &func.body_text,
+                    file_path,
+                    &func.name,
+                    &func.typed_params,
+                    &func_hints,
+                );
                 all_flows.extend(flows);
             }
         }
@@ -174,11 +191,12 @@ impl AstTaintAnalyzer {
         code: &str,
         file_path: &Path,
         function_name: &str,
+        typed_params: &[TypedParam],
+        callback_hints: &[CallbackTaintHint],
     ) -> Vec<TaintFlow> {
         let file_path_str = file_path.to_string_lossy().to_string();
 
         // 2. 用 AST 提取赋值和调用信息
-        // 为提取信息，创建临时文件
         let tmp_path = std::path::PathBuf::from(&file_path_str);
         let assignments = self.ast_parser.extract_assignments(&tmp_path, code);
         let calls = self.ast_parser.extract_calls(&tmp_path, code);
@@ -187,7 +205,7 @@ impl AstTaintAnalyzer {
         let cfg = EnhancedFlowGraph::from_code(code, &file_path_str, function_name);
 
         // 4. 前向污点传播
-        self.forward_taint_analysis(&cfg, &assignments, &calls, code, &file_path_str)
+        self.forward_taint_analysis(&cfg, &assignments, &calls, code, &file_path_str, typed_params, callback_hints)
     }
 
     /// 前向污点传播（worklist 算法）
@@ -198,6 +216,8 @@ impl AstTaintAnalyzer {
         calls: &[CallInfo],
         code: &str,
         file_path: &str,
+        typed_params: &[TypedParam],
+        callback_hints: &[CallbackTaintHint],
     ) -> Vec<TaintFlow> {
         let mut flows = Vec::new();
 
@@ -213,6 +233,9 @@ impl AstTaintAnalyzer {
             .iter()
             .map(|c| (c.line, c))
             .collect();
+
+        // 从赋值中构建别名映射
+        let alias_map = self.build_alias_map(assignments);
 
         // 初始化 worklist
         let mut worklist: VecDeque<usize> = VecDeque::new();
@@ -231,19 +254,18 @@ impl AstTaintAnalyzer {
             // Transfer function
             match node.node_type {
                 EnhancedNodeType::Entry => {
-                    // 入口节点：检查是否在函数参数中有污点源
-                    self.check_entry_sources(node, code, &mut new_state);
+                    self.check_entry_sources(node, code, &mut new_state, &alias_map, typed_params, callback_hints);
                 }
 
                 EnhancedNodeType::Assignment => {
-                    if let Some(flow) = self.transfer_assignment(node, &assign_by_line, &call_by_line, &mut new_state, file_path) {
+                    if let Some(flow) = self.transfer_assignment(node, &assign_by_line, &call_by_line, &mut new_state, file_path, &alias_map) {
                         flows.push(flow);
                     }
                 }
 
                 EnhancedNodeType::Call => {
                     if let Some(flow) = self.transfer_call(
-                        node, &call_by_line, &mut new_state, file_path,
+                        node, &call_by_line, &mut new_state, file_path, &alias_map,
                     ) {
                         flows.push(flow);
                     }
@@ -274,6 +296,18 @@ impl AstTaintAnalyzer {
         }
 
         flows
+    }
+
+    /// 从赋值列表构建别名映射
+    fn build_alias_map(&self, assignments: &[Assignment]) -> AliasMap {
+        let mut map = AliasMap::new();
+        for assign in assignments {
+            let detection = detect_all_aliases(assign);
+            for (var, path) in detection.new_aliases {
+                map.add_alias(&var, path);
+            }
+        }
+        map
     }
 
     /// Join 前驱节点的污点状态（union）
@@ -310,25 +344,92 @@ impl AstTaintAnalyzer {
         joined
     }
 
+    /// 已知的请求类型模式 — TypeScript 类型注解匹配
+    const REQUEST_TYPE_PATTERNS: &'static [&'static str] = &[
+        "HttpRequest", "Request", "IncomingMessage",
+        "HttpContext", "ServletRequest", "HttpServletRequest",
+        "Express.Request", "FastifyRequest", "Koa.Request",
+        "NextRequest", "NextApiRequest",
+        "EventHttpRequest", "ServerRequest",
+    ];
+
     /// 检查入口节点是否有污点源
     fn check_entry_sources(
         &self,
         node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
         code: &str,
         state: &mut HashMap<String, TaintInfo>,
+        alias_map: &AliasMap,
+        typed_params: &[TypedParam],
+        callback_hints: &[CallbackTaintHint],
     ) {
         let lines: Vec<&str> = code.lines().collect();
 
-        // 上下文感知：检测代码中是否使用了框架请求对象变量名
-        let request_aliases = ["req", "request", "ctx", "context", "c", "conn", "w", "res", "response", "input"];
-        let mut detected_aliases: Vec<&str> = Vec::new();
-        for alias in &request_aliases {
-            if code.contains(alias) {
-                detected_aliases.push(alias);
+        // 1. 基于类型注解的参数污点源
+        for tp in typed_params {
+            if state.contains_key(&tp.name) {
+                continue;
+            }
+            if let Some(ref type_ann) = tp.type_annotation {
+                let type_lower = type_ann.to_lowercase();
+                let is_request_type = Self::REQUEST_TYPE_PATTERNS.iter().any(|pattern| {
+                    type_lower.contains(&pattern.to_lowercase())
+                });
+                if is_request_type {
+                    let line_num = code.lines().enumerate()
+                        .find(|(_, l)| l.contains(&tp.name))
+                        .map(|(i, _)| i + 1)
+                        .unwrap_or(1);
+                    state.insert(
+                        tp.name.clone(),
+                        TaintInfo {
+                            source_line: line_num,
+                            source_var: format!("{}: {}", tp.name, type_ann),
+                            sanitized: false,
+                            sanitizer: None,
+                            propagation_steps: vec![PropagationStep {
+                                step_type: PropagationStepType::DirectAssignment,
+                                from_var: None,
+                                to_var: Some(tp.name.clone()),
+                                line: line_num,
+                                code_snippet: Some(format!("param: {}", type_ann)),
+                                function_name: None,
+                            }],
+                        },
+                    );
+                }
             }
         }
 
-        // 在整个代码中查找污点源
+        // 2. 基于回调提示的参数污点
+        for hint in callback_hints {
+            if state.contains_key(&hint.param_name) {
+                continue;
+            }
+            let line_num = code.lines().enumerate()
+                .find(|(_, l)| l.contains(&hint.param_name))
+                .map(|(i, _)| i + 1)
+                .unwrap_or(1);
+            state.insert(
+                hint.param_name.clone(),
+                TaintInfo {
+                    source_line: line_num,
+                    source_var: format!("{} (callback param)", hint.param_name),
+                    sanitized: false,
+                    sanitizer: None,
+                    propagation_steps: vec![PropagationStep {
+                        step_type: PropagationStepType::CallPropagation,
+                        from_var: None,
+                        to_var: Some(hint.param_name.clone()),
+                        line: line_num,
+                        code_snippet: Some(format!("{} => ...", hint.param_name)),
+                        function_name: None,
+                    }],
+                },
+            );
+        }
+
+        // 3. 基于行扫描的污点源匹配
         for (line_idx, line) in lines.iter().enumerate() {
             let line_num = line_idx + 1;
             for source in &self.sources {
@@ -356,6 +457,43 @@ impl AstTaintAnalyzer {
                 }
             }
         }
+
+        // 4. 通过别名映射检测间接污点源
+        for (local_var, paths) in alias_map.entries() {
+            if state.contains_key(local_var) {
+                continue;
+            }
+            for alias_path in paths {
+                let path_str = alias_path.as_dotted();
+                for source in &self.sources {
+                    if source.matches(&path_str, "") {
+                        let var_line = code.lines().enumerate()
+                            .find(|(_, l)| l.contains(local_var.as_str()))
+                            .map(|(i, _)| i + 1)
+                            .unwrap_or(1);
+
+                        state.insert(
+                            local_var.clone(),
+                            TaintInfo {
+                                source_line: var_line,
+                                source_var: path_str.clone(),
+                                sanitized: false,
+                                sanitizer: None,
+                                propagation_steps: vec![PropagationStep {
+                                    step_type: PropagationStepType::FieldPropagation,
+                                    from_var: Some(alias_path.root().to_string()),
+                                    to_var: Some(local_var.clone()),
+                                    line: var_line,
+                                    code_snippet: Some(format!("{} = {}", local_var, path_str)),
+                                    function_name: None,
+                                }],
+                            },
+                        );
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// 赋值转移函数
@@ -366,6 +504,7 @@ impl AstTaintAnalyzer {
         call_by_line: &HashMap<usize, &CallInfo>,
         state: &mut HashMap<String, TaintInfo>,
         file_path: &str,
+        alias_map: &AliasMap,
     ) -> Option<TaintFlow> {
         // 从 AST 提取的赋值中查找匹配
         if let Some(assign) = assign_by_line.get(&node.start_line) {
@@ -375,14 +514,11 @@ impl AstTaintAnalyzer {
                 .unwrap_or(false)
                 || self.sanitizer_patterns.iter().any(|p| assign.source_expr.contains(p.as_str()));
 
-            // 检查右值是否引用了污点变量
-            let tainted_source_var = assign.source_vars.iter().find(|v| {
-                let info = state.get(v.as_str());
-                info.is_some() && !info.unwrap().sanitized
-            });
+            // 检查右值是否引用了污点变量（直接匹配 + 别名解析）
+            let tainted_source_var = self.find_tainted_var(&assign.source_vars, state, alias_map);
 
             if let Some(src_var) = tainted_source_var {
-                let src_info = state.get(src_var.as_str()).unwrap().clone();
+                let src_info = state.get(&src_var).unwrap().clone();
                 let mut steps = src_info.propagation_steps.clone();
                 steps.push(PropagationStep {
                     step_type: if is_sanitized {
@@ -397,31 +533,42 @@ impl AstTaintAnalyzer {
                     function_name: None,
                 });
 
-                state.insert(
-                    assign.target.clone(),
-                    TaintInfo {
-                        source_line: src_info.source_line,
-                        source_var: src_info.source_var.clone(),
-                        sanitized: is_sanitized,
-                        sanitizer: if is_sanitized {
-                            call_by_line.get(&assign.line).map(|c| c.callee.clone())
-                        } else {
-                            None
+                // 对 target 及其别名都标记污点
+                let mut targets_to_taint = vec![assign.target.clone()];
+                for alias_path in alias_map.resolve(&assign.target) {
+                    let dotted = alias_path.as_dotted();
+                    if !state.contains_key(&dotted) {
+                        targets_to_taint.push(dotted);
+                    }
+                }
+
+                for target in targets_to_taint {
+                    state.insert(
+                        target,
+                        TaintInfo {
+                            source_line: src_info.source_line,
+                            source_var: src_info.source_var.clone(),
+                            sanitized: is_sanitized,
+                            sanitizer: if is_sanitized {
+                                call_by_line.get(&assign.line).map(|c| c.callee.clone())
+                            } else {
+                                None
+                            },
+                            propagation_steps: steps.clone(),
                         },
-                        propagation_steps: steps,
-                    },
-                );
+                    );
+                }
 
                 // 即使是赋值节点，也检查右值是否直接包含 sink 调用
                 // 例如: result = exec(userInput) 中的 exec(
                 if !is_sanitized {
                     if let Some(sink) = self.find_matching_sink_in_expr(&assign.source_expr) {
                         let taint_info = state.get(assign.target.as_str())
-                            .or_else(|| state.get(src_var.as_str()))
+                            .or_else(|| state.get(&src_var))
                             .unwrap().clone();
                         return Some(self.build_taint_flow(
                             &taint_info,
-                            src_var,
+                            &src_var,
                             &self.extract_sink_name(&assign.source_expr),
                             &sink,
                             assign.line,
@@ -433,19 +580,18 @@ impl AstTaintAnalyzer {
                 }
             }
         } else {
-            // 回退到基于 node defs/uses 的分析
+            // 回退到基于 node defs/uses 的分析（也检查别名）
             let has_tainted_use = node.uses.iter().any(|u| {
-                let info = state.get(u.as_str());
-                info.is_some() && !info.unwrap().sanitized
+                self.is_var_tainted(u, state, alias_map)
             });
 
             if has_tainted_use && !node.defs.is_empty() {
                 let tainted_var = node.uses.iter().find(|u| {
-                    let info = state.get(u.as_str());
-                    info.is_some() && !info.unwrap().sanitized
-                }).unwrap();
+                    self.is_var_tainted(u, state, alias_map)
+                }).and_then(|u| self.resolve_tainted_var(u, state, alias_map))
+                  .unwrap_or_else(|| node.uses[0].clone());
 
-                let src_info = state.get(tainted_var.as_str()).unwrap().clone();
+                let src_info = state.get(&tainted_var).unwrap().clone();
                 for def in &node.defs {
                     let mut steps = src_info.propagation_steps.clone();
                     steps.push(PropagationStep {
@@ -480,31 +626,31 @@ impl AstTaintAnalyzer {
         call_by_line: &HashMap<usize, &CallInfo>,
         state: &mut HashMap<String, TaintInfo>,
         file_path: &str,
+        alias_map: &AliasMap,
     ) -> Option<TaintFlow> {
         let call = call_by_line.get(&node.start_line)?;
 
         // 1. 检查是否匹配 sink
         if let Some(sink) = self.find_matching_sink(&call.callee) {
-            // 检查参数是否包含污点变量
+            // 检查参数是否包含污点变量（直接 + 别名解析）
             let tainted_arg = call.arguments.iter().find(|arg| {
                 arg.referenced_vars.iter().any(|v| {
-                    state.contains_key(v.as_str()) && !state.get(v.as_str()).unwrap().sanitized
+                    self.is_var_tainted(v, state, alias_map)
                 })
             });
 
             if let Some(arg) = tainted_arg {
-                let tainted_var = arg.referenced_vars.iter().find(|v| {
-                    state.contains_key(v.as_str()) && !state.get(v.as_str()).unwrap().sanitized
-                }).unwrap();
+                let tainted_var = arg.referenced_vars.iter().find_map(|v| {
+                    self.resolve_tainted_var(v, state, alias_map)
+                }).unwrap_or_else(|| arg.referenced_vars[0].clone());
 
-                let taint_info = state.get(tainted_var.as_str()).unwrap();
+                let taint_info = state.get(&tainted_var)?;
 
                 // 数据类型推断：检查是否使用了参数化查询
                 let code_line = &node.code;
                 let is_parameterized = self.is_parameterized_query(&call.callee, code_line);
                 if is_parameterized {
-                    // 参数化查询：标记为已净化而非报告漏洞
-                    if let Some(info) = state.get_mut(tainted_var.as_str()) {
+                    if let Some(info) = state.get_mut(&tainted_var) {
                         info.sanitized = true;
                         info.sanitizer = Some("parameterized_query".to_string());
                     }
@@ -514,7 +660,7 @@ impl AstTaintAnalyzer {
                 // 构建污点流
                 return Some(self.build_taint_flow(
                     taint_info,
-                    tainted_var,
+                    &tainted_var,
                     &call.callee,
                     &sink,
                     call.line,
@@ -545,9 +691,6 @@ impl AstTaintAnalyzer {
                 }
             }
         }
-
-        // 3. 如果调用有返回值被赋值（x = func(tainted)），传播污点
-        // 这在 assignment 节点中处理
 
         None
     }
@@ -632,6 +775,75 @@ impl AstTaintAnalyzer {
     }
 
     // ===== 匹配辅助方法 =====
+
+    /// 检查变量是否被污染（直接匹配 + 别名解析）
+    fn is_var_tainted(&self, var: &str, state: &HashMap<String, TaintInfo>, alias_map: &AliasMap) -> bool {
+        // 直接匹配
+        if let Some(info) = state.get(var) {
+            return !info.sanitized;
+        }
+        // 通过别名解析：检查 var 的别名路径中是否有被污染的
+        for path in alias_map.resolve(var) {
+            if let Some(info) = state.get(path.root()) {
+                if !info.sanitized {
+                    return true;
+                }
+            }
+            let dotted = path.as_dotted();
+            if let Some(info) = state.get(&dotted) {
+                if !info.sanitized {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// 在变量列表中找到第一个被污染的变量名（可能是别名解析后的路径）
+    fn find_tainted_var(&self, vars: &[String], state: &HashMap<String, TaintInfo>, alias_map: &AliasMap) -> Option<String> {
+        for v in vars {
+            // 直接匹配
+            if let Some(info) = state.get(v.as_str()) {
+                if !info.sanitized {
+                    return Some(v.clone());
+                }
+            }
+            // 别名解析
+            for path in alias_map.resolve(v) {
+                let root = path.root().to_string();
+                if let Some(info) = state.get(&root) {
+                    if !info.sanitized {
+                        return Some(root);
+                    }
+                }
+                let dotted = path.as_dotted();
+                if let Some(info) = state.get(&dotted) {
+                    if !info.sanitized {
+                        return Some(dotted);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// 将变量名解析为实际的被污染变量名
+    fn resolve_tainted_var(&self, var: &str, state: &HashMap<String, TaintInfo>, alias_map: &AliasMap) -> Option<String> {
+        if let Some(info) = state.get(var) {
+            if !info.sanitized {
+                return Some(var.to_string());
+            }
+        }
+        for path in alias_map.resolve(var) {
+            let root = path.root().to_string();
+            if let Some(info) = state.get(&root) {
+                if !info.sanitized {
+                    return Some(root);
+                }
+            }
+        }
+        None
+    }
 
     fn find_matching_sink(&self, callee: &str) -> Option<&TaintSink> {
         self.sinks.iter().find(|sink| sink.matches(callee, ""))
@@ -873,7 +1085,7 @@ cursor.execute(query)
 "#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.py");
-        let flows = analyzer.analyze_code(code, &path, "test_func");
+        let flows = analyzer.analyze_code(code, &path, "test_func", &[], &[]);
 
         // 应该检测到 SQL 注入
         assert!(!flows.is_empty(), "Should detect SQL injection");
@@ -888,7 +1100,7 @@ cursor.execute(query)
 result = exec(userInput)"#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.py");  // Use Python syntax for simpler parsing
-        let flows = analyzer.analyze_code(code, &path, "handler");
+        let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
 
         assert!(!flows.is_empty(), "Should detect command injection: found {} flows", flows.len());
     }
@@ -903,7 +1115,7 @@ cursor.execute(query)
 "#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.py");
-        let flows = analyzer.analyze_code(code, &path, "test_func");
+        let flows = analyzer.analyze_code(code, &path, "test_func", &[], &[]);
 
         // sanitizer 后的路径应该置信度低
         if !flows.is_empty() {
@@ -920,7 +1132,7 @@ result = execute(name)
 "#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.py");
-        let flows = analyzer.analyze_code(code, &path, "safe_func");
+        let flows = analyzer.analyze_code(code, &path, "safe_func", &[], &[]);
 
         assert!(flows.is_empty(), "Should not report false positive for non-tainted data");
     }
@@ -933,7 +1145,7 @@ result = parseModel(payload)
 output = eval(result)"#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.tsx");
-        let flows = analyzer.analyze_code(code, &path, "serverAction");
+        let flows = analyzer.analyze_code(code, &path, "serverAction", &[], &[]);
 
         // 应该检测到反序列化 + eval 两条路径
         assert!(!flows.is_empty(), "Should detect deserialization or eval sink: found {} flows", flows.len());
@@ -952,7 +1164,7 @@ output = eval(result)"#;
 db.execute(userInput)"#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.tsx");
-        let flows = analyzer.analyze_code(code, &path, "action");
+        let flows = analyzer.analyze_code(code, &path, "action", &[], &[]);
 
         assert!(!flows.is_empty(), "Should detect formData.get as taint source");
     }
@@ -966,7 +1178,7 @@ query = "SELECT * FROM users WHERE id=" + userInput
 cursor.execute(query)"#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.py");
-        let flows = analyzer.analyze_code(code, &path, "getUser");
+        let flows = analyzer.analyze_code(code, &path, "getUser", &[], &[]);
 
         assert!(!flows.is_empty(), "Should detect SQL injection via getParameter");
     }
@@ -978,7 +1190,7 @@ result = exec(userInput)
 print(result)"#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.js");
-        let flows = analyzer.analyze_code(code, &path, "run");
+        let flows = analyzer.analyze_code(code, &path, "run", &[], &[]);
 
         assert!(!flows.is_empty(), "Should detect command injection via process.argv");
     }
@@ -990,7 +1202,7 @@ f = open("/var/data/" + filename)
 content = f.read()"#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("views.py");
-        let flows = analyzer.analyze_code(code, &path, "download");
+        let flows = analyzer.analyze_code(code, &path, "download", &[], &[]);
 
         assert!(!flows.is_empty(), "Should detect Python path traversal");
     }
@@ -1001,13 +1213,13 @@ content = f.read()"#;
 element.innerHTML(userInput)"#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("test.js");
-        let flows = analyzer.analyze_code(code, &path, "render");
+        let flows = analyzer.analyze_code(code, &path, "render", &[], &[]);
 
         // innerHTML as function call form might not match, try eval as fallback
         if flows.is_empty() {
             let code2 = r#"userInput = req.query.comment
 eval(userInput)"#;
-            let flows2 = analyzer.analyze_code(code2, &path, "render");
+            let flows2 = analyzer.analyze_code(code2, &path, "render", &[], &[]);
             assert!(!flows2.is_empty(), "Should detect code injection via eval with user input");
         }
     }
@@ -1018,7 +1230,7 @@ eval(userInput)"#;
 response = requests.get(url)"#;
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("proxy.py");
-        let flows = analyzer.analyze_code(code, &path, "fetch_url");
+        let flows = analyzer.analyze_code(code, &path, "fetch_url", &[], &[]);
 
         assert!(!flows.is_empty(), "Should detect SSRF via requests.get");
     }
@@ -1057,7 +1269,7 @@ response = requests.get(url)"#;
         let path = std::path::PathBuf::from("broken.js");
 
         // Should not panic on malformed code
-        let flows = analyzer.analyze_code("{{{}}}", &path, "test");
+        let flows = analyzer.analyze_code("{{{}}}", &path, "test", &[], &[]);
         // No assertion on flows, just ensure no crash
         let _ = flows;
     }
@@ -1066,7 +1278,7 @@ response = requests.get(url)"#;
     fn test_empty_code() {
         let mut analyzer = AstTaintAnalyzer::new();
         let path = std::path::PathBuf::from("empty.py");
-        let flows = analyzer.analyze_code("", &path, "test");
+        let flows = analyzer.analyze_code("", &path, "test", &[], &[]);
         assert!(flows.is_empty());
     }
 
@@ -1078,5 +1290,43 @@ response = requests.get(url)"#;
         let flows = analyzer.analyze_file(&path, code);
         // No functions → no taint flows
         assert!(flows.is_empty());
+    }
+
+    // ===== Alias-aware taint propagation tests =====
+
+    #[test]
+    fn test_alias_simple_variable_chain() {
+        // 使用和已有测试相同的 source/sink 模式
+        let code = r#"userInput = request.GET['id']
+data = userInput
+query = "SELECT * FROM users WHERE id=" + data
+cursor.execute(query)"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("test.py");
+        let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
+        assert!(!flows.is_empty(), "Should detect SQLi through alias chain (userInput→data→query): found {} flows", flows.len());
+    }
+
+    #[test]
+    fn test_alias_property_access() {
+        // x = request.args (property access) → tainted
+        let code = r#"x = request.args.get('name')
+query = "SELECT * FROM users WHERE name=" + x
+cursor.execute(query)"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("test.py");
+        let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
+        assert!(!flows.is_empty(), "Should detect SQLi through property access: found {} flows", flows.len());
+    }
+
+    #[test]
+    fn test_alias_no_false_positive_non_tainted_prop() {
+        // x = obj.prop, obj is NOT tainted → should not report
+        let code = r#"x = obj.prop
+eval(x)"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("test.py");
+        let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
+        assert!(flows.is_empty(), "Should not report for non-tainted property access");
     }
 }

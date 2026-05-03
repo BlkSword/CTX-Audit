@@ -957,6 +957,37 @@ impl ASTParser {
             }
         }
 
+        // JS/TS const/let/var 声明（支持解构）
+        // tree-sitter: lexical_declaration > variable_declarator > [name, value]
+        if matches!(kind, "lexical_declaration" | "variable_declaration") {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "variable_declarator" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if let Some(value_node) = child.child_by_field_name("value") {
+                            let target = content[name_node.byte_range()].to_string();
+                            let source_expr = content[value_node.byte_range()].to_string();
+                            let source_vars = Self::collect_identifiers(&value_node, content);
+
+                            results.push(Assignment {
+                                target,
+                                target_node: NodeInfo {
+                                    line: name_node.start_position().row + 1,
+                                    column: name_node.start_position().column,
+                                    byte_start: name_node.start_byte(),
+                                    byte_end: name_node.end_byte(),
+                                },
+                                source_expr,
+                                source_vars,
+                                line: child.start_position().row + 1,
+                                column: child.start_position().column,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // 递归遍历子节点
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -1081,37 +1112,40 @@ impl ASTParser {
         );
 
         if is_function {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = content[name_node.byte_range()].to_string();
-                let params = if let Some(params_node) = node.child_by_field_name("parameters") {
-                    Self::extract_param_names(&params_node, content)
-                } else {
-                    Vec::new()
-                };
+            let name = node.child_by_field_name("name")
+                .map(|n| content[n.byte_range()].to_string())
+                .unwrap_or_else(|| format!("<anonymous@{}>", node.start_position().row + 1));
 
-                let body_node = node.child_by_field_name("body");
-                let (start_line, end_line, body_text) = if let Some(body) = body_node {
-                    (
-                        body.start_position().row + 1,
-                        body.end_position().row + 1,
-                        content[body.byte_range()].to_string(),
-                    )
-                } else {
-                    (
-                        node.start_position().row + 1,
-                        node.end_position().row + 1,
-                        content[node.byte_range()].to_string(),
-                    )
-                };
+            let typed_params = if let Some(params_node) = node.child_by_field_name("parameters") {
+                Self::extract_typed_params(&params_node, content)
+            } else {
+                Vec::new()
+            };
+            let params: Vec<String> = typed_params.iter().map(|tp| tp.name.clone()).collect();
 
-                results.push(FunctionBody {
-                    name,
-                    params,
-                    start_line,
-                    end_line,
-                    body_text,
-                });
-            }
+            let body_node = node.child_by_field_name("body");
+            let (start_line, end_line, body_text) = if let Some(body) = body_node {
+                (
+                    body.start_position().row + 1,
+                    body.end_position().row + 1,
+                    content[body.byte_range()].to_string(),
+                )
+            } else {
+                (
+                    node.start_position().row + 1,
+                    node.end_position().row + 1,
+                    content[node.byte_range()].to_string(),
+                )
+            };
+
+            results.push(FunctionBody {
+                name,
+                params,
+                start_line,
+                end_line,
+                body_text,
+                typed_params,
+            });
         }
 
         let mut cursor = node.walk();
@@ -1121,6 +1155,15 @@ impl ASTParser {
     }
 
     fn extract_param_names(params_node: &Node, content: &str) -> Vec<String> {
+        Self::extract_typed_params(params_node, content)
+            .into_iter()
+            .map(|tp| tp.name)
+            .collect()
+    }
+
+    /// 提取带类型注解的参数列表
+    fn extract_typed_params(params_node: &Node, content: &str) -> Vec<crate::ast::symbol::TypedParam> {
+        use crate::ast::symbol::TypedParam;
         let mut params = Vec::new();
         let mut cursor = params_node.walk();
         for child in params_node.children(&mut cursor) {
@@ -1146,12 +1189,57 @@ impl ASTParser {
                         text.split(':').next().unwrap_or(&text).trim().to_string()
                     });
 
+                // 提取类型注解
+                let type_annotation = Self::extract_type_annotation(&child, content);
+
                 if !name.is_empty() && name != "self" && name != "this" {
-                    params.push(name);
+                    params.push(TypedParam { name, type_annotation });
                 }
             }
         }
         params
+    }
+
+    /// 从参数节点中提取类型注解
+    fn extract_type_annotation(param_node: &Node, content: &str) -> Option<String> {
+        // TypeScript: required_parameter → identifier : type_annotation → type_identifier
+        // Python: typed_identifier → name : type
+        let text = content[param_node.byte_range()].to_string();
+
+        // 查找 type_annotation 子节点
+        let mut cursor = param_node.walk();
+        for child in param_node.children(&mut cursor) {
+            if child.kind() == "type_annotation" {
+                // type_annotation 节点内部有 type_identifier 或 predefined_type
+                let mut inner_cursor = child.walk();
+                for inner_child in child.children(&mut inner_cursor) {
+                    if matches!(inner_child.kind(), "type_identifier" | "predefined_type" | "generic_type" | "union_type" | "array_type") {
+                        return Some(content[inner_child.byte_range()].to_string());
+                    }
+                }
+                // 如果没有子类型节点，取整个 type_annotation 内容（去掉冒号）
+                let ann_text = content[child.byte_range()].to_string();
+                let cleaned = ann_text.trim_start_matches(':').trim();
+                if !cleaned.is_empty() {
+                    return Some(cleaned.to_string());
+                }
+            }
+        }
+
+        // 回退: 文本中包含冒号（Python typed_identifier 等）
+        if text.contains(':') {
+            let parts: Vec<&str> = text.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                let type_str = parts[1].trim();
+                // 清理: 去掉默认值等
+                let type_str = type_str.split('=').next().unwrap_or(type_str).trim();
+                if !type_str.is_empty() && type_str.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false) {
+                    return Some(type_str.to_string());
+                }
+            }
+        }
+
+        None
     }
 
     /// 从 AST 节点中收集所有标识符（变量引用）
