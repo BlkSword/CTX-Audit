@@ -227,6 +227,79 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["project_path"]
             }),
         },
+        // ── 攻击面 + 风险模式 + 动态规则 ────────────
+        ToolDefinition {
+            name: "get_attack_surface",
+            description: "Map the attack surface of a project. Returns entry points with risk scores, trust boundaries, high-risk files, per-entry-point risk factors (validation status, data sources, deserialization reach), and detected frameworks (Spring, Express, Next.js, Flask, Django). Essential for understanding attack vectors and prioritizing security analysis.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "Path to the project root directory"
+                    },
+                    "min_risk_score": {
+                        "type": "number",
+                        "description": "Minimum risk score to include (0.0-1.0, default: 0.3)",
+                        "default": 0.3
+                    },
+                    "include_details": {
+                        "type": "boolean",
+                        "description": "Include detailed risk factors per entry point (default: true)",
+                        "default": true
+                    }
+                },
+                "required": ["project_path"]
+            }),
+        },
+        ToolDefinition {
+            name: "analyze_risk_patterns",
+            description: "Analyze a project for high-level architectural risk patterns that may indicate 0-day vulnerability candidates. Combines entry point detection with data flow heuristics (source → sink + missing validation). Returns matched risk patterns with evidence, affected entry points, and confidence scores. Patterns include: unvalidated input to deserialization, unauthenticated privileged operations, external data to code execution, prototype pollution vectors, and missing input validation.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "Path to the project root directory"
+                    },
+                    "pattern_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Specific risk pattern IDs to check (optional, checks all by default)"
+                    },
+                    "min_severity": {
+                        "type": "string",
+                        "description": "Minimum severity filter: critical, high, medium, low, info",
+                        "enum": ["critical", "high", "medium", "low", "info"]
+                    }
+                },
+                "required": ["project_path"]
+            }),
+        },
+        ToolDefinition {
+            name: "add_custom_rule",
+            description: "Add a custom security rule (pattern or taint) at runtime. Validates the YAML content against the rule schema and, if valid, writes it to the project's .ctx-audit/rules/ directory. The rule becomes effective on the next scan or daemon reload (30s). Use this to create targeted rules for investigating potential 0-day vulnerabilities discovered during analysis.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "rule_content": {
+                        "type": "string",
+                        "description": "YAML content of the rule to add"
+                    },
+                    "rule_type": {
+                        "type": "string",
+                        "description": "Type of rule",
+                        "enum": ["pattern", "taint"]
+                    },
+                    "validate_only": {
+                        "type": "boolean",
+                        "description": "Validate without writing to disk (default: false)",
+                        "default": false
+                    }
+                },
+                "required": ["rule_content", "rule_type"]
+            }),
+        },
     ]
 }
 
@@ -245,6 +318,10 @@ async fn handle_tool_call(name: &str, arguments: &Value) -> Value {
         "list_sinks" => tool_list_sinks(arguments).await,
         "cross_file_analysis" => tool_cross_file_analysis(arguments).await,
         "get_call_graph" => tool_get_call_graph(arguments).await,
+        // 攻击面 + 风险模式 + 动态规则
+        "get_attack_surface" => tool_get_attack_surface(arguments).await,
+        "analyze_risk_patterns" => tool_analyze_risk_patterns(arguments).await,
+        "add_custom_rule" => tool_add_custom_rule(arguments).await,
         _ => serde_json::json!({
             "content": [{"type": "text", "text": format!("Unknown tool: {}", name)}],
             "isError": true
@@ -994,6 +1071,304 @@ pub async fn run_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+// ── 攻击面 + 风险模式 + 动态规则工具 ──────────────────────
+
+async fn tool_get_attack_surface(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return error_response("Missing required parameter: project_path"),
+    };
+    let min_risk_score = args.get("min_risk_score").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+    let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    let path = std::path::Path::new(project_path);
+    if !path.exists() {
+        return error_response(&format!("Project path not found: {}", project_path));
+    }
+
+    let surface = deepaudit_core::AttackSurfaceMapper::map_project(path);
+
+    // 过滤低风险入口点
+    let filtered_entries: Vec<Value> = surface.entry_points.iter()
+        .filter(|ep| ep.risk_score >= min_risk_score)
+        .map(|ep| {
+            let mut entry = serde_json::json!({
+                "file_path": ep.file_path,
+                "line": ep.line,
+                "entry_type": format!("{:?}", ep.entry_type),
+                "route": ep.route,
+                "http_method": ep.http_method,
+                "auth_required": ep.auth_required,
+                "risk_score": (ep.risk_score * 100.0).round() / 100.0,
+                "function_name": ep.function_name,
+            });
+            if include_details {
+                entry["context"] = serde_json::json!({
+                    "data_sources": ep.context.data_sources,
+                    "has_sanitization": ep.context.has_sanitization,
+                    "has_input_validation": ep.context.has_input_validation,
+                    "reaches_deserialization": ep.context.reaches_deserialization,
+                    "reaches_privileged_op": ep.context.reaches_privileged_op,
+                    "risk_factors": ep.context.risk_factors,
+                });
+            }
+            entry
+        })
+        .collect();
+
+    let trust_bounds: Vec<Value> = surface.trust_boundaries.iter()
+        .map(|tb| serde_json::json!({
+            "file_path": tb.file_path,
+            "line": tb.line,
+            "description": tb.description,
+            "source": tb.source,
+        }))
+        .collect();
+
+    let summary = format!(
+        "Attack Surface: {} entry points ({} filtered ≥{:.1}), {} trust boundaries, {} high-risk files. Frameworks: {}",
+        surface.stats.total_entry_points,
+        filtered_entries.len(),
+        min_risk_score,
+        surface.trust_boundaries.len(),
+        surface.high_risk_files.len(),
+        surface.stats.detected_frameworks.join(", "),
+    );
+
+    let details = serde_json::json!({
+        "entry_points": filtered_entries,
+        "trust_boundaries": trust_bounds,
+        "high_risk_files": surface.high_risk_files,
+        "stats": {
+            "files_scanned": surface.stats.files_scanned,
+            "total_entry_points": surface.stats.total_entry_points,
+            "unauthenticated_count": surface.stats.unauthenticated_count,
+            "high_risk_file_count": surface.stats.high_risk_file_count,
+            "detected_frameworks": surface.stats.detected_frameworks,
+        },
+    });
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "text", "text": serde_json::to_string_pretty(&details).unwrap_or_default()},
+        ]
+    })
+}
+
+async fn tool_analyze_risk_patterns(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return error_response("Missing required parameter: project_path"),
+    };
+
+    let path = std::path::Path::new(project_path);
+    if !path.exists() {
+        return error_response(&format!("Project path not found: {}", project_path));
+    }
+
+    // 获取攻击面
+    let surface = deepaudit_core::AttackSurfaceMapper::map_project(path);
+
+    // 创建风险模式扫描器
+    let mut scanner = deepaudit_core::RiskPatternScanner::new(path);
+
+    // 可选: 过滤特定 pattern IDs
+    let requested_ids: Option<Vec<String>> = args.get("pattern_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+
+    // 扫描
+    let mut matches = scanner.scan(&surface, path);
+
+    // 过滤
+    if let Some(ref ids) = requested_ids {
+        matches.retain(|m| ids.contains(&m.pattern_id));
+    }
+
+    let severity_order = |s: &str| match s {
+        "critical" => 0, "high" => 1, "medium" => 2, "low" => 3, "info" => 4, _ => 5,
+    };
+    if let Some(min_sev) = args.get("min_severity").and_then(|v| v.as_str()) {
+        let min_rank = severity_order(min_sev);
+        matches.retain(|m| {
+            let sev = format!("{:?}", m.severity).to_lowercase();
+            severity_order(&sev) <= min_rank
+        });
+    }
+
+    let summary = format!(
+        "Risk Pattern Analysis: {} matches found across {} entry points. Patterns checked: {}.",
+        matches.len(),
+        surface.stats.total_entry_points,
+        scanner.pattern_count(),
+    );
+
+    let match_details: Vec<Value> = matches.iter().map(|m| {
+        let evidence: Vec<Value> = m.evidence.iter().take(5).map(|e| serde_json::json!({
+            "file": e.file_path,
+            "line": e.line,
+            "matched": e.matched_pattern,
+            "code": e.code_snippet,
+            "type": e.context_type,
+        })).collect();
+
+        let affected: Vec<Value> = m.affected_entries.iter().map(|a| serde_json::json!({
+            "file": a.file_path,
+            "line": a.line,
+            "type": a.entry_type,
+            "function": a.function_name,
+            "route": a.route,
+        })).collect();
+
+        serde_json::json!({
+            "pattern_id": m.pattern_id,
+            "pattern_name": m.pattern_name,
+            "severity": format!("{:?}", m.severity).to_lowercase(),
+            "confidence": m.confidence,
+            "cwe": m.cwe,
+            "risk_factors": m.risk_factors,
+            "affected_entries": affected,
+            "evidence": evidence,
+        })
+    }).collect();
+
+    let output = serde_json::json!({
+        "total_matches": matches.len(),
+        "patterns_checked": scanner.pattern_count(),
+        "available_pattern_ids": scanner.pattern_ids(),
+        "matches": match_details,
+    });
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "text", "text": serde_json::to_string_pretty(&output).unwrap_or_default()},
+        ]
+    })
+}
+
+async fn tool_add_custom_rule(args: &Value) -> Value {
+    let rule_content = match args.get("rule_content").and_then(|v| v.as_str()) {
+        Some(c) => c,
+        None => return error_response("Missing required parameter: rule_content"),
+    };
+    let rule_type = match args.get("rule_type").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return error_response("Missing required parameter: rule_type"),
+    };
+    let validate_only = args.get("validate_only").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // 大小限制
+    if rule_content.len() > 65536 {
+        return error_response("Rule content too large (max 64KB)");
+    }
+
+    // 安全检查: 拒绝 YAML merge keys
+    if rule_content.contains("<<:") {
+        return error_response("Rule content contains forbidden YAML merge key (<<:)");
+    }
+
+    // 解析 YAML
+    let yaml_value: serde_yaml::Value = match serde_yaml::from_str(rule_content) {
+        Ok(v) => v,
+        Err(e) => return error_response(&format!("Invalid YAML: {}", e)),
+    };
+
+    // 按类型验证
+    match rule_type {
+        "pattern" => {
+            // 尝试解析为 RuleSet 或单个 Rule
+            let validation_result = if let Ok(rs) = serde_yaml::from_value::<deepaudit_core::RuleSet>(yaml_value.clone()) {
+                Ok((rs.name.clone(), rs.rules.len(), "ruleset"))
+            } else if let Ok(rule) = serde_yaml::from_value::<deepaudit_core::Rule>(yaml_value.clone()) {
+                // 验证必填字段
+                if rule.id.is_empty() {
+                    return error_response("Pattern rule missing required field: id");
+                }
+                if rule.name.is_empty() {
+                    return error_response("Pattern rule missing required field: name");
+                }
+                if rule.pattern.is_none() && rule.patterns.is_none() && rule.query.is_none() {
+                    return error_response("Pattern rule must have at least one of: pattern, patterns, query");
+                }
+                Ok((rule.name.clone(), 1, "rule"))
+            } else {
+                Err("Could not parse as RuleSet or Rule. Check YAML structure.".to_string())
+            };
+
+            match validation_result {
+                Ok((name, count, kind)) => {
+                    if validate_only {
+                        return text_response(&format!(
+                            "Validation OK: {} '{}' with {} rule(s)", kind, name, count
+                        ));
+                    }
+                    write_rule_file(rule_content, rule_type, &extract_rule_id(&yaml_value))
+                }
+                Err(e) => error_response(&format!("Validation failed: {}", e)),
+            }
+        }
+        "taint" => {
+            match serde_yaml::from_value::<deepaudit_core::TaintRuleSet>(yaml_value.clone()) {
+                Ok(ts) => {
+                    if ts.kind != "taint-rules" {
+                        return error_response(&format!(
+                            "Taint rule must have kind='taint-rules', got '{}'", ts.kind
+                        ));
+                    }
+                    if ts.sources.is_empty() && ts.sinks.is_empty() {
+                        return error_response("Taint rule must have at least one source or sink");
+                    }
+                    if validate_only {
+                        return text_response(&format!(
+                            "Validation OK: taint rule '{}' with {} sources, {} sinks, {} sanitizers",
+                            ts.name, ts.sources.len(), ts.sinks.len(), ts.sanitizers.len()
+                        ));
+                    }
+                    write_rule_file(rule_content, rule_type, &slugify(&ts.name))
+                }
+                Err(e) => error_response(&format!("Failed to parse taint rule: {}", e)),
+            }
+        }
+        _ => error_response(&format!("Unknown rule_type: '{}'. Must be 'pattern' or 'taint'", rule_type)),
+    }
+}
+
+fn write_rule_file(content: &str, rule_type: &str, id_base: &str) -> Value {
+    let rules_dir = std::path::Path::new(".ctx-audit/rules");
+    if let Err(e) = std::fs::create_dir_all(rules_dir) {
+        return error_response(&format!("Failed to create rules directory: {}", e));
+    }
+
+    let filename = format!("llm-generated-{}.yaml", id_base);
+    let filepath = rules_dir.join(&filename);
+
+    if let Err(e) = std::fs::write(&filepath, content) {
+        return error_response(&format!("Failed to write rule file: {}", e));
+    }
+
+    text_response(&format!(
+        "Rule written to {} (type: {}). Daemon will hot-reload within 30s.",
+        filepath.display(), rule_type
+    ))
+}
+
+fn extract_rule_id(yaml: &serde_yaml::Value) -> String {
+    yaml.get("id")
+        .and_then(|v| v.as_str())
+        .map(slugify)
+        .unwrap_or_else(|| "unnamed".to_string())
+}
+
+fn slugify(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
 }
 
 async fn handle_request(method: String, params: &Value) -> Value {

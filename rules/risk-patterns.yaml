@@ -1,0 +1,109 @@
+# CTX-Audit Risk Pattern Definitions
+# Architectural-level risk patterns for 0-day vulnerability discovery
+# These patterns combine entry point detection with data flow heuristics
+
+patterns:
+  # ── Critical: Unvalidated Input to Deserialization ──────────────
+  - id: "unvalidated-input-to-deserialization"
+    name: "Unvalidated Input to Deserialization"
+    description: "External input reaches deserialization without schema validation. This is the core pattern behind vulnerabilities like React2Shell (CVE-2025-55182)."
+    severity: critical
+    cwe: "CWE-502"
+    source_conditions:
+      - pattern: '(?:formData\.(get|getAll)|request\.(json|text|formData)\s*\(|searchParams\.(get|getAll)|req\.(body|query|params)|request\.(POST|GET|body)|getParameter|@RequestBody)'
+        languages: ["*"]
+        context: "function"
+    sink_conditions:
+      - pattern: '(?:JSON\.parse|parseModel|resolveModel|parseModelString|deserialize|unserialize|objectMapper\.readValue|pickle\.loads)'
+        languages: ["*"]
+        context: "file"
+    missing_patterns:
+      - pattern: '(?:zod|joi|yup|ajv|\.safeParse|Schema|schema\.|validate\s*\()'
+        languages: ["*"]
+        context: "function"
+    risk_factors:
+      - "no_input_validation"
+      - "reaches_deserialization"
+
+  # ── Critical: Unauthenticated Endpoint to Privileged Operation ──
+  - id: "unauthenticated-endpoint-to-privileged-op"
+    name: "Unauthenticated Endpoint to Privileged Operation"
+    description: "An endpoint without authentication requirements performs file I/O, database writes, or command execution. Attackers can exploit these without credentials."
+    severity: critical
+    cwe: "CWE-284"
+    source_conditions:
+      - pattern: '(?:app\.(get|post|put|delete|patch)\s*\(|router\.(get|post|put|delete|patch)\s*\(|@RequestMapping|@GetMapping|@PostMapping|export\s+async\s+function\s+\w+\s*\(|path\s*\(|@app\.route)'
+        languages: ["*"]
+        context: "function"
+    sink_conditions:
+      - pattern: '(?:fs\.|writeFile|readFile|\.execute\s*\(|\.query\s*\(|exec\s*\(|system\s*\(|child_process|subprocess|DB::|database\.|eval\s*\()'
+        languages: ["*"]
+        context: "file"
+    missing_patterns:
+      - pattern: '(?:auth|jwt|token|passport|@PreAuthorize|@Secured|@login_required|@permission_required|middleware)'
+        languages: ["*"]
+        context: "function"
+    risk_factors:
+      - "no_auth"
+      - "reaches_privileged_op"
+
+  # ── Critical: External Data to Code Execution ──────────────────
+  - id: "external-data-to-code-execution"
+    name: "External Data to Code Execution"
+    description: "User-controlled data flows into code execution functions without sanitization. This enables injection attacks like XSS, SQL injection, and command injection."
+    severity: critical
+    cwe: "CWE-94"
+    source_conditions:
+      - pattern: '(?:formData\.(get|getAll)|searchParams\.(get|getAll)|request\.(json|text)|req\.(body|query|params)|request\.(POST|GET|body)|@RequestParam|getParameter)'
+        languages: ["*"]
+        context: "function"
+    sink_conditions:
+      - pattern: '(?:eval\s*\(|new\s+Function\s*\(|child_process\.exec|vm\.runInContext|vm\.runInNewContext|vm\.compileFunction|dangerouslySetInnerHTML)'
+        languages: ["*"]
+        context: "file"
+    missing_patterns:
+      - pattern: '(?:sanitize|escape|encode|DOMPurify|bleach|htmlspecialchars|parameterized|prepared\s+statement)'
+        languages: ["*"]
+        context: "function"
+    risk_factors:
+      - "no_sanitization"
+      - "code_execution"
+
+  # ── High: Prototype Pollution Vector ────────────────────────────
+  - id: "prototype-pollution-vector"
+    name: "Prototype Pollution Vector"
+    description: "External data flows into object merge/clone operations without prototype filtering. This can lead to prototype pollution, enabling privilege escalation and RCE."
+    severity: high
+    cwe: "CWE-1321"
+    source_conditions:
+      - pattern: '(?:Object\.assign|merge\s*\(|deepClone|deepMerge|lodash.*merge|_\.extend|_\.merge|structuredClone)'
+        languages: ["*"]
+        context: "function"
+    sink_conditions:
+      - pattern: '(?:__proto__|constructor\s*\[\s*|constructor\.prototype|prototype\s*\[|Object\.defineProperty|Object\.setPrototypeOf)'
+        languages: ["*"]
+        context: "file"
+    missing_patterns:
+      - pattern: '(?:JSON\.parse\(JSON\.stringify|hasOwnProperty|Object\.create\(null\)|Object\.freeze|prototype\s*===)'
+        languages: ["*"]
+        context: "file"
+    risk_factors:
+      - "prototype_pollution_risk"
+
+  # ── Medium: Missing Input Schema Validation ────────────────────
+  - id: "missing-input-schema-validation"
+    name: "Missing Input Schema Validation"
+    description: "API endpoints, Server Actions, or route handlers accept external data without schema validation (zod, joi, yup, ajv). Missing validation increases the attack surface for injection and logic flaws."
+    severity: medium
+    cwe: "CWE-20"
+    source_conditions:
+      - pattern: '(?:export\s+async\s+function\s+(GET|POST|PUT|DELETE|PATCH)|app\.(get|post|put|delete|patch)\s*\(|router\.(get|post|put|delete|patch)\s*\(|@RequestMapping|@PostMapping|@app\.route|path\s*\()'
+        languages: ["*"]
+        context: "function"
+    sink_conditions: []
+    missing_patterns:
+      - pattern: '(?:zod|joi|yup|ajv|\.safeParse|\.parse\s*\(|validate\s*\(|Schema|schema\.|@Valid|@Validated)'
+        languages: ["*"]
+        context: "file"
+    risk_factors:
+      - "no_input_validation"

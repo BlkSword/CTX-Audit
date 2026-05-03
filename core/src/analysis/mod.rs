@@ -16,6 +16,7 @@ pub mod imports;
 pub mod alias;
 pub mod async_flow;
 pub mod attack_surface;
+pub mod risk_patterns;
 
 pub use alias::{AccessPath, AliasMap};
 pub use async_flow::{CallbackTaintHint, CallbackHintType, detect_callback_hints};
@@ -51,5 +52,9 @@ pub use cache::{
 pub use imports::{ImportResolver, SymbolReference, CrossFileReference};
 pub use attack_surface::{
     AttackSurfaceMapper, AttackSurface, AttackSurfaceStats,
-    EntryPoint, EntryType, TrustBoundary,
+    EntryPoint, EntryType, TrustBoundary, EntryContext,
+};
+pub use risk_patterns::{
+    RiskPattern, RiskPatternMatch, RiskPatternScanner,
+    AffectedEntry, EvidenceSnippet, PatternCondition,
 };
