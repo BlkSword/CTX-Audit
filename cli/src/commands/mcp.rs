@@ -11,8 +11,6 @@ use std::io::{self, BufRead, Write};
 
 use ctx_audit_daemon::client::DaemonClient;
 use ctx_audit_daemon::protocol::{Request, Response};
-use deepaudit_core::{AstTaintAnalyzer, ASTParser, CrossFileTaintAnalyzer, Finding, TaintRuleSet};
-use deepaudit_core::{scan_directory, scan_directory_deep};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -263,9 +261,9 @@ async fn tool_security_scan(args: &Value) -> Value {
     let pattern = args.get("pattern").and_then(|v| v.as_str()).map(String::from);
 
     let result = if deep {
-        scan_directory_deep(path).await
+        deepaudit_core::scan_directory_deep(path).await
     } else {
-        scan_directory(path).await
+        deepaudit_core::scan_directory(path).await
     };
 
     match result {
@@ -351,7 +349,7 @@ async fn tool_scan_file(args: &Value) -> Value {
             result.insert("total_lines".into(), serde_json::json!(code.lines().count()));
 
             // Taint analysis
-            let mut taint_analyzer = AstTaintAnalyzer::new();
+            let mut taint_analyzer = deepaudit_core::AstTaintAnalyzer::new();
             let flows = taint_analyzer.analyze_file(path, &code);
             if !flows.is_empty() {
                 result.insert("taint_flows".into(), serde_json::json!(
@@ -424,7 +422,7 @@ async fn tool_get_taint_path(args: &Value) -> Value {
         Err(e) => return error_response(&format!("Failed to read file: {}", e)),
     };
 
-    let mut analyzer = AstTaintAnalyzer::new();
+    let mut analyzer = deepaudit_core::AstTaintAnalyzer::new();
     let mut flows = analyzer.analyze_file(path, &code);
 
     // Apply filters
@@ -494,7 +492,7 @@ async fn tool_get_data_flow(args: &Value) -> Value {
         Err(e) => return error_response(&format!("Failed to read file: {}", e)),
     };
 
-    let mut parser = ASTParser::new();
+    let mut parser = deepaudit_core::ASTParser::new();
     let path_buf = std::path::PathBuf::from(file_path);
 
     // Extract assignments and calls
@@ -533,7 +531,7 @@ async fn tool_get_data_flow(args: &Value) -> Value {
         .collect();
 
     // Check if variable is tainted
-    let mut taint_analyzer = AstTaintAnalyzer::new();
+    let mut taint_analyzer = deepaudit_core::AstTaintAnalyzer::new();
     let flows = taint_analyzer.analyze_file(path, &code);
     let taint_status: Vec<Value> = flows.iter()
         .filter(|f| f.source.symbol == variable || f.path.iter().any(|n| n.symbol == variable))
@@ -568,7 +566,7 @@ async fn tool_check_sanitizer(args: &Value) -> Value {
         None => return error_response("Missing required parameter: func_name"),
     };
 
-    let analyzer = AstTaintAnalyzer::new();
+    let analyzer = deepaudit_core::AstTaintAnalyzer::new();
 
     // Check against sanitizer patterns
     let matches: Vec<Value> = analyzer.sanitizer_patterns().iter()
@@ -613,7 +611,7 @@ async fn tool_list_sources(args: &Value) -> Value {
         Err(e) => return error_response(&format!("Failed to read file: {}", e)),
     };
 
-    let analyzer = AstTaintAnalyzer::new();
+    let analyzer = deepaudit_core::AstTaintAnalyzer::new();
     let mut detected_sources: Vec<Value> = Vec::new();
 
     for (line_idx, line) in code.lines().enumerate() {
@@ -663,7 +661,7 @@ async fn tool_list_sinks(args: &Value) -> Value {
         Err(e) => return error_response(&format!("Failed to read file: {}", e)),
     };
 
-    let analyzer = AstTaintAnalyzer::new();
+    let analyzer = deepaudit_core::AstTaintAnalyzer::new();
     let mut detected_sinks: Vec<Value> = Vec::new();
 
     for (line_idx, line) in code.lines().enumerate() {
@@ -711,7 +709,7 @@ async fn tool_cross_file_analysis(args: &Value) -> Value {
     }
 
     // Local fallback
-    let mut analyzer = CrossFileTaintAnalyzer::new();
+    let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
     let result = analyzer.analyze_project(std::path::Path::new(project_path));
 
     let cross_file_flows: Vec<Value> = result.taint_flows.iter()
@@ -765,7 +763,7 @@ async fn tool_get_call_graph(args: &Value) -> Value {
     }
 
     // Local fallback: build call graph from CrossFileTaintAnalyzer
-    let mut analyzer = CrossFileTaintAnalyzer::new();
+    let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
     let result = analyzer.analyze_project(std::path::Path::new(project_path));
 
     let nodes: Vec<Value> = result.call_graph.nodes.values()
@@ -882,7 +880,7 @@ fn get_sanitizer_descriptions() -> Vec<(String, String)> {
                         continue;
                     }
                     if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(rule_set) = serde_yaml::from_str::<TaintRuleSet>(&content) {
+                        if let Ok(rule_set) = serde_yaml::from_str::<deepaudit_core::TaintRuleSet>(&content) {
                             for san in &rule_set.sanitizers {
                                 result.push((san.pattern.clone(), san.description.clone()));
                             }
@@ -914,7 +912,7 @@ fn text_response(text: &str) -> Value {
 
 // ── Formatting ──────────────────────────────────────────
 
-fn format_security_findings(findings: &[Finding]) -> String {
+fn format_security_findings(findings: &[deepaudit_core::Finding]) -> String {
     if findings.is_empty() {
         return "No security vulnerabilities found.".to_string();
     }

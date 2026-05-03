@@ -15,7 +15,6 @@ use deepaudit_core::scan_directory_deep;
 use deepaudit_core::scan_directory_with_rules;
 use deepaudit_core::scan_directory_deep_with_rules;
 use deepaudit_core::sarif::{SarifConverter, FindingInput};
-use deepaudit_core::Finding;
 
 /// 执行 scan 命令
 pub async fn execute(
@@ -139,7 +138,7 @@ async fn scan_local(
 /// 保存扫描结果到文件
 async fn save_scan_results(
     output_path: &str,
-    findings: &[Finding],
+    findings: &[deepaudit_core::Finding],
     format: &str,
     renderer: &mut TerminalRenderer,
 ) -> miette::Result<()> {
@@ -173,7 +172,7 @@ async fn save_scan_results(
 }
 
 /// 转换为 SARIF 格式 — 使用统一 SarifConverter
-fn to_sarif(findings: &[Finding]) -> String {
+fn to_sarif(findings: &[deepaudit_core::Finding]) -> String {
     let converter = SarifConverter::new();
     let inputs: Vec<FindingInput> = findings.iter().map(|f| FindingInput {
         id: Some(f.finding_id.clone()),
@@ -201,7 +200,7 @@ fn to_sarif(findings: &[Finding]) -> String {
 }
 
 /// 转换为 Markdown 格式
-fn to_markdown(findings: &[Finding]) -> String {
+fn to_markdown(findings: &[deepaudit_core::Finding]) -> String {
     let mut md = String::from("# 扫描报告\n\n");
     md.push_str(&format!("**生成时间**: {}\n\n", chrono::Utc::now().to_rfc3339()));
     md.push_str(&format!("**漏洞数量**: {}\n\n", findings.len()));
@@ -230,7 +229,7 @@ fn to_markdown(findings: &[Finding]) -> String {
 }
 
 /// 转换为文本格式
-fn to_text(findings: &[Finding]) -> String {
+fn to_text(findings: &[deepaudit_core::Finding]) -> String {
     let mut text = String::from("扫描报告\n");
     text.push_str(&format!("生成时间: {}\n", chrono::Utc::now().to_rfc3339()));
     text.push_str(&format!("漏洞数量: {}\n\n", findings.len()));
@@ -300,7 +299,7 @@ async fn scan_via_daemon(
 
             if let Some(output_path) = output_path {
                 // 将 JSON values 转回 Finding 结构用于格式化输出
-                let parsed_findings: Vec<Finding> = findings.iter()
+                let parsed_findings: Vec<deepaudit_core::Finding> = findings.iter()
                     .filter_map(|v| serde_json::from_value(v.clone()).ok())
                     .collect();
 
@@ -310,8 +309,8 @@ async fn scan_via_daemon(
 
                 let content = match output_format {
                     "sarif" => {
-                        let converter = SarifConverter::new();
-                        let inputs: Vec<FindingInput> = parsed_findings.iter().map(|f| FindingInput {
+                        let converter = deepaudit_core::sarif::SarifConverter::new();
+                        let inputs: Vec<deepaudit_core::sarif::FindingInput> = parsed_findings.iter().map(|f| deepaudit_core::sarif::FindingInput {
                             id: Some(f.finding_id.clone()),
                             title: Some(f.vuln_type.clone()),
                             description: f.description.clone(),
