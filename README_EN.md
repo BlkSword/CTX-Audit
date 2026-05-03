@@ -2,9 +2,11 @@
 
 <div align="center">
 
-**Security Analysis Daemon**
+**AI-Native Code Security Scanner**
 
-**Rust Deterministic Analysis Engine — AST Taint Tracking + Pattern Matching + SCA**
+**Data Flow Tracking · Cross-File Analysis · LLM-Powered 0-Day Discovery**
+
+Not just regex matching — traces every data path from user input to dangerous functions. Connect Claude Code via MCP, let AI find vulnerabilities that rules can't catch.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -17,9 +19,11 @@
 
 ## What is CTX-Audit
 
-CTX-Audit is a Rust-based code security analysis daemon. It runs a deterministic analysis engine (AST taint analysis, cross-file tracking, pattern matching, SCA) as a persistent background service, providing high-performance security analysis capabilities to consumers such as CLI, IDE, and AI agents via IPC.
+One command to scan 30+ vulnerability types across 12 languages and major frameworks (Next.js, React, Spring, Express, Django, and more).
 
-**Core Design**: The engine stays resident in memory, with AST indexes and scan results cached and reused. Repeated scans use content-hash incremental detection — unchanged code returns results in **~1ms**.
+**How?** Not keyword matching — CTX-Audit parses your code with AST, traces the full data path from user input (source) to dangerous functions (sink), across files and function boundaries. The engine stays resident in memory with incremental caching — unchanged code returns in **~1ms**.
+
+**AI Collaboration:** Connect Claude Code (or any LLM) via MCP protocol. The AI reads your attack surface, analyzes data flows, discovers risk patterns that rules miss, and even generates targeted rules on the fly — evolving from "detect known vulnerabilities" to "discover unknown ones".
 
 ```
 ┌───────────────────┐     IPC (TCP)     ┌──────────────────────────────┐
