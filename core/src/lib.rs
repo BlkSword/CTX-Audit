@@ -22,7 +22,7 @@ pub use scanner::regex_scanner::RegexScanner;
 pub use scanner::sca_scanner::ScaScanner;
 
 // 规则系统
-pub use rules::{loader::load_rules_from_dir, model::Rule, scanner::RuleScanner};
+pub use rules::{loader::load_rules_from_dir, model::Rule, model::RuleSet, scanner::RuleScanner};
 pub use rules::taint_model::TaintRuleSet;
 pub use rules::taint_loader::load_taint_rules_from_dir;
 
@@ -40,7 +40,8 @@ pub use analysis::{
     FunctionSummary, CrossFileTaintAnalyzer,
     ContextAssembler, FileContext, CallerInfo, CalleeInfo, TrustBoundaryInfo,
     AttackSurfaceMapper, AttackSurface, AttackSurfaceStats,
-    EntryPoint, EntryType, TrustBoundary,
+    EntryPoint, EntryType, TrustBoundary, EntryContext,
+    RiskPatternScanner, RiskPatternMatch, RiskPattern, PatternCondition,
 };
 
 pub mod error {

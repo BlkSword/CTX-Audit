@@ -145,7 +145,7 @@ ctx-audit daemon stop                        # 停止
 ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 ```
 
-通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **10 个工具**：
+通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **13 个工具**：
 
 **粗粒度工具**：
 
@@ -166,6 +166,14 @@ ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 | `list_sinks` | 列出文件中所有污点汇 |
 | `cross_file_analysis` | 运行跨文件污点分析（调用图 + 函数摘要） |
 | `get_call_graph` | 获取项目函数调用图 |
+
+**LLM 协作工具（0-day 发现支持）**：
+
+| 工具 | 说明 |
+|------|------|
+| `get_attack_surface` | 映射项目攻击面（入口点、风险评分、信任边界、框架检测） |
+| `analyze_risk_patterns` | 分析架构级风险模式（未验证输入→反序列化、未认证→特权操作等） |
+| `add_custom_rule` | 动态注入自定义规则（LLM 生成 YAML 规则实时生效） |
 
 Claude Code 配置示例（`.claude/settings.json`）：
 
@@ -446,7 +454,7 @@ cargo clippy                 # 代码检查
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
 | 模式匹配规则 | 38 个 YAML 规则，覆盖 7 类注入 + 6 语言 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存 |
-| MCP 集成 | 10 个工具（3 粗粒度 + 7 细粒度 + 1 状态查询） |
+| MCP 集成 | 13 个工具（3 粗粒度 + 7 细粒度 + 3 LLM 协作） |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
 | 测试覆盖 | 155 个测试 |

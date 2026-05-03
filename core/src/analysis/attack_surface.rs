@@ -6,6 +6,7 @@
 //! 识别项目中的入口点（HTTP endpoint、CLI handler 等），
 //! 构建信任边界，计算风险评分，用于优先化安全分析。
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -25,6 +26,29 @@ pub enum EntryType {
     FileUpload,
     /// WebSocket 端点
     WebSocket,
+    /// Next.js Server Action（'use server' 导出函数）
+    ServerAction,
+    /// Next.js App Router Route Handler（route.ts 导出函数）
+    RscEndpoint,
+}
+
+/// 入口点上下文分析
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EntryContext {
+    /// 数据源类型（如 "formData", "searchParams"）
+    pub data_sources: Vec<String>,
+    /// 是否检测到净化器
+    pub has_sanitization: bool,
+    /// 检测到的净化器函数名
+    pub sanitizers: Vec<String>,
+    /// 是否有输入校验（zod/joi/yup/ajv）
+    pub has_input_validation: bool,
+    /// 数据是否到达反序列化操作
+    pub reaches_deserialization: bool,
+    /// 数据是否到达特权操作（文件IO、数据库、命令执行）
+    pub reaches_privileged_op: bool,
+    /// 风险因子标签
+    pub risk_factors: Vec<String>,
 }
 
 /// 入口点
@@ -48,6 +72,9 @@ pub struct EntryPoint {
     pub risk_score: f32,
     /// 函数/方法名
     pub function_name: Option<String>,
+    /// 上下文分析结果
+    #[serde(default)]
+    pub context: EntryContext,
 }
 
 /// 信任边界
@@ -87,6 +114,9 @@ pub struct AttackSurfaceStats {
     pub unauthenticated_count: usize,
     /// 高风险文件数
     pub high_risk_file_count: usize,
+    /// 检测到的框架
+    #[serde(default)]
+    pub detected_frameworks: Vec<String>,
 }
 
 /// 攻击面映射器
@@ -98,6 +128,7 @@ impl AttackSurfaceMapper {
         let mut entry_points = Vec::new();
         let mut trust_boundaries = Vec::new();
         let mut files_scanned = 0;
+        let mut detected_frameworks: HashSet<String> = HashSet::new();
 
         // 遍历项目文件
         if let Ok(entries) = walk_project(project_path) {
@@ -115,18 +146,40 @@ impl AttackSurfaceMapper {
                     match ext {
                         "java" => {
                             let (eps, tbs) = Self::analyze_java_file(&file_str, &content);
+                            let has_endpoints = !eps.is_empty();
                             entry_points.extend(eps);
                             trust_boundaries.extend(tbs);
+                            if has_endpoints {
+                                detected_frameworks.insert("Spring".to_string());
+                            }
                         }
                         "js" | "ts" | "jsx" | "tsx" => {
-                            let (eps, tbs) = Self::analyze_js_file(&file_str, &content);
-                            entry_points.extend(eps);
-                            trust_boundaries.extend(tbs);
+                            // 先检测 Next.js 模式
+                            if Self::is_nextjs_file(&file_str, &content) {
+                                let (eps, tbs) = Self::analyze_nextjs_file(&file_str, &content);
+                                entry_points.extend(eps);
+                                trust_boundaries.extend(tbs);
+                                detected_frameworks.insert("Next.js".to_string());
+                            } else {
+                                let (eps, tbs) = Self::analyze_js_file(&file_str, &content);
+                                let has_endpoints = !eps.is_empty();
+                                entry_points.extend(eps);
+                                trust_boundaries.extend(tbs);
+                                if has_endpoints {
+                                    detected_frameworks.insert("Express".to_string());
+                                }
+                            }
                         }
                         "py" => {
                             let (eps, tbs) = Self::analyze_python_file(&file_str, &content);
                             entry_points.extend(eps);
                             trust_boundaries.extend(tbs);
+                            if content.contains("flask") || content.contains("Flask") {
+                                detected_frameworks.insert("Flask".to_string());
+                            }
+                            if content.contains("django") || content.contains("Django") {
+                                detected_frameworks.insert("Django".to_string());
+                            }
                         }
                         _ => {}
                     }
@@ -146,6 +199,9 @@ impl AttackSurfaceMapper {
         let total_entry_points = entry_points.len();
         let high_risk_file_count = high_risk_files.len();
 
+        let mut frameworks: Vec<String> = detected_frameworks.into_iter().collect();
+        frameworks.sort();
+
         AttackSurface {
             entry_points,
             trust_boundaries,
@@ -155,6 +211,7 @@ impl AttackSurfaceMapper {
                 total_entry_points,
                 unauthenticated_count,
                 high_risk_file_count,
+                detected_frameworks: frameworks,
             },
         }
     }
@@ -198,6 +255,7 @@ impl AttackSurfaceMapper {
                         },
                         risk_score: 0.0,
                         function_name: None,
+                        context: EntryContext::default(),
                     });
                 }
             }
@@ -212,10 +270,11 @@ impl AttackSurfaceMapper {
                     entry_type: EntryType::ScheduledTask,
                     route: None,
                     http_method: None,
-                    auth_required: true, // 定时任务是内部的，不需要外部认证
+                    auth_required: true,
                     auth_mechanism: None,
                     risk_score: 0.0,
                     function_name: None,
+                    context: EntryContext::default(),
                 });
             }
         }
@@ -285,6 +344,7 @@ impl AttackSurfaceMapper {
                         },
                         risk_score: 0.0,
                         function_name: None,
+                        context: EntryContext::default(),
                     });
                 }
             }
@@ -353,6 +413,7 @@ impl AttackSurfaceMapper {
                         },
                         risk_score: 0.0,
                         function_name: None,
+                        context: EntryContext::default(),
                     });
                 }
             }
@@ -383,25 +444,45 @@ impl AttackSurfaceMapper {
         (entry_points, trust_boundaries)
     }
 
-    /// 计算入口点风险评分
-    fn compute_risk_score(ep: &EntryPoint) -> f32 {
-        let mut score: f32 = 0.3; // 基础分
+    /// 计算入口点风险评分（增强版，使用 EntryContext）
+    fn compute_risk_score(ep: &mut EntryPoint) -> f32 {
+        let mut score: f32 = 0.2;
 
-        // 未认证 → 大幅提升
+        // 未认证
         if !ep.auth_required {
-            score += 0.4;
+            score += 0.35;
+            ep.context.risk_factors.push("no_auth".to_string());
         }
 
-        // HTTP 端点 → 外部可达
-        if ep.entry_type == EntryType::HttpEndpoint {
-            score += 0.2;
+        // 外部可达入口点
+        if matches!(ep.entry_type, EntryType::HttpEndpoint | EntryType::ServerAction | EntryType::RscEndpoint) {
+            score += 0.15;
         }
 
-        // POST/PUT/DELETE → 可修改数据
+        // POST/PUT/DELETE/PATCH
         if let Some(ref method) = ep.http_method {
             if matches!(method.as_str(), "POST" | "PUT" | "DELETE" | "PATCH") {
                 score += 0.1;
             }
+        }
+
+        // 无输入校验
+        if !ep.context.has_input_validation && matches!(ep.entry_type,
+            EntryType::HttpEndpoint | EntryType::ServerAction | EntryType::RscEndpoint) {
+            score += 0.15;
+            ep.context.risk_factors.push("no_input_validation".to_string());
+        }
+
+        // 数据到达反序列化
+        if ep.context.reaches_deserialization {
+            score += 0.15;
+            ep.context.risk_factors.push("reaches_deserialization".to_string());
+        }
+
+        // 数据到达特权操作
+        if ep.context.reaches_privileged_op {
+            score += 0.1;
+            ep.context.risk_factors.push("reaches_privileged_op".to_string());
         }
 
         // 定时任务 → 内部，降低
@@ -428,6 +509,271 @@ impl AttackSurfaceMapper {
         high_risk.sort();
         high_risk.dedup();
         high_risk
+    }
+
+    /// 检测文件是否为 Next.js 相关文件
+    fn is_nextjs_file(file_path: &str, content: &str) -> bool {
+        // 'use server' 指令
+        let has_use_server = content.lines().take(5)
+            .any(|l| l.trim() == "'use server'" || l.trim() == "\"use server\"");
+        if has_use_server {
+            return true;
+        }
+
+        // NextRequest / NextResponse 类型引用
+        if content.contains("NextRequest") || content.contains("NextResponse") {
+            return true;
+        }
+
+        // App Router 路径: app/ 目录下的 route.ts/js 或 page.tsx/jsx
+        let normalized = file_path.replace('\\', "/");
+        let is_app_route = normalized.contains("/app/") &&
+            (normalized.ends_with("/route.ts") || normalized.ends_with("/route.js"));
+        let is_app_page = normalized.contains("/app/") &&
+            (normalized.ends_with("/page.tsx") || normalized.ends_with("/page.jsx") ||
+             normalized.ends_with("/page.ts") || normalized.ends_with("/page.js"));
+
+        is_app_route || is_app_page
+    }
+
+    /// 分析 Next.js 文件中的入口点
+    fn analyze_nextjs_file(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
+        let mut entry_points = Vec::new();
+        let mut trust_boundaries = Vec::new();
+
+        // Server Actions: 'use server' 指令文件
+        let has_use_server = content.lines().take(5)
+            .any(|l| l.trim() == "'use server'" || l.trim() == "\"use server\"");
+
+        if has_use_server {
+            let (eps, tbs) = Self::detect_server_actions(file_path, content);
+            entry_points.extend(eps);
+            trust_boundaries.extend(tbs);
+        }
+
+        // Route Handlers: app/ 目录下的 route.ts/js
+        let normalized = file_path.replace('\\', "/");
+        let is_route_handler = normalized.contains("/app/") &&
+            (normalized.ends_with("/route.ts") || normalized.ends_with("/route.js"));
+
+        if is_route_handler {
+            let route = Self::extract_nextjs_route(&normalized);
+            let (eps, tbs) = Self::detect_route_handlers(file_path, content, route.as_deref());
+            entry_points.extend(eps);
+            trust_boundaries.extend(tbs);
+        }
+
+        (entry_points, trust_boundaries)
+    }
+
+    /// 检测 Server Action 函数
+    fn detect_server_actions(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
+        let mut entry_points = Vec::new();
+        let mut trust_boundaries = Vec::new();
+
+        // 匹配 export async function X( 和 export function X(
+        let func_re = regex::Regex::new(
+            r"(?:export\s+(?:async\s+)?function\s+(\w+)\s*\(|export\s+const\s+(\w+)\s*=\s*(?:async\s*)?\()"
+        ).unwrap();
+
+        for cap in func_re.captures_iter(content) {
+            let func_name = cap.get(1)
+                .or_else(|| cap.get(2))
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let line_num = content[..cap.get(0).unwrap().start()].lines().count();
+
+            // 获取函数上下文
+            let ctx = Self::get_context_block(content, line_num, 30);
+            let entry_ctx = Self::analyze_entry_context(&ctx);
+
+            // 信任边界: Next.js 数据源
+            Self::detect_nextjs_trust_boundaries(file_path, &ctx, line_num, &mut trust_boundaries);
+
+            entry_points.push(EntryPoint {
+                file_path: file_path.to_string(),
+                line: line_num + 1,
+                entry_type: EntryType::ServerAction,
+                route: None,
+                http_method: Some("POST".to_string()),
+                auth_required: false,
+                auth_mechanism: None,
+                risk_score: 0.0,
+                function_name: Some(func_name),
+                context: entry_ctx,
+            });
+        }
+
+        (entry_points, trust_boundaries)
+    }
+
+    /// 检测 Route Handler 函数
+    fn detect_route_handlers(
+        file_path: &str, content: &str, route: Option<&str>,
+    ) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
+        let mut entry_points = Vec::new();
+        let mut trust_boundaries = Vec::new();
+
+        let http_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
+
+        for (line_num, line) in content.lines().enumerate() {
+            for method in &http_methods {
+                // export async function GET(request: NextRequest)
+                let pattern = format!("export async function {}(", method);
+                let pattern_sync = format!("export function {}(", method);
+                if line.contains(&pattern) || line.contains(&pattern_sync) {
+                    let ctx = Self::get_context_block(content, line_num, 30);
+                    let entry_ctx = Self::analyze_entry_context(&ctx);
+                    let auth_required = ctx.contains("auth") || ctx.contains("jwt") || ctx.contains("token");
+
+                    // 信任边界
+                    Self::detect_nextjs_trust_boundaries(file_path, &ctx, line_num, &mut trust_boundaries);
+
+                    entry_points.push(EntryPoint {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        entry_type: EntryType::RscEndpoint,
+                        route: route.map(|r| r.to_string()),
+                        http_method: Some(method.to_string()),
+                        auth_required,
+                        auth_mechanism: if auth_required { Some("Next.js middleware".to_string()) } else { None },
+                        risk_score: 0.0,
+                        function_name: Some(method.to_string()),
+                        context: entry_ctx,
+                    });
+                }
+            }
+        }
+
+        (entry_points, trust_boundaries)
+    }
+
+    /// 分析入口点上下文
+    fn analyze_entry_context(context: &str) -> EntryContext {
+        let mut ctx = EntryContext::default();
+
+        // 数据源检测
+        let data_source_patterns = [
+            (r"formData\.(get|getAll|entries|values|has)", "formData"),
+            (r"cookies\(\)\.(get|getAll)", "cookies"),
+            (r"headers\(\)\.(get)", "headers"),
+            (r"searchParams\.(get|getAll)", "searchParams"),
+            (r"request\.(json|text|formData)\s*\(", "request"),
+            (r"req\.(body|query|params)", "req"),
+        ];
+        for (pattern, name) in &data_source_patterns {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if re.is_match(context) && !ctx.data_sources.contains(&name.to_string()) {
+                    ctx.data_sources.push(name.to_string());
+                }
+            }
+        }
+
+        // 净化器检测
+        let sanitizer_patterns = [
+            (r"sanitize|escape|encode|DOMPurify|bleach|htmlspecialchars", "sanitizer"),
+        ];
+        for (pattern, _) in &sanitizer_patterns {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if let Some(cap) = re.find(context) {
+                    ctx.has_sanitization = true;
+                    ctx.sanitizers.push(cap.as_str().to_string());
+                }
+            }
+        }
+
+        // 输入校验检测
+        let validation_re = regex::Regex::new(
+            r"(?i)(?:zod|joi|yup|ajv|\.safeParse|\.parse\(|validate\(|Schema|\.schema)"
+        ).unwrap();
+        ctx.has_input_validation = validation_re.is_match(context);
+
+        // 反序列化检测
+        let deserialization_re = regex::Regex::new(
+            r"(?:JSON\.parse|parseModel|resolveModel|deserialize|unserialize|objectMapper\.readValue|pickle\.loads)"
+        ).unwrap();
+        ctx.reaches_deserialization = deserialization_re.is_match(context);
+
+        // 特权操作检测
+        let privileged_re = regex::Regex::new(
+            r"(?:fs\.|writeFile|readFile|\.execute\s*\(|\.query\s*\(|exec\s*\(|eval\s*\(|system\s*\(|child_process|subprocess|DB::|database\.)"
+        ).unwrap();
+        ctx.reaches_privileged_op = privileged_re.is_match(context);
+
+        ctx
+    }
+
+    /// 检测 Next.js 信任边界
+    fn detect_nextjs_trust_boundaries(
+        file_path: &str, context: &str, base_line: usize,
+        trust_boundaries: &mut Vec<TrustBoundary>,
+    ) {
+        let patterns = [
+            (r"formData\.(get|getAll)\s*\(", "FormData input (Server Action)"),
+            (r"request\.(json|text|formData)\s*\(", "Request body (Route Handler)"),
+            (r"searchParams\.(get|getAll)\s*\(", "URL search parameters (RSC)"),
+            (r"cookies\(\)\.(get|getAll)\s*\(", "Cookies (Server Component)"),
+            (r"headers\(\)\.(get)\s*\(", "HTTP headers (Server Component)"),
+        ];
+
+        for (line_offset, line) in context.lines().enumerate() {
+            for (pattern, desc) in &patterns {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    if re.is_match(line) {
+                        trust_boundaries.push(TrustBoundary {
+                            file_path: file_path.to_string(),
+                            line: base_line + line_offset + 1,
+                            description: desc.to_string(),
+                            source: pattern.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// 从文件路径推导 Next.js 路由
+    fn extract_nextjs_route(file_path: &str) -> Option<String> {
+        // app/api/users/[id]/route.ts → /api/users/:id
+        // app/(dashboard)/settings/route.ts → /settings
+        if let Some(app_idx) = file_path.find("/app/") {
+            let after_app = &file_path[app_idx + 5..];
+            // 移除 /route.ts 或 /route.js 后缀
+            let path = after_app
+                .trim_end_matches("/route.ts")
+                .trim_end_matches("/route.js");
+
+            let mut route = String::from("/");
+            for segment in path.split('/') {
+                if segment.is_empty() {
+                    continue;
+                }
+                // 跳过 route groups: (dashboard)
+                if segment.starts_with('(') && segment.ends_with(')') {
+                    continue;
+                }
+                // 动态路由: [id] → :id, [...slug] → :slug*
+                if segment.starts_with('[') && segment.ends_with(']') {
+                    let inner = &segment[1..segment.len()-1];
+                    if inner.starts_with("...") {
+                        route.push_str(&inner[3..]);
+                        route.push('*');
+                    } else {
+                        route.push(':');
+                        route.push_str(inner);
+                    }
+                } else {
+                    route.push_str(segment);
+                }
+                route.push('/');
+            }
+            // 移除末尾 /
+            if route.len() > 1 {
+                route.pop();
+            }
+            return Some(route);
+        }
+        None
     }
 
     // --- 辅助方法 ---
@@ -605,7 +951,7 @@ app.post('/api/users', auth, (req, res) => {
 
     #[test]
     fn test_risk_score_unauthenticated_http() {
-        let ep = EntryPoint {
+        let mut ep = EntryPoint {
             file_path: "test.java".into(),
             line: 1,
             entry_type: EntryType::HttpEndpoint,
@@ -615,14 +961,15 @@ app.post('/api/users', auth, (req, res) => {
             auth_mechanism: None,
             risk_score: 0.0,
             function_name: None,
+            context: EntryContext::default(),
         };
-        let score = AttackSurfaceMapper::compute_risk_score(&ep);
+        let score = AttackSurfaceMapper::compute_risk_score(&mut ep);
         assert!(score >= 0.8, "Unauthenticated POST should score >= 0.8, got {}", score);
     }
 
     #[test]
     fn test_risk_score_scheduled_task() {
-        let ep = EntryPoint {
+        let mut ep = EntryPoint {
             file_path: "test.java".into(),
             line: 1,
             entry_type: EntryType::ScheduledTask,
@@ -632,8 +979,103 @@ app.post('/api/users', auth, (req, res) => {
             auth_mechanism: None,
             risk_score: 0.0,
             function_name: None,
+            context: EntryContext::default(),
         };
-        let score = AttackSurfaceMapper::compute_risk_score(&ep);
+        let score = AttackSurfaceMapper::compute_risk_score(&mut ep);
         assert!(score < 0.5, "Scheduled task should score < 0.5, got {}", score);
+    }
+
+    #[test]
+    fn test_nextjs_server_action_detection() {
+        let code = r#"'use server'
+
+export async function createUser(formData: FormData) {
+    const name = formData.get('name');
+    const email = formData.get('email');
+    await db.user.create({ data: { name, email } });
+}
+
+export async function deleteUser(formData: FormData) {
+    const id = formData.get('id');
+    await db.user.delete({ where: { id } });
+}
+"#;
+        let (eps, tbs) = AttackSurfaceMapper::analyze_nextjs_file("app/actions/user.ts", code);
+        assert!(eps.len() >= 2, "Should find at least 2 Server Actions, found {}", eps.len());
+        assert!(tbs.len() >= 2, "Should find trust boundaries for formData");
+
+        let create_ep = eps.iter().find(|e| e.function_name.as_deref() == Some("createUser"));
+        assert!(create_ep.is_some());
+        let ep = create_ep.unwrap();
+        assert_eq!(ep.entry_type, EntryType::ServerAction);
+        assert!(ep.context.data_sources.contains(&"formData".to_string()));
+    }
+
+    #[test]
+    fn test_nextjs_route_handler_detection() {
+        let code = r#"
+import { NextRequest, NextResponse } from 'next/server';
+
+export async function GET(request: NextRequest) {
+    const data = await request.json();
+    return NextResponse.json({ data });
+}
+
+export async function POST(request: NextRequest) {
+    const body = await request.json();
+    await db.query('INSERT INTO users VALUES (?)', [body.name]);
+    return NextResponse.json({ success: true });
+}
+"#;
+        let (eps, tbs) = AttackSurfaceMapper::analyze_nextjs_file(
+            "src/app/api/users/route.ts", code,
+        );
+        assert!(eps.len() >= 2, "Should find at least 2 route handlers");
+        assert_eq!(eps[0].entry_type, EntryType::RscEndpoint);
+
+        let post_ep = eps.iter().find(|e| e.http_method.as_deref() == Some("POST"));
+        assert!(post_ep.is_some());
+        assert!(post_ep.unwrap().context.reaches_privileged_op);
+    }
+
+    #[test]
+    fn test_nextjs_route_extraction() {
+        assert_eq!(
+            AttackSurfaceMapper::extract_nextjs_route("src/app/api/users/route.ts"),
+            Some("/api/users".to_string())
+        );
+        assert_eq!(
+            AttackSurfaceMapper::extract_nextjs_route("src/app/api/users/[id]/route.ts"),
+            Some("/api/users/:id".to_string())
+        );
+        assert_eq!(
+            AttackSurfaceMapper::extract_nextjs_route("src/app/(dashboard)/settings/route.ts"),
+            Some("/settings".to_string())
+        );
+    }
+
+    #[test]
+    fn test_entry_context_validation_detection() {
+        let code_with_validation = r#"
+import { z } from 'zod';
+const schema = z.object({ name: z.string() });
+export async function action(formData: FormData) {
+    const raw = { name: formData.get('name') };
+    const data = schema.safeParse(raw);
+}
+"#;
+        let ctx = AttackSurfaceMapper::analyze_entry_context(code_with_validation);
+        assert!(ctx.has_input_validation, "Should detect zod validation");
+        assert!(ctx.data_sources.contains(&"formData".to_string()));
+
+        let code_without_validation = r#"
+export async function action(formData: FormData) {
+    const name = formData.get('name');
+    eval(name);
+}
+"#;
+        let ctx2 = AttackSurfaceMapper::analyze_entry_context(code_without_validation);
+        assert!(!ctx2.has_input_validation, "Should NOT detect validation");
+        assert!(ctx2.reaches_privileged_op, "Should detect eval as privileged op");
     }
 }

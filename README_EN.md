@@ -145,7 +145,7 @@ Daemon features:
 ctx-audit mcp    # Start MCP Server (stdio JSON-RPC)
 ```
 
-Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **10 tools**:
+Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **13 tools**:
 
 **Coarse-grained tools**:
 
@@ -166,6 +166,14 @@ Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP p
 | `list_sinks` | List all taint sinks in a file |
 | `cross_file_analysis` | Run cross-file taint analysis (call graph + function summaries) |
 | `get_call_graph` | Get project function call graph |
+
+**LLM Collaboration tools (0-day discovery support)**:
+
+| Tool | Description |
+|------|-------------|
+| `get_attack_surface` | Map project attack surface (entry points, risk scores, trust boundaries, framework detection) |
+| `analyze_risk_patterns` | Analyze architectural risk patterns (unvalidated input→deserialization, unauthenticated→privileged ops, etc.) |
+| `add_custom_rule` | Dynamically inject custom rules (LLM-generated YAML rules take effect immediately) |
 
 Claude Code configuration example (`.claude/settings.json`):
 
@@ -446,7 +454,7 @@ cargo clippy                 # Lint
 | TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
 | Pattern Matching | 38 YAML rules covering 7 injection types + 6 languages |
 | SCA Scanner | OSV API, 4 ecosystems, local cache |
-| MCP Integration | 10 tools (3 coarse-grained + 7 fine-grained + 1 status) |
+| MCP Integration | 13 tools (3 coarse-grained + 7 fine-grained + 3 LLM collaboration) |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
 | Test Coverage | 155 tests |
