@@ -15,7 +15,6 @@ use deepaudit_core::watcher::{FileWatcher, WatcherConfig, WatchEvent, is_source_
 use deepaudit_core::scan_directory;
 use deepaudit_core::sarif::{SarifConverter, FindingInput};
 use deepaudit_core::analysis::TaintAnalyzer;
-use deepaudit_core::Finding;
 
 /// 执行 watch 命令
 pub async fn execute(
@@ -162,7 +161,7 @@ pub async fn execute(
 }
 
 /// 执行安全扫描
-async fn run_scan(path: &str, severity: &Option<String>) -> Vec<Finding> {
+async fn run_scan(path: &str, severity: &Option<String>) -> Vec<deepaudit_core::Finding> {
     match scan_directory(path).await {
         Ok(findings) => {
             if let Some(sev) = severity {
@@ -180,7 +179,7 @@ async fn run_scan(path: &str, severity: &Option<String>) -> Vec<Finding> {
 
 /// 生成并保存 SARIF 文件
 async fn generate_and_save_sarif(
-    findings: &[Finding],
+    findings: &[deepaudit_core::Finding],
     output_path: &str,
 ) -> anyhow::Result<()> {
     let converter = SarifConverter::new();
@@ -274,10 +273,10 @@ async fn watch_via_daemon(
                     // 保存结果
                     let content = match output_format.as_str() {
                         "sarif" => {
-                            let converter = SarifConverter::new();
-                            let inputs: Vec<FindingInput> = findings.iter()
+                            let converter = deepaudit_core::sarif::SarifConverter::new();
+                            let inputs: Vec<deepaudit_core::sarif::FindingInput> = findings.iter()
                                 .filter_map(|f| serde_json::from_value(f.clone()).ok())
-                                .map(|f: Finding| FindingInput {
+                                .map(|f: deepaudit_core::Finding| deepaudit_core::sarif::FindingInput {
                                     id: Some(f.finding_id),
                                     title: Some(f.vuln_type.clone()),
                                     description: f.description,

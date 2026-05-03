@@ -60,7 +60,6 @@ winapi = { version = "0.3", features = ["consoleapi", "wincon"] }
 
 # 数据库
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 
 # 内部包
 deepaudit-core = { workspace = true }
