@@ -2,9 +2,11 @@
 
 <div align="center">
 
-**安全分析守护进程**
+**AI 原生代码安全扫描引擎**
 
-**Rust 确定性分析引擎 — AST 污点追踪 + 模式匹配 + SCA**
+**数据流追踪 · 跨文件分析 · LLM 协作发现未知漏洞**
+
+不靠规则堆砌——追踪每一行数据从入口到危险函数的完整路径。接入 Claude Code，让 AI 帮你发现规则扫不到的漏洞。
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -17,9 +19,11 @@
 
 ## CTX-Audit 是什么
 
-CTX-Audit 是一个基于 Rust 的代码安全分析守护进程。它将确定性分析引擎（AST 污点分析、跨文件追踪、模式匹配、SCA）以常驻后台服务的形式运行，通过 IPC 为 CLI、IDE、AI agent 等消费者提供高性能安全分析能力。
+一条命令扫描 30+ 漏洞类型，支持 12 种语言和主流框架（Next.js、React、Spring、Express、Django 等）。
 
-**核心设计**：引擎常驻内存，AST 索引和扫描结果缓存复用。重复扫描利用 content-hash 增量检测，无变更时 **1ms** 返回结果。
+**怎么做到的？** 不只是正则匹配关键词——CTX-Audit 用 AST 解析你的代码，追踪数据从用户输入（source）到危险函数（sink）的完整路径，跨文件跨函数追踪。引擎常驻内存，增量扫描无变更时 **1ms** 返回结果。
+
+**AI 协作：** 通过 MCP 协议接入 Claude Code 等 LLM，让 AI 读取攻击面、分析数据流、发现规则扫不到的风险模式，甚至动态生成针对性规则——从"检测已知漏洞"升级为"发现未知漏洞"。
 
 ```
 ┌───────────────────┐     IPC (TCP)     ┌──────────────────────────────┐
