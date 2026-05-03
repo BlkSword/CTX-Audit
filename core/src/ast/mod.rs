@@ -10,5 +10,5 @@ pub use parser::ASTParser;
 pub use query::QueryEngine;
 pub use symbol::{
     Symbol, SymbolKind,
-    NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody,
+    NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody, TypedParam,
 };

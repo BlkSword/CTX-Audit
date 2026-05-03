@@ -240,6 +240,23 @@ ctx-audit config list
 
 支持 12 种语言：Python, JavaScript, TypeScript, Java, Rust, Go, C, C++, PHP, Ruby, JSX, TSX。
 
+### 动态语言智能追踪
+
+针对 Python、JavaScript、TypeScript 的污点追踪增强，解决动态语言的"污点断链"问题：
+
+| 特性 | 说明 |
+|------|------|
+| AccessPath | 将变量追踪为属性链路径（如 `req.body.name`），而非扁平字符串 |
+| AliasMap | 解析变量别名：`const y = x` 自动继承 x 的污点状态 |
+| 解构赋值 | `const { body } = req` → body 继承 req.body 的污点 |
+| 属性访问 | `const x = obj.prop` → x 别名 obj.prop |
+| await 表达式 | `const data = await resp.json()` → 污点传播不中断 |
+| Promise 链 | `.then(data => eval(data))` → data 继承链路污点 |
+| 回调提示 | `.forEach(item => ...)` 和 `.map(x => ...)` → 参数继承污点 |
+| TypeScript 类型 | `(req: HttpRequest)` → 自动识别 req 为污点源 |
+| 模块导出 | `module.exports.handler = fn` 和 `exports.processData = fn` 检测 |
+| CommonJS 解构 | `const { body } = require('express')` → 命名符号提取 |
+
 ### 依赖漏洞 (SCA)
 
 通过 OSV API 查询已知漏洞依赖：npm (`package.json`)、PyPI (`requirements.txt`)、crates.io (`Cargo.lock`)、Go (`go.sum`)。查询结果本地缓存 24h，减少网络请求。
@@ -329,6 +346,8 @@ core/                     # 确定性分析引擎
 │   ├── ast_taint.rs      # AST 污点分析器（CFG + worklist 算法）
 │   ├── cross_file.rs     # 跨文件分析（调用图 + 函数摘要 + 上下文组装）
 │   ├── enhanced_dataflow.rs  # 增强数据流分析
+│   ├── alias.rs          # AccessPath + AliasMap（动态语言追踪）
+│   ├── async_flow.rs     # Promise 链 + 回调污点提示
 │   ├── attack_surface.rs # 攻击面映射
 │   └── imports.rs        # 导入解析
 ├── scanner/              # 扫描器
@@ -412,7 +431,7 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 
 ```bash
 cargo build --release        # 构建（ctx-audit + ctx-audit-daemon）
-cargo test --workspace       # 运行测试（123 个测试）
+cargo test --workspace       # 运行测试（155 个测试）
 cargo fmt                    # 格式化
 cargo clippy                 # 代码检查
 ```
@@ -422,13 +441,15 @@ cargo clippy                 # 代码检查
 | 维度 | 状态 |
 |------|------|
 | AST 污点分析 | CFG + worklist 算法，12 语言，30+ sanitizer |
+| 动态语言追踪 | AccessPath + AliasMap + 解构 + 属性访问 + await + Promise 链 |
 | 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找 |
+| TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
 | 模式匹配规则 | 38 个 YAML 规则，覆盖 7 类注入 + 6 语言 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存 |
 | MCP 集成 | 10 个工具（3 粗粒度 + 7 细粒度 + 1 状态查询） |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
-| 测试覆盖 | 123 个测试 |
+| 测试覆盖 | 155 个测试 |
 
 ## 许可证
 

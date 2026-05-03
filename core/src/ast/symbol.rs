@@ -253,4 +253,16 @@ pub struct FunctionBody {
     pub end_line: usize,
     /// 函数体代码文本
     pub body_text: String,
+    /// 带类型注解的参数列表
+    pub typed_params: Vec<TypedParam>,
+}
+
+/// 带类型注解的参数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypedParam {
+    /// 参数名
+    pub name: String,
+    /// 类型注解（如 "HttpRequest", "string"）
+    #[serde(default)]
+    pub type_annotation: Option<String>,
 }

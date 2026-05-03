@@ -306,6 +306,8 @@ impl ImportResolver {
                             imports.push(import);
                         }
                     }
+                    // CommonJS exports
+                    exports.extend(self.parse_commonjs_exports(trimmed, line_idx + 1));
                 }
                 "rust" => {
                     if trimmed.starts_with("use ") {
@@ -502,20 +504,55 @@ impl ImportResolver {
         })
     }
 
-    /// 解析 CommonJS require
+    /// 解析 CommonJS require（支持解构）
     fn parse_commonjs_require(&self, line: &str, line_num: usize) -> Option<ImportInfo> {
         let raw = line.to_string();
 
-        let start = line.find("require('")? + 9;
-        let rest = &line[start..];
-        let end = rest.find('\'')?;
-        let source = rest[..end].to_string();
+        // 提取模块路径
+        let source = if let Some(start) = line.find("require('") {
+            let rest = &line[start + 9..];
+            let end = rest.find('\'')?;
+            rest[..end].to_string()
+        } else if let Some(start) = line.find("require(\"") {
+            let rest = &line[start + 9..];
+            let end = rest.find('"')?;
+            rest[..end].to_string()
+        } else {
+            return None;
+        };
 
-        let symbols = vec![ImportedSymbol {
-            original_name: "default".to_string(),
-            alias: None,
-            is_default: true,
-        }];
+        // 检测解构: const { body, query } = require('module')
+        let symbols = if line.contains('{') && line.contains('}') && line.contains("require(") {
+            self.parse_commonjs_destructuring(line)
+        } else if let Some(eq_pos) = line.find('=') {
+            let lhs = line[..eq_pos].trim();
+            let lhs = lhs
+                .strip_prefix("const ")
+                .or_else(|| lhs.strip_prefix("let "))
+                .or_else(|| lhs.strip_prefix("var "))
+                .unwrap_or(lhs)
+                .trim();
+
+            if lhs.is_empty() {
+                vec![ImportedSymbol {
+                    original_name: "default".to_string(),
+                    alias: None,
+                    is_default: true,
+                }]
+            } else {
+                vec![ImportedSymbol {
+                    original_name: lhs.to_string(),
+                    alias: None,
+                    is_default: true,
+                }]
+            }
+        } else {
+            vec![ImportedSymbol {
+                original_name: "default".to_string(),
+                alias: None,
+                is_default: true,
+            }]
+        };
 
         Some(ImportInfo {
             raw,
@@ -523,6 +560,80 @@ impl ImportResolver {
             source,
             line: line_num,
         })
+    }
+
+    /// 解析 CommonJS 解构: const { body, query } = require('module')
+    fn parse_commonjs_destructuring(&self, line: &str) -> Vec<ImportedSymbol> {
+        let mut symbols = Vec::new();
+        if let Some(start) = line.find('{') {
+            if let Some(end) = line.find('}') {
+                let inner = &line[start + 1..end];
+                for part in inner.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    if part.contains(':') {
+                        // 重命名: { body: data }
+                        let pieces: Vec<&str> = part.split(':').collect();
+                        symbols.push(ImportedSymbol {
+                            original_name: pieces[0].trim().to_string(),
+                            alias: Some(pieces[1].trim().to_string()),
+                            is_default: false,
+                        });
+                    } else {
+                        symbols.push(ImportedSymbol {
+                            original_name: part.to_string(),
+                            alias: None,
+                            is_default: false,
+                        });
+                    }
+                }
+            }
+        }
+        symbols
+    }
+
+    /// 解析 CommonJS 导出: module.exports.X 和 exports.X
+    fn parse_commonjs_exports(&self, line: &str, line_num: usize) -> Vec<ExportInfo> {
+        let mut exports = Vec::new();
+        let trimmed = line.trim();
+
+        // module.exports.funcName = ...
+        if trimmed.starts_with("module.exports.") {
+            if let Some(rest) = trimmed.strip_prefix("module.exports.") {
+                if let Some(eq_pos) = rest.find('=') {
+                    let name = rest[..eq_pos].trim().to_string();
+                    if !name.is_empty() && name != "exports" {
+                        exports.push(ExportInfo {
+                            name,
+                            symbol_type: SymbolType::Function,
+                            line: line_num,
+                            is_default: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        // exports.funcName = ...
+        if trimmed.starts_with("exports.") && !trimmed.starts_with("module.exports") {
+            if let Some(rest) = trimmed.strip_prefix("exports.") {
+                if let Some(eq_pos) = rest.find('=') {
+                    let name = rest[..eq_pos].trim().to_string();
+                    if !name.is_empty() {
+                        exports.push(ExportInfo {
+                            name,
+                            symbol_type: SymbolType::Function,
+                            line: line_num,
+                            is_default: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        exports
     }
 
     /// 解析 Rust use

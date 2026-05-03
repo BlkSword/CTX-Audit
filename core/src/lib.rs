@@ -13,7 +13,7 @@ pub mod watcher;
 // 重新导出常用类型
 pub use ast::{
     ASTEngine, ASTParser, CacheData, CacheManager, FileIndex, QueryEngine, Symbol, SymbolKind,
-    NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody,
+    NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody, TypedParam,
 };
 pub use diff::DiffEngine;
 pub use scanner::{Finding, Scanner, ScanResult, scan_directory, scan_directory_deep, scan_directory_with_attack_surface, scan_directory_with_rules, scan_directory_deep_with_rules};
@@ -34,7 +34,7 @@ pub use indexing::vector_store::VectorStoreError;
 pub use analysis::{
     TaintAnalyzer, TaintSource, TaintSink, TaintFlow, TaintResult,
     EnhancedTaintAnalyzer, VariableTaint,
-    AstTaintAnalyzer,
+    AstTaintAnalyzer, AccessPath, AliasMap,
     DataFlowAnalysis, FlowGraph, FlowNode,
     ImportResolver, SymbolReference, CrossFileReference,
     FunctionSummary, CrossFileTaintAnalyzer,
