@@ -322,15 +322,20 @@ async fn write_heartbeat_async(state: &DaemonState, engine: &AnalysisEngine) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let (ast_count, scan_count) = engine.cache_stats().await;
+    let mem_stats = engine.memory_stats().await;
     let content = serde_json::json!({
         "pid": state.pid,
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "version": crate::VERSION,
         "uptime_secs": state.uptime_secs(),
         "cache_stats": {
-            "ast_entries": ast_count,
-            "scan_entries": scan_count,
+            "ast_entries": mem_stats.ast_count,
+            "scan_entries": mem_stats.scan_count,
+        },
+        "memory": {
+            "ast_engines": mem_stats.ast_count,
+            "ast_estimated_bytes": mem_stats.ast_bytes,
+            "scan_caches": mem_stats.scan_count,
         },
     });
     if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&content).unwrap_or_default()) {
@@ -346,10 +351,16 @@ pub fn spawn_heartbeat_task(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let interval = tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+        let mut tick: u64 = 0;
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(interval) => {
                     write_heartbeat_async(&state, &engine).await;
+                    tick += 1;
+                    if tick % 12 == 0 {
+                        engine.evict_idle_ast_engines();
+                        engine.evict_idle_scan_caches();
+                    }
                 }
                 _ = shutdown_rx.changed() => {
                     // 退出前写最后一次心跳（标记为 shutting_down）

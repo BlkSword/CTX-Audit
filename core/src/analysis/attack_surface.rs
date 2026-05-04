@@ -10,6 +10,53 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+// ── 预编译正则（全局缓存，避免每次调用重新编译）──────────
+
+static RE_SERVER_ACTION_FUNC: OnceLock<Regex> = OnceLock::new();
+fn server_action_func_re() -> &'static Regex {
+    RE_SERVER_ACTION_FUNC.get_or_init(|| Regex::new(r"(?:export\s+(?:async\s+)?function\s+(\w+)\s*\(|export\s+const\s+(\w+)\s*=\s*(?:async\s*)?\()").unwrap())
+}
+
+// 数据源检测
+static RE_DS_FORMDATA: OnceLock<Regex> = OnceLock::new();
+static RE_DS_COOKIES: OnceLock<Regex> = OnceLock::new();
+static RE_DS_HEADERS: OnceLock<Regex> = OnceLock::new();
+static RE_DS_SEARCH_PARAMS: OnceLock<Regex> = OnceLock::new();
+static RE_DS_REQUEST: OnceLock<Regex> = OnceLock::new();
+static RE_DS_REQ: OnceLock<Regex> = OnceLock::new();
+
+fn ds_formdata_re() -> &'static Regex { RE_DS_FORMDATA.get_or_init(|| Regex::new(r"formData\.(get|getAll|entries|values|has)").unwrap()) }
+fn ds_cookies_re() -> &'static Regex { RE_DS_COOKIES.get_or_init(|| Regex::new(r"cookies\(\)\.(get|getAll)").unwrap()) }
+fn ds_headers_re() -> &'static Regex { RE_DS_HEADERS.get_or_init(|| Regex::new(r"headers\(\)\.(get)").unwrap()) }
+fn ds_search_params_re() -> &'static Regex { RE_DS_SEARCH_PARAMS.get_or_init(|| Regex::new(r"searchParams\.(get|getAll)").unwrap()) }
+fn ds_request_re() -> &'static Regex { RE_DS_REQUEST.get_or_init(|| Regex::new(r"request\.(json|text|formData)\s*\(").unwrap()) }
+fn ds_req_re() -> &'static Regex { RE_DS_REQ.get_or_init(|| Regex::new(r"req\.(body|query|params)").unwrap()) }
+
+// 上下文分析
+static RE_SANITIZER: OnceLock<Regex> = OnceLock::new();
+static RE_VALIDATION: OnceLock<Regex> = OnceLock::new();
+static RE_DESERIALIZATION: OnceLock<Regex> = OnceLock::new();
+static RE_PRIVILEGED_OP: OnceLock<Regex> = OnceLock::new();
+
+fn sanitizer_re() -> &'static Regex { RE_SANITIZER.get_or_init(|| Regex::new(r"sanitize|escape|encode|DOMPurify|bleach|htmlspecialchars").unwrap()) }
+fn validation_re() -> &'static Regex { RE_VALIDATION.get_or_init(|| Regex::new(r"(?i)(?:zod|joi|yup|ajv|\.safeParse|\.parse\(|validate\(|Schema|\.schema)").unwrap()) }
+fn deserialization_re() -> &'static Regex { RE_DESERIALIZATION.get_or_init(|| Regex::new(r"(?:JSON\.parse|parseModel|resolveModel|deserialize|unserialize|objectMapper\.readValue|pickle\.loads)").unwrap()) }
+fn privileged_op_re() -> &'static Regex { RE_PRIVILEGED_OP.get_or_init(|| Regex::new(r"(?:fs\.|writeFile|readFile|\.execute\s*\(|\.query\s*\(|exec\s*\(|eval\s*\(|system\s*\(|child_process|subprocess|DB::|database\.)").unwrap()) }
+
+// 信任边界
+static RE_TB_FORMDATA: OnceLock<Regex> = OnceLock::new();
+static RE_TB_REQUEST_BODY: OnceLock<Regex> = OnceLock::new();
+static RE_TB_SEARCH_PARAMS: OnceLock<Regex> = OnceLock::new();
+static RE_TB_COOKIES: OnceLock<Regex> = OnceLock::new();
+static RE_TB_HEADERS: OnceLock<Regex> = OnceLock::new();
+
+fn tb_formdata_re() -> &'static Regex { RE_TB_FORMDATA.get_or_init(|| Regex::new(r"formData\.(get|getAll)\s*\(").unwrap()) }
+fn tb_request_body_re() -> &'static Regex { RE_TB_REQUEST_BODY.get_or_init(|| Regex::new(r"request\.(json|text|formData)\s*\(").unwrap()) }
+fn tb_search_params_re() -> &'static Regex { RE_TB_SEARCH_PARAMS.get_or_init(|| Regex::new(r"searchParams\.(get|getAll)\s*\(").unwrap()) }
+fn tb_cookies_re() -> &'static Regex { RE_TB_COOKIES.get_or_init(|| Regex::new(r"cookies\(\)\.(get|getAll)\s*\(").unwrap()) }
+fn tb_headers_re() -> &'static Regex { RE_TB_HEADERS.get_or_init(|| Regex::new(r"headers\(\)\.(get)\s*\(").unwrap()) }
 
 /// 入口点类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -572,9 +619,7 @@ impl AttackSurfaceMapper {
         let mut trust_boundaries = Vec::new();
 
         // 匹配 export async function X( 和 export function X(
-        let func_re = regex::Regex::new(
-            r"(?:export\s+(?:async\s+)?function\s+(\w+)\s*\(|export\s+const\s+(\w+)\s*=\s*(?:async\s*)?\()"
-        ).unwrap();
+        let func_re = server_action_func_re();
 
         for cap in func_re.captures_iter(content) {
             let func_name = cap.get(1)
@@ -652,53 +697,35 @@ impl AttackSurfaceMapper {
     fn analyze_entry_context(context: &str) -> EntryContext {
         let mut ctx = EntryContext::default();
 
-        // 数据源检测
-        let data_source_patterns = [
-            (r"formData\.(get|getAll|entries|values|has)", "formData"),
-            (r"cookies\(\)\.(get|getAll)", "cookies"),
-            (r"headers\(\)\.(get)", "headers"),
-            (r"searchParams\.(get|getAll)", "searchParams"),
-            (r"request\.(json|text|formData)\s*\(", "request"),
-            (r"req\.(body|query|params)", "req"),
+        // 数据源检测（使用预编译正则）
+        let data_sources: &[(&str, &Regex)] = &[
+            ("formData", ds_formdata_re()),
+            ("cookies", ds_cookies_re()),
+            ("headers", ds_headers_re()),
+            ("searchParams", ds_search_params_re()),
+            ("request", ds_request_re()),
+            ("req", ds_req_re()),
         ];
-        for (pattern, name) in &data_source_patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if re.is_match(context) && !ctx.data_sources.contains(&name.to_string()) {
-                    ctx.data_sources.push(name.to_string());
-                }
+        for (name, re) in data_sources {
+            if re.is_match(context) && !ctx.data_sources.contains(&name.to_string()) {
+                ctx.data_sources.push(name.to_string());
             }
         }
 
         // 净化器检测
-        let sanitizer_patterns = [
-            (r"sanitize|escape|encode|DOMPurify|bleach|htmlspecialchars", "sanitizer"),
-        ];
-        for (pattern, _) in &sanitizer_patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if let Some(cap) = re.find(context) {
-                    ctx.has_sanitization = true;
-                    ctx.sanitizers.push(cap.as_str().to_string());
-                }
-            }
+        if let Some(cap) = sanitizer_re().find(context) {
+            ctx.has_sanitization = true;
+            ctx.sanitizers.push(cap.as_str().to_string());
         }
 
         // 输入校验检测
-        let validation_re = regex::Regex::new(
-            r"(?i)(?:zod|joi|yup|ajv|\.safeParse|\.parse\(|validate\(|Schema|\.schema)"
-        ).unwrap();
-        ctx.has_input_validation = validation_re.is_match(context);
+        ctx.has_input_validation = validation_re().is_match(context);
 
         // 反序列化检测
-        let deserialization_re = regex::Regex::new(
-            r"(?:JSON\.parse|parseModel|resolveModel|deserialize|unserialize|objectMapper\.readValue|pickle\.loads)"
-        ).unwrap();
-        ctx.reaches_deserialization = deserialization_re.is_match(context);
+        ctx.reaches_deserialization = deserialization_re().is_match(context);
 
         // 特权操作检测
-        let privileged_re = regex::Regex::new(
-            r"(?:fs\.|writeFile|readFile|\.execute\s*\(|\.query\s*\(|exec\s*\(|eval\s*\(|system\s*\(|child_process|subprocess|DB::|database\.)"
-        ).unwrap();
-        ctx.reaches_privileged_op = privileged_re.is_match(context);
+        ctx.reaches_privileged_op = privileged_op_re().is_match(context);
 
         ctx
     }
@@ -708,25 +735,23 @@ impl AttackSurfaceMapper {
         file_path: &str, context: &str, base_line: usize,
         trust_boundaries: &mut Vec<TrustBoundary>,
     ) {
-        let patterns = [
-            (r"formData\.(get|getAll)\s*\(", "FormData input (Server Action)"),
-            (r"request\.(json|text|formData)\s*\(", "Request body (Route Handler)"),
-            (r"searchParams\.(get|getAll)\s*\(", "URL search parameters (RSC)"),
-            (r"cookies\(\)\.(get|getAll)\s*\(", "Cookies (Server Component)"),
-            (r"headers\(\)\.(get)\s*\(", "HTTP headers (Server Component)"),
+        let patterns: &[(&str, &Regex)] = &[
+            ("FormData input (Server Action)", tb_formdata_re()),
+            ("Request body (Route Handler)", tb_request_body_re()),
+            ("URL search parameters (RSC)", tb_search_params_re()),
+            ("Cookies (Server Component)", tb_cookies_re()),
+            ("HTTP headers (Server Component)", tb_headers_re()),
         ];
 
         for (line_offset, line) in context.lines().enumerate() {
-            for (pattern, desc) in &patterns {
-                if let Ok(re) = regex::Regex::new(pattern) {
-                    if re.is_match(line) {
-                        trust_boundaries.push(TrustBoundary {
-                            file_path: file_path.to_string(),
-                            line: base_line + line_offset + 1,
-                            description: desc.to_string(),
-                            source: pattern.to_string(),
-                        });
-                    }
+            for (desc, re) in patterns {
+                if re.is_match(line) {
+                    trust_boundaries.push(TrustBoundary {
+                        file_path: file_path.to_string(),
+                        line: base_line + line_offset + 1,
+                        description: desc.to_string(),
+                        source: re.as_str().to_string(),
+                    });
                 }
             }
         }

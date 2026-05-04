@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::imports::ImportResolver;
 use super::taint::{TaintSource, TaintSink, FlowLocation, Severity, VulnerabilityType};
@@ -230,8 +231,9 @@ pub struct InterproceduralTaintPath {
 pub struct CrossFileTaintResult {
     /// 项目路径
     pub project_path: String,
-    /// 调用图
-    pub call_graph: CallGraph,
+    /// 调用图（Arc 零拷贝共享）
+    #[serde(skip)]
+    pub call_graph: Arc<CallGraph>,
     /// 污点流
     pub taint_flows: Vec<InterproceduralTaintFlow>,
     /// 分析统计
@@ -255,6 +257,9 @@ pub struct InterproceduralTaintFlow {
     pub severity: Severity,
     /// 置信度
     pub confidence: f32,
+    /// 置信度衰减因素
+    #[serde(default)]
+    pub confidence_factors: Vec<String>,
 }
 
 /// 过程间传播步骤
@@ -412,7 +417,7 @@ impl CrossFileTaintAnalyzer {
 
         CrossFileTaintResult {
             project_path: project_path.to_string_lossy().to_string(),
-            call_graph: self.call_graph.clone(),
+            call_graph: Arc::new(std::mem::take(&mut self.call_graph)),
             taint_flows,
             stats,
         }
@@ -497,15 +502,188 @@ impl CrossFileTaintAnalyzer {
 
     /// 为单个文件构建调用图
     fn build_call_graph_for_file(&mut self, file_path: &Path) {
-        if let Ok(content) = std::fs::read_to_string(file_path) {
+        if self.is_ast_supported(file_path) {
+            self.build_call_graph_for_file_ast(file_path);
+        } else if let Ok(content) = std::fs::read_to_string(file_path) {
             let file_path_str = file_path.to_string_lossy().to_string();
             let language = self.infer_language(file_path);
             let functions = self.extract_functions(&content, &file_path_str, language);
-
             for func in functions {
                 self.call_graph.add_node(func);
             }
         }
+    }
+
+    /// 判断文件是否支持 AST 解析
+    fn is_ast_supported(&self, path: &Path) -> bool {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        matches!(ext, "js" | "jsx" | "ts" | "tsx" | "py" | "java" | "rs" | "go" | "c" | "h" | "cpp" | "hpp" | "cc")
+    }
+
+    /// 使用 AST 解析构建调用图（更精确的函数提取和调用关系）
+    fn build_call_graph_for_file_ast(&mut self, file_path: &Path) {
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let file_path_str = file_path.to_string_lossy().to_string();
+        let mut parser = crate::ast::ASTParser::new();
+
+        let symbols = match parser.parse_file(file_path, &content) {
+            Ok(s) => s,
+            Err(_) => {
+                // AST 解析失败，回退到文本扫描
+                let language = self.infer_language(file_path);
+                let functions = self.extract_functions(&content, &file_path_str, language);
+                for func in functions {
+                    self.call_graph.add_node(func);
+                }
+                return;
+            }
+        };
+
+        let calls = parser.extract_calls(file_path, &content);
+
+        // 从 symbols 中提取函数/方法定义
+        for symbol in &symbols {
+            if !matches!(
+                symbol.kind,
+                crate::ast::SymbolKind::Function
+                    | crate::ast::SymbolKind::Method
+            ) {
+                continue;
+            }
+
+            let func_name = symbol.name.clone();
+            let func_id = format!("{}:{}", file_path_str, func_name);
+
+            // 收集该函数范围内的调用
+            let calls_in_func: Vec<String> = calls
+                .iter()
+                .filter(|c| c.line >= symbol.start_line as usize && c.line <= symbol.end_line as usize)
+                .map(|c| c.callee.clone())
+                .collect();
+
+            // 检测函数参数中哪些可能是污点
+            let parameters: Vec<FunctionParameter> = self
+                .extract_ast_parameters(symbol, &content);
+
+            let is_source = self.is_taint_source(&func_name);
+            let is_sink = self.is_taint_sink(&func_name);
+
+            let node = CallGraphNode {
+                id: func_id,
+                name: func_name,
+                file_path: file_path_str.clone(),
+                start_line: symbol.start_line as usize,
+                end_line: symbol.end_line as usize,
+                parameters,
+                return_type: None,
+                calls: calls_in_func,
+                called_by: Vec::new(),
+                is_external: false,
+                is_taint_source: is_source,
+                is_taint_sink: is_sink,
+            };
+
+            self.call_graph.add_node(node);
+        }
+
+        // 检测动态 import/require
+        self.detect_dynamic_imports(&content, &file_path_str);
+    }
+
+    /// 从 AST Symbol 中提取参数信息
+    fn extract_ast_parameters(
+        &self,
+        symbol: &crate::ast::Symbol,
+        _content: &str,
+    ) -> Vec<FunctionParameter> {
+        let mut params = Vec::new();
+        let func_name = &symbol.name;
+        let is_source = self.is_taint_source(func_name);
+
+        // 尝试从 symbol 的 metadata 中提取参数
+        if let Some(params_val) = symbol.metadata.get("params") {
+            if let Some(arr) = params_val.as_array() {
+                for p in arr {
+                    let name = p.as_str().unwrap_or("").to_string();
+                    if !name.is_empty() {
+                        params.push(FunctionParameter {
+                            name,
+                            param_type: None,
+                            may_be_tainted: is_source,
+                        });
+                    }
+                }
+            }
+        }
+
+        // fallback：使用通用参数名模式
+        if params.is_empty() && is_source {
+            params.push(FunctionParameter {
+                name: "input".to_string(),
+                param_type: None,
+                may_be_tainted: true,
+            });
+        }
+
+        params
+    }
+
+    /// 检测动态 import/require 模式，在调用图中标记不可解析的调用
+    fn detect_dynamic_imports(&mut self, content: &str, file_path: &str) {
+        let mut dynamic_imports = Vec::new();
+
+        for (i, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+
+            // import(expr) — ES dynamic import
+            if trimmed.contains("import(") {
+                let inner = self.extract_balanced_parens(trimmed, "import(");
+                if !inner.starts_with('"') && !inner.starts_with('\'') && !inner.starts_with('`') {
+                    dynamic_imports.push((format!("dynamic_import_{}", i), i + 1));
+                }
+            }
+
+            // require(var) / require(`template${}`) / require(a + b) — dynamic CommonJS
+            if let Some(idx) = trimmed.find("require(") {
+                let inner = self.extract_balanced_parens(&trimmed[idx..], "require(");
+                if !inner.starts_with('"') && !inner.starts_with('\'') {
+                    dynamic_imports.push((format!("dynamic_require_{}", i), i + 1));
+                }
+            }
+        }
+
+        // 为每个动态 import 创建特殊节点
+        for (name, line) in dynamic_imports {
+            let func_id = format!("{}:{}", file_path, name);
+            self.call_graph.add_node(CallGraphNode {
+                id: func_id.clone(),
+                name,
+                file_path: file_path.to_string(),
+                start_line: line,
+                end_line: line,
+                parameters: Vec::new(),
+                return_type: None,
+                calls: vec!["<dynamic>".to_string()],
+                called_by: Vec::new(),
+                is_external: false,
+                is_taint_source: true,
+                is_taint_sink: false,
+            });
+        }
+    }
+
+    /// 从 "prefix(" 后提取括号内内容（不嵌套）
+    fn extract_balanced_parens<'a>(&self, s: &'a str, prefix: &str) -> &'a str {
+        if let Some(start) = s.find(prefix) {
+            let after = &s[start + prefix.len()..];
+            if let Some(end) = after.find(')') {
+                return &after[..end].trim();
+            }
+        }
+        ""
     }
 
     /// 从代码中提取函数
@@ -707,37 +885,58 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 提取函数调用
-    fn extract_function_calls(&self, lines: &[&str], language: &str) -> Vec<String> {
+    fn extract_function_calls(&self, lines: &[&str], _language: &str) -> Vec<String> {
         let mut calls = Vec::new();
         let mut seen = HashSet::new();
 
+        const KEYWORDS: &[&str] = &[
+            "if", "for", "while", "switch", "return", "print", "console",
+            "self", "new", "typeof", "instanceof", "throw", "delete",
+            "class", "import", "export", "from", "async", "await",
+        ];
+
         for line in lines {
-            // 简单的正则匹配
             let line = line.trim();
             if line.is_empty() || line.starts_with("//") || line.starts_with("#") {
                 continue;
             }
 
-            // 查找 function_name( 模式
-            let mut i = 0;
             let chars: Vec<char> = line.chars().collect();
+            let mut i = 0;
+
             while i < chars.len() {
-                if chars[i].is_alphabetic() || chars[i] == '_' {
+                if chars[i] == '.' && i + 1 < chars.len() && (chars[i + 1].is_alphabetic() || chars[i + 1] == '_') {
+                    // .method( 模式
+                    i += 1;
+                    let start = i;
+                    while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                        i += 1;
+                    }
+                    if i < chars.len() && chars[i] == '(' {
+                        let method_name: String = chars[start..i].iter().collect();
+                        if !KEYWORDS.contains(&method_name.as_str()) {
+                            if seen.insert(method_name.clone()) {
+                                calls.push(method_name);
+                            }
+                        }
+                    }
+                } else if chars[i].is_alphabetic() || chars[i] == '_' {
+                    // identifier( 模式
                     let start = i;
                     while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
                         i += 1;
                     }
                     if i < chars.len() && chars[i] == '(' {
                         let func_name: String = chars[start..i].iter().collect();
-                        // 排除关键字
-                        if !["if", "for", "while", "switch", "return", "print", "console", "self"].contains(&func_name.as_str()) {
+                        if !KEYWORDS.contains(&func_name.as_str()) {
                             if seen.insert(func_name.clone()) {
                                 calls.push(func_name);
                             }
                         }
                     }
+                } else {
+                    i += 1;
                 }
-                i += 1;
             }
         }
 
@@ -825,34 +1024,94 @@ impl CrossFileTaintAnalyzer {
     /// 检查是否是污点源
     fn is_taint_source(&self, func_name: &str) -> bool {
         let lower = func_name.to_lowercase();
-        lower.contains("get")
-            || lower.contains("read")
-            || lower.contains("input")
-            || lower.contains("fetch")
-            || lower.contains("receive")
-            || lower.contains("request")
-            || lower.contains("param")
-            || self.source_patterns.iter().any(|s| s.matches(func_name, "*"))
+        let lower = lower.as_str();
+
+        // 精确匹配（全词）
+        const EXACT: &[&str] = &[
+            "get", "read", "input", "fetch", "receive", "request",
+            "parse", "load", "open", "recv", "accept",
+        ];
+        if EXACT.iter().any(|p| lower == *p) {
+            return true;
+        }
+
+        // 前缀匹配（兼容 snake_case 和 camelCase）
+        const PREFIX: &[&str] = &[
+            "get_user", "get_input", "get_data", "get_param", "get_query",
+            "getuser", "getinput", "getdata", "getparam", "getquery",
+            "getrequest", "getpayload",
+            "read_file", "read_input", "read_data",
+            "readfile", "readinput", "readdata",
+            "fetch_data", "fetch_url", "fetch_api",
+            "fetchdata", "fetchurl", "fetchapi",
+            "receive_data", "receive_input", "receive_message",
+            "receivedata", "receiveinput", "receivemessage",
+            "parse_input", "parse_data", "parse_request", "parse_body",
+            "parseinput", "parsedata", "parserequest", "parsebody",
+            "load_data", "load_file", "load_input",
+            "loaddata", "loadfile", "loadinput",
+            "request_input", "request_data",
+            "requestinput", "requestdata",
+        ];
+        if PREFIX.iter().any(|p| lower.starts_with(p)) {
+            return true;
+        }
+
+        // 后缀匹配
+        const SUFFIX: &[&str] = &[
+            "_input", "_data", "_request", "_payload", "_query",
+            "_params", "_body", "_form", "_message",
+            "input", "data", "request", "payload", "query",
+        ];
+        if SUFFIX.iter().any(|p| lower.ends_with(p) && lower.len() > p.len()) {
+            return true;
+        }
+
+        self.source_patterns.iter().any(|s| s.matches(func_name, "*"))
     }
 
     /// 检查是否是污点汇
     fn is_taint_sink(&self, func_name: &str) -> bool {
         let lower = func_name.to_lowercase();
-        lower.contains("execute")
-            || lower.contains("exec")
-            || lower.contains("query")
-            || lower.contains("write")
-            || lower.contains("send")
-            || lower.contains("eval")
-            || lower.contains("system")
-            || self.sink_patterns.iter().any(|s| s.matches(func_name, "*"))
+        let lower = lower.as_str();
+
+        // 精确匹配（全词）
+        const EXACT: &[&str] = &[
+            "execute", "exec", "query", "write", "send", "eval",
+            "system", "run", "open", "redirect",
+        ];
+        if EXACT.iter().any(|p| lower == *p) {
+            return true;
+        }
+
+        // 前缀匹配（兼容 snake_case 和 camelCase）
+        const PREFIX: &[&str] = &[
+            "execute_", "exec_", "query_", "send_", "write_",
+            "eval_", "system_", "run_command", "run_query",
+            "redirect_to", "redirect_url",
+            "executecommand", "runcommand", "runquery",
+            "redirectto", "redirecturl",
+        ];
+        if PREFIX.iter().any(|p| lower.starts_with(p)) {
+            return true;
+        }
+
+        // 后缀匹配
+        const SUFFIX: &[&str] = &[
+            "_execute", "_exec", "_query", "_write", "_send",
+            "_eval", "_system", "_command", "_sql", "_shell",
+        ];
+        if SUFFIX.iter().any(|p| lower.ends_with(p)) {
+            return true;
+        }
+
+        self.sink_patterns.iter().any(|s| s.matches(func_name, "*"))
     }
 
     /// 查找过程间污点流
     fn find_interprocedural_taint_flows(&self) -> Vec<InterproceduralTaintFlow> {
         let mut flows = Vec::new();
 
-        // 查找从污点源到污点汇的调用路径
         for source_id in &self.call_graph.taint_sources {
             for sink_id in &self.call_graph.taint_sinks {
                 if let Some(call_path) = self.call_graph.find_call_path(source_id, sink_id) {
@@ -860,7 +1119,6 @@ impl CrossFileTaintAnalyzer {
                         self.call_graph.nodes.get(source_id),
                         self.call_graph.nodes.get(sink_id),
                     ) {
-                        // 构建过程间路径
                         let mut interprocedural_path = Vec::new();
 
                         for func_id in &call_path {
@@ -882,6 +1140,9 @@ impl CrossFileTaintAnalyzer {
                             }
                         }
 
+                        let (confidence, confidence_factors) =
+                            self.calculate_flow_confidence(&call_path);
+
                         let flow = InterproceduralTaintFlow {
                             id: uuid::Uuid::new_v4().to_string(),
                             source: FlowLocation {
@@ -901,7 +1162,8 @@ impl CrossFileTaintAnalyzer {
                             interprocedural_path,
                             vulnerability_type: VulnerabilityType::Generic,
                             severity: Severity::High,
-                            confidence: 0.7,
+                            confidence,
+                            confidence_factors,
                         };
 
                         flows.push(flow);
@@ -911,6 +1173,45 @@ impl CrossFileTaintAnalyzer {
         }
 
         flows
+    }
+
+    /// 基于传播路径特征计算置信度
+    fn calculate_flow_confidence(&self, call_path: &[String]) -> (f32, Vec<String>) {
+        let mut confidence: f32 = 0.8;
+        let mut factors = Vec::new();
+
+        // 中间节点衰减
+        let hops = call_path.len().saturating_sub(2);
+        if hops > 0 {
+            let decay = 0.85_f32.powi(hops as i32);
+            confidence *= decay;
+            factors.push(format!("intermediate_hops:{}", hops));
+        }
+
+        // 跨文件衰减
+        let files: HashSet<&str> = call_path.iter()
+            .filter_map(|id| id.split(':').next())
+            .collect();
+        if files.len() > 1 {
+            confidence *= 0.9;
+            if files.len() > 2 {
+                confidence *= 0.95;
+            }
+            factors.push(format!("cross_file:{}", files.len()));
+        }
+
+        // 动态节点衰减
+        let has_dynamic = call_path.iter().any(|func_id| {
+            self.call_graph.nodes.get(func_id)
+                .map(|n| n.calls.iter().any(|c| c == "<dynamic>"))
+                .unwrap_or(false)
+        });
+        if has_dynamic {
+            confidence *= 0.5;
+            factors.push("dynamic_import".to_string());
+        }
+
+        (confidence.clamp(0.1, 1.0), factors)
     }
 
     /// 默认污点源模式
@@ -1212,13 +1513,13 @@ pub struct TrustBoundaryInfo {
 
 /// 上下文组装器 — 为指定文件构建跨文件上下文
 pub struct ContextAssembler {
-    /// 调用图
-    call_graph: CallGraph,
+    /// 调用图（Arc 共享，零拷贝）
+    call_graph: Arc<CallGraph>,
 }
 
 impl ContextAssembler {
     /// 从调用图创建
-    pub fn new(call_graph: CallGraph) -> Self {
+    pub fn new(call_graph: Arc<CallGraph>) -> Self {
         Self { call_graph }
     }
 
@@ -1227,7 +1528,7 @@ impl ContextAssembler {
         let mut analyzer = CrossFileTaintAnalyzer::new();
         let _ = analyzer.analyze_project(project_path);
         Self {
-            call_graph: analyzer.call_graph,
+            call_graph: Arc::new(std::mem::take(&mut analyzer.call_graph)),
         }
     }
 

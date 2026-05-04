@@ -67,3 +67,9 @@ similar = { version = "2.5", features = ["text", "inline", "bytes"] }
 deepaudit-core = { path = "core" }
 ctx-audit-tools = { path = "tools" }
 ctx-audit-daemon = { path = "daemon" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

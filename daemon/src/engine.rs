@@ -24,6 +24,7 @@ use deepaudit_core::ast_api::{ASTEngine, ASTParser, QueryEngine, Symbol};
 use deepaudit_core::scanning::{Finding, Scanner, RegexScanner, scan_directory_deep_with_rules, scan_directory_with_rules};
 use deepaudit_core::taint::{AstTaintAnalyzer, TaintFlow, CrossFileTaintAnalyzer};
 use deepaudit_core::watcher::{FileSnapshot, DeltaResult};
+use rayon::prelude::*;
 
 // ────────────────────────────────────────────────────────
 // 文件级 findings 缓存
@@ -51,14 +52,38 @@ struct ProjectScanCache {
 }
 
 // ────────────────────────────────────────────────────────
+// 带时间戳的包装（用于 LRU 淘汰）
+// ────────────────────────────────────────────────────────
+
+/// AST Engine 带访问时间戳和内存估算
+struct TimestampedEngine {
+    engine: Arc<ASTEngine>,
+    last_accessed: std::sync::Mutex<std::time::Instant>,
+    estimated_bytes: usize,
+}
+
+/// Scan Cache 带访问时间戳
+struct TimestampedScanCache {
+    cache: RwLock<ProjectScanCache>,
+    last_accessed: std::sync::Mutex<std::time::Instant>,
+}
+
+/// 内存统计
+pub struct MemoryStats {
+    pub ast_count: usize,
+    pub ast_bytes: usize,
+    pub scan_count: usize,
+}
+
+// ────────────────────────────────────────────────────────
 // 分析引擎
 // ────────────────────────────────────────────────────────
 
 pub struct AnalysisEngine {
-    /// AST 索引引擎: project_path → ASTEngine
-    ast_engines: RwLock<HashMap<String, Arc<ASTEngine>>>,
-    /// 扫描缓存: project_path → ProjectScanCache
-    scan_caches: RwLock<HashMap<String, RwLock<ProjectScanCache>>>,
+    /// AST 索引引擎: project_path → TimestampedEngine
+    ast_engines: RwLock<HashMap<String, TimestampedEngine>>,
+    /// 扫描缓存: project_path → TimestampedScanCache
+    scan_caches: RwLock<HashMap<String, TimestampedScanCache>>,
     /// 规则加载时间戳：rules_dir → (load_time, rule_count)
     rules_cache: RwLock<HashMap<String, (std::time::Instant, usize)>>,
 }
@@ -106,21 +131,27 @@ impl AnalysisEngine {
                         "build".into(), "dist".into(), "__pycache__".into(),
                         "vendor".into(), ".next".into(),
                     ];
-                    RwLock::new(ProjectScanCache {
-                        entries: HashMap::new(),
-                        snapshot: FileSnapshot::new(project_path, ignore),
-                        total_findings: 0,
-                    })
+                    TimestampedScanCache {
+                        cache: RwLock::new(ProjectScanCache {
+                            entries: HashMap::new(),
+                            snapshot: FileSnapshot::new(project_path, ignore),
+                            total_findings: 0,
+                        }),
+                        last_accessed: std::sync::Mutex::new(std::time::Instant::now()),
+                    }
                 });
             }
         }
 
         let caches = self.scan_caches.read().await;
-        let cache = match caches.get(path) {
+        let ts_cache = match caches.get(path) {
             Some(c) => c,
             None => anyhow::bail!("扫描缓存初始化失败"),
         };
-        let mut cache = cache.write().await;
+        if let Ok(mut t) = ts_cache.last_accessed.lock() {
+            *t = std::time::Instant::now();
+        }
+        let mut cache = ts_cache.cache.write().await;
 
         // 检测变更
         let delta = cache.snapshot.detect_changes()
@@ -177,7 +208,7 @@ impl AnalysisEngine {
         }
 
         // 按文件分组新 findings
-        let mut by_file: HashMap<String, Vec<Finding>> = HashMap::new();
+        let mut by_file: HashMap<String, Vec<Finding>> = HashMap::with_capacity(changed_set.len());
         for f in &new_findings {
             by_file.entry(f.file_path.clone()).or_default().push(f.clone());
         }
@@ -243,10 +274,13 @@ impl AnalysisEngine {
 
         // 按 file_path 分组缓存
         let caches = self.scan_caches.read().await;
-        if let Some(cache_rwlock) = caches.get(path) {
-            let mut cache = cache_rwlock.write().await;
+        if let Some(ts_cache) = caches.get(path) {
+            if let Ok(mut t) = ts_cache.last_accessed.lock() {
+                *t = std::time::Instant::now();
+            }
+            let mut cache = ts_cache.cache.write().await;
 
-            let mut by_file: HashMap<String, Vec<Finding>> = HashMap::new();
+            let mut by_file: HashMap<String, Vec<Finding>> = HashMap::with_capacity(findings.len());
             for f in &findings {
                 let rel = path_relative_to(project_path, Path::new(&f.file_path));
                 by_file.entry(rel.clone()).or_default().push(f.clone());
@@ -277,7 +311,7 @@ impl AnalysisEngine {
         })
     }
 
-    /// 扫描指定文件集合
+    /// 扫描指定文件集合（并行处理）
     async fn scan_files(
         &self,
         project_path: &str,
@@ -292,32 +326,49 @@ impl AnalysisEngine {
         const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
         let regex_scanner = RegexScanner::new();
-        let mut all_findings = Vec::new();
+        let rt_handle = tokio::runtime::Handle::current();
 
-        for file_path in files {
-            if !file_path.exists() {
-                continue;
-            }
-            // 文件大小检查
-            match std::fs::metadata(file_path) {
-                Ok(meta) if meta.len() > MAX_FILE_SIZE => {
-                    tracing::warn!("跳过大文件 ({}MB): {:?}", meta.len() / 1024 / 1024, file_path);
-                    continue;
+        // 并行扫描文件
+        let batch_results: Vec<(Vec<Finding>, Option<(String, String)>)> = files
+            .par_iter()
+            .filter_map(|file_path| {
+                if !file_path.exists() {
+                    return None;
                 }
-                Err(_) => continue,
-                _ => {}
-            }
-            let content = match std::fs::read_to_string(file_path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
+                // 文件大小检查
+                match std::fs::metadata(file_path) {
+                    Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+                        tracing::warn!("跳过大文件 ({}MB): {:?}", meta.len() / 1024 / 1024, file_path);
+                        return None;
+                    }
+                    Err(_) => return None,
+                    _ => {}
+                }
+                let content = std::fs::read_to_string(file_path).ok()?;
 
-            let file_path_buf = file_path.to_path_buf();
-            let file_findings = regex_scanner.scan_file(&file_path_buf, &content).await;
-            all_findings.extend(file_findings);
+                let file_findings = rt_handle.block_on(regex_scanner.scan_file(file_path, &content));
+
+                let cached = if deep && !file_findings.is_empty() {
+                    Some((file_path.to_string_lossy().to_string(), content))
+                } else {
+                    None
+                };
+
+                Some((file_findings, cached))
+            })
+            .collect();
+
+        // 合并结果
+        let mut all_findings = Vec::with_capacity(files.len() * 4);
+        let mut content_cache = std::collections::HashMap::new();
+        for (findings, cached) in batch_results {
+            if let Some((path, content)) = cached {
+                content_cache.insert(path, content);
+            }
+            all_findings.extend(findings);
         }
 
-        // 如果 deep 模式，对有 findings 的文件做 taint 分析
+        // 如果 deep 模式，对有 findings 的文件做 taint 分析（复用 content cache）
         if deep && !all_findings.is_empty() {
             let mut taint_analyzer = AstTaintAnalyzer::new();
             let files_with_findings: std::collections::HashSet<String> = all_findings.iter()
@@ -326,28 +377,35 @@ impl AnalysisEngine {
 
             for file_path_str in &files_with_findings {
                 let p = Path::new(file_path_str);
-                if let Ok(code) = std::fs::read_to_string(p) {
-                    let flows = taint_analyzer.analyze_file(p, &code);
-                    for flow in flows {
-                        all_findings.push(Finding {
-                            finding_id: uuid::Uuid::new_v4().to_string(),
-                            file_path: file_path_str.clone(),
-                            line_start: flow.source.line,
-                            line_end: flow.sink.line,
-                            detector: "ast_taint".to_string(),
-                            vuln_type: format!("{:?}", flow.vulnerability_type),
-                            severity: format!("{:?}", flow.severity).to_lowercase(),
-                            description: format!(
-                                "Taint flow: {}:{} → {}:{}",
-                                flow.source.symbol, flow.source.line,
-                                flow.sink.symbol, flow.sink.line
-                            ),
-                            analysis_trail: None,
-                            llm_output: None,
-                            confidence: Some(flow.confidence),
-                            corroboration_count: None,
-                        });
-                    }
+                // 优先使用缓存，避免重复读取
+                let code = if let Some(cached) = content_cache.get(file_path_str) {
+                    cached.clone()
+                } else if let Ok(c) = std::fs::read_to_string(p) {
+                    c
+                } else {
+                    continue;
+                };
+
+                let flows = taint_analyzer.analyze_file(p, &code);
+                for flow in flows {
+                    all_findings.push(Finding {
+                        finding_id: uuid::Uuid::new_v4().to_string(),
+                        file_path: file_path_str.clone(),
+                        line_start: flow.source.line,
+                        line_end: flow.sink.line,
+                        detector: "ast_taint".to_string(),
+                        vuln_type: format!("{:?}", flow.vulnerability_type),
+                        severity: format!("{:?}", flow.severity).to_lowercase(),
+                        description: format!(
+                            "Taint flow: {}:{} → {}:{}",
+                            flow.source.symbol, flow.source.line,
+                            flow.sink.symbol, flow.sink.line
+                        ),
+                        analysis_trail: None,
+                        llm_output: None,
+                        confidence: Some(flow.confidence),
+                        corroboration_count: None,
+                    });
                 }
             }
         }
@@ -456,7 +514,10 @@ impl AnalysisEngine {
     pub async fn ensure_indexed(&self, project_path: &str) -> Result<()> {
         {
             let engines = self.ast_engines.read().await;
-            if engines.contains_key(project_path) {
+            if let Some(ts_engine) = engines.get(project_path) {
+                if let Ok(mut t) = ts_engine.last_accessed.lock() {
+                    *t = std::time::Instant::now();
+                }
                 return Ok(());
             }
         }
@@ -474,8 +535,13 @@ impl AnalysisEngine {
             Err(e) => tracing::warn!("项目索引失败: {}", e),
         }
 
+        let estimated_bytes = estimate_ast_bytes(&engine);
         let mut engines = self.ast_engines.write().await;
-        engines.insert(project_path.to_string(), engine);
+        engines.insert(project_path.to_string(), TimestampedEngine {
+            engine,
+            last_accessed: std::sync::Mutex::new(std::time::Instant::now()),
+            estimated_bytes,
+        });
         Ok(())
     }
 
@@ -490,8 +556,11 @@ impl AnalysisEngine {
         self.ensure_indexed(project_path).await?;
 
         let engines = self.ast_engines.read().await;
-        if let Some(engine) = engines.get(project_path) {
-            match engine.search_symbols(query) {
+        if let Some(ts_engine) = engines.get(project_path) {
+            if let Ok(mut t) = ts_engine.last_accessed.lock() {
+                *t = std::time::Instant::now();
+            }
+            match ts_engine.engine.search_symbols(query) {
                 Ok(results) => {
                     let limit = limit.unwrap_or(50);
                     Ok(results.iter().take(limit).map(|s| json!({
@@ -520,8 +589,11 @@ impl AnalysisEngine {
         self.ensure_indexed(project_path).await?;
 
         let engines = self.ast_engines.read().await;
-        if let Some(engine) = engines.get(project_path) {
-            match engine.get_call_graph(entry, depth.unwrap_or(3)) {
+        if let Some(ts_engine) = engines.get(project_path) {
+            if let Ok(mut t) = ts_engine.last_accessed.lock() {
+                *t = std::time::Instant::now();
+            }
+            match ts_engine.engine.get_call_graph(entry, depth.unwrap_or(3)) {
                 Ok(graph) => Ok(graph),
                 Err(e) => anyhow::bail!("调用图查询失败: {}", e),
             }
@@ -608,6 +680,95 @@ impl AnalysisEngine {
         (ast_count, scan_count)
     }
 
+    /// 内存统计（用于心跳上报）
+    pub async fn memory_stats(&self) -> MemoryStats {
+        let engines = self.ast_engines.read().await;
+        let ast_bytes: usize = engines.values().map(|v| v.estimated_bytes).sum();
+        let ast_count = engines.len();
+        drop(engines);
+
+        let caches = self.scan_caches.read().await;
+        let scan_count = caches.len();
+
+        MemoryStats { ast_count, ast_bytes, scan_count }
+    }
+
+    // ── 内存淘汰 ─────────────────────────────────────
+
+    /// 淘汰空闲超时的 AST Engine，或总量超限时淘汰最久未访问的
+    pub fn evict_idle_ast_engines(&self) -> usize {
+        const MAX_IDLE_SECS: u64 = 3600;
+        const MAX_TOTAL_BYTES: usize = 512 * 1024 * 1024;
+
+        let mut engines = match self.ast_engines.try_write() {
+            Ok(guard) => guard,
+            Err(_) => return 0, // 正在被占用，跳过本次淘汰
+        };
+
+        let expired: Vec<String> = engines.iter()
+            .filter_map(|(k, v)| {
+                let last = v.last_accessed.lock().ok()?;
+                if last.elapsed().as_secs() > MAX_IDLE_SECS { Some(k.clone()) } else { None }
+            })
+            .collect();
+
+        let mut evicted = expired.len();
+        for key in &expired {
+            engines.remove(key);
+        }
+
+        let total: usize = engines.values().map(|v| v.estimated_bytes).sum();
+        if total > MAX_TOTAL_BYTES {
+            let mut entries: Vec<(String, std::time::Duration, usize)> = engines.iter()
+                .filter_map(|(k, v)| {
+                    let last = v.last_accessed.lock().ok()?;
+                    Some((k.clone(), last.elapsed(), v.estimated_bytes))
+                })
+                .collect();
+            entries.sort_by(|a, b| b.1.cmp(&a.1));
+
+            let mut freed = 0usize;
+            for (key, _, bytes) in entries {
+                if total - freed <= MAX_TOTAL_BYTES { break; }
+                engines.remove(&key);
+                freed += bytes;
+                evicted += 1;
+            }
+        }
+
+        if evicted > 0 {
+            tracing::info!("[内存管理] 淘汰 {} 个空闲 AST Engine", evicted);
+        }
+        evicted
+    }
+
+    /// 淘汰空闲超时的 Scan Cache
+    pub fn evict_idle_scan_caches(&self) -> usize {
+        const MAX_IDLE_SECS: u64 = 7200;
+
+        let mut caches = match self.scan_caches.try_write() {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        let expired: Vec<String> = caches.iter()
+            .filter_map(|(k, v)| {
+                let last = v.last_accessed.lock().ok()?;
+                if last.elapsed().as_secs() > MAX_IDLE_SECS { Some(k.clone()) } else { None }
+            })
+            .collect();
+
+        let evicted = expired.len();
+        for key in &expired {
+            caches.remove(key.as_str());
+        }
+
+        if evicted > 0 {
+            tracing::info!("[内存管理] 淘汰 {} 个空闲 Scan Cache", evicted);
+        }
+        evicted
+    }
+
     /// 规则热重载状态日志（带缓存去重）
     async fn log_rules_status(&self, project_path: &str, rules_dir: Option<&str>) {
         let rules_cache = self.rules_cache.read().await;
@@ -664,14 +825,22 @@ fn path_relative_to(root: &Path, full: &Path) -> String {
 }
 
 async fn cache_entries_count(
-    caches: &RwLock<HashMap<String, RwLock<ProjectScanCache>>>,
+    caches: &RwLock<HashMap<String, TimestampedScanCache>>,
     path: &str,
 ) -> usize {
     let caches = caches.read().await;
-    if let Some(cache) = caches.get(path) {
-        let cache = cache.read().await;
+    if let Some(ts_cache) = caches.get(path) {
+        let cache = ts_cache.cache.read().await;
         cache.entries.len()
     } else {
         0
     }
+}
+
+/// 估算 AST Engine 的内存占用
+fn estimate_ast_bytes(engine: &ASTEngine) -> usize {
+    engine.get_statistics().ok()
+        .and_then(|s| s.get("total_nodes").and_then(|v| v.as_u64()))
+        .map(|n| n as usize * 512)
+        .unwrap_or(0)
 }
