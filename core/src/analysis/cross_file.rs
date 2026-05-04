@@ -103,12 +103,12 @@ impl CallGraph {
     /// 添加调用关系
     pub fn add_call(&mut self, caller_id: &str, callee_id: &str) {
         if let Some(caller) = self.nodes.get_mut(caller_id) {
-            if !caller.calls.contains(&callee_id.to_string()) {
+            if !caller.calls.iter().any(|c| c == callee_id) {
                 caller.calls.push(callee_id.to_string());
             }
         }
         if let Some(callee) = self.nodes.get_mut(callee_id) {
-            if !callee.called_by.contains(&caller_id.to_string()) {
+            if !callee.called_by.iter().any(|c| c == caller_id) {
                 callee.called_by.push(caller_id.to_string());
             }
         }
@@ -529,10 +529,10 @@ impl CrossFileTaintAnalyzer {
         let file_path_str = file_path.to_string_lossy().to_string();
         let mut parser = crate::ast::ASTParser::new();
 
-        let symbols = match parser.parse_file(file_path, &content) {
+        let (symbols_result, calls) = parser.parse_and_extract_calls(file_path, &content);
+        let symbols = match symbols_result {
             Ok(s) => s,
             Err(_) => {
-                // AST 解析失败，回退到文本扫描
                 let language = self.infer_language(file_path);
                 let functions = self.extract_functions(&content, &file_path_str, language);
                 for func in functions {
@@ -541,8 +541,6 @@ impl CrossFileTaintAnalyzer {
                 return;
             }
         };
-
-        let calls = parser.extract_calls(file_path, &content);
 
         // 从 symbols 中提取函数/方法定义
         for symbol in &symbols {
@@ -1110,23 +1108,32 @@ impl CrossFileTaintAnalyzer {
 
     /// 查找过程间污点流
     fn find_interprocedural_taint_flows(&self) -> Vec<InterproceduralTaintFlow> {
+        let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let mut flows = Vec::new();
 
+        // 对每个 source 做 BFS，一次遍历找到所有可达的 sink
         for source_id in &self.call_graph.taint_sources {
-            for sink_id in &self.call_graph.taint_sinks {
-                if let Some(call_path) = self.call_graph.find_call_path(source_id, sink_id) {
+            // BFS: source_id → (path_from_source)
+            let mut visited: HashSet<&String> = HashSet::new();
+            // queue: (current_node, path_from_source)
+            let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::new();
+            queue.push_back((source_id.clone(), vec![source_id.clone()]));
+            visited.insert(source_id);
+
+            while let Some((current_id, path)) = queue.pop_front() {
+                // 检查当前节点是否是 sink
+                if sink_set.contains(&current_id) && current_id != *source_id {
                     if let (Some(source), Some(sink)) = (
                         self.call_graph.nodes.get(source_id),
-                        self.call_graph.nodes.get(sink_id),
+                        self.call_graph.nodes.get(&current_id),
                     ) {
                         let mut interprocedural_path = Vec::new();
-
-                        for func_id in &call_path {
+                        for func_id in &path {
                             if let Some(func) = self.call_graph.nodes.get(func_id) {
                                 interprocedural_path.push(InterproceduralStep {
                                     step_type: if func_id == source_id {
                                         InterproceduralStepType::Source
-                                    } else if func_id == sink_id {
+                                    } else if func_id == &current_id {
                                         InterproceduralStepType::Sink
                                     } else {
                                         InterproceduralStepType::ReturnValue
@@ -1141,9 +1148,9 @@ impl CrossFileTaintAnalyzer {
                         }
 
                         let (confidence, confidence_factors) =
-                            self.calculate_flow_confidence(&call_path);
+                            self.calculate_flow_confidence(&path);
 
-                        let flow = InterproceduralTaintFlow {
+                        flows.push(InterproceduralTaintFlow {
                             id: uuid::Uuid::new_v4().to_string(),
                             source: FlowLocation {
                                 file_path: source.file_path.clone(),
@@ -1164,9 +1171,20 @@ impl CrossFileTaintAnalyzer {
                             severity: Severity::High,
                             confidence,
                             confidence_factors,
-                        };
+                        });
+                    }
+                    // 继续探索（sink 可能转发到另一个 sink）
+                }
 
-                        flows.push(flow);
+                // 扩展邻居
+                if let Some(node) = self.call_graph.nodes.get(&current_id) {
+                    for callee_id in &node.calls {
+                        if !visited.contains(callee_id) {
+                            visited.insert(callee_id);
+                            let mut new_path = path.clone();
+                            new_path.push(callee_id.clone());
+                            queue.push_back((callee_id.clone(), new_path));
+                        }
                     }
                 }
             }

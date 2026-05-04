@@ -1354,6 +1354,47 @@ fn extract_last_name(node: &Node, content: &str) -> String {
     text.split('.').last().unwrap_or(&text).to_string()
 }
 
+impl ASTParser {
+    /// 一次解析同时提取 symbols 和 calls（避免双重解析）
+    pub fn parse_and_extract_calls(
+        &mut self,
+        file_path: &Path,
+        content: &str,
+    ) -> (Result<Vec<Symbol>, String>, Vec<CallInfo>) {
+        let ext = file_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+
+        let parser = match self.parsers.get_mut(&ext) {
+            Some(p) => p,
+            None => return (Err(format!("Unsupported file extension: {}", ext)), Vec::new()),
+        };
+
+        let tree = match parser.parse(content, None) {
+            Some(t) => t,
+            None => return (Err("Failed to parse file".to_string()), Vec::new()),
+        };
+
+        let root = tree.root_node();
+
+        let mut calls = Vec::new();
+        Self::collect_calls_recursive(&root, content, &mut calls);
+
+        let symbols = match ext.as_str() {
+            ".java" => self.extract_java_symbols(file_path, content, root),
+            ".py" => self.extract_python_symbols(file_path, content, root),
+            ".rs" => self.extract_rust_symbols(file_path, content, root),
+            ".ts" | ".tsx" => self.extract_typescript_symbols(file_path, content, root),
+            ".js" | ".jsx" => self.extract_javascript_symbols(file_path, content, root),
+            _ => self.extract_generic_symbols(file_path, content, &ext, root),
+        };
+
+        (symbols, calls)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

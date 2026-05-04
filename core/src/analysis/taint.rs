@@ -56,8 +56,7 @@ impl TaintSource {
 
     /// 检查是否匹配给定的符号
     pub fn matches(&self, symbol: &str, language: &str) -> bool {
-        // 检查语言
-        if !self.languages.contains(&"*".to_string()) && !self.languages.contains(&language.to_string()) {
+        if !self.languages.iter().any(|l| l == "*" || l == language) {
             return false;
         }
 
@@ -125,8 +124,7 @@ impl TaintSink {
 
     /// 检查是否匹配给定的函数名
     pub fn matches(&self, func_name: &str, language: &str) -> bool {
-        // 检查语言
-        if !self.languages.contains(&"*".to_string()) && !self.languages.contains(&language.to_string()) {
+        if !self.languages.iter().any(|l| l == "*" || l == language) {
             return false;
         }
 
@@ -490,15 +488,20 @@ impl TaintAnalyzer {
         let lines: Vec<&str> = code.lines().collect();
 
         // 收集污点源
-        let sources = self.find_sources(&lines, file_path, language);
+        let mut sources = self.find_sources(&lines, file_path, language);
 
         // 收集污点汇
-        let sinks = self.find_sinks(&lines, file_path, language);
+        let mut sinks = self.find_sinks(&lines, file_path, language);
 
-        // 追踪污点流
+        // 按行号排序，使用二分查找跳过不可达的配对
+        sources.sort_by_key(|(loc, _)| loc.line);
+        sinks.sort_by_key(|(loc, _)| loc.line);
+
         for source in &sources {
-            for sink in &sinks {
-                // 尝试追踪从源到汇的路径
+            let src_line = source.0.line;
+            // 二分查找第一个 sink.line > src_line 的位置
+            let first_valid = sinks.partition_point(|(loc, _)| loc.line <= src_line);
+            for sink in &sinks[first_valid..] {
                 if let Some(flow) = self.trace_flow(source, sink, &lines, file_path) {
                     flows.push(flow);
                 }

@@ -199,7 +199,7 @@ impl AnalysisEngine {
             delta.changed_files.len(), delta.deleted_files.len()
         );
 
-        let new_findings = self.scan_files(path, &changed_set, deep).await?;
+        let (new_findings, file_hashes) = self.scan_files(path, &changed_set, deep).await?;
 
         // 更新缓存：移除变更文件的旧 findings，加入新的
         for file_path in &changed_set {
@@ -213,11 +213,14 @@ impl AnalysisEngine {
             by_file.entry(f.file_path.clone()).or_default().push(f.clone());
         }
 
-        // 计算变更文件的 content hash 并缓存
+        // 计算变更文件的 content hash 并缓存（优先使用 scan_files 中已计算的 hash）
         for file_path in &changed_set {
             let rel = path_relative_to(project_path, file_path);
             let full = project_path.join(&rel);
-            let hash = hash_file_content(&full);
+            let full_str = full.to_string_lossy().to_string();
+            let hash = file_hashes.get(&full_str)
+                .copied()
+                .unwrap_or_else(|| hash_file_content(&full));
             let findings = by_file.get(&rel).cloned().unwrap_or_default();
             cache.entries.insert(rel.clone(), FileFindings {
                 relative_path: rel,
@@ -311,15 +314,15 @@ impl AnalysisEngine {
         })
     }
 
-    /// 扫描指定文件集合（并行处理）
+    /// 扫描指定文件集合（并行处理），同时返回 content hash
     async fn scan_files(
         &self,
         project_path: &str,
         files: &std::collections::HashSet<PathBuf>,
         deep: bool,
-    ) -> Result<Vec<Finding>> {
+    ) -> Result<(Vec<Finding>, HashMap<String, u64>)> {
         if files.is_empty() {
-            return Ok(vec![]);
+            return Ok((vec![], HashMap::new()));
         }
 
         /// 最大文件大小 10MB，超过则跳过
@@ -328,8 +331,8 @@ impl AnalysisEngine {
         let regex_scanner = RegexScanner::new();
         let rt_handle = tokio::runtime::Handle::current();
 
-        // 并行扫描文件
-        let batch_results: Vec<(Vec<Finding>, Option<(String, String)>)> = files
+        // 并行扫描文件（同时计算 content hash）
+        let batch_results: Vec<(Vec<Finding>, Option<(String, String)>, u64)> = files
             .par_iter()
             .filter_map(|file_path| {
                 if !file_path.exists() {
@@ -346,6 +349,9 @@ impl AnalysisEngine {
                 }
                 let content = std::fs::read_to_string(file_path).ok()?;
 
+                // 在内存中顺便计算 hash，避免后续二次读取
+                let content_hash = hash_content(&content);
+
                 let file_findings = rt_handle.block_on(regex_scanner.scan_file(file_path, &content));
 
                 let cached = if deep && !file_findings.is_empty() {
@@ -354,16 +360,18 @@ impl AnalysisEngine {
                     None
                 };
 
-                Some((file_findings, cached))
+                Some((file_findings, cached, content_hash))
             })
             .collect();
 
         // 合并结果
         let mut all_findings = Vec::with_capacity(files.len() * 4);
         let mut content_cache = std::collections::HashMap::new();
-        for (findings, cached) in batch_results {
-            if let Some((path, content)) = cached {
-                content_cache.insert(path, content);
+        let mut file_hashes: HashMap<String, u64> = HashMap::with_capacity(files.len());
+        for (findings, cached, hash) in batch_results {
+            if let Some((ref path, ref content)) = cached {
+                content_cache.insert(path.clone(), content.clone());
+                file_hashes.insert(path.clone(), hash);
             }
             all_findings.extend(findings);
         }
@@ -410,7 +418,7 @@ impl AnalysisEngine {
             }
         }
 
-        Ok(all_findings)
+        Ok((all_findings, file_hashes))
     }
 
     // ── 污点追踪 ──────────────────────────────────────
@@ -838,6 +846,16 @@ async fn cache_entries_count(
 }
 
 /// 估算 AST Engine 的内存占用
+/// 计算内存中内容的 hash（避免二次文件 IO）
+fn hash_content(content: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    use std::collections::hash_map::DefaultHasher;
+
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
 fn estimate_ast_bytes(engine: &ASTEngine) -> usize {
     engine.get_statistics().ok()
         .and_then(|s| s.get("total_nodes").and_then(|v| v.as_u64()))
