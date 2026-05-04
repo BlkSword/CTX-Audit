@@ -7,6 +7,7 @@ pub mod sca_scanner;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use rayon::prelude::*;
 
@@ -217,6 +218,17 @@ pub async fn scan_directory_with_rules(
     rules_dir: Option<&str>,
     exclude_dirs: Option<Vec<String>>,
 ) -> Result<Vec<Finding>, String> {
+    let (findings, _) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true).await?;
+    Ok(findings)
+}
+
+/// 内部实现：返回 findings 和文件内容缓存（用于 deep scan 复用）
+async fn scan_directory_with_rules_inner(
+    path: &str,
+    rules_dir: Option<&str>,
+    exclude_dirs: Option<Vec<String>>,
+    collect_content: bool,
+) -> Result<(Vec<Finding>, HashMap<String, String>), String> {
     use ignore::Walk;
 
     // 合并默认排除 + 用户排除
@@ -241,7 +253,8 @@ pub async fn scan_directory_with_rules(
         attack_surface.stats.unauthenticated_count,
     );
 
-    let mut findings = Vec::new();
+    let mut findings = Vec::with_capacity(attack_surface.entry_points.len() / 4);
+    let mut content_cache: HashMap<String, String> = HashMap::new();
 
     // 从攻击面生成未认证端点发现（过滤 test 目录）
     for ep in &attack_surface.entry_points {
@@ -356,14 +369,15 @@ pub async fn scan_directory_with_rules(
     let mut total_bytes_read: usize = 0;
 
     for chunk in code_files.chunks(batch_size) {
-        let code_findings: Vec<Vec<Finding>> = chunk
+        let code_results: Vec<(Vec<Finding>, Option<(String, String)>, usize)> = chunk
             .par_iter()
             .map(|path_buf| {
                 let content = match std::fs::read_to_string(path_buf) {
                     Ok(c) => c,
-                    Err(_) => return Vec::new(),
+                    Err(_) => return (Vec::new(), None, 0),
                 };
 
+                let content_len = content.len();
                 let mut file_findings = Vec::new();
 
                 // 规则扫描
@@ -372,11 +386,17 @@ pub async fn scan_directory_with_rules(
                     file_findings.extend(rule_results);
                 }
 
-                file_findings
+                let cached = if collect_content && !file_findings.is_empty() {
+                    Some((path_buf.to_string_lossy().to_string(), content))
+                } else {
+                    None
+                };
+
+                (file_findings, cached, content_len)
             })
             .collect();
 
-        total_bytes_read += chunk.len() * 10_000;
+        total_bytes_read += code_results.iter().map(|(_, _, len)| *len).sum::<usize>();
         if total_bytes_read > MEMORY_BUDGET_BYTES {
             tracing::warn!(
                 "内存预算接近上限 ({}MB)，停止扫描剩余文件",
@@ -385,7 +405,10 @@ pub async fn scan_directory_with_rules(
             break;
         }
 
-        for mut batch in code_findings {
+        for (mut batch, cached, _) in code_results {
+            if let Some((path, content)) = cached {
+                content_cache.insert(path, content);
+            }
             findings.append(&mut batch);
         }
     }
@@ -429,7 +452,13 @@ pub async fn scan_directory_with_rules(
     // 去重
     findings = deduplicate_findings(findings);
 
-    Ok(findings)
+    // 去重后清理缓存中不再需要的文件
+    if !content_cache.is_empty() {
+        let remaining_files: HashSet<String> = findings.iter().map(|f| f.file_path.clone()).collect();
+        content_cache.retain(|path, _| remaining_files.contains(path));
+    }
+
+    Ok((findings, content_cache))
 }
 
 /// 带攻击面信息的扫描结果
@@ -460,8 +489,8 @@ pub async fn scan_directory_deep_with_rules(
     rules_dir: Option<&str>,
     exclude_dirs: Option<Vec<String>>,
 ) -> Result<Vec<Finding>, String> {
-    // 先执行基础扫描
-    let mut findings = scan_directory_with_rules(path, rules_dir, exclude_dirs).await?;
+    // 先执行基础扫描（收集文件内容缓存）
+    let (mut findings, content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true).await?;
 
     if findings.is_empty() {
         return Ok(findings);
@@ -473,9 +502,9 @@ pub async fn scan_directory_deep_with_rules(
         .map(|f| f.file_path.clone())
         .collect();
 
-    // AST 污点分析
+    // AST 污点分析（复用 content_cache，避免重复读取文件）
     let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
-    let mut taint_findings: Vec<Finding> = Vec::new();
+    let mut taint_findings: Vec<Finding> = Vec::with_capacity(candidate_files.len() * 4);
 
     for file_path_str in &candidate_files {
         let file_path = std::path::Path::new(file_path_str);
@@ -484,39 +513,46 @@ pub async fn scan_directory_deep_with_rules(
             continue;
         }
 
-        if let Ok(content) = std::fs::read_to_string(file_path) {
-            let flows = analyzer.analyze_file(file_path, &content);
+        // 优先使用缓存，缓存未命中再读取文件
+        let content = if let Some(cached) = content_cache.get(file_path_str) {
+            cached.clone()
+        } else if let Ok(c) = std::fs::read_to_string(file_path) {
+            c
+        } else {
+            continue;
+        };
 
-            for flow in &flows {
-                let file_str = file_path.to_string_lossy().to_string();
-                let trail: Vec<String> = flow.path.iter().map(|n| {
-                    format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
-                }).collect();
+        let flows = analyzer.analyze_file(file_path, &content);
 
-                let vuln_name = format!("{}", flow.vulnerability_type);
+        for flow in &flows {
+            let file_str = file_path.to_string_lossy().to_string();
+            let trail: Vec<String> = flow.path.iter().map(|n| {
+                format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
+            }).collect();
 
-                taint_findings.push(Finding {
-                    finding_id: flow.id.clone(),
-                    file_path: file_str,
-                    line_start: flow.source.line,
-                    line_end: flow.sink.line,
-                    detector: "AstTaintScanner".to_string(),
-                    vuln_type: vuln_name.clone(),
-                    severity: format!("{:?}", flow.severity).to_lowercase(),
-                    description: format!(
-                        "{}: {} → {} ({}→{})",
-                        vuln_name,
-                        flow.source.symbol,
-                        flow.sink.symbol,
-                        flow.source.line,
-                        flow.sink.line,
-                    ),
-                    analysis_trail: Some(trail),
-                    llm_output: None,
-                    confidence: Some(0.85),
-                    corroboration_count: None,
-                });
-            }
+            let vuln_name = format!("{}", flow.vulnerability_type);
+
+            taint_findings.push(Finding {
+                finding_id: flow.id.clone(),
+                file_path: file_str,
+                line_start: flow.source.line,
+                line_end: flow.sink.line,
+                detector: "AstTaintScanner".to_string(),
+                vuln_type: vuln_name.clone(),
+                severity: format!("{:?}", flow.severity).to_lowercase(),
+                description: format!(
+                    "{}: {} → {} ({}→{})",
+                    vuln_name,
+                    flow.source.symbol,
+                    flow.sink.symbol,
+                    flow.source.line,
+                    flow.sink.line,
+                ),
+                analysis_trail: Some(trail),
+                llm_output: None,
+                confidence: Some(0.85),
+                corroboration_count: None,
+            });
         }
     }
 
@@ -596,23 +632,23 @@ fn is_ast_supported_file(path: &std::path::Path) -> bool {
     }
 }
 
-/// 去重发现：按 (file_path, line_start) 分组，同一行合并为一条
+/// 去重发现：按 (file_path, line_start) 精确分组，再按 (file_path, vuln_type) ±3 行容差分组
 fn deduplicate_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
     if findings.is_empty() {
         return findings;
     }
 
-    // 按 (file_path, line_start) 分组
+    // Round 1: 精确匹配 (file_path, line_start)
     let mut groups: std::collections::HashMap<(String, usize), Vec<usize>> =
-        std::collections::HashMap::new();
+        std::collections::HashMap::with_capacity(findings.len());
 
     for (i, f) in findings.iter().enumerate() {
         let key = (f.file_path.clone(), f.line_start);
         groups.entry(key).or_default().push(i);
     }
 
-    let mut result = Vec::new();
-    let mut deduped_indices = std::collections::HashSet::new();
+    let mut result = Vec::with_capacity(groups.len());
+    let mut deduped_indices = std::collections::HashSet::with_capacity(findings.len());
 
     for (_key, indices) in groups {
         if indices.len() == 1 {
@@ -622,77 +658,178 @@ fn deduplicate_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
                 result.push(findings[idx].clone());
             }
         } else {
-            // 多个发现合并：取最高 severity，合并 detector，最长的 description
-            let mut best_severity = "info".to_string();
-            let mut best_vuln_type = String::new();
-            let mut detectors = Vec::new();
-            let mut best_confidence: f32 = 0.0;
-            let mut best_description = String::new();
-            let mut best_trail: Option<Vec<String>> = None;
-            let mut best_id = String::new();
-            let mut best_end = 0usize;
-
+            let merged = merge_findings_at_indices(&findings, &indices);
             for &idx in &indices {
-                let f = &findings[idx];
-                detectors.push(f.detector.clone());
-
-                if severity_rank(&f.severity) > severity_rank(&best_severity) {
-                    best_severity = f.severity.clone();
-                }
-
-                // 优先选择 CWE 编号（更具体）而非通用名称
-                let current_len = best_vuln_type.len();
-                if f.vuln_type.starts_with("CWE-") && !best_vuln_type.starts_with("CWE-") {
-                    best_vuln_type = f.vuln_type.clone();
-                } else if !f.vuln_type.starts_with("CWE-") && current_len == 0 {
-                    best_vuln_type = f.vuln_type.clone();
-                } else if f.vuln_type.len() > current_len {
-                    best_vuln_type = f.vuln_type.clone();
-                }
-
-                if f.confidence.unwrap_or(0.0) > best_confidence {
-                    best_confidence = f.confidence.unwrap_or(0.0);
-                }
-
-                if f.description.len() > best_description.len() {
-                    best_description = f.description.clone();
-                }
-
-                if f.analysis_trail.as_ref().map(|t| t.len()).unwrap_or(0)
-                    > best_trail.as_ref().map(|t| t.len()).unwrap_or(0)
-                {
-                    best_trail = f.analysis_trail.clone();
-                }
-
-                if f.line_end > best_end {
-                    best_end = f.line_end;
-                    best_id = f.finding_id.clone();
-                }
-
                 deduped_indices.insert(idx);
             }
-
-            // 去重 detector 列表
-            detectors.sort();
-            detectors.dedup();
-
-            result.push(Finding {
-                finding_id: best_id,
-                file_path: findings[indices[0]].file_path.clone(),
-                line_start: findings[indices[0]].line_start,
-                line_end: best_end,
-                detector: detectors.join("+"),
-                vuln_type: best_vuln_type,
-                severity: best_severity,
-                description: best_description,
-                analysis_trail: best_trail,
-                llm_output: None,
-                confidence: Some(best_confidence.min(0.5 + 0.1 * indices.len() as f32).min(1.0)),
-                corroboration_count: Some(indices.len()),
-            });
+            result.push(merged);
         }
     }
 
+    // Round 2: 容差匹配 — 对 Round 1 的结果按 (file_path, vuln_type) 分组，±3 行内合并
+    result = deduplicate_with_tolerance(result);
+
+    result
+}
+
+/// 多引擎置信度融合（独立证据组合）
+fn fuse_confidences(confidences: &[f32]) -> f32 {
+    if confidences.is_empty() {
+        return 0.0;
+    }
+    if confidences.len() == 1 {
+        return confidences[0];
+    }
+    let disbelief: f32 = confidences.iter().map(|&c| 1.0 - c).product();
+    (1.0 - disbelief).min(0.95)
+}
+
+/// 合并同一精确位置的多个 findings
+fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding {
+    let mut best_severity = "info".to_string();
+    let mut best_vuln_type = String::new();
+    let mut detectors = Vec::new();
+    let mut best_description = String::new();
+    let mut best_trail: Option<Vec<String>> = None;
+    let mut best_id = String::new();
+    let mut best_end = 0usize;
+
+    let mut confidences = Vec::new();
+
+    for &idx in indices {
+        let f = &findings[idx];
+        detectors.push(f.detector.clone());
+        confidences.push(f.confidence.unwrap_or(0.5));
+
+        if severity_rank(&f.severity) > severity_rank(&best_severity) {
+            best_severity = f.severity.clone();
+        }
+
+        let current_len = best_vuln_type.len();
+        if f.vuln_type.starts_with("CWE-") && !best_vuln_type.starts_with("CWE-") {
+            best_vuln_type = f.vuln_type.clone();
+        } else if !f.vuln_type.starts_with("CWE-") && current_len == 0 {
+            best_vuln_type = f.vuln_type.clone();
+        } else if f.vuln_type.len() > current_len {
+            best_vuln_type = f.vuln_type.clone();
+        }
+
+        if f.description.len() > best_description.len() {
+            best_description = f.description.clone();
+        }
+
+        if f.analysis_trail.as_ref().map(|t| t.len()).unwrap_or(0)
+            > best_trail.as_ref().map(|t| t.len()).unwrap_or(0)
+        {
+            best_trail = f.analysis_trail.clone();
+        }
+
+        if f.line_end > best_end {
+            best_end = f.line_end;
+            best_id = f.finding_id.clone();
+        }
+    }
+
+    let fused = fuse_confidences(&confidences);
+
+    detectors.sort();
+    detectors.dedup();
+
+    // 多引擎 corroboration 标注
+    if indices.len() > 1 {
+        let engine_list: Vec<&str> = indices.iter()
+            .map(|&idx| findings[idx].detector.as_str())
+            .collect();
+        let unique_engines: Vec<&&str> = {
+            let mut deduped = engine_list.iter().collect::<Vec<_>>();
+            deduped.sort();
+            deduped.dedup();
+            deduped
+        };
+        best_description = format!(
+            "{}\n[Corroborated by {} engine(s): {}]",
+            best_description,
+            unique_engines.len(),
+            unique_engines.iter().map(|s| **s).collect::<Vec<_>>().join(", ")
+        );
+    }
+
+    Finding {
+        finding_id: best_id,
+        file_path: findings[indices[0]].file_path.clone(),
+        line_start: findings[indices[0]].line_start,
+        line_end: best_end,
+        detector: detectors.join("+"),
+        vuln_type: best_vuln_type,
+        severity: best_severity,
+        description: best_description,
+        analysis_trail: best_trail,
+        llm_output: None,
+        confidence: Some(fused),
+        corroboration_count: Some(indices.len()),
+    }
+}
+
+/// 容差去重：按 (file_path, vuln_type) 分组，±3 行内合并
+fn deduplicate_with_tolerance(findings: Vec<Finding>) -> Vec<Finding> {
+    const LINE_TOLERANCE: usize = 3;
+
+    // 按 (file_path, vuln_type) 分组
+    let mut groups: std::collections::HashMap<(String, String), Vec<usize>> =
+        std::collections::HashMap::with_capacity(findings.len());
+    for (i, f) in findings.iter().enumerate() {
+        groups
+            .entry((f.file_path.clone(), f.vuln_type.clone()))
+            .or_default()
+            .push(i);
+    }
+
+    let mut merged_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut to_add: Vec<Finding> = Vec::new();
+
+    for (_, indices) in &groups {
+        if indices.len() < 2 {
+            continue;
+        }
+
+        // 聚类：行号相近的分为同一 cluster
+        let mut clusters: Vec<Vec<usize>> = Vec::new();
+        for &idx in indices {
+            let line = findings[idx].line_start;
+            let mut found = false;
+            for cluster in &mut clusters {
+                if cluster.iter().any(|&c_idx| {
+                    findings[c_idx].line_start.abs_diff(line) <= LINE_TOLERANCE
+                }) {
+                    cluster.push(idx);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                clusters.push(vec![idx]);
+            }
+        }
+
+        for cluster in clusters {
+            if cluster.len() < 2 {
+                continue;
+            }
+            let merged = merge_findings_at_indices(&findings, &cluster);
+            for &idx in &cluster {
+                merged_indices.insert(idx);
+            }
+            to_add.push(merged);
+        }
+    }
+
+    let mut result: Vec<Finding> = findings
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !merged_indices.contains(i))
+        .map(|(_, f)| f)
+        .collect();
+    result.extend(to_add);
     result
 }
 

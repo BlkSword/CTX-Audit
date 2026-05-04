@@ -417,6 +417,21 @@ static PARAM_PATTERN: Lazy<Option<regex::Regex>> = Lazy::new(|| {
     regex::Regex::new(r#"(?:def|function|func|fn)\s+\w+\s*\(([^)]+)\)"#).ok()
 });
 
+/// Pre-compiled regex for assignment propagation detection
+static ASSIGNMENT_RE: Lazy<Option<regex::Regex>> = Lazy::new(|| {
+    regex::Regex::new(r#"(\w+)\s*=\s*([^=].*)"#).ok()
+});
+
+/// Pre-compiled regex for call propagation detection
+static CALL_RE: Lazy<Option<regex::Regex>> = Lazy::new(|| {
+    regex::Regex::new(r#"(?:(\w+)\s*[:=]+\s*)?(\w+)\s*\(([^)]*)\)"#).ok()
+});
+
+/// Pre-compiled regex for function name extraction
+static FUNC_NAME_RE: Lazy<Option<regex::Regex>> = Lazy::new(|| {
+    regex::Regex::new(r#"(\w+)\s*\("#).ok()
+});
+
 /// 污点分析器
 pub struct TaintAnalyzer {
     /// 污点源
@@ -565,10 +580,14 @@ impl TaintAnalyzer {
         // 简化实现：如果源在汇之前，假设存在污点流
         // 真实实现需要数据流分析
         if source_loc.line < sink_loc.line {
-            // 检查是否有净化
             let sanitized = self.check_sanitization(source_loc.line, sink_loc.line, lines);
 
-            let confidence = if sanitized { 0.3 } else { 0.8 };
+            let distance = sink_loc.line - source_loc.line;
+            let mut confidence = if sanitized { 0.3 } else { 0.8 };
+
+            // 传播距离衰减：每 50 行衰减 5%
+            let distance_factor = 0.95_f32.powi((distance / 50) as i32);
+            confidence *= distance_factor;
 
             Some(TaintFlow {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -1072,8 +1091,7 @@ impl TaintAnalyzer {
         tainted_vars: &HashSet<String>,
     ) -> Option<PropagationStep> {
         // 匹配赋值语句 - fixed regex to not match == (Fix 9)
-        let assignment_pattern = r#"(\w+)\s*=\s*([^=].*)"#;
-        let re = regex::Regex::new(assignment_pattern).ok()?;
+        let re = ASSIGNMENT_RE.as_ref()?;
 
         let caps = re.captures(line)?;
         let to_var = caps.get(1)?.as_str().to_string();
@@ -1112,8 +1130,7 @@ impl TaintAnalyzer {
         tainted_vars: &HashSet<String>,
     ) -> Option<PropagationStep> {
         // 匹配变量 = 函数调用(...) 或 函数调用(...)
-        let call_pattern = r#"(?:(\w+)\s*[:=]+\s*)?(\w+)\s*\(([^)]*)\)"#;
-        let re = regex::Regex::new(call_pattern).ok()?;
+        let re = CALL_RE.as_ref()?;
         let caps = re.captures(line)?;
 
         let to_var = caps.get(1).map(|m| m.as_str().to_string());
@@ -1154,8 +1171,7 @@ impl TaintAnalyzer {
 
     /// 提取函数名
     fn extract_function_name(&self, line: &str) -> Option<String> {
-        let pattern = r#"(\w+)\s*\("#;
-        let re = regex::Regex::new(pattern).ok()?;
+        let re = FUNC_NAME_RE.as_ref()?;
         let caps = re.captures(line)?;
         Some(caps.get(1)?.as_str().to_string())
     }

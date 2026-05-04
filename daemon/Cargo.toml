@@ -36,6 +36,9 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
+# Parallelism
+rayon = "1.10"
+
 # UUID
 uuid = { workspace = true }
 
