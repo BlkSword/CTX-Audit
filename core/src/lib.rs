@@ -22,7 +22,7 @@ pub mod scanning {
     };
     pub use crate::scanner::manager::ScannerManager;
     pub use crate::scanner::regex_scanner::RegexScanner;
-    pub use crate::scanner::sca_scanner::ScaScanner;
+    pub use crate::scanner::sca_scanner::{ScaScanner, ScaScanOptions, ScaSeverityMapping};
 }
 
 /// 污点分析接口 — 数据流追踪、跨文件分析、别名解析
@@ -76,7 +76,7 @@ pub use diff::DiffEngine;
 pub use scanner::{Finding, Scanner, ScanResult, scan_directory, scan_directory_deep, scan_directory_with_attack_surface, scan_directory_with_rules, scan_directory_deep_with_rules};
 pub use scanner::manager::ScannerManager;
 pub use scanner::regex_scanner::RegexScanner;
-pub use scanner::sca_scanner::ScaScanner;
+pub use scanner::sca_scanner::{ScaScanner, ScaScanOptions, ScaSeverityMapping};
 
 // 规则系统
 pub use rules::{loader::load_rules_from_dir, model::Rule, model::RuleSet, scanner::RuleScanner};

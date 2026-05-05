@@ -14,6 +14,110 @@ use serde::{Deserialize, Serialize};
 
 use super::{Finding, Scanner};
 
+fn severity_rank(s: &str) -> u8 {
+    match s.to_lowercase().as_str() {
+        "critical" => 5,
+        "high" => 4,
+        "medium" => 3,
+        "low" => 2,
+        "info" => 1,
+        _ => 0,
+    }
+}
+
+// ── 配置 ──────────────────────────────────────────────
+
+/// SCA 自定义 severity 映射（CVSS V3 分数阈值）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScaSeverityMapping {
+    /// ≥ 此值 → critical
+    #[serde(default = "default_critical_threshold")]
+    pub critical: f64,
+    /// ≥ 此值 → high
+    #[serde(default = "default_high_threshold")]
+    pub high: f64,
+    /// ≥ 此值 → medium
+    #[serde(default = "default_medium_threshold")]
+    pub medium: f64,
+    // < medium → low
+}
+
+fn default_critical_threshold() -> f64 { 9.0 }
+fn default_high_threshold() -> f64 { 7.0 }
+fn default_medium_threshold() -> f64 { 4.0 }
+
+impl Default for ScaSeverityMapping {
+    fn default() -> Self {
+        Self { critical: 9.0, high: 7.0, medium: 4.0 }
+    }
+}
+
+/// SCA 扫描运行时选项
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScaScanOptions {
+    /// 是否启用 SCA 扫描（默认 false）
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// 忽略的漏洞 ID 列表（如 ["CVE-2024-1234", "GHSA-xxxx-xxxx-xxxx"]）
+    #[serde(default)]
+    pub ignore_vulns: Vec<String>,
+
+    /// 忽略的包列表（如 ["lodash@4.17.21", "express"]）
+    #[serde(default)]
+    pub ignore_packages: Vec<String>,
+
+    /// 跳过的生态列表（如 ["Go"]，可选值：npm, PyPI, crates.io, Go）
+    #[serde(default)]
+    pub ignore_ecosystems: Vec<String>,
+
+    /// 是否包含 devDependencies（默认 true）
+    #[serde(default = "default_true")]
+    pub dev_dependencies: bool,
+
+    /// 最低报告严重程度（默认 "low"，可选：critical/high/medium/low/info）
+    #[serde(default = "default_severity_threshold")]
+    pub severity_threshold: String,
+
+    /// 自定义 CVSS → severity 映射阈值
+    #[serde(default)]
+    pub severity_mapping: ScaSeverityMapping,
+
+    /// 缓存 TTL（小时，默认 24）
+    #[serde(default = "default_cache_ttl_hours")]
+    pub cache_ttl_hours: u64,
+
+    /// OSV API 请求超时（秒，默认 30）
+    #[serde(default = "default_osv_timeout_sec")]
+    pub osv_timeout_sec: u64,
+
+    /// 离线/网络失败时是否报错（默认 false，静默跳过）
+    #[serde(default)]
+    pub fail_offline: bool,
+}
+
+fn default_true() -> bool { true }
+fn default_severity_threshold() -> String { "low".to_string() }
+fn default_cache_ttl_hours() -> u64 { 24 }
+fn default_osv_timeout_sec() -> u64 { 30 }
+
+impl Default for ScaScanOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ignore_vulns: Vec::new(),
+            ignore_packages: Vec::new(),
+            ignore_ecosystems: Vec::new(),
+            dev_dependencies: true,
+            severity_threshold: "low".to_string(),
+            severity_mapping: ScaSeverityMapping::default(),
+            cache_ttl_hours: 24,
+            osv_timeout_sec: 30,
+            fail_offline: false,
+        }
+    }
+}
+
 // ── 数据结构 ──────────────────────────────────────────────
 
 /// 解析后的依赖项
@@ -94,15 +198,22 @@ struct CachedVuln {
 /// SCA 依赖扫描器
 pub struct ScaScanner {
     client: reqwest::Client,
+    options: ScaScanOptions,
 }
 
 impl ScaScanner {
     pub fn new() -> Self {
+        Self::with_options(ScaScanOptions::default())
+    }
+
+    pub fn with_options(options: ScaScanOptions) -> Self {
+        let timeout = std::time::Duration::from_secs(options.osv_timeout_sec.max(5));
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(timeout)
                 .build()
                 .unwrap_or_default(),
+            options,
         }
     }
 
@@ -111,8 +222,10 @@ impl ScaScanner {
         Path::new(".ctx-audit/cache/sca_cache.json").to_path_buf()
     }
 
-    /// 缓存 TTL：24 小时
-    const CACHE_TTL_SECS: u64 = 24 * 3600;
+    /// 缓存 TTL（秒）
+    fn cache_ttl_secs(&self) -> u64 {
+        self.options.cache_ttl_hours * 3600
+    }
 
     /// 加载缓存
     fn load_cache() -> HashMap<String, CachedScaResult> {
@@ -144,13 +257,14 @@ impl ScaScanner {
     }
 
     /// 清理过期缓存
-    fn prune_expired(cache: &mut HashMap<String, CachedScaResult>) {
+    fn prune_expired(&self, cache: &mut HashMap<String, CachedScaResult>) {
         let now = chrono::Utc::now().timestamp();
-        cache.retain(|_, v| now - v.cached_at < Self::CACHE_TTL_SECS as i64);
+        let ttl = self.cache_ttl_secs() as i64;
+        cache.retain(|_, v| now - v.cached_at < ttl);
     }
 
     /// 解析 package.json
-    fn parse_package_json(&self, content: &str) -> Vec<Dependency> {
+    fn parse_package_json(&self, content: &str, include_dev: bool) -> Vec<Dependency> {
         let mut deps = Vec::new();
 
         #[derive(Deserialize)]
@@ -181,7 +295,9 @@ impl ScaScanner {
         };
 
         collect(&pkg.dependencies);
-        collect(&pkg.dev_dependencies);
+        if include_dev {
+            collect(&pkg.dev_dependencies);
+        }
         deps
     }
 
@@ -323,9 +439,9 @@ impl ScaScanner {
     async fn query_osv(
         &self,
         deps: &[Dependency],
-    ) -> Vec<(Dependency, Vec<OsvVulnerability>)> {
+    ) -> Result<Vec<(Dependency, Vec<OsvVulnerability>)>, String> {
         if deps.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let mut results = Vec::new();
@@ -369,23 +485,32 @@ impl ScaScanner {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!("OSV API response parse error: {}", e);
+                                let msg = format!("OSV API response parse error: {}", e);
+                                if self.options.fail_offline {
+                                    return Err(msg);
+                                }
+                                tracing::warn!("{}", msg);
                             }
                         }
                     } else {
-                        tracing::warn!(
-                            "OSV API returned status: {}",
-                            resp.status()
-                        );
+                        let msg = format!("OSV API returned status: {}", resp.status());
+                        if self.options.fail_offline {
+                            return Err(msg);
+                        }
+                        tracing::warn!("{}", msg);
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("OSV API request failed: {}", e);
+                    let msg = format!("OSV API request failed: {}", e);
+                    if self.options.fail_offline {
+                        return Err(msg);
+                    }
+                    tracing::warn!("{}", msg);
                 }
             }
         }
 
-        results
+        Ok(results)
     }
 
     /// 将 OSV 漏洞转换为 Finding
@@ -395,16 +520,15 @@ impl ScaScanner {
         vuln: &OsvVulnerability,
         file_path: &str,
     ) -> Finding {
-        // 提取最高严重程度
+        let mapping = &self.options.severity_mapping;
         let severity = vuln.severity.as_ref()
             .and_then(|s| s.first())
             .map(|s| {
-                // CVSS 分数映射到严重程度
                 if s.score_type == "CVSS_V3" {
                     if let Ok(score) = s.score.parse::<f64>() {
-                        if score >= 9.0 { return "critical".to_string(); }
-                        if score >= 7.0 { return "high".to_string(); }
-                        if score >= 4.0 { return "medium".to_string(); }
+                        if score >= mapping.critical { return "critical".to_string(); }
+                        if score >= mapping.high { return "high".to_string(); }
+                        if score >= mapping.medium { return "medium".to_string(); }
                         return "low".to_string();
                     }
                 }
@@ -463,7 +587,7 @@ impl Scanner for ScaScanner {
     async fn scan_file(&self, path: &PathBuf, content: &str) -> Vec<Finding> {
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let deps = match filename {
-            "package.json" => self.parse_package_json(content),
+            "package.json" => self.parse_package_json(content, self.options.dev_dependencies),
             "requirements.txt" | "requirements-dev.txt" | "requirements-dev.in" => {
                 self.parse_requirements_txt(content)
             }
@@ -471,6 +595,23 @@ impl Scanner for ScaScanner {
             "go.sum" => self.parse_go_sum(content),
             _ => return Vec::new(),
         };
+
+        // 过滤忽略的生态
+        let deps: Vec<Dependency> = deps
+            .into_iter()
+            .filter(|d| !self.options.ignore_ecosystems.iter().any(|e| e.eq_ignore_ascii_case(&d.ecosystem)))
+            .collect();
+
+        // 过滤忽略的包
+        let deps: Vec<Dependency> = deps
+            .into_iter()
+            .filter(|d| {
+                let pkg_key = format!("{}@{}", d.name, d.version);
+                !self.options.ignore_packages.iter().any(|p| {
+                    p.eq_ignore_ascii_case(&d.name) || p.eq_ignore_ascii_case(&pkg_key)
+                })
+            })
+            .collect();
 
         if deps.is_empty() {
             return Vec::new();
@@ -484,7 +625,7 @@ impl Scanner for ScaScanner {
 
         // 加载缓存，分离已缓存和未缓存的依赖
         let mut cache = Self::load_cache();
-        Self::prune_expired(&mut cache);
+        self.prune_expired(&mut cache);
         let now = chrono::Utc::now().timestamp();
 
         let mut cached_results: Vec<(Dependency, Vec<OsvVulnerability>)> = Vec::new();
@@ -493,7 +634,6 @@ impl Scanner for ScaScanner {
         for dep in &deps {
             let key = Self::cache_key(dep);
             if let Some(cached) = cache.get(&key) {
-                // 从缓存恢复漏洞
                 let vulns: Vec<OsvVulnerability> = cached.vulns.iter().map(|cv| {
                     OsvVulnerability {
                         id: cv.id.clone(),
@@ -513,7 +653,13 @@ impl Scanner for ScaScanner {
         // 查询未缓存的依赖
         let mut new_results = if !uncached_deps.is_empty() {
             tracing::info!("SCA: Querying OSV for {} uncached deps", uncached_deps.len());
-            self.query_osv(&uncached_deps).await
+            match self.query_osv(&uncached_deps).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("SCA: {}", e);
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -540,11 +686,20 @@ impl Scanner for ScaScanner {
         // 合并结果
         cached_results.append(&mut new_results);
 
+        let threshold_rank = severity_rank(&self.options.severity_threshold);
         let file_path_str = path.to_string_lossy().to_string();
         let findings: Vec<Finding> = cached_results
             .iter()
             .flat_map(|(dep, vulns)| {
                 vulns.iter().map(|v| self.vuln_to_finding(dep, v, &file_path_str))
+            })
+            .filter(|f| {
+                // 过滤忽略的漏洞 ID
+                if self.options.ignore_vulns.iter().any(|id| f.vuln_type.ends_with(id)) {
+                    return false;
+                }
+                // 过滤低于阈值的严重程度
+                severity_rank(&f.severity) >= threshold_rank
             })
             .collect();
 
@@ -585,7 +740,7 @@ mod tests {
     fn test_parse_package_json() {
         let scanner = ScaScanner::new();
         let json = r#"{"dependencies": {"express": "^4.18.2", "lodash": "~4.17.21"}, "devDependencies": {"jest": ">=29.0.0"}}"#;
-        let deps = scanner.parse_package_json(json);
+        let deps = scanner.parse_package_json(json, true);
         assert_eq!(deps.len(), 3);
 
         // HashMap iteration order is non-deterministic, check by name

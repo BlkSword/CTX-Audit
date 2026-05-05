@@ -265,10 +265,10 @@ impl AnalysisEngine {
         self.log_rules_status(path, rules_dir.as_deref()).await;
 
         let findings = if deep {
-            scan_directory_deep_with_rules(path, rules_dir.as_deref(), None).await
+            scan_directory_deep_with_rules(path, rules_dir.as_deref(), None, None).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         } else {
-            scan_directory_with_rules(path, rules_dir.as_deref(), None).await
+            scan_directory_with_rules(path, rules_dir.as_deref(), None, None).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         };
 

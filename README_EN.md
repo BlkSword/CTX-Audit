@@ -86,7 +86,7 @@ OPTIONS:
 | Engine | Description |
 |--------|-------------|
 | RuleScanner | Language-aware regex rules (YAML, multi-language patterns, 33 built-in rules) |
-| SCAScanner | Dependency vulnerability detection (OSV API, 24h local cache) |
+| SCAScanner | Dependency vulnerability detection (OSV API, disabled by default, `--sca` or config to enable) |
 | AstTaintScanner | AST taint analysis (`--deep` mode) |
 | CrossFileTaintAnalyzer | Cross-file / interprocedural taint tracking (`--deep` mode) |
 
@@ -213,10 +213,100 @@ ctx-audit findings export -o report.json
 ### `config` — Configuration Management
 
 ```bash
-ctx-audit config show
-ctx-audit config set scan.threads 8
-ctx-audit config list
+ctx-audit config show                    # Show current config
+ctx-audit config show sca.enabled        # Show single key
+ctx-audit config set sca.enabled true    # Set config value
+ctx-audit config remove scan.severity    # Reset to default
+ctx-audit config list                    # List all config keys
+ctx-audit config validate                # Validate config
+ctx-audit config reset --confirm         # Reset to defaults
 ```
+
+## Configuration File
+
+The configuration file is located in the system config directory:
+
+| Platform | Path |
+|----------|------|
+| Windows | `%APPDATA%\ctx-audit\config.toml` |
+| macOS | `~/Library/Application Support/ctx-audit/config.toml` |
+| Linux | `~/.config/ctx-audit/config.toml` |
+
+No need to create the file manually — running `ctx-audit config set` will auto-generate it.
+
+**Full configuration example** (`config.toml`):
+
+```toml
+[scan]
+threads = 4                        # Parallel thread count
+include_tests = false              # Include test files
+max_file_size_mb = 10              # Max file size to scan (MB)
+memory_budget_mb = 500             # Scan memory budget (MB)
+batch_size = 100                   # Parallel batch size
+line_tolerance = 3                 # Dedup line tolerance (±N lines merged)
+severity = "medium"                # Default severity filter
+deep = false                       # Enable deep scan by default
+
+[output]
+format = "text"                    # Output format (text/json/markdown/sarif)
+color = true                       # Show colors
+verbose = false                    # Verbose output
+
+[advanced]
+enable_cache = true                # Enable caching
+log_level = "info"                 # Log level (trace/debug/info/warn/error)
+
+[sca]
+enabled = false                    # Enable SCA dependency scanning
+dev_dependencies = true            # Include devDependencies
+severity_threshold = "low"         # Minimum severity to report
+cache_ttl_hours = 24               # Cache TTL (hours)
+osv_timeout_sec = 30               # OSV API timeout (seconds)
+fail_offline = false               # Error on network failure
+ignore_vulns = []                  # Ignored vuln IDs, e.g. ["CVE-2024-1234"]
+ignore_packages = []               # Ignored packages, e.g. ["lodash@4.17.21"]
+ignore_ecosystems = []             # Skipped ecosystems, e.g. ["Go"]
+
+[sca.severity_mapping]
+critical = 9.0                     # CVSS >= 9.0 → critical
+high = 7.0                         # CVSS >= 7.0 → high
+medium = 4.0                       # CVSS >= 4.0 → medium
+
+[daemon]
+listen_addr = "127.0.0.1:19527"    # Listen address
+rules_reload_interval_secs = 30    # Rule hot-reload interval (seconds)
+ast_idle_secs = 3600               # AST Engine idle timeout (seconds)
+ast_max_memory_mb = 512            # AST Engine max total memory (MB)
+scan_cache_idle_secs = 7200        # Scan Cache idle timeout (seconds)
+heartbeat_interval_secs = 5        # Heartbeat interval (seconds)
+reconnect_max_retries = 3          # Max reconnect retries
+reconnect_base_delay_ms = 200      # Reconnect base delay (milliseconds)
+```
+
+### Baseline Suppression
+
+Suppress confirmed false positives via `.ctx-audit/baseline.json`:
+
+```json
+{
+  "ignored": {
+    "src/utils.ts:10:CWE-79": "False positive: parameter is escaped",
+    "src/api.ts:45:CWE-89": "Confirmed: uses parameterized query"
+  }
+}
+```
+
+The key format is `file_path:line_number:vuln_type`, value is the suppression reason. Findings matching the baseline are automatically skipped during scans.
+
+### Project-Level Configuration
+
+Each project can place project-level files in the `.ctx-audit/` directory:
+
+| File | Purpose |
+|------|---------|
+| `.ctx-audit/rules/` | Project-level custom rules (YAML), takes priority over built-in rules |
+| `.ctx-audit/baseline.json` | Baseline suppression file |
+| `.ctx-audit/cache/` | Cache directory (AST, SCA, etc.) |
 
 ## Detection Capabilities
 
@@ -271,7 +361,45 @@ Taint tracking enhancements for Python, JavaScript, and TypeScript that solve "t
 
 ### Dependency Vulnerabilities (SCA)
 
-Queries known vulnerable dependencies via OSV API: npm (`package.json`), PyPI (`requirements.txt`), crates.io (`Cargo.lock`), Go (`go.sum`). Results cached locally for 24h to reduce network requests.
+Queries known vulnerable dependencies via OSV API: npm (`package.json`), PyPI (`requirements.txt`), crates.io (`Cargo.lock`), Go (`go.sum`).
+
+> **Note**: SCA scanning is disabled by default. The first scan sends network requests to `osv.dev`; projects with many dependencies (e.g., large Cargo.lock) may add several to tens of seconds. Subsequent scans are accelerated via local cache (default 24h TTL).
+
+**Enable SCA** (choose one):
+
+```bash
+# Option 1: enable for a single scan
+ctx-audit scan ./project --sca
+
+# Option 2: persist in config
+ctx-audit config set sca.enabled true
+```
+
+**Configuration example** (`config.toml` `[sca]` section):
+
+```toml
+[sca]
+enabled = true
+severity_threshold = "medium"      # only report medium and above
+dev_dependencies = false           # skip devDependencies
+cache_ttl_hours = 48               # cache for 48 hours
+osv_timeout_sec = 60               # API timeout 60 seconds
+fail_offline = false               # silently skip on network failure
+ignore_vulns = ["CVE-2024-1234"]   # ignore specific vulnerability IDs
+ignore_packages = ["lodash@4.17.21"]  # ignore specific packages
+ignore_ecosystems = ["Go"]         # skip specific ecosystems
+
+[sca.severity_mapping]
+critical = 9.0                     # CVSS >= 9.0 → critical
+high = 7.0                         # CVSS >= 7.0 → high
+medium = 4.0                       # CVSS >= 4.0 → medium (below → low)
+```
+
+**Offline usage**:
+
+SCA scanning relies on `api.osv.dev` online queries. For offline environments:
+1. Use local cache: after the first online scan, the cache file (`.ctx-audit/cache/sca_cache.json`) works offline within TTL
+2. Pre-download OSV database: OSV provides a public GCS bucket (`gs://osv-vulnerabilities/`) with full vulnerability data per ecosystem. See https://osv.dev/docs/#data-access
 
 ### False Positive Control
 
@@ -457,7 +585,7 @@ cargo clippy                 # Lint
 | Cross-file Tracking | Call graph + function summaries + DFS path finding |
 | TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
 | Pattern Matching | 38 YAML rules covering 7 injection types + 6 languages |
-| SCA Scanner | OSV API, 4 ecosystems, local cache |
+| SCA Scanner | OSV API, 4 ecosystems, local cache, configurable (disabled by default) |
 | MCP Integration | 13 tools (3 coarse-grained + 7 fine-grained + 3 LLM collaboration) |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |

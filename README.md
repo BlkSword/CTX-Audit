@@ -86,7 +86,7 @@ OPTIONS:
 | 引擎 | 说明 |
 |------|------|
 | RuleScanner | 语言感知正则规则（YAML，多语言模式，33 条内置规则） |
-| SCAScanner | 依赖漏洞检测（OSV API，本地缓存 24h） |
+| SCAScanner | 依赖漏洞检测（OSV API，默认关闭，`--sca` 或配置启用） |
 | AstTaintScanner | AST 污点分析（`--deep` 模式） |
 | CrossFileTaintAnalyzer | 跨文件/跨过程污点追踪（`--deep` 模式） |
 
@@ -213,10 +213,100 @@ ctx-audit findings export -o report.json
 ### `config` — 配置管理
 
 ```bash
-ctx-audit config show
-ctx-audit config set scan.threads 8
-ctx-audit config list
+ctx-audit config show                    # 显示当前配置
+ctx-audit config show sca.enabled        # 查看单个配置
+ctx-audit config set sca.enabled true    # 设置配置
+ctx-audit config remove scan.severity    # 恢复默认值
+ctx-audit config list                    # 列出所有配置键
+ctx-audit config validate                # 验证配置
+ctx-audit config reset --confirm         # 重置为默认
 ```
+
+## 配置文件
+
+配置文件位于系统配置目录：
+
+| 系统 | 路径 |
+|------|------|
+| Windows | `%APPDATA%\ctx-audit\config.toml` |
+| macOS | `~/Library/Application Support/ctx-audit/config.toml` |
+| Linux | `~/.config/ctx-audit/config.toml` |
+
+首次使用不需要手动创建配置文件——运行 `ctx-audit config set` 时会自动生成。
+
+**完整配置示例**（`config.toml`）：
+
+```toml
+[scan]
+threads = 4                        # 并行线程数
+include_tests = false              # 是否包含测试文件
+max_file_size_mb = 10              # 单文件最大扫描大小 (MB)
+memory_budget_mb = 500             # 扫描内存预算 (MB)
+batch_size = 100                   # 并行批次大小
+line_tolerance = 3                 # 去重行容差 (±N 行内合并)
+severity = "medium"                # 默认严重程度过滤
+deep = false                       # 是否默认启用深度扫描
+
+[output]
+format = "text"                    # 输出格式 (text/json/markdown/sarif)
+color = true                       # 是否显示颜色
+verbose = false                    # 是否显示详细输出
+
+[advanced]
+enable_cache = true                # 是否启用缓存
+log_level = "info"                 # 日志级别 (trace/debug/info/warn/error)
+
+[sca]
+enabled = false                    # 是否启用 SCA 依赖扫描
+dev_dependencies = true            # 是否包含 devDependencies
+severity_threshold = "low"         # 最低报告严重程度
+cache_ttl_hours = 24               # 缓存 TTL (小时)
+osv_timeout_sec = 30               # OSV API 超时 (秒)
+fail_offline = false               # 离线时是否报错
+ignore_vulns = []                  # 忽略的漏洞 ID，如 ["CVE-2024-1234"]
+ignore_packages = []               # 忽略的包，如 ["lodash@4.17.21"]
+ignore_ecosystems = []             # 跳过的生态，如 ["Go"]
+
+[sca.severity_mapping]
+critical = 9.0                     # CVSS ≥ 9.0 → critical
+high = 7.0                         # CVSS ≥ 7.0 → high
+medium = 4.0                       # CVSS ≥ 4.0 → medium
+
+[daemon]
+listen_addr = "127.0.0.1:19527"    # 监听地址
+rules_reload_interval_secs = 30    # 规则热重载间隔 (秒)
+ast_idle_secs = 3600               # AST Engine 空闲超时 (秒)
+ast_max_memory_mb = 512            # AST Engine 最大总内存 (MB)
+scan_cache_idle_secs = 7200        # Scan Cache 空闲超时 (秒)
+heartbeat_interval_secs = 5        # 心跳间隔 (秒)
+reconnect_max_retries = 3          # 最大重连重试次数
+reconnect_base_delay_ms = 200      # 重连基础延迟 (毫秒)
+```
+
+### 基线抑制
+
+通过 `.ctx-audit/baseline.json` 文件忽略已确认的误报：
+
+```json
+{
+  "ignored": {
+    "src/utils.ts:10:CWE-79": "误报：参数已转义",
+    "src/api.ts:45:CWE-89": "已确认：使用参数化查询"
+  }
+}
+```
+
+key 格式为 `文件路径:行号:漏洞类型`，value 为忽略原因。扫描时会自动跳过基线中记录的发现。
+
+### 项目级配置
+
+每个项目可在 `.ctx-audit/` 目录下放置项目级文件：
+
+| 文件 | 用途 |
+|------|------|
+| `.ctx-audit/rules/` | 项目级自定义规则（YAML），优先于内置规则 |
+| `.ctx-audit/baseline.json` | 基线抑制文件 |
+| `.ctx-audit/cache/` | 缓存目录（AST、SCA 等） |
 
 ## 检测能力
 
@@ -271,7 +361,45 @@ ctx-audit config list
 
 ### 依赖漏洞 (SCA)
 
-通过 OSV API 查询已知漏洞依赖：npm (`package.json`)、PyPI (`requirements.txt`)、crates.io (`Cargo.lock`)、Go (`go.sum`)。查询结果本地缓存 24h，减少网络请求。
+通过 OSV API 查询已知漏洞依赖：npm (`package.json`)、PyPI (`requirements.txt`)、crates.io (`Cargo.lock`)、Go (`go.sum`)。
+
+> **注意**：SCA 扫描默认关闭。首次扫描需要向 `osv.dev` 发送网络请求，依赖较多的项目（如大型 Cargo.lock）可能增加数秒到数十秒的扫描时间。后续扫描通过本地缓存（默认 24h TTL）加速。
+
+**启用方式**（二选一）：
+
+```bash
+# 方式 1：单次扫描启用
+ctx-audit scan ./project --sca
+
+# 方式 2：配置文件持久启用
+ctx-audit config set sca.enabled true
+```
+
+**配置示例**（`config.toml` 中的 `[sca]` 段）：
+
+```toml
+[sca]
+enabled = true
+severity_threshold = "medium"      # 只报告 medium 及以上
+dev_dependencies = false           # 不扫描 devDependencies
+cache_ttl_hours = 48               # 缓存 48 小时
+osv_timeout_sec = 60               # API 超时 60 秒
+fail_offline = false               # 网络失败静默跳过
+ignore_vulns = ["CVE-2024-1234"]   # 忽略指定漏洞 ID
+ignore_packages = ["lodash@4.17.21"]  # 忽略指定包
+ignore_ecosystems = ["Go"]         # 跳过指定生态
+
+[sca.severity_mapping]
+critical = 9.0                     # CVSS ≥ 9.0 → critical
+high = 7.0                         # CVSS ≥ 7.0 → high
+medium = 4.0                       # CVSS ≥ 4.0 → medium（低于此值 → low）
+```
+
+**离线方案**：
+
+SCA 扫描依赖 `api.osv.dev` 在线查询。离线环境下可：
+1. 利用本地缓存：首次联网扫描后，缓存文件（`.ctx-audit/cache/sca_cache.json`）在 TTL 内可离线使用
+2. 预下载 OSV 数据库：OSV 提供公开 GCS bucket（`gs://osv-vulnerabilities/`），可按生态下载全量漏洞数据并定期同步。详见 https://osv.dev/docs/#data-access
 
 ### 误报控制
 
@@ -457,7 +585,7 @@ cargo clippy                 # 代码检查
 | 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找 |
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
 | 模式匹配规则 | 38 个 YAML 规则，覆盖 7 类注入 + 6 语言 |
-| SCA 扫描 | OSV API，4 个生态，本地缓存 |
+| SCA 扫描 | OSV API，4 个生态，本地缓存，可配置（默认关闭） |
 | MCP 集成 | 13 个工具（3 粗粒度 + 7 细粒度 + 3 LLM 协作） |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
