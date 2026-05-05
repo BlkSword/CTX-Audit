@@ -5,6 +5,9 @@ pub mod manager;
 pub mod regex_scanner;
 pub mod sca_scanner;
 
+// Re-export SCA types
+pub use sca_scanner::{ScaScanOptions, ScaSeverityMapping};
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -209,7 +212,7 @@ fn severity_rank(s: &str) -> u8 {
 
 /// 便捷的 scan_directory 函数（用于web-backend）
 pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
-    scan_directory_with_rules(path, None, None).await
+    scan_directory_with_rules(path, None, None, None).await
 }
 
 /// 带自定义规则目录的扫描
@@ -217,8 +220,9 @@ pub async fn scan_directory_with_rules(
     path: &str,
     rules_dir: Option<&str>,
     exclude_dirs: Option<Vec<String>>,
+    sca_options: Option<ScaScanOptions>,
 ) -> Result<Vec<Finding>, String> {
-    let (findings, _) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true).await?;
+    let (findings, _) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options).await?;
     Ok(findings)
 }
 
@@ -228,6 +232,7 @@ async fn scan_directory_with_rules_inner(
     rules_dir: Option<&str>,
     exclude_dirs: Option<Vec<String>>,
     collect_content: bool,
+    sca_options: Option<ScaScanOptions>,
 ) -> Result<(Vec<Finding>, HashMap<String, String>), String> {
     use ignore::Walk;
 
@@ -315,7 +320,8 @@ async fn scan_directory_with_rules_inner(
     };
 
     // 创建 SCA 依赖扫描器
-    let sca_scanner = sca_scanner::ScaScanner::new();
+    let sca_opts = sca_options.unwrap_or_default();
+    let sca_scanner = sca_scanner::ScaScanner::with_options(sca_opts.clone());
 
     // 收集文件路径
     const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
@@ -354,11 +360,13 @@ async fn scan_directory_with_rules_inner(
         }
     }
 
-    // SCA 扫描
-    for path_buf in &dep_files {
-        if let Ok(content) = std::fs::read_to_string(path_buf) {
-            let sca_findings = sca_scanner.scan_file(path_buf, &content).await;
-            findings.extend(sca_findings);
+    // SCA 扫描（默认关闭，需通过配置或 --sca 启用）
+    if sca_opts.enabled {
+        for path_buf in &dep_files {
+            if let Ok(content) = std::fs::read_to_string(path_buf) {
+                let sca_findings = sca_scanner.scan_file(path_buf, &content).await;
+                findings.extend(sca_findings);
+            }
         }
     }
 
@@ -480,7 +488,7 @@ pub async fn scan_directory_with_attack_surface(path: &str) -> Result<ScanResult
 
 /// 深度扫描：在基础扫描后对候选文件运行 AST 污点分析
 pub async fn scan_directory_deep(path: &str) -> Result<Vec<Finding>, String> {
-    scan_directory_deep_with_rules(path, None, None).await
+    scan_directory_deep_with_rules(path, None, None, None).await
 }
 
 /// 带自定义规则目录的深度扫描
@@ -488,9 +496,10 @@ pub async fn scan_directory_deep_with_rules(
     path: &str,
     rules_dir: Option<&str>,
     exclude_dirs: Option<Vec<String>>,
+    sca_options: Option<ScaScanOptions>,
 ) -> Result<Vec<Finding>, String> {
     // 先执行基础扫描（收集文件内容缓存）
-    let (mut findings, content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true).await?;
+    let (mut findings, content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options).await?;
 
     if findings.is_empty() {
         return Ok(findings);

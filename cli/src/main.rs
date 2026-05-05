@@ -87,6 +87,10 @@ enum Commands {
         /// 通过守护进程执行
         #[arg(long)]
         daemon: bool,
+
+        /// 启用 SCA 依赖漏洞扫描
+        #[arg(long)]
+        sca: bool,
     },
 
     /// 深度分析单个文件
@@ -367,6 +371,7 @@ async fn main() -> Result<()> {
             exclude,
             deep,
             daemon,
+            sca,
         } => {
             commands::scan::execute(
                 path,
@@ -379,6 +384,7 @@ async fn main() -> Result<()> {
                 deep,
                 daemon,
                 exclude,
+                sca,
             )
             .await
         }

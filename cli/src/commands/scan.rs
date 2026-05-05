@@ -13,7 +13,7 @@ use ctx_audit_daemon::protocol::Response;
 use deepaudit_core::scanning::{
     scan_directory, scan_directory_deep,
     scan_directory_with_rules, scan_directory_deep_with_rules,
-    Finding,
+    Finding, ScaScanOptions, ScaSeverityMapping,
 };
 use deepaudit_core::sarif::{SarifConverter, FindingInput};
 
@@ -29,6 +29,7 @@ pub async fn execute(
     deep: bool,
     daemon: bool,
     exclude: String,
+    sca_enabled: bool,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -46,12 +47,49 @@ pub async fn execute(
         .filter(|s| !s.is_empty())
         .collect();
 
+    // 加载 SCA 配置
+    let sca_options = build_sca_options(sca_enabled);
+
     // 守护进程模式
     if daemon {
         return scan_via_daemon(path, severity, pattern, output_path, output_format, deep, &mut renderer).await;
     }
 
-    scan_local(path, rules_dir, severity, pattern, output_path, output_format, deep, exclude_dirs, &mut renderer).await
+    scan_local(path, rules_dir, severity, pattern, output_path, output_format, deep, exclude_dirs, &mut renderer, sca_options).await
+}
+
+/// 从配置文件 + CLI flag 构建 SCA 选项
+fn build_sca_options(cli_enabled: bool) -> ScaScanOptions {
+    let config = crate::config::ConfigManager::new(None)
+        .ok()
+        .map(|m| m.config().sca.clone());
+
+    match config {
+        Some(sca_cfg) => {
+            // CLI --sca flag 覆盖配置文件
+            let enabled = cli_enabled || sca_cfg.enabled;
+            ScaScanOptions {
+                enabled,
+                ignore_vulns: sca_cfg.ignore_vulns,
+                ignore_packages: sca_cfg.ignore_packages,
+                ignore_ecosystems: sca_cfg.ignore_ecosystems,
+                dev_dependencies: sca_cfg.dev_dependencies,
+                severity_threshold: sca_cfg.severity_threshold,
+                severity_mapping: ScaSeverityMapping {
+                    critical: sca_cfg.severity_mapping.critical,
+                    high: sca_cfg.severity_mapping.high,
+                    medium: sca_cfg.severity_mapping.medium,
+                },
+                cache_ttl_hours: sca_cfg.cache_ttl_hours,
+                osv_timeout_sec: sca_cfg.osv_timeout_sec,
+                fail_offline: sca_cfg.fail_offline,
+            }
+        }
+        None => ScaScanOptions {
+            enabled: cli_enabled,
+            ..ScaScanOptions::default()
+        },
+    }
 }
 
 /// 本地扫描（直接调用 core）
@@ -65,6 +103,7 @@ async fn scan_local(
     deep: bool,
     exclude_dirs: Vec<String>,
     renderer: &mut TerminalRenderer,
+    sca_options: ScaScanOptions,
 ) -> Result<()> {
     let mode = if deep { "深度扫描" } else { "快速扫描" };
     renderer.info(&format!("{}: {}", mode, path));
@@ -79,10 +118,11 @@ async fn scan_local(
 
     let rules_ref = rules_dir.as_deref();
     let exclude_opt = if exclude_dirs.is_empty() { None } else { Some(exclude_dirs) };
+    let sca_opt = Some(sca_options);
     let findings_result = if deep {
-        scan_directory_deep_with_rules(&path, rules_ref, exclude_opt).await
+        scan_directory_deep_with_rules(&path, rules_ref, exclude_opt, sca_opt).await
     } else {
-        scan_directory_with_rules(&path, rules_ref, exclude_opt).await
+        scan_directory_with_rules(&path, rules_ref, exclude_opt, sca_opt).await
     };
 
     pb.finish_with_message("扫描完成");
@@ -260,7 +300,7 @@ async fn scan_via_daemon(
         Err(e) => {
             renderer.warning(&format!("连接守护进程失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, pattern, output_path, output_format, deep, vec![], renderer).await;
+            return scan_local(path, None, severity, pattern, output_path, output_format, deep, vec![], renderer, ScaScanOptions::default()).await;
         }
     };
 
@@ -274,7 +314,7 @@ async fn scan_via_daemon(
             pb.finish_with_message("守护进程扫描失败");
             renderer.warning(&format!("守护进程扫描失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, pattern, output_path, output_format, deep, vec![], renderer).await;
+            return scan_local(path, None, severity, pattern, output_path, output_format, deep, vec![], renderer, ScaScanOptions::default()).await;
         }
     };
 
