@@ -567,6 +567,25 @@ cp my-custom-rule.yaml .ctx-audit/rules/
 ctx-audit scan ./myproject --deep    # Automatically loads .ctx-audit/rules/
 ```
 
+## Performance
+
+Benchmarks based on the [Next.js](https://github.com/vercel/next.js) repository (~22,000 source files, 243MB), excluding test/bench/docs directories, release build, Windows 10.
+
+| Mode | Time | Notes |
+|------|------|-------|
+| Quick scan | **~10s** | Rule scanning + attack surface mapping (single-pass) |
+| Quick scan + SCA | **~35s** | Includes OSV API network queries (first run); cached runs approach quick scan time |
+| Daemon first scan | **~41s** | Full scan + result caching |
+| Daemon incremental (no changes) | **~9s** | Cache hit, only file change detection |
+| Deep scan (`--deep`) | **~2.5m** | AST taint analysis + cross-file tracking (22K-file large project) |
+
+**Performance tips**:
+- Quick scan merges attack surface mapping and rule scanning into a single file pass — no extra overhead
+- Deep scan on large projects automatically limits candidate files (top 200 by severity) and processes in batches to prevent OOM
+- Daemon mode uses content-hash caching — unchanged files are skipped in incremental scans
+- SCA first-run is slower (network requests); subsequent runs use a 24h local cache
+- Use `--exclude` to skip irrelevant directories and reduce scan file count
+
 ## Development
 
 ```bash

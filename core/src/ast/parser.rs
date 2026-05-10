@@ -899,6 +899,42 @@ impl ASTParser {
         bodies
     }
 
+    /// 一次 AST 解析同时提取函数体、赋值和调用（避免重复解析）
+    pub fn extract_all_for_taint(
+        &mut self,
+        file_path: &Path,
+        content: &str,
+    ) -> (Vec<FunctionBody>, Vec<Assignment>, Vec<CallInfo>) {
+        let ext = file_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+
+        let parser = match self.parsers.get_mut(&ext) {
+            Some(p) => p,
+            None => return (Vec::new(), Vec::new(), Vec::new()),
+        };
+
+        let tree = match parser.parse(content, None) {
+            Some(t) => t,
+            None => return (Vec::new(), Vec::new(), Vec::new()),
+        };
+
+        let root = tree.root_node();
+
+        let mut bodies = Vec::new();
+        Self::collect_function_bodies_recursive(&root, content, &mut bodies);
+
+        let mut assignments = Vec::new();
+        Self::collect_assignments_generic(&root, content, &mut assignments);
+
+        let mut calls = Vec::new();
+        Self::collect_calls_recursive(&root, content, &mut calls);
+
+        (bodies, assignments, calls)
+    }
+
     fn collect_assignments_generic(
         node: &Node,
         content: &str,

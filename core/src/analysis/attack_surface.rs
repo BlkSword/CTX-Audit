@@ -263,6 +263,40 @@ impl AttackSurfaceMapper {
         }
     }
 
+    /// 单文件攻击面检测（用于合并扫描，避免二次文件遍历）
+    pub fn map_file(file_path: &str, content: &str) -> Vec<EntryPoint> {
+        let path = std::path::Path::new(file_path);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let mut entry_points = Vec::new();
+
+        match ext {
+            "java" => {
+                let (eps, _) = Self::analyze_java_file(file_path, content);
+                entry_points.extend(eps);
+            }
+            "js" | "ts" | "jsx" | "tsx" => {
+                if Self::is_nextjs_file(file_path, content) {
+                    let (eps, _) = Self::analyze_nextjs_file(file_path, content);
+                    entry_points.extend(eps);
+                } else {
+                    let (eps, _) = Self::analyze_js_file(file_path, content);
+                    entry_points.extend(eps);
+                }
+            }
+            "py" => {
+                let (eps, _) = Self::analyze_python_file(file_path, content);
+                entry_points.extend(eps);
+            }
+            _ => {}
+        }
+
+        for ep in &mut entry_points {
+            ep.risk_score = Self::compute_risk_score(ep);
+        }
+
+        entry_points
+    }
+
     /// 分析 Java 文件中的入口点
     fn analyze_java_file(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
         let mut entry_points = Vec::new();

@@ -423,6 +423,140 @@ impl CrossFileTaintAnalyzer {
         }
     }
 
+    /// 分析指定文件子集（用于深度扫描，避免全项目遍历）
+    pub fn analyze_files(&mut self, project_path: &Path, files: &[PathBuf]) -> CrossFileTaintResult {
+        let mut stats = CrossFileAnalysisStats::default();
+
+        // 只处理传入的文件列表
+        stats.files_analyzed = files.len();
+
+        for file_path in files {
+            self.build_call_graph_for_file(file_path);
+        }
+
+        self.resolve_cross_file_calls();
+
+        stats.total_functions = self.call_graph.nodes.len();
+        stats.taint_sources = self.call_graph.taint_sources.len();
+        stats.taint_sinks = self.call_graph.taint_sinks.len();
+
+        let taint_flows = self.find_interprocedural_taint_flows();
+        stats.taint_flows = taint_flows.len();
+        stats.cross_file_flows = taint_flows.iter()
+            .filter(|f| {
+                f.source.file_path != f.sink.file_path
+                    || f.interprocedural_path.len() > 1
+            })
+            .count();
+
+        CrossFileTaintResult {
+            project_path: project_path.to_string_lossy().to_string(),
+            call_graph: Arc::new(std::mem::take(&mut self.call_graph)),
+            taint_flows,
+            stats,
+        }
+    }
+
+    /// 分析指定文件子集，复用已有的文件内容缓存（避免重复 I/O）
+    pub fn analyze_files_with_content(
+        &mut self,
+        project_path: &Path,
+        files: &[PathBuf],
+        content_cache: &HashMap<String, String>,
+    ) -> CrossFileTaintResult {
+        let mut stats = CrossFileAnalysisStats::default();
+        stats.files_analyzed = files.len();
+
+        for file_path in files {
+            let file_str = file_path.to_string_lossy().to_string();
+            if let Some(content) = content_cache.get(&file_str) {
+                if self.is_ast_supported(file_path) {
+                    self.build_call_graph_for_file_with_content(file_path, content);
+                }
+            } else if let Ok(content) = std::fs::read_to_string(file_path) {
+                self.build_call_graph_for_file_with_content(file_path, &content);
+            }
+        }
+
+        self.resolve_cross_file_calls();
+
+        stats.total_functions = self.call_graph.nodes.len();
+        stats.taint_sources = self.call_graph.taint_sources.len();
+        stats.taint_sinks = self.call_graph.taint_sinks.len();
+
+        let taint_flows = self.find_interprocedural_taint_flows();
+        stats.taint_flows = taint_flows.len();
+        stats.cross_file_flows = taint_flows.iter()
+            .filter(|f| f.source.file_path != f.sink.file_path
+                || f.interprocedural_path.len() > 1)
+            .count();
+
+        CrossFileTaintResult {
+            project_path: project_path.to_string_lossy().to_string(),
+            call_graph: Arc::new(std::mem::take(&mut self.call_graph)),
+            taint_flows,
+            stats,
+        }
+    }
+
+    /// 用已有内容构建调用图（跳过磁盘 I/O）
+    fn build_call_graph_for_file_with_content(&mut self, file_path: &Path, content: &str) {
+        if self.is_ast_supported(file_path) {
+            let file_path_str = file_path.to_string_lossy().to_string();
+            let mut parser = crate::ast::ASTParser::new();
+
+            let (symbols_result, calls) = parser.parse_and_extract_calls(file_path, content);
+            let symbols = match symbols_result {
+                Ok(s) => s,
+                Err(_) => {
+                    let language = self.infer_language(file_path);
+                    let functions = self.extract_functions(content, &file_path_str, language);
+                    for func in functions {
+                        self.call_graph.add_node(func);
+                    }
+                    return;
+                }
+            };
+
+            for symbol in &symbols {
+                if !matches!(symbol.kind, crate::ast::SymbolKind::Function | crate::ast::SymbolKind::Method) {
+                    continue;
+                }
+
+                let func_name = symbol.name.clone();
+                let func_id = format!("{}:{}", file_path_str, func_name);
+
+                let calls_in_func: Vec<String> = calls.iter()
+                    .filter(|c| c.line >= symbol.start_line as usize && c.line <= symbol.end_line as usize)
+                    .map(|c| c.callee.clone())
+                    .collect();
+
+                let node = CallGraphNode {
+                    id: func_id.clone(),
+                    name: func_name,
+                    file_path: file_path_str.clone(),
+                    start_line: symbol.start_line as usize,
+                    end_line: symbol.end_line as usize,
+                    parameters: Vec::new(),
+                    return_type: None,
+                    calls: calls_in_func,
+                    called_by: Vec::new(),
+                    is_external: false,
+                    is_taint_source: false,
+                    is_taint_sink: false,
+                };
+                self.call_graph.add_node(node);
+            }
+        } else if let Ok(content) = std::fs::read_to_string(file_path) {
+            let file_path_str = file_path.to_string_lossy().to_string();
+            let language = self.infer_language(file_path);
+            let functions = self.extract_functions(&content, &file_path_str, language);
+            for func in functions {
+                self.call_graph.add_node(func);
+            }
+        }
+    }
+
     /// 跨文件调用解析
     ///
     /// extract_function_calls 返回裸函数名（如 "execute"），
