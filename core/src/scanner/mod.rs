@@ -12,7 +12,41 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use rayon::prelude::*;
+
+/// 扫描阶段
+#[derive(Debug, Clone)]
+pub enum ScanPhase {
+    /// 收集文件
+    FileWalking,
+    /// SCA 依赖扫描
+    ScaScanning,
+    /// 规则 + 攻击面扫描
+    RuleScanning,
+    /// 深度扫描：候选文件选取
+    CandidateSelection,
+    /// 深度扫描：AST 污点分析
+    TaintAnalysis,
+    /// 深度扫描：跨文件分析
+    CrossFileAnalysis,
+}
+
+/// 扫描进度
+#[derive(Debug, Clone)]
+pub struct ScanProgress {
+    /// 当前阶段
+    pub phase: ScanPhase,
+    /// 当前处理数量
+    pub current: usize,
+    /// 当前阶段总量
+    pub total: usize,
+    /// 描述信息
+    pub message: String,
+}
+
+/// 进度回调类型
+pub type ProgressCallback = Arc<dyn Fn(ScanProgress) + Send + Sync>;
 
 /// 默认排除列表（目录 + 文件模式）
 const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
@@ -212,7 +246,7 @@ fn severity_rank(s: &str) -> u8 {
 
 /// 便捷的 scan_directory 函数（用于web-backend）
 pub async fn scan_directory(path: &str) -> Result<Vec<Finding>, String> {
-    scan_directory_with_rules(path, None, None, None).await
+    scan_directory_with_rules_progress(path, None, None, None, None).await
 }
 
 /// 带自定义规则目录的扫描
@@ -222,7 +256,18 @@ pub async fn scan_directory_with_rules(
     exclude_dirs: Option<Vec<String>>,
     sca_options: Option<ScaScanOptions>,
 ) -> Result<Vec<Finding>, String> {
-    let (findings, _) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options).await?;
+    scan_directory_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, None).await
+}
+
+/// 带进度回调的扫描
+pub async fn scan_directory_with_rules_progress(
+    path: &str,
+    rules_dir: Option<&str>,
+    exclude_dirs: Option<Vec<String>>,
+    sca_options: Option<ScaScanOptions>,
+    progress: Option<ProgressCallback>,
+) -> Result<Vec<Finding>, String> {
+    let (findings, _) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, progress).await?;
     Ok(findings)
 }
 
@@ -233,6 +278,7 @@ async fn scan_directory_with_rules_inner(
     exclude_dirs: Option<Vec<String>>,
     collect_content: bool,
     sca_options: Option<ScaScanOptions>,
+    progress: Option<ProgressCallback>,
 ) -> Result<(Vec<Finding>, HashMap<String, String>), String> {
     use ignore::Walk;
 
@@ -247,51 +293,9 @@ async fn scan_directory_with_rules_inner(
         }
     }
 
-    // 先运行攻击面映射
-    let attack_surface = crate::analysis::attack_surface::AttackSurfaceMapper::map_project(
-        std::path::Path::new(path)
-    );
-    tracing::info!(
-        "[AttackSurface] 发现 {} 个入口点, {} 个高风险文件, {} 个未认证入口",
-        attack_surface.stats.total_entry_points,
-        attack_surface.stats.high_risk_file_count,
-        attack_surface.stats.unauthenticated_count,
-    );
-
-    let mut findings = Vec::with_capacity(attack_surface.entry_points.len() / 4);
+    let mut findings = Vec::new();
     let mut content_cache: HashMap<String, String> = HashMap::new();
 
-    // 从攻击面生成未认证端点发现（过滤 test 目录）
-    for ep in &attack_surface.entry_points {
-        if !ep.auth_required && ep.entry_type == crate::analysis::attack_surface::EntryType::HttpEndpoint {
-            // 跳过测试目录中的端点
-            if is_test_path(&ep.file_path) {
-                continue;
-            }
-            // 跳过排除目录中的端点
-            if is_excluded(std::path::Path::new(&ep.file_path), &excludes) {
-                continue;
-            }
-            findings.push(Finding {
-                finding_id: format!("attack-surface-unauth-{}", ep.line),
-                file_path: ep.file_path.clone(),
-                line_start: ep.line,
-                line_end: ep.line,
-                detector: "AttackSurfaceMapper".to_string(),
-                vuln_type: "UnauthenticatedEndpoint".to_string(),
-                severity: "high".to_string(),
-                description: format!(
-                    "{} {} 端点未配置认证保护",
-                    ep.http_method.as_deref().unwrap_or("?"),
-                    ep.route.as_deref().unwrap_or("?")
-                ),
-                analysis_trail: None,
-                llm_output: None,
-                confidence: Some(ep.risk_score),
-                corroboration_count: None,
-            });
-        }
-    }
     let rules = match resolve_rules_dir(path, rules_dir) {
         Some(rules_path) => {
             tracing::info!("加载规则: {}", rules_path.display());
@@ -362,10 +366,27 @@ async fn scan_directory_with_rules_inner(
 
     // SCA 扫描（默认关闭，需通过配置或 --sca 启用）
     if sca_opts.enabled {
-        for path_buf in &dep_files {
+        let sca_total = dep_files.len();
+        if let Some(ref cb) = progress {
+            cb(ScanProgress {
+                phase: ScanPhase::ScaScanning,
+                current: 0,
+                total: sca_total,
+                message: format!("SCA 扫描: 0/{} 依赖文件", sca_total),
+            });
+        }
+        for (i, path_buf) in dep_files.iter().enumerate() {
             if let Ok(content) = std::fs::read_to_string(path_buf) {
                 let sca_findings = sca_scanner.scan_file(path_buf, &content).await;
                 findings.extend(sca_findings);
+            }
+            if let Some(ref cb) = progress {
+                cb(ScanProgress {
+                    phase: ScanPhase::ScaScanning,
+                    current: i + 1,
+                    total: sca_total,
+                    message: format!("SCA 扫描: {}/{} 依赖文件", i + 1, sca_total),
+                });
             }
         }
     }
@@ -375,18 +396,30 @@ async fn scan_directory_with_rules_inner(
 
     let batch_size = 100;
     let mut total_bytes_read: usize = 0;
+    let total_code_files = code_files.len();
+    let mut scanned_files: usize = 0;
+
+    if let Some(ref cb) = progress {
+        cb(ScanProgress {
+            phase: ScanPhase::RuleScanning,
+            current: 0,
+            total: total_code_files,
+            message: format!("规则扫描: 0/{} 文件", total_code_files),
+        });
+    }
 
     for chunk in code_files.chunks(batch_size) {
-        let code_results: Vec<(Vec<Finding>, Option<(String, String)>, usize)> = chunk
+        let code_results: Vec<(Vec<Finding>, Vec<Finding>, Option<(String, String)>, usize)> = chunk
             .par_iter()
             .map(|path_buf| {
                 let content = match std::fs::read_to_string(path_buf) {
                     Ok(c) => c,
-                    Err(_) => return (Vec::new(), None, 0),
+                    Err(_) => return (Vec::new(), Vec::new(), None, 0),
                 };
 
                 let content_len = content.len();
                 let mut file_findings = Vec::new();
+                let file_str = path_buf.to_string_lossy().to_string();
 
                 // 规则扫描
                 if let Some(ref scanner) = rule_scanner {
@@ -394,17 +427,48 @@ async fn scan_directory_with_rules_inner(
                     file_findings.extend(rule_results);
                 }
 
-                let cached = if collect_content && !file_findings.is_empty() {
-                    Some((path_buf.to_string_lossy().to_string(), content))
+                // 攻击面检测（合并到同一次文件读取中）
+                let mut attack_surface_findings = Vec::new();
+                let entry_points = crate::analysis::attack_surface::AttackSurfaceMapper::map_file(
+                    &file_str, &content
+                );
+                for ep in &entry_points {
+                    if !ep.auth_required && ep.entry_type == crate::analysis::attack_surface::EntryType::HttpEndpoint {
+                        if !is_test_path(&ep.file_path) && !is_excluded(path_buf, &excludes) {
+                            attack_surface_findings.push(Finding {
+                                finding_id: format!("attack-surface-unauth-{}", ep.line),
+                                file_path: ep.file_path.clone(),
+                                line_start: ep.line,
+                                line_end: ep.line,
+                                detector: "AttackSurfaceMapper".to_string(),
+                                vuln_type: "UnauthenticatedEndpoint".to_string(),
+                                severity: "high".to_string(),
+                                description: format!(
+                                    "{} {} 端点未配置认证保护",
+                                    ep.http_method.as_deref().unwrap_or("?"),
+                                    ep.route.as_deref().unwrap_or("?")
+                                ),
+                                analysis_trail: None,
+                                llm_output: None,
+                                confidence: Some(ep.risk_score),
+                                corroboration_count: None,
+                            });
+                        }
+                    }
+                }
+
+                let has_findings = !file_findings.is_empty() || !attack_surface_findings.is_empty();
+                let cached = if collect_content && has_findings {
+                    Some((file_str, content))
                 } else {
                     None
                 };
 
-                (file_findings, cached, content_len)
+                (file_findings, attack_surface_findings, cached, content_len)
             })
             .collect();
 
-        total_bytes_read += code_results.iter().map(|(_, _, len)| *len).sum::<usize>();
+        total_bytes_read += code_results.iter().map(|(_, _, _, len)| *len).sum::<usize>();
         if total_bytes_read > MEMORY_BUDGET_BYTES {
             tracing::warn!(
                 "内存预算接近上限 ({}MB)，停止扫描剩余文件",
@@ -413,11 +477,22 @@ async fn scan_directory_with_rules_inner(
             break;
         }
 
-        for (mut batch, cached, _) in code_results {
+        for (mut batch, mut as_batch, cached, _) in code_results {
             if let Some((path, content)) = cached {
                 content_cache.insert(path, content);
             }
             findings.append(&mut batch);
+            findings.append(&mut as_batch);
+        }
+
+        scanned_files += chunk.len();
+        if let Some(ref cb) = progress {
+            cb(ScanProgress {
+                phase: ScanPhase::RuleScanning,
+                current: scanned_files,
+                total: total_code_files,
+                message: format!("规则扫描: {}/{} 文件", scanned_files, total_code_files),
+            });
         }
     }
 
@@ -475,7 +550,7 @@ pub struct ScanResult {
     pub attack_surface: crate::analysis::attack_surface::AttackSurface,
 }
 
-/// 扫描目录并返回完整结果（含攻击面）
+/// 扫描目录并返回完整结果（含攻击面） — 使用无进度回调的默认扫描
 pub async fn scan_directory_with_attack_surface(path: &str) -> Result<ScanResult, String> {
     let attack_surface = crate::analysis::attack_surface::AttackSurfaceMapper::map_project(
         std::path::Path::new(path)
@@ -498,69 +573,139 @@ pub async fn scan_directory_deep_with_rules(
     exclude_dirs: Option<Vec<String>>,
     sca_options: Option<ScaScanOptions>,
 ) -> Result<Vec<Finding>, String> {
+    scan_directory_deep_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, None).await
+}
+
+/// 带进度回调的深度扫描
+pub async fn scan_directory_deep_with_rules_progress(
+    path: &str,
+    rules_dir: Option<&str>,
+    exclude_dirs: Option<Vec<String>>,
+    sca_options: Option<ScaScanOptions>,
+    progress: Option<ProgressCallback>,
+) -> Result<Vec<Finding>, String> {
     // 先执行基础扫描（收集文件内容缓存）
-    let (mut findings, content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options).await?;
+    let (mut findings, mut content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, progress.clone()).await?;
 
     if findings.is_empty() {
         return Ok(findings);
     }
 
-    // 收集有候选发现的文件
-    let candidate_files: std::collections::HashSet<String> = findings
-        .iter()
-        .map(|f| f.file_path.clone())
-        .collect();
+    // C1: 候选文件限制 — 按严重程度排序取 top 200
+    const MAX_CANDIDATE_FILES: usize = 200;
+    const TAINT_BATCH_SIZE: usize = 50;
+    const MAX_TAINT_FILE_KB: usize = 100;
 
-    // AST 污点分析（复用 content_cache，避免重复读取文件）
-    let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
+    let candidate_files: Vec<String> = {
+        let mut file_severities: Vec<(String, u8)> = findings.iter()
+            .map(|f| (f.file_path.clone(), severity_rank(&f.severity)))
+            .collect();
+        file_severities.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut seen = std::collections::HashSet::new();
+        file_severities.into_iter()
+            .filter_map(|(f, _)| {
+                if seen.insert(f.clone()) { Some(f) } else { None }
+            })
+            .take(MAX_CANDIDATE_FILES)
+            .collect()
+    };
+
+    if let Some(ref cb) = progress {
+        cb(ScanProgress {
+            phase: ScanPhase::CandidateSelection,
+            current: candidate_files.len(),
+            total: MAX_CANDIDATE_FILES,
+            message: format!("选取候选文件: {} 个文件进入深度分析", candidate_files.len()),
+        });
+    }
+
+    // C2: 分批 AST 污点分析 + 并行处理
     let mut taint_findings: Vec<Finding> = Vec::with_capacity(candidate_files.len() * 4);
+    let taint_total = candidate_files.len();
+    let mut taint_scanned: usize = 0;
 
-    for file_path_str in &candidate_files {
-        let file_path = std::path::Path::new(file_path_str);
+    if let Some(ref cb) = progress {
+        cb(ScanProgress {
+            phase: ScanPhase::TaintAnalysis,
+            current: 0,
+            total: taint_total,
+            message: format!("AST 污点分析: 0/{} 文件", taint_total),
+        });
+    }
 
-        if !is_ast_supported_file(file_path) {
-            continue;
+    for batch in candidate_files.chunks(TAINT_BATCH_SIZE) {
+        // 准备本批次的文件内容（在主线程中提取，避免跨线程借用 content_cache）
+        let batch_data: Vec<(String, String)> = batch.iter()
+            .filter_map(|file_path_str| {
+                let file_path = std::path::Path::new(file_path_str);
+                if !is_ast_supported_file(file_path) {
+                    return None;
+                }
+                let content = if let Some(cached) = content_cache.get(file_path_str) {
+                    cached.clone()
+                } else if let Ok(c) = std::fs::read_to_string(file_path) {
+                    c
+                } else {
+                    return None;
+                };
+                if content.len() > MAX_TAINT_FILE_KB * 1024 {
+                    return None;
+                }
+                Some((file_path_str.clone(), content))
+            })
+            .collect();
+
+        // 并行分析
+        let batch_findings: Vec<Vec<Finding>> = batch_data
+            .par_iter()
+            .map(|(file_path_str, content)| {
+                let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
+                let file_path = std::path::Path::new(file_path_str);
+                let flows = analyzer.analyze_file(file_path, content);
+
+                flows.iter().map(|flow| {
+                    let file_str = file_path.to_string_lossy().to_string();
+                    let trail: Vec<String> = flow.path.iter().map(|n| {
+                        format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
+                    }).collect();
+                    let vuln_name = format!("{}", flow.vulnerability_type);
+
+                    Finding {
+                        finding_id: flow.id.clone(),
+                        file_path: file_str,
+                        line_start: flow.source.line,
+                        line_end: flow.sink.line,
+                        detector: "AstTaintScanner".to_string(),
+                        vuln_type: vuln_name.clone(),
+                        severity: format!("{:?}", flow.severity).to_lowercase(),
+                        description: format!(
+                            "{}: {} → {} ({}→{})",
+                            vuln_name,
+                            flow.source.symbol,
+                            flow.sink.symbol,
+                            flow.source.line,
+                            flow.sink.line,
+                        ),
+                        analysis_trail: Some(trail),
+                        llm_output: None,
+                        confidence: Some(0.85),
+                        corroboration_count: None,
+                    }
+                }).collect()
+            })
+            .collect();
+
+        for mut batch in batch_findings {
+            taint_findings.append(&mut batch);
         }
 
-        // 优先使用缓存，缓存未命中再读取文件
-        let content = if let Some(cached) = content_cache.get(file_path_str) {
-            cached.clone()
-        } else if let Ok(c) = std::fs::read_to_string(file_path) {
-            c
-        } else {
-            continue;
-        };
-
-        let flows = analyzer.analyze_file(file_path, &content);
-
-        for flow in &flows {
-            let file_str = file_path.to_string_lossy().to_string();
-            let trail: Vec<String> = flow.path.iter().map(|n| {
-                format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
-            }).collect();
-
-            let vuln_name = format!("{}", flow.vulnerability_type);
-
-            taint_findings.push(Finding {
-                finding_id: flow.id.clone(),
-                file_path: file_str,
-                line_start: flow.source.line,
-                line_end: flow.sink.line,
-                detector: "AstTaintScanner".to_string(),
-                vuln_type: vuln_name.clone(),
-                severity: format!("{:?}", flow.severity).to_lowercase(),
-                description: format!(
-                    "{}: {} → {} ({}→{})",
-                    vuln_name,
-                    flow.source.symbol,
-                    flow.sink.symbol,
-                    flow.source.line,
-                    flow.sink.line,
-                ),
-                analysis_trail: Some(trail),
-                llm_output: None,
-                confidence: Some(0.85),
-                corroboration_count: None,
+        taint_scanned += batch.len();
+        if let Some(ref cb) = progress {
+            cb(ScanProgress {
+                phase: ScanPhase::TaintAnalysis,
+                current: taint_scanned,
+                total: taint_total,
+                message: format!("AST 污点分析: {}/{} 文件", taint_scanned, taint_total),
             });
         }
     }
@@ -582,9 +727,32 @@ pub async fn scan_directory_deep_with_rules(
 
     findings.extend(taint_findings);
 
-    // 跨文件污点分析
-    let cross_file_result = crate::analysis::cross_file::CrossFileTaintAnalyzer::new()
-        .analyze_project(std::path::Path::new(path));
+    // C3: 跨文件污点分析 — 复用 content_cache 避免重复 I/O
+    if let Some(ref cb) = progress {
+        cb(ScanProgress {
+            phase: ScanPhase::CrossFileAnalysis,
+            current: 0,
+            total: 1,
+            message: "跨文件污点分析中...".to_string(),
+        });
+    }
+
+    let taint_files: Vec<std::path::PathBuf> = findings.iter()
+        .filter(|f| f.detector == "AstTaintScanner")
+        .map(|f| std::path::PathBuf::from(&f.file_path))
+        .collect();
+
+    let cross_file_result = if !taint_files.is_empty() {
+        crate::analysis::cross_file::CrossFileTaintAnalyzer::new()
+            .analyze_files_with_content(std::path::Path::new(path), &taint_files, &content_cache)
+    } else {
+        crate::analysis::cross_file::CrossFileTaintResult {
+            project_path: path.to_string(),
+            call_graph: Arc::new(crate::analysis::cross_file::CallGraph::new()),
+            taint_flows: Vec::new(),
+            stats: crate::analysis::cross_file::CrossFileAnalysisStats::default(),
+        }
+    };
 
     if !cross_file_result.taint_flows.is_empty() {
         tracing::info!(
