@@ -313,8 +313,8 @@ pub fn heartbeat_file_path() -> std::path::PathBuf {
     std::path::Path::new(".ctx-audit/heartbeat.json").to_path_buf()
 }
 
-/// 心跳间隔（秒）
-const HEARTBEAT_INTERVAL_SECS: u64 = 5;
+/// 心跳默认间隔（秒）
+const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 5;
 
 /// 写入心跳文件（在 async 上下文中调用）
 async fn write_heartbeat_async(state: &DaemonState, engine: &AnalysisEngine) {
@@ -349,8 +349,10 @@ pub fn spawn_heartbeat_task(
     engine: Arc<AnalysisEngine>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
+    let heartbeat_secs = read_daemon_config_u64("heartbeat_interval_secs", DEFAULT_HEARTBEAT_INTERVAL_SECS);
+
     tokio::spawn(async move {
-        let interval = tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+        let interval = tokio::time::Duration::from_secs(heartbeat_secs);
         let mut tick: u64 = 0;
         loop {
             tokio::select! {
@@ -404,4 +406,14 @@ pub fn read_pid_file() -> Option<serde_json::Value> {
     } else {
         None
     }
+}
+
+/// 从配置文件读取 daemon.* 字段（u64 类型）
+fn read_daemon_config_u64(key: &str, default: u64) -> u64 {
+    dirs::config_dir()
+        .map(|dir| dir.join("ctx-audit").join("config.toml"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|content| toml::from_str::<toml::Value>(&content).ok())
+        .and_then(|val| val.get("daemon")?.get(key)?.as_integer().map(|v| v as u64))
+        .unwrap_or(default)
 }

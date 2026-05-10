@@ -157,9 +157,6 @@ impl Default for OutputConfig {
 /// 高级配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdvancedConfig {
-    /// 缓存目录
-    pub cache_dir: Option<PathBuf>,
-
     /// 是否启用缓存
     #[serde(default = "default_true_val")]
     pub enable_cache: bool,
@@ -175,7 +172,6 @@ fn default_log_level() -> String { "info".to_string() }
 impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
-            cache_dir: None,
             enable_cache: true,
             log_level: "info".to_string(),
         }
@@ -601,7 +597,6 @@ impl ConfigManager {
             "scan.include_tests" => self.config.scan.include_tests = false,
             "scan.deep" => self.config.scan.deep = false,
             // advanced.*
-            "advanced.cache_dir" => self.config.advanced.cache_dir = None,
             "cache.enabled" => self.config.advanced.enable_cache = true,
             "log.level" => self.config.advanced.log_level = "info".to_string(),
             // sca.*

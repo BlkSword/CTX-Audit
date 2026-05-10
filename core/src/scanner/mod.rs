@@ -48,6 +48,36 @@ pub struct ScanProgress {
 /// 进度回调类型
 pub type ProgressCallback = Arc<dyn Fn(ScanProgress) + Send + Sync>;
 
+/// 扫描行为可配置参数
+#[derive(Debug, Clone)]
+pub struct ScanOptions {
+    /// 并行线程数（默认 4，0 = rayon 自动检测）
+    pub threads: usize,
+    /// 单文件最大扫描大小（字节，默认 10MB）
+    pub max_file_size: u64,
+    /// 扫描内存预算（字节，默认 500MB）
+    pub memory_budget: usize,
+    /// 并行扫描批次大小（默认 100）
+    pub batch_size: usize,
+    /// 去重行容差（默认 3，即 ±3 行内合并）
+    pub line_tolerance: usize,
+    /// 是否包含测试文件（默认 false，测试目录中文件降低置信度但不排除）
+    pub include_tests: bool,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            threads: 4,
+            max_file_size: 10 * 1024 * 1024,
+            memory_budget: 500 * 1024 * 1024,
+            batch_size: 100,
+            line_tolerance: 3,
+            include_tests: false,
+        }
+    }
+}
+
 /// 默认排除列表（目录 + 文件模式）
 const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
     // 目录
@@ -267,7 +297,19 @@ pub async fn scan_directory_with_rules_progress(
     sca_options: Option<ScaScanOptions>,
     progress: Option<ProgressCallback>,
 ) -> Result<Vec<Finding>, String> {
-    let (findings, _) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, progress).await?;
+    scan_directory_with_opts(path, rules_dir, exclude_dirs, sca_options, ScanOptions::default(), progress).await
+}
+
+/// 带完整配置的扫描
+pub async fn scan_directory_with_opts(
+    path: &str,
+    rules_dir: Option<&str>,
+    exclude_dirs: Option<Vec<String>>,
+    sca_options: Option<ScaScanOptions>,
+    scan_opts: ScanOptions,
+    progress: Option<ProgressCallback>,
+) -> Result<Vec<Finding>, String> {
+    let (findings, _) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, Some(scan_opts), progress).await?;
     Ok(findings)
 }
 
@@ -278,6 +320,7 @@ async fn scan_directory_with_rules_inner(
     exclude_dirs: Option<Vec<String>>,
     collect_content: bool,
     sca_options: Option<ScaScanOptions>,
+    scan_opts: Option<ScanOptions>,
     progress: Option<ProgressCallback>,
 ) -> Result<(Vec<Finding>, HashMap<String, String>), String> {
     use ignore::Walk;
@@ -328,8 +371,7 @@ async fn scan_directory_with_rules_inner(
     let sca_scanner = sca_scanner::ScaScanner::with_options(sca_opts.clone());
 
     // 收集文件路径
-    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
-    const MEMORY_BUDGET_BYTES: usize = 500 * 1024 * 1024;
+    let opts = scan_opts.unwrap_or_default();
 
     let mut code_files: Vec<std::path::PathBuf> = Vec::new();
     let mut dep_files: Vec<std::path::PathBuf> = Vec::new();
@@ -349,7 +391,7 @@ async fn scan_directory_with_rules_inner(
 
             // 文件大小检查
             if let Ok(meta) = std::fs::metadata(path) {
-                if meta.len() > MAX_FILE_SIZE {
+                if meta.len() > opts.max_file_size {
                     continue;
                 }
             }
@@ -394,7 +436,7 @@ async fn scan_directory_with_rules_inner(
     // 代码文件并行扫描
     let rt_handle = tokio::runtime::Handle::current();
 
-    let batch_size = 100;
+    let batch_size = opts.batch_size;
     let mut total_bytes_read: usize = 0;
     let total_code_files = code_files.len();
     let mut scanned_files: usize = 0;
@@ -469,7 +511,7 @@ async fn scan_directory_with_rules_inner(
             .collect();
 
         total_bytes_read += code_results.iter().map(|(_, _, _, len)| *len).sum::<usize>();
-        if total_bytes_read > MEMORY_BUDGET_BYTES {
+        if total_bytes_read > opts.memory_budget {
             tracing::warn!(
                 "内存预算接近上限 ({}MB)，停止扫描剩余文件",
                 total_bytes_read / 1024 / 1024
@@ -505,7 +547,7 @@ async fn scan_directory_with_rules_inner(
             || fp.ends_with(".spec.js") || fp.ends_with(".spec.ts");
         let is_example = fp.contains("/example") || fp.contains("/demo") || fp.contains("/sample");
 
-        if is_test || is_example {
+        if !opts.include_tests && (is_test || is_example) {
             finding.confidence = Some(finding.confidence.unwrap_or(0.7) * 0.3);
         }
 
@@ -533,7 +575,7 @@ async fn scan_directory_with_rules_inner(
     }
 
     // 去重
-    findings = deduplicate_findings(findings);
+    findings = deduplicate_findings(findings, opts.line_tolerance);
 
     // 去重后清理缓存中不再需要的文件
     if !content_cache.is_empty() {
@@ -573,7 +615,7 @@ pub async fn scan_directory_deep_with_rules(
     exclude_dirs: Option<Vec<String>>,
     sca_options: Option<ScaScanOptions>,
 ) -> Result<Vec<Finding>, String> {
-    scan_directory_deep_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, None).await
+    scan_directory_deep_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, None, None).await
 }
 
 /// 带进度回调的深度扫描
@@ -582,10 +624,12 @@ pub async fn scan_directory_deep_with_rules_progress(
     rules_dir: Option<&str>,
     exclude_dirs: Option<Vec<String>>,
     sca_options: Option<ScaScanOptions>,
+    scan_opts: Option<ScanOptions>,
     progress: Option<ProgressCallback>,
 ) -> Result<Vec<Finding>, String> {
     // 先执行基础扫描（收集文件内容缓存）
-    let (mut findings, mut content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, progress.clone()).await?;
+    let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);
+    let (mut findings, mut content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, scan_opts, progress.clone()).await?;
 
     if findings.is_empty() {
         return Ok(findings);
@@ -790,7 +834,7 @@ pub async fn scan_directory_deep_with_rules_progress(
     }
 
     // 去重
-    findings = deduplicate_findings(findings);
+    findings = deduplicate_findings(findings, line_tol);
 
     Ok(findings)
 }
@@ -809,8 +853,8 @@ fn is_ast_supported_file(path: &std::path::Path) -> bool {
     }
 }
 
-/// 去重发现：按 (file_path, line_start) 精确分组，再按 (file_path, vuln_type) ±3 行容差分组
-fn deduplicate_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
+/// 去重发现：按 (file_path, line_start) 精确分组，再按 (file_path, vuln_type) ±line_tolerance 行容差分组
+fn deduplicate_findings(mut findings: Vec<Finding>, line_tolerance: usize) -> Vec<Finding> {
     if findings.is_empty() {
         return findings;
     }
@@ -843,8 +887,8 @@ fn deduplicate_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
         }
     }
 
-    // Round 2: 容差匹配 — 对 Round 1 的结果按 (file_path, vuln_type) 分组，±3 行内合并
-    result = deduplicate_with_tolerance(result);
+    // Round 2: 容差匹配 — 对 Round 1 的结果按 (file_path, vuln_type) 分组，±line_tolerance 行内合并
+    result = deduplicate_with_tolerance(result, line_tolerance);
 
     result
 }
@@ -947,9 +991,8 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
     }
 }
 
-/// 容差去重：按 (file_path, vuln_type) 分组，±3 行内合并
-fn deduplicate_with_tolerance(findings: Vec<Finding>) -> Vec<Finding> {
-    const LINE_TOLERANCE: usize = 3;
+/// 容差去重：按 (file_path, vuln_type) 分组，±line_tolerance 行内合并
+fn deduplicate_with_tolerance(findings: Vec<Finding>, line_tolerance: usize) -> Vec<Finding> {
 
     // 按 (file_path, vuln_type) 分组
     let mut groups: std::collections::HashMap<(String, String), Vec<usize>> =
@@ -976,7 +1019,7 @@ fn deduplicate_with_tolerance(findings: Vec<Finding>) -> Vec<Finding> {
             let mut found = false;
             for cluster in &mut clusters {
                 if cluster.iter().any(|&c_idx| {
-                    findings[c_idx].line_start.abs_diff(line) <= LINE_TOLERANCE
+                    findings[c_idx].line_start.abs_diff(line) <= line_tolerance
                 }) {
                     cluster.push(idx);
                     found = true;

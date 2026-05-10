@@ -86,10 +86,12 @@ pub struct AnalysisEngine {
     scan_caches: RwLock<HashMap<String, TimestampedScanCache>>,
     /// 规则加载时间戳：rules_dir → (load_time, rule_count)
     rules_cache: RwLock<HashMap<String, (std::time::Instant, usize)>>,
+    /// 可配置参数
+    rules_reload_interval_secs: u64,
+    ast_idle_secs: u64,
+    ast_max_memory_bytes: usize,
+    scan_cache_idle_secs: u64,
 }
-
-/// 规则热重载检查间隔
-const RULES_RELOAD_INTERVAL_SECS: u64 = 30;
 
 /// 增量扫描输出
 pub struct ScanOutput {
@@ -102,10 +104,30 @@ pub struct ScanOutput {
 
 impl AnalysisEngine {
     pub fn new() -> Self {
+        let (rules_reload, ast_idle, ast_max_mem, scan_cache_idle) =
+            if let Some(dirs) = dirs::config_dir() {
+                let config_path = dirs.join("ctx-audit").join("config.toml");
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    if let Ok(val) = toml::from_str::<toml::Value>(&content) {
+                        let daemon = val.get("daemon");
+                        (
+                            daemon.and_then(|d| d.get("rules_reload_interval_secs")).and_then(|v| v.as_integer()).unwrap_or(30) as u64,
+                            daemon.and_then(|d| d.get("ast_idle_secs")).and_then(|v| v.as_integer()).unwrap_or(3600) as u64,
+                            daemon.and_then(|d| d.get("ast_max_memory_mb")).and_then(|v| v.as_integer()).unwrap_or(512) as usize * 1024 * 1024,
+                            daemon.and_then(|d| d.get("scan_cache_idle_secs")).and_then(|v| v.as_integer()).unwrap_or(7200) as u64,
+                        )
+                    } else { (30, 3600, 512 * 1024 * 1024, 7200) }
+                } else { (30, 3600, 512 * 1024 * 1024, 7200) }
+            } else { (30, 3600, 512 * 1024 * 1024, 7200) };
+
         Self {
             ast_engines: RwLock::new(HashMap::new()),
             scan_caches: RwLock::new(HashMap::new()),
             rules_cache: RwLock::new(HashMap::new()),
+            rules_reload_interval_secs: rules_reload,
+            ast_idle_secs: ast_idle,
+            ast_max_memory_bytes: ast_max_mem,
+            scan_cache_idle_secs: scan_cache_idle,
         }
     }
 
@@ -705,8 +727,8 @@ impl AnalysisEngine {
 
     /// 淘汰空闲超时的 AST Engine，或总量超限时淘汰最久未访问的
     pub fn evict_idle_ast_engines(&self) -> usize {
-        const MAX_IDLE_SECS: u64 = 3600;
-        const MAX_TOTAL_BYTES: usize = 512 * 1024 * 1024;
+        let max_idle_secs = self.ast_idle_secs;
+        let max_total_bytes = self.ast_max_memory_bytes;
 
         let mut engines = match self.ast_engines.try_write() {
             Ok(guard) => guard,
@@ -716,7 +738,7 @@ impl AnalysisEngine {
         let expired: Vec<String> = engines.iter()
             .filter_map(|(k, v)| {
                 let last = v.last_accessed.lock().ok()?;
-                if last.elapsed().as_secs() > MAX_IDLE_SECS { Some(k.clone()) } else { None }
+                if last.elapsed().as_secs() > max_idle_secs { Some(k.clone()) } else { None }
             })
             .collect();
 
@@ -726,7 +748,7 @@ impl AnalysisEngine {
         }
 
         let total: usize = engines.values().map(|v| v.estimated_bytes).sum();
-        if total > MAX_TOTAL_BYTES {
+        if total > max_total_bytes {
             let mut entries: Vec<(String, std::time::Duration, usize)> = engines.iter()
                 .filter_map(|(k, v)| {
                     let last = v.last_accessed.lock().ok()?;
@@ -737,7 +759,7 @@ impl AnalysisEngine {
 
             let mut freed = 0usize;
             for (key, _, bytes) in entries {
-                if total - freed <= MAX_TOTAL_BYTES { break; }
+                if total - freed <= max_total_bytes { break; }
                 engines.remove(&key);
                 freed += bytes;
                 evicted += 1;
@@ -752,7 +774,7 @@ impl AnalysisEngine {
 
     /// 淘汰空闲超时的 Scan Cache
     pub fn evict_idle_scan_caches(&self) -> usize {
-        const MAX_IDLE_SECS: u64 = 7200;
+        let max_idle_secs = self.scan_cache_idle_secs;
 
         let mut caches = match self.scan_caches.try_write() {
             Ok(guard) => guard,
@@ -762,7 +784,7 @@ impl AnalysisEngine {
         let expired: Vec<String> = caches.iter()
             .filter_map(|(k, v)| {
                 let last = v.last_accessed.lock().ok()?;
-                if last.elapsed().as_secs() > MAX_IDLE_SECS { Some(k.clone()) } else { None }
+                if last.elapsed().as_secs() > max_idle_secs { Some(k.clone()) } else { None }
             })
             .collect();
 
@@ -783,7 +805,7 @@ impl AnalysisEngine {
         let key = rules_dir.unwrap_or("none");
         let now = std::time::Instant::now();
         let should_log = match rules_cache.get(key) {
-            Some((last_time, _)) => now.duration_since(*last_time).as_secs() > RULES_RELOAD_INTERVAL_SECS,
+            Some((last_time, _)) => now.duration_since(*last_time).as_secs() > self.rules_reload_interval_secs,
             None => true,
         };
         drop(rules_cache);
