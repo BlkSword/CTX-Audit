@@ -152,31 +152,46 @@ impl AstTaintAnalyzer {
     pub fn analyze_file(&mut self, file_path: &Path, content: &str) -> Vec<TaintFlow> {
         let mut all_flows = Vec::new();
 
-        // 1. 提取函数体（按函数粒度分析）
-        let functions = self.ast_parser.extract_function_bodies(file_path, content);
+        // 一次 AST 解析提取函数体 + 赋值 + 调用（替代原来的 4 次解析）
+        let (functions, file_assignments, file_calls) =
+            self.ast_parser.extract_all_for_taint(file_path, content);
 
-        // 2. 检测 Promise 链和回调模式
+        // 检测 Promise 链和回调模式
         let callback_hints = async_flow::detect_callback_hints(content);
 
+        let file_path_str = file_path.to_string_lossy().to_string();
+
         if functions.is_empty() {
-            // 如果没有提取到函数，对整个文件做分析
-            let flows = self.analyze_code(content, file_path, "", &[], &callback_hints);
+            // 没有函数体，对整个文件做分析
+            let cfg = EnhancedFlowGraph::from_code(content, &file_path_str, "");
+            let flows = self.forward_taint_analysis(
+                &cfg, &file_assignments, &file_calls, content, &file_path_str, &[], &callback_hints,
+            );
             all_flows.extend(flows);
         } else {
-            // 按函数逐个分析
+            // 按函数逐个分析，复用已提取的 assignments 和 calls
             for func in &functions {
-                // 匹配此函数的回调提示
                 let func_hints: Vec<CallbackTaintHint> = callback_hints.iter()
                     .filter(|h| h.callback_start_line >= func.start_line && h.callback_start_line <= func.end_line)
                     .cloned()
                     .collect();
 
-                let flows = self.analyze_code(
-                    &func.body_text,
-                    file_path,
-                    &func.name,
-                    &func.typed_params,
-                    &func_hints,
+                // 按行范围筛选属于此函数的 assignments 和 calls
+                let func_assignments: Vec<_> = file_assignments.iter()
+                    .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+                    .cloned()
+                    .collect();
+                let func_calls: Vec<_> = file_calls.iter()
+                    .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+                    .cloned()
+                    .collect();
+
+                let cfg = EnhancedFlowGraph::from_code(
+                    &func.body_text, &file_path_str, &func.name,
+                );
+                let flows = self.forward_taint_analysis(
+                    &cfg, &func_assignments, &func_calls,
+                    &func.body_text, &file_path_str, &func.typed_params, &func_hints,
                 );
                 all_flows.extend(flows);
             }
@@ -185,8 +200,8 @@ impl AstTaintAnalyzer {
         all_flows
     }
 
-    /// 分析一段代码（函数体或完整文件）
-    fn analyze_code(
+    /// 分析一段代码（函数体或完整文件）— 供测试使用
+    pub(crate) fn analyze_code(
         &mut self,
         code: &str,
         file_path: &Path,
@@ -195,16 +210,9 @@ impl AstTaintAnalyzer {
         callback_hints: &[CallbackTaintHint],
     ) -> Vec<TaintFlow> {
         let file_path_str = file_path.to_string_lossy().to_string();
-
-        // 2. 用 AST 提取赋值和调用信息
         let tmp_path = std::path::PathBuf::from(&file_path_str);
-        let assignments = self.ast_parser.extract_assignments(&tmp_path, code);
-        let calls = self.ast_parser.extract_calls(&tmp_path, code);
-
-        // 3. 构建基于 AST 的 CFG
+        let (_, assignments, calls) = self.ast_parser.extract_all_for_taint(&tmp_path, code);
         let cfg = EnhancedFlowGraph::from_code(code, &file_path_str, function_name);
-
-        // 4. 前向污点传播
         self.forward_taint_analysis(&cfg, &assignments, &calls, code, &file_path_str, typed_params, callback_hints)
     }
 
@@ -237,9 +245,11 @@ impl AstTaintAnalyzer {
         // 从赋值中构建别名映射
         let alias_map = self.build_alias_map(assignments);
 
-        // 初始化 worklist
+        // 初始化 worklist（HashSet 辅助 O(1) 去重）
         let mut worklist: VecDeque<usize> = VecDeque::new();
+        let mut in_worklist: std::collections::HashSet<usize> = std::collections::HashSet::new();
         worklist.push_back(cfg.entry);
+        in_worklist.insert(cfg.entry);
 
         while let Some(node_id) = worklist.pop_front() {
             if node_id >= cfg.nodes.len() {
@@ -286,9 +296,9 @@ impl AstTaintAnalyzer {
             let changed = self.state_changed(node_id, &new_state, &taint_state);
             if changed {
                 taint_state.insert(node_id, new_state);
-                // 将后继加入 worklist
+                // 将后继加入 worklist（O(1) 去重）
                 for edge in &node.successors {
-                    if !worklist.contains(&edge.target) {
+                    if in_worklist.insert(edge.target) {
                         worklist.push_back(edge.target);
                     }
                 }

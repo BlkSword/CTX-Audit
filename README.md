@@ -567,6 +567,25 @@ cp my-custom-rule.yaml .ctx-audit/rules/
 ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 ```
 
+## 性能
+
+以下基准基于 [Next.js](https://github.com/vercel/next.js) 仓库（~22,000 源文件，243MB），排除 test/bench/docs 目录，release 构建，Windows 10。
+
+| 模式 | 耗时 | 说明 |
+|------|------|------|
+| 快速扫描 | **~10s** | 规则扫描 + 攻击面映射（单次文件遍历） |
+| 快速扫描 + SCA | **~35s** | 含 OSV API 网络查询（首次），缓存后接近快速扫描 |
+| Daemon 首次扫描 | **~41s** | 全量扫描 + 结果缓存 |
+| Daemon 增量扫描（无变更） | **~9s** | 命中缓存，仅做文件变更检测 |
+| 深度扫描（`--deep`） | **~2.5m** | AST 污点分析 + 跨文件追踪（22K 文件超大项目） |
+
+**性能提示**：
+- 快速扫描已合并攻击面映射与规则扫描为单次文件遍历，无需额外开销
+- 大型项目深度扫描自动限制候选文件数（top 200 by severity），分批处理避免 OOM
+- 守护进程模式下增量扫描利用 content-hash 缓存，无变更文件跳过扫描
+- SCA 首次扫描较慢（网络请求），后续使用 24h 本地缓存
+- `--exclude` 排除不关心的目录可显著减少扫描文件数
+
 ## 开发
 
 ```bash

@@ -13,9 +13,12 @@ use ctx_audit_daemon::protocol::Response;
 use deepaudit_core::scanning::{
     scan_directory, scan_directory_deep,
     scan_directory_with_rules, scan_directory_deep_with_rules,
+    scan_directory_with_rules_progress, scan_directory_deep_with_rules_progress,
     Finding, ScaScanOptions, ScaSeverityMapping,
+    ScanPhase, ScanProgress,
 };
 use deepaudit_core::sarif::{SarifConverter, FindingInput};
+use std::sync::Arc;
 
 /// 执行 scan 命令
 pub async fn execute(
@@ -112,20 +115,44 @@ async fn scan_local(
         renderer.info(&format!("自定义规则目录: {}", r));
     }
 
-    // 创建进度条
-    let pb = renderer.progress_bar(100);
-    pb.set_message("正在扫描...");
+    // 创建带 ETA 的进度条
+    let pb = renderer.progress_bar(0); // total will be set dynamically
+    pb.set_style(
+        indicatif::ProgressStyle::with_template(
+            "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ETA:{eta} {msg}"
+        )
+        .expect("valid template")
+        .progress_chars("##>-")
+    );
+    pb.set_message("准备扫描...");
+
+    let pb_clone = pb.clone();
+    let progress_cb: Option<Arc<dyn Fn(ScanProgress) + Send + Sync>> = Some(Arc::new(move |p: ScanProgress| {
+        let label = match p.phase {
+            ScanPhase::FileWalking => "文件收集",
+            ScanPhase::ScaScanning => "SCA 扫描",
+            ScanPhase::RuleScanning => "规则扫描",
+            ScanPhase::CandidateSelection => "候选选取",
+            ScanPhase::TaintAnalysis => "污点分析",
+            ScanPhase::CrossFileAnalysis => "跨文件分析",
+        };
+        if p.total > 0 {
+            pb_clone.set_length(p.total as u64);
+        }
+        pb_clone.set_position(p.current as u64);
+        pb_clone.set_message(format!("[{}] {}", label, p.message));
+    }));
 
     let rules_ref = rules_dir.as_deref();
     let exclude_opt = if exclude_dirs.is_empty() { None } else { Some(exclude_dirs) };
     let sca_opt = Some(sca_options);
     let findings_result = if deep {
-        scan_directory_deep_with_rules(&path, rules_ref, exclude_opt, sca_opt).await
+        scan_directory_deep_with_rules_progress(&path, rules_ref, exclude_opt, sca_opt, progress_cb).await
     } else {
-        scan_directory_with_rules(&path, rules_ref, exclude_opt, sca_opt).await
+        scan_directory_with_rules_progress(&path, rules_ref, exclude_opt, sca_opt, progress_cb).await
     };
 
-    pb.finish_with_message("扫描完成");
+    pb.finish_with_message("完成");
 
     let findings = match findings_result {
         Ok(f) => f,

@@ -3,6 +3,8 @@ use crate::scanner::{Finding, Scanner};
 use async_trait::async_trait;
 use regex::Regex;
 use std::path::PathBuf;
+use std::collections::HashMap;
+use std::cell::RefCell;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 use uuid::Uuid;
 
@@ -126,28 +128,38 @@ impl Scanner for RuleScanner {
                 }
                 RuleMatcher::TreeSitter(query) => {
                     if let Some(lang) = &compiled.language {
-                        let mut parser = Parser::new();
-                        if parser.set_language(lang).is_ok() {
-                            if let Some(tree) = parser.parse(content, None) {
-                                let mut cursor = QueryCursor::new();
-                                let matches =
-                                    cursor.matches(query, tree.root_node(), content.as_bytes());
+                        thread_local! {
+                            static PARSER_CACHE: std::cell::RefCell<HashMap<String, Parser>> =
+                                std::cell::RefCell::new(HashMap::new());
+                        }
+                        let tree = PARSER_CACHE.with(|cache| {
+                            let mut cache = cache.borrow_mut();
+                            let lang_key = format!("{:?}", lang);
+                            let parser = cache.entry(lang_key).or_insert_with(|| {
+                                let mut p = Parser::new();
+                                let _ = p.set_language(lang);
+                                p
+                            });
+                            parser.parse(content, None)
+                        });
+                        if let Some(tree) = tree {
+                            let mut cursor = QueryCursor::new();
+                            let matches =
+                                cursor.matches(query, tree.root_node(), content.as_bytes());
 
-                                for m in matches {
-                                    // Use the first capture for location
-                                    if let Some(capture) = m.captures.first() {
-                                        let node = capture.node;
-                                        let start_pos = node.start_position();
-                                        let end_pos = node.end_position();
+                            for m in matches {
+                                if let Some(capture) = m.captures.first() {
+                                    let node = capture.node;
+                                    let start_pos = node.start_position();
+                                    let end_pos = node.end_position();
 
-                                        findings.push(create_finding(
-                                            &compiled.rule,
-                                            path,
-                                            start_pos.row + 1,
-                                            end_pos.row + 1,
-                                            format!("ASTRule: {}", compiled.rule.id),
-                                        ));
-                                    }
+                                    findings.push(create_finding(
+                                        &compiled.rule,
+                                        path,
+                                        start_pos.row + 1,
+                                        end_pos.row + 1,
+                                        format!("ASTRule: {}", compiled.rule.id),
+                                    ));
                                 }
                             }
                         }
