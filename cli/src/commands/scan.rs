@@ -14,8 +14,9 @@ use deepaudit_core::scanning::{
     scan_directory, scan_directory_deep,
     scan_directory_with_rules, scan_directory_deep_with_rules,
     scan_directory_with_rules_progress, scan_directory_deep_with_rules_progress,
+    scan_directory_with_opts,
     Finding, ScaScanOptions, ScaSeverityMapping,
-    ScanPhase, ScanProgress,
+    ScanOptions, ScanPhase, ScanProgress,
 };
 use deepaudit_core::sarif::{SarifConverter, FindingInput};
 use std::sync::Arc;
@@ -95,6 +96,28 @@ fn build_sca_options(cli_enabled: bool) -> ScaScanOptions {
     }
 }
 
+/// 从配置文件构建 ScanOptions
+fn build_scan_options() -> ScanOptions {
+    let config = crate::config::ConfigManager::new(None)
+        .ok()
+        .map(|m| {
+            let scan = &m.config().scan;
+            (scan.threads, scan.max_file_size_mb, scan.memory_budget_mb, scan.batch_size, scan.line_tolerance, scan.include_tests)
+        });
+
+    match config {
+        Some((threads, max_mb, mem_mb, batch, tol, include_tests)) => ScanOptions {
+            threads,
+            max_file_size: max_mb * 1024 * 1024,
+            memory_budget: mem_mb * 1024 * 1024,
+            batch_size: batch,
+            line_tolerance: tol,
+            include_tests,
+        },
+        None => ScanOptions::default(),
+    }
+}
+
 /// 本地扫描（直接调用 core）
 async fn scan_local(
     path: String,
@@ -114,6 +137,19 @@ async fn scan_local(
     if let Some(ref r) = rules_dir {
         renderer.info(&format!("自定义规则目录: {}", r));
     }
+
+    // 从配置文件构建 ScanOptions
+    let scan_opts = build_scan_options();
+
+    // 配置 rayon 线程池（仅在配置值非默认时）
+    let _thread_pool = if scan_opts.threads != 4 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(scan_opts.threads)
+            .build_global()
+            .ok()
+    } else {
+        None
+    };
 
     // 创建带 ETA 的进度条
     let pb = renderer.progress_bar(0); // total will be set dynamically
@@ -147,9 +183,9 @@ async fn scan_local(
     let exclude_opt = if exclude_dirs.is_empty() { None } else { Some(exclude_dirs) };
     let sca_opt = Some(sca_options);
     let findings_result = if deep {
-        scan_directory_deep_with_rules_progress(&path, rules_ref, exclude_opt, sca_opt, progress_cb).await
+        scan_directory_deep_with_rules_progress(&path, rules_ref, exclude_opt, sca_opt, Some(scan_opts), progress_cb).await
     } else {
-        scan_directory_with_rules_progress(&path, rules_ref, exclude_opt, sca_opt, progress_cb).await
+        scan_directory_with_opts(&path, rules_ref, exclude_opt, sca_opt, scan_opts, progress_cb).await
     };
 
     pb.finish_with_message("完成");

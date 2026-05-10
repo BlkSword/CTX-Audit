@@ -53,6 +53,7 @@ dirs = "5"
 # 正则
 regex = "1"
 once_cell = "1.19"
+rayon = "1.10"
 
 # Windows API (用于控制台操作)
 [target.'cfg(windows)'.dependencies]

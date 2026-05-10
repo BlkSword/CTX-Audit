@@ -15,12 +15,13 @@ pub mod watcher;
 /// 扫描接口 — 扫描项目、获取漏洞发现
 pub mod scanning {
     pub use crate::scanner::{
-        Finding, Scanner, ScanResult,
+        Finding, Scanner, ScanResult, ScanOptions,
         ScanPhase, ScanProgress, ProgressCallback,
         scan_directory, scan_directory_deep,
         scan_directory_with_attack_surface,
         scan_directory_with_rules, scan_directory_deep_with_rules,
         scan_directory_with_rules_progress, scan_directory_deep_with_rules_progress,
+        scan_directory_with_opts,
     };
     pub use crate::scanner::manager::ScannerManager;
     pub use crate::scanner::regex_scanner::RegexScanner;
@@ -75,7 +76,7 @@ pub use ast::{
     NodeInfo, Assignment, CallInfo, ArgInfo, ReturnInfo, FunctionBody, TypedParam,
 };
 pub use diff::DiffEngine;
-pub use scanner::{Finding, Scanner, ScanResult, ScanPhase, ScanProgress, ProgressCallback, scan_directory, scan_directory_deep, scan_directory_with_attack_surface, scan_directory_with_rules, scan_directory_deep_with_rules, scan_directory_with_rules_progress, scan_directory_deep_with_rules_progress};
+pub use scanner::{Finding, Scanner, ScanResult, ScanOptions, ScanPhase, ScanProgress, ProgressCallback, scan_directory, scan_directory_deep, scan_directory_with_attack_surface, scan_directory_with_rules, scan_directory_deep_with_rules, scan_directory_with_rules_progress, scan_directory_deep_with_rules_progress, scan_directory_with_opts};
 pub use scanner::manager::ScannerManager;
 pub use scanner::regex_scanner::RegexScanner;
 pub use scanner::sca_scanner::{ScaScanner, ScaScanOptions, ScaSeverityMapping};
