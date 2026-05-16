@@ -905,6 +905,20 @@ impl ASTParser {
         file_path: &Path,
         content: &str,
     ) -> (Vec<FunctionBody>, Vec<Assignment>, Vec<CallInfo>) {
+        if let Some((_, bodies, assignments, calls)) = self.extract_all_for_taint_with_tree(file_path, content) {
+            (bodies, assignments, calls)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        }
+    }
+
+    /// 单次解析提取所有数据，同时返回 Tree 供 AST-based CFG 使用。
+    /// 调用者必须在 Tree 存活期间使用任何从中派生的节点。
+    pub fn extract_all_for_taint_with_tree(
+        &mut self,
+        file_path: &Path,
+        content: &str,
+    ) -> Option<(tree_sitter::Tree, Vec<FunctionBody>, Vec<Assignment>, Vec<CallInfo>)> {
         let ext = file_path
             .extension()
             .and_then(|s| s.to_str())
@@ -913,12 +927,12 @@ impl ASTParser {
 
         let parser = match self.parsers.get_mut(&ext) {
             Some(p) => p,
-            None => return (Vec::new(), Vec::new(), Vec::new()),
+            None => return None,
         };
 
         let tree = match parser.parse(content, None) {
             Some(t) => t,
-            None => return (Vec::new(), Vec::new(), Vec::new()),
+            None => return None,
         };
 
         let root = tree.root_node();
@@ -932,7 +946,7 @@ impl ASTParser {
         let mut calls = Vec::new();
         Self::collect_calls_recursive(&root, content, &mut calls);
 
-        (bodies, assignments, calls)
+        Some((tree, bodies, assignments, calls))
     }
 
     fn collect_assignments_generic(
@@ -1135,6 +1149,37 @@ impl ASTParser {
         results: &mut Vec<FunctionBody>,
     ) {
         let kind = node.kind();
+
+        // Unwrap export_statement: recurse into children to find the actual function.
+        // e.g. "export default function handler(req, res) { ... }"
+        if kind == "export_statement" || kind == "export_default_expression" {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let ck = child.kind();
+                if ck != "export" && ck != "default" {
+                    Self::collect_function_bodies_recursive(&child, content, results);
+                }
+            }
+            return;
+        }
+
+        // Unwrap lexical_declaration / variable_declaration to find arrow_function
+        // e.g. "const handler = (req, res) => { ... }"
+        if kind == "lexical_declaration" || kind == "variable_declaration" {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "variable_declarator" {
+                    if let Some(value) = child.child_by_field_name("value") {
+                        let vk = value.kind();
+                        if vk == "arrow_function" || vk == "function_expression" {
+                            Self::collect_function_bodies_recursive(&value, content, results);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         let is_function = matches!(
             kind,
             "function_declaration"
@@ -1145,6 +1190,7 @@ impl ASTParser {
                 | "method_definition"
                 | "arrow_function"
                 | "generator_function_declaration"
+                | "function_expression"
         );
 
         if is_function {

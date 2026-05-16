@@ -439,6 +439,7 @@ async fn scan_directory_with_rules_inner(
     let batch_size = opts.batch_size;
     let mut total_bytes_read: usize = 0;
     let total_code_files = code_files.len();
+    tracing::debug!("[ScanInner] {} code files, {} dep files", total_code_files, dep_files.len());
     let mut scanned_files: usize = 0;
 
     if let Some(ref cb) = progress {
@@ -500,7 +501,8 @@ async fn scan_directory_with_rules_inner(
                 }
 
                 let has_findings = !file_findings.is_empty() || !attack_surface_findings.is_empty();
-                let cached = if collect_content && has_findings {
+                let is_ast_supported = is_ast_supported_file(path_buf);
+                let cached = if collect_content && (has_findings || is_ast_supported) {
                     Some((file_str, content))
                 } else {
                     None
@@ -542,6 +544,7 @@ async fn scan_directory_with_rules_inner(
     for finding in &mut findings {
         let fp = finding.file_path.to_lowercase().replace('\\', "/");
         let is_test = fp.contains("/test") || fp.contains("/tests/") || fp.contains("/__tests__/")
+
             || fp.contains("/spec/") || fp.ends_with("_test.go") || fp.ends_with("_test.rs")
             || fp.ends_with("_test.py") || fp.ends_with(".test.js") || fp.ends_with(".test.ts")
             || fp.ends_with(".spec.js") || fp.ends_with(".spec.ts");
@@ -631,28 +634,53 @@ pub async fn scan_directory_deep_with_rules_progress(
     let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);
     let (mut findings, mut content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, scan_opts, progress.clone()).await?;
 
-    if findings.is_empty() {
-        return Ok(findings);
-    }
-
-    // C1: 候选文件限制 — 按严重程度排序取 top 200
+    // C1: 候选文件选择 — 基于 AST 支持的文件类型，不依赖 rule findings
     const MAX_CANDIDATE_FILES: usize = 200;
     const TAINT_BATCH_SIZE: usize = 50;
     const MAX_TAINT_FILE_KB: usize = 100;
 
-    let candidate_files: Vec<String> = {
-        let mut file_severities: Vec<(String, u8)> = findings.iter()
-            .map(|f| (f.file_path.clone(), severity_rank(&f.severity)))
-            .collect();
-        file_severities.sort_by(|a, b| b.1.cmp(&a.1));
-        let mut seen = std::collections::HashSet::new();
-        file_severities.into_iter()
-            .filter_map(|(f, _)| {
-                if seen.insert(f.clone()) { Some(f) } else { None }
-            })
-            .take(MAX_CANDIDATE_FILES)
-            .collect()
-    };
+    // 如果 content_cache 中 AST 文件不足，做第二轮收集
+    // （内存预算可能提前终止了主扫描循环，导致 AST 文件未被缓存）
+    let ast_in_cache = content_cache.keys()
+        .filter(|fp| is_ast_supported_file(std::path::Path::new(fp)))
+        .count();
+    if ast_in_cache < MAX_CANDIDATE_FILES {
+        let excludes: Vec<String> = DEFAULT_EXCLUDE_PATTERNS.iter().map(|s| s.to_string()).collect();
+        let mut extra_cached = 0;
+        for entry in ignore::WalkBuilder::new(path).hidden(false).build() {
+            if extra_cached >= MAX_CANDIDATE_FILES - ast_in_cache { break; }
+            if let Ok(entry) = entry {
+                let p = entry.path();
+                if !p.is_file() || !is_ast_supported_file(p) { continue; }
+                let p_str = p.to_string_lossy().to_string();
+                if content_cache.contains_key(&p_str) { continue; }
+                if is_excluded(p, &excludes) { continue; }
+                if let Ok(meta) = std::fs::metadata(p) {
+                    if meta.len() as usize > MAX_TAINT_FILE_KB * 1024 { continue; }
+                }
+                if let Ok(content) = std::fs::read_to_string(p) {
+                    if content.len() <= MAX_TAINT_FILE_KB * 1024 {
+                        content_cache.insert(p_str, content);
+                        extra_cached += 1;
+                    }
+                }
+            }
+        }
+        tracing::debug!("[TaintAnalysis] 二次收集补充 {} 个 AST 文件", extra_cached);
+    }
+
+    let candidate_files: Vec<String> = content_cache.iter()
+        .filter(|(fp, _)| is_ast_supported_file(std::path::Path::new(fp)))
+        .filter(|(_, content)| content.len() <= MAX_TAINT_FILE_KB * 1024)
+        .map(|(fp, _)| fp.clone())
+        .take(MAX_CANDIDATE_FILES)
+        .collect();
+
+    tracing::debug!(
+        "[TaintAnalysis] content_cache: {}, AST 候选: {}",
+        content_cache.len(), candidate_files.len()
+    );
+
 
     if let Some(ref cb) = progress {
         cb(ScanProgress {

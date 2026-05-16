@@ -722,6 +722,18 @@ impl<'a> AstCFGBuilder<'a> {
     }
 
     /// 递归处理单个 AST 节点，返回该节点处理后"当前"的 CFG 节点 ID
+
+    /// 安全截断字符串到指定字节长度，避免在多字节字符中间截断
+    fn truncate_to_char_boundary(s: &str, max_len: usize) -> &str {
+        if s.len() <= max_len {
+            return s;
+        }
+        let mut boundary = max_len;
+        while boundary > 0 && !s.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        &s[..boundary]
+    }
     fn process_node(
         &mut self,
         node: &Node,
@@ -732,7 +744,7 @@ impl<'a> AstCFGBuilder<'a> {
         let kind = node.kind();
         let line = node.start_position().row + 1;
         let code = content[node.byte_range()].to_string();
-        let code_display = if code.len() > 200 { &code[..200.min(code.len())] } else { &code };
+        let code_display = Self::truncate_to_char_boundary(&code, 200);
 
         // if 语句
         if matches!(kind, "if_statement" | "if") {
@@ -818,7 +830,7 @@ impl<'a> AstCFGBuilder<'a> {
     ) -> usize {
         let line = node.start_position().row + 1;
         let code = content[node.byte_range()].to_string();
-        let code_display = if code.len() > 200 { &code[..200] } else { &code };
+        let code_display = Self::truncate_to_char_boundary(&code, 200);
         let uses = self.extract_uses(node, content);
 
         // 条件节点
@@ -899,7 +911,7 @@ impl<'a> AstCFGBuilder<'a> {
     ) -> usize {
         let line = node.start_position().row + 1;
         let code = content[node.byte_range()].to_string();
-        let code_display = if code.len() > 200 { &code[..200] } else { &code };
+        let code_display = Self::truncate_to_char_boundary(&code, 200);
         let uses = self.extract_uses(node, content);
 
         let loop_id = self.create_node(

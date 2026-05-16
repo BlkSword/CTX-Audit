@@ -370,6 +370,10 @@ pub enum VulnerabilityType {
     LogInjection,
     /// 开放重定向
     OpenRedirect,
+    /// Header 注入
+    HeaderInjection,
+    /// 缓存投毒
+    CachePoisoning,
     /// 通用
     Generic,
 }
@@ -388,6 +392,8 @@ impl std::fmt::Display for VulnerabilityType {
             VulnerabilityType::InsecureDeserialization => write!(f, "Insecure Deserialization"),
             VulnerabilityType::LogInjection => write!(f, "Log Injection"),
             VulnerabilityType::OpenRedirect => write!(f, "Open Redirect"),
+            VulnerabilityType::HeaderInjection => write!(f, "Header Injection"),
+            VulnerabilityType::CachePoisoning => write!(f, "Cache Poisoning"),
             VulnerabilityType::Generic => write!(f, "Potential Security Issue"),
         }
     }

@@ -151,56 +151,89 @@ impl AstTaintAnalyzer {
     /// 分析单个文件，返回所有检测到的污点流
     pub fn analyze_file(&mut self, file_path: &Path, content: &str) -> Vec<TaintFlow> {
         let mut all_flows = Vec::new();
-
-        // 一次 AST 解析提取函数体 + 赋值 + 调用（替代原来的 4 次解析）
-        let (functions, file_assignments, file_calls) =
-            self.ast_parser.extract_all_for_taint(file_path, content);
-
-        // 检测 Promise 链和回调模式
+        let file_path_str = file_path.to_string_lossy().to_string();
         let callback_hints = async_flow::detect_callback_hints(content);
 
-        let file_path_str = file_path.to_string_lossy().to_string();
+        // 使用 AST-based 分析（保留 Tree 供 CFG 构建使用）
+        if let Some((tree, functions, file_assignments, file_calls)) =
+            self.ast_parser.extract_all_for_taint_with_tree(file_path, content)
+        {
+            let root = tree.root_node();
 
-        if functions.is_empty() {
-            // 没有函数体，对整个文件做分析
-            let cfg = EnhancedFlowGraph::from_code(content, &file_path_str, "");
-            let flows = self.forward_taint_analysis(
-                &cfg, &file_assignments, &file_calls, content, &file_path_str, &[], &callback_hints,
-            );
-            all_flows.extend(flows);
-        } else {
-            // 按函数逐个分析，复用已提取的 assignments 和 calls
-            for func in &functions {
-                let func_hints: Vec<CallbackTaintHint> = callback_hints.iter()
-                    .filter(|h| h.callback_start_line >= func.start_line && h.callback_start_line <= func.end_line)
-                    .cloned()
-                    .collect();
-
-                // 按行范围筛选属于此函数的 assignments 和 calls
-                let func_assignments: Vec<_> = file_assignments.iter()
-                    .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
-                    .cloned()
-                    .collect();
-                let func_calls: Vec<_> = file_calls.iter()
-                    .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
-                    .cloned()
-                    .collect();
-
-                let cfg = EnhancedFlowGraph::from_code(
-                    &func.body_text, &file_path_str, &func.name,
+            if functions.is_empty() {
+                // 没有函数体：对整个文件做 AST-based CFG 分析
+                let cfg = EnhancedFlowGraph::from_ast_node(
+                    &root, content, &file_path_str, "",
                 );
                 let flows = self.forward_taint_analysis(
-                    &cfg, &func_assignments, &func_calls,
-                    &func.body_text, &file_path_str, &func.typed_params, &func_hints,
+                    &cfg, &file_assignments, &file_calls, content, &file_path_str, &[], &callback_hints,
                 );
                 all_flows.extend(flows);
+            } else {
+                // 按函数逐个分析
+                for func in &functions {
+                    let func_hints: Vec<CallbackTaintHint> = callback_hints.iter()
+                        .filter(|h| h.callback_start_line >= func.start_line && h.callback_start_line <= func.end_line)
+                        .cloned()
+                        .collect();
+
+                    let func_assignments: Vec<_> = file_assignments.iter()
+                        .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+                        .cloned()
+                        .collect();
+                    let func_calls: Vec<_> = file_calls.iter()
+                        .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+                        .cloned()
+                        .collect();
+
+                    // 优先使用 AST-based CFG，fallback 到 text-based
+                    let func_body_node = Self::find_function_body_node(&root, func.start_line, func.end_line);
+                    let cfg = if let Some(body_node) = func_body_node {
+                        EnhancedFlowGraph::from_ast_node(
+                            &body_node, content, &file_path_str, &func.name,
+                        )
+                    } else {
+                        EnhancedFlowGraph::from_code(
+                            &func.body_text, &file_path_str, &func.name,
+                        )
+                    };
+
+                    let flows = self.forward_taint_analysis(
+                        &cfg, &func_assignments, &func_calls,
+                        &func.body_text, &file_path_str, &func.typed_params, &func_hints,
+                    );
+                    all_flows.extend(flows);
+                }
             }
         }
 
         all_flows
     }
 
+    /// 在 AST 中查找匹配行号范围的函数体节点
+    fn find_function_body_node<'a>(node: &tree_sitter::Node<'a>, start_line: usize, end_line: usize) -> Option<tree_sitter::Node<'a>> {
+        let node_start = node.start_position().row + 1;
+        let node_end = node.end_position().row + 1;
+
+        if node_start == start_line && node_end >= end_line {
+            if let Some(body) = node.child_by_field_name("body") {
+                return Some(body);
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = Self::find_function_body_node(&child, start_line, end_line) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     /// 分析一段代码（函数体或完整文件）— 供测试使用
+    ///
+    /// 测试用：使用 text-based CFG 保证对短代码片段的稳定性。
+    /// 生产用 `analyze_file()` 走 AST-based CFG 路径。
     pub(crate) fn analyze_code(
         &mut self,
         code: &str,
@@ -1005,6 +1038,14 @@ impl AstTaintAnalyzer {
                 "request.text", "request.json", "request.formData",
                 "cookies().get", "headers().get",
                 "searchParams.get",
+                // Next.js App Router / Route Handlers
+                "request.nextUrl.searchParams", "request.nextUrl",
+                "req.jsonBody",
+            ]),
+            TaintSource::new("nextjs_server_apis", "Next.js Server APIs", vec![
+                "cookies(", "headers(", "draftMode(",
+                "useSearchParams", "params.", "searchParams.",
+                "request.json", "req.json",
             ]),
             TaintSource::new("file_input", "File Input", vec![
                 "readFile", "read()", "readlines", "fs.read", "f.read",
@@ -1044,6 +1085,39 @@ impl AstTaintAnalyzer {
                 "JSON.parse", "deserialize", "unserialize",
                 "objectMapper.readValue", "pickle.loads",
             ], VulnerabilityType::InsecureDeserialization).with_cwe("CWE-502"),
+
+            // ===== Next.js / React 专用 sinks =====
+
+            // React dangerouslySetInnerHTML XSS
+            TaintSink::new("react_xss", "dangerouslySetInnerHTML", vec![
+                "dangerouslySetInnerHTML",
+            ], VulnerabilityType::CrossSiteScripting).with_cwe("CWE-79"),
+
+            // Next.js open redirect
+            TaintSink::new("open_redirect", "Open Redirect", vec![
+                "redirect(", "permanentRedirect(", "NextResponse.redirect(",
+            ], VulnerabilityType::OpenRedirect).with_cwe("CWE-601"),
+
+            // Next.js middleware SSRF via rewrite
+            TaintSink::new("nextjs_middleware_ssrf", "NextResponse Rewrite", vec![
+                "NextResponse.rewrite(",
+            ], VulnerabilityType::ServerSideRequestForgery).with_cwe("CWE-918"),
+
+            // Response header injection
+            TaintSink::new("response_header", "Response Header", vec![
+                "setHeader(", ".setHeader(",
+                "response.setHeader(",
+            ], VulnerabilityType::HeaderInjection).with_cwe("CWE-113"),
+
+            // Cache manipulation
+            TaintSink::new("cache_manipulation", "Cache Manipulation", vec![
+                "revalidatePath(", "revalidateTag(",
+            ], VulnerabilityType::CachePoisoning).with_cwe("CWE-444"),
+
+            // Route handler response (Next.js App Router)
+            TaintSink::new("route_handler_response", "Route Handler", vec![
+                "Response.json(", "new Response(",
+            ], VulnerabilityType::CrossSiteScripting).with_cwe("CWE-79"),
         ]
     }
 
