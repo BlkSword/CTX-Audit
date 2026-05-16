@@ -67,6 +67,37 @@ sources:
     category: "UserInput"
     ast_patterns: []
 
+  - id: "nextjs_request_headers"
+    name: "Next.js Request Headers"
+    description: "HTTP request headers that may be attacker-controlled (Host, X-Forwarded-Host, etc.)"
+    patterns:
+      - "req.headers.host"
+      - "req.headers["
+      - "request.headers.host"
+      - "request.headers["
+      - "req.getHeader("
+      - "request.getHeader("
+      - "x-forwarded-host"
+      - "x-forwarded-for"
+      - "x-forwarded-proto"
+    languages: ["javascript", "typescript"]
+    severity: "High"
+    category: "NetworkInput"
+    ast_patterns: []
+
+  - id: "nextjs_params"
+    name: "Next.js Route Params"
+    description: "Dynamic route parameters in Next.js App/Pages Router"
+    patterns:
+      - "params."
+      - "searchParams."
+      - "useSearchParams"
+      - "useParams"
+    languages: ["javascript", "typescript"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
 sinks:
   - id: "react_dangerously_set_inner_html"
     name: "dangerouslySetInnerHTML"
@@ -124,6 +155,63 @@ sinks:
     vulnerability_type: "CodeInjection"
     severity: "High"
     cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "nextjs_redirect"
+    name: "Next.js Redirect"
+    description: "Redirect with user-controlled URL — open redirect and SSRF vector"
+    patterns:
+      - "redirect("
+      - "permanentRedirect("
+      - "NextResponse.redirect("
+      - "NextResponse.rewrite("
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "OpenRedirect"
+    severity: "High"
+    cwe_id: "CWE-601"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "nextjs_response_header"
+    name: "Response Header Injection"
+    description: "User input written to HTTP response headers"
+    patterns:
+      - "setHeader("
+      - ".setHeader("
+      - "response.setHeader("
+      - "res.setHeader("
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "HeaderInjection"
+    severity: "Medium"
+    cwe_id: "CWE-113"
+    sensitive_params: [1]
+    ast_patterns: []
+
+  - id: "nextjs_cache_operation"
+    name: "Cache Manipulation"
+    description: "Cache operations with user-controlled input — cache poisoning vector"
+    patterns:
+      - "revalidatePath("
+      - "revalidateTag("
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "CachePoisoning"
+    severity: "Medium"
+    cwe_id: "CWE-444"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "nextjs_response_write"
+    name: "Route Handler Response"
+    description: "Route handler response with user-controlled data"
+    patterns:
+      - "Response.json("
+      - "new Response("
+      - "NextResponse.json("
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "Medium"
+    cwe_id: "CWE-79"
     sensitive_params: [0]
     ast_patterns: []
 

@@ -1,0 +1,20 @@
+category: dos
+cwe: CWE-400
+description: 检测 ReadableStream/请求体无边界读取导致的 DoS — 缺少 body size limit 时攻击者可发送超大请求体耗尽内存
+id: unbounded-stream-read
+language: all
+name: Unbounded Stream Read Detection
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "在读取流之前设置最大 body 大小限制（如 Transform stream with size limit）；对 Edge Runtime 实现 body size check"
+references:
+  - "https://cwe.mitre.org/data/definitions/400.html"
+patterns:
+  - language: javascript
+    pattern: (?s)getReader\s*\(\s*\).*?while.*?reader\.read.*?chunks\.push
+  - language: javascript
+    pattern: (?i)TODO.*(?:add\s+body\s+limit|body\s+size\s+limit)
+  - language: typescript
+    pattern: (?s)getReader\s*\(\s*\).*?while.*?reader\.read.*?chunks\.push
+  - language: typescript
+    pattern: (?i)TODO.*(?:add\s+body\s+limit|body\s+size\s+limit)
+severity: high

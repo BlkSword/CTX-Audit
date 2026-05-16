@@ -1,0 +1,25 @@
+category: redirect
+cwe: CWE-601
+description: 检测用户可控输入进入 redirect/Location header 导致的开放重定向 — 攻击者可构造恶意 URL 进行钓鱼攻击
+id: open-redirect
+language: all
+name: Open Redirect Detection
+owasp: "A01:2021-Broken Access Control"
+remediation: "验证 redirect 目标 URL 是否为合法域名白名单；使用相对路径或内部路由 ID 替代直接传入 URL"
+references:
+  - "https://cwe.mitre.org/data/definitions/601.html"
+  - "https://owasp.org/www-community/attacks/Open_redirect"
+patterns:
+  - language: javascript
+    pattern: (?i)(?:redirect|permanentRedirect)\s*\([^)]*\b(?:req\.|request\.|params|query|searchParams|url)
+  - language: javascript
+    pattern: (?i)NextResponse\.(?:redirect|rewrite)\s*\([^)]*\b(?:req\.|request\.|headers|url)
+  - language: javascript
+    pattern: (?i)setHeader\s*\(\s*['"](?:Location|Refresh)['"]
+  - language: typescript
+    pattern: (?i)(?:redirect|permanentRedirect)\s*\([^)]*\b(?:req\.|request\.|params|query|searchParams|url)
+  - language: typescript
+    pattern: (?i)NextResponse\.(?:redirect|rewrite)\s*\([^)]*\b(?:req\.|request\.|headers|url)
+  - language: typescript
+    pattern: (?i)setHeader\s*\(\s*['"](?:Location|Refresh)['"]
+severity: high

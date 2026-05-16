@@ -1047,6 +1047,11 @@ impl AstTaintAnalyzer {
                 "useSearchParams", "params.", "searchParams.",
                 "request.json", "req.json",
             ]),
+            TaintSource::new("http_headers", "HTTP Request Headers", vec![
+                "req.headers.host", "req.headers[", "request.headers.host", "request.headers[",
+                "req.getHeader(", "request.getHeader(",
+                "x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",
+            ]),
             TaintSource::new("file_input", "File Input", vec![
                 "readFile", "read()", "readlines", "fs.read", "f.read",
                 "File.read", "std::fs::read",
@@ -1072,9 +1077,11 @@ impl AstTaintAnalyzer {
             ], VulnerabilityType::PathTraversal).with_cwe("CWE-22"),
             TaintSink::new("html_output", "HTML Output", vec![
                 "innerHTML", "document.write", "res.write", "res.send",
+                "res.json(", "res.end(",
             ], VulnerabilityType::CrossSiteScripting).with_cwe("CWE-79"),
             TaintSink::new("http_request", "HTTP Request", vec![
                 "fetch(", "axios", "requests.get", "requests.post",
+                "new URL(",
             ], VulnerabilityType::ServerSideRequestForgery).with_cwe("CWE-918"),
             TaintSink::new("eval", "Code Evaluation", vec![
                 "eval(", "Function(", "__import__", "compile(",

@@ -1,0 +1,20 @@
+category: cache-poisoning
+cwe: CWE-444
+description: 检测缓存操作函数（revalidatePath/revalidateTag）使用用户可控输入 — 攻击者可触发任意页面缓存失效或投毒
+id: cache-poisoning-vector
+language: all
+name: Cache Poisoning Vector Detection
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "对 revalidatePath/revalidateTag 的参数进行白名单验证；不要直接将用户输入传入缓存操作函数"
+references:
+  - "https://cwe.mitre.org/data/definitions/444.html"
+patterns:
+  - language: javascript
+    pattern: (?i)revalidate(?:Path|Tag)\s*\([^)]*\b(?:req\.|request\.|params|query|searchParams|body|formData)
+  - language: javascript
+    pattern: (?i)trustHostHeader
+  - language: typescript
+    pattern: (?i)revalidate(?:Path|Tag)\s*\([^)]*\b(?:req\.|request\.|params|query|searchParams|body|formData)
+  - language: typescript
+    pattern: (?i)trustHostHeader
+severity: medium

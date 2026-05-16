@@ -1,0 +1,20 @@
+category: security-misconfiguration
+cwe: CWE-639
+description: 检测内部 HTTP header（x-matched-path, x-middleware-override-headers 等）直接用于路由或认证决策 — 外部请求可伪造这些 header 绕过安全控制
+id: header-injection-internal
+language: all
+name: Internal Header Injection Detection
+owasp: "A01:2021-Broken Access Control"
+remediation: "在入口层（router-server）过滤所有 x-middleware-* 和 x-matched-path 等 internal header；自定义服务器部署时必须调用 filterInternalHeaders"
+references:
+  - "https://cwe.mitre.org/data/definitions/639.html"
+patterns:
+  - language: javascript
+    pattern: (?i)x-matched-path|x-middleware-rewrite|x-middleware-override-headers|x-middleware-request-
+  - language: typescript
+    pattern: (?i)x-matched-path|x-middleware-rewrite|x-middleware-override-headers|x-middleware-request-
+  - language: javascript
+    pattern: (?i)x-prerender-revalidate|PRERENDER_REVALIDATE_HEADER
+  - language: typescript
+    pattern: (?i)x-prerender-revalidate|PRERENDER_REVALIDATE_HEADER
+severity: medium

@@ -1,0 +1,25 @@
+category: ssrf
+cwe: CWE-918
+description: 检测 Host header 直接用于 URL 构造导致的 SSRF — 攻击者通过篡改 Host header 使服务器向内部服务发起请求
+id: ssrf-host-header
+language: all
+name: Host Header SSRF Detection
+owasp: "A10:2021-Server-Side Request Forgery"
+remediation: "使用固定的 origin 配置（如 __NEXT_PRIVATE_ORIGIN 环境变量）替代从 Host header 派生 URL；在反向代理层验证和覆盖 Host header"
+references:
+  - "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery"
+  - "https://cwe.mitre.org/data/definitions/918.html"
+patterns:
+  - language: javascript
+    pattern: (?i)fetch\s*\(\s*[`'"]https?://\$\{.*(?:req\.headers|request\.headers|headers\.host|x-forwarded-host)
+  - language: javascript
+    pattern: (?i)new\s+URL\s*\(\s*[`'"]https?://\$\{.*(?:host\.value|host\b)
+  - language: javascript
+    pattern: (?i)fetch\s*\(\s*[`'"]https?://\$\{\s*(?:req|request)\.headers\.host
+  - language: typescript
+    pattern: (?i)fetch\s*\(\s*[`'"]https?://\$\{.*(?:req\.headers|request\.headers|headers\.host|x-forwarded-host)
+  - language: typescript
+    pattern: (?i)new\s+URL\s*\(\s*[`'"]https?://\$\{.*(?:host\.value|host\b)
+  - language: typescript
+    pattern: (?i)trustHostHeader.*fetch\s*\(
+severity: high
