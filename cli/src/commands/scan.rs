@@ -342,6 +342,14 @@ fn to_text(findings: &[Finding]) -> String {
         text.push_str(&format!("[{}] {} - {}\n", i + 1, finding.severity.to_uppercase(), finding.vuln_type));
         text.push_str(&format!("    文件: {}:{}\n", finding.file_path, finding.line_start));
         text.push_str(&format!("    描述: {}\n", finding.description));
+        if let Some(ref trail) = finding.analysis_trail {
+            if !trail.is_empty() {
+                text.push_str("    污点链:\n");
+                for step in trail {
+                    text.push_str(&format!("      → {}\n", step));
+                }
+            }
+        }
         text.push('\n');
     }
 
