@@ -21,10 +21,15 @@ pub struct CompiledRule {
 
 pub struct RuleScanner {
     compiled_rules: Vec<CompiledRule>,
+    context_lines: usize,
 }
 
 impl RuleScanner {
     pub fn new(rules: Vec<Rule>) -> Self {
+        Self::with_context_lines(rules, 3)
+    }
+
+    pub fn with_context_lines(rules: Vec<Rule>, context_lines: usize) -> Self {
         let mut compiled_rules = Vec::new();
         for rule in rules {
             // Priority: Query (AST) > patterns (multi-lang) > Pattern (Regex)
@@ -81,17 +86,11 @@ impl RuleScanner {
                 }
             }
         }
-        Self { compiled_rules }
-    }
-}
-
-#[async_trait]
-impl Scanner for RuleScanner {
-    fn name(&self) -> String {
-        "RuleBasedScanner".to_string()
+        Self { compiled_rules, context_lines }
     }
 
-    async fn scan_file(&self, path: &PathBuf, content: &str) -> Vec<Finding> {
+    /// 同步扫描文件（可在任意线程调用，不需要 async runtime）
+    pub fn scan_file_sync(&self, path: &PathBuf, content: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
         let extension = path
             .extension()
@@ -122,6 +121,8 @@ impl Scanner for RuleScanner {
                                 line_start,
                                 line_end,
                                 format!("RegexRule: {}", compiled.rule.id),
+                                content,
+                                3,
                             ));
                         }
                     }
@@ -159,6 +160,8 @@ impl Scanner for RuleScanner {
                                         start_pos.row + 1,
                                         end_pos.row + 1,
                                         format!("ASTRule: {}", compiled.rule.id),
+                                        content,
+                                        3,
                                     ));
                                 }
                             }
@@ -172,13 +175,27 @@ impl Scanner for RuleScanner {
     }
 }
 
+#[async_trait]
+impl Scanner for RuleScanner {
+    fn name(&self) -> String {
+        "RuleBasedScanner".to_string()
+    }
+
+    async fn scan_file(&self, path: &PathBuf, content: &str) -> Vec<Finding> {
+        self.scan_file_sync(path, content)
+    }
+}
+
 fn create_finding(
     rule: &Rule,
     path: &PathBuf,
     line_start: usize,
     line_end: usize,
     detector: String,
+    content: &str,
+    context_lines: usize,
 ) -> Finding {
+    let code_snippet = Some(crate::scanner::extract_code_context(content, line_start, line_end, context_lines));
     Finding {
         finding_id: Uuid::new_v4().to_string(),
         file_path: path.to_string_lossy().to_string(),
@@ -192,6 +209,9 @@ fn create_finding(
         llm_output: None,
         confidence: None,
         corroboration_count: None,
+        code_snippet,
+        source_snippet: None,
+        sink_snippet: None,
     }
 }
 

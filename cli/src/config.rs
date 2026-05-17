@@ -66,6 +66,10 @@ pub struct ScanConfig {
     #[serde(default = "default_exclude_patterns")]
     pub exclude_patterns: Vec<String>,
 
+    /// 额外排除的目录（追加到默认列表）
+    #[serde(default)]
+    pub exclude_extra: Vec<String>,
+
     /// 单文件最大扫描大小（MB，默认 10）
     #[serde(default = "default_max_file_size_mb")]
     pub max_file_size_mb: u64,
@@ -85,6 +89,14 @@ pub struct ScanConfig {
     /// 默认严重程度过滤（可选 critical/high/medium/low/info）
     pub severity: Option<String>,
 
+    /// 最低严重程度阈值（默认 medium，过滤 low/info）
+    #[serde(default = "default_min_severity")]
+    pub min_severity: String,
+
+    /// 代码上下文行数（±N 行，默认 3）
+    #[serde(default = "default_context_lines")]
+    pub context_lines: usize,
+
     /// 是否默认启用深度扫描
     #[serde(default)]
     pub deep: bool,
@@ -93,16 +105,24 @@ pub struct ScanConfig {
 fn default_threads() -> usize { 4 }
 fn default_exclude_patterns() -> Vec<String> {
     vec![
-        "node_modules".to_string(),
-        "target".to_string(),
-        "vendor".to_string(),
-        ".git".to_string(),
-    ]
+        // VCS / 依赖 / 构建产物
+        "node_modules", ".git", "target", "build", "dist", "vendor",
+        "__pycache__", ".gradle", ".idea", ".vscode", ".cache",
+        "bower_components", ".next", ".nuxt", "coverage",
+        // 测试 / 示例 / 脚本
+        "test", "tests", "__tests__", "spec", "fixtures", "e2e",
+        "examples", "example", "scripts",
+        // 文件模式
+        "*.min.js", "*.min.css", "*.bundle.js", "*.chunk.js",
+        "*.map", ".env.*", "*.test.*", "*.spec.*",
+    ].iter().map(|s| s.to_string()).collect()
 }
 fn default_max_file_size_mb() -> u64 { 10 }
 fn default_memory_budget_mb() -> usize { 500 }
 fn default_batch_size() -> usize { 100 }
 fn default_line_tolerance() -> usize { 3 }
+fn default_min_severity() -> String { "medium".to_string() }
+fn default_context_lines() -> usize { 3 }
 
 impl Default for ScanConfig {
     fn default() -> Self {
@@ -111,11 +131,14 @@ impl Default for ScanConfig {
             threads: 4,
             include_tests: false,
             exclude_patterns: default_exclude_patterns(),
+            exclude_extra: Vec::new(),
             max_file_size_mb: 10,
             memory_budget_mb: 500,
             batch_size: 100,
             line_tolerance: 3,
             severity: None,
+            min_severity: "medium".to_string(),
+            context_lines: 3,
             deep: false,
         }
     }
@@ -139,13 +162,13 @@ pub struct OutputConfig {
     pub verbose: bool,
 }
 
-fn default_format() -> String { "text".to_string() }
+fn default_format() -> String { "llm".to_string() }
 fn default_color() -> bool { true }
 
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
-            format: "text".to_string(),
+            format: "llm".to_string(),
             color: true,
             verbose: false,
         }
@@ -435,6 +458,9 @@ impl ConfigManager {
             "scan.batch_size" => Some(self.config.scan.batch_size.to_string()),
             "scan.line_tolerance" => Some(self.config.scan.line_tolerance.to_string()),
             "scan.severity" => self.config.scan.severity.clone(),
+            "scan.min_severity" => Some(self.config.scan.min_severity.clone()),
+            "scan.context_lines" => Some(self.config.scan.context_lines.to_string()),
+            "scan.exclude_extra" => Some(serde_json::to_string(&self.config.scan.exclude_extra).unwrap_or_default()),
             "scan.deep" => Some(self.config.scan.deep.to_string()),
             // output.*
             "output.format" => Some(self.config.output.format.clone()),
@@ -502,6 +528,20 @@ impl ConfigManager {
             }
             "scan.deep" => {
                 self.config.scan.deep = value.parse().context("无效的布尔值")?;
+            }
+            "scan.min_severity" => {
+                let valid = ["critical", "high", "medium", "low"];
+                if !valid.contains(&value.as_str()) {
+                    anyhow::bail!("无效的最低严重程度，可选: {}", valid.join(", "));
+                }
+                self.config.scan.min_severity = value;
+            }
+            "scan.context_lines" => {
+                self.config.scan.context_lines = value.parse().context("无效的上下文行数")?;
+            }
+            "scan.exclude_extra" => {
+                self.config.scan.exclude_extra = serde_json::from_str(&value)
+                    .context("无效的 JSON 数组，如 [\"scripts\",\"bench\"]")?;
             }
             // output.*
             "output.format" => self.config.output.format = value,

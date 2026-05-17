@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**AI 原生代码安全扫描引擎**
+**LLM 原生代码安全分析引擎**
 
 **数据流追踪 · 跨文件分析 · LLM 协作发现未知漏洞**
 
-不靠规则堆砌——追踪每一行数据从入口到危险函数的完整路径。接入 Claude Code，让 AI 帮你发现规则扫不到的漏洞。
+不靠规则堆砌——追踪每一行数据从入口到危险函数的完整路径，输出含代码上下文和污点链的结构化 JSON，直接喂给 LLM 做最终判定。也可接入 Claude Code，让 AI 读取攻击面、分析数据流、发现规则扫不到的风险。
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -21,7 +21,7 @@
 
 一条命令扫描 30+ 漏洞类型，支持 12 种语言和主流框架（Next.js、React、Spring、Express、Django 等）。
 
-**怎么做到的？** 不只是正则匹配关键词——CTX-Audit 用 AST 解析你的代码，追踪数据从用户输入（source）到危险函数（sink）的完整路径，跨文件跨函数追踪。引擎常驻内存，增量扫描无变更时 **1ms** 返回结果。
+**怎么做到的？** 不只是正则匹配关键词——CTX-Audit 用 AST 解析你的代码，追踪数据从用户输入（source）到危险函数（sink）的完整路径，跨文件跨函数追踪。引擎常驻内存，增量扫描无变更时 **1ms** 返回结果。默认输出面向 LLM 的结构化 JSON，包含代码上下文、污点链、置信度，让 LLM 直接基于证据做漏洞判定。
 
 **AI 协作：** 通过 MCP 协议接入 Claude Code 等 LLM，让 AI 读取攻击面、分析数据流、发现规则扫不到的风险模式，甚至动态生成针对性规则——从"检测已知漏洞"升级为"发现未知漏洞"。
 
@@ -71,32 +71,70 @@ ctx-audit mcp                                 # 启动 MCP Server（stdio JSON-R
 ctx-audit scan ./project [OPTIONS]
 
 OPTIONS:
-  -s, --severity <级别>     按严重程度过滤 (critical, high, medium, low, info)
-  -p, --pattern <模式>      按文件模式过滤 (如 *.py)
-  -r, --rules <目录>        自定义规则目录
-  -o, --output <文件>       输出文件路径
-  -t, --threads <N>         并行线程数 (默认: 4)
-  -e, --exclude <模式>      排除目录或文件（逗号分隔，如 test,*.min.js,.json）
-      --deep                启用深度扫描 (AST 污点分析 + 跨文件追踪)
-      --daemon              通过守护进程执行（增量缓存）
+  -s, --severity <级别>         按严重程度过滤 (critical, high, medium, low, info)
+  -p, --pattern <模式>          按文件模式过滤 (如 *.py)
+  -r, --rules <目录>            自定义规则目录
+  -o, --output <文件>           输出文件路径
+  -t, --threads <N>             并行线程数 (默认: 4)
+  -e, --exclude <模式>          追加排除目录或文件（逗号分隔，如 bench,*.min.js）
+      --min-severity <级别>     覆盖配置文件的最低严重程度阈值
+      --deep                    启用深度扫描 (AST 污点分析 + 跨文件追踪)
+      --daemon                  通过守护进程执行（增量缓存）
+      --sca                     启用 SCA 依赖漏洞扫描
 ```
 
 **扫描引擎**：
 
 | 引擎 | 说明 |
 |------|------|
-| RuleScanner | 语言感知正则规则（YAML，多语言模式，33 条内置规则） |
+| RuleScanner | 语言感知正则规则（YAML，多语言模式，39 条内置规则） |
 | SCAScanner | 依赖漏洞检测（OSV API，默认关闭，`--sca` 或配置启用） |
 | AstTaintScanner | AST 污点分析（`--deep` 模式） |
 | CrossFileTaintAnalyzer | 跨文件/跨过程污点追踪（`--deep` 模式） |
 
 **输出格式**：
 
+默认输出为 `llm`（面向 LLM 的结构化 JSON），包含代码上下文、污点链、置信度等完整信息。也支持其他格式：
+
 ```bash
-ctx-audit -o sarif scan ./project -o report.sarif     # SARIF 2.1.0
-ctx-audit -o json scan ./project -o results.json       # JSON
-ctx-audit -o markdown scan ./project -o report.md      # Markdown
+ctx-audit scan ./project -o report.json              # 默认 llm 格式 JSON
+ctx-audit -o sarif scan ./project -o report.sarif    # SARIF 2.1.0
+ctx-audit -o json scan ./project -o results.json     # 原始 JSON
+ctx-audit -o markdown scan ./project -o report.md    # Markdown
 ```
+
+**LLM 输出结构**（默认格式）：
+
+```json
+{
+  "scan_summary": {
+    "generated_at": "2026-05-17T01:19:18Z",
+    "total_findings": 8,
+    "by_severity": {"critical": 1, "high": 2, "medium": 5},
+    "by_detector": {"RegexRule: ssrf-host-header": 1, ...}
+  },
+  "findings": [
+    {
+      "id": "uuid",
+      "severity": "high",
+      "vulnerability_type": "CWE-918",
+      "detector": "RegexRule: ssrf-host-header",
+      "file": "packages/next/src/server/api-utils/node/api-resolver.ts",
+      "line": 302,
+      "end_line": 302,
+      "description": "检测 Host header 直接用于 URL 构造导致的 SSRF ...",
+      "code_context": ">> 302 |       const res = await fetch(`https://${req.headers.host}${urlPath}`)",
+      "source_snippet": "req.headers.host",
+      "sink_snippet": "fetch(`https://${host}...`)",
+      "taint_chain": ["Source:34 - req.headers.host", "Assignment:35 - ...", "Sink:36 - fetch(url)"],
+      "confidence": "0.88",
+      "corroboration_count": 3
+    }
+  ]
+}
+```
+
+`code_context` 中的 `>>` 标识匹配行，`±3` 行上下文。`source_snippet` / `sink_snippet` 仅 AST 污点分析发现包含。
 
 ### `analyze` — 单文件分析
 
@@ -244,11 +282,25 @@ max_file_size_mb = 10              # 单文件最大扫描大小 (MB)
 memory_budget_mb = 500             # 扫描内存预算 (MB)
 batch_size = 100                   # 并行批次大小
 line_tolerance = 3                 # 去重行容差 (±N 行内合并)
-severity = "medium"                # 默认严重程度过滤
+severity = "medium"                # 精确严重程度过滤 (可选)
+min_severity = "medium"            # 最低严重程度阈值 (过滤 low/info)
+context_lines = 3                  # 代码上下文行数 (±N 行)
 deep = false                       # 是否默认启用深度扫描
 
+# 排除目录/文件模式（完全由配置文件控制，首次运行生成默认值）
+exclude_patterns = [
+  "node_modules", ".git", "target", "build", "dist", "vendor",
+  "__pycache__", ".gradle", ".idea", ".vscode", ".cache",
+  "bower_components", ".next", ".nuxt", "coverage",
+  "test", "tests", "__tests__", "spec", "fixtures", "e2e",
+  "examples", "example", "scripts",
+  "*.min.js", "*.min.css", "*.bundle.js", "*.chunk.js",
+  "*.map", ".env.*", "*.test.*", "*.spec.*",
+]
+exclude_extra = []                 # 额外排除项（追加到 exclude_patterns）
+
 [output]
-format = "text"                    # 输出格式 (text/json/markdown/sarif)
+format = "llm"                     # 输出格式 (llm/json/sarif/markdown/text)
 color = true                       # 是否显示颜色
 verbose = false                    # 是否显示详细输出
 
@@ -319,8 +371,13 @@ key 格式为 `文件路径:行号:漏洞类型`，value 为忽略原因。扫�
 | 代码注入 | Critical | CWE-94 | 多语言规则 + 污点分析 |
 | 路径遍历 | High | CWE-22 | 多语言规则 + 污点分析 |
 | XSS（反射型/存储型） | High | CWE-79 | 污点分析 |
-| SSRF | High | CWE-918 | 污点分析 |
+| SSRF | High | CWE-918 | 污点分析 + Host Header 规则 |
 | 不安全反序列化 | Critical | CWE-502 | 多语言规则 |
+| Host Header SSRF | High | CWE-918 | 语义规则 |
+| 原型链污染 | High | CWE-1321 | 语义规则 |
+| 无边界流读取 (DoS) | High | CWE-400 | 语义规则 |
+| 缓存投毒 | Medium | CWE-444 | 语义规则 |
+| Header 注入 | Medium | CWE-639 | 语义规则 |
 | JWT 安全问题 | High | — | 规则匹配 |
 | ReDoS（正则 DoS） | Medium | CWE-1333 | 规则匹配 |
 | XXE | High | CWE-611 | 规则匹配 |
@@ -414,21 +471,27 @@ SCA 扫描依赖 `api.osv.dev` 在线查询。离线环境下可：
 | 基线抑制 | `.ctx-audit/baseline.json` 记录已确认/已忽略的 finding |
 | 上下文感知 | 测试文件和配置目录中的匹配自动降低置信度 |
 
-**默认排除列表**：`node_modules`, `.git`, `target`, `build`, `dist`, `vendor`, `*.min.js`, `*.min.css`, `*.map` 等。
+**配置驱动的排除**：所有排除项通过 `config.toml` 中的 `scan.exclude_patterns` 控制，首次运行使用代码默认值，用户可随时修改。`--exclude` CLI 参数为追加（不替换配置文件）。
 
 ```bash
-# 排除示例
-ctx-audit scan ./project --exclude "test,example"           # 排除目录
-ctx-audit scan ./project --exclude "*.test.ts,*.spec.js"    # 排除文件模式
-ctx-audit scan ./project --exclude ".json,.lock"            # 排除后缀
-ctx-audit scan ./project --exclude "test,*.min.js,.env.*"   # 混合使用
+# 查看当前排除列表
+ctx-audit config show scan.exclude_patterns
+
+# 修改排除列表（完全替换）
+ctx-audit config set scan.exclude_patterns '["node_modules",".git","target","test","*.min.js"]'
+
+# 追加排除（不替换）
+ctx-audit config set scan.exclude_extra '["scripts","bench"]'
+
+# CLI 临时追加
+ctx-audit scan ./project --exclude "temp,vendor"
 ```
 
 ### 框架感知规则
 
 | 框架 | Sources | Sinks |
 |------|---------|-------|
-| React/Next.js | formData, cookies, headers, searchParams | dangerouslySetInnerHTML, eval, parseModel |
+| React/Next.js | formData, cookies, headers, searchParams, params, useSearchParams, req.headers.host, x-forwarded-host | dangerouslySetInnerHTML, eval, parseModel, redirect, setHeader, revalidatePath, revalidateTag, NextResponse.redirect |
 | Django | request.GET/POST/args | raw(), extra() |
 | Spring | @RequestParam | JdbcTemplate, Runtime.exec |
 | Express/Node | req.body/query/params | eval, child_process.exec |
@@ -519,8 +582,8 @@ cli/                      # 命令行客户端
 ├── commands/rules.rs     # 规则管理
 └── commands/findings.rs  # 漏洞管理
 
-rules/                    # 内置规则（38 个 YAML 文件）
-├── *.yaml                # 模式规则（26 个）
+rules/                    # 内置规则（45+ 个 YAML 文件）
+├── *.yaml                # 模式规则（含 Next.js 语义规则）
 └── taint/                # 污点规则
     ├── generic-taint.yaml          # 通用污点规则
     └── frameworks/                 # 框架特定规则
@@ -550,7 +613,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo build --release
-      - run: ./target/release/ctx-audit -o sarif scan . --deep -o results.sarif
+      - run: ./target/release/ctx-audit -o sarif scan . --deep -o results.sarif   # SARIF for GitHub
+      # 默认 -o llm 可直接输出 LLM 格式给后续 AI 分析
       - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
@@ -590,7 +654,7 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 
 ```bash
 cargo build --release        # 构建（ctx-audit + ctx-audit-daemon）
-cargo test --workspace       # 运行测试（155 个测试）
+cargo test --workspace       # 运行测试（162 个测试）
 cargo fmt                    # 格式化
 cargo clippy                 # 代码检查
 ```
@@ -603,12 +667,12 @@ cargo clippy                 # 代码检查
 | 动态语言追踪 | AccessPath + AliasMap + 解构 + 属性访问 + await + Promise 链 |
 | 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找 |
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
-| 模式匹配规则 | 38 个 YAML 规则，覆盖 7 类注入 + 6 语言 |
+| 模式匹配规则 | 45 个 YAML 规则，覆盖 7 类注入 + 6 语言 + Next.js 语义规则 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存，可配置（默认关闭） |
 | MCP 集成 | 13 个工具（3 粗粒度 + 7 细粒度 + 3 LLM 协作） |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
-| 测试覆盖 | 155 个测试 |
+| 测试覆盖 | 162 个测试 |
 
 ## 许可证
 

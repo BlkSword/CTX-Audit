@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**AI-Native Code Security Scanner**
+**LLM-Native Code Security Analysis Engine**
 
-**Data Flow Tracking · Cross-File Analysis · LLM-Powered 0-Day Discovery**
+**Data Flow Tracking · Cross-File Analysis · LLM-Ready Structured Output**
 
-Not just regex matching — traces every data path from user input to dangerous functions. Connect Claude Code via MCP, let AI find vulnerabilities that rules can't catch.
+Not just regex matching — traces every data path from user input to dangerous functions. Outputs structured JSON with code context, taint chains, and confidence scores for LLM-based vulnerability assessment. Also connects Claude Code via MCP for AI-driven 0-day discovery.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -21,7 +21,7 @@ Not just regex matching — traces every data path from user input to dangerous 
 
 One command to scan 30+ vulnerability types across 12 languages and major frameworks (Next.js, React, Spring, Express, Django, and more).
 
-**How?** Not keyword matching — CTX-Audit parses your code with AST, traces the full data path from user input (source) to dangerous functions (sink), across files and function boundaries. The engine stays resident in memory with incremental caching — unchanged code returns in **~1ms**.
+**How?** Not keyword matching — CTX-Audit parses your code with AST, traces the full data path from user input (source) to dangerous functions (sink), across files and function boundaries. The engine stays resident in memory with incremental caching — unchanged code returns in **~1ms**. Default output is LLM-oriented structured JSON with code context, taint chains, and confidence scores, ready for LLM-based vulnerability triage.
 
 **AI Collaboration:** Connect Claude Code (or any LLM) via MCP protocol. The AI reads your attack surface, analyzes data flows, discovers risk patterns that rules miss, and even generates targeted rules on the fly — evolving from "detect known vulnerabilities" to "discover unknown ones".
 
@@ -71,32 +71,70 @@ ctx-audit mcp                                 # Start MCP Server (stdio JSON-RPC
 ctx-audit scan ./project [OPTIONS]
 
 OPTIONS:
-  -s, --severity <level>    Filter by severity (critical, high, medium, low, info)
-  -p, --pattern <pattern>   Filter by file pattern (e.g. *.py)
-  -r, --rules <dir>         Custom rules directory
-  -o, --output <file>       Output file path
-  -t, --threads <N>         Number of parallel threads (default: 4)
-  -e, --exclude <patterns>  Exclude dirs/files (comma-separated, e.g. test,*.min.js,.json)
-      --deep                Enable deep scan (AST taint + cross-file analysis)
-      --daemon              Execute via daemon (incremental cache)
+  -s, --severity <level>         Filter by severity (critical, high, medium, low, info)
+  -p, --pattern <pattern>        Filter by file pattern (e.g. *.py)
+  -r, --rules <dir>              Custom rules directory
+  -o, --output <file>            Output file path
+  -t, --threads <N>              Number of parallel threads (default: 4)
+  -e, --exclude <patterns>       Append exclusions (comma-separated, e.g. bench,*.min.js)
+      --min-severity <level>     Override config file's minimum severity threshold
+      --deep                     Enable deep scan (AST taint + cross-file analysis)
+      --daemon                   Execute via daemon (incremental cache)
+      --sca                      Enable SCA dependency scanning
 ```
 
 **Scan Engines**:
 
 | Engine | Description |
 |--------|-------------|
-| RuleScanner | Language-aware regex rules (YAML, multi-language patterns, 33 built-in rules) |
+| RuleScanner | Language-aware regex rules (YAML, multi-language patterns, 39 built-in rules) |
 | SCAScanner | Dependency vulnerability detection (OSV API, disabled by default, `--sca` or config to enable) |
 | AstTaintScanner | AST taint analysis (`--deep` mode) |
 | CrossFileTaintAnalyzer | Cross-file / interprocedural taint tracking (`--deep` mode) |
 
 **Output Formats**:
 
+Default output is `llm` (LLM-oriented structured JSON) with code context, taint chains, and confidence scores. Other formats are also supported:
+
 ```bash
-ctx-audit -o sarif scan ./project -o report.sarif     # SARIF 2.1.0
-ctx-audit -o json scan ./project -o results.json       # JSON
-ctx-audit -o markdown scan ./project -o report.md      # Markdown
+ctx-audit scan ./project -o report.json              # Default llm format JSON
+ctx-audit -o sarif scan ./project -o report.sarif    # SARIF 2.1.0
+ctx-audit -o json scan ./project -o results.json     # Raw JSON
+ctx-audit -o markdown scan ./project -o report.md    # Markdown
 ```
+
+**LLM Output Structure** (default format):
+
+```json
+{
+  "scan_summary": {
+    "generated_at": "2026-05-17T01:19:18Z",
+    "total_findings": 8,
+    "by_severity": {"critical": 1, "high": 2, "medium": 5},
+    "by_detector": {"RegexRule: ssrf-host-header": 1, ...}
+  },
+  "findings": [
+    {
+      "id": "uuid",
+      "severity": "high",
+      "vulnerability_type": "CWE-918",
+      "detector": "RegexRule: ssrf-host-header",
+      "file": "packages/next/src/server/api-utils/node/api-resolver.ts",
+      "line": 302,
+      "end_line": 302,
+      "description": "SSRF via Host header used directly in URL construction ...",
+      "code_context": ">> 302 |       const res = await fetch(`https://${req.headers.host}${urlPath}`)",
+      "source_snippet": "req.headers.host",
+      "sink_snippet": "fetch(`https://${host}...`)",
+      "taint_chain": ["Source:34 - req.headers.host", "Assignment:35 - ...", "Sink:36 - fetch(url)"],
+      "confidence": "0.88",
+      "corroboration_count": 3
+    }
+  ]
+}
+```
+
+`>>` marks the matched line in `code_context` with `±3` lines of context. `source_snippet` / `sink_snippet` are included only for AST taint analysis findings.
 
 ### `analyze` — Single File Analysis
 
@@ -244,11 +282,25 @@ max_file_size_mb = 10              # Max file size to scan (MB)
 memory_budget_mb = 500             # Scan memory budget (MB)
 batch_size = 100                   # Parallel batch size
 line_tolerance = 3                 # Dedup line tolerance (±N lines merged)
-severity = "medium"                # Default severity filter
+severity = "medium"                # Exact severity filter (optional)
+min_severity = "medium"            # Minimum severity threshold (filters low/info)
+context_lines = 3                  # Code context lines (±N lines)
 deep = false                       # Enable deep scan by default
 
+# Exclude dirs/file patterns (fully config-driven, defaults generated on first run)
+exclude_patterns = [
+  "node_modules", ".git", "target", "build", "dist", "vendor",
+  "__pycache__", ".gradle", ".idea", ".vscode", ".cache",
+  "bower_components", ".next", ".nuxt", "coverage",
+  "test", "tests", "__tests__", "spec", "fixtures", "e2e",
+  "examples", "example", "scripts",
+  "*.min.js", "*.min.css", "*.bundle.js", "*.chunk.js",
+  "*.map", ".env.*", "*.test.*", "*.spec.*",
+]
+exclude_extra = []                 # Additional exclusions (appended to exclude_patterns)
+
 [output]
-format = "text"                    # Output format (text/json/markdown/sarif)
+format = "llm"                     # Output format (llm/json/sarif/markdown/text)
 color = true                       # Show colors
 verbose = false                    # Verbose output
 
@@ -319,8 +371,13 @@ Each project can place project-level files in the `.ctx-audit/` directory:
 | Code Injection | Critical | CWE-94 | Multi-lang rules + taint analysis |
 | Path Traversal | High | CWE-22 | Multi-lang rules + taint analysis |
 | XSS (Reflected/Stored) | High | CWE-79 | Taint analysis |
-| SSRF | High | CWE-918 | Taint analysis |
+| SSRF | High | CWE-918 | Taint analysis + Host Header rules |
 | Unsafe Deserialization | Critical | CWE-502 | Multi-lang rules |
+| Host Header SSRF | High | CWE-918 | Semantic rules |
+| Prototype Pollution | High | CWE-1321 | Semantic rules |
+| Unbounded Stream Read (DoS) | High | CWE-400 | Semantic rules |
+| Cache Poisoning | Medium | CWE-444 | Semantic rules |
+| Header Injection | Medium | CWE-639 | Semantic rules |
 | JWT Security Issues | High | — | Rule matching |
 | ReDoS | Medium | CWE-1333 | Rule matching |
 | XXE | High | CWE-611 | Rule matching |
@@ -407,28 +464,34 @@ SCA scanning relies on `api.osv.dev` online queries. For offline environments:
 |-----------|-------------|
 | Same-line dedup | Multiple scanner hits on same file:line auto-merged, highest severity kept |
 | Test directory filter | Attack surface findings in test/tests/spec dirs auto-skipped |
-| Blacklist exclusion | `--exclude` supports directory names, file patterns (`*.min.js`), suffixes (`.json`) |
+| Config-driven exclusions | All exclusions via `scan.exclude_patterns` in config file, `--exclude` CLI flag appends |
 | Confidence scoring | Each finding includes confidence (0.0-1.0) |
 | Sanitizer recognition | 30+ sanitizer patterns reduce confidence on sanitized paths |
 | Parameterized query detection | Distinguishes string-concatenated SQL from parameterized queries |
 | Baseline suppression | `.ctx-audit/baseline.json` records confirmed/ignored findings |
 | Context-awareness | Reduced confidence for matches in test files and config dirs |
 
-**Default exclusion list**: `node_modules`, `.git`, `target`, `build`, `dist`, `vendor`, `*.min.js`, `*.min.css`, `*.map`, etc.
+**Config-driven exclusions**: All exclusion patterns are controlled via `scan.exclude_patterns` in `config.toml`. First run uses code defaults; modify anytime via `config set`. The `--exclude` CLI flag appends (does not replace) config values.
 
 ```bash
-# Exclusion examples
-ctx-audit scan ./project --exclude "test,example"           # Exclude directories
-ctx-audit scan ./project --exclude "*.test.ts,*.spec.js"    # Exclude file patterns
-ctx-audit scan ./project --exclude ".json,.lock"            # Exclude suffixes
-ctx-audit scan ./project --exclude "test,*.min.js,.env.*"   # Mixed usage
+# View current exclusion list
+ctx-audit config show scan.exclude_patterns
+
+# Modify exclusion list (full replacement)
+ctx-audit config set scan.exclude_patterns '["node_modules",".git","target","test","*.min.js"]'
+
+# Append exclusions (no replacement)
+ctx-audit config set scan.exclude_extra '["scripts","bench"]'
+
+# CLI temporary append
+ctx-audit scan ./project --exclude "temp,vendor"
 ```
 
 ### Framework-Aware Rules
 
 | Framework | Sources | Sinks |
 |-----------|---------|-------|
-| React/Next.js | formData, cookies, headers, searchParams | dangerouslySetInnerHTML, eval, parseModel |
+| React/Next.js | formData, cookies, headers, searchParams, params, useSearchParams, req.headers.host, x-forwarded-host | dangerouslySetInnerHTML, eval, parseModel, redirect, setHeader, revalidatePath, revalidateTag, NextResponse.redirect |
 | Django | request.GET/POST/args | raw(), extra() |
 | Spring | @RequestParam | JdbcTemplate, Runtime.exec |
 | Express/Node | req.body/query/params | eval, child_process.exec |
@@ -519,8 +582,8 @@ cli/                      # Command-line client
 ├── commands/rules.rs     # Rule management
 └── commands/findings.rs  # Vulnerability management
 
-rules/                    # Built-in rules (38 YAML files)
-├── *.yaml                # Pattern rules (26 files)
+rules/                    # Built-in rules (45+ YAML files)
+├── *.yaml                # Pattern rules (including Next.js semantic rules)
 └── taint/                # Taint rules
     ├── generic-taint.yaml          # Generic taint rules
     └── frameworks/                 # Framework-specific rules
@@ -550,7 +613,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo build --release
-      - run: ./target/release/ctx-audit -o sarif scan . --deep -o results.sarif
+      - run: ./target/release/ctx-audit -o sarif scan . --deep -o results.sarif   # SARIF for GitHub
+      # Default -o llm outputs LLM format for downstream AI analysis
       - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
@@ -584,13 +648,13 @@ Benchmarks based on the [Next.js](https://github.com/vercel/next.js) repository 
 - Deep scan on large projects automatically limits candidate files (top 200 by severity) and processes in batches to prevent OOM
 - Daemon mode uses content-hash caching — unchanged files are skipped in incremental scans
 - SCA first-run is slower (network requests); subsequent runs use a 24h local cache
-- Use `--exclude` to skip irrelevant directories and reduce scan file count
+- Use `--exclude` to append exclusions for irrelevant directories and reduce scan file count
 
 ## Development
 
 ```bash
 cargo build --release        # Build (ctx-audit + ctx-audit-daemon)
-cargo test --workspace       # Run tests (155 tests)
+cargo test --workspace       # Run tests (162 tests)
 cargo fmt                    # Format
 cargo clippy                 # Lint
 ```
@@ -603,12 +667,14 @@ cargo clippy                 # Lint
 | Dynamic Language Tracking | AccessPath + AliasMap + destructuring + property access + await + Promise chains |
 | Cross-file Tracking | Call graph + function summaries + DFS path finding |
 | TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
-| Pattern Matching | 38 YAML rules covering 7 injection types + 6 languages |
+| Pattern Matching | 45+ YAML rules covering 7 injection types + 6 languages + Next.js semantic rules |
 | SCA Scanner | OSV API, 4 ecosystems, local cache, configurable (disabled by default) |
 | MCP Integration | 13 tools (3 coarse-grained + 7 fine-grained + 3 LLM collaboration) |
+| LLM Output | Structured JSON with code context, taint chains, source/sink snippets, confidence |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
-| Test Coverage | 155 tests |
+| Config-driven | All exclusions, severity thresholds, and context settings via config file |
+| Test Coverage | 162 tests |
 
 ## License
 
