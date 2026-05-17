@@ -64,6 +64,10 @@ enum Commands {
         #[arg(short, long)]
         severity: Option<String>,
 
+        /// 最低严重程度阈值（覆盖配置文件，默认使用配置文件中的 scan.min_severity）
+        #[arg(long)]
+        min_severity: Option<String>,
+
         /// 文件模式过滤（如 *.rs）
         #[arg(short, long)]
         pattern: Option<String>,
@@ -365,6 +369,7 @@ async fn main() -> Result<()> {
             path,
             rules,
             severity,
+            min_severity,
             pattern,
             output,
             threads,
@@ -377,6 +382,7 @@ async fn main() -> Result<()> {
                 path,
                 rules,
                 severity,
+                min_severity,
                 pattern,
                 output,
                 threads,

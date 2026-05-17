@@ -1,0 +1,29 @@
+category: injection
+cwe: CWE-1321
+description: 检测原型链污染风险 — 不安全的对象合并或属性赋值可污染 Object.prototype，影响所有对象
+id: prototype-pollution
+language: all
+name: Prototype Pollution Detection
+owasp: "A08:2021-Software and Data Integrity Failures"
+remediation: "使用 Object.create(null) 创建无原型对象；在 merge 操作中过滤 __proto__/constructor/prototype 键；使用 Map 替代普通对象"
+references:
+  - "https://cwe.mitre.org/data/definitions/1321.html"
+  - "https://github.com/HoLyVieR/prototype-pollution-nsec18/blob/master/paper/JavaScript_prototype_pollution_attack_in_NodeJS.pdf"
+patterns:
+  - language: javascript
+    pattern: (?s)(?:function\s+\w*[Mm]erge|function\s+\w*[Ee]xtend|function\s+\w*[Cc]opy|const\s+\w+[Mm]erge|const\s+\w+[Ee]xtend).*for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*\w+\[\w+\]\s*=\s*\w+\[\w+\]
+  - language: javascript
+    pattern: (?i)Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req\.|request\.|body|query|params|ctx\.)
+  - language: javascript
+    pattern: (?s)for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*__proto__
+  - language: javascript
+    pattern: (?i)\w+\[['"]__proto__['"]\]\s*=
+  - language: javascript
+    pattern: (?i)\w+\[['"]constructor['"]\]\[['"]prototype['"]\]
+  - language: typescript
+    pattern: (?s)(?:function\s+\w*[Mm]erge|function\s+\w*[Ee]xtend|function\s+\w*[Cc]opy|const\s+\w+[Mm]erge|const\s+\w+[Ee]xtend).*for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*\w+\[\w+\]\s*=\s*\w+\[\w+\]
+  - language: typescript
+    pattern: (?i)Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req\.|request\.|body|query|params|ctx\.)
+  - language: typescript
+    pattern: (?i)\w+\[['"]__proto__['"]\]\s*=
+severity: high

@@ -276,6 +276,9 @@ impl FileWatcher {
                         llm_output: None,
                         confidence: None,
                         corroboration_count: None,
+                        code_snippet: None,
+                        source_snippet: flow.source.code_snippet.clone(),
+                        sink_snippet: flow.sink.code_snippet.clone(),
                     });
                 }
 

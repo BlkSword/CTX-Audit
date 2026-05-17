@@ -78,17 +78,6 @@ impl Default for ScanOptions {
     }
 }
 
-/// 默认排除列表（目录 + 文件模式）
-const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
-    // 目录
-    "node_modules", ".git", "target", "build", "dist", "vendor",
-    "__pycache__", ".gradle", ".idea", ".vscode", ".cache",
-    "bower_components", ".next", ".nuxt", "coverage", ".cache",
-    // 文件
-    "*.min.js", "*.min.css", "*.bundle.js", "*.chunk.js",
-    "*.map", ".env.*",
-];
-
 /// 测试目录标识（用于降低置信度，不排除扫描）
 const TEST_DIR_MARKERS: &[&str] = &[
     "/test/", "/tests/", "/__tests__/", "/spec/",
@@ -124,6 +113,35 @@ pub struct Finding {
     /// 多扫描器确认计数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corroboration_count: Option<usize>,
+    /// 匹配行的代码上下文（±context_lines 行，带行号标记）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_snippet: Option<String>,
+    /// 污点源代码片段（仅 taint findings）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_snippet: Option<String>,
+    /// 污点汇聚点代码片段（仅 taint findings）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink_snippet: Option<String>,
+}
+
+/// 提取匹配行周围的代码上下文
+pub fn extract_code_context(content: &str, line_start: usize, line_end: usize, context_lines: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() || line_start == 0 {
+        return String::new();
+    }
+
+    let start = if line_start > context_lines + 1 { line_start - context_lines - 1 } else { 0 };
+    let end = (line_end + context_lines).min(lines.len());
+
+    let width = format!("{}", end).len();
+    let mut result = String::new();
+    for i in start..end {
+        let line_num = i + 1;
+        let marker = if line_num >= line_start && line_num <= line_end { ">>" } else { "  " };
+        result.push_str(&format!("{} {:>width$} | {}\n", marker, line_num, lines[i], width = width));
+    }
+    result.trim_end().to_string()
 }
 
 /// 扫描器 trait - 所有扫描器都需要实现此接口
@@ -325,15 +343,14 @@ async fn scan_directory_with_rules_inner(
 ) -> Result<(Vec<Finding>, HashMap<String, String>), String> {
     use ignore::Walk;
 
-    // 合并默认排除 + 用户排除
-    let mut excludes: Vec<String> = DEFAULT_EXCLUDE_PATTERNS.iter().map(|s| s.to_string()).collect();
-    if let Some(user_excludes) = exclude_dirs {
-        for dir in user_excludes {
-            let trimmed = dir.trim();
-            if !trimmed.is_empty() && !excludes.contains(&trimmed.to_string()) {
-                excludes.push(trimmed.to_string());
-            }
-        }
+    // 排除列表完全由调用方（CLI 配置）提供，core 不硬编码任何排除项
+    let mut excludes: Vec<String> = exclude_dirs.unwrap_or_default();
+    // 若调用方未提供任何排除项，使用最小安全默认（防止扫描 .git 等）
+    if excludes.is_empty() {
+        excludes = vec![
+            "node_modules".to_string(), ".git".to_string(),
+            "target".to_string(), "vendor".to_string(),
+        ];
     }
 
     let mut findings = Vec::new();
@@ -464,9 +481,9 @@ async fn scan_directory_with_rules_inner(
                 let mut file_findings = Vec::new();
                 let file_str = path_buf.to_string_lossy().to_string();
 
-                // 规则扫描
+                // 规则扫描（同步调用，无需 async runtime）
                 if let Some(ref scanner) = rule_scanner {
-                    let rule_results = rt_handle.block_on(scanner.scan_file(path_buf, &content));
+                    let rule_results = scanner.scan_file_sync(path_buf, &content);
                     file_findings.extend(rule_results);
                 }
 
@@ -495,6 +512,9 @@ async fn scan_directory_with_rules_inner(
                                 llm_output: None,
                                 confidence: Some(ep.risk_score),
                                 corroboration_count: None,
+                                code_snippet: Some(extract_code_context(&content, ep.line, ep.line, 3)),
+                                source_snippet: None,
+                                sink_snippet: None,
                             });
                         }
                     }
@@ -632,6 +652,9 @@ pub async fn scan_directory_deep_with_rules_progress(
 ) -> Result<Vec<Finding>, String> {
     // 先执行基础扫描（收集文件内容缓存）
     let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);
+    let include_tests = scan_opts.as_ref().map(|o| o.include_tests).unwrap_or(false);
+    // 保存排除列表副本用于二次收集
+    let excludes_for_secondary = exclude_dirs.clone();
     let (mut findings, mut content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, scan_opts, progress.clone()).await?;
 
     // C1: 候选文件选择 — 基于 AST 支持的文件类型，不依赖 rule findings
@@ -645,7 +668,10 @@ pub async fn scan_directory_deep_with_rules_progress(
         .filter(|fp| is_ast_supported_file(std::path::Path::new(fp)))
         .count();
     if ast_in_cache < MAX_CANDIDATE_FILES {
-        let excludes: Vec<String> = DEFAULT_EXCLUDE_PATTERNS.iter().map(|s| s.to_string()).collect();
+        let excludes = excludes_for_secondary.unwrap_or_else(|| vec![
+            "node_modules".to_string(), ".git".to_string(),
+            "target".to_string(), "vendor".to_string(),
+        ]);
         let mut extra_cached = 0;
         for entry in ignore::WalkBuilder::new(path).hidden(false).build() {
             if extra_cached >= MAX_CANDIDATE_FILES - ast_in_cache { break; }
@@ -762,6 +788,9 @@ pub async fn scan_directory_deep_with_rules_progress(
                         llm_output: None,
                         confidence: Some(0.85),
                         corroboration_count: None,
+                        code_snippet: Some(extract_code_context(content, flow.source.line, flow.sink.line, 3)),
+                        source_snippet: flow.source.code_snippet.clone(),
+                        sink_snippet: flow.sink.code_snippet.clone(),
                     }
                 }).collect()
             })
@@ -857,6 +886,9 @@ pub async fn scan_directory_deep_with_rules_progress(
                 llm_output: None,
                 confidence: Some(flow.confidence),
                 corroboration_count: None,
+                code_snippet: None,
+                source_snippet: flow.source.code_snippet.clone(),
+                sink_snippet: flow.sink.code_snippet.clone(),
             });
         }
     }
@@ -1003,6 +1035,14 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
         );
     }
 
+    // Pick best code_snippet/source_snippet/sink_snippet (prefer taint findings)
+    let best_code_snippet = indices.iter()
+        .find_map(|&idx| findings[idx].code_snippet.clone());
+    let best_source_snippet = indices.iter()
+        .find_map(|&idx| findings[idx].source_snippet.clone());
+    let best_sink_snippet = indices.iter()
+        .find_map(|&idx| findings[idx].sink_snippet.clone());
+
     Finding {
         finding_id: best_id,
         file_path: findings[indices[0]].file_path.clone(),
@@ -1016,6 +1056,9 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
         llm_output: None,
         confidence: Some(fused),
         corroboration_count: Some(indices.len()),
+        code_snippet: best_code_snippet,
+        source_snippet: best_source_snippet,
+        sink_snippet: best_sink_snippet,
     }
 }
 
