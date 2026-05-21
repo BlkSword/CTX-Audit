@@ -122,6 +122,15 @@ pub struct Finding {
     /// 污点汇聚点代码片段（仅 taint findings）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sink_snippet: Option<String>,
+    /// 文件角色标签: "production" | "test" | "build" | "vendor"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_role: Option<String>,
+    /// 检测到的安全屏障 (如 "shell:false", "array_args", "safe_target")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub barriers: Option<Vec<String>>,
+    /// 标记原因说明（为什么规则匹配了这段代码）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_hint: Option<String>,
 }
 
 /// 提取匹配行周围的代码上下文
@@ -142,6 +151,189 @@ pub fn extract_code_context(content: &str, line_start: usize, line_end: usize, c
         result.push_str(&format!("{} {:>width$} | {}\n", marker, line_num, lines[i], width = width));
     }
     result.trim_end().to_string()
+}
+
+/// 文件角色分类
+pub fn classify_file_role(path: &str) -> &'static str {
+    let normalized = path.replace('\\', "/").to_lowercase();
+
+    // 测试文件标识
+    let test_markers = [
+        "/__testfixtures__/", "/__tests__/", "/__mocks__/",
+        "/test/", "/tests/", "/spec/", "/specs/",
+        "/e2e/", "/evals/", "/benchmark/", "/bench/",
+        "/fixtures/", "/snapshots/",
+    ];
+    let test_file_patterns = [
+        ".test.", ".spec.", "_test.", "_spec.",
+        ".bench.", ".benchmark.",
+        ".snapshot", ".fixture",
+    ];
+    let test_file_names = [
+        "run-tests.js", "run-tests.ts", "run-evals.js", "run-evals.ts",
+        "jest.config", "vitest.config", "mocha", "karma.conf",
+        "tsconfig-test", "test-runner",
+    ];
+
+    for marker in &test_markers {
+        if normalized.contains(marker) {
+            return "test";
+        }
+    }
+    let file_name = normalized.rsplit('/').next().unwrap_or("");
+    for pat in &test_file_patterns {
+        if file_name.contains(pat) {
+            return "test";
+        }
+    }
+    for name in &test_file_names {
+        if file_name.starts_with(name) {
+            return "test";
+        }
+    }
+
+    // 构建脚本标识
+    let build_markers = [
+        "/scripts/", "/build/", "/tooling/",
+        "webpack.config", "rollup.config", "vite.config",
+        "gulpfile", "gruntfile", "babel.config",
+        "postcss.config", "tailwind.config",
+        "taskfile.", "makefile", "rakefile",
+    ];
+    for marker in &build_markers {
+        if normalized.contains(marker) {
+            return "build";
+        }
+    }
+
+    // 第三方/供应商标识
+    let vendor_markers = [
+        "/vendor/", "/third-party/", "/third_party/",
+        "/external/", "/polyfill",
+    ];
+    for marker in &vendor_markers {
+        if normalized.contains(marker) {
+            return "vendor";
+        }
+    }
+
+    "production"
+}
+
+/// 检测代码上下文中的安全屏障
+///
+/// 检查匹配位置周围的代码是否有安全防护措施：
+/// - `shell: false` / `shell: false,` → 阻止 shell 注入
+/// - 数组参数 `spawn(cmd, [...` → 参数化调用（非字符串拼接）
+/// - `process.execPath` → 固定目标路径
+/// - `require.resolve(` → 本地模块解析
+/// - `new URL(` → URL 标准化
+pub fn detect_barriers(content: &str, line_start: usize, line_end: usize, vuln_type: &str) -> Vec<String> {
+    let mut barriers = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() { return barriers; }
+
+    // 检查匹配行及附近上下文（向下扫描到函数结束或最多 20 行）
+    let check_start = line_start.saturating_sub(1);
+    let check_end = (line_end + 20).min(lines.len());
+
+    let context_block: String = lines[check_start..check_end].join("\n").to_lowercase();
+
+    // Command/Code Injection 相关屏障
+    if vuln_type.contains("CWE-78") || vuln_type.contains("CWE-94") ||
+       vuln_type.contains("command") || vuln_type.contains("code") ||
+       vuln_type.contains("injection") {
+        // shell: false 检查
+        if context_block.contains("shell: false") || context_block.contains("shell:false") ||
+           context_block.contains("shell:!") {
+            barriers.push("shell:false".to_string());
+        }
+        // spawn() 默认 shell:false — 如果没有 shell:true/shell: true，且使用数组参数
+        let has_shell_true = context_block.contains("shell: true") || context_block.contains("shell:true");
+        let has_spawn = context_block.contains("spawn(");
+        let has_array_args = context_block.contains("[") && has_spawn;
+        if has_spawn && !has_shell_true {
+            barriers.push("spawn_default_no_shell".to_string());
+        }
+        if has_array_args {
+            barriers.push("array_args".to_string());
+        }
+        // process.execPath — 固定目标
+        if context_block.contains("process.execpath") {
+            barriers.push("safe_target:process.execPath".to_string());
+        }
+        // require.resolve — 本地模块
+        if context_block.contains("require.resolve") {
+            barriers.push("safe_target:require.resolve".to_string());
+        }
+        // child_process 变量赋值检查 — `require('child_process')` 只是导入
+        if context_block.contains("typeof import('child_process')") ||
+           context_block.contains("as typeof import") {
+            barriers.push("type_import_only".to_string());
+        }
+        // windowsHide: true — 通常用于后台进程，非交互式
+        if context_block.contains("windowshide: true") || context_block.contains("windowshide:true") {
+            barriers.push("background_process".to_string());
+        }
+    }
+
+    // Open Redirect / SSRF 相关屏障
+    if vuln_type.contains("CWE-601") || vuln_type.contains("redirect") ||
+       vuln_type.contains("CWE-918") || vuln_type.contains("ssrf") {
+        // new URL() 标准化
+        if context_block.contains("new url(") {
+            barriers.push("url_normalization".to_string());
+        }
+        // startsWith('/') 检查 — 相对路径校验
+        if context_block.contains("startswith(\"/") || context_block.contains("startswith('/") {
+            barriers.push("path_prefix_check".to_string());
+        }
+    }
+
+    // XSS 相关屏障
+    if vuln_type.contains("CWE-79") || vuln_type.contains("xss") {
+        // dangerouslySetInnerHTML 中使用序列化函数
+        if context_block.contains("json.stringify") || context_block.contains("serialize") ||
+           context_block.contains("escapehtml") || context_block.contains("sanitiz") {
+            barriers.push("output_encoding".to_string());
+        }
+    }
+
+    // Path Traversal 相关屏障
+    if vuln_type.contains("CWE-22") || vuln_type.contains("path") {
+        if context_block.contains("path.normalize") || context_block.contains("path.resolve") ||
+           context_block.contains("realpath") || context_block.contains("..") &&
+           (context_block.contains("replace") || context_block.contains("filter")) {
+            barriers.push("path_normalization".to_string());
+        }
+    }
+
+    barriers
+}
+
+/// 根据 file_role 和 barriers 调整严重程度
+pub fn adjust_severity(severity: &str, file_role: &str, barriers: &[String]) -> String {
+    // 有安全屏障时降级
+    if !barriers.is_empty() {
+        return match severity {
+            "critical" => "medium".to_string(),
+            "high" => "low".to_string(),
+            s => s.to_string(),
+        };
+    }
+    // 非生产代码降级
+    if file_role != "production" {
+        return match (severity, file_role) {
+            ("critical", "test") => "medium".to_string(),
+            ("critical", "build") => "medium".to_string(),
+            ("critical", "vendor") => "high".to_string(),
+            ("high", "test") => "low".to_string(),
+            ("high", "build") => "low".to_string(),
+            ("high", "vendor") => "medium".to_string(),
+            (s, _) => s.to_string(),
+        };
+    }
+    severity.to_string()
 }
 
 /// 扫描器 trait - 所有扫描器都需要实现此接口
@@ -515,6 +707,9 @@ async fn scan_directory_with_rules_inner(
                                 code_snippet: Some(extract_code_context(&content, ep.line, ep.line, 3)),
                                 source_snippet: None,
                                 sink_snippet: None,
+                                file_role: None,
+                                barriers: None,
+                                reasoning_hint: None,
                             });
                         }
                     }
@@ -770,7 +965,7 @@ pub async fn scan_directory_deep_with_rules_progress(
 
                     Finding {
                         finding_id: flow.id.clone(),
-                        file_path: file_str,
+                        file_path: file_str.clone(),
                         line_start: flow.source.line,
                         line_end: flow.sink.line,
                         detector: "AstTaintScanner".to_string(),
@@ -791,6 +986,9 @@ pub async fn scan_directory_deep_with_rules_progress(
                         code_snippet: Some(extract_code_context(content, flow.source.line, flow.sink.line, 3)),
                         source_snippet: flow.source.code_snippet.clone(),
                         sink_snippet: flow.sink.code_snippet.clone(),
+                        file_role: Some(classify_file_role(&file_str).to_string()),
+                        barriers: None,
+                        reasoning_hint: Some(format!("Taint flow: {} → {} via {} steps", flow.source.symbol, flow.sink.symbol, flow.path.len())),
                     }
                 }).collect()
             })
@@ -889,6 +1087,9 @@ pub async fn scan_directory_deep_with_rules_progress(
                 code_snippet: None,
                 source_snippet: flow.source.code_snippet.clone(),
                 sink_snippet: flow.sink.code_snippet.clone(),
+                file_role: Some(classify_file_role(&flow.source.file_path).to_string()),
+                barriers: None,
+                reasoning_hint: Some(format!("Cross-file taint: {} → {} via {} hops", flow.source.symbol, flow.sink.symbol, flow.interprocedural_path.len())),
             });
         }
     }
@@ -1042,6 +1243,13 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
         .find_map(|&idx| findings[idx].source_snippet.clone());
     let best_sink_snippet = indices.iter()
         .find_map(|&idx| findings[idx].sink_snippet.clone());
+    let best_file_role = indices.iter()
+        .find_map(|&idx| findings[idx].file_role.clone());
+    let best_barriers: Vec<String> = indices.iter()
+        .flat_map(|&idx| findings[idx].barriers.clone().unwrap_or_default())
+        .collect();
+    let best_reasoning = indices.iter()
+        .find_map(|&idx| findings[idx].reasoning_hint.clone());
 
     Finding {
         finding_id: best_id,
@@ -1059,6 +1267,9 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
         code_snippet: best_code_snippet,
         source_snippet: best_source_snippet,
         sink_snippet: best_sink_snippet,
+        file_role: best_file_role,
+        barriers: if best_barriers.is_empty() { None } else { Some(best_barriers) },
+        reasoning_hint: best_reasoning,
     }
 }
 

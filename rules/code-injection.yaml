@@ -1,6 +1,6 @@
 category: injection
 cwe: CWE-94
-description: 检测代码注入风险：动态代码执行
+description: "检测代码注入风险：动态代码执行。注意：dev-only 工具脚本（构建/测试）中的 eval 使用会被标记为 build 角色。"
 id: code-injection
 language: all
 name: Code Injection Detection
@@ -11,11 +11,11 @@ references:
   - "https://cwe.mitre.org/data/definitions/94.html"
 patterns:
   - language: javascript
-    pattern: (?i)(eval\s*\(|new\s+Function\s*\(|setTimeout\s*\(\s*['"]|setInterval\s*\(\s*['"]|vm\.runInNewContext|vm\.runInThisContext|vm\.runInContext|child_process\.exec\s*\()
+    pattern: (?i)(eval\s*\(|new\s+Function\s*\(|setTimeout\s*\(\s*['"]|setInterval\s*\(\s*['"]|vm\.runInNewContext|vm\.runInThisContext|vm\.runInContext)
   - language: python
     pattern: (?i)(eval\s*\(|exec\s*\(|__import__\s*\(|compile\s*\()
   - language: java
-    pattern: (?i)(ScriptEngineManager|GroovyShell|ScriptEngine\.eval|Runtime\.getRuntime\(\)\.exec|ProcessBuilder)
+    pattern: (?i)(ScriptEngineManager|GroovyShell|ScriptEngine\.eval)
   - language: php
     pattern: (?i)(eval\s*\(|assert\s*\(|create_function\s*\(|preg_replace\s*\(.*/[a-z]*e[a-z]*['"])
 severity: critical

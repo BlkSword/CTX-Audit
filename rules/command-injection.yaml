@@ -1,21 +1,28 @@
 category: injection
 cwe: CWE-78
-description: 检测命令注入风险：用户输入直接用于命令执行
+description: "检测命令注入风险：用户输入直接用于命令执行。注意：spawn/execFile 使用数组参数且 shell:false 时风险较低，工具会自动检测安全屏障并降级。"
 id: command-injection
 language: all
 name: Command Injection Detection
 owasp: "A03:2021-Injection"
-remediation: "使用参数化的命令执行 API；避免在 subprocess 中使用 shell=True；对所有用户输入进行严格验证和白名单过滤后再传入命令执行函数。"
+remediation: "使用参数化的命令执行 API（spawn/execFile + 数组参数 + shell:false）；避免使用 exec/execSync 拼接字符串；对所有用户输入进行严格验证和白名单过滤。"
 references:
   - "https://owasp.org/www-community/attacks/Command_Injection"
   - "https://cwe.mitre.org/data/definitions/78.html"
 patterns:
+  # 高风险：exec/execSync 使用字符串拼接（经过 shell 解释）
+  - language: javascript
+    pattern: (?i)(child_process\.exec\s*\(|child_process\.execSync\s*\()
+  # spawn 调用（安全屏障检测会识别 shell:false 并降级）
+  - language: javascript
+    pattern: (?i)(child_process\.spawn\s*\(|\.spawn\s*\()
+  # Java
   - language: java
     pattern: (?i)(Runtime\.getRuntime\(\)\.exec\s*\(|ProcessBuilder\s*\()
-  - language: javascript
-    pattern: (?i)(child_process\.exec\s*\(|child_process\.execSync\s*\(|child_process\.spawn\s*\(|require\s*\(\s*['\"]child_process['\"]\s*\))
+  # Python
   - language: python
     pattern: (?i)(subprocess\.(call|run|Popen)\s*\(|os\.system\s*\(|os\.popen\s*\()
+  # PHP
   - language: php
     pattern: (?i)(shell_exec\s*\(|passthru\s*\(|popen\s*\(|system\s*\(|exec\s*\()
 severity: critical

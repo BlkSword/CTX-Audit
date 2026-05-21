@@ -577,6 +577,9 @@ impl ScaScanner {
             code_snippet: None,
             source_snippet: None,
             sink_snippet: None,
+            file_role: None,
+            barriers: None,
+            reasoning_hint: None,
         }
     }
 }
