@@ -478,9 +478,13 @@ fn to_llm_json(findings: &[Finding]) -> String {
 
     let mut by_severity = std::collections::HashMap::new();
     let mut by_detector = std::collections::HashMap::new();
+    let mut by_file_role = std::collections::HashMap::new();
     for f in findings {
         *by_severity.entry(f.severity.clone()).or_insert(0usize) += 1;
         *by_detector.entry(f.detector.clone()).or_insert(0usize) += 1;
+        if let Some(ref role) = f.file_role {
+            *by_file_role.entry(role.clone()).or_insert(0usize) += 1;
+        }
     }
 
     let findings_json: Vec<Value> = findings.iter().map(|f| {
@@ -495,6 +499,32 @@ fn to_llm_json(findings: &[Finding]) -> String {
             "description": f.description,
             "code_context": f.code_snippet,
         });
+
+        // 文件角色标签
+        if let Some(ref role) = f.file_role {
+            obj.as_object_mut().unwrap().insert(
+                "file_role".to_string(),
+                json!(role),
+            );
+        }
+
+        // 安全屏障
+        if let Some(ref barriers) = f.barriers {
+            if !barriers.is_empty() {
+                obj.as_object_mut().unwrap().insert(
+                    "barriers".to_string(),
+                    json!(barriers),
+                );
+            }
+        }
+
+        // 标记原因
+        if let Some(ref hint) = f.reasoning_hint {
+            obj.as_object_mut().unwrap().insert(
+                "reasoning_hint".to_string(),
+                json!(hint),
+            );
+        }
 
         if let Some(ref trail) = f.analysis_trail {
             if !trail.is_empty() {
@@ -551,6 +581,7 @@ fn to_llm_json(findings: &[Finding]) -> String {
             "total_findings": findings.len(),
             "by_severity": by_severity,
             "by_detector": by_detector,
+            "by_file_role": by_file_role,
         },
         "findings": findings_json,
     });

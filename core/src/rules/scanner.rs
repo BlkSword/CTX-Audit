@@ -196,14 +196,41 @@ fn create_finding(
     context_lines: usize,
 ) -> Finding {
     let code_snippet = Some(crate::scanner::extract_code_context(content, line_start, line_end, context_lines));
+    let file_path = path.to_string_lossy().to_string();
+    let vuln_type = rule.cwe.clone().unwrap_or_else(|| "Unknown".to_string());
+
+    // 文件角色分类
+    let file_role = Some(crate::scanner::classify_file_role(&file_path).to_string());
+
+    // 安全屏障检测
+    let barriers = {
+        let b = crate::scanner::detect_barriers(content, line_start, line_end, &vuln_type);
+        if b.is_empty() { None } else { Some(b) }
+    };
+
+    // 根据角色和屏障调整严重程度
+    let raw_severity = format!("{:?}", rule.severity).to_lowercase();
+    let severity = crate::scanner::adjust_severity(
+        &raw_severity,
+        file_role.as_deref().unwrap_or("production"),
+        barriers.as_deref().unwrap_or(&[]),
+    );
+
+    // 生成标记原因
+    let reasoning_hint = Some(format!(
+        "Matched {} pattern in {} context",
+        rule.id,
+        file_role.as_deref().unwrap_or("unknown")
+    ));
+
     Finding {
         finding_id: Uuid::new_v4().to_string(),
-        file_path: path.to_string_lossy().to_string(),
+        file_path,
         line_start,
         line_end,
         detector,
-        vuln_type: rule.cwe.clone().unwrap_or_else(|| "Unknown".to_string()),
-        severity: format!("{:?}", rule.severity).to_lowercase(),
+        vuln_type,
+        severity,
         description: rule.description.clone(),
         analysis_trail: None,
         llm_output: None,
@@ -212,6 +239,9 @@ fn create_finding(
         code_snippet,
         source_snippet: None,
         sink_snippet: None,
+        file_role,
+        barriers,
+        reasoning_hint,
     }
 }
 

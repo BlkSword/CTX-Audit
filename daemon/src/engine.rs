@@ -438,6 +438,9 @@ impl AnalysisEngine {
                         code_snippet: None,
                         source_snippet: flow.source.code_snippet.clone(),
                         sink_snippet: flow.sink.code_snippet.clone(),
+                        file_role: None,
+                        barriers: None,
+                        reasoning_hint: None,
                     });
                 }
             }
