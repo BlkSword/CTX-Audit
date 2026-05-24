@@ -14,7 +14,7 @@ use ctx_audit_daemon::protocol::{Request, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use deepaudit_core::scanning::{Finding, scan_directory, scan_directory_deep};
+use deepaudit_core::scanning::{Finding, ScanOptions, scan_directory, scan_directory_deep_with_rules_progress};
 use deepaudit_core::ast_api::ASTParser;
 use deepaudit_core::taint::{AstTaintAnalyzer, CrossFileTaintAnalyzer};
 use deepaudit_core::attack_surface::{AttackSurfaceMapper, RiskPatternScanner};
@@ -64,7 +64,17 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "deep": {
                         "type": "boolean",
-                        "description": "Enable deep scan with AST taint analysis (default: false)",
+                        "description": "Shorthand for enable_taint + enable_cross_file (default: false)",
+                        "default": false
+                    },
+                    "enable_taint": {
+                        "type": "boolean",
+                        "description": "Enable AST taint analysis (single-file source-to-sink tracking)",
+                        "default": false
+                    },
+                    "enable_cross_file": {
+                        "type": "boolean",
+                        "description": "Enable cross-file taint tracking (implies enable_taint)",
                         "default": false
                     },
                     "severity": {
@@ -465,14 +475,22 @@ async fn handle_tool_call(name: &str, arguments: &Value) -> Value {
 async fn tool_security_scan(args: &Value) -> Value {
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
     let deep = args.get("deep").and_then(|v| v.as_bool()).unwrap_or(false);
+    let taint_arg = args.get("enable_taint").and_then(|v| v.as_bool()).unwrap_or(false);
+    let cross_file_arg = args.get("enable_cross_file").and_then(|v| v.as_bool()).unwrap_or(false);
     let severity = args.get("severity").and_then(|v| v.as_str()).map(String::from);
     let pattern = args.get("pattern").and_then(|v| v.as_str()).map(String::from);
     let file_role_filter = args.get("file_role_filter").and_then(|v| v.as_str()).map(String::from);
     let min_severity = args.get("min_severity").and_then(|v| v.as_str()).map(String::from);
     let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(true);
 
-    let result = if deep {
-        scan_directory_deep(path).await
+    let enable_taint = taint_arg || deep || cross_file_arg;
+    let enable_cross_file = cross_file_arg || deep;
+
+    let result = if enable_taint || enable_cross_file {
+        let mut opts = ScanOptions::default();
+        opts.enable_taint = enable_taint;
+        opts.enable_cross_file = enable_cross_file;
+        scan_directory_deep_with_rules_progress(path, None, None, None, Some(opts), None).await
     } else {
         scan_directory(path).await
     };

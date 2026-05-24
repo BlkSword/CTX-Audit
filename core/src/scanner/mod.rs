@@ -63,6 +63,10 @@ pub struct ScanOptions {
     pub line_tolerance: usize,
     /// 是否包含测试文件（默认 false，测试目录中文件降低置信度但不排除）
     pub include_tests: bool,
+    /// 启用 AST 污点分析（单文件 source→sink 追踪）
+    pub enable_taint: bool,
+    /// 启用跨文件污点追踪（需要 enable_taint）
+    pub enable_cross_file: bool,
 }
 
 impl Default for ScanOptions {
@@ -74,6 +78,8 @@ impl Default for ScanOptions {
             batch_size: 100,
             line_tolerance: 3,
             include_tests: false,
+            enable_taint: false,
+            enable_cross_file: false,
         }
     }
 }
@@ -833,7 +839,10 @@ pub async fn scan_directory_deep_with_rules(
     exclude_dirs: Option<Vec<String>>,
     sca_options: Option<ScaScanOptions>,
 ) -> Result<Vec<Finding>, String> {
-    scan_directory_deep_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, None, None).await
+    let mut opts = ScanOptions::default();
+    opts.enable_taint = true;
+    opts.enable_cross_file = true;
+    scan_directory_deep_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, Some(opts), None).await
 }
 
 /// 带进度回调的深度扫描
@@ -845,6 +854,10 @@ pub async fn scan_directory_deep_with_rules_progress(
     scan_opts: Option<ScanOptions>,
     progress: Option<ProgressCallback>,
 ) -> Result<Vec<Finding>, String> {
+    // 引擎标志
+    let enable_taint = scan_opts.as_ref().map(|o| o.enable_taint).unwrap_or(false);
+    let enable_cross_file = scan_opts.as_ref().map(|o| o.enable_cross_file).unwrap_or(false);
+
     // 先执行基础扫描（收集文件内容缓存）
     let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);
     let include_tests = scan_opts.as_ref().map(|o| o.include_tests).unwrap_or(false);
@@ -852,6 +865,13 @@ pub async fn scan_directory_deep_with_rules_progress(
     let excludes_for_secondary = exclude_dirs.clone();
     let (mut findings, mut content_cache) = scan_directory_with_rules_inner(path, rules_dir, exclude_dirs, true, sca_options, scan_opts, progress.clone()).await?;
 
+    // 无深度引擎启用时直接返回基础扫描结果
+    if !enable_taint {
+        findings = deduplicate_findings(findings, line_tol);
+        return Ok(findings);
+    }
+
+    // Stage B: AST 污点分析（enable_taint = true）
     // C1: 候选文件选择 — 基于 AST 支持的文件类型，不依赖 rule findings
     const MAX_CANDIDATE_FILES: usize = 200;
     const TAINT_BATCH_SIZE: usize = 50;
@@ -1026,7 +1046,8 @@ pub async fn scan_directory_deep_with_rules_progress(
 
     findings.extend(taint_findings);
 
-    // C3: 跨文件污点分析 — 复用 content_cache 避免重复 I/O
+    // Stage C: 跨文件污点分析（enable_cross_file = true）
+    if enable_cross_file {
     if let Some(ref cb) = progress {
         cb(ScanProgress {
             phase: ScanPhase::CrossFileAnalysis,
@@ -1093,6 +1114,7 @@ pub async fn scan_directory_deep_with_rules_progress(
             });
         }
     }
+    } // end enable_cross_file
 
     // 去重
     findings = deduplicate_findings(findings, line_tol);

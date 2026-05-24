@@ -84,9 +84,17 @@ enum Commands {
         #[arg(short, long, default_value = "")]
         exclude: String,
 
-        /// 启用深度扫描（AST 污点分析）
+        /// 启用深度扫描（等同于 --taint --cross-file）
         #[arg(long)]
         deep: bool,
+
+        /// 启用 AST 污点分析（单文件 source→sink 追踪）
+        #[arg(long)]
+        taint: bool,
+
+        /// 启用跨文件污点追踪（隐含 --taint）
+        #[arg(long)]
+        cross_file: bool,
 
         /// 通过守护进程执行
         #[arg(long)]
@@ -375,6 +383,8 @@ async fn main() -> Result<()> {
             threads,
             exclude,
             deep,
+            taint,
+            cross_file,
             daemon,
             sca,
         } => {
@@ -388,6 +398,8 @@ async fn main() -> Result<()> {
                 threads,
                 cli.output.as_str(),
                 deep,
+                taint,
+                cross_file,
                 daemon,
                 exclude,
                 sca,

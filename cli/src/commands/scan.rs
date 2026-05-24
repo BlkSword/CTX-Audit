@@ -65,11 +65,17 @@ pub async fn execute(
     threads: usize,
     output_format: &str,
     deep: bool,
+    taint: bool,
+    cross_file: bool,
     daemon: bool,
     exclude: String,
     sca_enabled: bool,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
+
+    // 解析引擎标志：--deep = --taint --cross-file；--cross-file 隐含 --taint
+    let enable_taint = taint || deep || cross_file;
+    let enable_cross_file = cross_file || deep;
 
     // 验证项目路径
     let project_path = std::path::Path::new(&path);
@@ -94,10 +100,10 @@ pub async fn execute(
 
     // 守护进程模式
     if daemon {
-        return scan_via_daemon(path, severity, effective_min_severity, pattern, output_path, output_format, deep, &mut renderer).await;
+        return scan_via_daemon(path, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, &mut renderer).await;
     }
 
-    scan_local(path, rules_dir, severity, effective_min_severity, pattern, output_path, output_format, deep, exclude_dirs, &mut renderer, sca_options).await
+    scan_local(path, rules_dir, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, exclude_dirs, &mut renderer, sca_options).await
 }
 
 /// 从配置文件 + CLI flag 构建 SCA 选项
@@ -150,6 +156,8 @@ fn build_scan_options() -> ScanOptions {
             batch_size: batch,
             line_tolerance: tol,
             include_tests,
+            enable_taint: false,
+            enable_cross_file: false,
         },
         None => ScanOptions::default(),
     }
@@ -208,12 +216,17 @@ async fn scan_local(
     pattern: Option<String>,
     output_path: Option<String>,
     output_format: &str,
-    deep: bool,
+    enable_taint: bool,
+    enable_cross_file: bool,
     exclude_dirs: Vec<String>,
     renderer: &mut TerminalRenderer,
     sca_options: ScaScanOptions,
 ) -> Result<()> {
-    let mode = if deep { "深度扫描" } else { "快速扫描" };
+    let mode = match (enable_taint, enable_cross_file) {
+        (true, true) => "深度扫描 (规则 + 污点 + 跨文件)",
+        (true, false) => "扫描 (规则 + 污点分析)",
+        (false, _) => "快速扫描 (规则)",
+    };
     renderer.info(&format!("{}: {}", mode, path));
 
     if let Some(ref r) = rules_dir {
@@ -221,7 +234,9 @@ async fn scan_local(
     }
 
     // 从配置文件构建 ScanOptions
-    let scan_opts = build_scan_options();
+    let mut scan_opts = build_scan_options();
+    scan_opts.enable_taint = enable_taint;
+    scan_opts.enable_cross_file = enable_cross_file;
 
     // 合并排除列表：CLI + 配置文件 exclude_extra
     let all_excludes = build_exclude_dirs(exclude_dirs);
@@ -267,7 +282,7 @@ async fn scan_local(
     let rules_ref = rules_dir.as_deref();
     let exclude_opt = if all_excludes.is_empty() { None } else { Some(all_excludes) };
     let sca_opt = Some(sca_options);
-    let findings_result = if deep {
+    let findings_result = if enable_taint || enable_cross_file {
         scan_directory_deep_with_rules_progress(&path, rules_ref, exclude_opt, sca_opt, Some(scan_opts), progress_cb).await
     } else {
         scan_directory_with_opts(&path, rules_ref, exclude_opt, sca_opt, scan_opts, progress_cb).await
@@ -332,21 +347,45 @@ async fn scan_local(
     ));
 
     if let Some(output_path) = output_path {
-        // 自动检测格式：如果 output_path 的值是已知格式名且无扩展名，视为格式参数
-        let effective_format = match output_path.as_str() {
-            "json" => "json",
-            "sarif" => "sarif",
-            "llm" => "llm",
-            "markdown" | "md" => "markdown",
-            _ => {
-                // 尝试从文件扩展名推断
-                std::path::Path::new(&output_path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or(output_format)
-            }
+        // 区分格式名 vs 真实文件路径
+        let is_format_shorthand = !output_path.contains(std::path::MAIN_SEPARATOR)
+            && !output_path.contains('/')
+            && std::path::Path::new(&output_path).extension().is_none()
+            && matches!(
+                output_path.to_lowercase().as_str(),
+                "json" | "sarif" | "llm" | "markdown" | "md"
+            );
+
+        let (effective_format, effective_file_path) = if is_format_shorthand {
+            let lower = output_path.to_lowercase();
+            let format_name = match lower.as_str() {
+                "md" => "markdown",
+                other => other,
+            };
+            let format_name = format_name.to_string();
+            let ext = match format_name.as_str() {
+                "llm" => "json",
+                "sarif" => "sarif",
+                other => other,
+            };
+            let timestamp = chrono::Local::now().format("%Y-%m-%d");
+            let filename = format!("ctx-audit-{}-{}.{}", format_name, timestamp, ext);
+            (format_name, filename)
+        } else {
+            let format = std::path::Path::new(&output_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| match e.to_lowercase().as_str() {
+                    "json" => "json",
+                    "sarif" => "sarif",
+                    "md" => "markdown",
+                    _ => output_format,
+                })
+                .unwrap_or(output_format);
+            (format.to_string(), output_path.clone())
         };
-        save_scan_results(&output_path, &filtered_findings, effective_format, renderer).await?;
+
+        save_scan_results(&effective_file_path, &filtered_findings, &effective_format, renderer).await?;
     }
 
     Ok(())
@@ -597,7 +636,8 @@ async fn scan_via_daemon(
     pattern: Option<String>,
     output_path: Option<String>,
     output_format: &str,
-    deep: bool,
+    enable_taint: bool,
+    enable_cross_file: bool,
     renderer: &mut TerminalRenderer,
 ) -> Result<()> {
     let mut client = match DaemonClient::connect_with_retry().await {
@@ -605,7 +645,7 @@ async fn scan_via_daemon(
         Err(e) => {
             renderer.warning(&format!("连接守护进程失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, deep, vec![], renderer, ScaScanOptions::default()).await;
+            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, vec![], renderer, ScaScanOptions::default()).await;
         }
     };
 
@@ -613,13 +653,14 @@ async fn scan_via_daemon(
     let pb = renderer.progress_bar(100);
     pb.set_message("扫描中...");
 
-    let response = match client.scan(path.clone(), deep, severity.clone(), pattern.clone()).await {
+    let deep = enable_taint && enable_cross_file;
+    let response = match client.scan(path.clone(), deep, enable_taint, enable_cross_file, severity.clone(), pattern.clone()).await {
         Ok(r) => r,
         Err(e) => {
             pb.finish_with_message("守护进程扫描失败");
             renderer.warning(&format!("守护进程扫描失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, deep, vec![], renderer, ScaScanOptions::default()).await;
+            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, vec![], renderer, ScaScanOptions::default()).await;
         }
     };
 

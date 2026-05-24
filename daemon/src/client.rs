@@ -210,12 +210,16 @@ impl DaemonClient {
         &mut self,
         path: String,
         deep: bool,
+        enable_taint: bool,
+        enable_cross_file: bool,
         severity_filter: Option<String>,
         pattern_filter: Option<String>,
     ) -> Result<Response> {
         self.send_request(Request::Scan {
             path,
             deep,
+            enable_taint,
+            enable_cross_file,
             severity_filter,
             pattern_filter,
         }).await

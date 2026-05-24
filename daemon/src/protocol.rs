@@ -26,7 +26,12 @@ pub enum Request {
     /// 扫描项目
     Scan {
         path: String,
+        #[serde(default)]
         deep: bool,
+        #[serde(default)]
+        enable_taint: bool,
+        #[serde(default)]
+        enable_cross_file: bool,
         severity_filter: Option<String>,
         pattern_filter: Option<String>,
     },

@@ -19,11 +19,18 @@ Not just regex matching — traces every data path from user input to dangerous 
 
 ## What is CTX-Audit
 
-One command to scan 30+ vulnerability types across 12 languages and major frameworks (Next.js, React, Spring, Express, Django, and more).
+CTX-Audit is a code security analysis engine designed for LLM-assisted auditing. It doesn't just tell you "where dangerous functions are used" — it traces the **full path** of data from user input to dangerous operations, and outputs structured evidence chains that let LLMs make vulnerability verdicts based on facts.
 
-**How?** Not keyword matching — CTX-Audit parses your code with AST, traces the full data path from user input (source) to dangerous functions (sink), across files and function boundaries. The engine stays resident in memory with incremental caching — unchanged code returns in **~1ms**. Default output is LLM-oriented structured JSON with code context, taint chains, and confidence scores, ready for LLM-based vulnerability triage.
+**Core Capabilities**:
 
-**AI Collaboration:** Connect Claude Code (or any LLM) via MCP protocol. The AI reads your attack surface, analyzes data flows, discovers risk patterns that rules miss, and even generates targeted rules on the fly — evolving from "detect known vulnerabilities" to "discover unknown ones".
+- **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
+- **Data flow tracking**: Based on tree-sitter AST + CFG worklist algorithm, with AccessPath, AliasMap, destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
+- **LLM autonomous audit loop**: Exposes 17 tools via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → taint tracing → code review → TP/FP verdict → rule generation → re-validation"
+- **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), confidence scoring, multi-engine corroboration, baseline suppression
+- **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
+- **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
+
+**Coverage**: 20+ vulnerability types (injection, XSS, SSRF, deserialization, path traversal...), AST analysis for 12 languages (JS/TS/Python/Java/Rust/Go/C/C++...), file scanning for 23 extensions, built-in framework-aware rules for Next.js, React, Django, Spring, Express, Laravel, Rails.
 
 ```
 ┌───────────────────┐     IPC (TCP)     ┌──────────────────────────────┐
@@ -47,8 +54,10 @@ cargo build --release
 
 # Direct usage (no daemon required)
 ctx-audit scan ./myproject                    # Quick scan
-ctx-audit scan ./myproject --deep             # Deep scan (AST taint analysis)
-ctx-audit scan ./myproject --deep --rules ./my-rules/  # Custom rules
+ctx-audit scan ./myproject --taint            # Rules + AST taint analysis
+ctx-audit scan ./myproject --cross-file       # Rules + taint + cross-file tracking
+ctx-audit scan ./myproject --deep             # Same as above (backward compat shorthand)
+ctx-audit scan ./myproject --taint --rules ./my-rules/  # Custom rules + taint analysis
 ctx-audit analyze ./src/main.rs --symbols     # Single file analysis
 ctx-audit watch ./myproject                   # Continuous monitoring
 
@@ -74,33 +83,36 @@ OPTIONS:
   -s, --severity <level>         Filter by severity (critical, high, medium, low, info)
   -p, --pattern <pattern>        Filter by file pattern (e.g. *.py)
   -r, --rules <dir>              Custom rules directory
-  -o, --output <file>            Output file path
+  -o, --output <file>            Output file path or format name (llm/sarif/json/markdown)
   -t, --threads <N>              Number of parallel threads (default: 4)
   -e, --exclude <patterns>       Append exclusions (comma-separated, e.g. bench,*.min.js)
       --min-severity <level>     Override config file's minimum severity threshold
-      --deep                     Enable deep scan (AST taint + cross-file analysis)
+      --taint                    Enable AST taint analysis (single-file source→sink tracking)
+      --cross-file               Enable cross-file taint tracking (implies --taint)
+      --deep                     Shorthand for --taint --cross-file
       --daemon                   Execute via daemon (incremental cache)
       --sca                      Enable SCA dependency scanning
 ```
 
 **Scan Engines**:
 
-| Engine | Description |
-|--------|-------------|
-| RuleScanner | Language-aware regex rules (YAML, multi-language patterns, 39 built-in rules) |
-| SCAScanner | Dependency vulnerability detection (OSV API, disabled by default, `--sca` or config to enable) |
-| AstTaintScanner | AST taint analysis (`--deep` mode) |
-| CrossFileTaintAnalyzer | Cross-file / interprocedural taint tracking (`--deep` mode) |
+| Engine | Description | How to Enable |
+|--------|-------------|---------------|
+| RuleScanner | Language-aware regex rules (YAML, multi-language patterns, 40 built-in rules) | Always on |
+| SCAScanner | Dependency vulnerability detection (OSV API, disabled by default, `--sca` or config to enable) | `--sca` |
+| AstTaintScanner | AST taint analysis (single-file source→sink tracking) | `--taint` |
+| CrossFileTaintAnalyzer | Cross-file / interprocedural taint tracking | `--cross-file` |
 
 **Output Formats**:
 
 Default output is `llm` (LLM-oriented structured JSON) with code context, taint chains, and confidence scores. Other formats are also supported:
 
 ```bash
-ctx-audit scan ./project -o report.json              # Default llm format JSON
-ctx-audit -o sarif scan ./project -o report.sarif    # SARIF 2.1.0
-ctx-audit -o json scan ./project -o results.json     # Raw JSON
-ctx-audit -o markdown scan ./project -o report.md    # Markdown
+ctx-audit scan ./project -o llm                     # Auto-generates ctx-audit-llm-2026-05-24.json
+ctx-audit scan ./project -o sarif                   # Auto-generates ctx-audit-sarif-2026-05-24.sarif
+ctx-audit scan ./project -o json                    # Auto-generates ctx-audit-json-2026-05-24.json
+ctx-audit scan ./project -o report.json             # Uses specified filename report.json
+ctx-audit scan ./project -o /tmp/results.sarif      # Uses full path
 ```
 
 **LLM Output Structure** (default format):
@@ -109,9 +121,10 @@ ctx-audit -o markdown scan ./project -o report.md    # Markdown
 {
   "scan_summary": {
     "generated_at": "2026-05-17T01:19:18Z",
-    "total_findings": 8,
-    "by_severity": {"critical": 1, "high": 2, "medium": 5},
-    "by_detector": {"RegexRule: ssrf-host-header": 1, ...}
+    "total_findings": 229,
+    "by_severity": {"critical": 6, "high": 126, "medium": 97},
+    "by_detector": {"RegexRule: ssrf-host-header": 1, "AstTaintScanner": 45, ...},
+    "by_file_role": {"production": 229, "test": 2771, "build": 11}
   },
   "findings": [
     {
@@ -123,18 +136,32 @@ ctx-audit -o markdown scan ./project -o report.md    # Markdown
       "line": 302,
       "end_line": 302,
       "description": "SSRF via Host header used directly in URL construction ...",
+      "file_role": "production",
+      "barriers": [],
+      "reasoning_hint": "Matched ssrf-host-header pattern in production context",
       "code_context": ">> 302 |       const res = await fetch(`https://${req.headers.host}${urlPath}`)",
       "source_snippet": "req.headers.host",
       "sink_snippet": "fetch(`https://${host}...`)",
       "taint_chain": ["Source:34 - req.headers.host", "Assignment:35 - ...", "Sink:36 - fetch(url)"],
       "confidence": "0.88",
       "corroboration_count": 3
+    },
+    {
+      "id": "uuid",
+      "severity": "medium",
+      "vulnerability_type": "CWE-78",
+      "detector": "RegexRule: command-injection",
+      "file": "packages/next/src/server/lib/launch-editor.ts",
+      "line": 45,
+      "file_role": "production",
+      "barriers": ["spawn_default_no_shell", "array_args"],
+      "reasoning_hint": "Matched command-injection pattern in production context"
     }
   ]
 }
 ```
 
-`>>` marks the matched line in `code_context` with `±3` lines of context. `source_snippet` / `sink_snippet` are included only for AST taint analysis findings.
+Key fields: `file_role` identifies production/test/build code; `barriers` lists detected security mitigations; `reasoning_hint` explains why the tool flagged this; `>>` in `code_context` marks the matched line (±3 lines context); `taint_chain` and `source_snippet`/`sink_snippet` are included only for `--taint` findings.
 
 ### `analyze` — Single File Analysis
 
@@ -398,7 +425,7 @@ Each project can place project-level files in the `.ctx-audit/` directory:
 
 ### Cross-File Taint Tracking
 
-`--deep` mode enables cross-file, interprocedural analysis:
+`--cross-file` (or `--deep`) enables cross-file, interprocedural analysis:
 
 - **Call graph construction**: Auto-extracts function nodes and call relationships
 - **Cross-file resolution**: Matches bare function names to global functions, builds cross-file call edges
@@ -472,9 +499,11 @@ SCA scanning relies on `api.osv.dev` online queries. For offline environments:
 | Mechanism | Description |
 |-----------|-------------|
 | Same-line dedup | Multiple scanner hits on same file:line auto-merged, highest severity kept |
+| File role classification | Auto-tags production/test/build/vendor, adjusts severity by role |
+| Security barrier detection | Detects shell:false, array args, require.resolve etc., auto-downgrades |
 | Test directory filter | Attack surface findings in test/tests/spec dirs auto-skipped |
 | Config-driven exclusions | All exclusions via `scan.exclude_patterns` in config file, `--exclude` CLI flag appends |
-| Confidence scoring | Each finding includes confidence (0.0-1.0) |
+| Confidence scoring | Each finding includes confidence (0.0-1.0), boosted to 0.9 on multi-engine corroboration |
 | Sanitizer recognition | 30+ sanitizer patterns reduce confidence on sanitized paths |
 | Parameterized query detection | Distinguishes string-concatenated SQL from parameterized queries |
 | Baseline suppression | `.ctx-audit/baseline.json` records confirmed/ignored findings |
@@ -747,7 +776,7 @@ cli/                      # Command-line client
 ├── commands/rules.rs     # Rule management
 └── commands/findings.rs  # Vulnerability management
 
-rules/                    # Built-in rules (45+ YAML files)
+rules/                    # Built-in rules (40 pattern + 5 taint)
 ├── *.yaml                # Pattern rules (including Next.js semantic rules)
 └── taint/                # Taint rules
     ├── generic-taint.yaml          # Generic taint rules
@@ -803,10 +832,11 @@ Benchmarks based on the [Next.js](https://github.com/vercel/next.js) repository 
 | Mode | Time | Notes |
 |------|------|-------|
 | Quick scan | **~10s** | Rule scanning + attack surface mapping (single-pass) |
+| `--taint` | **~1m** | Rules + AST taint analysis (single-file source→sink) |
+| `--deep` / `--cross-file` | **~2.5m** | Rules + taint + cross-file tracking (22K-file large project) |
 | Quick scan + SCA | **~35s** | Includes OSV API network queries (first run); cached runs approach quick scan time |
 | Daemon first scan | **~41s** | Full scan + result caching |
 | Daemon incremental (no changes) | **~9s** | Cache hit, only file change detection |
-| Deep scan (`--deep`) | **~2.5m** | AST taint analysis + cross-file tracking (22K-file large project) |
 
 **Performance tips**:
 - Quick scan merges attack surface mapping and rule scanning into a single file pass — no extra overhead
@@ -828,17 +858,18 @@ cargo clippy                 # Lint
 
 | Dimension | Status |
 |-----------|--------|
-| AST Taint Analysis | CFG + worklist algorithm, 12 languages, 30+ sanitizers |
+| AST Taint Analysis | CFG + worklist algorithm, 12 languages AST, 30+ sanitizers |
 | Dynamic Language Tracking | AccessPath + AliasMap + destructuring + property access + await + Promise chains |
-| Cross-file Tracking | Call graph + function summaries + DFS path finding |
+| Cross-file Tracking | Call graph + function summaries + DFS path finding (`--cross-file`) |
 | TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
-| Pattern Matching | 45+ YAML rules covering 7 injection types + 6 languages + Next.js semantic rules |
+| Pattern Matching | 40 pattern rules + 5 taint rules, covering 6 languages + 6 frameworks |
+| False Positive Control | File role classification + security barrier detection + multi-engine confidence fusion + baseline suppression |
 | SCA Scanner | OSV API, 4 ecosystems, local cache, configurable (disabled by default) |
-| MCP Integration | 17 tools (3 coarse-grained + 7 fine-grained + 3 LLM collaboration + 4 autonomous audit) |
-| LLM Output | Structured JSON with code context, taint chains, source/sink snippets, confidence |
+| MCP Integration | 17 tools (3 scanning + 7 taint + 3 risk patterns + 4 autonomous audit) |
+| LLM Output | Structured JSON: code context + taint chains + file role + barriers + confidence |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
-| Config-driven | All exclusions, severity thresholds, and context settings via config file |
+| Config-driven | All exclusions, severity thresholds, and engine toggles via config.toml |
 | Test Coverage | 162 tests |
 
 ## License
