@@ -183,8 +183,10 @@ async fn handle_request(
             }
         }
 
-        Request::Scan { path, deep, severity_filter, pattern_filter } => {
-            match engine.scan(&path, deep).await {
+        Request::Scan { path, deep, enable_taint, enable_cross_file, severity_filter, pattern_filter } => {
+            let eff_taint = enable_taint || deep || enable_cross_file;
+            let eff_cross_file = enable_cross_file || deep;
+            match engine.scan(&path, eff_taint, eff_cross_file).await {
                 Ok(output) => {
                     let mut findings = output.findings;
 

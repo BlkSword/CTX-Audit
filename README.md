@@ -19,11 +19,18 @@
 
 ## CTX-Audit 是什么
 
-一条命令扫描 30+ 漏洞类型，支持 12 种语言和主流框架（Next.js、React、Spring、Express、Django 等）。
+CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不只是告诉你"哪里用了危险函数"——而是追踪数据从用户输入到危险操作的**完整路径**，并输出结构化的证据链，让 LLM 基于事实做漏洞判定。
 
-**怎么做到的？** 不只是正则匹配关键词——CTX-Audit 用 AST 解析你的代码，追踪数据从用户输入（source）到危险函数（sink）的完整路径，跨文件跨函数追踪。引擎常驻内存，增量扫描无变更时 **1ms** 返回结果。默认输出面向 LLM 的结构化 JSON，包含代码上下文、污点链、置信度，让 LLM 直接基于证据做漏洞判定。
+**核心能力**：
 
-**AI 协作：** 通过 MCP 协议接入 Claude Code 等 LLM，让 AI 读取攻击面、分析数据流、发现规则扫不到的风险模式，甚至动态生成针对性规则——从"检测已知漏洞"升级为"发现未知漏洞"。
+- **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
+- **数据流追踪**：基于 tree-sitter AST + CFG worklist 算法，支持 AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
+- **LLM 自主审计闭环**：通过 MCP 协议暴露 17 个工具，LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
+- **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、置信度评分、多引擎交叉确认、基线抑制
+- **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
+- **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
+
+**覆盖范围**：20+ 漏洞类型（注入、XSS、SSRF、反序列化、路径遍历...），AST 分析支持 12 种语言（JS/TS/Python/Java/Rust/Go/C/C++...），文件扫描覆盖 23 种扩展名，内置 Next.js、React、Django、Spring、Express、Laravel、Rails 框架感知规则。
 
 ```
 ┌───────────────────┐     IPC (TCP)     ┌──────────────────────────────┐
@@ -47,8 +54,10 @@ cargo build --release
 
 # 直接使用（无需守护进程）
 ctx-audit scan ./myproject                    # 快速扫描
-ctx-audit scan ./myproject --deep             # 深度扫描（AST 污点分析）
-ctx-audit scan ./myproject --deep --rules ./my-rules/  # 自定义规则
+ctx-audit scan ./myproject --taint            # 规则 + AST 污点分析
+ctx-audit scan ./myproject --cross-file       # 规则 + 污点 + 跨文件追踪
+ctx-audit scan ./myproject --deep             # 同上（向后兼容简写）
+ctx-audit scan ./myproject --taint --rules ./my-rules/  # 自定义规则 + 污点分析
 ctx-audit analyze ./src/main.rs --symbols     # 单文件分析
 ctx-audit watch ./myproject                   # 持续监控
 
@@ -74,33 +83,36 @@ OPTIONS:
   -s, --severity <级别>         按严重程度过滤 (critical, high, medium, low, info)
   -p, --pattern <模式>          按文件模式过滤 (如 *.py)
   -r, --rules <目录>            自定义规则目录
-  -o, --output <文件>           输出文件路径
+  -o, --output <文件>           输出文件路径或格式名 (llm/sarif/json/markdown)
   -t, --threads <N>             并行线程数 (默认: 4)
   -e, --exclude <模式>          追加排除目录或文件（逗号分隔，如 bench,*.min.js）
       --min-severity <级别>     覆盖配置文件的最低严重程度阈值
-      --deep                    启用深度扫描 (AST 污点分析 + 跨文件追踪)
+      --taint                   启用 AST 污点分析 (单文件 source→sink 追踪)
+      --cross-file              启用跨文件污点追踪 (隐含 --taint)
+      --deep                    等同于 --taint --cross-file
       --daemon                  通过守护进程执行（增量缓存）
       --sca                     启用 SCA 依赖漏洞扫描
 ```
 
 **扫描引擎**：
 
-| 引擎 | 说明 |
-|------|------|
-| RuleScanner | 语言感知正则规则（YAML，多语言模式，39 条内置规则） |
-| SCAScanner | 依赖漏洞检测（OSV API，默认关闭，`--sca` 或配置启用） |
-| AstTaintScanner | AST 污点分析（`--deep` 模式） |
-| CrossFileTaintAnalyzer | 跨文件/跨过程污点追踪（`--deep` 模式） |
+| 引擎 | 说明 | 启用方式 |
+|------|------|----------|
+| RuleScanner | 语言感知正则规则（YAML，多语言模式，40 条内置规则） | 默认启用 |
+| SCAScanner | 依赖漏洞检测（OSV API，默认关闭，`--sca` 或配置启用） | `--sca` |
+| AstTaintScanner | AST 污点分析（单文件 source→sink 追踪） | `--taint` |
+| CrossFileTaintAnalyzer | 跨文件/跨过程污点追踪 | `--cross-file` |
 
 **输出格式**：
 
 默认输出为 `llm`（面向 LLM 的结构化 JSON），包含代码上下文、污点链、置信度等完整信息。也支持其他格式：
 
 ```bash
-ctx-audit scan ./project -o report.json              # 默认 llm 格式 JSON
-ctx-audit -o sarif scan ./project -o report.sarif    # SARIF 2.1.0
-ctx-audit -o json scan ./project -o results.json     # 原始 JSON
-ctx-audit -o markdown scan ./project -o report.md    # Markdown
+ctx-audit scan ./project -o llm                     # 自动生成 ctx-audit-llm-2026-05-24.json
+ctx-audit scan ./project -o sarif                   # 自动生成 ctx-audit-sarif-2026-05-24.sarif
+ctx-audit scan ./project -o json                    # 自动生成 ctx-audit-json-2026-05-24.json
+ctx-audit scan ./project -o report.json             # 指定文件名 report.json
+ctx-audit scan ./project -o /tmp/results.sarif      # 指定完整路径
 ```
 
 **LLM 输出结构**（默认格式）：
@@ -109,9 +121,10 @@ ctx-audit -o markdown scan ./project -o report.md    # Markdown
 {
   "scan_summary": {
     "generated_at": "2026-05-17T01:19:18Z",
-    "total_findings": 8,
-    "by_severity": {"critical": 1, "high": 2, "medium": 5},
-    "by_detector": {"RegexRule: ssrf-host-header": 1, ...}
+    "total_findings": 229,
+    "by_severity": {"critical": 6, "high": 126, "medium": 97},
+    "by_detector": {"RegexRule: ssrf-host-header": 1, "AstTaintScanner": 45, ...},
+    "by_file_role": {"production": 229, "test": 2771, "build": 11}
   },
   "findings": [
     {
@@ -123,18 +136,32 @@ ctx-audit -o markdown scan ./project -o report.md    # Markdown
       "line": 302,
       "end_line": 302,
       "description": "检测 Host header 直接用于 URL 构造导致的 SSRF ...",
+      "file_role": "production",
+      "barriers": [],
+      "reasoning_hint": "Matched ssrf-host-header pattern in production context",
       "code_context": ">> 302 |       const res = await fetch(`https://${req.headers.host}${urlPath}`)",
       "source_snippet": "req.headers.host",
       "sink_snippet": "fetch(`https://${host}...`)",
       "taint_chain": ["Source:34 - req.headers.host", "Assignment:35 - ...", "Sink:36 - fetch(url)"],
       "confidence": "0.88",
       "corroboration_count": 3
+    },
+    {
+      "id": "uuid",
+      "severity": "medium",
+      "vulnerability_type": "CWE-78",
+      "detector": "RegexRule: command-injection",
+      "file": "packages/next/src/server/lib.launch-editor.ts",
+      "line": 45,
+      "file_role": "production",
+      "barriers": ["spawn_default_no_shell", "array_args"],
+      "reasoning_hint": "Matched command-injection pattern in production context"
     }
   ]
 }
 ```
 
-`code_context` 中的 `>>` 标识匹配行，`±3` 行上下文。`source_snippet` / `sink_snippet` 仅 AST 污点分析发现包含。
+关键字段：`file_role` 标识生产/测试/构建代码；`barriers` 列出检测到的安全屏障；`reasoning_hint` 说明标记原因；`code_context` 中 `>>` 标识匹配行（±3 行上下文）；`taint_chain` 和 `source_snippet`/`sink_snippet` 仅 `--taint` 发现包含。
 
 ### `analyze` — 单文件分析
 
@@ -398,7 +425,7 @@ key 格式为 `文件路径:行号:漏洞类型`，value 为忽略原因。扫�
 
 ### 跨文件污点追踪
 
-`--deep` 模式启用跨文件、跨过程分析：
+`--cross-file`（或 `--deep`）启用跨文件、跨过程分析：
 
 - **调用图构建**：自动提取项目函数节点和调用关系
 - **跨文件解析**：将裸函数名匹配到全局函数，建立跨文件调用边
@@ -472,9 +499,11 @@ SCA 扫描依赖 `api.osv.dev` 在线查询。离线环境下可：
 | 机制 | 说明 |
 |------|------|
 | 同行去重 | 同一 file:line 的多个扫描器发现自动合并，取最高 severity |
+| 文件角色分类 | 自动标记 production/test/build/vendor，按角色调整严重程度 |
+| 安全屏障检测 | 检测 shell:false、数组参数、require.resolve 等屏障，自动降级 |
 | 测试目录过滤 | 自动跳过 test/tests/spec 目录的攻击面发现 |
 | 黑名单排除 | `--exclude` 支持目录名、文件模式 (`*.min.js`)、后缀 (`.json`) |
-| 置信度评分 | 每条 finding 附带 confidence (0.0-1.0) |
+| 置信度评分 | 每条 finding 附带 confidence (0.0-1.0)，多引擎交叉确认时提升至 0.9 |
 | Sanitizer 识别 | 30+ 净化函数模式，降低已净化路径置信度 |
 | 参数化查询检测 | 区分字符串拼接 SQL vs 参数化查询 |
 | 基线抑制 | `.ctx-audit/baseline.json` 记录已确认/已忽略的 finding |
@@ -747,7 +776,7 @@ cli/                      # 命令行客户端
 ├── commands/rules.rs     # 规则管理
 └── commands/findings.rs  # 漏洞管理
 
-rules/                    # 内置规则（45+ 个 YAML 文件）
+rules/                    # 内置规则（40 模式 + 5 污点）
 ├── *.yaml                # 模式规则（含 Next.js 语义规则）
 └── taint/                # 污点规则
     ├── generic-taint.yaml          # 通用污点规则
@@ -803,10 +832,11 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 | 模式 | 耗时 | 说明 |
 |------|------|------|
 | 快速扫描 | **~10s** | 规则扫描 + 攻击面映射（单次文件遍历） |
+| `--taint` | **~1m** | 规则 + AST 污点分析（单文件 source→sink） |
+| `--deep` / `--cross-file` | **~2.5m** | 规则 + 污点 + 跨文件追踪（22K 文件超大项目） |
 | 快速扫描 + SCA | **~35s** | 含 OSV API 网络查询（首次），缓存后接近快速扫描 |
 | Daemon 首次扫描 | **~41s** | 全量扫描 + 结果缓存 |
 | Daemon 增量扫描（无变更） | **~9s** | 命中缓存，仅做文件变更检测 |
-| 深度扫描（`--deep`） | **~2.5m** | AST 污点分析 + 跨文件追踪（22K 文件超大项目） |
 
 **性能提示**：
 - 快速扫描已合并攻击面映射与规则扫描为单次文件遍历，无需额外开销
@@ -828,15 +858,18 @@ cargo clippy                 # 代码检查
 
 | 维度 | 状态 |
 |------|------|
-| AST 污点分析 | CFG + worklist 算法，12 语言，30+ sanitizer |
+| AST 污点分析 | CFG + worklist 算法，12 语言 AST，30+ sanitizer |
 | 动态语言追踪 | AccessPath + AliasMap + 解构 + 属性访问 + await + Promise 链 |
-| 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找 |
+| 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找（`--cross-file`） |
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
-| 模式匹配规则 | 45 个 YAML 规则，覆盖 7 类注入 + 6 语言 + Next.js 语义规则 |
+| 模式匹配规则 | 40 条模式规则 + 5 条污点规则，覆盖 6 语言 + 6 框架 |
+| 误报控制 | 文件角色分类 + 安全屏障检测 + 多引擎置信度融合 + 基线抑制 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存，可配置（默认关闭） |
-| MCP 集成 | 17 个工具（3 粗粒度 + 7 细粒度 + 3 LLM 协作 + 4 自主审计） |
+| MCP 集成 | 17 个工具（3 扫描 + 7 污点 + 3 风险模式 + 4 自主审计） |
+| LLM 输出 | 结构化 JSON：代码上下文 + 污点链 + 文件角色 + 屏障 + 置信度 |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
+| 配置驱动 | 所有排除项、严重程度阈值、引擎开关均可通过 config.toml 控制 |
 | 测试覆盖 | 162 个测试 |
 
 ## 许可证

@@ -21,7 +21,7 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use deepaudit_core::ast_api::{ASTEngine, ASTParser, QueryEngine, Symbol};
-use deepaudit_core::scanning::{Finding, Scanner, RegexScanner, scan_directory_deep_with_rules, scan_directory_with_rules};
+use deepaudit_core::scanning::{Finding, Scanner, RegexScanner, scan_directory_deep_with_rules, scan_directory_deep_with_rules_progress, scan_directory_with_rules};
 use deepaudit_core::taint::{AstTaintAnalyzer, TaintFlow, CrossFileTaintAnalyzer};
 use deepaudit_core::watcher::{FileSnapshot, DeltaResult};
 use rayon::prelude::*;
@@ -137,7 +137,7 @@ impl AnalysisEngine {
     ///
     /// 首次调用：全量扫描，缓存结果。
     /// 后续调用：检测变更文件，只重新扫描变更部分，合并缓存。
-    pub async fn scan(&self, path: &str, deep: bool) -> Result<ScanOutput> {
+    pub async fn scan(&self, path: &str, enable_taint: bool, enable_cross_file: bool) -> Result<ScanOutput> {
         let start = Instant::now();
         let project_path = Path::new(path);
 
@@ -211,7 +211,7 @@ impl AnalysisEngine {
         if cache.entries.is_empty() {
             drop(cache);
             drop(caches);
-            return self.full_scan(path, deep, start).await;
+            return self.full_scan(path, enable_taint, enable_cross_file, start).await;
         }
 
         // 增量：只扫描变更文件
@@ -221,7 +221,7 @@ impl AnalysisEngine {
             delta.changed_files.len(), delta.deleted_files.len()
         );
 
-        let (new_findings, file_hashes) = self.scan_files(path, &changed_set, deep).await?;
+        let (new_findings, file_hashes) = self.scan_files(path, &changed_set, enable_taint, enable_cross_file).await?;
 
         // 更新缓存：移除变更文件的旧 findings，加入新的
         for file_path in &changed_set {
@@ -272,7 +272,7 @@ impl AnalysisEngine {
     }
 
     /// 全量扫描（首次或强制）
-    async fn full_scan(&self, path: &str, deep: bool, start: Instant) -> Result<ScanOutput> {
+    async fn full_scan(&self, path: &str, enable_taint: bool, enable_cross_file: bool, start: Instant) -> Result<ScanOutput> {
         // 检测规则目录（项目级 > 内置）
         let project_rules = Path::new(path).join(".ctx-audit/rules");
         let builtin_rules = Path::new("rules");
@@ -286,8 +286,11 @@ impl AnalysisEngine {
 
         self.log_rules_status(path, rules_dir.as_deref()).await;
 
-        let findings = if deep {
-            scan_directory_deep_with_rules(path, rules_dir.as_deref(), None, None).await
+        let findings = if enable_taint || enable_cross_file {
+            let mut opts = deepaudit_core::scanning::ScanOptions::default();
+            opts.enable_taint = enable_taint;
+            opts.enable_cross_file = enable_cross_file;
+            scan_directory_deep_with_rules_progress(path, rules_dir.as_deref(), None, None, Some(opts), None).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         } else {
             scan_directory_with_rules(path, rules_dir.as_deref(), None, None).await
@@ -341,7 +344,8 @@ impl AnalysisEngine {
         &self,
         project_path: &str,
         files: &std::collections::HashSet<PathBuf>,
-        deep: bool,
+        enable_taint: bool,
+        enable_cross_file: bool,
     ) -> Result<(Vec<Finding>, HashMap<String, u64>)> {
         if files.is_empty() {
             return Ok((vec![], HashMap::new()));
@@ -376,7 +380,7 @@ impl AnalysisEngine {
 
                 let file_findings = rt_handle.block_on(regex_scanner.scan_file(file_path, &content));
 
-                let cached = if deep && !file_findings.is_empty() {
+                let cached = if enable_taint && !file_findings.is_empty() {
                     Some((file_path.to_string_lossy().to_string(), content))
                 } else {
                     None
@@ -398,8 +402,8 @@ impl AnalysisEngine {
             all_findings.extend(findings);
         }
 
-        // 如果 deep 模式，对有 findings 的文件做 taint 分析（复用 content cache）
-        if deep && !all_findings.is_empty() {
+        // 如果启用污点分析，对有 findings 的文件做 taint 分析（复用 content cache）
+        if enable_taint && !all_findings.is_empty() {
             let mut taint_analyzer = AstTaintAnalyzer::new();
             let files_with_findings: std::collections::HashSet<String> = all_findings.iter()
                 .map(|f| f.file_path.clone())

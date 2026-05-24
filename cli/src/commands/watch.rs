@@ -253,6 +253,8 @@ async fn watch_via_daemon(
         let response = client.scan(
             path.clone(),
             false,
+            false,
+            false,
             severity.clone(),
             None,
         ).await;
