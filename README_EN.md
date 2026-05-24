@@ -187,13 +187,13 @@ Daemon features:
 ctx-audit mcp    # Start MCP Server (stdio JSON-RPC)
 ```
 
-Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **13 tools**:
+Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **17 tools**:
 
 **Coarse-grained tools**:
 
 | Tool | Description |
 |------|-------------|
-| `security_scan` | Scan project, supports deep/severity/pattern filtering |
+| `security_scan` | Scan project, supports deep/severity/file_role_filter/min_severity filtering |
 | `scan_file` | Analyze single file, returns language/symbols/taint flows |
 | `daemon_status` | Query daemon status |
 
@@ -216,6 +216,15 @@ Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP p
 | `get_attack_surface` | Map project attack surface (entry points, risk scores, trust boundaries, framework detection) |
 | `analyze_risk_patterns` | Analyze architectural risk patterns (unvalidated input→deserialization, unauthenticated→privileged ops, etc.) |
 | `add_custom_rule` | Dynamically inject custom rules (LLM-generated YAML rules take effect immediately) |
+
+**LLM Autonomous Audit tools**:
+
+| Tool | Description |
+|------|-------------|
+| `get_code_context` | Read source code context around a specific line (for verifying findings) |
+| `get_project_info` | Project overview: language distribution, frameworks, directory structure, entry point stats |
+| `validate_finding` | Record audit verdict (TP/FP + reasoning), auto-suppresses FPs |
+| `list_rules` | View all currently loaded security rules |
 
 Claude Code configuration example (`.claude/settings.json`):
 
@@ -513,6 +522,162 @@ CTX-Audit supports user-written custom YAML rules, placed in `.ctx-audit/rules/`
 
 For detailed writing guides, see [`docs/custom-rules-en.md`](docs/custom-rules-en.md) | [`docs/custom-rules.md`](docs/custom-rules.md) (中文).
 
+## LLM-Assisted Autonomous Auditing
+
+CTX-Audit exposes **17 tools** via the MCP protocol, enabling LLMs (Claude Code / Cursor / any MCP-compatible agent) to fully autonomously drive the security audit process — from project understanding, scanning, taint tracing, code review to audit conclusions — with zero manual intervention.
+
+### Setup
+
+Add the following to your Claude Code configuration (`.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "ctx-audit": {
+      "command": "ctx-audit",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Autonomous Audit Workflow
+
+```
+1. get_project_info      → Understand the project: languages, frameworks, structure, entry points
+2. get_attack_surface    → Map attack surface: high-risk entry points, trust boundaries, unauthenticated routes
+3. security_scan         → Full scan: rule matching + AST taint analysis (--deep)
+4. Filter results        → file_role_filter="production", min_severity="high"
+5. Audit each finding:
+   ├─ get_code_context   → Read source code around the finding
+   ├─ get_taint_path     → Trace full source→sink data flow
+   ├─ check_sanitizer    → Verify if sanitization functions exist
+   ├─ list_sources/sinks → View all taint sources and sinks in the file
+   └─ validate_finding   → Record audit verdict (TP/FP) with reasoning
+6. add_custom_rule       → Dynamically generate rules for discovered 0-day patterns
+7. security_scan         → Re-scan with new rules to validate
+```
+
+### MCP Tool Reference
+
+#### Scanning & Detection
+
+| Tool | Description |
+|------|-------------|
+| `security_scan` | Project scan with deep/severity/file_role_filter/min_severity filtering |
+| `scan_file` | Single file analysis: language detection, symbol extraction, taint flows |
+| `get_project_info` | Project overview: language distribution, framework detection, directory structure, entry point stats |
+| `list_rules` | View all loaded security rules (including custom rules) |
+
+#### Taint Analysis & Data Flow
+
+| Tool | Description |
+|------|-------------|
+| `get_taint_path` | Get full source→sink taint propagation path (with code snippets at each step) |
+| `get_data_flow` | Trace variable definitions, uses, propagation, and taint status |
+| `check_sanitizer` | Check if a function matches known sanitizer patterns |
+| `list_sources` | List all taint sources (user input points) in a file |
+| `list_sinks` | List all taint sinks (dangerous function calls) in a file |
+| `cross_file_analysis` | Cross-file taint tracking (call graph + function summaries + path finding) |
+| `get_call_graph` | Get project function call graph |
+
+#### Attack Surface & Risk Patterns
+
+| Tool | Description |
+|------|-------------|
+| `get_attack_surface` | Map attack surface: entry points, risk scores, trust boundaries, framework detection |
+| `analyze_risk_patterns` | Detect architectural risk patterns (unvalidated input→deserialization, etc.) |
+
+#### LLM Audit Loop
+
+| Tool | Description |
+|------|-------------|
+| `get_code_context` | Read source code context around a specific line (for verifying findings) |
+| `validate_finding` | Record audit verdict: TP/FP + reasoning, auto-writes to baseline for FP suppression |
+| `add_custom_rule` | Dynamically inject custom rules (YAML format, takes effect immediately) |
+| `daemon_status` | Query daemon process status |
+
+### System Prompt for Autonomous Auditing
+
+Once MCP is configured in Claude Code, use this system prompt to drive fully autonomous auditing:
+
+```
+You are a security audit expert responsible for performing a fully autonomous security audit of the target project.
+You have access to CTX-Audit tools for scanning and analysis.
+
+## Audit Process
+
+### Phase 1: Project Understanding
+1. Call `get_project_info` to understand the tech stack and structure
+2. Call `get_attack_surface` to map the attack surface and identify high-risk entry points
+3. Call `list_rules` to confirm available detection rules
+
+### Phase 2: Deep Scanning
+4. Call `security_scan` with `deep: true`, `file_role_filter: "production"`,
+   `min_severity: "high"` for production code deep scan
+5. For each critical finding:
+   - Call `get_code_context` to read surrounding code and understand full context
+   - Call `get_taint_path` to trace the full data flow (source→sink)
+   - Call `check_sanitizer` to verify if sanitization functions exist
+   - Make a comprehensive judgment: true positive (TP) or false positive (FP)
+   - Call `validate_finding` to record the audit verdict
+
+### Phase 3: 0-day Exploration
+6. Call `analyze_risk_patterns` to detect architectural risk patterns
+7. For high-risk patterns, call `cross_file_analysis` for cross-file tracking
+8. If you discover new vulnerability patterns not covered by rules, call `add_custom_rule`
+9. Re-scan with new rules to validate
+
+### Phase 4: Audit Report
+10. Summarize all TP findings, sorted by priority
+11. Provide fix recommendations for each TP
+12. FPs are automatically recorded to baseline (via validate_finding)
+
+## Output Requirements
+- Each TP/FP verdict must include detailed reasoning
+- Reference specific code line numbers and data flow steps
+- Consider framework built-in security mechanisms (e.g., Next.js auto-escaping)
+- The `barriers` field indicates detected security barriers — verify their effectiveness
+```
+
+### Example Audit Output
+
+```
+## Security Audit Report
+
+### Project Overview
+- **Project**: next.js (TypeScript/JavaScript)
+- **Source files**: 22,000+
+- **Frameworks**: Next.js, React
+- **Attack surface**: 156 entry points (23 unauthenticated)
+
+### Scan Results
+- **Scan mode**: deep (AST taint analysis + cross-file tracking)
+- **Total findings**: 3014 → filtered: 229 production code findings
+- **Critical**: 6 | **High**: 126 | **Medium**: 97
+
+### Critical Finding Audit
+
+#### 1. [TP] SSRF via Host Header — `api-resolver.ts:302`
+- **Data flow**: req.headers.host → `https://${host}/api/...` → fetch()
+- **Code context**:
+  ```typescript
+  >> 302 | const res = await fetch(`https://${req.headers.host}${urlPath}`)
+  ```
+- **Reasoning**: Host header is fully client-controlled, directly interpolated into fetch URL with no validation
+- **Barriers**: None (barriers field is empty)
+- **Recommendation**: Validate Host header against whitelist, or check allowed domain list before using it
+
+#### 2. [FP] Command Injection — `launch-editor.ts:45`
+- **Data flow**: editorPath → spawn(args)
+- **Barriers**: spawn_default_no_shell + array_args
+- **Reasoning**: Node.js spawn() defaults to shell:false, and args are an array — attacker cannot inject extra commands
+- **Conclusion**: Auto-downgraded to medium, confirmed as FP
+
+### Custom Rules Generated
+- `llm-generated-nextjs-host-ssrf.yaml` — Detects Next.js Host Header SSRF variants
+```
+
 ## Incremental Scanning
 
 The daemon implements incremental scanning via content-hash caching:
@@ -578,7 +743,7 @@ cli/                      # Command-line client
 ├── commands/analyze.rs   # Analyze command
 ├── commands/watch.rs     # Watch command
 ├── commands/daemon.rs    # Daemon management
-├── commands/mcp.rs       # MCP Server (11 tools)
+├── commands/mcp.rs       # MCP Server (17 tools)
 ├── commands/rules.rs     # Rule management
 └── commands/findings.rs  # Vulnerability management
 
@@ -669,7 +834,7 @@ cargo clippy                 # Lint
 | TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
 | Pattern Matching | 45+ YAML rules covering 7 injection types + 6 languages + Next.js semantic rules |
 | SCA Scanner | OSV API, 4 ecosystems, local cache, configurable (disabled by default) |
-| MCP Integration | 13 tools (3 coarse-grained + 7 fine-grained + 3 LLM collaboration) |
+| MCP Integration | 17 tools (3 coarse-grained + 7 fine-grained + 3 LLM collaboration + 4 autonomous audit) |
 | LLM Output | Structured JSON with code context, taint chains, source/sink snippets, confidence |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |

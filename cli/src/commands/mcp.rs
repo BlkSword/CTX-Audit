@@ -17,7 +17,7 @@ use serde_json::Value;
 use deepaudit_core::scanning::{Finding, scan_directory, scan_directory_deep};
 use deepaudit_core::ast_api::ASTParser;
 use deepaudit_core::taint::{AstTaintAnalyzer, CrossFileTaintAnalyzer};
-use deepaudit_core::attack_surface::{AttackSurfaceMapper, AttackSurface, RiskPatternScanner, RiskPatternMatch};
+use deepaudit_core::attack_surface::{AttackSurfaceMapper, RiskPatternScanner};
 use deepaudit_core::rules::model::Rule;
 use deepaudit_core::rules::taint_model::TaintRuleSet;
 use deepaudit_core::rules::model::RuleSet;
@@ -54,7 +54,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         // ── 粗粒度工具 ────────────────────────────
         ToolDefinition {
             name: "security_scan",
-            description: "Scan a project or directory for security vulnerabilities. Returns a list of findings with severity, file path, line number, and description. Supports quick scan and deep scan (AST taint analysis).",
+            description: "Scan a project or directory for security vulnerabilities. Returns a list of findings with full metadata: severity, file role (production/test/build/vendor), detected security barriers, code context, taint chains, and reasoning hints. Supports quick scan and deep scan (AST taint analysis + cross-file tracking). Use file_role_filter to focus on production code.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -74,7 +74,22 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "pattern": {
                         "type": "string",
-                        "description": "Filter by file pattern (e.g. '*.py')"
+                        "description": "Filter by file path pattern (e.g. '*.py')"
+                    },
+                    "file_role_filter": {
+                        "type": "string",
+                        "description": "Filter by file role: production, test, build, vendor",
+                        "enum": ["production", "test", "build", "vendor"]
+                    },
+                    "min_severity": {
+                        "type": "string",
+                        "description": "Minimum severity threshold (e.g. 'high' returns critical+high)",
+                        "enum": ["critical", "high", "medium", "low", "info"]
+                    },
+                    "include_details": {
+                        "type": "boolean",
+                        "description": "Include full finding details: code_context, taint_chain, barriers, source/sink snippets (default: true)",
+                        "default": true
                     }
                 },
                 "required": ["path"]
@@ -308,6 +323,109 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["rule_content", "rule_type"]
             }),
         },
+        // ── LLM 自主审计工具 ──────────────────────────
+        ToolDefinition {
+            name: "get_code_context",
+            description: "Read source code around a specific file and line number. Returns the code with line numbers, highlighting the target line. Use this to read the actual source code when auditing a finding — you need to see the surrounding context to judge if a finding is a true positive or false positive.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the source file"
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "Center line number to read around"
+                    },
+                    "context_lines": {
+                        "type": "integer",
+                        "description": "Number of context lines above and below (default: 10)",
+                        "default": 10
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Start line (overrides line - context_lines)"
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "End line (overrides line + context_lines)"
+                    }
+                },
+                "required": ["file_path"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_project_info",
+            description: "Get project overview: detected languages, frameworks, file counts, directory structure, and entry points. Call this first to understand what you're auditing before running scans. Returns top-level directory structure, language distribution, and detected frameworks.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "Path to the project root directory"
+                    }
+                },
+                "required": ["project_path"]
+            }),
+        },
+        ToolDefinition {
+            name: "validate_finding",
+            description: "Record your audit decision for a finding. Marks it as true positive (TP) or false positive (FP) with your reasoning. Writes to .ctx-audit/baseline.json for FP suppression or .ctx-audit/audit_log.json for confirmed findings. This creates the feedback loop for LLM-driven auditing.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "finding_id": {
+                        "type": "string",
+                        "description": "The finding ID to validate"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "File path of the finding"
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "Line number of the finding"
+                    },
+                    "vulnerability_type": {
+                        "type": "string",
+                        "description": "Vulnerability type (e.g. 'CWE-79')"
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "description": "Your audit verdict",
+                        "enum": ["true_positive", "false_positive", "needs_review"]
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Your detailed reasoning for this verdict"
+                    },
+                    "severity_override": {
+                        "type": "string",
+                        "description": "Override severity if different from original (optional)",
+                        "enum": ["critical", "high", "medium", "low", "info"]
+                    }
+                },
+                "required": ["finding_id", "verdict", "reasoning"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_rules",
+            description: "List all active security rules currently loaded. Shows rule ID, name, severity, language, and category for each rule. Use this to understand what vulnerability patterns the scanner checks for, and to identify gaps where custom rules may be needed.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Filter by category (e.g. 'injection', 'xss')"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Filter by language (e.g. 'javascript', 'python')"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -330,6 +448,11 @@ async fn handle_tool_call(name: &str, arguments: &Value) -> Value {
         "get_attack_surface" => tool_get_attack_surface(arguments).await,
         "analyze_risk_patterns" => tool_analyze_risk_patterns(arguments).await,
         "add_custom_rule" => tool_add_custom_rule(arguments).await,
+        // LLM 自主审计工具
+        "get_code_context" => tool_get_code_context(arguments).await,
+        "get_project_info" => tool_get_project_info(arguments).await,
+        "validate_finding" => tool_validate_finding(arguments).await,
+        "list_rules" => tool_list_rules(arguments).await,
         _ => serde_json::json!({
             "content": [{"type": "text", "text": format!("Unknown tool: {}", name)}],
             "isError": true
@@ -344,6 +467,9 @@ async fn tool_security_scan(args: &Value) -> Value {
     let deep = args.get("deep").and_then(|v| v.as_bool()).unwrap_or(false);
     let severity = args.get("severity").and_then(|v| v.as_str()).map(String::from);
     let pattern = args.get("pattern").and_then(|v| v.as_str()).map(String::from);
+    let file_role_filter = args.get("file_role_filter").and_then(|v| v.as_str()).map(String::from);
+    let min_severity = args.get("min_severity").and_then(|v| v.as_str()).map(String::from);
+    let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(true);
 
     let result = if deep {
         scan_directory_deep(path).await
@@ -361,18 +487,70 @@ async fn tool_security_scan(args: &Value) -> Value {
             if let Some(pat) = &pattern {
                 filtered.retain(|f| f.file_path.contains(pat.as_str()));
             }
+            if let Some(role) = &file_role_filter {
+                let role_lower = role.to_lowercase();
+                filtered.retain(|f| {
+                    f.file_role.as_deref().unwrap_or("production").to_lowercase() == role_lower
+                });
+            }
+            if let Some(min_sev) = &min_severity {
+                let rank = |s: &str| match s {
+                    "critical" => 0, "high" => 1, "medium" => 2, "low" => 3, "info" => 4, _ => 5,
+                };
+                let min_rank = rank(min_sev);
+                filtered.retain(|f| rank(&f.severity.to_lowercase()) <= min_rank);
+            }
 
             let summary = format_security_findings(&filtered);
-            let details: Vec<Value> = filtered.iter().map(|f| serde_json::json!({
-                "id": f.finding_id,
-                "severity": f.severity,
-                "type": f.vuln_type,
-                "file": f.file_path,
-                "line": f.line_start,
-                "description": f.description,
-                "confidence": f.confidence,
-                "detector": f.detector,
-            })).collect();
+            let details: Vec<Value> = filtered.iter().map(|f| {
+                let mut obj = serde_json::json!({
+                    "id": f.finding_id,
+                    "severity": f.severity,
+                    "vulnerability_type": f.vuln_type,
+                    "detector": f.detector,
+                    "file": f.file_path,
+                    "line": f.line_start,
+                    "end_line": f.line_end,
+                    "description": f.description,
+                });
+
+                if let Some(ref role) = f.file_role {
+                    obj.as_object_mut().unwrap().insert("file_role".into(), serde_json::json!(role));
+                }
+                if let Some(ref barriers) = f.barriers {
+                    if !barriers.is_empty() {
+                        obj.as_object_mut().unwrap().insert("barriers".into(), serde_json::json!(barriers));
+                    }
+                }
+                if let Some(ref hint) = f.reasoning_hint {
+                    obj.as_object_mut().unwrap().insert("reasoning_hint".into(), serde_json::json!(hint));
+                }
+
+                if include_details {
+                    if let Some(ref ctx) = f.code_snippet {
+                        obj.as_object_mut().unwrap().insert("code_context".into(), serde_json::json!(ctx));
+                    }
+                    if let Some(ref trail) = f.analysis_trail {
+                        if !trail.is_empty() {
+                            obj.as_object_mut().unwrap().insert("taint_chain".into(), serde_json::json!(trail));
+                        }
+                    }
+                    if let Some(ref src) = f.source_snippet {
+                        obj.as_object_mut().unwrap().insert("source_snippet".into(), serde_json::json!(src));
+                    }
+                    if let Some(ref snk) = f.sink_snippet {
+                        obj.as_object_mut().unwrap().insert("sink_snippet".into(), serde_json::json!(snk));
+                    }
+                    if let Some(conf) = f.confidence {
+                        obj.as_object_mut().unwrap().insert("confidence".into(), serde_json::json!(format!("{:.2}", conf)));
+                    }
+                    if let Some(count) = f.corroboration_count {
+                        obj.as_object_mut().unwrap().insert("corroboration_count".into(), serde_json::json!(count));
+                    }
+                }
+
+                obj
+            }).collect();
 
             serde_json::json!({
                 "content": [
@@ -882,6 +1060,403 @@ async fn tool_get_call_graph(args: &Value) -> Value {
     });
 
     text_response(&serde_json::to_string_pretty(&output).unwrap_or_default())
+}
+
+// ── LLM 自主审计工具实现 ────────────────────────────────
+
+async fn tool_get_code_context(args: &Value) -> Value {
+    let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return error_response("Missing required parameter: file_path"),
+    };
+
+    let path = std::path::Path::new(file_path);
+    if !path.exists() {
+        return error_response(&format!("File not found: {}", file_path));
+    }
+
+    let code = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => return error_response(&format!("Failed to read file: {}", e)),
+    };
+
+    let lines: Vec<&str> = code.lines().collect();
+    let total_lines = lines.len();
+
+    let (start, end) = if let (Some(s), Some(e)) = (
+        args.get("start_line").and_then(|v| v.as_u64()),
+        args.get("end_line").and_then(|v| v.as_u64()),
+    ) {
+        (s as usize, e as usize)
+    } else {
+        let center = args.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+        let ctx = args.get("context_lines").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        (center.saturating_sub(ctx), (center + ctx).min(total_lines))
+    };
+
+    let start = start.max(1);
+    let end = end.min(total_lines);
+    let center_line = args.get("line").and_then(|v| v.as_u64()).map(|l| l as usize);
+
+    let mut code_output = String::new();
+    for i in start..=end {
+        let marker = if center_line == Some(i) { ">> " } else { "   " };
+        code_output.push_str(&format!("{}{:>4} | {}\n", marker, i, lines[i - 1]));
+    }
+
+    let result = serde_json::json!({
+        "file_path": file_path,
+        "total_lines": total_lines,
+        "shown_range": format!("{}-{}", start, end),
+        "center_line": center_line,
+        "language": path.extension().and_then(|e| e.to_str()).unwrap_or("unknown"),
+        "code": code_output,
+    });
+
+    text_response(&serde_json::to_string_pretty(&result).unwrap_or_default())
+}
+
+async fn tool_get_project_info(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return error_response("Missing required parameter: project_path"),
+    };
+
+    let path = std::path::Path::new(project_path);
+    if !path.exists() {
+        return error_response(&format!("Project path not found: {}", project_path));
+    }
+
+    // 语言检测
+    let lang_extensions: HashMap<&str, &str> = [
+        (".py", "Python"), (".js", "JavaScript"), (".ts", "TypeScript"),
+        (".tsx", "TypeScript (JSX)"), (".jsx", "JavaScript (JSX)"),
+        (".java", "Java"), (".rs", "Rust"), (".go", "Go"),
+        (".c", "C"), (".cpp", "C++"), (".h", "C/C++ Header"),
+        (".php", "PHP"), (".rb", "Ruby"), (".cs", "C#"),
+        (".kt", "Kotlin"), (".swift", "Swift"), (".scala", "Scala"),
+        (".vue", "Vue"), (".html", "HTML"),
+    ].iter().cloned().collect();
+
+    let mut language_counts: HashMap<String, usize> = HashMap::new();
+    let mut total_source_files = 0usize;
+    let mut top_dirs: HashMap<String, usize> = HashMap::new();
+
+    let ignore_dirs = ["node_modules", ".git", "target", "build", "dist", "vendor",
+        "__pycache__", ".gradle", ".idea", ".vscode", ".cache", ".next"];
+
+    for entry in ignore::WalkBuilder::new(path).hidden(false).build() {
+        if let Ok(entry) = entry {
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    let ext_with_dot = format!(".{}", ext);
+                    if let Some(&lang) = lang_extensions.get(ext_with_dot.as_str()) {
+                        *language_counts.entry(lang.to_string()).or_insert(0) += 1;
+                        total_source_files += 1;
+                    }
+                }
+                // Top-level directory tracking
+                if let Ok(relative) = p.strip_prefix(path) {
+                    if let Some(comp) = relative.components().next() {
+                        let dir = comp.as_os_str().to_string_lossy().to_string();
+                        if !ignore_dirs.contains(&dir.as_str()) {
+                            *top_dirs.entry(dir).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 排序语言
+    let mut languages: Vec<(String, usize)> = language_counts.into_iter().collect();
+    languages.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // 排序目录
+    let mut dirs: Vec<(String, usize)> = top_dirs.into_iter().collect();
+    dirs.sort_by(|a, b| b.1.cmp(&a.1));
+    dirs.truncate(15);
+
+    // 框架检测
+    let surface = AttackSurfaceMapper::map_project(path);
+    let frameworks = surface.stats.detected_frameworks;
+
+    // 包管理器检测
+    let mut package_managers = Vec::new();
+    if path.join("package.json").exists() { package_managers.push("npm".to_string()); }
+    if path.join("yarn.lock").exists() { package_managers.push("yarn".to_string()); }
+    if path.join("pnpm-lock.yaml").exists() { package_managers.push("pnpm".to_string()); }
+    if path.join("requirements.txt").exists() || path.join("Pipfile").exists() { package_managers.push("pip".to_string()); }
+    if path.join("Cargo.toml").exists() { package_managers.push("cargo".to_string()); }
+    if path.join("go.sum").exists() { package_managers.push("go modules".to_string()); }
+    if path.join("pom.xml").exists() { package_managers.push("maven".to_string()); }
+    if path.join("build.gradle").exists() { package_managers.push("gradle".to_string()); }
+
+    let top_langs = languages.iter().take(3).map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", ");
+    let frameworks_str = if frameworks.is_empty() { "none detected".to_string() } else { frameworks.join(", ") };
+
+    let result = serde_json::json!({
+        "project_path": project_path,
+        "total_source_files": total_source_files,
+        "languages": languages.into_iter().map(|(lang, count)| serde_json::json!({
+            "language": lang,
+            "file_count": count,
+        })).collect::<Vec<_>>(),
+        "frameworks": frameworks,
+        "package_managers": package_managers,
+        "directory_structure": dirs.into_iter().map(|(dir, count)| serde_json::json!({
+            "directory": dir,
+            "file_count": count,
+        })).collect::<Vec<_>>(),
+        "entry_points": {
+            "total": surface.stats.total_entry_points,
+            "unauthenticated": surface.stats.unauthenticated_count,
+        },
+    });
+
+    let summary = format!(
+        "Project: {} | {} source files | Languages: {} | Frameworks: {} | Entry points: {} ({} unauthenticated)",
+        project_path,
+        total_source_files,
+        top_langs,
+        frameworks_str,
+        surface.stats.total_entry_points,
+        surface.stats.unauthenticated_count,
+    );
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_default()}
+        ]
+    })
+}
+
+async fn tool_validate_finding(args: &Value) -> Value {
+    let finding_id = match args.get("finding_id").and_then(|v| v.as_str()) {
+        Some(id) => id,
+        None => return error_response("Missing required parameter: finding_id"),
+    };
+    let verdict = match args.get("verdict").and_then(|v| v.as_str()) {
+        Some(v) => v,
+        None => return error_response("Missing required parameter: verdict"),
+    };
+    let reasoning = match args.get("reasoning").and_then(|v| v.as_str()) {
+        Some(r) => r,
+        None => return error_response("Missing required parameter: reasoning"),
+    };
+
+    // 验证 verdict
+    if !["true_positive", "false_positive", "needs_review"].contains(&verdict) {
+        return error_response(&format!("Invalid verdict: '{}'. Must be true_positive, false_positive, or needs_review", verdict));
+    }
+
+    let file_path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+    let vuln_type = args.get("vulnerability_type").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let severity_override = args.get("severity_override").and_then(|v| v.as_str());
+
+    // 写入审计日志
+    let audit_dir = std::path::Path::new(".ctx-audit");
+    if let Err(e) = std::fs::create_dir_all(audit_dir) {
+        return error_response(&format!("Failed to create .ctx-audit directory: {}", e));
+    }
+
+    // 审计日志
+    let audit_log_path = audit_dir.join("audit_log.json");
+    let mut audit_log: Vec<Value> = if audit_log_path.exists() {
+        std::fs::read_to_string(&audit_log_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let entry = serde_json::json!({
+        "finding_id": finding_id,
+        "file_path": file_path,
+        "line": line,
+        "vulnerability_type": vuln_type,
+        "verdict": verdict,
+        "reasoning": reasoning,
+        "severity_override": severity_override,
+        "audited_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    audit_log.push(entry);
+
+    if let Err(e) = std::fs::write(&audit_log_path, serde_json::to_string_pretty(&audit_log).unwrap_or_default()) {
+        return error_response(&format!("Failed to write audit log: {}", e));
+    }
+
+    // 如果是 false_positive，同时写入 baseline.json 用于后续扫描抑制
+    if verdict == "false_positive" {
+        let baseline_path = audit_dir.join("baseline.json");
+        let mut baseline: serde_json::Map<String, Value> = if baseline_path.exists() {
+            std::fs::read_to_string(&baseline_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
+        } else {
+            let mut map = serde_json::Map::new();
+            map.insert("ignored".into(), serde_json::json!({}));
+            map
+        };
+
+        let key = format!("{}:{}:{}", file_path, line, vuln_type);
+        if let Some(ignored) = baseline.get_mut("ignored").and_then(|v| v.as_object_mut()) {
+            ignored.insert(key, serde_json::json!(reasoning));
+        }
+
+        if let Err(e) = std::fs::write(&baseline_path, serde_json::to_string_pretty(&baseline).unwrap_or_default()) {
+            return error_response(&format!("Failed to write baseline: {}", e));
+        }
+    }
+
+    let verdict_label = match verdict {
+        "true_positive" => "TRUE POSITIVE",
+        "false_positive" => "FALSE POSITIVE",
+        "needs_review" => "NEEDS REVIEW",
+        _ => verdict,
+    };
+
+    text_response(&format!(
+        "Finding {} recorded as {}. {}Entry written to .ctx-audit/audit_log.json{}",
+        finding_id,
+        verdict_label,
+        if severity_override.is_some() { format!("Severity overridden to {}. ", severity_override.unwrap()) } else { String::new() },
+        if verdict == "false_positive" { " and .ctx-audit/baseline.json (future scans will suppress this finding)" } else { "" }
+    ))
+}
+
+async fn tool_list_rules(args: &Value) -> Value {
+    let category_filter = args.get("category").and_then(|v| v.as_str());
+    let language_filter = args.get("language").and_then(|v| v.as_str());
+
+    let mut all_rules: Vec<Value> = Vec::new();
+
+    // 加载内置规则
+    let rules_dirs = [
+        std::path::Path::new("rules"),
+        std::path::Path::new(".ctx-audit/rules"),
+    ];
+
+    for rules_dir in &rules_dirs {
+        if !rules_dir.exists() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(rules_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if ext != "yaml" && ext != "yml" { continue; }
+                    if let Ok(content) = std::fs::read_to_string(&p) {
+                        // 尝试解析为 RuleSet
+                        if let Ok(rs) = serde_yaml::from_str::<RuleSet>(&content) {
+                            for rule in &rs.rules {
+                                let matches_filter = {
+                                    let cat_ok = category_filter.map_or(true, |cf| {
+                                        rule.category.as_deref().map_or(false, |c| c.to_lowercase().contains(&cf.to_lowercase()))
+                                    });
+                                    let lang_ok = language_filter.map_or(true, |lf| {
+                                        rule.language.to_lowercase().contains(&lf.to_lowercase()) || rule.language == "all"
+                                    });
+                                    cat_ok && lang_ok
+                                };
+                                if matches_filter {
+                                    all_rules.push(serde_json::json!({
+                                        "id": rule.id,
+                                        "name": rule.name,
+                                        "severity": format!("{:?}", rule.severity).to_lowercase(),
+                                        "language": rule.language,
+                                        "category": rule.category,
+                                        "cwe": rule.cwe,
+                                        "owasp": rule.owasp,
+                                        "source": format!("{} ({})", p.display(), rs.name),
+                                    }));
+                                }
+                            }
+                        }
+                        // 尝试解析为单个 Rule
+                        else if let Ok(rule) = serde_yaml::from_str::<Rule>(&content) {
+                            let matches_filter = {
+                                let cat_ok = category_filter.map_or(true, |cf| {
+                                    rule.category.as_deref().map_or(false, |c| c.to_lowercase().contains(&cf.to_lowercase()))
+                                });
+                                let lang_ok = language_filter.map_or(true, |lf| {
+                                    rule.language.to_lowercase().contains(&lf.to_lowercase()) || rule.language == "all"
+                                });
+                                cat_ok && lang_ok
+                            };
+                            if matches_filter {
+                                all_rules.push(serde_json::json!({
+                                    "id": rule.id,
+                                    "name": rule.name,
+                                    "severity": format!("{:?}", rule.severity).to_lowercase(),
+                                    "language": rule.language,
+                                    "category": rule.category,
+                                    "cwe": rule.cwe,
+                                    "owasp": rule.owasp,
+                                    "source": p.display().to_string(),
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 加载 taint 规则（简要信息）
+    let taint_dir = std::path::Path::new("rules/taint");
+    if taint_dir.exists() {
+        fn visit_taint_yaml(dir: &std::path::Path, rules: &mut Vec<Value>, cat_filter: Option<&str>, lang_filter: Option<&str>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        visit_taint_yaml(&p, rules, cat_filter, lang_filter);
+                    } else if p.is_file() {
+                        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if ext != "yaml" && ext != "yml" { continue; }
+                        if let Ok(content) = std::fs::read_to_string(&p) {
+                            if let Ok(ts) = serde_yaml::from_str::<TaintRuleSet>(&content) {
+                                rules.push(serde_json::json!({
+                                    "id": format!("taint:{}", ts.name.to_lowercase().replace(' ', "-")),
+                                    "name": ts.name,
+                                    "severity": "variable",
+                                    "language": "multi",
+                                    "category": "taint-rules",
+                                    "type": "taint",
+                                    "sources_count": ts.sources.len(),
+                                    "sinks_count": ts.sinks.len(),
+                                    "sanitizers_count": ts.sanitizers.len(),
+                                    "source": p.display().to_string(),
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        visit_taint_yaml(taint_dir, &mut all_rules, category_filter, language_filter);
+    }
+
+    let summary = format!("Loaded {} rule(s){}{}.",
+        all_rules.len(),
+        category_filter.map(|c| format!(" (category: {})", c)).unwrap_or_default(),
+        language_filter.map(|l| format!(" (language: {})", l)).unwrap_or_default(),
+    );
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "text", "text": serde_json::to_string_pretty(&all_rules).unwrap_or_default()}
+        ]
+    })
 }
 
 // ── Daemon helpers ──────────────────────────────────────

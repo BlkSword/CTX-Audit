@@ -49,6 +49,7 @@ reqwest = { workspace = true }
 
 # 目录工具
 dirs = "5"
+ignore = { workspace = true }
 
 # 正则
 regex = "1"

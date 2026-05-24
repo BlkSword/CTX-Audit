@@ -187,13 +187,13 @@ ctx-audit daemon stop                        # 停止
 ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 ```
 
-通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **13 个工具**：
+通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **17 个工具**：
 
 **粗粒度工具**：
 
 | 工具 | 说明 |
 |------|------|
-| `security_scan` | 扫描项目，支持 deep/severity/pattern 过滤 |
+| `security_scan` | 扫描项目，支持 deep/severity/file_role_filter/min_severity 过滤 |
 | `scan_file` | 分析单个文件，返回语言/符号/污点流 |
 | `daemon_status` | 查询守护进程状态 |
 
@@ -216,6 +216,15 @@ ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 | `get_attack_surface` | 映射项目攻击面（入口点、风险评分、信任边界、框架检测） |
 | `analyze_risk_patterns` | 分析架构级风险模式（未验证输入→反序列化、未认证→特权操作等） |
 | `add_custom_rule` | 动态注入自定义规则（LLM 生成 YAML 规则实时生效） |
+
+**LLM 自主审计工具**：
+
+| 工具 | 说明 |
+|------|------|
+| `get_code_context` | 读取源代码指定行周围上下文（验证发现） |
+| `get_project_info` | 项目概览：语言分布、框架、目录结构、入口点统计 |
+| `validate_finding` | 记录审计结论（TP/FP + 推理原因），自动抑制 FP |
+| `list_rules` | 查看当前加载的所有安全规则 |
 
 Claude Code 配置示例（`.claude/settings.json`）：
 
@@ -513,6 +522,162 @@ CTX-Audit 支持用户编写自定义 YAML 规则，放置在 `.ctx-audit/rules/
 
 详细编写指南见 [`docs/custom-rules.md`](docs/custom-rules.md) | [`docs/custom-rules-en.md`](docs/custom-rules-en.md)。
 
+## LLM 协作审计
+
+CTX-Audit 通过 MCP 协议暴露 **17 个工具**，让 LLM（Claude Code / Cursor / 任何支持 MCP 的 Agent）完全自主驱动安全审计流程——从项目理解、扫描、污点追踪、代码审查到审计结论，全程无需人工干预。
+
+### 接入方式
+
+在 Claude Code 的配置文件（`.claude/settings.json`）中添加：
+
+```json
+{
+  "mcpServers": {
+    "ctx-audit": {
+      "command": "ctx-audit",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### 自主审计工作流
+
+```
+1. get_project_info      → 了解项目：语言、框架、文件结构、入口点数量
+2. get_attack_surface    → 映射攻击面：高风险入口点、信任边界、未认证路由
+3. security_scan         → 全量扫描：规则匹配 + AST 污点分析（--deep）
+4. 过滤筛选              → file_role_filter="production", min_severity="high"
+5. 逐条审计:
+   ├─ get_code_context   → 阅读发现点周围的源代码
+   ├─ get_taint_path     → 追踪 source→sink 完整数据流
+   ├─ check_sanitizer    → 验证是否存在有效的净化函数
+   ├─ list_sources/sinks → 查看文件中所有污点源和汇
+   └─ validate_finding   → 记录审计结论（TP/FP）及推理过程
+6. add_custom_rule       → 针对发现的 0-day 模式动态生成规则
+7. security_scan         → 使用新规则重新扫描验证
+```
+
+### MCP 工具清单
+
+#### 扫描与检测
+
+| 工具 | 说明 |
+|------|------|
+| `security_scan` | 项目扫描，支持 deep/severity/file_role_filter/min_severity 过滤 |
+| `scan_file` | 单文件分析：语言检测、符号提取、污点流 |
+| `get_project_info` | 项目概览：语言分布、框架检测、目录结构、入口点统计 |
+| `list_rules` | 查看当前加载的所有安全规则（含自定义规则） |
+
+#### 污点分析与数据流
+
+| 工具 | 说明 |
+|------|------|
+| `get_taint_path` | 获取 source→sink 完整污点传播路径（含每步代码片段） |
+| `get_data_flow` | 追踪指定变量的定义、使用、传播和污点状态 |
+| `check_sanitizer` | 检查函数是否匹配已知净化器模式 |
+| `list_sources` | 列出文件中所有污点源（用户输入点） |
+| `list_sinks` | 列出文件中所有污点汇（危险函数调用） |
+| `cross_file_analysis` | 跨文件污点追踪（调用图 + 函数摘要 + 路径查找） |
+| `get_call_graph` | 获取项目函数调用图 |
+
+#### 攻击面与风险模式
+
+| 工具 | 说明 |
+|------|------|
+| `get_attack_surface` | 映射攻击面：入口点、风险评分、信任边界、框架检测 |
+| `analyze_risk_patterns` | 检测架构级风险模式（未验证输入→反序列化等） |
+
+#### LLM 审计闭环
+
+| 工具 | 说明 |
+|------|------|
+| `get_code_context` | 读取源代码指定行周围上下文（用于验证发现） |
+| `validate_finding` | 记录审计结论：TP/FP + 推理原因，自动写入 baseline 抑制 FP |
+| `add_custom_rule` | 动态注入自定义规则（YAML 格式，实时生效） |
+| `daemon_status` | 查询守护进程状态 |
+
+### 提示词示例
+
+在 Claude Code 中配置 MCP 后，可直接使用以下系统提示词驱动自主审计：
+
+```
+你是一名安全审计专家，负责对目标项目进行完全自主的安全审计。
+你可以使用 CTX-Audit 工具进行扫描和分析。
+
+## 审计流程
+
+### 第一阶段：项目理解
+1. 调用 `get_project_info` 了解项目的技术栈和结构
+2. 调用 `get_attack_surface` 映射攻击面，识别高风险入口点
+3. 调用 `list_rules` 确认可用的检测规则
+
+### 第二阶段：深度扫描
+4. 调用 `security_scan` 并设置 `deep: true`, `file_role_filter: "production"`,
+   `min_severity: "high"` 进行生产代码深度扫描
+5. 对每个 critical 发现：
+   - 调用 `get_code_context` 阅读周围代码，理解完整上下文
+   - 调用 `get_taint_path` 追踪完整数据流（source→sink）
+   - 调用 `check_sanitizer` 验证是否存在净化函数
+   - 综合判断是否为真实漏洞（TP）或误报（FP）
+   - 调用 `validate_finding` 记录审计结论
+
+### 第三阶段：0-day 探索
+6. 调用 `analyze_risk_patterns` 检测架构级风险模式
+7. 对高风险模式调用 `cross_file_analysis` 进行跨文件追踪
+8. 如果发现规则未覆盖的新漏洞模式，调用 `add_custom_rule` 创建规则
+9. 使用新规则重新扫描验证
+
+### 第四阶段：审计报告
+10. 汇总所有 TP 发现，按优先级排序
+11. 为每个 TP 提供修复建议
+12. 将 FP 记录到 baseline（validate_finding 自动处理）
+
+## 输出要求
+- 每条发现的 TP/FP 判定必须附上详细推理过程
+- 引用具体的代码行号和数据流步骤
+- 考虑框架自带的安全机制（如 Next.js 的自动转义）
+- barriers 字段表示检测到的安全屏障，需验证其有效性
+```
+
+### 审计输出示例
+
+```
+## 安全审计报告
+
+### 项目概况
+- **项目**: next.js (TypeScript/JavaScript)
+- **源文件**: 22,000+
+- **框架**: Next.js, React
+- **攻击面**: 156 个入口点 (23 个未认证)
+
+### 扫描结果
+- **扫描模式**: deep (AST 污点分析 + 跨文件追踪)
+- **总发现**: 3014 → 过滤后: 229 条生产代码发现
+- **Critical**: 6 | **High**: 126 | **Medium**: 97
+
+### Critical 发现审计
+
+#### 1. [TP] SSRF via Host Header — `api-resolver.ts:302`
+- **数据流**: req.headers.host → `https://${host}/api/...` → fetch()
+- **代码上下文**:
+  ```typescript
+  >> 302 | const res = await fetch(`https://${req.headers.host}${urlPath}`)
+  ```
+- **推理**: Host header 完全由客户端控制，直接拼接进 fetch URL，无验证
+- **屏障**: 无（barriers 为空）
+- **建议**: 使用白名单验证 Host header，或使用 `req.headers.host` 之前检查允许的域名列表
+
+#### 2. [FP] Command Injection — `launch-editor.ts:45`
+- **数据流**: editorPath → spawn(args)
+- **屏障**: spawn_default_no_shell + array_args
+- **推理**: Node.js spawn() 默认 shell:false，且参数为数组，攻击者无法注入额外命令
+- **结论**: 已自动降级为 medium，确认为 FP
+
+### 已生成自定义规则
+- `llm-generated-nextjs-host-ssrf.yaml` — 检测 Next.js 中的 Host Header SSRF 变体
+```
+
 ## 增量扫描原理
 
 守护进程通过 content-hash 缓存实现增量扫描：
@@ -578,7 +743,7 @@ cli/                      # 命令行客户端
 ├── commands/analyze.rs   # 分析命令
 ├── commands/watch.rs     # 监控命令
 ├── commands/daemon.rs    # 守护进程管理
-├── commands/mcp.rs       # MCP Server（11 个工具）
+├── commands/mcp.rs       # MCP Server（17 个工具）
 ├── commands/rules.rs     # 规则管理
 └── commands/findings.rs  # 漏洞管理
 
@@ -669,7 +834,7 @@ cargo clippy                 # 代码检查
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
 | 模式匹配规则 | 45 个 YAML 规则，覆盖 7 类注入 + 6 语言 + Next.js 语义规则 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存，可配置（默认关闭） |
-| MCP 集成 | 13 个工具（3 粗粒度 + 7 细粒度 + 3 LLM 协作） |
+| MCP 集成 | 17 个工具（3 粗粒度 + 7 细粒度 + 3 LLM 协作 + 4 自主审计） |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
 | 测试覆盖 | 162 个测试 |
