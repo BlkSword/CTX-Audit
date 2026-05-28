@@ -221,6 +221,13 @@ impl EnhancedFlowGraph {
             .unwrap_or_default()
     }
 
+    /// 获取 from → to 的边类型（供路径敏感分析使用）
+    pub fn edge_type_between(&self, from: usize, to: usize) -> Option<EdgeType> {
+        self.nodes.get(from)
+            .and_then(|n| n.successors.iter().find(|e| e.target == to))
+            .map(|e| e.edge_type)
+    }
+
     /// 获取特定类型的后继边
     pub fn successors_by_type(&self, id: usize, edge_type: EdgeType) -> Vec<usize> {
         self.nodes

@@ -371,6 +371,10 @@ pub struct CrossFileTaintAnalyzer {
     source_patterns: Vec<TaintSource>,
     /// 污点汇模式
     sink_patterns: Vec<TaintSink>,
+    /// CPG 缓存（从 scan pipeline Stage B 传入）
+    cpg_cache: HashMap<String, super::cpg::FunctionCPG>,
+    /// CPG taint flow 缓存
+    cpg_taint_flows: HashMap<String, Vec<super::taint::TaintFlow>>,
 }
 
 impl CrossFileTaintAnalyzer {
@@ -381,7 +385,19 @@ impl CrossFileTaintAnalyzer {
             import_resolver: ImportResolver::new(),
             source_patterns: Self::default_source_patterns(),
             sink_patterns: Self::default_sink_patterns(),
+            cpg_cache: HashMap::new(),
+            cpg_taint_flows: HashMap::new(),
         }
+    }
+
+    /// 注入 CPG 缓存（从 scan pipeline Stage B 传入）
+    pub fn set_cpg_cache(
+        &mut self,
+        cpg_cache: HashMap<String, super::cpg::FunctionCPG>,
+        taint_flows: HashMap<String, Vec<super::taint::TaintFlow>>,
+    ) {
+        self.cpg_cache = cpg_cache;
+        self.cpg_taint_flows = taint_flows;
     }
 
     /// 分析项目
@@ -1457,8 +1473,25 @@ impl CrossFileTaintAnalyzer {
         result
     }
 
-    /// 计算单个函数的摘要
+    /// 计算单个函数的摘要（优先使用 CPG 精确摘要）
     fn compute_single_summary(&self, func_id: &str) -> Option<FunctionSummary> {
+        // 优先使用 CPG 摘要
+        if let Some(func_cpg) = self.cpg_cache.get(func_id) {
+            let taint_flows = self.cpg_taint_flows.get(func_id)
+                .cloned()
+                .unwrap_or_default();
+
+            let sink_names: Vec<&str> = self.sink_patterns.iter()
+                .flat_map(|s| s.patterns.iter().map(|p| p.as_str()))
+                .collect();
+
+            let summary = super::cpg::compute_summary_from_cpg(func_cpg, &taint_flows, &sink_names);
+            if !summary.taint_propagation.is_empty() || !summary.direct_sinks.is_empty() {
+                return Some(summary);
+            }
+        }
+
+        // 回退到 heuristic
         let node = self.call_graph.nodes.get(func_id)?;
 
         let mut taint_propagation = Vec::new();

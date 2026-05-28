@@ -936,6 +936,8 @@ pub async fn scan_directory_deep_with_rules_progress(
     let mut taint_findings: Vec<Finding> = Vec::with_capacity(candidate_files.len() * 4);
     let taint_total = candidate_files.len();
     let mut taint_scanned: usize = 0;
+    let mut accumulated_cpg: HashMap<String, crate::analysis::cpg::FunctionCPG> = HashMap::new();
+    let mut accumulated_flows: HashMap<String, Vec<crate::analysis::taint::TaintFlow>> = HashMap::new();
 
     if let Some(ref cb) = progress {
         cb(ScanProgress {
@@ -968,15 +970,94 @@ pub async fn scan_directory_deep_with_rules_progress(
             })
             .collect();
 
-        // 并行分析
-        let batch_findings: Vec<Vec<Finding>> = batch_data
+        // 并行分析 — 通过 CPG 构建后再做污点分析
+        // 同时收集 CPG 缓存和 taint_flows 供 Stage C 使用
+        let batch_results: Vec<(Vec<Finding>, HashMap<String, crate::analysis::cpg::FunctionCPG>, HashMap<String, Vec<crate::analysis::taint::TaintFlow>>)> = batch_data
             .par_iter()
             .map(|(file_path_str, content)| {
+                use crate::analysis::cpg::CPGBuilder;
+                use crate::ast::parser::ASTParser;
+
                 let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
                 let file_path = std::path::Path::new(file_path_str);
-                let flows = analyzer.analyze_file(file_path, content);
 
-                flows.iter().map(|flow| {
+                // CPG 缓存（按函数 ID 存储）
+                let mut cpg_cache: HashMap<String, crate::analysis::cpg::FunctionCPG> = HashMap::new();
+                let mut cpg_flows: HashMap<String, Vec<crate::analysis::taint::TaintFlow>> = HashMap::new();
+
+                // 构建函数级 CPG，再运行污点分析
+                let mut ast_parser = ASTParser::new();
+                let flows = if let Some((tree, functions, file_assignments, file_calls)) =
+                    ast_parser.extract_all_for_taint_with_tree(
+                        &std::path::PathBuf::from(file_path_str), content,
+                    )
+                {
+                    let root = tree.root_node();
+                    let mut all_flows = Vec::new();
+
+                    // 加载回调提示
+                    let callback_hints = crate::analysis::async_flow::detect_callback_hints(content);
+
+                    if functions.is_empty() {
+                        // 无函数体：整个文件构建一个 CPG
+                        let func_cpg = CPGBuilder::build_file_cpg(
+                            content, file_path_str, &file_assignments, &file_calls,
+                        );
+                        all_flows.extend(analyzer.analyze_function_cpg(&func_cpg, content, &callback_hints));
+                    } else {
+                        // 按函数逐个构建 CPG 并分析
+                        for func in &functions {
+                            let func_hints: Vec<_> = callback_hints.iter()
+                                .filter(|h| h.callback_start_line >= func.start_line
+                                    && h.callback_start_line <= func.end_line)
+                                .cloned()
+                                .collect();
+
+                            let func_assignments: Vec<_> = file_assignments.iter()
+                                .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+                                .cloned()
+                                .collect();
+                            let func_calls: Vec<_> = file_calls.iter()
+                                .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+                                .cloned()
+                                .collect();
+
+                            // 查找函数体 AST 节点
+                            let func_body_node = crate::analysis::ast_taint::AstTaintAnalyzer::find_function_body_node_static(
+                                &root, func.start_line, func.end_line,
+                            );
+
+                            let func_cpg = if let Some(body_node) = func_body_node {
+                                CPGBuilder::build_function_cpg(
+                                    &body_node, content, file_path_str,
+                                    func, &func_assignments, &func_calls,
+                                )
+                            } else {
+                                CPGBuilder::build_file_cpg(
+                                    &func.body_text, file_path_str,
+                                    &func_assignments, &func_calls,
+                                )
+                            };
+
+                            let sig_id = func_cpg.signature.id();
+                            let func_flows = analyzer.analyze_function_cpg(
+                                &func_cpg, &func.body_text, &func_hints,
+                            );
+
+                            // 缓存 CPG 和对应的 taint flows
+                            cpg_flows.insert(sig_id.clone(), func_flows.clone());
+                            cpg_cache.insert(sig_id, func_cpg);
+
+                            all_flows.extend(func_flows);
+                        }
+                    }
+                    all_flows
+                } else {
+                    // AST 解析失败，回退到原有路径
+                    analyzer.analyze_file(file_path, content)
+                };
+
+                let findings_list: Vec<Finding> = flows.iter().map(|flow| {
                     let file_str = file_path.to_string_lossy().to_string();
                     let trail: Vec<String> = flow.path.iter().map(|n| {
                         format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
@@ -1010,12 +1091,17 @@ pub async fn scan_directory_deep_with_rules_progress(
                         barriers: None,
                         reasoning_hint: Some(format!("Taint flow: {} → {} via {} steps", flow.source.symbol, flow.sink.symbol, flow.path.len())),
                     }
-                }).collect()
+                }).collect();
+
+                (findings_list, cpg_cache, cpg_flows)
             })
             .collect();
 
-        for mut batch in batch_findings {
-            taint_findings.append(&mut batch);
+        // 收集 findings + CPG 缓存
+        for (mut batch_findings, file_cpgs, file_flows) in batch_results {
+            taint_findings.append(&mut batch_findings);
+            accumulated_cpg.extend(file_cpgs);
+            accumulated_flows.extend(file_flows);
         }
 
         taint_scanned += batch.len();
@@ -1063,8 +1149,12 @@ pub async fn scan_directory_deep_with_rules_progress(
         .collect();
 
     let cross_file_result = if !taint_files.is_empty() {
-        crate::analysis::cross_file::CrossFileTaintAnalyzer::new()
-            .analyze_files_with_content(std::path::Path::new(path), &taint_files, &content_cache)
+        let mut analyzer = crate::analysis::cross_file::CrossFileTaintAnalyzer::new();
+        // 注入 Stage B 的 CPG 缓存，使 compute_single_summary 使用精确摘要
+        if !accumulated_cpg.is_empty() {
+            analyzer.set_cpg_cache(accumulated_cpg, accumulated_flows);
+        }
+        analyzer.analyze_files_with_content(std::path::Path::new(path), &taint_files, &content_cache)
     } else {
         crate::analysis::cross_file::CrossFileTaintResult {
             project_path: path.to_string(),

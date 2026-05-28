@@ -17,7 +17,14 @@ pub mod alias;
 pub mod async_flow;
 pub mod attack_surface;
 pub mod risk_patterns;
+pub mod cpg;
 
+pub use cpg::{
+    FunctionCPG, FunctionSignature, CPGNodeMeta, ConditionInfo,
+    CPGBuilder, CodePropertyGraph, BranchContext,
+    PathSensitiveState, PathCondition, VarTaintState,
+    compute_summary_from_cpg,
+};
 pub use alias::{AccessPath, AliasMap};
 pub use async_flow::{CallbackTaintHint, CallbackHintType, detect_callback_hints};
 pub use taint::{

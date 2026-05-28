@@ -187,7 +187,7 @@ impl AstTaintAnalyzer {
                         .collect();
 
                     // 优先使用 AST-based CFG，fallback 到 text-based
-                    let func_body_node = Self::find_function_body_node(&root, func.start_line, func.end_line);
+                    let func_body_node = Self::find_function_body_node_static(&root, func.start_line, func.end_line);
                     let cfg = if let Some(body_node) = func_body_node {
                         EnhancedFlowGraph::from_ast_node(
                             &body_node, content, &file_path_str, &func.name,
@@ -211,7 +211,7 @@ impl AstTaintAnalyzer {
     }
 
     /// 在 AST 中查找匹配行号范围的函数体节点
-    fn find_function_body_node<'a>(node: &tree_sitter::Node<'a>, start_line: usize, end_line: usize) -> Option<tree_sitter::Node<'a>> {
+    pub fn find_function_body_node_static<'a>(node: &tree_sitter::Node<'a>, start_line: usize, end_line: usize) -> Option<tree_sitter::Node<'a>> {
         let node_start = node.start_position().row + 1;
         let node_end = node.end_position().row + 1;
 
@@ -223,7 +223,7 @@ impl AstTaintAnalyzer {
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if let Some(found) = Self::find_function_body_node(&child, start_line, end_line) {
+            if let Some(found) = Self::find_function_body_node_static(&child, start_line, end_line) {
                 return Some(found);
             }
         }
@@ -247,6 +247,30 @@ impl AstTaintAnalyzer {
         let (_, assignments, calls) = self.ast_parser.extract_all_for_taint(&tmp_path, code);
         let cfg = EnhancedFlowGraph::from_code(code, &file_path_str, function_name);
         self.forward_taint_analysis(&cfg, &assignments, &calls, code, &file_path_str, typed_params, callback_hints)
+    }
+
+    /// 从 FunctionCPG 分析（路径敏感污点传播）
+    ///
+    /// 使用 CPG 中的 ConditionInfo 实现路径敏感分析：
+    /// 条件净化检查（如 if (isSafe(x))）会降低对应分支上的置信度。
+    pub fn analyze_function_cpg(
+        &self,
+        cpg: &super::cpg::FunctionCPG,
+        content: &str,
+        callback_hints: &[crate::analysis::async_flow::CallbackTaintHint],
+    ) -> Vec<TaintFlow> {
+        let assignments: Vec<Assignment> = cpg.node_meta.values()
+            .filter_map(|m| m.assignment.clone())
+            .collect();
+        let calls: Vec<CallInfo> = cpg.node_meta.values()
+            .filter_map(|m| m.call_info.clone())
+            .collect();
+
+        self.forward_taint_analysis_cpg(
+            &cpg.cfg, &assignments, &calls, &cpg.node_meta,
+            content, &cpg.signature.file_path,
+            &cpg.signature.params, callback_hints,
+        )
     }
 
     /// 前向污点传播（worklist 算法）
@@ -339,6 +363,722 @@ impl AstTaintAnalyzer {
         }
 
         flows
+    }
+
+    /// 路径敏感前向污点传播（worklist 算法 + CPG）
+    ///
+    /// 与 forward_taint_analysis 相同的基本结构，但：
+    /// - 使用 PathSensitiveState 替代 HashMap<String, TaintInfo>
+    /// - ConditionHeader 节点注入路径条件到后继
+    /// - 合并节点使用 merge_branches 而非简单 union
+    /// - 置信度根据分支净化情况调整
+    fn forward_taint_analysis_cpg(
+        &self,
+        cfg: &EnhancedFlowGraph,
+        assignments: &[Assignment],
+        calls: &[CallInfo],
+        node_meta: &std::collections::HashMap<usize, super::cpg::CPGNodeMeta>,
+        code: &str,
+        file_path: &str,
+        typed_params: &[TypedParam],
+        callback_hints: &[CallbackTaintHint],
+    ) -> Vec<TaintFlow> {
+        use super::cpg::{ConditionInfo, PathCondition, PathSensitiveState, VarTaintState};
+        use crate::analysis::enhanced_dataflow::EdgeType;
+
+        let mut flows = Vec::new();
+
+        // 路径敏感状态：node_id → PathSensitiveState
+        let mut taint_state: HashMap<usize, PathSensitiveState> = HashMap::new();
+
+        let assign_by_line: HashMap<usize, &Assignment> = assignments
+            .iter().map(|a| (a.line, a)).collect();
+        let call_by_line: HashMap<usize, &CallInfo> = calls
+            .iter().map(|c| (c.line, c)).collect();
+
+        let alias_map = self.build_alias_map(assignments);
+
+        let mut worklist: VecDeque<usize> = VecDeque::new();
+        let mut in_worklist: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        worklist.push_back(cfg.entry);
+        in_worklist.insert(cfg.entry);
+
+        while let Some(node_id) = worklist.pop_front() {
+            if node_id >= cfg.nodes.len() {
+                continue;
+            }
+
+            let node = &cfg.nodes[node_id];
+
+            // 路径敏感 Join：考虑入边类型
+            let mut new_state = self.join_predecessors_cpg(node_id, &taint_state, cfg, node_meta);
+
+            // Transfer function
+            match node.node_type {
+                EnhancedNodeType::Entry => {
+                    self.check_entry_sources_cpg(node, code, &mut new_state, &alias_map, typed_params, callback_hints);
+                }
+
+                EnhancedNodeType::Assignment => {
+                    if let Some(flow) = self.transfer_assignment_cpg(
+                        node, &assign_by_line, &call_by_line, &mut new_state, file_path, &alias_map,
+                    ) {
+                        flows.push(flow);
+                    }
+                }
+
+                EnhancedNodeType::Call => {
+                    if let Some(flow) = self.transfer_call_cpg(
+                        node, &call_by_line, &mut new_state, file_path, &alias_map,
+                    ) {
+                        flows.push(flow);
+                    }
+                }
+
+                EnhancedNodeType::ConditionHeader => {
+                    // 路径敏感：检查条件是否包含净化器调用
+                    // 在后继节点中注入路径条件（通过 taint_state 传递）
+                    let condition = node_meta.get(&node_id)
+                        .and_then(|m| m.condition.as_ref());
+
+                    if let Some(cond) = condition {
+                        if cond.is_sanitizer_check {
+                            // 对当前状态中受影响的变量打上路径条件标记
+                            // 实际的 True/False 分支净化在 join 时处理
+                            // 这里只记录条件信息
+                        }
+                    }
+                }
+
+                EnhancedNodeType::Return | EnhancedNodeType::Statement => {
+                    // 不需要特殊处理
+                }
+
+                _ => {}
+            }
+
+            // 检查状态是否变化
+            let changed = self.state_changed_cpg(node_id, &new_state, &taint_state);
+            if changed {
+                taint_state.insert(node_id, new_state);
+
+                // 对后继节点：如果是 ConditionHeader 的后继，注入路径条件
+                let condition = node_meta.get(&node_id)
+                    .and_then(|m| m.condition.as_ref());
+
+                for edge in &node.successors {
+                    if in_worklist.insert(edge.target) {
+                        worklist.push_back(edge.target);
+                    }
+                }
+            }
+        }
+
+        flows
+    }
+
+    /// 路径敏感 Join：考虑入边类型和条件信息
+    fn join_predecessors_cpg(
+        &self,
+        node_id: usize,
+        taint_state: &HashMap<usize, super::cpg::PathSensitiveState>,
+        cfg: &EnhancedFlowGraph,
+        node_meta: &std::collections::HashMap<usize, super::cpg::CPGNodeMeta>,
+    ) -> super::cpg::PathSensitiveState {
+        use super::cpg::{PathCondition, PathSensitiveState};
+        use crate::analysis::enhanced_dataflow::EdgeType;
+
+        let node = &cfg.nodes[node_id];
+        let preds = &node.predecessors;
+
+        if preds.is_empty() {
+            return PathSensitiveState::new();
+        }
+
+        // 收集各前驱的状态和对应边类型
+        let pred_entries: Vec<(&PathSensitiveState, EdgeType, usize)> = preds.iter()
+            .filter_map(|&pred_id| {
+                let state = taint_state.get(&pred_id)?;
+                let edge_type = cfg.edge_type_between(pred_id, node_id)
+                    .unwrap_or(EdgeType::Sequential);
+                // 查找前驱中的 ConditionHeader，获取条件信息
+                let cond_pred = self.find_condition_predecessor(pred_id, cfg, node_meta);
+                Some((state, edge_type, cond_pred))
+            })
+            .collect();
+
+        if pred_entries.is_empty() {
+            return PathSensitiveState::new();
+        }
+
+        // 分支感知合并
+        let mut true_states: Vec<&PathSensitiveState> = Vec::new();
+        let mut false_states: Vec<&PathSensitiveState> = Vec::new();
+        let mut seq_states: Vec<&PathSensitiveState> = Vec::new();
+        let mut cond_info: Option<&super::cpg::ConditionInfo> = None;
+
+        for (state, edge_type, cond_pred_id) in &pred_entries {
+            match edge_type {
+                EdgeType::TrueBranch => {
+                    true_states.push(state);
+                    // 获取条件信息
+                    if cond_info.is_none() {
+                        if let Some(meta) = node_meta.get(cond_pred_id) {
+                            if let Some(ref ci) = meta.condition {
+                                cond_info = Some(ci);
+                            }
+                        }
+                    }
+                }
+                EdgeType::FalseBranch => {
+                    false_states.push(state);
+                    if cond_info.is_none() {
+                        if let Some(meta) = node_meta.get(cond_pred_id) {
+                            if let Some(ref ci) = meta.condition {
+                                cond_info = Some(ci);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    seq_states.push(state);
+                }
+            }
+        }
+
+        // 对 True/False 分支的状态注入条件效果
+        let mut true_merged = PathSensitiveState::new();
+        for ts in &true_states {
+            true_merged.union_with(ts);
+        }
+        if let Some(ci) = cond_info {
+            if ci.is_sanitizer_check {
+                let pc = PathCondition {
+                    condition_node_id: preds[0],
+                    branch: EdgeType::TrueBranch,
+                    expr: ci.expr.clone(),
+                };
+                // 在 True 分支上，净化器检查的变量被净化
+                for var in &ci.used_vars {
+                    if let Some(vt) = true_merged.get_var_mut(var) {
+                        vt.mark_sanitized_on_branch(&pc);
+                    }
+                }
+            }
+        }
+
+        let mut false_merged = PathSensitiveState::new();
+        for fs in &false_states {
+            false_merged.union_with(fs);
+        }
+        if let Some(ci) = cond_info {
+            if ci.is_sanitizer_check {
+                let pc = PathCondition {
+                    condition_node_id: preds[0],
+                    branch: EdgeType::FalseBranch,
+                    expr: ci.expr.clone(),
+                };
+                // 在 False 分支上，变量仍被污染
+                for var in &ci.used_vars {
+                    if let Some(vt) = false_merged.get_var_mut(var) {
+                        vt.mark_tainted_on_branch(&pc);
+                    }
+                }
+            }
+        }
+
+        // 最终合并
+        let mut result = PathSensitiveState::new();
+        for ss in &seq_states {
+            result.union_with(ss);
+        }
+
+        if !true_states.is_empty() && !false_states.is_empty() {
+            let merged = PathSensitiveState::merge_branches(&true_merged, &false_merged);
+            result.union_with(&merged);
+        } else if !true_states.is_empty() {
+            result.union_with(&true_merged);
+        } else if !false_states.is_empty() {
+            result.union_with(&false_merged);
+        }
+
+        result
+    }
+
+    /// 查找支配前驱的 ConditionHeader 节点
+    fn find_condition_predecessor(
+        &self,
+        pred_id: usize,
+        cfg: &EnhancedFlowGraph,
+        _node_meta: &std::collections::HashMap<usize, super::cpg::CPGNodeMeta>,
+    ) -> usize {
+        // 简化：直接检查 pred 是否是 ConditionHeader
+        if cfg.nodes.get(pred_id)
+            .map(|n| n.node_type == EnhancedNodeType::ConditionHeader)
+            .unwrap_or(false)
+        {
+            return pred_id;
+        }
+        pred_id
+    }
+
+    /// 检查入口源（PathSensitiveState 版本）
+    fn check_entry_sources_cpg(
+        &self,
+        node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
+        code: &str,
+        state: &mut super::cpg::PathSensitiveState,
+        alias_map: &AliasMap,
+        typed_params: &[TypedParam],
+        callback_hints: &[CallbackTaintHint],
+    ) {
+        use super::cpg::VarTaintState;
+
+        let lines: Vec<&str> = code.lines().collect();
+
+        // 1. 基于类型注解的参数污点源
+        for tp in typed_params {
+            let var_name = tp.name.clone();
+            if state.get_var(&var_name).is_some() {
+                continue;
+            }
+            if let Some(ref type_ann) = tp.type_annotation {
+                let type_lower = type_ann.to_lowercase();
+                let is_request_type = Self::REQUEST_TYPE_PATTERNS.iter().any(|pattern| {
+                    type_lower.contains(&pattern.to_lowercase())
+                });
+                if is_request_type {
+                    let line_num = code.lines().enumerate()
+                        .find(|(_, l)| l.contains(&tp.name))
+                        .map(|(i, _)| i + 1)
+                        .unwrap_or(1);
+                    state.insert_var(var_name, VarTaintState::from_taint(
+                        line_num,
+                        format!("{}: {}", tp.name, type_ann),
+                        vec![PropagationStep {
+                            step_type: PropagationStepType::DirectAssignment,
+                            from_var: None,
+                            to_var: Some(tp.name.clone()),
+                            line: line_num,
+                            code_snippet: Some(format!("param: {}", type_ann)),
+                            function_name: None,
+                        }],
+                    ));
+                }
+            }
+        }
+
+        // 2. 基于回调提示的参数污点
+        for hint in callback_hints {
+            let var_name = hint.param_name.clone();
+            if state.get_var(&var_name).is_some() {
+                continue;
+            }
+            let line_num = code.lines().enumerate()
+                .find(|(_, l)| l.contains(&hint.param_name))
+                .map(|(i, _)| i + 1)
+                .unwrap_or(1);
+            state.insert_var(var_name, VarTaintState::from_taint(
+                line_num,
+                format!("{} (callback param)", hint.param_name),
+                vec![PropagationStep {
+                    step_type: PropagationStepType::CallPropagation,
+                    from_var: None,
+                    to_var: Some(hint.param_name.clone()),
+                    line: line_num,
+                    code_snippet: Some(format!("{} => ...", hint.param_name)),
+                    function_name: None,
+                }],
+            ));
+        }
+
+        // 3. 基于行扫描的污点源匹配
+        for (line_idx, line) in lines.iter().enumerate() {
+            let line_num = line_idx + 1;
+            for source in &self.sources {
+                if source.matches(line, "") {
+                    if let Some(var_name) = self.extract_var_from_source(line) {
+                        if state.get_var(&var_name).is_none() {
+                            state.insert_var(var_name.clone(), VarTaintState::from_taint(
+                                line_num,
+                                var_name.clone(),
+                                vec![PropagationStep {
+                                    step_type: PropagationStepType::DirectAssignment,
+                                    from_var: None,
+                                    to_var: Some(var_name.clone()),
+                                    line: line_num,
+                                    code_snippet: Some(line.trim().to_string()),
+                                    function_name: None,
+                                }],
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. 基于别名的污点源
+        for (local_var, paths) in alias_map.all_aliases() {
+            if state.get_var(local_var).is_some() {
+                continue;
+            }
+            let path_matches_source = paths.iter().any(|path| {
+                let dotted = path.as_dotted();
+                self.sources.iter().any(|s| s.matches(&dotted, ""))
+            });
+            if path_matches_source {
+                let line_num = code.lines().enumerate()
+                    .find(|(_, l)| l.contains(local_var))
+                    .map(|(i, _)| i + 1)
+                    .unwrap_or(1);
+                state.insert_var(local_var.clone(), VarTaintState::from_taint(
+                    line_num,
+                    local_var.clone(),
+                    vec![PropagationStep {
+                        step_type: PropagationStepType::DirectAssignment,
+                        from_var: None,
+                        to_var: Some(local_var.clone()),
+                        line: line_num,
+                        code_snippet: None,
+                        function_name: None,
+                    }],
+                ));
+            }
+        }
+    }
+
+    /// 赋值传播（PathSensitiveState 版本）
+    fn transfer_assignment_cpg(
+        &self,
+        node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
+        assign_by_line: &HashMap<usize, &Assignment>,
+        call_by_line: &HashMap<usize, &CallInfo>,
+        state: &mut super::cpg::PathSensitiveState,
+        file_path: &str,
+        alias_map: &AliasMap,
+    ) -> Option<TaintFlow> {
+        use super::cpg::VarTaintState;
+
+        if let Some(assign) = assign_by_line.get(&node.start_line) {
+            let is_sanitized = call_by_line.get(&assign.line)
+                .map(|c| self.is_sanitizer(&c.callee))
+                .unwrap_or(false)
+                || self.sanitizer_patterns.iter().any(|p| assign.source_expr.contains(p.as_str()));
+
+            // 在 PathSensitiveState 中查找污点变量
+            let tainted_source_var = self.find_tainted_var_cpg(&assign.source_vars, state, alias_map);
+
+            if let Some(src_var) = tainted_source_var {
+                let src_path = AccessPath::from_dotted(&src_var);
+                let src_vt = state.find_taint_for_path(&src_path).unwrap().clone();
+                let mut steps = src_vt.propagation_steps.clone();
+                steps.push(PropagationStep {
+                    step_type: if is_sanitized {
+                        PropagationStepType::Sanitization
+                    } else {
+                        PropagationStepType::DirectAssignment
+                    },
+                    from_var: Some(src_var.clone()),
+                    to_var: Some(assign.target.clone()),
+                    line: assign.line,
+                    code_snippet: Some(assign.source_expr.clone()),
+                    function_name: None,
+                });
+
+                // 使用 AccessPath 作为 key（支持 obj.prop 格式）
+                let target_path = AccessPath::from_dotted(&assign.target);
+                let mut target_paths = vec![target_path.clone()];
+
+                // 别名路径也作为目标
+                for alias_ap in alias_map.resolve(&assign.target) {
+                    if state.get_exact(&alias_ap).is_none() {
+                        target_paths.push(alias_ap);
+                    }
+                }
+
+                for tp in target_paths {
+                    let mut vt = VarTaintState::from_taint(
+                        src_vt.source_line,
+                        src_vt.source_var.clone(),
+                        steps.clone(),
+                    );
+                    if is_sanitized {
+                        vt.sanitized = true;
+                        vt.sanitizer = call_by_line.get(&assign.line).map(|c| c.callee.clone());
+                    }
+                    state.insert_path(tp, vt);
+                }
+
+                // 检查赋值右值中的 sink
+                if !is_sanitized {
+                    if let Some(sink) = self.find_matching_sink_in_expr(&assign.source_expr) {
+                        let target_ap = AccessPath::from_dotted(&assign.target);
+                        let vt = state.find_taint_for_path(&target_ap)
+                            .or_else(|| state.find_taint_for_path(&src_path))
+                            .unwrap().clone();
+                        return Some(self.build_taint_flow_cpg(
+                            &vt,
+                            &src_var,
+                            &self.extract_sink_name(&assign.source_expr),
+                            &sink,
+                            assign.line, assign.line,
+                            file_path, &assign.source_expr,
+                        ));
+                    }
+                }
+            }
+        } else {
+            // 回退到 defs/uses 分析
+            let has_tainted_use = node.uses.iter().any(|u| {
+                self.is_var_tainted_cpg(u, state, alias_map)
+            });
+
+            if has_tainted_use && !node.defs.is_empty() {
+                let tainted_var = node.uses.iter()
+                    .find(|u| self.is_var_tainted_cpg(u, state, alias_map))
+                    .and_then(|u| self.resolve_tainted_var_cpg(u, state, alias_map))
+                    .unwrap_or_else(|| node.uses[0].clone());
+
+                let src_path = AccessPath::from_dotted(&tainted_var);
+                let src_vt = state.find_taint_for_path(&src_path).unwrap().clone();
+                for def in &node.defs {
+                    let mut steps = src_vt.propagation_steps.clone();
+                    steps.push(PropagationStep {
+                        step_type: PropagationStepType::DirectAssignment,
+                        from_var: Some(tainted_var.clone()),
+                        to_var: Some(def.clone()),
+                        line: node.start_line,
+                        code_snippet: Some(node.code.clone()),
+                        function_name: None,
+                    });
+                    state.insert_path(AccessPath::from_dotted(def), VarTaintState::from_taint(
+                        src_vt.source_line, src_vt.source_var.clone(), steps,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// 调用传播（PathSensitiveState 版本）
+    fn transfer_call_cpg(
+        &self,
+        node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
+        call_by_line: &HashMap<usize, &CallInfo>,
+        state: &mut super::cpg::PathSensitiveState,
+        file_path: &str,
+        alias_map: &AliasMap,
+    ) -> Option<TaintFlow> {
+        if let Some(call) = call_by_line.get(&node.start_line) {
+            // 检查 sink
+            if let Some(sink) = self.find_matching_sink(&call.callee) {
+                let tainted_arg = call.arguments.iter().find(|arg| {
+                    arg.referenced_vars.iter().any(|v| {
+                        self.is_var_tainted_cpg(v, state, alias_map)
+                    })
+                });
+
+                if let Some(arg) = tainted_arg {
+                    let tainted_var = arg.referenced_vars.iter()
+                        .find(|v| self.is_var_tainted_cpg(v, state, alias_map))
+                        .and_then(|v| self.resolve_tainted_var_cpg(v, state, alias_map))
+                        .unwrap_or_else(|| arg.referenced_vars[0].clone());
+
+                    let src_path = AccessPath::from_dotted(&tainted_var);
+                    let src_vt = state.find_taint_for_path(&src_path).unwrap().clone();
+
+                    // 检查参数化查询
+                    if self.is_parameterized_query(&call.callee, &node.code) {
+                        state.mark_sanitized(&tainted_var, Some("parameterized_query".into()));
+                        return None;
+                    }
+
+                    return Some(self.build_taint_flow_cpg(
+                        &src_vt, &tainted_var, &call.callee, &sink,
+                        call.line, node.start_line, file_path, &node.code,
+                    ));
+                }
+            }
+
+            // 检查净化器
+            if self.is_sanitizer(&call.callee) {
+                for arg in &call.arguments {
+                    for var in &arg.referenced_vars {
+                        state.mark_sanitized(var, Some(call.callee.clone()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// 在 PathSensitiveState 中查找污点变量
+    fn find_tainted_var_cpg(
+        &self,
+        vars: &[String],
+        state: &super::cpg::PathSensitiveState,
+        alias_map: &AliasMap,
+    ) -> Option<String> {
+        for var in vars {
+            if self.is_var_tainted_cpg(var, state, alias_map) {
+                return Some(self.resolve_tainted_var_cpg(var, state, alias_map)
+                    .unwrap_or_else(|| var.clone()));
+            }
+        }
+        None
+    }
+
+    /// 检查变量是否被污染（AccessPath 版本，支持前缀匹配）
+    fn is_var_tainted_cpg(
+        &self,
+        var: &str,
+        state: &super::cpg::PathSensitiveState,
+        alias_map: &AliasMap,
+    ) -> bool {
+        // AccessPath 查询（含前缀匹配）
+        let path = AccessPath::from_dotted(var);
+        if state.is_path_tainted(&path) {
+            return true;
+        }
+        // 别名路径查询
+        for alias_path in alias_map.resolve(var) {
+            if state.is_path_tainted(&alias_path) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 解析污点变量名（AccessPath 版本）
+    fn resolve_tainted_var_cpg(
+        &self,
+        var: &str,
+        state: &super::cpg::PathSensitiveState,
+        alias_map: &AliasMap,
+    ) -> Option<String> {
+        // 精确匹配
+        let path = AccessPath::from_dotted(var);
+        if state.get_exact(&path).is_some() {
+            return Some(var.to_string());
+        }
+        // 别名解析
+        for alias_path in alias_map.resolve(var) {
+            if state.get_exact(&alias_path).is_some() {
+                return Some(alias_path.as_dotted());
+            }
+        }
+        // 前缀匹配 — 返回匹配到的路径
+        if state.find_taint_for_path(&path).is_some() {
+            return Some(var.to_string());
+        }
+        None
+    }
+
+    /// 构建污点流（VarTaintState 版本 — 含路径敏感置信度）
+    fn build_taint_flow_cpg(
+        &self,
+        taint_state: &super::cpg::VarTaintState,
+        tainted_var: &str,
+        sink_name: &str,
+        sink: &TaintSink,
+        sink_line: usize,
+        _node_line: usize,
+        file_path: &str,
+        sink_code: &str,
+    ) -> TaintFlow {
+        let mut path = Vec::new();
+
+        path.push(FlowNode {
+            node_type: FlowNodeType::Source,
+            file_path: file_path.to_string(),
+            line: taint_state.source_line,
+            symbol: taint_state.source_var.clone(),
+            code_snippet: None,
+        });
+
+        for step in &taint_state.propagation_steps {
+            let node_type = match step.step_type {
+                PropagationStepType::DirectAssignment => FlowNodeType::Assignment,
+                PropagationStepType::ConcatAssignment => FlowNodeType::Assignment,
+                PropagationStepType::CallPropagation => FlowNodeType::Call,
+                PropagationStepType::ReturnPropagation => FlowNodeType::Return,
+                PropagationStepType::FieldPropagation => FlowNodeType::FieldAccess,
+                PropagationStepType::Sanitization => FlowNodeType::Sanitized,
+                PropagationStepType::Dereference => FlowNodeType::Statement,
+            };
+            path.push(FlowNode {
+                node_type,
+                file_path: file_path.to_string(),
+                line: step.line,
+                symbol: step.to_var.clone().unwrap_or_default(),
+                code_snippet: step.code_snippet.clone(),
+            });
+        }
+
+        path.push(FlowNode {
+            node_type: FlowNodeType::Sink,
+            file_path: file_path.to_string(),
+            line: sink_line,
+            symbol: sink_name.to_string(),
+            code_snippet: Some(sink_code.to_string()),
+        });
+
+        // 路径敏感置信度
+        let confidence = taint_state.confidence() as f32;
+
+        TaintFlow {
+            id: uuid::Uuid::new_v4().to_string(),
+            source: FlowLocation {
+                file_path: file_path.to_string(),
+                line: taint_state.source_line,
+                column: None,
+                symbol: taint_state.source_var.clone(),
+                code_snippet: None,
+            },
+            sink: FlowLocation {
+                file_path: file_path.to_string(),
+                line: sink_line,
+                column: None,
+                symbol: sink_name.to_string(),
+                code_snippet: Some(sink_code.to_string()),
+            },
+            path,
+            vulnerability_type: sink.vulnerability_type.clone(),
+            severity: sink.severity,
+            confidence,
+        }
+    }
+
+    /// 状态变化检查（PathSensitiveState 版本）
+    fn state_changed_cpg(
+        &self,
+        node_id: usize,
+        new_state: &super::cpg::PathSensitiveState,
+        old_states: &HashMap<usize, super::cpg::PathSensitiveState>,
+    ) -> bool {
+        match old_states.get(&node_id) {
+            None => !new_state.is_empty(),
+            Some(old) => {
+                if old.len() != new_state.len() {
+                    return true;
+                }
+                for (path, new_vt) in new_state.all_entries() {
+                    match old.get_exact(path) {
+                        None => return true,
+                        Some(old_vt) => {
+                            if old_vt.source_line != new_vt.source_line
+                                || old_vt.sanitized != new_vt.sanitized
+                                || old_vt.sanitized_on.len() != new_vt.sanitized_on.len()
+                                || old_vt.tainted_on.len() != new_vt.tainted_on.len()
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            }
+        }
     }
 
     /// 从赋值列表构建别名映射

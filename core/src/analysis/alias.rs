@@ -111,6 +111,11 @@ impl AliasMap {
         result
     }
 
+    /// 返回所有别名映射的迭代器
+    pub fn all_aliases(&self) -> impl Iterator<Item = (&String, &HashSet<AccessPath>)> {
+        self.aliases.iter()
+    }
+
     fn resolve_recursive(
         &self,
         var: &str,

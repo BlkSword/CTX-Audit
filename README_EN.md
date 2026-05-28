@@ -24,13 +24,13 @@ CTX-Audit is a code security analysis engine designed for LLM-assisted auditing.
 **Core Capabilities**:
 
 - **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
-- **Data flow tracking**: Based on tree-sitter AST + CFG worklist algorithm, with AccessPath, AliasMap, destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
+- **Data flow tracking**: Powered by CPG (Code Property Graph) engine — fuses CFG + AST metadata + alias maps into a unified structure. Supports path-sensitive analysis (conditional sanitization detection), AccessPath prefix matching (`req.body` → `req.body.name`), destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
 - **LLM autonomous audit loop**: Exposes 17 tools via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → taint tracing → code review → TP/FP verdict → rule generation → re-validation"
 - **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), confidence scoring, multi-engine corroboration, baseline suppression
 - **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
 - **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
 
-**Coverage**: 20+ vulnerability types (injection, XSS, SSRF, deserialization, path traversal...), AST analysis for 12 languages (JS/TS/Python/Java/Rust/Go/C/C++...), file scanning for 23 extensions, built-in framework-aware rules for Next.js, React, Django, Spring, Express, Laravel, Rails.
+**Coverage**: 20+ vulnerability types (injection, XSS, SSRF, deserialization, path traversal...), AST analysis for 12 languages (JS/TS/Python/Java/Rust/Go/C/C++...), file scanning for 18 extensions, built-in framework-aware rules for Next.js, React, Django, Spring, Express, Laravel, Rails.
 
 ```
 ┌───────────────────┐     IPC (TCP)     ┌──────────────────────────────┐
@@ -432,8 +432,11 @@ Each project can place project-level files in the `.ctx-audit/` directory:
 - **Function summaries**: Bottom-up computation of each function's taint propagation signature
 - **Path tracing**: DFS search for source→sink cross-file call paths
 - **Context assembly**: Identifies callers, callees, and trust boundaries
+- **CPG auto-summaries**: FunctionCPG cache from Stage B is passed to Stage C, auto-generating precise function summaries (replacing heuristic guesses) with accurate sink line numbers and param→return propagation
+- **Path-sensitive analysis**: Branch-aware taint propagation — `if (isSafe(x))` True branch auto-marks sanitized, reducing false positives under conditional guards
+- **Property path tracking**: Taint state keyed by AccessPath with prefix matching — `req.body` taint detected at `req.body.name`; `req.body.name` taint does NOT affect `req.body.email`
 
-Supports 12 languages: Python, JavaScript, TypeScript, Java, Rust, Go, C, C++, PHP, Ruby, JSX, TSX.
+Supports 12 languages: JavaScript/JSX, TypeScript/TSX, Python, Java, Rust, Go, C, C++, HTML, CSS, JSON.
 
 ### Dynamic Language Smart Tracking
 
@@ -508,6 +511,8 @@ SCA scanning relies on `api.osv.dev` online queries. For offline environments:
 | Parameterized query detection | Distinguishes string-concatenated SQL from parameterized queries |
 | Baseline suppression | `.ctx-audit/baseline.json` records confirmed/ignored findings |
 | Context-awareness | Reduced confidence for matches in test files and config dirs |
+| Path-sensitive sanitization | `if (isSafe(x))` True branch auto-marks sanitized, confidence drops to 0.3; partial sanitization paths get confidence 0.5 |
+| Property path isolation | `req.body.name` taint does NOT affect `req.body.email` (AccessPath prefix matching, different properties don't cross-contaminate) |
 
 **Config-driven exclusions**: All exclusion patterns are controlled via `scan.exclude_patterns` in `config.toml`. First run uses code defaults; modify anytime via `config set`. The `--exclude` CLI flag appends (does not replace) config values.
 
@@ -734,18 +739,34 @@ daemon/                   # Daemon process
 ├── src/engine.rs         # Analysis engine coordination + incremental cache + cross-file
 ├── src/state.rs          # Project state management
 ├── src/client.rs         # IPC client (exponential backoff reconnect)
+├── src/lib.rs            # Library entry (public interface exports)
 └── src/main.rs           # Daemon entry (PID lock + panic recovery)
 
 core/                     # Deterministic analysis engine
-├── ast/                  # AST engine (tree-sitter, 12+ languages, incremental mtime index)
+├── lib.rs                # Library entry (layered exports: scanning/taint/ast_api/attack_surface)
+├── ast/                  # AST engine (tree-sitter, 12 languages, 18 extensions, incremental mtime index)
+├── diff/                 # Diff engine
+│   ├── engine.rs         # DiffEngine (code diff computation)
+│   ├── git_integration.rs # Git integration (diff/commit parsing)
+│   └── types.rs          # Diff type definitions
 ├── analysis/             # Analysis modules
 │   ├── taint.rs          # Taint analysis core (Source/Sink/Flow types)
-│   ├── ast_taint.rs      # AST taint analyzer (CFG + worklist algorithm)
-│   ├── cross_file.rs     # Cross-file analysis (call graph + function summaries)
-│   ├── enhanced_dataflow.rs  # Enhanced data flow analysis
+│   ├── ast_taint.rs      # AST taint analyzer (CFG + worklist + CPG path-sensitive algorithm)
+│   ├── cross_file.rs     # Cross-file analysis (call graph + function summaries + CPG cache)
+│   ├── enhanced_dataflow.rs  # Enhanced data flow analysis (CFG + edge types)
+│   ├── enhanced_taint.rs # Enhanced taint analyzer
+│   ├── dataflow.rs       # Basic data flow analysis
 │   ├── alias.rs          # AccessPath + AliasMap (dynamic language tracking)
 │   ├── async_flow.rs     # Promise chain + callback taint hints
 │   ├── attack_surface.rs # Attack surface mapping
+│   ├── risk_patterns.rs  # Architectural risk pattern detection
+│   ├── cache.rs          # Analysis cache (AST/Taint/Analysis cache management)
+│   ├── cpg/              # Code Property Graph engine
+│   │   ├── mod.rs        # FunctionCPG, CPGNodeMeta, ConditionInfo, FunctionSignature
+│   │   ├── builder.rs    # CPGBuilder (AST→CPG construction + condition extraction + alias building)
+│   │   ├── query.rs      # CodePropertyGraph unified query API
+│   │   ├── path_taint.rs # PathSensitiveState + AccessPath prefix matching + branch merging
+│   │   └── summary.rs    # CPG auto function summary generation
 │   └── imports.rs        # Import resolution
 ├── scanner/              # Scanners
 │   ├── regex_scanner.rs  # Regex scanner
@@ -761,20 +782,39 @@ core/                     # Deterministic analysis engine
 ├── watcher/              # File watching + change detection
 └── indexing/             # Code indexing
 
-tools/                    # Tool suite
+tools/                    # MCP tool suite
+├── lib.rs                # Module entry (tool category definitions)
+├── registry.rs           # Tool registry
+├── executor.rs           # Tool execution engine
+├── bridge.rs             # Built-in tool implementations
+├── external.rs           # External tool adapters (Semgrep/Bandit/Gitleaks)
 ├── ast_tools.rs          # AST query tools
 ├── taint_tools.rs        # Taint analysis tools
 ├── pattern_tools.rs      # Pattern detection tools
 └── search_tools.rs       # Code search tools
 
 cli/                      # Command-line client
-├── commands/scan.rs      # Scan command
-├── commands/analyze.rs   # Analyze command
-├── commands/watch.rs     # Watch command
-├── commands/daemon.rs    # Daemon management
-├── commands/mcp.rs       # MCP Server (17 tools)
-├── commands/rules.rs     # Rule management
-└── commands/findings.rs  # Vulnerability management
+├── main.rs               # CLI entry point
+├── config.rs             # Configuration management (TOML read/write + path resolution)
+├── output.rs             # Output formatting (LLM/SARIF/JSON/Markdown/Text)
+├── terminal.rs           # Terminal UI (progress bar + colorized output)
+├── index.rs              # File indexing
+├── commands/             # Command implementations
+│   ├── scan.rs           # Scan command (with progress callback + incremental mode)
+│   ├── analyze.rs        # Single file analysis command
+│   ├── watch.rs          # Continuous monitoring command
+│   ├── daemon.rs         # Daemon management command
+│   ├── mcp.rs            # MCP Server (17 tools)
+│   ├── rules.rs          # Rule management command
+│   ├── config.rs         # Configuration management command
+│   └── findings.rs       # Vulnerability management command
+├── database/             # Vulnerability database
+│   ├── schema.rs         # SQLite schema definitions
+│   ├── models.rs         # Data models
+│   ├── queries.rs        # Query interface
+│   └── migrations.rs     # Database migrations
+└── report/               # Report export
+    └── exporter.rs       # Multi-format report export
 
 rules/                    # Built-in rules (40 pattern + 5 taint)
 ├── *.yaml                # Pattern rules (including Next.js semantic rules)
@@ -849,7 +889,7 @@ Benchmarks based on the [Next.js](https://github.com/vercel/next.js) repository 
 
 ```bash
 cargo build --release        # Build (ctx-audit + ctx-audit-daemon)
-cargo test --workspace       # Run tests (162 tests)
+cargo test --workspace       # Run tests (184 tests)
 cargo fmt                    # Format
 cargo clippy                 # Lint
 ```
@@ -858,9 +898,9 @@ cargo clippy                 # Lint
 
 | Dimension | Status |
 |-----------|--------|
-| AST Taint Analysis | CFG + worklist algorithm, 12 languages AST, 30+ sanitizers |
+| CPG Analysis Engine | CFG + AST metadata + alias map fusion, path-sensitive taint propagation, AccessPath property tracking, 12 languages AST, 30+ sanitizers |
 | Dynamic Language Tracking | AccessPath + AliasMap + destructuring + property access + await + Promise chains |
-| Cross-file Tracking | Call graph + function summaries + DFS path finding (`--cross-file`) |
+| Cross-file Tracking | Call graph + function summaries + DFS path finding (`--cross-file`) + CPG auto-summaries (precise sink line numbers, replacing heuristics) |
 | TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
 | Pattern Matching | 40 pattern rules + 5 taint rules, covering 6 languages + 6 frameworks |
 | False Positive Control | File role classification + security barrier detection + multi-engine confidence fusion + baseline suppression |
@@ -870,7 +910,7 @@ cargo clippy                 # Lint
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
 | Config-driven | All exclusions, severity thresholds, and engine toggles via config.toml |
-| Test Coverage | 162 tests |
+| Test Coverage | 184 tests |
 
 ## License
 

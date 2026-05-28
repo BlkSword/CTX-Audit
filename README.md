@@ -24,13 +24,13 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 **核心能力**：
 
 - **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
-- **数据流追踪**：基于 tree-sitter AST + CFG worklist 算法，支持 AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
+- **数据流追踪**：基于 CPG（代码属性图）引擎，融合 CFG + AST 元数据 + 别名映射，支持路径敏感分析（条件净化检测）、属性路径前缀匹配（`req.body` → `req.body.name`）、AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
 - **LLM 自主审计闭环**：通过 MCP 协议暴露 17 个工具，LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
 - **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、置信度评分、多引擎交叉确认、基线抑制
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
 
-**覆盖范围**：20+ 漏洞类型（注入、XSS、SSRF、反序列化、路径遍历...），AST 分析支持 12 种语言（JS/TS/Python/Java/Rust/Go/C/C++...），文件扫描覆盖 23 种扩展名，内置 Next.js、React、Django、Spring、Express、Laravel、Rails 框架感知规则。
+**覆盖范围**：20+ 漏洞类型（注入、XSS、SSRF、反序列化、路径遍历...），AST 分析支持 12 种语言（JS/TS/Python/Java/Rust/Go/C/C++...），文件扫描覆盖 18 种扩展名，内置 Next.js、React、Django、Spring、Express、Laravel、Rails 框架感知规则。
 
 ```
 ┌───────────────────┐     IPC (TCP)     ┌──────────────────────────────┐
@@ -432,8 +432,11 @@ key 格式为 `文件路径:行号:漏洞类型`，value 为忽略原因。扫�
 - **函数摘要**：自底向上计算每个函数的污点传播签名
 - **路径追踪**：DFS 查找 source→sink 的跨文件调用路径
 - **上下文组装**：识别 callers、callees、信任边界
+- **CPG 自动摘要**：Stage B 构建的 FunctionCPG 缓存传递给 Stage C，自动生成精确函数摘要（替代启发式猜测），提供准确的 sink 行号和参数→返回值传播信息
+- **路径敏感分析**：条件分支感知的污点传播，`if (isSafe(x))` 的 True 分支自动标记净化，减少条件保护下的误报
+- **属性路径追踪**：污点状态以 AccessPath 为 key，支持前缀匹配——`req.body` 被污染时 `req.body.name` 自动检出，`req.body.name` 不影响 `req.body.email`
 
-支持 12 种语言：Python, JavaScript, TypeScript, Java, Rust, Go, C, C++, PHP, Ruby, JSX, TSX。
+支持 12 种语言：JavaScript/JSX, TypeScript/TSX, Python, Java, Rust, Go, C, C++, HTML, CSS, JSON。
 
 ### 动态语言智能追踪
 
@@ -508,6 +511,8 @@ SCA 扫描依赖 `api.osv.dev` 在线查询。离线环境下可：
 | 参数化查询检测 | 区分字符串拼接 SQL vs 参数化查询 |
 | 基线抑制 | `.ctx-audit/baseline.json` 记录已确认/已忽略的 finding |
 | 上下文感知 | 测试文件和配置目录中的匹配自动降低置信度 |
+| 路径敏感净化 | `if (isSafe(x))` 条件保护下的 True 分支自动标记净化，置信度降至 0.3；部分净化路径置信度 0.5 |
+| 属性路径隔离 | `req.body.name` 的污点不影响 `req.body.email`（AccessPath 前缀匹配，不同属性不交叉） |
 
 **配置驱动的排除**：所有排除项通过 `config.toml` 中的 `scan.exclude_patterns` 控制，首次运行使用代码默认值，用户可随时修改。`--exclude` CLI 参数为追加（不替换配置文件）。
 
@@ -734,18 +739,34 @@ daemon/                   # 守护进程
 ├── src/engine.rs         # 分析引擎协调 + 增量缓存 + 跨文件分析
 ├── src/state.rs          # 项目状态管理
 ├── src/client.rs         # IPC 客户端（指数退避重连）
+├── src/lib.rs            # 库入口（公共接口导出）
 └── src/main.rs           # 守护进程入口（PID 锁 + panic 自恢复）
 
 core/                     # 确定性分析引擎
-├── ast/                  # AST 引擎 (tree-sitter, 12+ 语言, 增量 mtime 索引)
+├── lib.rs                # 库入口（分层导出: scanning/taint/ast_api/attack_surface）
+├── ast/                  # AST 引擎 (tree-sitter, 12 语言, 18 种扩展名, 增量 mtime 索引)
+├── diff/                 # 差异引擎
+│   ├── engine.rs         # DiffEngine（代码差异计算）
+│   ├── git_integration.rs # Git 集成（diff/commit 解析）
+│   └── types.rs          # 差异类型定义
 ├── analysis/             # 分析模块
 │   ├── taint.rs          # 污点分析核心（Source/Sink/Flow 类型）
-│   ├── ast_taint.rs      # AST 污点分析器（CFG + worklist 算法）
-│   ├── cross_file.rs     # 跨文件分析（调用图 + 函数摘要 + 上下文组装）
-│   ├── enhanced_dataflow.rs  # 增强数据流分析
+│   ├── ast_taint.rs      # AST 污点分析器（CFG + worklist + CPG 路径敏感算法）
+│   ├── cross_file.rs     # 跨文件分析（调用图 + 函数摘要 + CPG 缓存）
+│   ├── enhanced_dataflow.rs  # 增强数据流分析（CFG + 边类型）
+│   ├── enhanced_taint.rs # 增强污点分析器
+│   ├── dataflow.rs       # 基础数据流分析
 │   ├── alias.rs          # AccessPath + AliasMap（动态语言追踪）
 │   ├── async_flow.rs     # Promise 链 + 回调污点提示
 │   ├── attack_surface.rs # 攻击面映射
+│   ├── risk_patterns.rs  # 架构级风险模式检测
+│   ├── cache.rs          # 分析缓存（AST/Taint/Analysis 缓存管理）
+│   ├── cpg/              # 代码属性图引擎 (CPG)
+│   │   ├── mod.rs        # FunctionCPG, CPGNodeMeta, ConditionInfo, FunctionSignature
+│   │   ├── builder.rs    # CPGBuilder (AST→CPG 构建 + 条件提取 + 别名构建)
+│   │   ├── query.rs      # CodePropertyGraph 统一查询 API
+│   │   ├── path_taint.rs # PathSensitiveState + AccessPath 前缀匹配 + 分支合并
+│   │   └── summary.rs    # CPG 自动函数摘要生成
 │   └── imports.rs        # 导入解析
 ├── scanner/              # 扫描器
 │   ├── regex_scanner.rs  # 正则扫描
@@ -761,20 +782,39 @@ core/                     # 确定性分析引擎
 ├── watcher/              # 文件监听 + 变更检测
 └── indexing/             # 代码索引
 
-tools/                    # 工具集
+tools/                    # MCP 工具集
+├── lib.rs                # 模块入口（工具类别定义）
+├── registry.rs           # 工具注册中心
+├── executor.rs           # 工具执行引擎
+├── bridge.rs             # 内置工具实现
+├── external.rs           # 外部工具适配（Semgrep/Bandit/Gitleaks）
 ├── ast_tools.rs          # AST 查询工具
 ├── taint_tools.rs        # 污点分析工具
 ├── pattern_tools.rs      # 模式检测工具
 └── search_tools.rs       # 代码搜索工具
 
 cli/                      # 命令行客户端
-├── commands/scan.rs      # 扫描命令
-├── commands/analyze.rs   # 分析命令
-├── commands/watch.rs     # 监控命令
-├── commands/daemon.rs    # 守护进程管理
-├── commands/mcp.rs       # MCP Server（17 个工具）
-├── commands/rules.rs     # 规则管理
-└── commands/findings.rs  # 漏洞管理
+├── main.rs               # CLI 入口
+├── config.rs             # 配置管理（TOML 读写 + 路径解析）
+├── output.rs             # 输出格式化（LLM/SARIF/JSON/Markdown/Text）
+├── terminal.rs           # 终端 UI（进度条 + 彩色输出）
+├── index.rs              # 文件索引
+├── commands/             # 命令实现
+│   ├── scan.rs           # 扫描命令（含进度回调 + 增量模式）
+│   ├── analyze.rs        # 单文件分析命令
+│   ├── watch.rs          # 持续监控命令
+│   ├── daemon.rs         # 守护进程管理命令
+│   ├── mcp.rs            # MCP Server（17 个工具）
+│   ├── rules.rs          # 规则管理命令
+│   ├── config.rs         # 配置管理命令
+│   └── findings.rs       # 漏洞管理命令
+├── database/             # 漏洞数据库
+│   ├── schema.rs         # SQLite schema 定义
+│   ├── models.rs         # 数据模型
+│   ├── queries.rs        # 查询接口
+│   └── migrations.rs     # 数据库迁移
+└── report/               # 报告导出
+    └── exporter.rs       # 多格式报告导出
 
 rules/                    # 内置规则（40 模式 + 5 污点）
 ├── *.yaml                # 模式规则（含 Next.js 语义规则）
@@ -849,7 +889,7 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 
 ```bash
 cargo build --release        # 构建（ctx-audit + ctx-audit-daemon）
-cargo test --workspace       # 运行测试（162 个测试）
+cargo test --workspace       # 运行测试（184 个测试）
 cargo fmt                    # 格式化
 cargo clippy                 # 代码检查
 ```
@@ -858,9 +898,9 @@ cargo clippy                 # 代码检查
 
 | 维度 | 状态 |
 |------|------|
-| AST 污点分析 | CFG + worklist 算法，12 语言 AST，30+ sanitizer |
+| CPG 分析引擎 | CFG + AST 元数据 + 别名映射融合，路径敏感污点传播，AccessPath 属性路径追踪，12 语言 AST，30+ sanitizer |
 | 动态语言追踪 | AccessPath + AliasMap + 解构 + 属性访问 + await + Promise 链 |
-| 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找（`--cross-file`） |
+| 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找（`--cross-file`） + CPG 自动函数摘要（精确 sink 行号，替代启发式） |
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
 | 模式匹配规则 | 40 条模式规则 + 5 条污点规则，覆盖 6 语言 + 6 框架 |
 | 误报控制 | 文件角色分类 + 安全屏障检测 + 多引擎置信度融合 + 基线抑制 |
@@ -870,7 +910,7 @@ cargo clippy                 # 代码检查
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
 | 配置驱动 | 所有排除项、严重程度阈值、引擎开关均可通过 config.toml 控制 |
-| 测试覆盖 | 162 个测试 |
+| 测试覆盖 | 184 个测试 |
 
 ## 许可证
 
