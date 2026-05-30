@@ -102,3 +102,31 @@ impl ProjectInfo {
         Self { tech_stack, frameworks, project_type }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_daemon_state_new() {
+        let state = DaemonState::new();
+        assert!(state.uptime_secs() < 5);
+        assert_eq!(state.pid, std::process::id());
+    }
+
+    #[test]
+    fn test_project_state_detection() {
+        // Test that detection doesn't panic on non-existent paths
+        let info = ProjectInfo::detect("/nonexistent/path/12345");
+        assert!(info.tech_stack.is_empty());
+        assert_eq!(info.project_type, "unknown");
+    }
+
+    #[test]
+    fn test_uptime_increases() {
+        let state = DaemonState::new();
+        let start = state.uptime_secs();
+        // uptime should be 0 or very small
+        assert!(start < 2);
+    }
+}

@@ -622,4 +622,126 @@ mod tests {
         assert_eq!(severity_to_level("low"), "note");
         assert_eq!(severity_to_level("info"), "note");
     }
+
+    #[test]
+    fn test_sarif_output_matches_schema_structure() {
+        let converter = SarifConverter::new();
+        let findings = vec![
+            FindingInput {
+                id: Some("finding-1".into()),
+                title: Some("SQL Injection in query builder".into()),
+                description: "Detected unsanitized input flowing into SQL".into(),
+                severity: "high".into(),
+                category: "SQL Injection".into(),
+                cwe_id: Some("CWE-89".into()),
+                file_path: "src/db.py".into(),
+                start_line: 100,
+                end_line: Some(100),
+                start_column: Some(10),
+                end_column: Some(30),
+                code_snippet: Some("cursor.execute(user_input)".into()),
+                recommendation: Some("Use parameterized queries".into()),
+                status: "confirmed".into(),
+                verification_status: Some("verified".into()),
+                discovered_by: Some("ast_taint".into()),
+                code_flows: None,
+                fix_suggestions: None,
+                confidence: Some(0.95),
+            },
+        ];
+
+        let json_str = converter.convert_to_json(&findings).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // Required top-level fields per SARIF 2.1.0
+        assert_eq!(root["version"], "2.1.0");
+        assert!(root["$schema"].as_str().unwrap().starts_with("https://"));
+        assert!(root["runs"].is_array());
+
+        let run = &root["runs"][0];
+
+        // Tool info required
+        assert!(run["tool"]["driver"]["name"].is_string());
+        assert!(run["tool"]["driver"]["version"].is_string());
+        assert!(run["tool"]["driver"]["informationUri"].is_string());
+        assert!(run["tool"]["driver"]["rules"].is_array());
+
+        // Results array
+        assert!(run["results"].is_array());
+
+        let result = &run["results"][0];
+        assert!(result["ruleId"].is_string());
+        assert!(result["message"]["text"].is_string());
+        assert!(result["locations"].is_array());
+        assert!(!result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+
+        // Properties bag
+        assert!(result["properties"]["id"].is_string());
+        assert!(result["properties"]["confidence"].is_number());
+    }
+
+    #[test]
+    fn test_sarif_with_taint_flow_produces_code_flows() {
+        let flow = TaintFlowSummary {
+            source: FlowLocationSummary {
+                file_path: "app.js".into(),
+                line: 10,
+                column: Some(5),
+                symbol: "req.body".into(),
+                code_snippet: Some("const user = req.body".into()),
+            },
+            sink: FlowLocationSummary {
+                file_path: "app.js".into(),
+                line: 50,
+                column: None,
+                symbol: "exec".into(),
+                code_snippet: Some("exec(user)".into()),
+            },
+            steps: vec![
+                FlowStepSummary {
+                    step_type: "Assignment".into(),
+                    file_path: "app.js".into(),
+                    line: 20,
+                    symbol: "cmd".into(),
+                    code_snippet: Some("const cmd = user.name".into()),
+                },
+            ],
+            vulnerability_type: "Command Injection".into(),
+            confidence: 0.85,
+        };
+
+        let findings = vec![FindingInput {
+            id: Some("taint-1".into()),
+            title: Some("Command Injection".into()),
+            description: "User input reaches exec".into(),
+            severity: "critical".into(),
+            category: "Command Injection".into(),
+            cwe_id: Some("CWE-78".into()),
+            file_path: "app.js".into(),
+            start_line: 10,
+            end_line: Some(50),
+            start_column: None,
+            end_column: None,
+            code_snippet: None,
+            recommendation: None,
+            status: "confirmed".into(),
+            verification_status: None,
+            discovered_by: None,
+            code_flows: Some(vec![flow]),
+            fix_suggestions: None,
+            confidence: Some(0.85),
+        }];
+
+        let converter = SarifConverter::new();
+        let json_str = converter.convert_to_json(&findings).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        let result = &root["runs"][0]["results"][0];
+        let code_flows = &result["codeFlows"];
+        assert!(code_flows.is_array());
+        assert_eq!(code_flows[0]["threadFlows"][0]["locations"].as_array().unwrap().len(), 3);
+    }
 }

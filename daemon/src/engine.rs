@@ -720,6 +720,11 @@ impl AnalysisEngine {
         (ast_count, scan_count)
     }
 
+    /// taint cache 条目数（当前无独立 taint cache，taint 结果内嵌在 scan cache 中）
+    pub async fn taint_cache_count(&self) -> usize {
+        0
+    }
+
     /// 内存统计（用于心跳上报）
     pub async fn memory_stats(&self) -> MemoryStats {
         let engines = self.ast_engines.read().await;

@@ -9,8 +9,8 @@ use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::Duration;
 
-use crate::protocol::{Envelope, Request, Response};
-use crate::server::heartbeat_file_path;
+use crate::protocol::{Envelope, Request, RequestCommand, Response};
+use crate::server::{heartbeat_file_path, read_token_file};
 
 /// 默认地址
 const DEFAULT_ADDR: &str = "127.0.0.1:19527";
@@ -26,6 +26,7 @@ const RECONNECT_MAX_DELAY_MS: u64 = 3000;
 /// 守护进程 IPC 客户端
 pub struct DaemonClient {
     stream: tokio::net::TcpStream,
+    auth_token: Option<String>,
 }
 
 /// 心跳检测结果
@@ -52,7 +53,8 @@ impl DaemonClient {
     pub async fn connect() -> Result<Self> {
         let addr = Self::detect_addr()?;
         let stream = tokio::net::TcpStream::connect(&addr).await?;
-        Ok(Self { stream })
+        let auth_token = read_token_file();
+        Ok(Self { stream, auth_token })
     }
 
     /// 带重试的连接（指数退避）
@@ -141,9 +143,9 @@ impl DaemonClient {
     }
 
     /// 发送请求（带自动重连）
-    pub async fn send_request(&mut self, request: Request) -> Result<Response> {
+    pub async fn send_request(&mut self, command: RequestCommand) -> Result<Response> {
         // 先尝试发送
-        match self.try_send_request(&request).await {
+        match self.try_send_request(&command).await {
             Ok(resp) => return Ok(resp),
             Err(e) if is_connection_error(&e) => {
                 tracing::debug!("连接断开，尝试重连: {}", e);
@@ -164,7 +166,7 @@ impl DaemonClient {
                 Ok(stream) => {
                     self.stream = stream;
                     tracing::debug!("重连成功");
-                    return self.try_send_request(&request).await;
+                    return self.try_send_request(&command).await;
                 }
                 Err(_) => continue,
             }
@@ -174,8 +176,12 @@ impl DaemonClient {
     }
 
     /// 单次发送请求（不重试）
-    async fn try_send_request(&mut self, request: &Request) -> Result<Response> {
-        let json = serde_json::to_string(request)?;
+    async fn try_send_request(&mut self, command: &RequestCommand) -> Result<Response> {
+        let request = Request {
+            auth_token: self.auth_token.clone(),
+            command: command.clone(),
+        };
+        let json = serde_json::to_string(&request)?;
         self.stream.write_all(format!("{}\n", json).as_bytes()).await?;
         self.stream.flush().await?;
 
@@ -191,19 +197,19 @@ impl DaemonClient {
     }
 
     pub async fn ping(&mut self) -> Result<Response> {
-        self.send_request(Request::Ping).await
+        self.send_request(RequestCommand::Ping).await
     }
 
     pub async fn status(&mut self) -> Result<Response> {
-        self.send_request(Request::Status).await
+        self.send_request(RequestCommand::Status).await
     }
 
     pub async fn shutdown(&mut self) -> Result<Response> {
-        self.send_request(Request::Shutdown).await
+        self.send_request(RequestCommand::Shutdown).await
     }
 
     pub async fn load_project(&mut self, path: String) -> Result<Response> {
-        self.send_request(Request::LoadProject { path }).await
+        self.send_request(RequestCommand::LoadProject { path }).await
     }
 
     pub async fn scan(
@@ -215,7 +221,7 @@ impl DaemonClient {
         severity_filter: Option<String>,
         pattern_filter: Option<String>,
     ) -> Result<Response> {
-        self.send_request(Request::Scan {
+        self.send_request(RequestCommand::Scan {
             path,
             deep,
             enable_taint,
@@ -226,7 +232,7 @@ impl DaemonClient {
     }
 
     pub async fn trace_taint(&mut self, file_path: String) -> Result<Response> {
-        self.send_request(Request::TraceTaint { file_path }).await
+        self.send_request(RequestCommand::TraceTaint { file_path }).await
     }
 
     fn detect_addr() -> Result<String> {

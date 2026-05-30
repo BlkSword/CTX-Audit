@@ -9,7 +9,7 @@ use miette::Result;
 
 use crate::terminal::TerminalRenderer;
 use ctx_audit_daemon::client::DaemonClient;
-use ctx_audit_daemon::protocol::{Request, Response};
+use ctx_audit_daemon::protocol::{RequestCommand, Response};
 
 /// 执行 analyze 命令
 pub async fn execute(
@@ -105,7 +105,7 @@ async fn analyze_via_daemon(
 
     renderer.info(&format!("通过守护进程分析: {}", file));
 
-    let response = client.send_request(Request::Analyze {
+    let response = client.send_request(RequestCommand::Analyze {
         file_path: file.clone(),
         start_line: Some(start_line),
         end_line,

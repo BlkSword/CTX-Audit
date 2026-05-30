@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
 use ctx_audit_daemon::client::DaemonClient;
-use ctx_audit_daemon::protocol::{Request, Response};
+use ctx_audit_daemon::protocol::{RequestCommand, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -1486,7 +1486,7 @@ async fn try_daemon_analyze(
     show_symbols: bool,
 ) -> Option<serde_json::Map<String, Value>> {
     let mut client = DaemonClient::connect().await.ok()?;
-    let response = client.send_request(Request::Analyze {
+    let response = client.send_request(RequestCommand::Analyze {
         file_path: file_path.to_string(),
         start_line,
         end_line,
@@ -1504,7 +1504,7 @@ async fn try_daemon_analyze(
 
 async fn try_daemon_cross_file(project_path: &str) -> Option<Value> {
     let mut client = DaemonClient::connect().await.ok()?;
-    let response = client.send_request(Request::CrossFileAnalysis {
+    let response = client.send_request(RequestCommand::CrossFileAnalysis {
         path: project_path.to_string(),
     }).await.ok()?;
 
@@ -1520,11 +1520,11 @@ async fn try_daemon_call_graph(project_path: &str, entry: &str, depth: usize) ->
     let mut client = DaemonClient::connect().await.ok()?;
 
     // Try to load project first
-    let _ = client.send_request(Request::LoadProject {
+    let _ = client.send_request(RequestCommand::LoadProject {
         path: project_path.to_string(),
     }).await;
 
-    let response = client.send_request(Request::GetCallGraph {
+    let response = client.send_request(RequestCommand::GetCallGraph {
         entry: entry.to_string(),
         depth: Some(depth),
     }).await.ok()?;
