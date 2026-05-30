@@ -104,7 +104,7 @@ pub struct SarifResult {
     pub message: Message,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub locations: Vec<Location>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "codeFlows", skip_serializing_if = "Vec::is_empty")]
     pub code_flows: Vec<CodeFlow>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fixes: Vec<Fix>,

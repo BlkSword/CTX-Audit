@@ -9,8 +9,19 @@ use serde::{Deserialize, Serialize};
 
 /// IPC 请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Request {
+    /// 认证令牌（Ping 请求可选，其他必须）
+    #[serde(default)]
+    pub auth_token: Option<String>,
+
+    #[serde(flatten)]
+    pub command: RequestCommand,
+}
+
+/// IPC 请求命令
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
-pub enum Request {
+pub enum RequestCommand {
     /// 心跳检测
     Ping,
 
@@ -133,5 +144,130 @@ pub struct Envelope {
 impl Envelope {
     pub fn new(id: impl Into<String>, payload: Response) -> Self {
         Self { id: id.into(), payload }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_request_serialization_roundtrip() {
+        // Test that Request with auth_token serializes/deserializes correctly
+        let req = Request {
+            auth_token: Some("test-token-123".into()),
+            command: RequestCommand::Ping,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.auth_token.unwrap(), "test-token-123");
+        assert!(matches!(parsed.command, RequestCommand::Ping));
+    }
+
+    #[test]
+    fn test_request_without_token() {
+        let json = r#"{"type":"Ping"}"#;
+        let parsed: Request = serde_json::from_str(json).unwrap();
+        assert!(parsed.auth_token.is_none());
+        assert!(matches!(parsed.command, RequestCommand::Ping));
+    }
+
+    #[test]
+    fn test_scan_request_serialization() {
+        let req = Request {
+            auth_token: Some("tok".into()),
+            command: RequestCommand::Scan {
+                path: "/test/project".into(),
+                deep: true,
+                enable_taint: false,
+                enable_cross_file: false,
+                severity_filter: Some("high".into()),
+                pattern_filter: None,
+            },
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.auth_token.unwrap(), "tok");
+        match parsed.command {
+            RequestCommand::Scan { path, deep, severity_filter, .. } => {
+                assert_eq!(path, "/test/project");
+                assert!(deep);
+                assert_eq!(severity_filter.unwrap(), "high");
+            }
+            _ => panic!("Expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn test_response_pong_serialization() {
+        let resp = Response::Pong {
+            version: "2.0.0".into(),
+            uptime_secs: 42,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "Pong");
+        assert_eq!(parsed["data"]["version"], "2.0.0");
+        assert_eq!(parsed["data"]["uptime_secs"], 42);
+    }
+
+    #[test]
+    fn test_response_error_serialization() {
+        let resp = Response::Error {
+            code: "auth_failed".into(),
+            message: "Invalid token".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "Error");
+        assert_eq!(parsed["data"]["code"], "auth_failed");
+    }
+
+    #[test]
+    fn test_envelope_wraps_response() {
+        let env = Envelope::new("msg-1", Response::Ack {
+            message: "ok".into(),
+        });
+        let json = serde_json::to_string(&env).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["id"], "msg-1");
+        assert_eq!(parsed["type"], "Ack");
+        assert_eq!(parsed["data"]["message"], "ok");
+    }
+
+    #[test]
+    fn test_all_request_commands_deserialize() {
+        let commands = vec![
+            r#"{"type":"Ping"}"#,
+            r#"{"type":"Status"}"#,
+            r#"{"type":"Shutdown"}"#,
+            r#"{"type":"LoadProject","data":{"path":"/tmp/test"}}"#,
+            r#"{"type":"Scan","data":{"path":"/tmp","deep":false,"enable_taint":true,"enable_cross_file":false,"severity_filter":null,"pattern_filter":null}}"#,
+            r#"{"type":"Analyze","data":{"file_path":"src/main.rs","start_line":null,"end_line":null,"show_ast":true,"show_symbols":false}}"#,
+            r#"{"type":"TraceTaint","data":{"file_path":"src/main.rs"}}"#,
+            r#"{"type":"QuerySymbols","data":{"query":"main","limit":10}}"#,
+            r#"{"type":"GetCallGraph","data":{"entry":"main","depth":3}}"#,
+            r#"{"type":"CrossFileAnalysis","data":{"path":"/tmp"}}"#,
+            r#"{"type":"WatchStart","data":{"path":"/tmp","ignore_patterns":[]}}"#,
+            r#"{"type":"WatchStop","data":{"path":"/tmp"}}"#,
+        ];
+
+        for cmd_json in commands {
+            let req: Request = serde_json::from_str(cmd_json).unwrap();
+            assert!(req.auth_token.is_none());
+        }
+    }
+
+    #[test]
+    fn test_cache_stats_serialization() {
+        let stats = CacheStats {
+            ast_cache_entries: 5,
+            taint_cache_entries: 10,
+            scan_cache_entries: 3,
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["ast_cache_entries"], 5);
+        assert_eq!(parsed["taint_cache_entries"], 10);
     }
 }

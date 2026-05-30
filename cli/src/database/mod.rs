@@ -17,7 +17,7 @@ pub use queries::*;
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
-use sqlx::{Sqlite, Pool};
+use sqlx::{Sqlite, Pool, Row};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tracing::{debug, info};
@@ -163,11 +163,80 @@ pub async fn migrate_from_tauri() -> Result<()> {
 
     info!("Found Tauri database at {:?}", tauri_db_path);
 
-    // TODO: 实现数据迁移逻辑
-    // 1. 连接到 Tauri 数据库
-    // 2. 读取所有数据
-    // 3. 写入新数据库
-    // 4. 验证迁移成功
+    // 连接到 Tauri 数据库
+    let tauri_options = SqliteConnectOptions::from_str(
+        tauri_db_path.to_str().unwrap(),
+    )?
+    .read_only(true);
+
+    let tauri_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(tauri_options)
+        .await
+        .context("Failed to connect to Tauri database")?;
+
+    // 读取 audits 数据
+    let audit_rows = sqlx::query(
+        "SELECT id, project_id, status, severity, created_at FROM audits",
+    )
+    .fetch_all(&tauri_pool)
+    .await
+    .unwrap_or_default();
+
+    info!("Migrating {} audit records from Tauri", audit_rows.len());
+
+    // 读取 settings
+    let setting_rows = sqlx::query(
+        "SELECT key, value FROM settings",
+    )
+    .fetch_all(&tauri_pool)
+    .await
+    .unwrap_or_default();
+
+    // 写入新数据库（使用默认路径）
+    let db = Database::with_default_path().await?;
+    db.initialize().await?;
+
+    for row in &audit_rows {
+        let id: String = row.get("id");
+        let project_id: Option<String> = row.get("project_id");
+        let status: String = row.try_get::<String, _>("status").unwrap_or_default();
+        let created_at: String = row.try_get::<String, _>("created_at").unwrap_or_default();
+
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO audit_sessions (id, project_id, status, created_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(&project_id)
+        .bind(&status)
+        .bind(&created_at)
+        .execute(db.pool())
+        .await;
+    }
+
+    // 迁移 settings
+    for row in &setting_rows {
+        let key: String = row.get("key");
+        let value: String = row.get("value");
+
+        let _ = sqlx::query(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+        )
+        .bind(&key)
+        .bind(&value)
+        .execute(db.pool())
+        .await;
+    }
+
+    tauri_pool.close().await;
+    db.close().await;
+
+    info!(
+        "Migration complete: {} audits, {} settings",
+        audit_rows.len(),
+        setting_rows.len()
+    );
 
     Ok(())
 }
