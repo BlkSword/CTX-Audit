@@ -30,7 +30,7 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
 
-**覆盖范围**：20+ 漏洞类型（注入、XSS、SSRF、反序列化、路径遍历...），AST 分析支持 12 种语言（JS/TS/Python/Java/Rust/Go/C/C++...），文件扫描覆盖 18 种扩展名，内置 Next.js、React、Django、Spring、Express、Laravel、Rails 框架感知规则。
+**覆盖范围**：20+ 漏洞类型（注入、XSS、SSRF、反序列化、路径遍历...），AST 分析支持 11 种语言（JavaScript/TypeScript/Python/Java/Rust/Go/C/C++/HTML/CSS/JSON），文件扫描覆盖 18 种扩展名，内置 Next.js、React、Django、Spring、Express、Laravel、Rails 框架感知规则。
 
 ```
 ┌───────────────────┐     IPC (TCP)     ┌──────────────────────────────┐
@@ -427,14 +427,17 @@ key 格式为 `文件路径:行号:漏洞类型`，value 为忽略原因。扫�
 
 `--cross-file`（或 `--deep`）启用跨文件、跨过程分析：
 
-- **调用图构建**：自动提取项目函数节点和调用关系
-- **跨文件解析**：将裸函数名匹配到全局函数，建立跨文件调用边
+- **调用图构建**：自动提取项目函数节点和调用关系，支持匿名回调注册（箭头函数/函数表达式）
+- **跨文件解析**：两阶段调用解析——Phase 1 通过 Import/Require 别名精确匹配目标文件和导出名，Phase 2 全局名称回退
+- **方法调用追踪**：`CallTarget` 保留 `obj.method()` 的 receiver 信息，receiver 感知的跨文件调用匹配
 - **函数摘要**：自底向上计算每个函数的污点传播签名
-- **路径追踪**：DFS 查找 source→sink 的跨文件调用路径
+- **路径追踪**：BFS 查找 source→sink 的跨文件调用路径
 - **上下文组装**：识别 callers、callees、信任边界
-- **CPG 自动摘要**：Stage B 构建的 FunctionCPG 缓存传递给 Stage C，自动生成精确函数摘要（替代启发式猜测），提供准确的 sink 行号和参数→返回值传播信息
-- **路径敏感分析**：条件分支感知的污点传播，`if (isSafe(x))` 的 True 分支自动标记净化，减少条件保护下的误报
-- **属性路径追踪**：污点状态以 AccessPath 为 key，支持前缀匹配——`req.body` 被污染时 `req.body.name` 自动检出，`req.body.name` 不影响 `req.body.email`
+- **CPG 自动摘要**：Stage B 构建的 FunctionCPG 缓存传递给 Stage C，自动生成精确函数摘要
+- **路径敏感分析**：条件分支感知的污点传播，`if (isSafe(x))` 的 True 分支自动标记净化
+- **属性路径追踪**：AccessPath 前缀匹配——`req.body` 污染时 `req.body.name` 自动检出
+- **类型层次**：Class/Interface/Struct 继承 DAG + 虚方法分发（Java/TypeScript/Python）
+- **框架中间件**：Express `app.use()` 中间件虚拟边注入，Django MIDDLEWARE 检测
 
 支持 12 种语言：JavaScript/JSX, TypeScript/TSX, Python, Java, Rust, Go, C, C++, HTML, CSS, JSON。
 
@@ -767,7 +770,9 @@ core/                     # 确定性分析引擎
 │   │   ├── query.rs      # CodePropertyGraph 统一查询 API
 │   │   ├── path_taint.rs # PathSensitiveState + AccessPath 前缀匹配 + 分支合并
 │   │   └── summary.rs    # CPG 自动函数摘要生成
-│   └── imports.rs        # 导入解析
+│   ├── imports.rs        # 导入解析
+│   ├── type_hierarchy.rs # 类型层次结构（extends/implements DAG）
+│   └── middleware.rs     # 框架中间件建模（Express app.use）
 ├── scanner/              # 扫描器
 │   ├── regex_scanner.rs  # 正则扫描
 │   ├── sca_scanner.rs    # SCA 扫描（OSV API + 本地缓存）
@@ -847,7 +852,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo build --release
-      - run: ./target/release/ctx-audit -o sarif scan . --deep -o results.sarif   # SARIF for GitHub
+      - run: ./target/release/ctx-audit scan . --deep -o results.sarif   # SARIF for GitHub
       # 默认 -o llm 可直接输出 LLM 格式给后续 AI 分析
       - uses: github/codeql-action/upload-sarif@v3
         with:
@@ -889,7 +894,7 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 
 ```bash
 cargo build --release        # 构建（ctx-audit + ctx-audit-daemon）
-cargo test --workspace       # 运行测试（184 个测试）
+cargo test --workspace       # 运行测试（218 个测试）
 cargo fmt                    # 格式化
 cargo clippy                 # 代码检查
 ```
@@ -900,7 +905,7 @@ cargo clippy                 # 代码检查
 |------|------|
 | CPG 分析引擎 | CFG + AST 元数据 + 别名映射融合，路径敏感污点传播，AccessPath 属性路径追踪，12 语言 AST，30+ sanitizer |
 | 动态语言追踪 | AccessPath + AliasMap + 解构 + 属性访问 + await + Promise 链 |
-| 跨文件追踪 | 调用图 + 函数摘要 + DFS 路径查找（`--cross-file`） + CPG 自动函数摘要（精确 sink 行号，替代启发式） |
+| 跨文件追踪 | 调用图 + Import-Aware 别名解析 + Callback 注册 + CallTarget receiver 追踪 + 类型层次虚方法分发 + 框架中间件虚拟边 + CPG 自动摘要 + BFS 路径查找 |
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
 | 模式匹配规则 | 40 条模式规则 + 5 条污点规则，覆盖 6 语言 + 6 框架 |
 | 误报控制 | 文件角色分类 + 安全屏障检测 + 多引擎置信度融合 + 基线抑制 |
@@ -910,7 +915,7 @@ cargo clippy                 # 代码检查
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
 | 配置驱动 | 所有排除项、严重程度阈值、引擎开关均可通过 config.toml 控制 |
-| 测试覆盖 | 184 个测试 |
+| 测试覆盖 | 218 个测试 |
 
 ## 许可证
 
