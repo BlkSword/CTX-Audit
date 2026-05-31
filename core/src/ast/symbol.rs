@@ -212,6 +212,21 @@ pub struct ArgInfo {
     pub referenced_vars: Vec<String>,
 }
 
+/// 回调参数信息 — 调用参数中的内联函数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallbackArg {
+    /// 回调参数名列表
+    pub params: Vec<String>,
+    /// 起始行（1-based）
+    pub start_line: usize,
+    /// 结束行（1-based）
+    pub end_line: usize,
+    /// 回调体字节范围 (start, end)
+    pub body_range: (usize, usize),
+    /// 回调体源码（截断至 500 字符）
+    pub body_text: String,
+}
+
 /// 函数调用信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallInfo {
@@ -227,6 +242,9 @@ pub struct CallInfo {
     pub is_method: bool,
     /// 方法调用的接收者（obj.method() 中的 obj）
     pub receiver: Option<String>,
+    /// 调用参数中的内联回调函数
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callback_args: Vec<CallbackArg>,
 }
 
 /// 返回语句信息

@@ -18,6 +18,8 @@ pub mod async_flow;
 pub mod attack_surface;
 pub mod risk_patterns;
 pub mod cpg;
+pub mod type_hierarchy;
+pub mod middleware;
 
 pub use cpg::{
     FunctionCPG, FunctionSignature, CPGNodeMeta, ConditionInfo,
@@ -65,3 +67,4 @@ pub use risk_patterns::{
     RiskPattern, RiskPatternMatch, RiskPatternScanner,
     AffectedEntry, EvidenceSnippet, PatternCondition,
 };
+pub use type_hierarchy::{TypeHierarchy, TypeInfo, TypeKind, MethodSignature, ResolvedMethod};
