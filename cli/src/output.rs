@@ -21,6 +21,9 @@ pub enum OutputFormat {
     /// JSON
     Json,
 
+    /// LLM 面向的结构化 JSON（含代码上下文、污点链、置信度）
+    Llm,
+
     /// Markdown
     Markdown,
 
@@ -34,6 +37,7 @@ impl OutputFormat {
         match s.to_lowercase().as_str() {
             "text" => Some(OutputFormat::Text),
             "json" => Some(OutputFormat::Json),
+            "llm" => Some(OutputFormat::Llm),
             "markdown" | "md" => Some(OutputFormat::Markdown),
             "sarif" => Some(OutputFormat::Sarif),
             _ => None,
@@ -53,6 +57,7 @@ impl OutputFormatter {
         match format {
             OutputFormat::Text => Self::format_findings_text(findings),
             OutputFormat::Json => Self::format_findings_json(findings),
+            OutputFormat::Llm => Self::format_findings_llm(findings),
             OutputFormat::Markdown => Self::format_findings_markdown(findings),
             OutputFormat::Sarif => Self::format_findings_sarif(findings),
         }
@@ -102,6 +107,21 @@ impl OutputFormatter {
     /// JSON 格式
     fn format_findings_json(findings: &[FindingData]) -> Result<String> {
         serde_json::to_string_pretty(findings).map_err(Into::into)
+    }
+
+    /// LLM 面向的结构化 JSON 输出（含统计摘要）
+    fn format_findings_llm(findings: &[FindingData]) -> Result<String> {
+        let mut by_severity = std::collections::HashMap::new();
+        for f in findings {
+            *by_severity.entry(f.severity.clone()).or_insert(0) += 1;
+        }
+        let output = serde_json::json!({
+            "generated_at": chrono::Utc::now().to_rfc3339(),
+            "total_findings": findings.len(),
+            "by_severity": by_severity,
+            "findings": findings,
+        });
+        serde_json::to_string_pretty(&output).map_err(Into::into)
     }
 
     /// Markdown 格式
