@@ -1,5 +1,5 @@
 use crate::ast::symbol::{
-    ArgInfo, Assignment, CallInfo, Field, FunctionBody, NodeInfo, ReturnInfo, Symbol, SymbolKind,
+    ArgInfo, Assignment, CallInfo, CallbackArg, Field, FunctionBody, NodeInfo, ReturnInfo, Symbol, SymbolKind,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -1067,6 +1067,13 @@ impl ASTParser {
                     Vec::new()
                 };
 
+                // 检测回调参数（箭头函数、函数表达式等）
+                let callback_args = if let Some(args_node) = args_node {
+                    Self::detect_callback_args(&args_node, content)
+                } else {
+                    Vec::new()
+                };
+
                 results.push(CallInfo {
                     callee: callee_name,
                     arguments,
@@ -1074,6 +1081,7 @@ impl ASTParser {
                     column: node.start_position().column,
                     is_method,
                     receiver,
+                    callback_args,
                 });
             }
         }
@@ -1123,6 +1131,110 @@ impl ASTParser {
             });
         }
         args
+    }
+
+    /// 检测调用参数中的内联回调函数（箭头函数、函数表达式等）
+    fn detect_callback_args(args_node: &Node, content: &str) -> Vec<CallbackArg> {
+        let mut callbacks = Vec::new();
+        let mut cursor = args_node.walk();
+        for child in args_node.children(&mut cursor) {
+            let kind = child.kind();
+            if kind == "(" || kind == ")" || kind == "," || kind == "argument_list" {
+                continue;
+            }
+
+            // JS/TS: arrow_function, function_expression, function_declaration
+            // Python: lambda, function_definition (nested def)
+            // Java: lambda_expression
+            let is_callback = matches!(
+                kind,
+                "arrow_function" | "function_expression" | "function_declaration"
+                    | "function_definition" | "lambda" | "lambda_expression"
+            );
+
+            if is_callback {
+                let params = Self::extract_callback_params(&child, content, kind);
+                let start_line = child.start_position().row + 1;
+                let end_line = child.end_position().row + 1;
+                let byte_range = child.byte_range();
+                let body_range = (byte_range.start, byte_range.end);
+                let body_text = content[byte_range].to_string();
+                // 截断至 500 字符
+                let body_text = if body_text.len() > 500 {
+                    format!("{}...", &body_text[..500])
+                } else {
+                    body_text
+                };
+
+                callbacks.push(CallbackArg {
+                    params,
+                    start_line,
+                    end_line,
+                    body_range,
+                    body_text,
+                });
+            }
+        }
+        callbacks
+    }
+
+    /// 从回调 AST 节点中提取参数名列表
+    fn extract_callback_params(node: &Node, content: &str, kind: &str) -> Vec<String> {
+        // 查找 parameters / formal_parameters 子节点
+        let params_node = node
+            .child_by_field_name("parameters")
+            .or_else(|| node.child_by_field_name("params"));
+
+        if let Some(params_node) = params_node {
+            let mut params = Vec::new();
+            let mut cursor = params_node.walk();
+            let param_kinds = if kind == "lambda" || kind == "lambda_expression" {
+                // lambda 的参数可能是裸标识符，不是嵌套在 parameter 节点中
+                Self::collect_lambda_params(&params_node, content)
+            } else {
+                for child in params_node.children(&mut cursor) {
+                    let ck = child.kind();
+                    if ck == "(" || ck == ")" || ck == "," {
+                        continue;
+                    }
+                    // JS/TS: "identifier" 在 "required_parameter" / "optional_parameter" 内
+                    // Python: "identifier" 在 "typed_parameter" / "default_parameter" 内
+                    // 提取最内层的标识符
+                    Self::extract_identifier_text(&child, content)
+                        .into_iter()
+                        .for_each(|p| params.push(p));
+                }
+                params
+            };
+            param_kinds
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// 提取 Python lambda 的参数（lambda x, y: expr → params = ["x", "y"]）
+    fn collect_lambda_params(params_node: &Node, content: &str) -> Vec<String> {
+        let mut params = Vec::new();
+        let mut cursor = params_node.walk();
+        for child in params_node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                params.push(content[child.byte_range()].to_string());
+            }
+        }
+        params
+    }
+
+    /// 从参数子节点中提取标识符文本
+    fn extract_identifier_text(node: &Node, content: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        if node.kind() == "identifier" {
+            names.push(content[node.byte_range()].to_string());
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            names.extend(Self::extract_identifier_text(&child, content));
+        }
+        names
     }
 
     fn collect_returns_recursive(node: &Node, content: &str, results: &mut Vec<ReturnInfo>) {
