@@ -73,6 +73,24 @@ pub enum RequestCommand {
 
     /// 停止文件监控
     WatchStop { path: String },
+
+    /// 查询调用图：谁调用了指定函数
+    QueryCallers { project_path: String, file_path: String, function_name: String, recursive: Option<bool> },
+
+    /// 查询调用图：指定函数调用了谁
+    QueryCallees { project_path: String, file_path: String, function_name: String, recursive: Option<bool> },
+
+    /// 查找 source→sink 调用路径
+    FindCallPath { project_path: String, source_file: String, source_function: String, sink_file: String, sink_function: String },
+
+    /// 获取调用图统计
+    GetGraphStats { project_path: String },
+
+    /// 列出文件中被索引的函数
+    ListFileFunctions { project_path: String, file_path: String },
+
+    /// 追踪变量流
+    TraceVariableFlow { project_path: String, file_path: String, function_name: String },
 }
 
 /// IPC 响应
@@ -123,6 +141,9 @@ pub enum Response {
 
     /// 错误
     Error { code: String, message: String },
+
+    /// 调用图查询结果
+    GraphQueryResult { result: serde_json::Value },
 }
 
 /// 缓存统计

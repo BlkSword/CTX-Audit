@@ -711,6 +711,66 @@ impl AnalysisEngine {
         }))
     }
 
+    // ── 调用图查询 ──────────────────────────────────
+
+    fn build_query_engine_for_project(&self, project_path: &str) -> anyhow::Result<deepaudit_core::CallGraphQueryEngine> {
+        let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+        let result = analyzer.analyze_project(std::path::Path::new(project_path));
+        Ok(deepaudit_core::CallGraphQueryEngine::from_result(&result))
+    }
+
+    pub fn graph_query_callers(
+        &self, project_path: &str, file_path: &str, function_name: &str, recursive: bool,
+    ) -> anyhow::Result<serde_json::Value> {
+        let engine = self.build_query_engine_for_project(project_path)?;
+        let callers = if recursive {
+            engine.query_all_callers(file_path, function_name)
+        } else {
+            engine.query_callers(file_path, function_name)
+        };
+        Ok(serde_json::to_value(callers)?)
+    }
+
+    pub fn graph_query_callees(
+        &self, project_path: &str, file_path: &str, function_name: &str, recursive: bool,
+    ) -> anyhow::Result<serde_json::Value> {
+        let engine = self.build_query_engine_for_project(project_path)?;
+        let callees = if recursive {
+            engine.query_all_callees(file_path, function_name)
+        } else {
+            engine.query_callees(file_path, function_name)
+        };
+        Ok(serde_json::to_value(callees)?)
+    }
+
+    pub fn graph_find_call_path(
+        &self, project_path: &str, source_file: &str, source_function: &str, sink_file: &str, sink_function: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let engine = self.build_query_engine_for_project(project_path)?;
+        let path = engine.find_call_path(source_file, source_function, sink_file, sink_function);
+        Ok(serde_json::to_value(path)?)
+    }
+
+    pub fn graph_get_stats(&self, project_path: &str) -> anyhow::Result<serde_json::Value> {
+        let engine = self.build_query_engine_for_project(project_path)?;
+        let stats = engine.query_graph_stats();
+        Ok(serde_json::to_value(stats)?)
+    }
+
+    pub fn graph_list_functions(&self, project_path: &str, file_path: &str) -> anyhow::Result<serde_json::Value> {
+        let engine = self.build_query_engine_for_project(project_path)?;
+        let functions = engine.query_functions_in_file(file_path);
+        Ok(serde_json::to_value(functions)?)
+    }
+
+    pub fn graph_trace_flow(
+        &self, project_path: &str, file_path: &str, function_name: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let engine = self.build_query_engine_for_project(project_path)?;
+        let flow = engine.trace_variable_flow(file_path, function_name);
+        Ok(serde_json::to_value(flow)?)
+    }
+
     // ── 缓存统计 ─────────────────────────────────────
 
     pub async fn cache_stats(&self) -> (usize, usize) {

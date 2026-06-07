@@ -41,10 +41,16 @@ pub mod taint {
         DataFlowAnalysis, FlowGraph, FlowNode as DataFlowNode,
         EnhancedFlowGraph, EnhancedFlowNode, EnhancedNodeType, ControlFlowEdge, EdgeType,
         CrossFileTaintAnalyzer, CrossFileTaintResult, CrossFileAnalysisStats,
-        CallGraph, CallGraphNode, FunctionParameter,
+        CallGraph, CallGraphNode, FunctionParameter, CallTarget,
         InterproceduralTaintFlow, InterproceduralStep, InterproceduralStepType,
         FunctionSummary, SinkReachability, SummaryPropagationResult,
         ContextAssembler, FileContext, CallerInfo, CalleeInfo, TrustBoundaryInfo,
+        ImportResolution,
+        CallGraphQueryEngine, CallerEvidence, CalleeEvidence, CallPath, PathStep,
+        ReachabilityResult, ReachableNode, ReachableSink,
+        ResolvedCallTarget, TypeChainResult, MethodEvidence, MiddlewareEvidence,
+        RouteEvidence, CallbackEvidence, VariableFlowResult, TaintPathEvidence,
+        GraphStats, FunctionInfo,
     };
 }
 
@@ -99,9 +105,14 @@ pub use analysis::{
     ImportResolver, SymbolReference, CrossFileReference,
     FunctionSummary, CrossFileTaintAnalyzer,
     ContextAssembler, FileContext, CallerInfo, CalleeInfo, TrustBoundaryInfo,
+    CallTarget,
     AttackSurfaceMapper, AttackSurface, AttackSurfaceStats,
     EntryPoint, EntryType, TrustBoundary, EntryContext,
     RiskPatternScanner, RiskPatternMatch, RiskPattern, PatternCondition,
+    CallGraphQueryEngine, CallerEvidence, CalleeEvidence, CallPath, PathStep,
+    ReachabilityResult, ResolvedCallTarget, TypeChainResult, MiddlewareEvidence,
+    CallbackEvidence, VariableFlowResult, TaintPathEvidence, GraphStats, FunctionInfo,
+    ImportResolution,
 };
 
 pub mod error {

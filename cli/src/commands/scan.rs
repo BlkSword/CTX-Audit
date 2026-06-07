@@ -70,6 +70,8 @@ pub async fn execute(
     daemon: bool,
     exclude: String,
     sca_enabled: bool,
+    graph_output: Option<String>,
+    query_mode: bool,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -100,10 +102,14 @@ pub async fn execute(
 
     // 守护进程模式
     if daemon {
+        if graph_output.is_some() || query_mode {
+            renderer.warning("--graph-output 和 --query-mode 在 daemon 模式下不可用，降级为本地扫描");
+            return scan_local(path, rules_dir, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, exclude_dirs, &mut renderer, sca_options, graph_output, query_mode).await;
+        }
         return scan_via_daemon(path, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, &mut renderer).await;
     }
 
-    scan_local(path, rules_dir, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, exclude_dirs, &mut renderer, sca_options).await
+    scan_local(path, rules_dir, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, exclude_dirs, &mut renderer, sca_options, graph_output, query_mode).await
 }
 
 /// 从配置文件 + CLI flag 构建 SCA 选项
@@ -221,6 +227,8 @@ async fn scan_local(
     exclude_dirs: Vec<String>,
     renderer: &mut TerminalRenderer,
     sca_options: ScaScanOptions,
+    graph_output: Option<String>,
+    query_mode: bool,
 ) -> Result<()> {
     let mode = match (enable_taint, enable_cross_file) {
         (true, true) => "深度扫描 (规则 + 污点 + 跨文件)",
@@ -386,6 +394,59 @@ async fn scan_local(
         };
 
         save_scan_results(&effective_file_path, &filtered_findings, &effective_format, renderer).await?;
+    }
+
+    // --graph-output: 单独构建并导出调用图
+    if let Some(ref graph_path) = graph_output {
+        renderer.info("构建跨文件调用图...");
+        let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+        let result = analyzer.analyze_project(std::path::Path::new(&path));
+        let engine = deepaudit_core::CallGraphQueryEngine::from_result(&result);
+
+        let stats = engine.query_graph_stats();
+        let all_functions: Vec<_> = engine.query_files().iter()
+            .flat_map(|f| engine.query_functions_in_file(f))
+            .collect();
+        let all_callers: Vec<_> = all_functions.iter()
+            .flat_map(|f| engine.query_callers(&f.id.split(':').next().unwrap_or(""), &f.name))
+            .take(500)
+            .collect();
+        let all_callees: Vec<_> = all_functions.iter()
+            .flat_map(|f| engine.query_callees(&f.id.split(':').next().unwrap_or(""), &f.name))
+            .take(500)
+            .collect();
+
+        let graph_json = serde_json::json!({
+            "project_path": &path,
+            "stats": stats,
+            "functions": all_functions,
+            "sample_callers": all_callers,
+            "sample_callees": all_callees,
+        });
+
+        let graph_content = serde_json::to_string_pretty(&graph_json)
+            .map_err(|e| miette::miette!("JSON serialization failed: {}", e))?;
+        tokio::fs::write(graph_path, graph_content)
+            .await
+            .map_err(|e| miette::miette!("Failed to write graph: {}", e))?;
+        renderer.info(&format!("调用图已导出到: {}", graph_path));
+    }
+
+    // --query-mode: 仅构建调用图，不运行规则扫描输出
+    if query_mode {
+        renderer.info("查询模式：构建跨文件调用图...");
+        let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+        let result = analyzer.analyze_project(std::path::Path::new(&path));
+        let engine = deepaudit_core::CallGraphQueryEngine::from_result(&result);
+        let stats = engine.query_graph_stats();
+
+        renderer.info(&format!(
+            "调用图已就绪: {} 节点, {} 边, {} 跨文件边, {} source, {} sink, {} 类型, {} 中间件",
+            stats.total_nodes, stats.total_edges, stats.cross_file_edges,
+            stats.taint_sources, stats.taint_sinks,
+            stats.type_count, stats.middleware_count,
+        ));
+        renderer.info("调用图已加载到内存，可通过 MCP 工具查询 (query_callers, trace_variable_flow 等)");
     }
 
     Ok(())
@@ -645,7 +706,7 @@ async fn scan_via_daemon(
         Err(e) => {
             renderer.warning(&format!("连接守护进程失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, vec![], renderer, ScaScanOptions::default()).await;
+            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, vec![], renderer, ScaScanOptions::default(), None, false).await;
         }
     };
 
@@ -660,7 +721,7 @@ async fn scan_via_daemon(
             pb.finish_with_message("守护进程扫描失败");
             renderer.warning(&format!("守护进程扫描失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, vec![], renderer, ScaScanOptions::default()).await;
+            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, vec![], renderer, ScaScanOptions::default(), None, false).await;
         }
     };
 

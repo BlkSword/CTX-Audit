@@ -445,6 +445,50 @@ async fn handle_request(
                 }
             }
         }
+
+        // ── 调用图查询命令 ──────────────────────────
+
+        RequestCommand::QueryCallers { project_path, file_path, function_name, recursive } => {
+            match engine.graph_query_callers(&project_path, &file_path, &function_name, recursive.unwrap_or(false)) {
+                Ok(result) => Response::GraphQueryResult { result },
+                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+            }
+        }
+
+        RequestCommand::QueryCallees { project_path, file_path, function_name, recursive } => {
+            match engine.graph_query_callees(&project_path, &file_path, &function_name, recursive.unwrap_or(false)) {
+                Ok(result) => Response::GraphQueryResult { result },
+                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+            }
+        }
+
+        RequestCommand::FindCallPath { project_path, source_file, source_function, sink_file, sink_function } => {
+            match engine.graph_find_call_path(&project_path, &source_file, &source_function, &sink_file, &sink_function) {
+                Ok(result) => Response::GraphQueryResult { result },
+                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+            }
+        }
+
+        RequestCommand::GetGraphStats { project_path } => {
+            match engine.graph_get_stats(&project_path) {
+                Ok(result) => Response::GraphQueryResult { result },
+                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+            }
+        }
+
+        RequestCommand::ListFileFunctions { project_path, file_path } => {
+            match engine.graph_list_functions(&project_path, &file_path) {
+                Ok(result) => Response::GraphQueryResult { result },
+                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+            }
+        }
+
+        RequestCommand::TraceVariableFlow { project_path, file_path, function_name } => {
+            match engine.graph_trace_flow(&project_path, &file_path, &function_name) {
+                Ok(result) => Response::GraphQueryResult { result },
+                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+            }
+        }
     }
 }
 

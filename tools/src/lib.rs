@@ -13,6 +13,7 @@ pub mod ast_tools;
 pub mod search_tools;
 pub mod taint_tools;
 pub mod pattern_tools;
+pub mod call_graph_tools;
 
 // 重新导出常用类型
 pub use registry::{ToolRegistry, Tool};

@@ -296,6 +296,15 @@ pub struct CrossFileTaintResult {
     pub taint_flows: Vec<InterproceduralTaintFlow>,
     /// 分析统计
     pub stats: CrossFileAnalysisStats,
+    /// 类型层次结构（类/接口继承关系）
+    #[serde(skip)]
+    pub type_hierarchy: super::type_hierarchy::TypeHierarchy,
+    /// 框架中间件模型
+    #[serde(skip)]
+    pub middleware_model: super::middleware::MiddlewareModel,
+    /// 文件导入别名映射: normalized_file_path → (local_name → ImportResolution)
+    #[serde(skip)]
+    pub file_import_aliases: HashMap<String, HashMap<String, ImportResolution>>,
 }
 
 /// 过程间污点流
@@ -420,14 +429,14 @@ pub struct CrossFileAnalysisStats {
 }
 
 /// 导入解析结果 — 将调用者文件中的局部名称映射到目标文件和导出名称
-#[derive(Debug, Clone)]
-struct ImportResolution {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportResolution {
     /// 源模块路径（如 './db', '../utils/helper'）
-    source_module: String,
+    pub source_module: String,
     /// 被导入的原始导出名称
-    original_export_name: String,
+    pub original_export_name: String,
     /// 是否为默认导入（无法确定具体导出名称）
-    is_default: bool,
+    pub is_default: bool,
 }
 
 /// 跨文件污点分析器
@@ -515,6 +524,9 @@ impl CrossFileTaintAnalyzer {
             call_graph: Arc::new(std::mem::take(&mut self.call_graph)),
             taint_flows,
             stats,
+            type_hierarchy: std::mem::take(&mut self.type_hierarchy),
+            middleware_model: std::mem::take(&mut self.middleware_model),
+            file_import_aliases: std::mem::take(&mut self.file_import_aliases),
         }
     }
 
@@ -550,6 +562,9 @@ impl CrossFileTaintAnalyzer {
             call_graph: Arc::new(std::mem::take(&mut self.call_graph)),
             taint_flows,
             stats,
+            type_hierarchy: std::mem::take(&mut self.type_hierarchy),
+            middleware_model: std::mem::take(&mut self.middleware_model),
+            file_import_aliases: std::mem::take(&mut self.file_import_aliases),
         }
     }
 
@@ -593,6 +608,9 @@ impl CrossFileTaintAnalyzer {
             call_graph: Arc::new(std::mem::take(&mut self.call_graph)),
             taint_flows,
             stats,
+            type_hierarchy: std::mem::take(&mut self.type_hierarchy),
+            middleware_model: std::mem::take(&mut self.middleware_model),
+            file_import_aliases: std::mem::take(&mut self.file_import_aliases),
         }
     }
 
@@ -2337,7 +2355,7 @@ impl ContextAssembler {
 }
 
 /// 标准化文件路径（统一使用正斜杠）
-fn normalize_path(path: &str) -> String {
+pub fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 

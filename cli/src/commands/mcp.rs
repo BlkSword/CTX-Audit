@@ -436,6 +436,125 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 }
             }),
         },
+        // ── 调用图查询工具（Cross-File Call Graph）────
+        ToolDefinition {
+            name: "query_callers",
+            description: "Query the cross-file call graph: find all functions that call a given function. Returns deterministic evidence: caller function name, file, line number, and receiver info. Use this to trace backward from a sink to find entry points.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "file_path": {"type": "string", "description": "File path containing the target function (relative to project)"},
+                    "function_name": {"type": "string", "description": "Name of the target function"},
+                    "recursive": {"type": "boolean", "description": "Recursively find all transitive callers (default: false)"}
+                },
+                "required": ["project_path", "file_path", "function_name"]
+            }),
+        },
+        ToolDefinition {
+            name: "query_callees",
+            description: "Query the cross-file call graph: find all functions called by a given function. Returns each callee with file, line, receiver, and resolution status. Use this to trace forward from an entry point to find sinks.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "file_path": {"type": "string", "description": "File path containing the target function"},
+                    "function_name": {"type": "string", "description": "Name of the target function"},
+                    "recursive": {"type": "boolean", "description": "Recursively find all transitive callees (default: false)"}
+                },
+                "required": ["project_path", "file_path", "function_name"]
+            }),
+        },
+        ToolDefinition {
+            name: "find_call_path",
+            description: "Find the exact call path from a source function to a sink function in the cross-file call graph. Returns each step with file, function, line number. If a path exists, this is DETERMINISTIC evidence that the source can reach the sink — use this to confirm or refute potential vulnerabilities.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "source_file": {"type": "string", "description": "File containing the source function"},
+                    "source_function": {"type": "string", "description": "Source function name (taint entry point)"},
+                    "sink_file": {"type": "string", "description": "File containing the sink function"},
+                    "sink_function": {"type": "string", "description": "Sink function name (dangerous operation)"}
+                },
+                "required": ["project_path", "source_file", "source_function", "sink_file", "sink_function"]
+            }),
+        },
+        ToolDefinition {
+            name: "resolve_method_call",
+            description: "Resolve a method call like db.query(x) to its actual implementation. Uses import aliases, receiver tracking, and type hierarchy. Returns candidate implementations with resolution method and confidence. Essential for distinguishing db.query() from logger.query().",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "file_path": {"type": "string", "description": "File containing the method call"},
+                    "line": {"type": "integer", "description": "Line number of the method call"},
+                    "receiver": {"type": "string", "description": "Receiver variable name (e.g., 'db' in db.query())"},
+                    "method": {"type": "string", "description": "Method name (e.g., 'query' in db.query())"}
+                },
+                "required": ["project_path", "file_path", "line", "receiver", "method"]
+            }),
+        },
+        ToolDefinition {
+            name: "query_type_hierarchy",
+            description: "Get the full class inheritance hierarchy from the cross-file analysis. Returns parent classes, child classes, interface implementations, and all methods (including inherited). Use this to understand virtual method dispatch for object-oriented code.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "class_name": {"type": "string", "description": "Class name to query"}
+                },
+                "required": ["project_path", "class_name"]
+            }),
+        },
+        ToolDefinition {
+            name: "query_middleware_chain",
+            description: "Get Express app.use() / Django MIDDLEWARE registrations detected by the framework-aware scanner. Shows which middleware functions affect which routes. Use this to find authentication bypass vulnerabilities — if a route is NOT covered by auth middleware, it may be unauthenticated.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "file_path": {"type": "string", "description": "File path to query middleware for (optional — omit for all middleware)"}
+                },
+                "required": ["project_path"]
+            }),
+        },
+        ToolDefinition {
+            name: "trace_variable_flow",
+            description: "Trace a tainted source function through the cross-file call graph to find all reachable sinks. Returns each sink with its complete call path, hop count, and vulnerability type. Use this to quickly assess whether an entry point poses a real security risk.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "file_path": {"type": "string", "description": "File containing the source function"},
+                    "function_name": {"type": "string", "description": "Source function name (e.g., handleRequest, getUserInput)"}
+                },
+                "required": ["project_path", "file_path", "function_name"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_graph_stats",
+            description: "Get cross-file call graph statistics: total function nodes, callback nodes, edges, cross-file edges, taint sources/sinks, file count, type count, and middleware count. Use this first to understand project scale and what the analysis engine has discovered.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"}
+                },
+                "required": ["project_path"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_file_functions",
+            description: "List all functions in a file that are indexed in the cross-file call graph. Shows function name, line range, whether it's a taint source/sink/callback, call count, and caller count. Use this to browse file structure and identify analysis targets.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "file_path": {"type": "string", "description": "File path to list functions for"}
+                },
+                "required": ["project_path", "file_path"]
+            }),
+        },
     ]
 }
 
@@ -463,6 +582,16 @@ async fn handle_tool_call(name: &str, arguments: &Value) -> Value {
         "get_project_info" => tool_get_project_info(arguments).await,
         "validate_finding" => tool_validate_finding(arguments).await,
         "list_rules" => tool_list_rules(arguments).await,
+        // 调用图查询工具
+        "query_callers" => tool_query_callers(arguments).await,
+        "query_callees" => tool_query_callees(arguments).await,
+        "find_call_path" => tool_find_call_path(arguments).await,
+        "resolve_method_call" => tool_resolve_method_call(arguments).await,
+        "query_type_hierarchy" => tool_query_type_hierarchy(arguments).await,
+        "query_middleware_chain" => tool_query_middleware_chain(arguments).await,
+        "trace_variable_flow" => tool_trace_variable_flow(arguments).await,
+        "get_graph_stats" => tool_get_graph_stats_handler(arguments).await,
+        "list_file_functions" => tool_list_file_functions(arguments).await,
         _ => serde_json::json!({
             "content": [{"type": "text", "text": format!("Unknown tool: {}", name)}],
             "isError": true
@@ -1571,6 +1700,384 @@ fn get_sanitizer_descriptions() -> Vec<(String, String)> {
 
     visit_yaml(yaml_dir, &mut descriptions);
     descriptions
+}
+
+// ── 调用图查询工具实现 ──────────────────────────────────
+
+fn build_query_engine_for_mcp(project_path: &str) -> Result<deepaudit_core::CallGraphQueryEngine, String> {
+    let path = std::path::Path::new(project_path);
+    if !path.exists() {
+        return Err(format!("Project path not found: {}", project_path));
+    }
+    let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+    let result = analyzer.analyze_project(path);
+    Ok(deepaudit_core::CallGraphQueryEngine::from_result(&result))
+}
+
+async fn tool_query_callers(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+    let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing file_path"),
+    };
+    let function_name = match args.get("function_name").and_then(|v| v.as_str()) {
+        Some(n) => n, None => return error_response("Missing function_name"),
+    };
+    let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    let callers = if recursive {
+        engine.query_all_callers(file_path, function_name)
+    } else {
+        engine.query_callers(file_path, function_name)
+    };
+
+    let text = if callers.is_empty() {
+        format!("No callers found for '{}' in {}", function_name, file_path)
+    } else {
+        format!("Found {} caller(s) for '{}'{}", callers.len(), function_name,
+            if recursive { " (recursive)" } else { "" })
+    };
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                "target": {"file": file_path, "function": function_name},
+                "count": callers.len(),
+                "recursive": recursive,
+                "callers": callers,
+            })).unwrap_or_default()}
+        ]
+    })
+}
+
+async fn tool_query_callees(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+    let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing file_path"),
+    };
+    let function_name = match args.get("function_name").and_then(|v| v.as_str()) {
+        Some(n) => n, None => return error_response("Missing function_name"),
+    };
+    let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    let callees = if recursive {
+        engine.query_all_callees(file_path, function_name)
+    } else {
+        engine.query_callees(file_path, function_name)
+    };
+
+    let text = if callees.is_empty() {
+        format!("'{}' in {} calls no known functions", function_name, file_path)
+    } else {
+        format!("'{}' calls {} function(s){}", function_name, callees.len(),
+            if recursive { " (recursive)" } else { "" })
+    };
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                "source": {"file": file_path, "function": function_name},
+                "count": callees.len(),
+                "recursive": recursive,
+                "callees": callees,
+            })).unwrap_or_default()}
+        ]
+    })
+}
+
+async fn tool_find_call_path(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+    let source_file = match args.get("source_file").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing source_file"),
+    };
+    let source_function = match args.get("source_function").and_then(|v| v.as_str()) {
+        Some(n) => n, None => return error_response("Missing source_function"),
+    };
+    let sink_file = match args.get("sink_file").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing sink_file"),
+    };
+    let sink_function = match args.get("sink_function").and_then(|v| v.as_str()) {
+        Some(n) => n, None => return error_response("Missing sink_function"),
+    };
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    let result = engine.find_call_path(source_file, source_function, sink_file, sink_function);
+
+    match result {
+        Some(path) => {
+            let text = if path.crosses_files {
+                format!("PATH FOUND: {} hops across {} files", path.total_hops, path.files_in_path.len())
+            } else {
+                format!("PATH FOUND: {} hops (same file)", path.total_hops)
+            };
+
+            serde_json::json!({
+                "content": [
+                    {"type": "text", "text": text},
+                    {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                        "path_exists": true,
+                        "total_hops": path.total_hops,
+                        "crosses_files": path.crosses_files,
+                        "files_in_path": path.files_in_path,
+                        "steps": path.steps,
+                    })).unwrap_or_default()}
+                ]
+            })
+        }
+        None => {
+            serde_json::json!({
+                "content": [{"type": "text", "text": format!(
+                    "NO PATH: '{}' ({}) cannot reach '{}' ({})",
+                    source_function, source_file, sink_function, sink_file
+                )}]
+            })
+        }
+    }
+}
+
+async fn tool_resolve_method_call(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+    let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing file_path"),
+    };
+    let line = match args.get("line").and_then(|v| v.as_u64()) {
+        Some(l) => l as usize, None => return error_response("Missing line"),
+    };
+    let receiver = match args.get("receiver").and_then(|v| v.as_str()) {
+        Some(r) => r, None => return error_response("Missing receiver"),
+    };
+    let method = match args.get("method").and_then(|v| v.as_str()) {
+        Some(m) => m, None => return error_response("Missing method"),
+    };
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    let targets = engine.resolve_method_call(file_path, line, receiver, method);
+
+    if targets.is_empty() {
+        text_response(&format!(
+            "No resolved targets for {}.{}() at {}:{}", receiver, method, file_path, line
+        ))
+    } else {
+        let best = &targets[0];
+        let text = format!(
+            "Found {} candidate(s) for {}.{}() — best: {} ({}:{} confidence {:.0}%) via {}",
+            targets.len(), receiver, method,
+            best.function_name, best.file_path, best.line,
+            best.confidence * 100.0, best.resolution_method
+        );
+
+        serde_json::json!({
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                    "call": {"receiver": receiver, "method": method, "file": file_path, "line": line},
+                    "candidates": targets,
+                    "best_match": targets.first(),
+                })).unwrap_or_default()}
+            ]
+        })
+    }
+}
+
+async fn tool_query_type_hierarchy(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+    let class_name = match args.get("class_name").and_then(|v| v.as_str()) {
+        Some(n) => n, None => return error_response("Missing class_name"),
+    };
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    match engine.query_type_chain(class_name) {
+        Some(chain) => {
+            let text = format!(
+                "{} ({}) — {} parents, {} children, {} methods",
+                chain.class_name, chain.kind,
+                chain.parent_classes.len(),
+                chain.child_classes.len(),
+                chain.methods.len(),
+            );
+            serde_json::json!({
+                "content": [
+                    {"type": "text", "text": text},
+                    {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!(chain)).unwrap_or_default()}
+                ]
+            })
+        }
+        None => text_response(&format!("Type '{}' not found in hierarchy", class_name)),
+    }
+}
+
+async fn tool_query_middleware_chain(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    if let Some(file_path) = args.get("file_path").and_then(|v| v.as_str()) {
+        let mw = engine.query_middleware_for_file(file_path);
+        let routes = engine.query_routes_in_file(file_path);
+        let text = format!(
+            "File '{}': {} middleware, {} routes",
+            file_path, mw.len(), routes.len()
+        );
+        serde_json::json!({
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                    "file_path": file_path, "middleware": mw, "routes": routes,
+                })).unwrap_or_default()}
+            ]
+        })
+    } else {
+        let all = engine.query_all_middleware();
+        let text = format!("Total: {} middleware registrations", all.len());
+        serde_json::json!({
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                    "all_middleware": all, "count": all.len(),
+                })).unwrap_or_default()}
+            ]
+        })
+    }
+}
+
+async fn tool_trace_variable_flow(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+    let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing file_path"),
+    };
+    let function_name = match args.get("function_name").and_then(|v| v.as_str()) {
+        Some(n) => n, None => return error_response("Missing function_name"),
+    };
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    let flow = engine.trace_variable_flow(file_path, function_name);
+
+    let text = if flow.total_sinks_reached > 0 {
+        format!(
+            "'{}' reaches {} sink(s): {}",
+            function_name, flow.total_sinks_reached,
+            flow.flows_to_sinks.iter()
+                .map(|f| format!("{}({})", f.sink_function, f.vulnerability_type))
+                .collect::<Vec<_>>().join(", ")
+        )
+    } else {
+        format!("'{}' reaches no sinks", function_name)
+    };
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                "source": {"function": flow.source_function, "file": flow.source_file, "line": flow.source_line},
+                "total_sinks_reached": flow.total_sinks_reached,
+                "flows_to_sinks": flow.flows_to_sinks,
+            })).unwrap_or_default()}
+        ]
+    })
+}
+
+async fn tool_get_graph_stats_handler(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    let stats = engine.query_graph_stats();
+    let text = format!(
+        "Call Graph: {} nodes ({} callbacks), {} edges ({} cross-file), {} sources, {} sinks, {} files, {} types, {} middleware",
+        stats.total_nodes, stats.callback_nodes, stats.total_edges, stats.cross_file_edges,
+        stats.taint_sources, stats.taint_sinks, stats.total_files, stats.type_count, stats.middleware_count,
+    );
+
+    text_response(&serde_json::to_string_pretty(&serde_json::json!(stats)).unwrap_or_default())
+}
+
+async fn tool_list_file_functions(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing project_path"),
+    };
+    let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
+        Some(p) => p, None => return error_response("Missing file_path"),
+    };
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    let functions = engine.query_functions_in_file(file_path);
+
+    if functions.is_empty() {
+        return text_response(&format!("No indexed functions in '{}'", file_path));
+    }
+
+    let sources: Vec<_> = functions.iter().filter(|f| f.is_source).collect();
+    let sinks: Vec<_> = functions.iter().filter(|f| f.is_sink).collect();
+    let cbs: Vec<_> = functions.iter().filter(|f| f.is_callback).collect();
+
+    let text = format!(
+        "{} functions in '{}': {} sources, {} sinks, {} callbacks",
+        functions.len(), file_path, sources.len(), sinks.len(), cbs.len(),
+    );
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                "file_path": file_path,
+                "total": functions.len(),
+                "functions": functions,
+            })).unwrap_or_default()}
+        ]
+    })
 }
 
 // ── Response helpers ─────────────────────────────────────
