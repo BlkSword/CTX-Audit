@@ -17,6 +17,19 @@
 
 ---
 
+## 目录
+
+| 章节 | |
+|------|----|
+| [CTX-Audit 是什么](#ctx-audit-是什么) | [LLM 协作审计](#llm-协作审计) |
+| [快速开始](#快速开始) | [增量扫描原理](#增量扫描原理) |
+| [命令](#命令) | [架构](#架构) |
+| [配置文件](#配置文件) | [LLM 审计 Skill 指南](LLM-AUDIT-SKILL.md) |
+| [检测能力](#检测能力) | |
+| [自定义规则](#自定义规则) | |
+
+---
+
 ## CTX-Audit 是什么
 
 CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不只是告诉你"哪里用了危险函数"——而是追踪数据从用户输入到危险操作的**完整路径**，并输出结构化的证据链，让 LLM 基于事实做漏洞判定。
@@ -25,7 +38,7 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 
 - **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
 - **数据流追踪**：基于 CPG（代码属性图）引擎，融合 CFG + AST 元数据 + 别名映射，支持路径敏感分析（条件净化检测）、属性路径前缀匹配（`req.body` → `req.body.name`）、AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
-- **LLM 自主审计闭环**：通过 MCP 协议暴露 26 个工具（含调用图查询），LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
+- **LLM 自主审计闭环**：通过 MCP 协议暴露 31 个工具（含调用图查询 + 审计会话），LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → 调查式验证 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
 - **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、置信度评分、多引擎交叉确认、基线抑制
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
@@ -216,7 +229,7 @@ ctx-audit daemon stop                        # 停止
 ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 ```
 
-通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **26 个工具**：
+通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **31 个工具**：
 
 **粗粒度工具**：
 
@@ -271,6 +284,20 @@ ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 
 这些工具返回的数据基于 AST 解析的**确定性调用图**——函数调用关系不依赖任何 LLM 推断。
 LLM 审计时使用这些工具获取证据链，而非猜测代码行为。
+
+**审计会话工具（调查式协作）**：
+
+| 工具 | 说明 |
+|------|------|
+| `start_audit_session` | 创建审计会话，返回 session_uuid 用于关联后续调查 |
+| `start_investigation` | 对单个 finding 启动深度调查，返回确定性证据 + 建议的后续查询工具 |
+| `log_investigation_step` | 记录调查步骤（工具调用 + 发现 + 推理），构建完整审计轨迹 |
+| `conclude_investigation` | 结束调查并下结论（TP/FP/needs_review），自动写入 audit_log 和 baseline |
+| `conclude_audit_session` | 结束审计会话，返回 TP/FP/review 统计摘要 |
+
+这 5 个工具实现**状态化调查**——LLM 不再是一次性"扫描→判断"，而是可以
+对每个 finding 建立调查上下文、逐步收集证据、记录推理链、最终下结论。
+完整调查流程见 [LLM 审计 Skill 指南](LLM-AUDIT-SKILL.md)。
 
 Claude Code 配置示例（`.claude/settings.json`）：
 
@@ -580,7 +607,7 @@ CTX-Audit 支持用户编写自定义 YAML 规则，放置在 `.ctx-audit/rules/
 
 ## LLM 协作审计
 
-CTX-Audit 通过 MCP 协议暴露 **26 个工具**（含 9 个调用图查询工具），让 LLM（Claude Code / Cursor / 任何支持 MCP 的 Agent）完全自主驱动安全审计流程——从项目理解、扫描、污点追踪、代码审查到审计结论，全程无需人工干预。
+CTX-Audit 通过 MCP 协议暴露 **31 个工具**（含 9 个调用图查询 + 5 个审计会话工具），让 LLM（Claude Code / Cursor / 任何支持 MCP 的 Agent）完全自主驱动安全审计流程——从项目理解、扫描、证据收集、调查式验证到审计结论，全程无需人工干预。
 
 ### 接入方式
 
@@ -599,26 +626,31 @@ CTX-Audit 通过 MCP 协议暴露 **26 个工具**（含 9 个调用图查询工
 
 ### 自主审计工作流
 
+CTX-Audit 采用**调查式协作**模式——LLM 不仅是扫描结果的评判者，更是主动的调查者。
+每个 finding 都经过"建立调查 → 收集证据 → 记录推理 → 下结论"的完整流程。
+
 ```
-1. get_project_info        → 了解项目：语言、框架、文件结构、入口点数量
-2. get_attack_surface      → 映射攻击面：高风险入口点、信任边界、未认证路由
-3. get_graph_stats         → 了解调用图规模：节点数、边数、source/sink 分布
-4. security_scan           → 全量扫描：规则匹配 + AST 污点分析（--deep）
-5. 过滤筛选                → file_role_filter="production", min_severity="high"
-6. 逐条审计:
-   ├─ get_code_context     → 阅读发现点周围的源代码
-   ├─ get_taint_path       → 追踪 source→sink 完整数据流
-   ├─ query_callees        → 查该函数调用了哪些 sink（正向追踪）
-   ├─ query_callers        → 查哪些入口点可达这个 sink（反向追踪）
-   ├─ find_call_path       → 验证 source→sink 的精确调用路径（确定性证据）
-   ├─ resolve_method_call  → 解析模糊的方法调用（如 db.query）到实际实现
-   ├─ check_sanitizer      → 验证是否存在有效的净化函数
-   ├─ list_sources/sinks   → 查看文件中所有污点源和汇
-   └─ validate_finding     → 记录审计结论（TP/FP）及推理过程
-7. query_middleware_chain  → 检查中间件覆盖，发现认证绕过
-8. add_custom_rule         → 针对发现的 0-day 模式动态生成规则
-9. security_scan           → 使用新规则重新扫描验证
+1. get_project_info         → 了解项目：语言、框架、文件结构、入口点数量
+2. get_attack_surface       → 映射攻击面：高风险入口点、信任边界、未认证路由
+3. get_graph_stats          → 了解调用图规模：节点数、边数、source/sink 分布
+4. security_scan(deep=true) → 全量扫描，返回 findings（含 evidence_refs 证据指针）
+5. start_audit_session      → 创建审计会话，获得 session_uuid ★
+6. 对每个 high/critical finding:
+   ├─ start_investigation   → 启动调查，获得 evidence_map + suggested_tools ★
+   ├─ get_code_context      → 阅读发现点周围的源代码
+   ├─ query_callers         → 反向追踪：哪些入口点可达这个 sink？
+   ├─ query_callees         → 正向追踪：这个函数调用了哪些敏感操作？
+   ├─ find_call_path        → source→sink 精确路径（确定性可达性证据）
+   ├─ query_middleware_chain → 中间件是否覆盖此路由？（认证绕过检测）
+   ├─ resolve_method_call   → 解析模糊方法调用到实际实现
+   ├─ log_investigation_step → 记录每一步的工具调用 + 发现 + 推理 ★
+   └─ conclude_investigation → 下结论（TP/FP/needs_review），自动记录 audit_log ★
+7. add_custom_rule          → 针对发现的 0-day 模式动态生成规则
+8. security_scan            → 使用新规则重新扫描验证
+9. conclude_audit_session   → 输出完整审计摘要（TP/FP/review 统计）★
 ```
+
+★ = 调查式协作新增步骤。详细流程和示例见 [LLM-AUDIT-SKILL.md](LLM-AUDIT-SKILL.md)。
 
 ### MCP 工具清单
 
@@ -673,47 +705,32 @@ CTX-Audit 通过 MCP 协议暴露 **26 个工具**（含 9 个调用图查询工
 | `query_middleware_chain` | 中间件及其影响的路由 |
 | `trace_variable_flow` | 污点变量跨文件传播路径 |
 
+#### 审计会话（调查式协作）
+
+| 工具 | 说明 |
+|------|------|
+| `start_audit_session` | 创建审计会话，获得 session_uuid |
+| `start_investigation` | 对 finding 启动调查，返回证据 + 建议工具 |
+| `log_investigation_step` | 记录调查步骤（工具 + 发现 + 推理） |
+| `conclude_investigation` | 结束调查，下结论（TP/FP），自动记录 audit_log |
+| `conclude_audit_session` | 结束会话，输出 TP/FP/review 统计 |
+
 ### 提示词示例
 
-在 Claude Code 中配置 MCP 后，可直接使用以下系统提示词驱动自主审计：
+完整的 LLM 审计引导系统见 **[LLM-AUDIT-SKILL.md](LLM-AUDIT-SKILL.md)**——
+这是一个结构化的 Skill 文件，包含：
+- 审计哲学（调查式协作 vs 扫描→判断）
+- 完整的 4 阶段审计工作流
+- 每个 MCP 工具的使用场景和参数
+- 证据驱动的 TP/FP 判定框架
+- 实际审计对话示例
 
-```
-你是一名安全审计专家，负责对目标项目进行完全自主的安全审计。
-你可以使用 CTX-Audit 工具进行扫描和分析。
-
-## 审计流程
-
-### 第一阶段：项目理解
-1. 调用 `get_project_info` 了解项目的技术栈和结构
-2. 调用 `get_attack_surface` 映射攻击面，识别高风险入口点
-3. 调用 `list_rules` 确认可用的检测规则
-
-### 第二阶段：深度扫描
-4. 调用 `security_scan` 并设置 `deep: true`, `file_role_filter: "production"`,
-   `min_severity: "high"` 进行生产代码深度扫描
-5. 对每个 critical 发现：
-   - 调用 `get_code_context` 阅读周围代码，理解完整上下文
-   - 调用 `get_taint_path` 追踪完整数据流（source→sink）
-   - 调用 `check_sanitizer` 验证是否存在净化函数
-   - 综合判断是否为真实漏洞（TP）或误报（FP）
-   - 调用 `validate_finding` 记录审计结论
-
-### 第三阶段：0-day 探索
-6. 调用 `analyze_risk_patterns` 检测架构级风险模式
-7. 对高风险模式调用 `cross_file_analysis` 进行跨文件追踪
-8. 如果发现规则未覆盖的新漏洞模式，调用 `add_custom_rule` 创建规则
-9. 使用新规则重新扫描验证
-
-### 第四阶段：审计报告
-10. 汇总所有 TP 发现，按优先级排序
-11. 为每个 TP 提供修复建议
-12. 将 FP 记录到 baseline（validate_finding 自动处理）
-
-## 输出要求
-- 每条发现的 TP/FP 判定必须附上详细推理过程
-- 引用具体的代码行号和数据流步骤
-- 考虑框架自带的安全机制（如 Next.js 的自动转义）
-- barriers 字段表示检测到的安全屏障，需验证其有效性
+在 Claude Code 中使用：
+```bash
+# 将 skill 文件复制到项目目录
+cp LLM-AUDIT-SKILL.md .claude/agents/ctx-auditor.md
+# 或在对话中直接引用
+@LLM-AUDIT-SKILL.md 请对当前项目进行安全审计
 ```
 
 ### 审计输出示例

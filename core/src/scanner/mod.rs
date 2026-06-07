@@ -137,6 +137,108 @@ pub struct Finding {
     /// 标记原因说明（为什么规则匹配了这段代码）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_hint: Option<String>,
+    /// 调用图证据指针 — LLM 可据此用查询工具做深度验证
+    /// 仅在跨文件分析（enable_cross_file=true）时填充
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_refs: Option<EvidenceRefs>,
+}
+
+// ── 证据引用类型 ──────────────────────────────────────────
+
+/// 证据引用 — 指向调用图中的具体节点和路径
+/// 为 LLM 提供可追踪、可查询的确定性证据入口
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceRefs {
+    /// source→sink 的调用路径证据
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_sink_path: Option<SourceSinkEvidence>,
+    /// 沿途经过的 sanitizer（及有效性判定）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sanitizer_chain: Vec<SanitizerEvidence>,
+    /// 中间件覆盖情况（路由是否被 auth middleware 覆盖）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub middleware_coverage: Vec<MiddlewareEvidence>,
+    /// 调用图统计快照（用于 LLM 了解项目规模）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_snapshot: Option<GraphSnapshot>,
+}
+
+/// source→sink 调用的路径证据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceSinkEvidence {
+    /// 源函数名
+    pub source_function: String,
+    /// 源函数所在文件
+    pub source_file: String,
+    /// 源函数行号
+    pub source_line: usize,
+    /// 汇函数名
+    pub sink_function: String,
+    /// 汇函数所在文件
+    pub sink_file: String,
+    /// 汇函数行号
+    pub sink_line: usize,
+    /// 路径跳数
+    pub path_length: usize,
+    /// 路径中的每一步
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_steps: Vec<PathStepRef>,
+}
+
+/// 路径中的单步引用（轻量，可据此调用 query_callers/query_callees）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathStepRef {
+    /// 函数名
+    pub function: String,
+    /// 文件路径
+    pub file: String,
+    /// 行号
+    pub line: usize,
+    /// 步骤类型：direct_call | callback | middleware | virtual_dispatch
+    pub step_type: String,
+}
+
+/// Sanitizer 证据 — 路径中遇到的净化函数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SanitizerEvidence {
+    /// 净化函数名
+    pub function: String,
+    /// 所在文件
+    pub file: String,
+    /// 行号
+    pub line: usize,
+    /// 对该漏洞类型是否有效
+    pub effective: bool,
+    /// 有效性判定理由
+    pub reason: String,
+}
+
+/// 中间件覆盖证据 — 路由是否被安全中间件覆盖
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiddlewareEvidence {
+    /// 中间件名/处理器名
+    pub middleware_name: String,
+    /// 中间件所在文件
+    pub middleware_file: String,
+    /// 是否适用于此路由
+    pub applies_to_route: bool,
+    /// 受影响的路由处理器
+    pub route_handler: String,
+}
+
+/// 调用图统计快照
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphSnapshot {
+    /// 总函数节点数
+    pub total_nodes: usize,
+    /// 总边数
+    pub total_edges: usize,
+    /// 跨文件边数
+    pub cross_file_edges: usize,
+    /// 污点源数量
+    pub taint_sources_count: usize,
+    /// 污点汇数量
+    pub taint_sinks_count: usize,
 }
 
 /// 提取匹配行周围的代码上下文
@@ -716,6 +818,7 @@ async fn scan_directory_with_rules_inner(
                                 file_role: None,
                                 barriers: None,
                                 reasoning_hint: None,
+                                evidence_refs: None,
                             });
                         }
                     }
@@ -814,6 +917,9 @@ async fn scan_directory_with_rules_inner(
 pub struct ScanResult {
     pub findings: Vec<Finding>,
     pub attack_surface: crate::analysis::attack_surface::AttackSurface,
+    /// 跨文件分析结果（仅当 enable_cross_file=true 时存在）
+    /// 包含调用图、类型层次、中间件模型等确定性证据数据
+    pub cross_file_result: Option<crate::analysis::cross_file::CrossFileTaintResult>,
 }
 
 /// 扫描目录并返回完整结果（含攻击面） — 使用无进度回调的默认扫描
@@ -824,7 +930,7 @@ pub async fn scan_directory_with_attack_surface(path: &str) -> Result<ScanResult
 
     let findings = scan_directory(path).await?;
 
-    Ok(ScanResult { findings, attack_surface })
+    Ok(ScanResult { findings, attack_surface, cross_file_result: None })
 }
 
 /// 深度扫描：在基础扫描后对候选文件运行 AST 污点分析
@@ -842,7 +948,9 @@ pub async fn scan_directory_deep_with_rules(
     let mut opts = ScanOptions::default();
     opts.enable_taint = true;
     opts.enable_cross_file = true;
-    scan_directory_deep_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, Some(opts), None).await
+    scan_directory_deep_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, Some(opts), None)
+        .await
+        .map(|r| r.findings)
 }
 
 /// 带进度回调的深度扫描
@@ -853,7 +961,7 @@ pub async fn scan_directory_deep_with_rules_progress(
     sca_options: Option<ScaScanOptions>,
     scan_opts: Option<ScanOptions>,
     progress: Option<ProgressCallback>,
-) -> Result<Vec<Finding>, String> {
+) -> Result<ScanResult, String> {
     // 引擎标志
     let enable_taint = scan_opts.as_ref().map(|o| o.enable_taint).unwrap_or(false);
     let enable_cross_file = scan_opts.as_ref().map(|o| o.enable_cross_file).unwrap_or(false);
@@ -868,7 +976,11 @@ pub async fn scan_directory_deep_with_rules_progress(
     // 无深度引擎启用时直接返回基础扫描结果
     if !enable_taint {
         findings = deduplicate_findings(findings, line_tol);
-        return Ok(findings);
+        return Ok(ScanResult {
+            findings,
+            attack_surface: crate::analysis::attack_surface::AttackSurface::default(),
+            cross_file_result: None,
+        });
     }
 
     // Stage B: AST 污点分析（enable_taint = true）
@@ -1090,6 +1202,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                         file_role: Some(classify_file_role(&file_str).to_string()),
                         barriers: None,
                         reasoning_hint: Some(format!("Taint flow: {} → {} via {} steps", flow.source.symbol, flow.sink.symbol, flow.path.len())),
+                        evidence_refs: None,
                     }
                 }).collect();
 
@@ -1133,6 +1246,7 @@ pub async fn scan_directory_deep_with_rules_progress(
     findings.extend(taint_findings);
 
     // Stage C: 跨文件污点分析（enable_cross_file = true）
+    let mut cross_file_result_opt: Option<crate::analysis::cross_file::CrossFileTaintResult> = None;
     if enable_cross_file {
     if let Some(ref cb) = progress {
         cb(ScanProgress {
@@ -1172,12 +1286,84 @@ pub async fn scan_directory_deep_with_rules_progress(
             "[CrossFileTaint] 发现 {} 个跨文件污点流",
             cross_file_result.taint_flows.len()
         );
+
+        // 预计算图快照（所有 cross-file finding 共享）
+        let total_edges: usize = cross_file_result.call_graph.nodes.values()
+            .map(|n| n.calls.len())
+            .sum();
+        let graph_snapshot = GraphSnapshot {
+            total_nodes: cross_file_result.call_graph.nodes.len(),
+            total_edges,
+            cross_file_edges: cross_file_result.stats.cross_file_flows,
+            taint_sources_count: cross_file_result.stats.taint_sources,
+            taint_sinks_count: cross_file_result.stats.taint_sinks,
+        };
+
         for flow in &cross_file_result.taint_flows {
             let intermediate: Vec<String> = flow.interprocedural_path.iter()
                 .map(|s| format!("{}:{}", s.file_path, s.line))
                 .collect();
 
             let vuln_name = format!("{}", flow.vulnerability_type);
+
+            // 构建证据引用 — 从跨文件分析结果提取确定性证据
+            let path_steps: Vec<PathStepRef> = flow.interprocedural_path.iter().map(|step| {
+                PathStepRef {
+                    function: step.function_name.clone(),
+                    file: step.file_path.clone(),
+                    line: step.line,
+                    step_type: match step.step_type {
+                        crate::analysis::cross_file::InterproceduralStepType::Source => "source".to_string(),
+                        crate::analysis::cross_file::InterproceduralStepType::Sink => "sink".to_string(),
+                        _ => "direct_call".to_string(),
+                    },
+                }
+            }).collect();
+
+            let path_length = path_steps.len();
+
+            // 中间件覆盖证据 — 检查中间件是否在源文件注册
+            let middleware_coverage: Vec<MiddlewareEvidence> = cross_file_result.middleware_model
+                .express_middleware.iter()
+                .map(|mw| {
+                    let applies = mw.handler_file == flow.source.file_path
+                        || cross_file_result.middleware_model
+                            .express_routes.get(&mw.handler_file)
+                            .map(|routes| routes.iter().any(|l| {
+                                *l >= flow.source.line.saturating_sub(5)
+                                    && *l <= flow.sink.line.saturating_add(5)
+                            }))
+                            .unwrap_or(false);
+                    // 获取该中间件文件的第一个路由行号作为参考
+                    let route_ref = cross_file_result.middleware_model
+                        .get_express_route_lines(&mw.handler_file)
+                        .first()
+                        .map(|l| format!("{}:{}", mw.handler_file, l))
+                        .unwrap_or_default();
+                    MiddlewareEvidence {
+                        middleware_name: mw.handler_name.clone(),
+                        middleware_file: mw.handler_file.clone(),
+                        applies_to_route: applies,
+                        route_handler: route_ref,
+                    }
+                })
+                .collect();
+
+            let evidence = EvidenceRefs {
+                source_sink_path: Some(SourceSinkEvidence {
+                    source_function: flow.source.symbol.clone(),
+                    source_file: flow.source.file_path.clone(),
+                    source_line: flow.source.line,
+                    sink_function: flow.sink.symbol.clone(),
+                    sink_file: flow.sink.file_path.clone(),
+                    sink_line: flow.sink.line,
+                    path_length,
+                    path_steps,
+                }),
+                sanitizer_chain: Vec::new(),
+                middleware_coverage,
+                graph_snapshot: Some(graph_snapshot.clone()),
+            };
 
             findings.push(Finding {
                 finding_id: flow.id.clone(),
@@ -1204,15 +1390,21 @@ pub async fn scan_directory_deep_with_rules_progress(
                 file_role: Some(classify_file_role(&flow.source.file_path).to_string()),
                 barriers: None,
                 reasoning_hint: Some(format!("Cross-file taint: {} → {} via {} hops", flow.source.symbol, flow.sink.symbol, flow.interprocedural_path.len())),
+                evidence_refs: Some(evidence),
             });
         }
     }
+        cross_file_result_opt = Some(cross_file_result);
     } // end enable_cross_file
 
     // 去重
     findings = deduplicate_findings(findings, line_tol);
 
-    Ok(findings)
+    Ok(ScanResult {
+        findings,
+        attack_surface: crate::analysis::attack_surface::AttackSurface::default(),
+        cross_file_result: cross_file_result_opt,
+    })
 }
 
 /// 判断文件是否支持 AST 分析
@@ -1385,6 +1577,7 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
         file_role: best_file_role,
         barriers: if best_barriers.is_empty() { None } else { Some(best_barriers) },
         reasoning_hint: best_reasoning,
+        evidence_refs: None,
     }
 }
 

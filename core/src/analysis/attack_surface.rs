@@ -150,6 +150,17 @@ pub struct AttackSurface {
     pub stats: AttackSurfaceStats,
 }
 
+impl Default for AttackSurface {
+    fn default() -> Self {
+        Self {
+            entry_points: Vec::new(),
+            trust_boundaries: Vec::new(),
+            high_risk_files: Vec::new(),
+            stats: AttackSurfaceStats::default(),
+        }
+    }
+}
+
 /// 映射统计
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AttackSurfaceStats {

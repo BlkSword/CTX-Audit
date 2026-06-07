@@ -436,6 +436,75 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 }
             }),
         },
+        // ── 审计会话工具（调查式协作）──────────────
+        ToolDefinition {
+            name: "start_audit_session",
+            description: "Start a new audit session for a project. Creates a session context that tracks all investigations. Call this FIRST before auditing findings. Returns a session_uuid to use in subsequent investigation calls.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "session_type": {"type": "string", "description": "Session type: full, targeted, or incremental", "enum": ["full", "targeted", "incremental"], "default": "targeted"}
+                },
+                "required": ["project_path"]
+            }),
+        },
+        ToolDefinition {
+            name: "start_investigation",
+            description: "Start a deep investigation of a specific finding. Returns deterministic evidence from the call graph (callers, callees, middleware coverage) and suggests next query tools to use. Use this to drill down into a finding before making a verdict.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_uuid": {"type": "string", "description": "Session UUID from start_audit_session"},
+                    "finding_id": {"type": "string", "description": "The finding ID to investigate"},
+                    "finding_file": {"type": "string", "description": "File path of the finding"},
+                    "finding_line": {"type": "integer", "description": "Line number of the finding"},
+                    "hypothesis": {"type": "string", "description": "Your initial hypothesis about this finding (e.g., 'likely TP because no sanitizer', 'suspicious FP because of array args')"}
+                },
+                "required": ["session_uuid", "finding_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "log_investigation_step",
+            description: "Record a step in your investigation. Call this after using other tools (query_callers, get_code_context, etc.) to document what you found and your reasoning. Builds a complete audit trail for each finding.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "investigation_id": {"type": "string", "description": "Investigation ID from start_investigation"},
+                    "tool_used": {"type": "string", "description": "Name of the tool you just used (e.g., 'query_callers', 'get_code_context')"},
+                    "finding": {"type": "string", "description": "What you discovered from this tool call"},
+                    "reasoning": {"type": "string", "description": "Your reasoning about how this affects the verdict"}
+                },
+                "required": ["investigation_id", "tool_used", "finding", "reasoning"]
+            }),
+        },
+        ToolDefinition {
+            name: "conclude_investigation",
+            description: "Conclude an investigation with your final verdict. Records the complete investigation trail (all steps) and the final decision. For FP verdicts, automatically updates .ctx-audit/baseline.json for future suppression. Also logs to .ctx-audit/audit_log.json.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "investigation_id": {"type": "string", "description": "Investigation ID from start_investigation"},
+                    "verdict": {"type": "string", "description": "Your final verdict", "enum": ["true_positive", "false_positive", "needs_review"]},
+                    "reasoning": {"type": "string", "description": "Complete reasoning for your verdict, summarizing all investigation steps"},
+                    "confidence": {"type": "number", "description": "Your confidence in this verdict (0.0-1.0)"},
+                    "severity_override": {"type": "string", "description": "Override severity if different from original", "enum": ["critical", "high", "medium", "low", "info"]}
+                },
+                "required": ["investigation_id", "verdict", "reasoning"]
+            }),
+        },
+        ToolDefinition {
+            name: "conclude_audit_session",
+            description: "Conclude the entire audit session. Returns a summary of all investigations with counts of TP/FP/needs_review findings. This finalizes the session and provides an audit summary.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_uuid": {"type": "string", "description": "Session UUID from start_audit_session"},
+                    "summary": {"type": "string", "description": "Optional free-text summary of the audit"}
+                },
+                "required": ["session_uuid"]
+            }),
+        },
         // ── 调用图查询工具（Cross-File Call Graph）────
         ToolDefinition {
             name: "query_callers",
@@ -582,6 +651,7 @@ async fn handle_tool_call(name: &str, arguments: &Value) -> Value {
         "get_project_info" => tool_get_project_info(arguments).await,
         "validate_finding" => tool_validate_finding(arguments).await,
         "list_rules" => tool_list_rules(arguments).await,
+        // 审计会话工具（在 handle_request_with_state 中处理）
         // 调用图查询工具
         "query_callers" => tool_query_callers(arguments).await,
         "query_callees" => tool_query_callees(arguments).await,
@@ -620,6 +690,7 @@ async fn tool_security_scan(args: &Value) -> Value {
         opts.enable_taint = enable_taint;
         opts.enable_cross_file = enable_cross_file;
         scan_directory_deep_with_rules_progress(path, None, None, None, Some(opts), None).await
+            .map(|r| r.findings)
     } else {
         scan_directory(path).await
     };
@@ -693,6 +764,9 @@ async fn tool_security_scan(args: &Value) -> Value {
                     }
                     if let Some(count) = f.corroboration_count {
                         obj.as_object_mut().unwrap().insert("corroboration_count".into(), serde_json::json!(count));
+                    }
+                    if let Some(ref evidence) = f.evidence_refs {
+                        obj.as_object_mut().unwrap().insert("evidence_refs".into(), serde_json::to_value(evidence).unwrap_or_default());
                     }
                 }
 
@@ -2080,6 +2154,323 @@ async fn tool_list_file_functions(args: &Value) -> Value {
     })
 }
 
+// ── 审计会话工具实现 ──────────────────────────────────────
+
+async fn tool_start_audit_session_with_state(state: &McpServerState, args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => return error_response("Missing required parameter: project_path"),
+    };
+    let session_type = args.get("session_type").and_then(|v| v.as_str()).unwrap_or("targeted").to_string();
+
+    let session_uuid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let ctx = SessionContext {
+        session_uuid: session_uuid.clone(),
+        project_path: project_path.clone(),
+        session_type: session_type.clone(),
+        started_at: now.clone(),
+    };
+
+    state.audit.active_sessions.borrow_mut().insert(session_uuid.clone(), ctx);
+
+    let summary = format!(
+        "🔍 Audit session started\n  Session: {}\n  Project: {}\n  Type: {}\n  Time: {}\n\nNext: run security_scan or cross_file_analysis to get findings, then use start_investigation to drill down.",
+        session_uuid, project_path, session_type, now
+    );
+
+    serde_json::json!({
+        "content": [{"type": "text", "text": summary}],
+        "data": {
+            "session_uuid": session_uuid,
+            "project_path": project_path,
+            "session_type": session_type,
+            "started_at": now,
+        }
+    })
+}
+
+async fn tool_start_investigation_with_state(state: &McpServerState, args: &Value) -> Value {
+    let session_uuid = match args.get("session_uuid").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: session_uuid"),
+    };
+    let finding_id = match args.get("finding_id").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: finding_id"),
+    };
+    let finding_file = args.get("finding_file").and_then(|v| v.as_str());
+    let finding_line = args.get("finding_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let hypothesis = args.get("hypothesis").and_then(|v| v.as_str()).map(String::from);
+
+    // 检查会话是否存在
+    let project_path = match state.audit.active_sessions.borrow().get(&session_uuid) {
+        Some(s) => s.project_path.clone(),
+        None => return error_response(&format!("Session not found: {}. Use start_audit_session first.", session_uuid)),
+    };
+
+    let investigation_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // 构建建议的后续工具调用
+    let mut suggested_tools: Vec<serde_json::Value> = Vec::new();
+
+    if let Some(ref file) = finding_file {
+        suggested_tools.push(serde_json::json!({
+            "tool": "get_code_context",
+            "params": { "file_path": file, "line": finding_line.unwrap_or(1) },
+            "purpose": "Read the source code around this finding to understand the context"
+        }));
+        suggested_tools.push(serde_json::json!({
+            "tool": "list_file_functions",
+            "params": { "project_path": project_path, "file_path": file },
+            "purpose": "List all indexed functions in this file"
+        }));
+    }
+
+    suggested_tools.push(serde_json::json!({
+        "tool": "query_callers",
+        "params": { "project_path": project_path, "file_path": finding_file.unwrap_or(""), "function_name": "(see finding details)" },
+        "purpose": "Trace backward: find what calls the sink function"
+    }));
+    suggested_tools.push(serde_json::json!({
+        "tool": "query_middleware_chain",
+        "params": { "project_path": project_path, "file_path": finding_file.unwrap_or("") },
+        "purpose": "Check if auth middleware covers this route"
+    }));
+    suggested_tools.push(serde_json::json!({
+        "tool": "get_graph_stats",
+        "params": { "project_path": project_path },
+        "purpose": "Understand project scale and analysis coverage"
+    }));
+
+    let ctx = InvestigationContext {
+        investigation_id: investigation_id.clone(),
+        session_uuid: session_uuid.clone(),
+        finding_id: finding_id.clone(),
+        hypothesis,
+        steps: Vec::new(),
+        started_at: now.clone(),
+    };
+
+    state.audit.active_investigations.borrow_mut().insert(investigation_id.clone(), ctx);
+
+    let summary = format!(
+        "🕵️ Investigation started\n  ID: {}\n  Finding: {}\n  Session: {}\n  Time: {}\n\nSuggested tools to verify this finding:",
+        investigation_id, finding_id, session_uuid, now
+    );
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                "investigation_id": investigation_id,
+                "finding_id": finding_id,
+                "suggested_tools": suggested_tools,
+                "evidence_query_hint": "Use query_callers/query_callees/find_call_path with project_path to trace the call graph. Use get_code_context to read actual source code. Use query_middleware_chain to check for auth bypass."
+            })).unwrap_or_default()}
+        ]
+    })
+}
+
+async fn tool_log_investigation_step_with_state(state: &McpServerState, args: &Value) -> Value {
+    let investigation_id = match args.get("investigation_id").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: investigation_id"),
+    };
+    let tool_used = match args.get("tool_used").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: tool_used"),
+    };
+    let finding = match args.get("finding").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: finding"),
+    };
+    let reasoning = match args.get("reasoning").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: reasoning"),
+    };
+
+    let step = InvestigationStep {
+        tool_used: tool_used.clone(),
+        finding,
+        reasoning,
+    };
+
+    let step_count = match state.audit.active_investigations.borrow_mut().get_mut(&investigation_id) {
+        Some(inv) => {
+            inv.steps.push(step);
+            inv.steps.len()
+        }
+        None => return error_response(&format!("Investigation not found: {}. Use start_investigation first.", investigation_id)),
+    };
+
+    serde_json::json!({
+        "content": [{"type": "text", "text": format!("📝 Step {} recorded for investigation {}\n  Tool: {}\n  Total steps so far: {}", step_count, investigation_id, tool_used, step_count)}]
+    })
+}
+
+async fn tool_conclude_investigation_with_state(state: &McpServerState, args: &Value) -> Value {
+    let investigation_id = match args.get("investigation_id").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: investigation_id"),
+    };
+    let verdict = match args.get("verdict").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: verdict"),
+    };
+    let reasoning = match args.get("reasoning").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: reasoning"),
+    };
+    let confidence = args.get("confidence").and_then(|v| v.as_f64());
+    let severity_override = args.get("severity_override").and_then(|v| v.as_str()).map(String::from);
+
+    // 获取调查上下文
+    let inv = match state.audit.active_investigations.borrow_mut().remove(&investigation_id) {
+        Some(inv) => inv,
+        None => return error_response(&format!("Investigation not found: {}", investigation_id)),
+    };
+
+    // 构建完整的审计日志条目
+    let audit_entry = serde_json::json!({
+        "investigation_id": investigation_id,
+        "session_uuid": inv.session_uuid,
+        "finding_id": inv.finding_id,
+        "verdict": verdict,
+        "confidence": confidence,
+        "reasoning": reasoning,
+        "severity_override": severity_override,
+        "hypothesis": inv.hypothesis,
+        "investigation_steps": inv.steps.iter().map(|s| serde_json::json!({
+            "tool_used": s.tool_used,
+            "finding": s.finding,
+            "reasoning": s.reasoning,
+        })).collect::<Vec<_>>(),
+        "total_steps": inv.steps.len(),
+        "started_at": inv.started_at,
+        "concluded_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    // 写入 audit_log.json
+    // (复用现有的 validate_finding 逻辑)
+    let log_path = std::path::Path::new(".ctx-audit").join("audit_log.json");
+    let mut log_entries: Vec<serde_json::Value> = if log_path.exists() {
+        std::fs::read_to_string(&log_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    log_entries.push(audit_entry.clone());
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&log_path, serde_json::to_string_pretty(&log_entries).unwrap_or_default());
+
+    // 如果是 FP，同时更新 baseline.json
+    if verdict == "false_positive" {
+        let baseline_path = std::path::Path::new(".ctx-audit").join("baseline.json");
+        let mut baseline: serde_json::Value = if baseline_path.exists() {
+            std::fs::read_to_string(&baseline_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::json!({"ignored": {}}))
+        } else {
+            serde_json::json!({"ignored": {}})
+        };
+        // 使用 finding_id 作为基线键
+        if let Some(obj) = baseline.as_object_mut() {
+            if let Some(ignored) = obj.get_mut("ignored").and_then(|v| v.as_object_mut()) {
+                ignored.insert(inv.finding_id.clone(), serde_json::json!(reasoning));
+            }
+        }
+        let _ = std::fs::write(&baseline_path, serde_json::to_string_pretty(&baseline).unwrap_or_default());
+    }
+
+    let verdict_label = match verdict.as_str() {
+        "true_positive" => "✅ TRUE POSITIVE",
+        "false_positive" => "❌ FALSE POSITIVE",
+        _ => "⚠️ NEEDS REVIEW",
+    };
+
+    let summary = format!(
+        "{} Investigation concluded\n  Finding: {}\n  Verdict: {}\n  Steps: {}\n  Confidence: {}\n\nReasoning: {}\n\nAudit log → .ctx-audit/audit_log.json",
+        verdict_label,
+        inv.finding_id,
+        verdict,
+        inv.steps.len(),
+        confidence.map(|c| format!("{:.0}%", c * 100.0)).unwrap_or_else(|| "N/A".to_string()),
+        reasoning
+    );
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "text", "text": serde_json::to_string_pretty(&audit_entry).unwrap_or_default()}
+        ]
+    })
+}
+
+async fn tool_conclude_audit_session_with_state(state: &McpServerState, args: &Value) -> Value {
+    let session_uuid = match args.get("session_uuid").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: session_uuid"),
+    };
+    let user_summary = args.get("summary").and_then(|v| v.as_str());
+
+    // 统计所有调查结果
+    let investigations: Vec<InvestigationContext> = {
+        let invs = state.audit.active_investigations.borrow();
+        invs.values().filter(|i| i.session_uuid == session_uuid).cloned().collect()
+    };
+
+    let total = investigations.len();
+
+    // 收集已下结论的调查（从 audit_log.json）
+    let log_path = std::path::Path::new(".ctx-audit").join("audit_log.json");
+    let log_entries: Vec<serde_json::Value> = if log_path.exists() {
+        std::fs::read_to_string(&log_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let tp_count = log_entries.iter().filter(|e| e["verdict"].as_str() == Some("true_positive")).count();
+    let fp_count = log_entries.iter().filter(|e| e["verdict"].as_str() == Some("false_positive")).count();
+    let review_count = log_entries.iter().filter(|e| e["verdict"].as_str() == Some("needs_review")).count();
+
+    // 移除会话
+    let session_info = state.audit.active_sessions.borrow_mut().remove(&session_uuid);
+
+    let summary = format!(
+        "📋 Audit session concluded\n  Session: {}\n  Project: {}\n  Investigations: {} total\n  ✅ True Positives: {}\n  ❌ False Positives: {}\n  ⚠️ Needs Review: {}\n  Active investigations at close: {}\n\n{}",
+        session_uuid,
+        session_info.as_ref().map(|s| s.project_path.as_str()).unwrap_or("unknown"),
+        tp_count + fp_count + review_count,
+        tp_count,
+        fp_count,
+        review_count,
+        total,
+        user_summary.unwrap_or("Audit complete.")
+    );
+
+    serde_json::json!({
+        "content": [{"type": "text", "text": summary}],
+        "data": {
+            "session_uuid": session_uuid,
+            "total_investigations": tp_count + fp_count + review_count,
+            "true_positives": tp_count,
+            "false_positives": fp_count,
+            "needs_review": review_count,
+        }
+    })
+}
+
 // ── Response helpers ─────────────────────────────────────
 
 fn error_response(msg: &str) -> Value {
@@ -2107,6 +2498,8 @@ fn format_security_findings(findings: &[Finding]) -> String {
         *counts.entry(f.severity.clone()).or_insert(0) += 1;
     }
 
+    let has_evidence = findings.iter().any(|f| f.evidence_refs.is_some());
+
     let mut summary = format!(
         "Found {} security findings:\n",
         findings.len()
@@ -2116,6 +2509,10 @@ fn format_security_findings(findings: &[Finding]) -> String {
         if let Some(count) = counts.get(*sev) {
             summary.push_str(&format!("  - {}: {}\n", sev.to_uppercase(), count));
         }
+    }
+
+    if has_evidence {
+        summary.push_str("\n📎 Cross-file findings include 'evidence_refs' with call graph pointers. Use query_callers/query_callees/find_call_path with the evidence data to verify each finding deterministically.\n");
     }
 
     summary.push_str("\nTop findings:\n");
@@ -2137,12 +2534,81 @@ fn format_security_findings(findings: &[Finding]) -> String {
     summary
 }
 
+// ── MCP Server State ──────────────────────────────────────
+
+/// MCP 服务器运行时状态
+struct McpServerState {
+    /// 统一的工具注册表（来自 tools/ crate）
+    tool_registry: std::sync::Arc<ctx_audit_tools::ToolRegistry>,
+    /// 审计会话状态（内存存储，进程生命周期内有效）
+    audit: McpAuditState,
+}
+
+/// 审计会话管理（纯内存，无数据库依赖）
+/// 使用 RefCell 实现内部可变性（MCP 服务器单线程运行，无需 Mutex）
+struct McpAuditState {
+    /// 活跃审计会话: session_uuid → SessionContext
+    active_sessions: std::cell::RefCell<HashMap<String, SessionContext>>,
+    /// 活跃调查: investigation_id → InvestigationContext
+    active_investigations: std::cell::RefCell<HashMap<String, InvestigationContext>>,
+}
+
+impl McpAuditState {
+    fn new() -> Self {
+        Self {
+            active_sessions: std::cell::RefCell::new(HashMap::new()),
+            active_investigations: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+/// 审计会话上下文
+struct SessionContext {
+    session_uuid: String,
+    project_path: String,
+    session_type: String,
+    started_at: String,
+}
+
+/// 调查上下文 — 对单个 finding 的深度调查
+#[derive(Clone)]
+struct InvestigationContext {
+    investigation_id: String,
+    session_uuid: String,
+    finding_id: String,
+    hypothesis: Option<String>,
+    steps: Vec<InvestigationStep>,
+    started_at: String,
+}
+
+/// 调查步骤记录
+#[derive(Clone)]
+struct InvestigationStep {
+    tool_used: String,
+    finding: String,
+    reasoning: String,
+}
+
+impl McpServerState {
+    async fn new() -> Self {
+        let registry = std::sync::Arc::new(ctx_audit_tools::ToolRegistry::new());
+        // 注册所有内置工具（搜索、污点、模式、调用图）
+        ctx_audit_tools::register_all_tools(&registry, ".".to_string(), None).await;
+        Self {
+            tool_registry: registry,
+            audit: McpAuditState::new(),
+        }
+    }
+}
+
 // ── MCP Server Main Loop ────────────────────────────────
 
 pub async fn run_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let reader = stdin.lock();
+
+    let state = McpServerState::new().await;
 
     for line in reader.lines() {
         let line = line?;
@@ -2166,7 +2632,7 @@ pub async fn run_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let id = request.id.unwrap_or(Value::Null);
-        let result = handle_request(request.method.clone(), &request.params).await;
+        let result = handle_request_with_state(&state, request.method.clone(), &request.params).await;
 
         let response = JsonRpcResponse {
             jsonrpc: "2.0",
@@ -2479,7 +2945,7 @@ fn slugify(s: &str) -> String {
         .to_string()
 }
 
-async fn handle_request(method: String, params: &Value) -> Value {
+async fn handle_request_with_state(state: &McpServerState, method: String, params: &Value) -> Value {
     match method.as_str() {
         "initialize" => {
             serde_json::json!({
@@ -2498,20 +2964,59 @@ async fn handle_request(method: String, params: &Value) -> Value {
             serde_json::json!(null)
         }
         "tools/list" => {
-            let tools: Vec<Value> = tool_definitions().iter().map(|t| {
-                serde_json::json!({
-                    "name": t.name,
+            // 合并 ToolRegistry 工具 + MCP 独有工具
+            let mut tools: Vec<Value> = Vec::new();
+
+            // 1. 来自 tools/ crate 的工具（通过 ToolRegistry）
+            for def in state.tool_registry.get_definitions().await {
+                tools.push(serde_json::json!({
+                    "name": def.name,
+                    "description": def.description,
+                    "inputSchema": def.to_mcp_schema(),
+                }));
+            }
+
+            // 2. MCP 独有的工具（security_scan, scan_file, get_attack_surface 等）
+            for t in tool_definitions() {
+                // 避免与 ToolRegistry 中的同名工具重复
+                let name = t.name;
+                if tools.iter().any(|existing| existing["name"].as_str() == Some(name)) {
+                    continue;
+                }
+                tools.push(serde_json::json!({
+                    "name": name,
                     "description": t.description,
                     "inputSchema": t.input_schema,
-                })
-            }).collect();
+                }));
+            }
+
             serde_json::json!({"tools": tools})
         }
         "tools/call" => {
             let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
 
-            handle_tool_call(tool_name, &arguments).await
+            // 先尝试 ToolRegistry
+            if let Some(tool) = state.tool_registry.get_tool(tool_name) {
+                match tool.execute(arguments).await {
+                    Ok(result) => result.to_mcp_response(),
+                    Err(e) => serde_json::json!({
+                        "content": [{"type": "text", "text": format!("Tool error: {}", e)}],
+                        "isError": true
+                    }),
+                }
+            } else {
+                // 审计会话工具（需要 state 访问）
+                match tool_name {
+                    "start_audit_session" => tool_start_audit_session_with_state(state, &arguments).await,
+                    "start_investigation" => tool_start_investigation_with_state(state, &arguments).await,
+                    "log_investigation_step" => tool_log_investigation_step_with_state(state, &arguments).await,
+                    "conclude_investigation" => tool_conclude_investigation_with_state(state, &arguments).await,
+                    "conclude_audit_session" => tool_conclude_audit_session_with_state(state, &arguments).await,
+                    // 回退到 MCP 独有工具（不需要 state）
+                    _ => handle_tool_call(tool_name, &arguments).await,
+                }
+            }
         }
         "ping" => {
             serde_json::json!({})

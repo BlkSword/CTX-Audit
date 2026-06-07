@@ -242,6 +242,7 @@ fn create_finding(
         file_role,
         barriers,
         reasoning_hint,
+        evidence_refs: None,
     }
 }
 

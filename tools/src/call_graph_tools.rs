@@ -59,6 +59,17 @@ impl Tool for QueryCallersTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(self.name(), self.description(), self.category())
             .add_parameter(ToolParameter {
+                name: "project_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "项目根目录路径".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
                 name: "file_path".to_string(),
                 param_type: ToolParameterType::String,
                 description: "目标函数所在的文件路径（相对于项目根目录）".to_string(),
@@ -100,7 +111,8 @@ impl Tool for QueryCallersTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 function_name 参数".to_string()))?;
         let recursive = input["recursive"].as_bool().unwrap_or(false);
 
-        let engine = build_query_engine(&self.project_path)?;
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
 
         let callers = if recursive {
             engine.query_all_callers(file_path, function_name)
@@ -163,6 +175,17 @@ impl Tool for QueryCalleesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(self.name(), self.description(), self.category())
             .add_parameter(ToolParameter {
+                name: "project_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "项目根目录路径".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
                 name: "file_path".to_string(),
                 param_type: ToolParameterType::String,
                 description: "目标函数所在的文件路径".to_string(),
@@ -204,7 +227,8 @@ impl Tool for QueryCalleesTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 function_name 参数".to_string()))?;
         let recursive = input["recursive"].as_bool().unwrap_or(false);
 
-        let engine = build_query_engine(&self.project_path)?;
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
 
         let callees = if recursive {
             engine.query_all_callees(file_path, function_name)
@@ -267,6 +291,17 @@ impl Tool for FindCallPathTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(self.name(), self.description(), self.category())
             .add_parameter(ToolParameter {
+                name: "project_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "项目根目录路径".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
                 name: "source_file".to_string(),
                 param_type: ToolParameterType::String,
                 description: "源函数所在文件路径".to_string(),
@@ -322,7 +357,8 @@ impl Tool for FindCallPathTool {
         let sink_function = input["sink_function"].as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 sink_function 参数".to_string()))?;
 
-        let engine = build_query_engine(&self.project_path)?;
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
 
         match engine.find_call_path(source_file, source_function, sink_file, sink_function) {
             Some(path) => {
@@ -394,6 +430,17 @@ impl Tool for ResolveMethodCallTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(self.name(), self.description(), self.category())
             .add_parameter(ToolParameter {
+                name: "project_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "项目根目录路径".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
                 name: "file_path".to_string(),
                 param_type: ToolParameterType::String,
                 description: "包含该调用的文件路径".to_string(),
@@ -449,7 +496,8 @@ impl Tool for ResolveMethodCallTool {
         let method = input["method"].as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 method 参数".to_string()))?;
 
-        let engine = build_query_engine(&self.project_path)?;
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
 
         let targets = engine.resolve_method_call(file_path, line, receiver, method);
 
@@ -513,6 +561,17 @@ impl Tool for GetTypeHierarchyTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(self.name(), self.description(), self.category())
             .add_parameter(ToolParameter {
+                name: "project_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "项目根目录路径".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
                 name: "class_name".to_string(),
                 param_type: ToolParameterType::String,
                 description: "类名".to_string(),
@@ -529,7 +588,8 @@ impl Tool for GetTypeHierarchyTool {
         let class_name = input["class_name"].as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 class_name 参数".to_string()))?;
 
-        let engine = build_query_engine(&self.project_path)?;
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
 
         match engine.query_type_chain(class_name) {
             Some(chain) => {
@@ -585,6 +645,17 @@ impl Tool for GetMiddlewareChainTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(self.name(), self.description(), self.category())
             .add_parameter(ToolParameter {
+                name: "project_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "项目根目录路径".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
                 name: "file_path".to_string(),
                 param_type: ToolParameterType::String,
                 description: "要查询的文件路径（可选，不填返回所有中间件）".to_string(),
@@ -598,7 +669,8 @@ impl Tool for GetMiddlewareChainTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let engine = build_query_engine(&self.project_path)?;
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
 
         if let Some(file_path) = input["file_path"].as_str() {
             let middleware = engine.query_middleware_for_file(file_path);
@@ -664,6 +736,17 @@ impl Tool for TraceVariableFlowTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(self.name(), self.description(), self.category())
             .add_parameter(ToolParameter {
+                name: "project_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "项目根目录路径".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
                 name: "file_path".to_string(),
                 param_type: ToolParameterType::String,
                 description: "源函数所在文件路径".to_string(),
@@ -693,7 +776,8 @@ impl Tool for TraceVariableFlowTool {
         let function_name = input["function_name"].as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 function_name 参数".to_string()))?;
 
-        let engine = build_query_engine(&self.project_path)?;
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
 
         let flow = engine.trace_variable_flow(file_path, function_name);
 
@@ -757,8 +841,9 @@ impl Tool for GetGraphStatsTool {
         ToolDefinition::new(self.name(), self.description(), self.category())
     }
 
-    async fn execute(&self, _input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let engine = build_query_engine(&self.project_path)?;
+    async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
         let stats = engine.query_graph_stats();
 
         let summary = format!(
@@ -811,6 +896,17 @@ impl Tool for ListFunctionsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::new(self.name(), self.description(), self.category())
             .add_parameter(ToolParameter {
+                name: "project_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "项目根目录路径".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
                 name: "file_path".to_string(),
                 param_type: ToolParameterType::String,
                 description: "文件路径（相对于项目根目录）".to_string(),
@@ -827,7 +923,8 @@ impl Tool for ListFunctionsTool {
         let file_path = input["file_path"].as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
 
-        let engine = build_query_engine(&self.project_path)?;
+        let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
+        let engine = build_query_engine(project_path)?;
         let functions = engine.query_functions_in_file(file_path);
 
         if functions.is_empty() {
@@ -868,18 +965,18 @@ impl Tool for ListFunctionsTool {
 /// 注册所有调用图查询工具到 ToolRegistry
 pub async fn register_call_graph_tools(
     registry: &Arc<ToolRegistry>,
-    project_path: String,
 ) {
+    // project_path 现在从 input JSON 中读取，构造时传空字符串
     let tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(QueryCallersTool::new(project_path.clone())),
-        Arc::new(QueryCalleesTool::new(project_path.clone())),
-        Arc::new(FindCallPathTool::new(project_path.clone())),
-        Arc::new(ResolveMethodCallTool::new(project_path.clone())),
-        Arc::new(GetTypeHierarchyTool::new(project_path.clone())),
-        Arc::new(GetMiddlewareChainTool::new(project_path.clone())),
-        Arc::new(TraceVariableFlowTool::new(project_path.clone())),
-        Arc::new(GetGraphStatsTool::new(project_path.clone())),
-        Arc::new(ListFunctionsTool::new(project_path)),
+        Arc::new(QueryCallersTool::new(String::new())),
+        Arc::new(QueryCalleesTool::new(String::new())),
+        Arc::new(FindCallPathTool::new(String::new())),
+        Arc::new(ResolveMethodCallTool::new(String::new())),
+        Arc::new(GetTypeHierarchyTool::new(String::new())),
+        Arc::new(GetMiddlewareChainTool::new(String::new())),
+        Arc::new(TraceVariableFlowTool::new(String::new())),
+        Arc::new(GetGraphStatsTool::new(String::new())),
+        Arc::new(ListFunctionsTool::new(String::new())),
     ];
 
     for tool in tools {

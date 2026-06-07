@@ -580,6 +580,7 @@ impl ScaScanner {
             file_role: None,
             barriers: None,
             reasoning_hint: None,
+            evidence_refs: None,
         }
     }
 }
