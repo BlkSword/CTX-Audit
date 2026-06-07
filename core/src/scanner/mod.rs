@@ -1161,6 +1161,9 @@ pub async fn scan_directory_deep_with_rules_progress(
             call_graph: Arc::new(crate::analysis::cross_file::CallGraph::new()),
             taint_flows: Vec::new(),
             stats: crate::analysis::cross_file::CrossFileAnalysisStats::default(),
+            type_hierarchy: crate::analysis::type_hierarchy::TypeHierarchy::new(),
+            middleware_model: crate::analysis::middleware::MiddlewareModel::new(),
+            file_import_aliases: std::collections::HashMap::new(),
         }
     };
 

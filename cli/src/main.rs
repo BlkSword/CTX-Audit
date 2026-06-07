@@ -103,6 +103,14 @@ enum Commands {
         /// 启用 SCA 依赖漏洞扫描
         #[arg(long)]
         sca: bool,
+
+        /// 保存调用图到指定路径（用于 LLM 查询）
+        #[arg(long)]
+        graph_output: Option<String>,
+
+        /// 查询模式：构建调用图但不运行规则扫描（与 MCP 工具配合使用）
+        #[arg(long)]
+        query_mode: bool,
     },
 
     /// 深度分析单个文件
@@ -387,6 +395,8 @@ async fn main() -> Result<()> {
             cross_file,
             daemon,
             sca,
+            graph_output,
+            query_mode,
         } => {
             commands::scan::execute(
                 path,
@@ -403,6 +413,8 @@ async fn main() -> Result<()> {
                 daemon,
                 exclude,
                 sca,
+                graph_output,
+                query_mode,
             )
             .await
         }

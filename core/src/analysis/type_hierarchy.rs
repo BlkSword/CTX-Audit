@@ -13,11 +13,11 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TypeHierarchy {
     /// 类型名 → TypeInfo
-    types: HashMap<String, TypeInfo>,
+    pub types: HashMap<String, TypeInfo>,
     /// 子类型 → 父类型列表
-    extends_map: HashMap<String, Vec<String>>,
+    pub extends_map: HashMap<String, Vec<String>>,
     /// 接口 → 实现该接口的类列表
-    implementations: HashMap<String, Vec<String>>,
+    pub implementations: HashMap<String, Vec<String>>,
 }
 
 /// 类型信息

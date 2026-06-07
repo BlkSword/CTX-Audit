@@ -20,6 +20,7 @@ pub mod risk_patterns;
 pub mod cpg;
 pub mod type_hierarchy;
 pub mod middleware;
+pub mod query;
 
 pub use cpg::{
     FunctionCPG, FunctionSignature, CPGNodeMeta, ConditionInfo,
@@ -44,11 +45,12 @@ pub use enhanced_dataflow::{
     EnhancedFlowGraph, EnhancedFlowNode, EnhancedNodeType, ControlFlowEdge, EdgeType,
 };
 pub use cross_file::{
-    CallGraph, CallGraphNode, FunctionParameter,
+    CallGraph, CallGraphNode, CallTarget, FunctionParameter,
     CrossFileTaintAnalyzer, CrossFileTaintResult, CrossFileAnalysisStats,
     InterproceduralTaintFlow, InterproceduralStep, InterproceduralStepType,
     FunctionSummary, SinkReachability, SummaryPropagationResult,
     ContextAssembler, FileContext, CallerInfo, CalleeInfo, TrustBoundaryInfo,
+    ImportResolution,
 };
 pub use cache::{
     CacheEntry, CacheStats, MemoryCache,
@@ -68,3 +70,10 @@ pub use risk_patterns::{
     AffectedEntry, EvidenceSnippet, PatternCondition,
 };
 pub use type_hierarchy::{TypeHierarchy, TypeInfo, TypeKind, MethodSignature, ResolvedMethod};
+pub use query::{
+    CallGraphQueryEngine, CallerEvidence, CalleeEvidence, CallPath, PathStep,
+    ReachabilityResult, ReachableNode, ReachableSink,
+    ResolvedCallTarget, TypeChainResult, MethodEvidence, MiddlewareEvidence,
+    RouteEvidence, CallbackEvidence, VariableFlowResult, TaintPathEvidence,
+    GraphStats, FunctionInfo,
+};

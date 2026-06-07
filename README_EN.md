@@ -25,7 +25,7 @@ CTX-Audit is a code security analysis engine designed for LLM-assisted auditing.
 
 - **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
 - **Data flow tracking**: Powered by CPG (Code Property Graph) engine — fuses CFG + AST metadata + alias maps into a unified structure. Supports path-sensitive analysis (conditional sanitization detection), AccessPath prefix matching (`req.body` → `req.body.name`), destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
-- **LLM autonomous audit loop**: Exposes 17 tools via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → taint tracing → code review → TP/FP verdict → rule generation → re-validation"
+- **LLM autonomous audit loop**: Exposes 26 tools (including call graph query tools) via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → call graph query → taint tracing → code review → TP/FP verdict → rule generation → re-validation"
 - **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), confidence scoring, multi-engine corroboration, baseline suppression
 - **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
 - **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
@@ -92,6 +92,8 @@ OPTIONS:
       --deep                     Shorthand for --taint --cross-file
       --daemon                   Execute via daemon (incremental cache)
       --sca                      Enable SCA dependency scanning
+      --graph-output <file>     Export call graph as JSON (for LLM queries)
+      --query-mode              Build call graph only, print stats (for use with MCP tools)
 ```
 
 **Scan Engines**:
@@ -214,7 +216,7 @@ Daemon features:
 ctx-audit mcp    # Start MCP Server (stdio JSON-RPC)
 ```
 
-Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **17 tools**:
+Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **26 tools**:
 
 **Coarse-grained tools**:
 
@@ -252,6 +254,22 @@ Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP p
 | `get_project_info` | Project overview: language distribution, frameworks, directory structure, entry point stats |
 | `validate_finding` | Record audit verdict (TP/FP + reasoning), auto-suppresses FPs |
 | `list_rules` | View all currently loaded security rules |
+
+**Call Graph Query Tools (Deterministic Evidence)**:
+
+| Tool | Description |
+|------|-------------|
+| `get_graph_stats` | Get cross-file call graph statistics: nodes/edges/cross-file edges/sources/sinks/types/middleware |
+| `list_file_functions` | List all functions indexed in the call graph for a file (with source/sink/callback markers) |
+| `query_callers` | Find all functions that call a given function (with receiver info) — backward trace from sink to entry points |
+| `query_callees` | Find all functions called by a given function — forward trace from entry point to sinks |
+| `find_call_path` | Find the exact call path from source to sink in the cross-file call graph — deterministic reachability evidence |
+| `resolve_method_call` | Resolve `obj.method()` to actual implementations (import aliases + receiver tracking + type hierarchy) |
+| `query_type_hierarchy` | Get class inheritance hierarchy: parents/children/interface implementations/all methods (including inherited) |
+| `query_middleware_chain` | Get Express app.use() / Django MIDDLEWARE registrations and which routes they affect |
+| `trace_variable_flow` | Trace a tainted variable through the cross-file call graph to find all reachable sinks |
+
+These tools return data based on AST-parsed **deterministic call graphs** — function call relationships do not depend on any LLM inference. LLMs use these tools to obtain evidence chains rather than guessing code behavior.
 
 Claude Code configuration example (`.claude/settings.json`):
 
@@ -427,14 +445,17 @@ Each project can place project-level files in the `.ctx-audit/` directory:
 
 `--cross-file` (or `--deep`) enables cross-file, interprocedural analysis:
 
-- **Call graph construction**: Auto-extracts function nodes and call relationships
-- **Cross-file resolution**: Matches bare function names to global functions, builds cross-file call edges
+- **Call graph construction**: Auto-extracts function nodes and call relationships, supports anonymous callback registration (arrow functions/function expressions)
+- **Cross-file resolution**: Two-phase call resolution — Phase 1 via Import/Require alias exact matching to target file and export name, Phase 2 global name fallback
+- **Method call tracking**: `CallTarget` preserves `obj.method()` receiver info, receiver-aware cross-file call matching
 - **Function summaries**: Bottom-up computation of each function's taint propagation signature
-- **Path tracing**: DFS search for source→sink cross-file call paths
+- **Path tracing**: BFS search for source→sink cross-file call paths
 - **Context assembly**: Identifies callers, callees, and trust boundaries
 - **CPG auto-summaries**: FunctionCPG cache from Stage B is passed to Stage C, auto-generating precise function summaries (replacing heuristic guesses) with accurate sink line numbers and param→return propagation
 - **Path-sensitive analysis**: Branch-aware taint propagation — `if (isSafe(x))` True branch auto-marks sanitized, reducing false positives under conditional guards
 - **Property path tracking**: Taint state keyed by AccessPath with prefix matching — `req.body` taint detected at `req.body.name`; `req.body.name` taint does NOT affect `req.body.email`
+- **Type hierarchy**: Class/Interface/Struct inheritance DAG + virtual method dispatch (Java/TypeScript/Python)
+- **Framework middleware**: Express `app.use()` middleware virtual edge injection, Django MIDDLEWARE detection
 
 Supports 12 languages: JavaScript/JSX, TypeScript/TSX, Python, Java, Rust, Go, C, C++, HTML, CSS, JSON.
 
@@ -558,7 +579,7 @@ For detailed writing guides, see [`docs/custom-rules-en.md`](docs/custom-rules-e
 
 ## LLM-Assisted Autonomous Auditing
 
-CTX-Audit exposes **17 tools** via the MCP protocol, enabling LLMs (Claude Code / Cursor / any MCP-compatible agent) to fully autonomously drive the security audit process — from project understanding, scanning, taint tracing, code review to audit conclusions — with zero manual intervention.
+CTX-Audit exposes **26 tools** (including 9 call graph query tools) via the MCP protocol, enabling LLMs (Claude Code / Cursor / any MCP-compatible agent) to fully autonomously drive the security audit process — from project understanding, scanning, call graph query, taint tracing, code review to audit conclusions — with zero manual intervention.
 
 ### Setup
 
@@ -578,18 +599,24 @@ Add the following to your Claude Code configuration (`.claude/settings.json`):
 ### Autonomous Audit Workflow
 
 ```
-1. get_project_info      → Understand the project: languages, frameworks, structure, entry points
-2. get_attack_surface    → Map attack surface: high-risk entry points, trust boundaries, unauthenticated routes
-3. security_scan         → Full scan: rule matching + AST taint analysis (--deep)
-4. Filter results        → file_role_filter="production", min_severity="high"
-5. Audit each finding:
-   ├─ get_code_context   → Read source code around the finding
-   ├─ get_taint_path     → Trace full source→sink data flow
-   ├─ check_sanitizer    → Verify if sanitization functions exist
-   ├─ list_sources/sinks → View all taint sources and sinks in the file
-   └─ validate_finding   → Record audit verdict (TP/FP) with reasoning
-6. add_custom_rule       → Dynamically generate rules for discovered 0-day patterns
-7. security_scan         → Re-scan with new rules to validate
+1. get_project_info        → Understand the project: languages, frameworks, structure, entry points
+2. get_attack_surface      → Map attack surface: high-risk entry points, trust boundaries, unauthenticated routes
+3. get_graph_stats         → Understand call graph scale: nodes, edges, source/sink distribution
+4. security_scan           → Full scan: rule matching + AST taint analysis (--deep)
+5. Filter results          → file_role_filter="production", min_severity="high"
+6. Audit each finding:
+   ├─ get_code_context     → Read source code around the finding
+   ├─ get_taint_path       → Trace full source→sink data flow
+   ├─ query_callees        → Find what sinks this function calls (forward trace)
+   ├─ query_callers        → Find what entry points reach this sink (backward trace)
+   ├─ find_call_path       → Verify exact source→sink call path (deterministic evidence)
+   ├─ resolve_method_call  → Resolve ambiguous method calls (e.g. db.query) to actual implementations
+   ├─ check_sanitizer      → Verify if sanitization functions exist
+   ├─ list_sources/sinks   → View all taint sources and sinks in the file
+   └─ validate_finding     → Record audit verdict (TP/FP) with reasoning
+7. query_middleware_chain  → Check middleware coverage, find auth bypasses
+8. add_custom_rule         → Dynamically generate rules for discovered 0-day patterns
+9. security_scan           → Re-scan with new rules to validate
 ```
 
 ### MCP Tool Reference
@@ -630,6 +657,20 @@ Add the following to your Claude Code configuration (`.claude/settings.json`):
 | `validate_finding` | Record audit verdict: TP/FP + reasoning, auto-writes to baseline for FP suppression |
 | `add_custom_rule` | Dynamically inject custom rules (YAML format, takes effect immediately) |
 | `daemon_status` | Query daemon process status |
+
+#### Call Graph Query (Deterministic Evidence)
+
+| Tool | Description |
+|------|-------------|
+| `get_graph_stats` | Call graph statistics: nodes/edges/sources/sinks/types/middleware |
+| `list_file_functions` | List all indexed functions in a file |
+| `query_callers` | Backward trace: who calls this function? |
+| `query_callees` | Forward trace: what does this function call? |
+| `find_call_path` | Exact call path: is source→sink reachable? |
+| `resolve_method_call` | Resolve obj.method() → actual implementation |
+| `query_type_hierarchy` | Class inheritance chain + virtual method dispatch |
+| `query_middleware_chain` | Middleware registrations and affected routes |
+| `trace_variable_flow` | Cross-file taint variable propagation paths |
 
 ### System Prompt for Autonomous Auditing
 
@@ -767,7 +808,10 @@ core/                     # Deterministic analysis engine
 │   │   ├── query.rs      # CodePropertyGraph unified query API
 │   │   ├── path_taint.rs # PathSensitiveState + AccessPath prefix matching + branch merging
 │   │   └── summary.rs    # CPG auto function summary generation
-│   └── imports.rs        # Import resolution
+│   ├── imports.rs        # Import resolution
+│   ├── type_hierarchy.rs # Type hierarchy (extends/implements DAG)
+│   ├── middleware.rs     # Framework middleware modeling (Express app.use)
+│   └── query.rs          # Call graph query engine (LLM evidence chain)
 ├── scanner/              # Scanners
 │   ├── regex_scanner.rs  # Regex scanner
 │   ├── sca_scanner.rs    # SCA scanner (OSV API + local cache)
@@ -791,6 +835,7 @@ tools/                    # MCP tool suite
 ├── ast_tools.rs          # AST query tools
 ├── taint_tools.rs        # Taint analysis tools
 ├── pattern_tools.rs      # Pattern detection tools
+├── call_graph_tools.rs   # Call graph query tools (9 LLM evidence queries)
 └── search_tools.rs       # Code search tools
 
 cli/                      # Command-line client
@@ -889,7 +934,7 @@ Benchmarks based on the [Next.js](https://github.com/vercel/next.js) repository 
 
 ```bash
 cargo build --release        # Build (ctx-audit + ctx-audit-daemon)
-cargo test --workspace       # Run tests (184 tests)
+cargo test --workspace       # Run tests (186 tests)
 cargo fmt                    # Format
 cargo clippy                 # Lint
 ```
@@ -900,17 +945,17 @@ cargo clippy                 # Lint
 |-----------|--------|
 | CPG Analysis Engine | CFG + AST metadata + alias map fusion, path-sensitive taint propagation, AccessPath property tracking, 12 languages AST, 30+ sanitizers |
 | Dynamic Language Tracking | AccessPath + AliasMap + destructuring + property access + await + Promise chains |
-| Cross-file Tracking | Call graph + function summaries + DFS path finding (`--cross-file`) + CPG auto-summaries (precise sink line numbers, replacing heuristics) |
+| Cross-file Tracking | Call graph + Import-Aware alias resolution + Callback registration + CallTarget receiver tracking + Type hierarchy virtual dispatch + Framework middleware virtual edges + CPG auto-summaries + BFS path finding |
 | TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
 | Pattern Matching | 40 pattern rules + 5 taint rules, covering 6 languages + 6 frameworks |
 | False Positive Control | File role classification + security barrier detection + multi-engine confidence fusion + baseline suppression |
 | SCA Scanner | OSV API, 4 ecosystems, local cache, configurable (disabled by default) |
-| MCP Integration | 17 tools (3 scanning + 7 taint + 3 risk patterns + 4 autonomous audit) |
+| MCP Integration | 26 tools (3 scanning + 7 taint + 3 risk patterns + 4 autonomous audit + 9 call graph query) |
 | LLM Output | Structured JSON: code context + taint chains + file role + barriers + confidence |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
 | Config-driven | All exclusions, severity thresholds, and engine toggles via config.toml |
-| Test Coverage | 184 tests |
+| Test Coverage | 186 tests |
 
 ## License
 

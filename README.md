@@ -25,7 +25,7 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 
 - **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
 - **数据流追踪**：基于 CPG（代码属性图）引擎，融合 CFG + AST 元数据 + 别名映射，支持路径敏感分析（条件净化检测）、属性路径前缀匹配（`req.body` → `req.body.name`）、AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
-- **LLM 自主审计闭环**：通过 MCP 协议暴露 17 个工具，LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
+- **LLM 自主审计闭环**：通过 MCP 协议暴露 26 个工具（含调用图查询），LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
 - **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、置信度评分、多引擎交叉确认、基线抑制
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
@@ -92,6 +92,8 @@ OPTIONS:
       --deep                    等同于 --taint --cross-file
       --daemon                  通过守护进程执行（增量缓存）
       --sca                     启用 SCA 依赖漏洞扫描
+      --graph-output <文件>    导出调用图为 JSON（供 LLM 查询）
+      --query-mode             仅构建调用图，输出统计信息（配合 MCP 工具使用）
 ```
 
 **扫描引擎**：
@@ -214,7 +216,7 @@ ctx-audit daemon stop                        # 停止
 ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 ```
 
-通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **17 个工具**：
+通过 MCP 协议暴露安全分析能力给 AI agent（如 Claude Code）。提供 **26 个工具**：
 
 **粗粒度工具**：
 
@@ -252,6 +254,23 @@ ctx-audit mcp    # 启动 MCP Server（stdio JSON-RPC）
 | `get_project_info` | 项目概览：语言分布、框架、目录结构、入口点统计 |
 | `validate_finding` | 记录审计结论（TP/FP + 推理原因），自动抑制 FP |
 | `list_rules` | 查看当前加载的所有安全规则 |
+
+**调用图查询工具（确定性证据）**：
+
+| 工具 | 说明 |
+|------|------|
+| `get_graph_stats` | 获取跨文件调用图统计概览：节点/边/跨文件边/source/sink/类型/中间件数量 |
+| `list_file_functions` | 列出文件中所有被调用图索引的函数（含 source/sink/callback 标记） |
+| `query_callers` | 查询谁调用了指定函数（含 receiver 信息）——反向追踪 sink 到入口点 |
+| `query_callees` | 查询指定函数调用了谁——正向追踪入口点到 sink |
+| `find_call_path` | 在跨文件调用图中查找 source→sink 的精确调用路径（确定性可达性证据） |
+| `resolve_method_call` | 解析 `obj.method()` 到实际函数实现（import 别名 + receiver 追踪 + 类型层次） |
+| `query_type_hierarchy` | 获取类的继承层次：父类/子类/接口实现/所有方法（含继承） |
+| `query_middleware_chain` | 获取 Express app.use() / Django MIDDLEWARE 中间件及其影响的路由 |
+| `trace_variable_flow` | 从 source 函数出发，找出所有可达的 sink 及完整调用路径 |
+
+这些工具返回的数据基于 AST 解析的**确定性调用图**——函数调用关系不依赖任何 LLM 推断。
+LLM 审计时使用这些工具获取证据链，而非猜测代码行为。
 
 Claude Code 配置示例（`.claude/settings.json`）：
 
@@ -561,7 +580,7 @@ CTX-Audit 支持用户编写自定义 YAML 规则，放置在 `.ctx-audit/rules/
 
 ## LLM 协作审计
 
-CTX-Audit 通过 MCP 协议暴露 **17 个工具**，让 LLM（Claude Code / Cursor / 任何支持 MCP 的 Agent）完全自主驱动安全审计流程——从项目理解、扫描、污点追踪、代码审查到审计结论，全程无需人工干预。
+CTX-Audit 通过 MCP 协议暴露 **26 个工具**（含 9 个调用图查询工具），让 LLM（Claude Code / Cursor / 任何支持 MCP 的 Agent）完全自主驱动安全审计流程——从项目理解、扫描、污点追踪、代码审查到审计结论，全程无需人工干预。
 
 ### 接入方式
 
@@ -581,18 +600,24 @@ CTX-Audit 通过 MCP 协议暴露 **17 个工具**，让 LLM（Claude Code / Cur
 ### 自主审计工作流
 
 ```
-1. get_project_info      → 了解项目：语言、框架、文件结构、入口点数量
-2. get_attack_surface    → 映射攻击面：高风险入口点、信任边界、未认证路由
-3. security_scan         → 全量扫描：规则匹配 + AST 污点分析（--deep）
-4. 过滤筛选              → file_role_filter="production", min_severity="high"
-5. 逐条审计:
-   ├─ get_code_context   → 阅读发现点周围的源代码
-   ├─ get_taint_path     → 追踪 source→sink 完整数据流
-   ├─ check_sanitizer    → 验证是否存在有效的净化函数
-   ├─ list_sources/sinks → 查看文件中所有污点源和汇
-   └─ validate_finding   → 记录审计结论（TP/FP）及推理过程
-6. add_custom_rule       → 针对发现的 0-day 模式动态生成规则
-7. security_scan         → 使用新规则重新扫描验证
+1. get_project_info        → 了解项目：语言、框架、文件结构、入口点数量
+2. get_attack_surface      → 映射攻击面：高风险入口点、信任边界、未认证路由
+3. get_graph_stats         → 了解调用图规模：节点数、边数、source/sink 分布
+4. security_scan           → 全量扫描：规则匹配 + AST 污点分析（--deep）
+5. 过滤筛选                → file_role_filter="production", min_severity="high"
+6. 逐条审计:
+   ├─ get_code_context     → 阅读发现点周围的源代码
+   ├─ get_taint_path       → 追踪 source→sink 完整数据流
+   ├─ query_callees        → 查该函数调用了哪些 sink（正向追踪）
+   ├─ query_callers        → 查哪些入口点可达这个 sink（反向追踪）
+   ├─ find_call_path       → 验证 source→sink 的精确调用路径（确定性证据）
+   ├─ resolve_method_call  → 解析模糊的方法调用（如 db.query）到实际实现
+   ├─ check_sanitizer      → 验证是否存在有效的净化函数
+   ├─ list_sources/sinks   → 查看文件中所有污点源和汇
+   └─ validate_finding     → 记录审计结论（TP/FP）及推理过程
+7. query_middleware_chain  → 检查中间件覆盖，发现认证绕过
+8. add_custom_rule         → 针对发现的 0-day 模式动态生成规则
+9. security_scan           → 使用新规则重新扫描验证
 ```
 
 ### MCP 工具清单
@@ -633,6 +658,20 @@ CTX-Audit 通过 MCP 协议暴露 **17 个工具**，让 LLM（Claude Code / Cur
 | `validate_finding` | 记录审计结论：TP/FP + 推理原因，自动写入 baseline 抑制 FP |
 | `add_custom_rule` | 动态注入自定义规则（YAML 格式，实时生效） |
 | `daemon_status` | 查询守护进程状态 |
+
+#### 调用图查询（确定性证据）
+
+| 工具 | 说明 |
+|------|------|
+| `get_graph_stats` | 调用图统计：节点/边/source/sink/类型/中间件 |
+| `list_file_functions` | 列出文件中所有已索引的函数 |
+| `query_callers` | 反向追踪：谁调用了这个函数？ |
+| `query_callees` | 正向追踪：这个函数调用了谁？ |
+| `find_call_path` | 精确调用路径：source 到 sink 可达？ |
+| `resolve_method_call` | 解析 obj.method() → 实际实现 |
+| `query_type_hierarchy` | 类继承层次 + 虚方法分发 |
+| `query_middleware_chain` | 中间件及其影响的路由 |
+| `trace_variable_flow` | 污点变量跨文件传播路径 |
 
 ### 提示词示例
 
@@ -772,7 +811,8 @@ core/                     # 确定性分析引擎
 │   │   └── summary.rs    # CPG 自动函数摘要生成
 │   ├── imports.rs        # 导入解析
 │   ├── type_hierarchy.rs # 类型层次结构（extends/implements DAG）
-│   └── middleware.rs     # 框架中间件建模（Express app.use）
+│   ├── middleware.rs     # 框架中间件建模（Express app.use）
+│   └── query.rs          # 调用图查询引擎（LLM 证据链）
 ├── scanner/              # 扫描器
 │   ├── regex_scanner.rs  # 正则扫描
 │   ├── sca_scanner.rs    # SCA 扫描（OSV API + 本地缓存）
@@ -796,6 +836,7 @@ tools/                    # MCP 工具集
 ├── ast_tools.rs          # AST 查询工具
 ├── taint_tools.rs        # 污点分析工具
 ├── pattern_tools.rs      # 模式检测工具
+├── call_graph_tools.rs   # 调用图查询工具（9 个 LLM 证据查询）
 └── search_tools.rs       # 代码搜索工具
 
 cli/                      # 命令行客户端
@@ -894,7 +935,7 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 
 ```bash
 cargo build --release        # 构建（ctx-audit + ctx-audit-daemon）
-cargo test --workspace       # 运行测试（218 个测试）
+cargo test --workspace       # 运行测试（186 个测试）
 cargo fmt                    # 格式化
 cargo clippy                 # 代码检查
 ```
@@ -910,12 +951,12 @@ cargo clippy                 # 代码检查
 | 模式匹配规则 | 40 条模式规则 + 5 条污点规则，覆盖 6 语言 + 6 框架 |
 | 误报控制 | 文件角色分类 + 安全屏障检测 + 多引擎置信度融合 + 基线抑制 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存，可配置（默认关闭） |
-| MCP 集成 | 17 个工具（3 扫描 + 7 污点 + 3 风险模式 + 4 自主审计） |
+| MCP 集成 | 26 个工具（3 扫描 + 7 污点 + 3 风险模式 + 4 自主审计 + 9 调用图查询） |
 | LLM 输出 | 结构化 JSON：代码上下文 + 污点链 + 文件角色 + 屏障 + 置信度 |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
 | 配置驱动 | 所有排除项、严重程度阈值、引擎开关均可通过 config.toml 控制 |
-| 测试覆盖 | 218 个测试 |
+| 测试覆盖 | 186 个测试 |
 
 ## 许可证
 
