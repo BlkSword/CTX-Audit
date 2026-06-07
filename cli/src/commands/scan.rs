@@ -292,6 +292,7 @@ async fn scan_local(
     let sca_opt = Some(sca_options);
     let findings_result = if enable_taint || enable_cross_file {
         scan_directory_deep_with_rules_progress(&path, rules_ref, exclude_opt, sca_opt, Some(scan_opts), progress_cb).await
+            .map(|r| r.findings)
     } else {
         scan_directory_with_opts(&path, rules_ref, exclude_opt, sca_opt, scan_opts, progress_cb).await
     };

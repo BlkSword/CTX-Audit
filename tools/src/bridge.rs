@@ -161,6 +161,86 @@ impl ToolResult {
     }
 }
 
+// ── MCP JSON Schema / Response 转换 ──────────────────────
+
+impl ToolDefinition {
+    /// 转换为 MCP 兼容的 JSON Schema (input_schema)
+    pub fn to_mcp_schema(&self) -> serde_json::Value {
+        let mut properties = serde_json::Map::new();
+        let mut required: Vec<serde_json::Value> = Vec::new();
+
+        for param in &self.parameters {
+            let mut prop = serde_json::Map::new();
+            prop.insert(
+                "type".into(),
+                serde_json::Value::String(param_type_to_json_type(&param.param_type)),
+            );
+            prop.insert(
+                "description".into(),
+                serde_json::Value::String(param.description.clone()),
+            );
+            if let Some(ref default) = param.default {
+                prop.insert("default".into(), default.clone());
+            }
+            if let Some(ref enum_vals) = param.enum_values {
+                prop.insert("enum".into(), serde_json::json!(enum_vals));
+            }
+            if let Some(ref format) = param.format {
+                prop.insert("format".into(), serde_json::Value::String(format.clone()));
+            }
+            if param.required {
+                required.push(serde_json::Value::String(param.name.clone()));
+            }
+            properties.insert(param.name.clone(), serde_json::Value::Object(prop));
+        }
+
+        let mut schema = serde_json::Map::new();
+        schema.insert("type".into(), serde_json::Value::String("object".into()));
+        if !properties.is_empty() {
+            schema.insert("properties".into(), serde_json::Value::Object(properties));
+        }
+        if !required.is_empty() {
+            schema.insert("required".into(), serde_json::Value::Array(required));
+        }
+        serde_json::Value::Object(schema)
+    }
+}
+
+impl ToolResult {
+    /// 转换为 MCP JSON-RPC 工具调用响应格式
+    pub fn to_mcp_response(&self) -> serde_json::Value {
+        if self.is_error {
+            serde_json::json!({
+                "content": [{"type": "text", "text": self.text}],
+                "isError": true
+            })
+        } else if let Some(ref data) = self.data {
+            serde_json::json!({
+                "content": [
+                    {"type": "text", "text": self.text},
+                    {"type": "text", "text": serde_json::to_string_pretty(data).unwrap_or_default()}
+                ]
+            })
+        } else {
+            serde_json::json!({
+                "content": [{"type": "text", "text": self.text}]
+            })
+        }
+    }
+}
+
+/// 将 ToolParameterType 转换为 JSON Schema 类型字符串
+fn param_type_to_json_type(pt: &ToolParameterType) -> String {
+    match pt {
+        ToolParameterType::String => "string".to_string(),
+        ToolParameterType::Number => "number".to_string(),
+        ToolParameterType::Integer => "integer".to_string(),
+        ToolParameterType::Boolean => "boolean".to_string(),
+        ToolParameterType::Array => "array".to_string(),
+        ToolParameterType::Object => "object".to_string(),
+    }
+}
+
 /// 工具错误
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ToolError {
@@ -831,7 +911,7 @@ pub async fn register_all_tools(
     crate::pattern_tools::register_pattern_tools(registry, project_path.clone()).await;
 
     // 注册调用图查询工具（不依赖 AST 引擎，使用 CrossFileTaintAnalyzer）
-    crate::call_graph_tools::register_call_graph_tools(registry, project_path.clone()).await;
+    crate::call_graph_tools::register_call_graph_tools(registry).await;
 
     // 如果提供了 AST 引擎，注册 AST 工具并自动索引项目
     if let Some(engine) = ast_engine {

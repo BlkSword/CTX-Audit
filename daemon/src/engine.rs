@@ -21,7 +21,7 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use deepaudit_core::ast_api::{ASTEngine, ASTParser, QueryEngine, Symbol};
-use deepaudit_core::scanning::{Finding, Scanner, RegexScanner, scan_directory_deep_with_rules, scan_directory_deep_with_rules_progress, scan_directory_with_rules};
+use deepaudit_core::scanning::{Finding, Scanner, RegexScanner, ScanResult, scan_directory_deep_with_rules, scan_directory_deep_with_rules_progress, scan_directory_with_rules};
 use deepaudit_core::taint::{AstTaintAnalyzer, TaintFlow, CrossFileTaintAnalyzer};
 use deepaudit_core::watcher::{FileSnapshot, DeltaResult};
 use rayon::prelude::*;
@@ -286,16 +286,21 @@ impl AnalysisEngine {
 
         self.log_rules_status(path, rules_dir.as_deref()).await;
 
-        let findings = if enable_taint || enable_cross_file {
+        let scan_result = if enable_taint || enable_cross_file {
             let mut opts = deepaudit_core::scanning::ScanOptions::default();
             opts.enable_taint = enable_taint;
             opts.enable_cross_file = enable_cross_file;
             scan_directory_deep_with_rules_progress(path, rules_dir.as_deref(), None, None, Some(opts), None).await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
         } else {
-            scan_directory_with_rules(path, rules_dir.as_deref(), None, None).await
-                .map_err(|e| anyhow::anyhow!("{}", e))?
+            ScanResult {
+                findings: scan_directory_with_rules(path, rules_dir.as_deref(), None, None).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?,
+                attack_surface: Default::default(),
+                cross_file_result: None,
+            }
         };
+        let findings = scan_result.findings;
 
         let project_path = Path::new(path);
         let total = findings.len();
@@ -445,6 +450,7 @@ impl AnalysisEngine {
                         file_role: None,
                         barriers: None,
                         reasoning_hint: None,
+                        evidence_refs: None,
                     });
                 }
             }

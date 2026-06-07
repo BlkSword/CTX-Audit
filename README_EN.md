@@ -17,6 +17,19 @@ Not just regex matching — traces every data path from user input to dangerous 
 
 ---
 
+## Table of Contents
+
+| Section | |
+|---------|----|
+| [What is CTX-Audit](#what-is-ctx-audit) | [LLM-Assisted Autonomous Auditing](#llm-assisted-autonomous-auditing) |
+| [Quick Start](#quick-start) | [Incremental Scanning](#incremental-scanning) |
+| [Commands](#commands) | [Architecture](#architecture) |
+| [Configuration File](#configuration-file) | [LLM Audit Skill Guide](LLM-AUDIT-SKILL.md) |
+| [Detection Capabilities](#detection-capabilities) | |
+| [Custom Rules](#custom-rules) | |
+
+---
+
 ## What is CTX-Audit
 
 CTX-Audit is a code security analysis engine designed for LLM-assisted auditing. It doesn't just tell you "where dangerous functions are used" — it traces the **full path** of data from user input to dangerous operations, and outputs structured evidence chains that let LLMs make vulnerability verdicts based on facts.
@@ -25,7 +38,7 @@ CTX-Audit is a code security analysis engine designed for LLM-assisted auditing.
 
 - **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
 - **Data flow tracking**: Powered by CPG (Code Property Graph) engine — fuses CFG + AST metadata + alias maps into a unified structure. Supports path-sensitive analysis (conditional sanitization detection), AccessPath prefix matching (`req.body` → `req.body.name`), destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
-- **LLM autonomous audit loop**: Exposes 26 tools (including call graph query tools) via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → call graph query → taint tracing → code review → TP/FP verdict → rule generation → re-validation"
+- **LLM autonomous audit loop**: Exposes 31 tools (including call graph query + audit session tools) via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → evidence collection → investigative verification → TP/FP verdict → rule generation → re-validation"
 - **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), confidence scoring, multi-engine corroboration, baseline suppression
 - **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
 - **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
@@ -216,7 +229,7 @@ Daemon features:
 ctx-audit mcp    # Start MCP Server (stdio JSON-RPC)
 ```
 
-Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **26 tools**:
+Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP protocol. Provides **31 tools**:
 
 **Coarse-grained tools**:
 
@@ -270,6 +283,20 @@ Exposes security analysis capabilities to AI agents (e.g. Claude Code) via MCP p
 | `trace_variable_flow` | Trace a tainted variable through the cross-file call graph to find all reachable sinks |
 
 These tools return data based on AST-parsed **deterministic call graphs** — function call relationships do not depend on any LLM inference. LLMs use these tools to obtain evidence chains rather than guessing code behavior.
+
+**Audit Session Tools (Investigative Collaboration)**:
+
+| Tool | Description |
+|------|-------------|
+| `start_audit_session` | Create an audit session, returns session_uuid for linking subsequent investigations |
+| `start_investigation` | Start a deep investigation on a finding, returns deterministic evidence + suggested follow-up tools |
+| `log_investigation_step` | Record an investigation step (tool call + finding + reasoning), building a complete audit trail |
+| `conclude_investigation` | Conclude investigation with verdict (TP/FP/needs_review), auto-writes audit_log and baseline |
+| `conclude_audit_session` | Conclude the entire audit session, returns TP/FP/review summary statistics |
+
+These 5 tools implement **stateful investigation** — instead of a one-shot "scan → judge", the LLM
+establishes investigation context for each finding, progressively collects evidence, records reasoning
+chains, and renders a final verdict. See the full workflow in [LLM Audit Skill Guide](LLM-AUDIT-SKILL.md).
 
 Claude Code configuration example (`.claude/settings.json`):
 
@@ -579,7 +606,7 @@ For detailed writing guides, see [`docs/custom-rules-en.md`](docs/custom-rules-e
 
 ## LLM-Assisted Autonomous Auditing
 
-CTX-Audit exposes **26 tools** (including 9 call graph query tools) via the MCP protocol, enabling LLMs (Claude Code / Cursor / any MCP-compatible agent) to fully autonomously drive the security audit process — from project understanding, scanning, call graph query, taint tracing, code review to audit conclusions — with zero manual intervention.
+CTX-Audit exposes **31 tools** (including 9 call graph query + 5 audit session tools) via the MCP protocol, enabling LLMs (Claude Code / Cursor / any MCP-compatible agent) to fully autonomously drive the security audit process — from project understanding, scanning, evidence collection, investigative verification to audit conclusions — with zero manual intervention.
 
 ### Setup
 
@@ -598,26 +625,30 @@ Add the following to your Claude Code configuration (`.claude/settings.json`):
 
 ### Autonomous Audit Workflow
 
+CTX-Audit uses an **investigative collaboration** model — the LLM is not just a judge of scan results, but an active investigator. Each finding goes through: "establish investigation → collect evidence → record reasoning → reach verdict."
+
 ```
-1. get_project_info        → Understand the project: languages, frameworks, structure, entry points
-2. get_attack_surface      → Map attack surface: high-risk entry points, trust boundaries, unauthenticated routes
-3. get_graph_stats         → Understand call graph scale: nodes, edges, source/sink distribution
-4. security_scan           → Full scan: rule matching + AST taint analysis (--deep)
-5. Filter results          → file_role_filter="production", min_severity="high"
-6. Audit each finding:
-   ├─ get_code_context     → Read source code around the finding
-   ├─ get_taint_path       → Trace full source→sink data flow
-   ├─ query_callees        → Find what sinks this function calls (forward trace)
-   ├─ query_callers        → Find what entry points reach this sink (backward trace)
-   ├─ find_call_path       → Verify exact source→sink call path (deterministic evidence)
-   ├─ resolve_method_call  → Resolve ambiguous method calls (e.g. db.query) to actual implementations
-   ├─ check_sanitizer      → Verify if sanitization functions exist
-   ├─ list_sources/sinks   → View all taint sources and sinks in the file
-   └─ validate_finding     → Record audit verdict (TP/FP) with reasoning
-7. query_middleware_chain  → Check middleware coverage, find auth bypasses
-8. add_custom_rule         → Dynamically generate rules for discovered 0-day patterns
-9. security_scan           → Re-scan with new rules to validate
+1. get_project_info         → Understand the project: languages, frameworks, structure, entry points
+2. get_attack_surface       → Map attack surface: high-risk entry points, trust boundaries, unauthenticated routes
+3. get_graph_stats          → Understand call graph scale: nodes, edges, source/sink distribution
+4. security_scan(deep=true) → Full scan, returns findings with evidence_refs pointers
+5. start_audit_session      → Create audit session, get session_uuid ★
+6. For each high/critical finding:
+   ├─ start_investigation   → Start investigation, get evidence_map + suggested_tools ★
+   ├─ get_code_context      → Read source code around the finding
+   ├─ query_callers         → Backward trace: what entry points reach this sink?
+   ├─ query_callees         → Forward trace: what sensitive operations does this call?
+   ├─ find_call_path        → Exact source→sink path (deterministic reachability evidence)
+   ├─ query_middleware_chain → Does middleware cover this route? (auth bypass detection)
+   ├─ resolve_method_call   → Resolve ambiguous method calls to implementations
+   ├─ log_investigation_step → Record each tool call + finding + reasoning ★
+   └─ conclude_investigation → Reach verdict (TP/FP/needs_review), auto-record audit_log ★
+7. add_custom_rule          → Dynamically generate rules for discovered 0-day patterns
+8. security_scan            → Re-scan with new rules to validate
+9. conclude_audit_session   → Output full audit summary (TP/FP/review counts) ★
 ```
+
+★ = New investigative collaboration steps. See [LLM-AUDIT-SKILL.md](LLM-AUDIT-SKILL.md) for detailed workflow and examples.
 
 ### MCP Tool Reference
 
@@ -672,47 +703,32 @@ Add the following to your Claude Code configuration (`.claude/settings.json`):
 | `query_middleware_chain` | Middleware registrations and affected routes |
 | `trace_variable_flow` | Cross-file taint variable propagation paths |
 
+#### Audit Session (Investigative Collaboration)
+
+| Tool | Description |
+|------|-------------|
+| `start_audit_session` | Create audit session, get session_uuid |
+| `start_investigation` | Start investigation on a finding, get evidence + suggested tools |
+| `log_investigation_step` | Record investigation step (tool + finding + reasoning) |
+| `conclude_investigation` | Conclude with verdict, auto-write audit_log/baseline |
+| `conclude_audit_session` | End session, output TP/FP/review summary |
+
 ### System Prompt for Autonomous Auditing
 
-Once MCP is configured in Claude Code, use this system prompt to drive fully autonomous auditing:
+The complete LLM audit guidance system is at **[LLM-AUDIT-SKILL.md](LLM-AUDIT-SKILL.md)** —
+a structured Skill file containing:
+- Audit philosophy (investigative collaboration vs scan→judge)
+- Complete 4-phase audit workflow
+- Usage scenarios and parameters for every MCP tool
+- Evidence-driven TP/FP verdict framework
+- Example audit dialogs
 
-```
-You are a security audit expert responsible for performing a fully autonomous security audit of the target project.
-You have access to CTX-Audit tools for scanning and analysis.
-
-## Audit Process
-
-### Phase 1: Project Understanding
-1. Call `get_project_info` to understand the tech stack and structure
-2. Call `get_attack_surface` to map the attack surface and identify high-risk entry points
-3. Call `list_rules` to confirm available detection rules
-
-### Phase 2: Deep Scanning
-4. Call `security_scan` with `deep: true`, `file_role_filter: "production"`,
-   `min_severity: "high"` for production code deep scan
-5. For each critical finding:
-   - Call `get_code_context` to read surrounding code and understand full context
-   - Call `get_taint_path` to trace the full data flow (source→sink)
-   - Call `check_sanitizer` to verify if sanitization functions exist
-   - Make a comprehensive judgment: true positive (TP) or false positive (FP)
-   - Call `validate_finding` to record the audit verdict
-
-### Phase 3: 0-day Exploration
-6. Call `analyze_risk_patterns` to detect architectural risk patterns
-7. For high-risk patterns, call `cross_file_analysis` for cross-file tracking
-8. If you discover new vulnerability patterns not covered by rules, call `add_custom_rule`
-9. Re-scan with new rules to validate
-
-### Phase 4: Audit Report
-10. Summarize all TP findings, sorted by priority
-11. Provide fix recommendations for each TP
-12. FPs are automatically recorded to baseline (via validate_finding)
-
-## Output Requirements
-- Each TP/FP verdict must include detailed reasoning
-- Reference specific code line numbers and data flow steps
-- Consider framework built-in security mechanisms (e.g., Next.js auto-escaping)
-- The `barriers` field indicates detected security barriers — verify their effectiveness
+Usage with Claude Code:
+```bash
+# Copy the skill file to your project
+cp LLM-AUDIT-SKILL.md .claude/agents/ctx-auditor.md
+# Or reference directly in conversation
+@LLM-AUDIT-SKILL.md Please audit this project for security vulnerabilities
 ```
 
 ### Example Audit Output
