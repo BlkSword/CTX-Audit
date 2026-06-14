@@ -870,8 +870,8 @@ impl AstTaintAnalyzer {
         alias_map: &AliasMap,
     ) -> Option<TaintFlow> {
         if let Some(call) = call_by_line.get(&node.start_line) {
-            // 检查 sink
-            if let Some(sink) = self.find_matching_sink(&call.callee) {
+            // 检查 sink（方法调用考虑 receiver，如 needle.get）
+            if let Some(sink) = self.match_sink_for_call(call) {
                 let tainted_arg = call.arguments.iter().find(|arg| {
                     arg.referenced_vars.iter().any(|v| {
                         self.is_var_tainted_cpg(v, state, alias_map)
@@ -1413,8 +1413,8 @@ impl AstTaintAnalyzer {
     ) -> Option<TaintFlow> {
         let call = call_by_line.get(&node.start_line)?;
 
-        // 1. 检查是否匹配 sink
-        if let Some(sink) = self.find_matching_sink(&call.callee) {
+        // 1. 检查是否匹配 sink（方法调用考虑 receiver，如 needle.get）
+        if let Some(sink) = self.match_sink_for_call(call) {
             // 检查参数是否包含污点变量（直接 + 别名解析）
             let tainted_arg = call.arguments.iter().find(|arg| {
                 arg.referenced_vars.iter().any(|v| {
@@ -1630,6 +1630,21 @@ impl AstTaintAnalyzer {
 
     fn find_matching_sink(&self, callee: &str) -> Option<&TaintSink> {
         self.sinks.iter().find(|sink| sink.matches(callee, ""))
+    }
+
+    /// 匹配 sink，对方法调用优先用 receiver.callee（如 needle.get）匹配。
+    /// sink pattern 往往带库名前缀（"needle.get"/"axios.get"），而
+    /// CallInfo.callee 只存方法名（"get"），不拼 receiver 会漏匹配。
+    fn match_sink_for_call(&self, call: &crate::ast::CallInfo) -> Option<&TaintSink> {
+        if call.is_method {
+            if let Some(ref recv) = call.receiver {
+                let qualified = format!("{}.{}", recv, call.callee);
+                if let Some(s) = self.find_matching_sink(&qualified) {
+                    return Some(s);
+                }
+            }
+        }
+        self.find_matching_sink(&call.callee)
     }
 
     /// 在表达式中查找是否有 sink 函数调用
