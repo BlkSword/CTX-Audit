@@ -1154,7 +1154,10 @@ impl ASTParser {
 
         if kind == "member_expression" || kind == "attribute" || kind == "field_expression" {
             if let Some(obj) = func_node.child_by_field_name("object") {
-                if let Some(prop) = func_node.child_by_field_name("field") {
+                // tree-sitter-javascript uses "property", Java/C# use "field"
+                if let Some(prop) = func_node.child_by_field_name("field")
+                    .or_else(|| func_node.child_by_field_name("property"))
+                {
                     let receiver = content[obj.byte_range()].to_string();
                     let method = content[prop.byte_range()].to_string();
                     return (true, Some(receiver), method);

@@ -92,6 +92,9 @@ pub struct CallGraphNode {
     pub is_taint_source: bool,
     /// 是否是污点汇
     pub is_taint_sink: bool,
+    /// 污点汇对应的漏洞类型（从匹配的 sink pattern 提取）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sink_type: Option<VulnerabilityType>,
     /// 是否为合成回调节点（匿名箭头函数/函数表达式）
     #[serde(default)]
     pub is_callback: bool,
@@ -664,7 +667,7 @@ impl CrossFileTaintAnalyzer {
 
                 let body_text = Self::extract_body(content, symbol.start_line as usize, symbol.end_line as usize);
                 let is_source = self.is_taint_source(&func_name, &body_text);
-                let is_sink = self.is_taint_sink(&func_name, &body_text);
+                let (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
 
                 let node = CallGraphNode {
                     id: func_id.clone(),
@@ -679,6 +682,7 @@ impl CrossFileTaintAnalyzer {
                     is_external: false,
                     is_taint_source: is_source,
                     is_taint_sink: is_sink,
+                    sink_type,
                     is_callback: false,
                     parent_call_site: None,
                 };
@@ -694,6 +698,7 @@ impl CrossFileTaintAnalyzer {
                             FunctionParameter { name: p.clone(), param_type: None, may_be_tainted: false }
                         }).collect();
 
+                        let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text);
                         let cb_node = CallGraphNode {
                             id: cb_id.clone(),
                             name: format!("<callback@{}>", call.line),
@@ -706,7 +711,8 @@ impl CrossFileTaintAnalyzer {
                             called_by: vec![func_id.clone()],
                             is_external: false,
                             is_taint_source: false,
-                            is_taint_sink: false,
+                            is_taint_sink: cb_is_sink,
+                            sink_type: cb_sink_type,
                             is_callback: true,
                             parent_call_site: Some(call.line),
                         };
@@ -863,6 +869,7 @@ impl CrossFileTaintAnalyzer {
                 .or_default()
                 .push(id.clone());
         }
+
 
         // 收集需要添加的跨文件调用关系
         let mut cross_calls: Vec<(String, String)> = Vec::new();
@@ -1097,7 +1104,7 @@ impl CrossFileTaintAnalyzer {
 
             let body_text = Self::extract_body(&content, symbol.start_line as usize, symbol.end_line as usize);
             let is_source = self.is_taint_source(&func_name, &body_text);
-            let is_sink = self.is_taint_sink(&func_name, &body_text);
+            let (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
 
             let node = CallGraphNode {
                 id: func_id.clone(),
@@ -1112,6 +1119,7 @@ impl CrossFileTaintAnalyzer {
                 is_external: false,
                 is_taint_source: is_source,
                 is_taint_sink: is_sink,
+                sink_type,
                 is_callback: false,
                 parent_call_site: None,
             };
@@ -1132,6 +1140,7 @@ impl CrossFileTaintAnalyzer {
                         }
                     }).collect();
 
+                    let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text);
                     let cb_node = CallGraphNode {
                         id: cb_id.clone(),
                         name: format!("<callback@{}>", call.line),
@@ -1144,7 +1153,8 @@ impl CrossFileTaintAnalyzer {
                         called_by: vec![func_id.clone()],
                         is_external: false,
                         is_taint_source: false,
-                        is_taint_sink: false,
+                        is_taint_sink: cb_is_sink,
+                        sink_type: cb_sink_type,
                         is_callback: true,
                         parent_call_site: Some(call.line),
                     };
@@ -1291,6 +1301,7 @@ impl CrossFileTaintAnalyzer {
                 is_external: false,
                 is_taint_source: true,
                 is_taint_sink: false,
+                sink_type: None,
                 is_callback: false,
                 parent_call_site: None,
             });
@@ -1322,7 +1333,7 @@ impl CrossFileTaintAnalyzer {
 
                 // 检查是否是污点源或汇（fallback 路径：仅函数名兜底，函数体提取成本高且此路径少走）
                 let is_source = self.is_taint_source(&func_name, "");
-                let is_sink = self.is_taint_sink(&func_name, "");
+                let (is_sink, sink_type) = self.is_taint_sink(&func_name, "");
 
                 // 提取参数
                 let parameters = self.extract_parameters(line, language);
@@ -1343,6 +1354,7 @@ impl CrossFileTaintAnalyzer {
                     is_external: false,
                     is_taint_source: is_source,
                     is_taint_sink: is_sink,
+                    sink_type,
                     is_callback: false,
                     parent_call_site: None,
                 };
@@ -1751,11 +1763,19 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 检查是否是污点汇：函数名兜底 + 函数体内容匹配（核心修复）
-    fn is_taint_sink(&self, func_name: &str, body: &str) -> bool {
-        if self.is_sink_by_name(func_name) {
-            return true;
+    /// 返回 (is_sink, matched_vulnerability_type)
+    fn is_taint_sink(&self, func_name: &str, body: &str) -> (bool, Option<VulnerabilityType>) {
+        // 优先按函数体内容匹配（可确定漏洞类型）
+        for s in &self.sink_patterns {
+            if s.matches(body, "*") {
+                return (true, Some(s.vulnerability_type));
+            }
         }
-        self.sink_patterns.iter().any(|s| s.matches(body, "*"))
+        // 按函数名兜底（无法确定具体类型）
+        if self.is_sink_by_name(func_name) {
+            return (true, None);
+        }
+        (false, None)
     }
 
     /// 从文件内容按行范围提取函数体文本
@@ -1813,6 +1833,10 @@ impl CrossFileTaintAnalyzer {
                         let (confidence, confidence_factors) =
                             self.calculate_flow_confidence(&path);
 
+                        // 使用 sink 节点匹配到的漏洞类型（从 taint rule pattern 提取）
+                        // 如果 sink 没有匹配到具体类型（name-based fallback），回退为 Generic
+                        let vuln_type = sink.sink_type.unwrap_or(VulnerabilityType::Generic);
+
                         flows.push(InterproceduralTaintFlow {
                             id: uuid::Uuid::new_v4().to_string(),
                             source: FlowLocation {
@@ -1830,7 +1854,7 @@ impl CrossFileTaintAnalyzer {
                                 code_snippet: None,
                             },
                             interprocedural_path,
-                            vulnerability_type: VulnerabilityType::Generic,
+                            vulnerability_type: vuln_type,
                             severity: Severity::High,
                             confidence,
                             confidence_factors,
@@ -2458,6 +2482,7 @@ mod tests {
             is_external: false,
             is_taint_source: false,
             is_taint_sink: false,
+            sink_type: None,
             is_callback: false,
             parent_call_site: None,
         };
@@ -2483,6 +2508,7 @@ mod tests {
             is_external: false,
             is_taint_source: false,
             is_taint_sink: false,
+            sink_type: None,
             is_callback: false,
             parent_call_site: None,
         };
@@ -2500,6 +2526,7 @@ mod tests {
             is_external: false,
             is_taint_source: false,
             is_taint_sink: false,
+            sink_type: None,
             is_callback: false,
             parent_call_site: None,
         };
@@ -2541,14 +2568,17 @@ mod tests {
     #[test]
     fn test_is_taint_sink() {
         let analyzer = CrossFileTaintAnalyzer::new();
-        // 函数名兜底
-        assert!(analyzer.is_taint_sink("executeQuery", ""));
-        assert!(analyzer.is_taint_sink("system", ""));
-        assert!(!analyzer.is_taint_sink("format", ""));
-        // 核心修复：函数体内容匹配
-        assert!(analyzer.is_taint_sink("handler", "eval(req.body.x);"));
-        assert!(analyzer.is_taint_sink("callback", "needle.get(url);"));
-        assert!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});"));
+        // 函数名兜底（只返回 bool，无具体类型）
+        assert!(analyzer.is_taint_sink("executeQuery", "").0);
+        assert!(analyzer.is_taint_sink("system", "").0);
+        assert!(!analyzer.is_taint_sink("format", "").0);
+        // 核心修复：函数体内容匹配（返回具体漏洞类型）
+        assert!(analyzer.is_taint_sink("handler", "eval(req.body.x);").0);
+        assert_eq!(analyzer.is_taint_sink("handler", "eval(req.body.x);").1, Some(VulnerabilityType::CodeInjection));
+        assert!(analyzer.is_taint_sink("callback", "needle.get(url);").0);
+        assert_eq!(analyzer.is_taint_sink("callback", "needle.get(url);").1, Some(VulnerabilityType::ServerSideRequestForgery));
+        assert!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});").0);
+        assert_eq!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});").1, Some(VulnerabilityType::SqlInjection));
     }
 
     #[test]
