@@ -662,6 +662,10 @@ impl CrossFileTaintAnalyzer {
                     })
                     .collect();
 
+                let body_text = Self::extract_body(content, symbol.start_line as usize, symbol.end_line as usize);
+                let is_source = self.is_taint_source(&func_name, &body_text);
+                let is_sink = self.is_taint_sink(&func_name, &body_text);
+
                 let node = CallGraphNode {
                     id: func_id.clone(),
                     name: func_name,
@@ -673,8 +677,8 @@ impl CrossFileTaintAnalyzer {
                     calls: calls_in_func,
                     called_by: Vec::new(),
                     is_external: false,
-                    is_taint_source: false,
-                    is_taint_sink: false,
+                    is_taint_source: is_source,
+                    is_taint_sink: is_sink,
                     is_callback: false,
                     parent_call_site: None,
                 };
@@ -1091,8 +1095,9 @@ impl CrossFileTaintAnalyzer {
             let parameters: Vec<FunctionParameter> = self
                 .extract_ast_parameters(symbol, &content);
 
-            let is_source = self.is_taint_source(&func_name);
-            let is_sink = self.is_taint_sink(&func_name);
+            let body_text = Self::extract_body(&content, symbol.start_line as usize, symbol.end_line as usize);
+            let is_source = self.is_taint_source(&func_name, &body_text);
+            let is_sink = self.is_taint_sink(&func_name, &body_text);
 
             let node = CallGraphNode {
                 id: func_id.clone(),
@@ -1211,11 +1216,12 @@ impl CrossFileTaintAnalyzer {
     fn extract_ast_parameters(
         &self,
         symbol: &crate::ast::Symbol,
-        _content: &str,
+        content: &str,
     ) -> Vec<FunctionParameter> {
         let mut params = Vec::new();
         let func_name = &symbol.name;
-        let is_source = self.is_taint_source(func_name);
+        let body_text = Self::extract_body(content, symbol.start_line as usize, symbol.end_line as usize);
+        let is_source = self.is_taint_source(func_name, &body_text);
 
         // 尝试从 symbol 的 metadata 中提取参数
         if let Some(params_val) = symbol.metadata.get("params") {
@@ -1314,9 +1320,9 @@ impl CrossFileTaintAnalyzer {
             if let Some(func_name) = self.extract_function_name(line, language) {
                 let func_id = format!("{}:{}", file_path, func_name);
 
-                // 检查是否是污点源或汇
-                let is_source = self.is_taint_source(&func_name);
-                let is_sink = self.is_taint_sink(&func_name);
+                // 检查是否是污点源或汇（fallback 路径：仅函数名兜底，函数体提取成本高且此路径少走）
+                let is_source = self.is_taint_source(&func_name, "");
+                let is_sink = self.is_taint_sink(&func_name, "");
 
                 // 提取参数
                 let parameters = self.extract_parameters(line, language);
@@ -1645,8 +1651,8 @@ impl CrossFileTaintAnalyzer {
         TAINT_PARAM_NAMES.iter().any(|p| lower == *p || lower.contains(p))
     }
 
-    /// 检查是否是污点源
-    fn is_taint_source(&self, func_name: &str) -> bool {
+    /// 按函数名判断是否是污点源（兜底：教学/测试代码的语义命名）
+    fn is_source_by_name(&self, func_name: &str) -> bool {
         let lower = func_name.to_lowercase();
         let lower = lower.as_str();
 
@@ -1694,8 +1700,20 @@ impl CrossFileTaintAnalyzer {
         self.source_patterns.iter().any(|s| s.matches(func_name, "*"))
     }
 
-    /// 检查是否是污点汇
-    fn is_taint_sink(&self, func_name: &str) -> bool {
+    /// 检查是否是污点源：函数名兜底 + 函数体内容匹配（核心修复）
+    ///
+    /// 真实项目用业务命名（handleLoginRequest/displayResearch），函数名不含
+    /// get_/input 等关键词，但函数体里会出现 req.body 等真实 source。
+    /// 因此对函数体内容做 pattern 匹配，by-name 仅作兜底。
+    fn is_taint_source(&self, func_name: &str, body: &str) -> bool {
+        if self.is_source_by_name(func_name) {
+            return true;
+        }
+        self.source_patterns.iter().any(|s| s.matches(body, "*"))
+    }
+
+    /// 按函数名判断是否是污点汇（兜底）
+    fn is_sink_by_name(&self, func_name: &str) -> bool {
         let lower = func_name.to_lowercase();
         let lower = lower.as_str();
 
@@ -1730,6 +1748,25 @@ impl CrossFileTaintAnalyzer {
         }
 
         self.sink_patterns.iter().any(|s| s.matches(func_name, "*"))
+    }
+
+    /// 检查是否是污点汇：函数名兜底 + 函数体内容匹配（核心修复）
+    fn is_taint_sink(&self, func_name: &str, body: &str) -> bool {
+        if self.is_sink_by_name(func_name) {
+            return true;
+        }
+        self.sink_patterns.iter().any(|s| s.matches(body, "*"))
+    }
+
+    /// 从文件内容按行范围提取函数体文本
+    fn extract_body(content: &str, start_line: usize, end_line: usize) -> String {
+        content
+            .lines()
+            .enumerate()
+            .filter(|(i, _)| (*i + 1) >= start_line && (*i + 1) <= end_line)
+            .map(|(_, l)| l)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// 查找过程间污点流
@@ -1858,21 +1895,57 @@ impl CrossFileTaintAnalyzer {
         (confidence.clamp(0.1, 1.0), factors)
     }
 
-    /// 默认污点源模式
+    /// 默认污点源模式（按代码内容匹配，用于 is_taint_source 的函数体匹配）
     fn default_source_patterns() -> Vec<TaintSource> {
         vec![
-            TaintSource::new("http_request", "HTTP Request", vec!["request", "req", "res"]),
-            TaintSource::new("file_input", "File Input", vec!["read", "fread", "load"]),
-            TaintSource::new("user_input", "User Input", vec!["input", "scanf", "prompt"]),
+            TaintSource::new("http_request_body", "HTTP Request", vec![
+                "req.body", "req.query", "req.params", "req.headers", "req.cookies",
+                "request.body", "request.query", "request.params",
+                "req.get(", "req.param(", "req.header(",
+            ]),
+            TaintSource::new("process_input", "Process Input", vec![
+                "process.argv", "process.env", "process.stdin",
+                "os.environ", "sys.argv",
+            ]),
+            TaintSource::new("file_input", "File Input", vec![
+                "fs.readFile", "readFileSync", "createReadStream",
+                "fread", "fopen",
+            ]),
+            // 泛化兜底：匹配按安全语义命名的教学/测试代码（仅供 by-name 兜底使用）
+            TaintSource::new("user_input_named", "User Input (named)", vec![
+                "getuserinput", "get_input", "get_user", "read_input",
+                "scanf", "prompt",
+            ]),
         ]
     }
 
-    /// 默认污点汇模式
+    /// 默认污点汇模式（按代码内容匹配）
     fn default_sink_patterns() -> Vec<TaintSink> {
         vec![
-            TaintSink::new("sql_exec", "SQL Execute", vec!["execute", "query", "exec"], VulnerabilityType::SqlInjection),
-            TaintSink::new("command_exec", "Command Execute", vec!["system", "exec", "popen", "shell"], VulnerabilityType::CommandInjection),
-            TaintSink::new("file_write", "File Write", vec!["write", "fwrite", "save"], VulnerabilityType::PathTraversal),
+            TaintSink::new("code_injection", "Code Injection", vec![
+                "eval(", "new Function(", "vm.runIn", "vm.Script",
+            ], VulnerabilityType::CodeInjection),
+            TaintSink::new("command_injection", "Command Injection", vec![
+                "exec(", "execSync(", "spawn(", "child_process", "system(", "popen(",
+            ], VulnerabilityType::CommandInjection),
+            TaintSink::new("sql_injection", "SQL Injection", vec![
+                ".query(", ".execute(", "executeQuery",
+            ], VulnerabilityType::SqlInjection),
+            TaintSink::new("nosql_injection", "NoSQL Injection", vec![
+                ".findOne(", ".find(", "collection.find", "db.collection", "$where",
+            ], VulnerabilityType::SqlInjection),
+            TaintSink::new("ssrf", "SSRF", vec![
+                "http.request", "https.request", "fetch(", "axios", "needle.get",
+            ], VulnerabilityType::ServerSideRequestForgery),
+            TaintSink::new("xss", "XSS", vec![
+                "res.write(", "res.send(", "innerHTML", "response.write(",
+            ], VulnerabilityType::CrossSiteScripting),
+            TaintSink::new("path_traversal", "Path Traversal", vec![
+                "writeFile", "writeFileSync", "createWriteStream", "fs.open",
+            ], VulnerabilityType::PathTraversal),
+            TaintSink::new("open_redirect", "Open Redirect", vec![
+                "redirect(", "res.redirect",
+            ], VulnerabilityType::OpenRedirect),
         ]
     }
 
@@ -2029,7 +2102,7 @@ impl CrossFileTaintAnalyzer {
 
                 // 检查函数体内是否有直接调用 sink
                 for ct in &node.calls {
-                    if self.is_taint_sink(&ct.callee) {
+                    if self.is_sink_by_name(&ct.callee) {
                         direct_sinks.push(SinkReachability {
                             sink_name: ct.callee.clone(),
                             from_param: param_idx,
@@ -2456,17 +2529,26 @@ mod tests {
     #[test]
     fn test_is_taint_source() {
         let analyzer = CrossFileTaintAnalyzer::new();
-        assert!(analyzer.is_taint_source("getUserInput"));
-        assert!(analyzer.is_taint_source("read_file"));
-        assert!(!analyzer.is_taint_source("calculate"));
+        // 函数名兜底（教学/测试命名）
+        assert!(analyzer.is_taint_source("getUserInput", ""));
+        assert!(analyzer.is_taint_source("read_file", ""));
+        assert!(!analyzer.is_taint_source("calculate", ""));
+        // 核心修复：函数体内容匹配（真实项目用业务命名，source 在函数体里）
+        assert!(analyzer.is_taint_source("handler", "const x = req.body.name;"));
+        assert!(analyzer.is_taint_source("callback", "return req.query.url;"));
     }
 
     #[test]
     fn test_is_taint_sink() {
         let analyzer = CrossFileTaintAnalyzer::new();
-        assert!(analyzer.is_taint_sink("executeQuery"));
-        assert!(analyzer.is_taint_sink("system"));
-        assert!(!analyzer.is_taint_sink("format"));
+        // 函数名兜底
+        assert!(analyzer.is_taint_sink("executeQuery", ""));
+        assert!(analyzer.is_taint_sink("system", ""));
+        assert!(!analyzer.is_taint_sink("format", ""));
+        // 核心修复：函数体内容匹配
+        assert!(analyzer.is_taint_sink("handler", "eval(req.body.x);"));
+        assert!(analyzer.is_taint_sink("callback", "needle.get(url);"));
+        assert!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});"));
     }
 
     #[test]

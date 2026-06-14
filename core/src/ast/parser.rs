@@ -717,6 +717,59 @@ impl ASTParser {
                         symbols.push(symbol);
                     }
                 }
+                "assignment_expression" => {
+                    // 处理 this.method = (args) => {} / obj.method = function() {} 模式
+                    // Node.js 最常见的模块/类方法定义；原 extract_javascript_symbols 只认
+                    // function_declaration|method_definition，导致大量方法漏提取
+                    // （NodeGoat user-dao.js 2/7，research.js 1/1）。
+                    if let (Some(left), Some(right)) = (
+                        node.child_by_field_name("left"),
+                        node.child_by_field_name("right"),
+                    ) {
+                        let rk = right.kind();
+                        if (rk == "arrow_function" || rk == "function_expression")
+                            && left.kind() == "member_expression"
+                        {
+                            let method_name = extract_last_name(&left, content);
+                            if !method_name.is_empty() && method_name != "this" {
+                                let start_line = right.start_position().row + 1;
+                                let end_line = right.end_position().row + 1;
+                                let code = content[node.byte_range()].to_string();
+                                let code = if code.len() > 200 {
+                                    truncate_string_safe(&code, 197)
+                                } else {
+                                    code
+                                };
+
+                                let mut metadata = HashMap::new();
+                                if let Some(class_name) = class_stack.last() {
+                                    metadata.insert(
+                                        "callerClass".to_string(),
+                                        serde_json::Value::String(class_name.clone()),
+                                    );
+                                }
+                                if let Some(func_name) = func_stack.last() {
+                                    metadata.insert(
+                                        "callerFunction".to_string(),
+                                        serde_json::Value::String(func_name.clone()),
+                                    );
+                                }
+
+                                let symbol = Symbol::new(
+                                    method_name,
+                                    SymbolKind::Method,
+                                    file_path.to_string_lossy().to_string(),
+                                    start_line as u32,
+                                    code,
+                                )
+                                .with_end_line(end_line as u32)
+                                .with_metadata(metadata);
+
+                                symbols.push(symbol);
+                            }
+                        }
+                    }
+                }
                 "call_expression" => {
                     if let Some(function_node) = node.child_by_field_name("function") {
                         let name = extract_last_name(&function_node, content);
