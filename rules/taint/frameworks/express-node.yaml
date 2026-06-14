@@ -125,6 +125,11 @@ sinks:
       - "axios.post"
       - "request("
       - "urllib.request"
+      - "needle.get"
+      - "needle.post"
+      - "got("
+      - "superagent"
+      - "request-promise"
     languages: ["javascript", "typescript"]
     vulnerability_type: "ServerSideRequestForgery"
     severity: "High"

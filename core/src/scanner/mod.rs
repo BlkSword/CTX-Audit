@@ -1257,9 +1257,13 @@ pub async fn scan_directory_deep_with_rules_progress(
         });
     }
 
-    let taint_files: Vec<std::path::PathBuf> = findings.iter()
-        .filter(|f| f.detector == "AstTaintScanner")
-        .map(|f| std::path::PathBuf::from(&f.file_path))
+    // 跨文件分析需要完整调用图才能发现 L2 漏掉的跨文件漏洞（如 NoSQL 注入：
+    // session.js handleLoginRequest → user-dao.js validateLogin → findOne）。
+    // 之前只分析 AstTaintScanner 报过的文件——循环依赖：L3 靠 L2 选文件，
+    // 而 L3 的价值恰恰是发现 L2 漏的。改为分析所有 AST 支持的源文件。
+    let taint_files: Vec<std::path::PathBuf> = content_cache.keys()
+        .filter(|fp| is_ast_supported_file(std::path::Path::new(fp)))
+        .map(|fp| std::path::PathBuf::from(fp))
         .collect();
 
     let cross_file_result = if !taint_files.is_empty() {
