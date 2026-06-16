@@ -504,6 +504,7 @@ impl CrossFileTaintAnalyzer {
         }
 
         // 3. 跨文件调用解析：将裸函数名匹配到已知函数节点
+        self.filter_constructor_fps();
         self.resolve_cross_file_calls();
         self.inject_middleware_edges();
 
@@ -544,6 +545,7 @@ impl CrossFileTaintAnalyzer {
             self.build_call_graph_for_file(file_path);
         }
 
+        self.filter_constructor_fps();
         self.resolve_cross_file_calls();
         self.inject_middleware_edges();
 
@@ -592,6 +594,7 @@ impl CrossFileTaintAnalyzer {
             }
         }
 
+        self.filter_constructor_fps();
         self.resolve_cross_file_calls();
         self.inject_middleware_edges();
 
@@ -845,6 +848,72 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 跨文件调用解析
+    /// 过滤构造函数误标：外层 Function 包含 Method 节点时，将其从 source/sink 移除
+    ///
+    /// 背景：`SessionHandler(db)` 等构造函数 body 覆盖整个文件（包含所有 `this.method =`
+    /// 定义），函数体文本匹配到 req.body/res.redirect 等 pattern 后会被误标为 source+sink，
+    /// 产生大量 FP 跨文件流。实际 source/sink 是内层 Method 节点。
+    fn filter_constructor_fps(&mut self) {
+        // 收集所有节点按文件分组
+        let mut file_nodes: HashMap<String, Vec<(String, usize, usize, bool, bool)>> = HashMap::new();
+        for (id, node) in &self.call_graph.nodes {
+            file_nodes
+                .entry(normalize_path(&node.file_path))
+                .or_default()
+                .push((id.clone(), node.start_line, node.end_line, node.is_taint_source, node.is_taint_sink));
+        }
+
+        let mut demote_sources: HashSet<String> = HashSet::new();
+        let mut demote_sinks: HashSet<String> = HashSet::new();
+
+        for (_file, nodes) in &file_nodes {
+            for (outer_id, outer_start, outer_end, outer_is_source, outer_is_sink) in nodes {
+                if !outer_is_source && !outer_is_sink {
+                    continue;
+                }
+                // 检查是否存在严格嵌套且同样是 source/sink 的内层节点
+                let has_inner_source_or_sink = nodes.iter().any(|(inner_id, inner_start, inner_end, inner_is_source, inner_is_sink)| {
+                    inner_id != outer_id
+                        && *inner_start > *outer_start
+                        && *inner_end < *outer_end
+                        && (*inner_is_source || *inner_is_sink)
+                });
+                if has_inner_source_or_sink {
+                    if *outer_is_source {
+                        demote_sources.insert(outer_id.clone());
+                    }
+                    if *outer_is_sink {
+                        demote_sinks.insert(outer_id.clone());
+                    }
+                }
+            }
+        }
+
+        // 应用降级
+        for id in &demote_sources {
+            if let Some(node) = self.call_graph.nodes.get_mut(id) {
+                node.is_taint_source = false;
+            }
+        }
+        for id in &demote_sinks {
+            if let Some(node) = self.call_graph.nodes.get_mut(id) {
+                node.is_taint_sink = false;
+                node.sink_type = None;
+            }
+        }
+        self.call_graph.taint_sources.retain(|id| !demote_sources.contains(id));
+        self.call_graph.taint_sinks.retain(|id| !demote_sinks.contains(id));
+
+        let total = demote_sources.len() + demote_sinks.len();
+        if total > 0 {
+            tracing::info!(
+                "[CrossFileTaint] 过滤构造函数误标: {} source + {} sink 降级",
+                demote_sources.len(),
+                demote_sinks.len()
+            );
+        }
+    }
+
     ///
     /// 两阶段匹配：
     /// 1. **Import alias 精确匹配**：利用 import 语句将局部名称解析为
