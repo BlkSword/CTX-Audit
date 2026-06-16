@@ -1348,6 +1348,55 @@ impl ASTParser {
             return;
         }
 
+        // Unwrap assignment_expression to find this.method = arrow_function / obj.method = function
+        // e.g. "this.displayResearch = (req, res) => { ... }"
+        // This is the most common module method pattern in Node.js; without it,
+        // taint analysis misses every method defined via assignment.
+        if kind == "assignment_expression" {
+            if let Some(left) = node.child_by_field_name("left") {
+                if let Some(right) = node.child_by_field_name("right") {
+                    let rk = right.kind();
+                    if rk == "arrow_function" || rk == "function_expression" {
+                        // Extract method name from left side for the FunctionBody name
+                        let method_name = extract_last_name(&left, content);
+                        if !method_name.is_empty() && method_name != "this" {
+                            let typed_params = if let Some(params_node) = right.child_by_field_name("parameters") {
+                                Self::extract_typed_params(&params_node, content)
+                            } else {
+                                Vec::new()
+                            };
+                            let params: Vec<String> = typed_params.iter().map(|tp| tp.name.clone()).collect();
+
+                            let body_node = right.child_by_field_name("body");
+                            let (start_line, end_line, body_text) = if let Some(body) = body_node {
+                                (
+                                    body.start_position().row + 1,
+                                    body.end_position().row + 1,
+                                    content[body.byte_range()].to_string(),
+                                )
+                            } else {
+                                (
+                                    right.start_position().row + 1,
+                                    right.end_position().row + 1,
+                                    content[right.byte_range()].to_string(),
+                                )
+                            };
+
+                            results.push(FunctionBody {
+                                name: method_name,
+                                params,
+                                start_line,
+                                end_line,
+                                body_text,
+                                typed_params,
+                            });
+                            return; // Don't recurse further — already extracted the function
+                        }
+                    }
+                }
+            }
+        }
+
         let is_function = matches!(
             kind,
             "function_declaration"

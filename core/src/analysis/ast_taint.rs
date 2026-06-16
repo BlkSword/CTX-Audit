@@ -339,7 +339,12 @@ impl AstTaintAnalyzer {
                 }
 
                 EnhancedNodeType::Return => {
-                    // 返回语句不需要特殊处理（函数摘要场景用）
+                    // Return 节点可能包含 sink 调用（如 return needle.get(url, ...)）
+                    if let Some(flow) = self.transfer_call(
+                        node, &call_by_line, &mut new_state, file_path, &alias_map,
+                    ) {
+                        flows.push(flow);
+                    }
                 }
 
                 EnhancedNodeType::ConditionHeader => {
@@ -385,6 +390,7 @@ impl AstTaintAnalyzer {
     ) -> Vec<TaintFlow> {
         use super::cpg::{ConditionInfo, PathCondition, PathSensitiveState, VarTaintState};
         use crate::analysis::enhanced_dataflow::EdgeType;
+
 
         let mut flows = Vec::new();
 
@@ -451,7 +457,15 @@ impl AstTaintAnalyzer {
                 }
 
                 EnhancedNodeType::Return | EnhancedNodeType::Statement => {
-                    // 不需要特殊处理
+                    // Return 节点可能包含 sink 调用（如 return needle.get(url, ...)）
+                    // 需要检查是否包含污点流向的 sink
+                    if node.node_type == EnhancedNodeType::Return {
+                        if let Some(flow) = self.transfer_call_cpg(
+                            node, &call_by_line, &mut new_state, file_path, &alias_map,
+                        ) {
+                            flows.push(flow);
+                        }
+                    }
                 }
 
                 _ => {}
@@ -706,6 +720,26 @@ impl AstTaintAnalyzer {
                                     step_type: PropagationStepType::DirectAssignment,
                                     from_var: None,
                                     to_var: Some(var_name.clone()),
+                                    line: line_num,
+                                    code_snippet: Some(line.trim().to_string()),
+                                    function_name: None,
+                                }],
+                            ));
+                        }
+                    }
+                    // 同时标记源行中引用的函数参数为污点
+                    // 例：const url = req.query.url + ... 中 req 是参数，
+                    // 后续 transfer_assignment 需要 req 在 state 中才能传播到 url
+                    for tp in typed_params {
+                        let pname = &tp.name;
+                        if line.contains(pname.as_str()) && state.get_var(pname).is_none() {
+                            state.insert_var(pname.clone(), VarTaintState::from_taint(
+                                line_num,
+                                format!("{} (tainted param)", pname),
+                                vec![PropagationStep {
+                                    step_type: PropagationStepType::DirectAssignment,
+                                    from_var: None,
+                                    to_var: Some(pname.clone()),
                                     line: line_num,
                                     code_snippet: Some(line.trim().to_string()),
                                     function_name: None,
@@ -1237,6 +1271,29 @@ impl AstTaintAnalyzer {
                             },
                         );
                     }
+                    // 同时标记源行中引用的函数参数为污点
+                    for tp in typed_params {
+                        let pname = &tp.name;
+                        if line.contains(pname.as_str()) && !state.contains_key(pname.as_str()) {
+                            state.insert(
+                                pname.clone(),
+                                TaintInfo {
+                                    source_line: line_num,
+                                    source_var: format!("{} (tainted param)", pname),
+                                    sanitized: false,
+                                    sanitizer: None,
+                                    propagation_steps: vec![PropagationStep {
+                                        step_type: PropagationStepType::DirectAssignment,
+                                        from_var: None,
+                                        to_var: Some(pname.clone()),
+                                        line: line_num,
+                                        code_snippet: Some(line.trim().to_string()),
+                                        function_name: None,
+                                    }],
+                                },
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1629,7 +1686,7 @@ impl AstTaintAnalyzer {
     }
 
     fn find_matching_sink(&self, callee: &str) -> Option<&TaintSink> {
-        self.sinks.iter().find(|sink| sink.matches(callee, ""))
+        self.sinks.iter().find(|sink| sink.matches(callee, "*"))
     }
 
     /// 匹配 sink，对方法调用优先用 receiver.callee（如 needle.get）匹配。
@@ -1836,7 +1893,9 @@ impl AstTaintAnalyzer {
             ], VulnerabilityType::CrossSiteScripting).with_cwe("CWE-79"),
             TaintSink::new("http_request", "HTTP Request", vec![
                 "fetch(", "axios", "requests.get", "requests.post",
-                "new URL(",
+                "new URL(", "needle.get", "needle.post", "needle.request",
+                "got(", "superagent",
+                "http.request", "https.request",
             ], VulnerabilityType::ServerSideRequestForgery).with_cwe("CWE-918"),
             TaintSink::new("eval", "Code Evaluation", vec![
                 "eval(", "Function(", "__import__", "compile(",

@@ -124,8 +124,12 @@ impl TaintSink {
 
     /// 检查是否匹配给定的函数名
     pub fn matches(&self, func_name: &str, language: &str) -> bool {
-        if !self.languages.iter().any(|l| l == "*" || l == language) {
-            return false;
+        // language 为 "*" 或 "" 时视为通配符，匹配所有语言
+        // 否则需要 sink 的 languages 列表包含 "*" 或匹配 language
+        if language != "*" && language != "" {
+            if !self.languages.iter().any(|l| l == "*" || l == language) {
+                return false;
+            }
         }
 
         // 检查模式
