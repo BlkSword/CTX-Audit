@@ -28,6 +28,8 @@ pub enum CallbackHintType {
     PromiseCatch,
     /// .forEach()/.map()/.filter() 回调 — 参数是数组元素
     ArrayCallback,
+    /// HTTP 请求回调 — 最后一个参数是外部响应体（二阶污点源）
+    HttpResponseCallback,
 }
 
 /// 检测源代码中的 Promise 链和回调模式，返回污点提示
@@ -56,6 +58,12 @@ pub fn detect_callback_hints(code: &str) -> Vec<CallbackTaintHint> {
             hints.push(hint);
         }
         if let Some(hint) = extract_callback_hint(trimmed, ".filter(", line_num, CallbackHintType::ArrayCallback) {
+            hints.push(hint);
+        }
+
+        // HTTP 请求回调: needle.get(url, (err, resp, body) => ...)
+        // 最后一个参数是外部响应体（二阶污点源）
+        if let Some(hint) = extract_http_callback_hint(trimmed, line_num) {
             hints.push(hint);
         }
     }
@@ -129,6 +137,63 @@ fn extract_function_expr_param(rest: &str) -> Option<String> {
             let first = inner.split(',').next().unwrap_or(inner).trim();
             if is_valid_param_name(first) {
                 return Some(first.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// HTTP 库列表（这些库的回调最后一个参数是外部响应体）
+const HTTP_REQUEST_LIBS: &[&str] = &[
+    "needle.get", "needle.post", "needle.put", "needle.patch", "needle.delete", "needle.request",
+    "request(", "http.get", "http.request", "https.get", "https.request",
+    "got(", "superagent",
+    "fetch(",
+];
+
+/// 从 HTTP 请求回调中提取最后一个参数（响应体）作为污点源
+/// 模式: needle.get(url, (err, resp, body) => { ... })
+/// 返回 body（即最后一个参数）的污点提示
+fn extract_http_callback_hint(line: &str, line_num: usize) -> Option<CallbackTaintHint> {
+    // 检查是否调用了 HTTP 请求库
+    let is_http_call = HTTP_REQUEST_LIBS.iter().any(|lib| line.contains(lib));
+    if !is_http_call {
+        return None;
+    }
+
+    // 查找箭头函数回调: (err, resp, body) => ... 或 (resp) => ...
+    if let Some(arrow_pos) = line.find("=>") {
+        // 向前找最近的括号对
+        let before_arrow = &line[..arrow_pos];
+        if let Some(paren_start) = before_arrow.rfind('(') {
+            let inner = &before_arrow[paren_start + 1..];
+            if let Some(paren_end) = inner.find(')') {
+                let params = &inner[..paren_end];
+                let param_list: Vec<&str> = params.split(',').map(|s| s.trim()).collect();
+
+                if param_list.is_empty() {
+                    return None;
+                }
+
+                // 取最后一个参数（HTTP 响应体中通常是最后一个参数，如 body/data）
+                let last_param = param_list.last().unwrap();
+                if is_valid_param_name(last_param) && param_list.len() >= 2 {
+                    return Some(CallbackTaintHint {
+                        param_name: last_param.to_string(),
+                        callback_start_line: line_num,
+                        hint_type: CallbackHintType::HttpResponseCallback,
+                    });
+                }
+
+                // 单参数回调（如 .then(data => ...)）的第一个参数
+                if param_list.len() == 1 && is_valid_param_name(param_list[0]) {
+                    return Some(CallbackTaintHint {
+                        param_name: param_list[0].to_string(),
+                        callback_start_line: line_num,
+                        hint_type: CallbackHintType::HttpResponseCallback,
+                    });
+                }
             }
         }
     }

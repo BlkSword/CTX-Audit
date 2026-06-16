@@ -1390,6 +1390,10 @@ impl ASTParser {
                                 body_text,
                                 typed_params,
                             });
+                            // Recurse into the body to find nested callbacks (e.g., HTTP response callbacks)
+                            if let Some(body_node) = right.child_by_field_name("body") {
+                                Self::collect_function_bodies_recursive(&body_node, content, results);
+                            }
                             return; // Don't recurse further — already extracted the function
                         }
                     }
