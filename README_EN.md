@@ -472,17 +472,19 @@ Each project can place project-level files in the `.ctx-audit/` directory:
 
 `--cross-file` (or `--deep`) enables cross-file, interprocedural analysis:
 
-- **Call graph construction**: Auto-extracts function nodes and call relationships, supports anonymous callback registration (arrow functions/function expressions)
-- **Cross-file resolution**: Two-phase call resolution — Phase 1 via Import/Require alias exact matching to target file and export name, Phase 2 global name fallback
-- **Method call tracking**: `CallTarget` preserves `obj.method()` receiver info, receiver-aware cross-file call matching
+- **Call graph construction**: Auto-extracts function nodes and call relationships, supports anonymous callback registration (arrow functions/function expressions) and independent HTTP response callback body analysis
+- **Cross-file resolution**: Two-phase call resolution — Phase 1 via Import/Require alias exact matching to target file and export name, Phase 2 global name fallback + receiver narrowing
+- **Method call tracking**: `CallTarget` preserves `obj.method()` receiver info, supports both `property` and `field` AST field names (JS/Java compatible)
 - **Function summaries**: Bottom-up computation of each function's taint propagation signature
-- **Path tracing**: BFS search for source→sink cross-file call paths
+- **Path tracing**: BFS search for source→sink cross-file call paths, with sink detection in Return nodes
 - **Context assembly**: Identifies callers, callees, and trust boundaries
 - **CPG auto-summaries**: FunctionCPG cache from Stage B is passed to Stage C, auto-generating precise function summaries (replacing heuristic guesses) with accurate sink line numbers and param→return propagation
 - **Path-sensitive analysis**: Branch-aware taint propagation — `if (isSafe(x))` True branch auto-marks sanitized, reducing false positives under conditional guards
 - **Property path tracking**: Taint state keyed by AccessPath with prefix matching — `req.body` taint detected at `req.body.name`; `req.body.name` taint does NOT affect `req.body.email`
 - **Type hierarchy**: Class/Interface/Struct inheritance DAG + virtual method dispatch (Java/TypeScript/Python)
 - **Framework middleware**: Express `app.use()` middleware virtual edge injection, Django MIDDLEWARE detection
+- **Constructor FP filtering**: Auto-demotes outer constructor functions when inner Method nodes are the actual sources/sinks
+- **Language wildcard**: YAML rule language field supports wildcard matching, preventing cross-language rule failures
 
 Supports 12 languages: JavaScript/JSX, TypeScript/TSX, Python, Java, Rust, Go, C, C++, HTML, CSS, JSON.
 
@@ -499,6 +501,7 @@ Taint tracking enhancements for Python, JavaScript, and TypeScript that solve "t
 | await Expression | `const data = await resp.json()` → taint propagation continues |
 | Promise Chains | `.then(data => eval(data))` → data inherits chain's taint |
 | Callback Hints | `.forEach(item => ...)` and `.map(x => ...)` → parameter inherits taint |
+| HTTP Callback Hints | `needle.get(url, (err, resp, body) => ...)` → body marked as second-order taint source (external response) |
 | TypeScript Types | `(req: HttpRequest)` → auto-identifies req as taint source |
 | Module Exports | `module.exports.handler = fn` and `exports.processData = fn` detection |
 | CommonJS Destructuring | `const { body } = require('express')` → named symbol extraction |
@@ -950,7 +953,7 @@ Benchmarks based on the [Next.js](https://github.com/vercel/next.js) repository 
 
 ```bash
 cargo build --release        # Build (ctx-audit + ctx-audit-daemon)
-cargo test --workspace       # Run tests (186 tests)
+cargo test --workspace       # Run tests (188 tests)
 cargo fmt                    # Format
 cargo clippy                 # Lint
 ```
@@ -961,17 +964,18 @@ cargo clippy                 # Lint
 |-----------|--------|
 | CPG Analysis Engine | CFG + AST metadata + alias map fusion, path-sensitive taint propagation, AccessPath property tracking, 12 languages AST, 30+ sanitizers |
 | Dynamic Language Tracking | AccessPath + AliasMap + destructuring + property access + await + Promise chains |
-| Cross-file Tracking | Call graph + Import-Aware alias resolution + Callback registration + CallTarget receiver tracking + Type hierarchy virtual dispatch + Framework middleware virtual edges + CPG auto-summaries + BFS path finding |
+| Cross-file Tracking | Call graph + Import-Aware alias resolution + Callback registration + CallTarget receiver tracking + Type hierarchy virtual dispatch + Framework middleware virtual edges + CPG auto-summaries + BFS path finding + Constructor FP filtering + Callback body analysis |
 | TypeScript Integration | Type annotation → auto taint source (HttpRequest, Request, etc.) |
 | Pattern Matching | 40 pattern rules + 5 taint rules, covering 6 languages + 6 frameworks |
 | False Positive Control | File role classification + security barrier detection + multi-engine confidence fusion + baseline suppression |
 | SCA Scanner | OSV API, 4 ecosystems, local cache, configurable (disabled by default) |
-| MCP Integration | 26 tools (3 scanning + 7 taint + 3 risk patterns + 4 autonomous audit + 9 call graph query) |
+| MCP Integration | 31 tools (3 scanning + 7 taint + 3 risk patterns + 4 autonomous audit + 9 call graph query + 5 audit session) |
 | LLM Output | Structured JSON: code context + taint chains + file role + barriers + confidence |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
 | Config-driven | All exclusions, severity thresholds, and engine toggles via config.toml |
-| Test Coverage | 186 tests |
+| Test Coverage | 188 tests |
+| NodeGoat Benchmark | 7/7 ground truth hits (eval/redirect/ReDoS/IDOR/NoSQL/SSRF/XSS), 25+ findings |
 
 ## License
 

@@ -473,17 +473,19 @@ key 格式为 `文件路径:行号:漏洞类型`，value 为忽略原因。扫�
 
 `--cross-file`（或 `--deep`）启用跨文件、跨过程分析：
 
-- **调用图构建**：自动提取项目函数节点和调用关系，支持匿名回调注册（箭头函数/函数表达式）
-- **跨文件解析**：两阶段调用解析——Phase 1 通过 Import/Require 别名精确匹配目标文件和导出名，Phase 2 全局名称回退
-- **方法调用追踪**：`CallTarget` 保留 `obj.method()` 的 receiver 信息，receiver 感知的跨文件调用匹配
+- **调用图构建**：自动提取项目函数节点和调用关系，支持匿名回调注册（箭头函数/函数表达式）和 HTTP 响应回调体独立分析
+- **跨文件解析**：两阶段调用解析——Phase 1 通过 Import/Require 别名精确匹配目标文件和导出名，Phase 2 全局名称回退 + receiver 缩小范围
+- **方法调用追踪**：`CallTarget` 保留 `obj.method()` 的 receiver 信息，支持 `property` 和 `field` AST 字段名（JS/Java 兼容）
 - **函数摘要**：自底向上计算每个函数的污点传播签名
-- **路径追踪**：BFS 查找 source→sink 的跨文件调用路径
+- **路径追踪**：BFS 查找 source→sink 的跨文件调用路径，支持 Return 节点中的 sink 检测
 - **上下文组装**：识别 callers、callees、信任边界
 - **CPG 自动摘要**：Stage B 构建的 FunctionCPG 缓存传递给 Stage C，自动生成精确函数摘要
 - **路径敏感分析**：条件分支感知的污点传播，`if (isSafe(x))` 的 True 分支自动标记净化
 - **属性路径追踪**：AccessPath 前缀匹配——`req.body` 污染时 `req.body.name` 自动检出
 - **类型层次**：Class/Interface/Struct 继承 DAG + 虚方法分发（Java/TypeScript/Python）
 - **框架中间件**：Express `app.use()` 中间件虚拟边注入，Django MIDDLEWARE 检测
+- **构造函数 FP 过滤**：自动降级外层构造函数误标，内层 Method 节点为实际 source/sink
+- **语言过滤**：YAML 规则中的 language 字段支持通配符，避免跨语言规则失效
 
 支持 12 种语言：JavaScript/JSX, TypeScript/TSX, Python, Java, Rust, Go, C, C++, HTML, CSS, JSON。
 
@@ -500,6 +502,7 @@ key 格式为 `文件路径:行号:漏洞类型`，value 为忽略原因。扫�
 | await 表达式 | `const data = await resp.json()` → 污点传播不中断 |
 | Promise 链 | `.then(data => eval(data))` → data 继承链路污点 |
 | 回调提示 | `.forEach(item => ...)` 和 `.map(x => ...)` → 参数继承污点 |
+| HTTP 回调提示 | `needle.get(url, (err, resp, body) => ...)` → body 标记为二阶污点源（外部响应体） |
 | TypeScript 类型 | `(req: HttpRequest)` → 自动识别 req 为污点源 |
 | 模块导出 | `module.exports.handler = fn` 和 `exports.processData = fn` 检测 |
 | CommonJS 解构 | `const { body } = require('express')` → 命名符号提取 |
@@ -952,7 +955,7 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 
 ```bash
 cargo build --release        # 构建（ctx-audit + ctx-audit-daemon）
-cargo test --workspace       # 运行测试（186 个测试）
+cargo test --workspace       # 运行测试（188 个测试）
 cargo fmt                    # 格式化
 cargo clippy                 # 代码检查
 ```
@@ -963,17 +966,18 @@ cargo clippy                 # 代码检查
 |------|------|
 | CPG 分析引擎 | CFG + AST 元数据 + 别名映射融合，路径敏感污点传播，AccessPath 属性路径追踪，12 语言 AST，30+ sanitizer |
 | 动态语言追踪 | AccessPath + AliasMap + 解构 + 属性访问 + await + Promise 链 |
-| 跨文件追踪 | 调用图 + Import-Aware 别名解析 + Callback 注册 + CallTarget receiver 追踪 + 类型层次虚方法分发 + 框架中间件虚拟边 + CPG 自动摘要 + BFS 路径查找 |
+| 跨文件追踪 | 调用图 + Import-Aware 别名解析 + Callback 注册 + CallTarget receiver 追踪 + 类型层次虚方法分发 + 框架中间件虚拟边 + CPG 自动摘要 + BFS 路径查找 + 构造函数 FP 过滤 + 回调体独立分析 |
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
 | 模式匹配规则 | 40 条模式规则 + 5 条污点规则，覆盖 6 语言 + 6 框架 |
 | 误报控制 | 文件角色分类 + 安全屏障检测 + 多引擎置信度融合 + 基线抑制 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存，可配置（默认关闭） |
-| MCP 集成 | 26 个工具（3 扫描 + 7 污点 + 3 风险模式 + 4 自主审计 + 9 调用图查询） |
+| MCP 集成 | 31 个工具（3 扫描 + 7 污点 + 3 风险模式 + 4 自主审计 + 9 调用图查询 + 5 审计会话） |
 | LLM 输出 | 结构化 JSON：代码上下文 + 污点链 + 文件角色 + 屏障 + 置信度 |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
 | 配置驱动 | 所有排除项、严重程度阈值、引擎开关均可通过 config.toml 控制 |
-| 测试覆盖 | 186 个测试 |
+| 测试覆盖 | 188 个测试 |
+| NodeGoat Benchmark | 7/7 ground truth 命中（eval/重定向/ReDoS/IDOR/NoSQL/SSRF/XSS），25+ findings |
 
 ## 许可证
 
