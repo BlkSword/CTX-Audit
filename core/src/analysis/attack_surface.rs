@@ -419,7 +419,9 @@ impl AttackSurfaceMapper {
                 if line.contains(pattern) {
                     let route = Self::extract_express_route(line);
                     let context = Self::get_context_block(content, line_num, 10);
-                    let auth_required = context.contains("auth") || context.contains("jwt")
+                    let has_inline = Self::has_inline_middleware(line);
+                    let auth_required = has_inline
+                        || context.contains("auth") || context.contains("jwt")
                         || context.contains("token") || context.contains("passport");
 
                     entry_points.push(EntryPoint {
@@ -864,6 +866,39 @@ impl AttackSurfaceMapper {
             }
         }
         None
+    }
+
+    /// 检测 Express 路由注册行是否有内联 middleware
+    ///
+    /// Express 路由签名: app.METHOD(path, [middleware...], handler)
+    /// 当逗号数量 ≥ 2 时（path, middleware, handler），认为有内联 middleware。
+    /// 同时检查常见的 auth middleware 变量名。
+    fn has_inline_middleware(line: &str) -> bool {
+        // 路由路径后的逗号分隔参数数量
+        // app.get("/path", mw, handler) → 至少 2 个逗号
+        let comma_count = line.matches(',').count();
+        if comma_count < 2 {
+            return false;
+        }
+
+        // 检查常见的 auth middleware 变量名
+        let auth_mw_patterns = [
+            "isLoggedIn", "isAuthenticated", "isAdmin", "isAuthorized",
+            "requireAuth", "requireLogin", "authenticate", "authenticateUser",
+            "authMiddleware", "auth", "ensureLoggedIn", "ensureAuthenticated",
+            "checkAuth", "verifyToken", "validateSession", "protect",
+            "withAuth", "withUser",
+        ];
+        let lower = line.to_lowercase();
+        for pat in &auth_mw_patterns {
+            if lower.contains(&pat.to_lowercase()) {
+                return true;
+            }
+        }
+
+        // 通用检测：path 后的参数 ≥ 2 个（path, middleware, handler）
+        // 不要求精确匹配 auth pattern，只要有额外参数就是潜在 middleware
+        true
     }
 
     fn extract_express_route(line: &str) -> Option<String> {
