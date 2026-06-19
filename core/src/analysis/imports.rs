@@ -300,10 +300,20 @@ impl ImportResolver {
                             exports.push(export);
                         }
                     }
-                    // CommonJS require
-                    if trimmed.contains("require(") {
+                    // CommonJS require (single-line only; skip multi-line closing brackets)
+                    if trimmed.contains("require(") && !trimmed.starts_with('}') {
                         if let Some(import) = self.parse_commonjs_require(trimmed, line_idx + 1) {
                             imports.push(import);
+                        }
+                    }
+                    // 多行 CommonJS require: const {\n  Foo\n} = require('...')
+                    if (trimmed.starts_with("const {") || trimmed.starts_with("let {") || trimmed.starts_with("var {"))
+                        && !trimmed.contains("require(") && !trimmed.contains("=")
+                    {
+                        if let Some(merged) = self.try_merge_multiline_require(content, line_idx) {
+                            if let Some(import) = self.parse_commonjs_require(&merged, line_idx + 1) {
+                                imports.push(import);
+                            }
                         }
                     }
                     // CommonJS exports
@@ -502,6 +512,31 @@ impl ImportResolver {
             source,
             line: line_num,
         })
+    }
+
+    /// 合并多行 CommonJS require 语句为单行
+    ///
+    /// 处理模式:
+    ///   const {
+    ///     BenefitsDAO
+    ///   } = require("../data/benefits-dao");
+    fn try_merge_multiline_require(&self, content: &str, start_line: usize) -> Option<String> {
+        let lines: Vec<&str> = content.lines().collect();
+        let mut merged = String::new();
+        for i in start_line..lines.len() {
+            let line = lines[i].trim();
+            merged.push_str(line);
+            merged.push(' ');
+            // 找到 require( 且包含 }=
+            if line.contains("require(") && (line.contains("}") || merged.contains("}")) {
+                return Some(merged.trim().to_string());
+            }
+            // 防止无限缓冲：最多合并 10 行
+            if i - start_line > 10 {
+                return None;
+            }
+        }
+        None
     }
 
     /// 解析 CommonJS require（支持解构）
