@@ -1282,6 +1282,7 @@ pub async fn scan_directory_deep_with_rules_progress(
             type_hierarchy: crate::analysis::type_hierarchy::TypeHierarchy::new(),
             middleware_model: crate::analysis::middleware::MiddlewareModel::new(),
             file_import_aliases: std::collections::HashMap::new(),
+            variable_type_map: std::collections::HashMap::new(),
         }
     };
 

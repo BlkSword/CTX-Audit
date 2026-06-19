@@ -308,6 +308,9 @@ pub struct CrossFileTaintResult {
     /// 文件导入别名映射: normalized_file_path → (local_name → ImportResolution)
     #[serde(skip)]
     pub file_import_aliases: HashMap<String, HashMap<String, ImportResolution>>,
+    /// 局部变量→类型映射: normalized_file_path → (var_name → type_name)
+    #[serde(skip)]
+    pub variable_type_map: HashMap<String, HashMap<String, String>>,
 }
 
 /// 过程间污点流
@@ -458,6 +461,10 @@ pub struct CrossFileTaintAnalyzer {
     cpg_taint_flows: HashMap<String, Vec<super::taint::TaintFlow>>,
     /// 文件导入别名映射: file_path -> (local_name -> ImportResolution)
     file_import_aliases: HashMap<String, HashMap<String, ImportResolution>>,
+    /// 局部变量→类型映射: file_path -> (var_name -> type_name)
+    /// 追踪 const x = new Type(...) 中的 x→Type 关系，
+    /// 用于 receiver 感知的跨文件调用解析（取代全局名称回退）
+    variable_type_map: HashMap<String, HashMap<String, String>>,
     /// 类型层次结构（类/接口继承关系）
     type_hierarchy: super::type_hierarchy::TypeHierarchy,
     /// 框架中间件模型（Express app.use, Django MIDDLEWARE）
@@ -475,6 +482,7 @@ impl CrossFileTaintAnalyzer {
             cpg_cache: HashMap::new(),
             cpg_taint_flows: HashMap::new(),
             file_import_aliases: HashMap::new(),
+            variable_type_map: HashMap::new(),
             type_hierarchy: super::type_hierarchy::TypeHierarchy::new(),
             middleware_model: super::middleware::MiddlewareModel::new(),
         }
@@ -531,6 +539,7 @@ impl CrossFileTaintAnalyzer {
             type_hierarchy: std::mem::take(&mut self.type_hierarchy),
             middleware_model: std::mem::take(&mut self.middleware_model),
             file_import_aliases: std::mem::take(&mut self.file_import_aliases),
+            variable_type_map: std::mem::take(&mut self.variable_type_map),
         }
     }
 
@@ -570,6 +579,7 @@ impl CrossFileTaintAnalyzer {
             type_hierarchy: std::mem::take(&mut self.type_hierarchy),
             middleware_model: std::mem::take(&mut self.middleware_model),
             file_import_aliases: std::mem::take(&mut self.file_import_aliases),
+            variable_type_map: std::mem::take(&mut self.variable_type_map),
         }
     }
 
@@ -617,6 +627,7 @@ impl CrossFileTaintAnalyzer {
             type_hierarchy: std::mem::take(&mut self.type_hierarchy),
             middleware_model: std::mem::take(&mut self.middleware_model),
             file_import_aliases: std::mem::take(&mut self.file_import_aliases),
+            variable_type_map: std::mem::take(&mut self.variable_type_map),
         }
     }
 
@@ -626,6 +637,7 @@ impl CrossFileTaintAnalyzer {
 
         // 解析文件导入（用于后续跨文件调用精确匹配）
         self.parse_file_imports(&file_path_str, content);
+        self.parse_variable_types(&file_path_str, content);
         // 扫描框架中间件和路由注册
         super::middleware::scan_middleware(file_path, content, &mut self.middleware_model);
 
@@ -769,6 +781,34 @@ impl CrossFileTaintAnalyzer {
             for func in functions {
                 self.call_graph.add_node(func);
             }
+        }
+    }
+
+    /// 解析局部变量→类型映射（const x = new Type(...) / const x = Type(...)）
+    ///
+    /// 追踪 `userDAO` → `UserDAO` 这样的关系，使 resolve_cross_file_calls 能通过
+    /// receiver 变量名反查其类型，进而通过 import 别名定位到正确的目标文件。
+    fn parse_variable_types(&mut self, file_path: &str, content: &str) {
+        let normalized = normalize_path(file_path);
+        let mut var_types: HashMap<String, String> = HashMap::new();
+
+        // 模式: const/let/var varName = new TypeName(...)
+        // 也匹配: const/let/var varName = TypeName(...)  (无 new 的构造函数)
+        let re = regex::Regex::new(
+            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:new\s+)?(\w+)\s*\("
+        ).unwrap();
+
+        for cap in re.captures_iter(content) {
+            let var_name = cap[1].to_string();
+            let type_name = cap[2].to_string();
+            // 跳过明显不是类型名的变量（如小写开头的方法调用）
+            if type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                var_types.entry(var_name).or_insert(type_name);
+            }
+        }
+
+        if !var_types.is_empty() {
+self.variable_type_map.insert(normalized, var_types);
         }
     }
 
@@ -995,14 +1035,28 @@ impl CrossFileTaintAnalyzer {
                     }
                 }
 
-                // ── Phase 2: 全局名称回退（含 receiver 缩小范围） ──
+                // ── Phase 2: receiver 感知解析（import 别名 + 变量→类型追踪） ──
                 if !resolved {
-                    // 如果调用有 receiver，尝试通过 import 别名解析到目标文件
+                    // 如果调用有 receiver，尝试通过以下路径解析到目标文件：
+                    //   a) receiver 是 import 别名（如 UserDAO from require）
+                    //   b) receiver 是局部变量，其类型是 import 别名
+                    //      （如 const userDAO = new UserDAO(db) → userDAO → UserDAO → target file）
                     let receiver_target_file: Option<String> = ct.receiver.as_ref()
-                        .and_then(|recv| import_aliases
-                            .and_then(|aliases| aliases.get(recv))
-                            .and_then(|res| self.resolve_module_to_file(&res.source_module, &node.file_path))
-                        );
+                        .and_then(|recv| {
+                            // a) 直接 import 别名
+                            if let Some(target) = import_aliases
+                                .and_then(|aliases| aliases.get(recv))
+                                .and_then(|res| self.resolve_module_to_file(&res.source_module, &node.file_path))
+                            {
+                                return Some(target);
+                            }
+                            // b) 局部变量 → 类型 → import 别名
+                            let var_types = self.variable_type_map.get(&caller_file_normalized)?;
+                            let type_name = var_types.get(recv)?;
+                            let aliases = import_aliases?;
+                            let resolution = aliases.get(type_name)?;
+                            self.resolve_module_to_file(&resolution.source_module, &node.file_path)
+                        });
 
                     if let Some(callee_ids) = name_to_ids.get(&ct.callee) {
                         for callee_id in callee_ids {
@@ -1010,14 +1064,16 @@ impl CrossFileTaintAnalyzer {
                                 .map(|n| normalize_path(&n.file_path))
                                 .unwrap_or_default();
                             if callee_file != caller_file_normalized {
-                                // receiver 命中时，优先匹配 receiver 目标文件
+                                // receiver 命中时，精确匹配 receiver 目标文件
                                 if let Some(ref target_file) = receiver_target_file {
                                     let target_normalized = normalize_path(target_file);
                                     if callee_file == target_normalized {
                                         cross_calls.push((caller_id.clone(), callee_id.clone()));
+                                        resolved = true;
                                     }
                                     // 即使 receiver 不匹配该 callee，也继续尝试其他 callee
                                 } else {
+                                    // 无 receiver 信息时的全局名称回退（低精度，仅兜底）
                                     cross_calls.push((caller_id.clone(), callee_id.clone()));
                                 }
                             }
@@ -2522,7 +2578,21 @@ impl ContextAssembler {
 
 /// 标准化文件路径（统一使用正斜杠）
 pub fn normalize_path(path: &str) -> String {
-    path.replace('\\', "/")
+    let normalized = path.replace('\\', "/");
+    // Resolve . and .. path components
+    let parts: Vec<&str> = normalized.split('/').collect();
+    let mut resolved: Vec<&str> = Vec::new();
+    for part in parts {
+        if part == "." || part.is_empty() {
+            continue;
+        }
+        if part == ".." {
+            resolved.pop();
+        } else {
+            resolved.push(part);
+        }
+    }
+    resolved.join("/")
 }
 
 #[cfg(test)]
