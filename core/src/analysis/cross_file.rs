@@ -2082,7 +2082,7 @@ self.variable_type_map.insert(normalized, var_types);
             ], VulnerabilityType::SqlInjection),
             TaintSink::new("nosql_injection", "NoSQL Injection", vec![
                 ".findOne(", ".find(", "collection.find", "db.collection", "$where",
-            ], VulnerabilityType::SqlInjection),
+            ], VulnerabilityType::NoSqlInjection),
             TaintSink::new("ssrf", "SSRF", vec![
                 "http.request", "https.request", "fetch(", "axios", "needle.get",
             ], VulnerabilityType::ServerSideRequestForgery),
@@ -2717,7 +2717,7 @@ mod tests {
         assert!(analyzer.is_taint_sink("callback", "needle.get(url);").0);
         assert_eq!(analyzer.is_taint_sink("callback", "needle.get(url);").1, Some(VulnerabilityType::ServerSideRequestForgery));
         assert!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});").0);
-        assert_eq!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});").1, Some(VulnerabilityType::SqlInjection));
+        assert_eq!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});").1, Some(VulnerabilityType::NoSqlInjection));
     }
 
     #[test]

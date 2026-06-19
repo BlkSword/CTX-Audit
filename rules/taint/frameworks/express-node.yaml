@@ -149,7 +149,7 @@ sinks:
       - "db.collection"
       - "$where"
     languages: ["javascript", "typescript"]
-    vulnerability_type: "SqlInjection"
+    vulnerability_type: "NoSqlInjection"
     severity: "High"
     cwe_id: "CWE-89"
     sensitive_params: [0]

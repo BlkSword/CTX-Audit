@@ -354,6 +354,8 @@ pub enum TaintCategory {
 pub enum VulnerabilityType {
     /// SQL 注入
     SqlInjection,
+    /// NoSQL 注入（MongoDB $where, .findOne 等）
+    NoSqlInjection,
     /// 命令注入
     CommandInjection,
     /// 路径遍历
@@ -386,6 +388,7 @@ impl std::fmt::Display for VulnerabilityType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VulnerabilityType::SqlInjection => write!(f, "SQL Injection"),
+            VulnerabilityType::NoSqlInjection => write!(f, "NoSQL Injection"),
             VulnerabilityType::CommandInjection => write!(f, "Command Injection"),
             VulnerabilityType::PathTraversal => write!(f, "Path Traversal"),
             VulnerabilityType::CrossSiteScripting => write!(f, "Cross-Site Scripting"),
