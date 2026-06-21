@@ -1131,9 +1131,9 @@ pub async fn scan_directory_deep_with_rules_progress(
 
     // Stage B: AST 污点分析（enable_taint = true）
     // C1: 候选文件选择 — 基于 AST 支持的文件类型，不依赖 rule findings
-    const MAX_CANDIDATE_FILES: usize = 200;
+    const MAX_CANDIDATE_FILES: usize = 5000;
     const TAINT_BATCH_SIZE: usize = 50;
-    const MAX_TAINT_FILE_KB: usize = 100;
+    const MAX_TAINT_FILE_KB: usize = 500;
 
     // 如果 content_cache 中 AST 文件不足，做第二轮收集
     // （内存预算可能提前终止了主扫描循环，导致 AST 文件未被缓存）

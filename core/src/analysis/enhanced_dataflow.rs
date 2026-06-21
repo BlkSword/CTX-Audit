@@ -935,6 +935,8 @@ impl<'a> AstCFGBuilder<'a> {
                 | "variable_declarator"
                 | "lexical_declaration"
                 | "variable_declaration"
+                | "local_variable_declaration"
+                | "field_declaration"
         ) {
             let (defs, uses) = self.extract_defs_uses(node, content);
             let assign_id = self.create_node(
@@ -952,7 +954,7 @@ impl<'a> AstCFGBuilder<'a> {
         }
 
         // 函数调用（独立语句，如 execute(query)）
-        if matches!(kind, "call_expression" | "call" | "expression_statement") {
+        if matches!(kind, "call_expression" | "call" | "expression_statement" | "method_invocation") {
             // expression_statement 内部可能有 call，递归看一层
             if kind == "expression_statement" {
                 let mut cursor = node.walk();

@@ -1517,25 +1517,17 @@ impl ASTParser {
                                 typed_params.iter().map(|tp| tp.name.clone()).collect();
 
                             let body_node = right.child_by_field_name("body");
-                            let (start_line, end_line, body_text) = if let Some(body) = body_node {
-                                (
-                                    body.start_position().row + 1,
-                                    body.end_position().row + 1,
-                                    content[body.byte_range()].to_string(),
-                                )
+                            let body_text = if let Some(body) = body_node {
+                                content[body.byte_range()].to_string()
                             } else {
-                                (
-                                    right.start_position().row + 1,
-                                    right.end_position().row + 1,
-                                    content[right.byte_range()].to_string(),
-                                )
+                                content[right.byte_range()].to_string()
                             };
 
                             results.push(FunctionBody {
                                 name: method_name,
                                 params,
-                                start_line,
-                                end_line,
+                                start_line: right.start_position().row + 1,
+                                end_line: right.end_position().row + 1,
                                 body_text,
                                 typed_params,
                             });
@@ -1579,25 +1571,19 @@ impl ASTParser {
             let params: Vec<String> = typed_params.iter().map(|tp| tp.name.clone()).collect();
 
             let body_node = node.child_by_field_name("body");
-            let (start_line, end_line, body_text) = if let Some(body) = body_node {
-                (
-                    body.start_position().row + 1,
-                    body.end_position().row + 1,
-                    content[body.byte_range()].to_string(),
-                )
+            let body_text = if let Some(body) = body_node {
+                content[body.byte_range()].to_string()
             } else {
-                (
-                    node.start_position().row + 1,
-                    node.end_position().row + 1,
-                    content[node.byte_range()].to_string(),
-                )
+                content[node.byte_range()].to_string()
             };
 
+            // 使用函数声明节点的起止行号，以便上层通过 AST 定位到完整函数节点
+            // （body 的起止行号会导致 AST-based CFG 无法匹配）。
             results.push(FunctionBody {
                 name,
                 params,
-                start_line,
-                end_line,
+                start_line: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
                 body_text,
                 typed_params,
             });

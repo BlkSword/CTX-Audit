@@ -2875,6 +2875,26 @@ eval(user_input)"#;
     }
 
     #[test]
+    fn test_java_analyze_file_sqli() {
+        let code = r#"public class UserServlet {
+    public void doGet(HttpServletRequest request) throws Exception {
+        String id = request.getParameter("id");
+        String sql = "SELECT * FROM users WHERE id=" + id;
+        Statement stmt = conn.createStatement();
+        stmt.executeQuery(sql);
+    }
+}"#;
+        let mut analyzer = analyzer_with_yaml_rules();
+        let path = std::path::PathBuf::from("UserServlet.java");
+        let flows = analyzer.analyze_file(&path, code);
+        assert!(
+            !flows.is_empty(),
+            "analyze_file should detect Java SQLi, got {} flows",
+            flows.len()
+        );
+    }
+
+    #[test]
     fn test_go_sql_injection_db_query() {
         let code = r#"func handler(w http.ResponseWriter, r *http.Request) {
     id := r.URL.Query().Get("id")
