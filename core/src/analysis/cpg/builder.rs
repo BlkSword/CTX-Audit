@@ -12,18 +12,29 @@ use crate::analysis::alias::{detect_all_aliases, AliasMap};
 use crate::analysis::enhanced_dataflow::{EnhancedFlowGraph, EnhancedNodeType};
 use crate::ast::symbol::{Assignment, CallInfo, FunctionBody, TypedParam};
 
-use super::{ConditionInfo, CPGNodeMeta, FunctionCPG, FunctionSignature};
+use super::{CPGNodeMeta, ConditionInfo, FunctionCPG, FunctionSignature};
 
 /// CPG 构建器
 pub struct CPGBuilder;
 
 /// 净化器函数名模式 — 用于检测条件中的净化检查
 const SANITIZER_CALL_PATTERNS: &[&str] = &[
-    "isSafe", "validate", "sanitize", "isValid", "check",
-    "verify", "isAuthorized", "isAuthenticated",
-    "isAllowed", "isPermitted", "checkPermission",
-    "escape", "encode", "DOMPurify",
-    "htmlspecialchars", "bleach",
+    "isSafe",
+    "validate",
+    "sanitize",
+    "isValid",
+    "check",
+    "verify",
+    "isAuthorized",
+    "isAuthenticated",
+    "isAllowed",
+    "isPermitted",
+    "checkPermission",
+    "escape",
+    "encode",
+    "DOMPurify",
+    "htmlspecialchars",
+    "bleach",
 ];
 
 impl CPGBuilder {
@@ -44,9 +55,7 @@ impl CPGBuilder {
         calls: &[CallInfo],
     ) -> FunctionCPG {
         // 1. 构建 CFG（复用现有实现）
-        let cfg = EnhancedFlowGraph::from_ast_node(
-            func_body_node, content, file_path, &func.name,
-        );
+        let cfg = EnhancedFlowGraph::from_ast_node(func_body_node, content, file_path, &func.name);
 
         // 2. 按行号索引赋值和调用
         let assign_by_line: HashMap<usize, &Assignment> = assignments
@@ -64,7 +73,10 @@ impl CPGBuilder {
         let mut node_meta = HashMap::new();
         for node in &cfg.nodes {
             let line = node.start_line;
-            let ast_kind = node.code.split('(').next()
+            let ast_kind = node
+                .code
+                .split('(')
+                .next()
                 .unwrap_or(&node.code)
                 .trim()
                 .to_string();
@@ -79,12 +91,15 @@ impl CPGBuilder {
                 None
             };
 
-            node_meta.insert(node.id, CPGNodeMeta {
-                ast_kind,
-                assignment,
-                call_info,
-                condition,
-            });
+            node_meta.insert(
+                node.id,
+                CPGNodeMeta {
+                    ast_kind,
+                    assignment,
+                    call_info,
+                    condition,
+                },
+            );
         }
 
         // 5. 构建别名映射（复用现有 detect_all_aliases）
@@ -116,15 +131,17 @@ impl CPGBuilder {
     ) -> FunctionCPG {
         let cfg = EnhancedFlowGraph::from_code(content, file_path, "");
 
-        let assign_by_line: HashMap<usize, &Assignment> = assignments
-            .iter().map(|a| (a.line, a)).collect();
-        let call_by_line: HashMap<usize, &CallInfo> = calls
-            .iter().map(|c| (c.line, c)).collect();
+        let assign_by_line: HashMap<usize, &Assignment> =
+            assignments.iter().map(|a| (a.line, a)).collect();
+        let call_by_line: HashMap<usize, &CallInfo> = calls.iter().map(|c| (c.line, c)).collect();
 
         let mut node_meta = HashMap::new();
         for node in &cfg.nodes {
             let line = node.start_line;
-            let ast_kind = node.code.split('(').next()
+            let ast_kind = node
+                .code
+                .split('(')
+                .next()
                 .unwrap_or(&node.code)
                 .trim()
                 .to_string();
@@ -137,12 +154,15 @@ impl CPGBuilder {
                 None
             };
 
-            node_meta.insert(node.id, CPGNodeMeta {
-                ast_kind,
-                assignment,
-                call_info,
-                condition,
-            });
+            node_meta.insert(
+                node.id,
+                CPGNodeMeta {
+                    ast_kind,
+                    assignment,
+                    call_info,
+                    condition,
+                },
+            );
         }
 
         let alias_map = Self::build_alias_map(assignments);
@@ -185,7 +205,9 @@ impl CPGBuilder {
 
         // 判断是否包含净化器检查
         let is_sanitizer_check = calls.iter().any(|c| {
-            SANITIZER_CALL_PATTERNS.iter().any(|p| c.eq_ignore_ascii_case(p))
+            SANITIZER_CALL_PATTERNS
+                .iter()
+                .any(|p| c.eq_ignore_ascii_case(p))
         });
 
         Some(ConditionInfo {
@@ -199,17 +221,51 @@ impl CPGBuilder {
     /// 从表达式中提取标识符（排除关键字）
     fn extract_variables(expr: &str) -> Vec<String> {
         let keywords = [
-            "if", "else", "for", "while", "return", "let", "const", "var",
-            "fn", "func", "function", "def", "class", "import", "from",
-            "true", "false", "null", "none", "undefined", "and", "or", "not",
-            "typeof", "instanceof", "in", "of", "new", "async", "await",
+            "if",
+            "else",
+            "for",
+            "while",
+            "return",
+            "let",
+            "const",
+            "var",
+            "fn",
+            "func",
+            "function",
+            "def",
+            "class",
+            "import",
+            "from",
+            "true",
+            "false",
+            "null",
+            "none",
+            "undefined",
+            "and",
+            "or",
+            "not",
+            "typeof",
+            "instanceof",
+            "in",
+            "of",
+            "new",
+            "async",
+            "await",
         ];
 
         let mut vars = Vec::new();
-        for word in expr.split(&[' ', '(', ')', '+', '-', '*', '/', ',', ';', '[', ']', '{', '}', '<', '>', '=', '!', '&', '|', ':', '.', '?'][..]) {
+        for word in expr.split(
+            &[
+                ' ', '(', ')', '+', '-', '*', '/', ',', ';', '[', ']', '{', '}', '<', '>', '=',
+                '!', '&', '|', ':', '.', '?',
+            ][..],
+        ) {
             let word = word.trim();
             if !word.is_empty()
-                && word.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
+                && word
+                    .chars()
+                    .next()
+                    .map_or(false, |c| c.is_alphabetic() || c == '_')
                 && !keywords.contains(&word)
                 && !vars.iter().any(|v| v == word)
             {
@@ -228,7 +284,11 @@ impl CPGBuilder {
             if chars[i] == '(' && i > 0 {
                 // 回溯找到函数名
                 let mut end = i;
-                while end > 0 && (chars[end - 1] == '.' || chars[end - 1].is_alphanumeric() || chars[end - 1] == '_') {
+                while end > 0
+                    && (chars[end - 1] == '.'
+                        || chars[end - 1].is_alphanumeric()
+                        || chars[end - 1] == '_')
+                {
                     end -= 1;
                 }
                 if end < i {
@@ -236,7 +296,10 @@ impl CPGBuilder {
                     // 只取最后一段（如 obj.method → method）
                     let short_name = name.rsplit('.').next().unwrap_or(&name);
                     if !short_name.is_empty()
-                        && short_name.chars().next().map_or(false, |c| c.is_alphabetic())
+                        && short_name
+                            .chars()
+                            .next()
+                            .map_or(false, |c| c.is_alphabetic())
                         && !calls.iter().any(|c| c == short_name)
                     {
                         calls.push(short_name.to_string());
@@ -288,7 +351,8 @@ mod tests {
 
     #[test]
     fn test_extract_calls_from_expr() {
-        let calls = CPGBuilder::extract_calls_from_expr("validate(req.body) && checkPermission(user)");
+        let calls =
+            CPGBuilder::extract_calls_from_expr("validate(req.body) && checkPermission(user)");
         assert!(calls.contains(&"validate".to_string()));
         assert!(calls.contains(&"checkPermission".to_string()));
     }

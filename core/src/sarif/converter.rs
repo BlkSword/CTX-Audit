@@ -8,9 +8,7 @@
 use super::rules::{built_in_rules, find_rule_index};
 use super::types::*;
 
-use crate::analysis::taint::{
-    FlowNodeType, FlowLocation, TaintFlow,
-};
+use crate::analysis::taint::{FlowLocation, FlowNodeType, TaintFlow};
 
 /// 污点流摘要 — 轻量版，供外部 crate 传递
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -164,10 +162,8 @@ impl SarifConverter {
             tool_execution_notifications: None,
         }];
 
-        let results: Vec<SarifResult> = findings
-            .iter()
-            .map(|f| self.finding_to_result(f))
-            .collect();
+        let results: Vec<SarifResult> =
+            findings.iter().map(|f| self.finding_to_result(f)).collect();
 
         let run = Run {
             tool: Tool {
@@ -208,12 +204,7 @@ impl SarifConverter {
 
         let level = severity_to_level(&finding.severity);
 
-        let message = Message::new(
-            finding
-                .title
-                .as_deref()
-                .unwrap_or(&finding.category),
-        );
+        let message = Message::new(finding.title.as_deref().unwrap_or(&finding.category));
 
         let locations = vec![Location {
             physical_location: PhysicalLocation {
@@ -228,9 +219,10 @@ impl SarifConverter {
                     end_column: finding.end_column,
                     byte_offset: None,
                     byte_length: None,
-                    snippet: finding.code_snippet.as_ref().map(|s| ArtifactContent {
-                        text: s.clone(),
-                    }),
+                    snippet: finding
+                        .code_snippet
+                        .as_ref()
+                        .map(|s| ArtifactContent { text: s.clone() }),
                 },
             },
         }];
@@ -263,8 +255,7 @@ impl SarifConverter {
             properties = properties.with("confidence".into(), serde_json::json!(conf));
         }
         if let Some(ref status) = finding.verification_status {
-            properties =
-                properties.with("verificationStatus".into(), serde_json::json!(status));
+            properties = properties.with("verificationStatus".into(), serde_json::json!(status));
         }
         if let Some(ref by) = finding.discovered_by {
             properties = properties.with("discoveredBy".into(), serde_json::json!(by));
@@ -331,9 +322,10 @@ fn taint_flow_to_code_flow(flow: &TaintFlowSummary) -> CodeFlow {
                         end_column: None,
                         byte_offset: None,
                         byte_length: None,
-                        snippet: step.code_snippet.as_ref().map(|s| ArtifactContent {
-                            text: s.clone(),
-                        }),
+                        snippet: step
+                            .code_snippet
+                            .as_ref()
+                            .map(|s| ArtifactContent { text: s.clone() }),
                     },
                 },
             },
@@ -355,10 +347,7 @@ fn taint_flow_to_code_flow(flow: &TaintFlowSummary) -> CodeFlow {
         state: Some(
             PropertyBag::new()
                 .with("symbol".into(), serde_json::json!(flow.sink.symbol))
-                .with(
-                    "snippet".into(),
-                    serde_json::json!(flow.sink.code_snippet),
-                ),
+                .with("snippet".into(), serde_json::json!(flow.sink.code_snippet)),
         ),
     });
 
@@ -384,9 +373,10 @@ fn flow_location_to_location(loc: &FlowLocationSummary) -> Location {
                 end_column: None,
                 byte_offset: None,
                 byte_length: None,
-                snippet: loc.code_snippet.as_ref().map(|s| ArtifactContent {
-                    text: s.clone(),
-                }),
+                snippet: loc
+                    .code_snippet
+                    .as_ref()
+                    .map(|s| ArtifactContent { text: s.clone() }),
             },
         },
     }
@@ -412,9 +402,7 @@ pub fn taint_flow_to_summary(flow: &TaintFlow) -> TaintFlowSummary {
         steps: flow
             .path
             .iter()
-            .filter(|n| {
-                !matches!(n.node_type, FlowNodeType::Source | FlowNodeType::Sink)
-            })
+            .filter(|n| !matches!(n.node_type, FlowNodeType::Source | FlowNodeType::Sink))
             .map(|n| FlowStepSummary {
                 step_type: match n.node_type {
                     FlowNodeType::Assignment => "Assignment",
@@ -439,10 +427,7 @@ pub fn taint_flow_to_summary(flow: &TaintFlow) -> TaintFlowSummary {
 }
 
 /// FixSuggestion → SARIF Fix
-fn fix_suggestion_to_fix(
-    suggestion: &FixSuggestion,
-    file_path: &str,
-) -> Option<Fix> {
+fn fix_suggestion_to_fix(suggestion: &FixSuggestion, file_path: &str) -> Option<Fix> {
     // 如果没有 old_code/new_code 对，生成描述性修复
     let (deleted_region, inserted_content) = match &suggestion.fix_type {
         FixType::Replacement => {
@@ -456,13 +441,9 @@ fn fix_suggestion_to_fix(
                     end_column: None,
                     byte_offset: None,
                     byte_length: None,
-                    snippet: Some(ArtifactContent {
-                        text: old.clone(),
-                    }),
+                    snippet: Some(ArtifactContent { text: old.clone() }),
                 },
-                Some(ArtifactContent {
-                    text: new.clone(),
-                }),
+                Some(ArtifactContent { text: new.clone() }),
             )
         }
         FixType::Wrap => (
@@ -488,9 +469,10 @@ fn fix_suggestion_to_fix(
                 end_column: None,
                 byte_offset: None,
                 byte_length: None,
-                snippet: suggestion.old_code.as_ref().map(|c| ArtifactContent {
-                    text: c.clone(),
-                }),
+                snippet: suggestion
+                    .old_code
+                    .as_ref()
+                    .map(|c| ArtifactContent { text: c.clone() }),
             },
             None,
         ),
@@ -557,7 +539,10 @@ mod tests {
         assert_eq!(parsed["runs"][0]["results"][0]["ruleId"], "CWE-89");
         assert_eq!(parsed["runs"][0]["results"][0]["level"], "error");
         assert_eq!(
-            parsed["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap().len(),
+            parsed["runs"][0]["tool"]["driver"]["rules"]
+                .as_array()
+                .unwrap()
+                .len(),
             6
         );
     }
@@ -626,29 +611,27 @@ mod tests {
     #[test]
     fn test_sarif_output_matches_schema_structure() {
         let converter = SarifConverter::new();
-        let findings = vec![
-            FindingInput {
-                id: Some("finding-1".into()),
-                title: Some("SQL Injection in query builder".into()),
-                description: "Detected unsanitized input flowing into SQL".into(),
-                severity: "high".into(),
-                category: "SQL Injection".into(),
-                cwe_id: Some("CWE-89".into()),
-                file_path: "src/db.py".into(),
-                start_line: 100,
-                end_line: Some(100),
-                start_column: Some(10),
-                end_column: Some(30),
-                code_snippet: Some("cursor.execute(user_input)".into()),
-                recommendation: Some("Use parameterized queries".into()),
-                status: "confirmed".into(),
-                verification_status: Some("verified".into()),
-                discovered_by: Some("ast_taint".into()),
-                code_flows: None,
-                fix_suggestions: None,
-                confidence: Some(0.95),
-            },
-        ];
+        let findings = vec![FindingInput {
+            id: Some("finding-1".into()),
+            title: Some("SQL Injection in query builder".into()),
+            description: "Detected unsanitized input flowing into SQL".into(),
+            severity: "high".into(),
+            category: "SQL Injection".into(),
+            cwe_id: Some("CWE-89".into()),
+            file_path: "src/db.py".into(),
+            start_line: 100,
+            end_line: Some(100),
+            start_column: Some(10),
+            end_column: Some(30),
+            code_snippet: Some("cursor.execute(user_input)".into()),
+            recommendation: Some("Use parameterized queries".into()),
+            status: "confirmed".into(),
+            verification_status: Some("verified".into()),
+            discovered_by: Some("ast_taint".into()),
+            code_flows: None,
+            fix_suggestions: None,
+            confidence: Some(0.95),
+        }];
 
         let json_str = converter.convert_to_json(&findings).unwrap();
         let root: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -673,10 +656,12 @@ mod tests {
         assert!(result["ruleId"].is_string());
         assert!(result["message"]["text"].is_string());
         assert!(result["locations"].is_array());
-        assert!(!result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
-            .as_str()
-            .unwrap()
-            .is_empty());
+        assert!(
+            !result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
 
         // Properties bag
         assert!(result["properties"]["id"].is_string());
@@ -700,15 +685,13 @@ mod tests {
                 symbol: "exec".into(),
                 code_snippet: Some("exec(user)".into()),
             },
-            steps: vec![
-                FlowStepSummary {
-                    step_type: "Assignment".into(),
-                    file_path: "app.js".into(),
-                    line: 20,
-                    symbol: "cmd".into(),
-                    code_snippet: Some("const cmd = user.name".into()),
-                },
-            ],
+            steps: vec![FlowStepSummary {
+                step_type: "Assignment".into(),
+                file_path: "app.js".into(),
+                line: 20,
+                symbol: "cmd".into(),
+                code_snippet: Some("const cmd = user.name".into()),
+            }],
             vulnerability_type: "Command Injection".into(),
             confidence: 0.85,
         };
@@ -742,6 +725,12 @@ mod tests {
         let result = &root["runs"][0]["results"][0];
         let code_flows = &result["codeFlows"];
         assert!(code_flows.is_array());
-        assert_eq!(code_flows[0]["threadFlows"][0]["locations"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            code_flows[0]["threadFlows"][0]["locations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
     }
 }

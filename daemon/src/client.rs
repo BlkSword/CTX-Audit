@@ -98,25 +98,51 @@ impl DaemonClient {
         };
 
         let pid = hb.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let timestamp = hb.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let timestamp = hb
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         if hb.get("status").and_then(|v| v.as_str()) == Some("shutting_down") {
             return HeartbeatStatus::ShuttingDown;
         }
 
         let age_secs = match chrono::DateTime::parse_from_rfc3339(&timestamp) {
-            Ok(ts) => chrono::Utc::now().signed_duration_since(ts.with_timezone(&chrono::Utc)).num_seconds(),
-            Err(_) => return HeartbeatStatus::Stale { pid, timestamp, age_secs: i64::MAX },
+            Ok(ts) => chrono::Utc::now()
+                .signed_duration_since(ts.with_timezone(&chrono::Utc))
+                .num_seconds(),
+            Err(_) => {
+                return HeartbeatStatus::Stale {
+                    pid,
+                    timestamp,
+                    age_secs: i64::MAX,
+                }
+            }
         };
 
         if age_secs > HEARTBEAT_STALE_SECS {
-            return HeartbeatStatus::Stale { pid, timestamp, age_secs };
+            return HeartbeatStatus::Stale {
+                pid,
+                timestamp,
+                age_secs,
+            };
         }
 
-        let version = hb.get("version").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        let version = hb
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
         let uptime_secs = hb.get("uptime_secs").and_then(|v| v.as_u64()).unwrap_or(0);
 
-        HeartbeatStatus::Alive { pid, timestamp, uptime_secs, version, age_secs }
+        HeartbeatStatus::Alive {
+            pid,
+            timestamp,
+            uptime_secs,
+            version,
+            age_secs,
+        }
     }
 
     /// 综合检测存活
@@ -182,7 +208,9 @@ impl DaemonClient {
             command: command.clone(),
         };
         let json = serde_json::to_string(&request)?;
-        self.stream.write_all(format!("{}\n", json).as_bytes()).await?;
+        self.stream
+            .write_all(format!("{}\n", json).as_bytes())
+            .await?;
         self.stream.flush().await?;
 
         let mut reader = BufReader::new(&mut self.stream);
@@ -209,7 +237,8 @@ impl DaemonClient {
     }
 
     pub async fn load_project(&mut self, path: String) -> Result<Response> {
-        self.send_request(RequestCommand::LoadProject { path }).await
+        self.send_request(RequestCommand::LoadProject { path })
+            .await
     }
 
     pub async fn scan(
@@ -228,11 +257,13 @@ impl DaemonClient {
             enable_cross_file,
             severity_filter,
             pattern_filter,
-        }).await
+        })
+        .await
     }
 
     pub async fn trace_taint(&mut self, file_path: String) -> Result<Response> {
-        self.send_request(RequestCommand::TraceTaint { file_path }).await
+        self.send_request(RequestCommand::TraceTaint { file_path })
+            .await
     }
 
     fn detect_addr() -> Result<String> {

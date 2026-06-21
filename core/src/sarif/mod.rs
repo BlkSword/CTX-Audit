@@ -25,9 +25,8 @@ mod types;
 
 // 公共接口
 pub use converter::{
-    FixSuggestion, FixType, FindingInput, SarifConverter,
-    TaintFlowSummary, FlowLocationSummary, FlowStepSummary,
-    taint_flow_to_summary,
+    taint_flow_to_summary, FindingInput, FixSuggestion, FixType, FlowLocationSummary,
+    FlowStepSummary, SarifConverter, TaintFlowSummary,
 };
 pub use rules::{built_in_rules, find_rule_index};
 pub use types::*;

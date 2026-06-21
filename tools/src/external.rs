@@ -6,11 +6,13 @@
 //! 支持集成外部工具如 Semgrep、Bandit、Gitleaks 等
 
 use async_trait::async_trait;
-use tokio::process::Command;
 use std::sync::Arc;
+use tokio::process::Command;
 
+use crate::bridge::{
+    ToolCategory, ToolDefinition, ToolError, ToolParameter, ToolParameterType, ToolResult,
+};
 use crate::registry::{Tool, ToolRegistry};
-use crate::bridge::{ToolResult, ToolError, ToolDefinition, ToolParameter, ToolParameterType, ToolCategory};
 
 /// 外部工具配置
 #[derive(Debug, Clone)]
@@ -87,7 +89,9 @@ impl Tool for ExternalTool {
 
         // 验证 target 路径（防止路径遍历）
         if target.contains("..") || target.starts_with('/') || target.starts_with('\\') {
-            return Err(ToolError::ExecutionFailed("Invalid target path: path traversal detected".to_string()));
+            return Err(ToolError::ExecutionFailed(
+                "Invalid target path: path traversal detected".to_string(),
+            ));
         }
 
         let mut cmd = Command::new(&self.config.command);
@@ -101,8 +105,15 @@ impl Tool for ExternalTool {
         if let Some(args) = input["args"].as_object() {
             for (key, value) in args {
                 // 验证参数名只包含安全字符
-                if !key.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') || key.is_empty() {
-                    return Err(ToolError::ExecutionFailed(format!("Invalid argument key: {}", key)));
+                if !key
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                    || key.is_empty()
+                {
+                    return Err(ToolError::ExecutionFailed(format!(
+                        "Invalid argument key: {}",
+                        key
+                    )));
                 }
                 if let Some(s) = value.as_str() {
                     cmd.arg(format!("--{}", key));
@@ -117,13 +128,10 @@ impl Tool for ExternalTool {
         }
 
         // 执行命令（带超时）
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            cmd.output()
-        )
-        .await
-        .map_err(|_| ToolError::ExecutionFailed("Command timed out (60s)".to_string()))?
-        .map_err(|e| ToolError::ExecutionFailed(format!("执行失败: {}", e)))?;
+        let output = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
+            .await
+            .map_err(|_| ToolError::ExecutionFailed("Command timed out (60s)".to_string()))?
+            .map_err(|e| ToolError::ExecutionFailed(format!("执行失败: {}", e)))?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -159,10 +167,7 @@ pub async fn register_common_tools(registry: &Arc<ToolRegistry>, project_path: &
         let config = ExternalToolConfig {
             name: "bandit".to_string(),
             command: bandit.to_string_lossy().to_string(),
-            args_template: vec![
-                "-f".to_string(),
-                "json".to_string(),
-            ],
+            args_template: vec!["-f".to_string(), "json".to_string()],
             working_dir: Some(project_path.to_string()),
         };
         if let Err(e) = registry.register(Arc::new(ExternalTool::new(config))).await {
@@ -175,10 +180,7 @@ pub async fn register_common_tools(registry: &Arc<ToolRegistry>, project_path: &
         let config = ExternalToolConfig {
             name: "gitleaks".to_string(),
             command: gitleaks.to_string_lossy().to_string(),
-            args_template: vec![
-                "detect".to_string(),
-                "--source".to_string(),
-            ],
+            args_template: vec!["detect".to_string(), "--source".to_string()],
             working_dir: Some(project_path.to_string()),
         };
         if let Err(e) = registry.register(Arc::new(ExternalTool::new(config))).await {

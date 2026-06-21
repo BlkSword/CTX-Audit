@@ -10,14 +10,12 @@ use async_trait::async_trait;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::registry::{Tool, ToolRegistry};
 use crate::bridge::{
-    ToolCategory, ToolDefinition, ToolParameter, ToolParameterType, ToolResult, ToolError,
+    ToolCategory, ToolDefinition, ToolError, ToolParameter, ToolParameterType, ToolResult,
 };
+use crate::registry::{Tool, ToolRegistry};
 
-use deepaudit_core::{
-    CrossFileTaintAnalyzer, CallGraphQueryEngine,
-};
+use deepaudit_core::{CallGraphQueryEngine, CrossFileTaintAnalyzer};
 
 /// 延迟构建查询引擎（避免每次工具调用都重新分析项目）
 fn build_query_engine(project_path: &str) -> Result<CallGraphQueryEngine, ToolError> {
@@ -105,9 +103,11 @@ impl Tool for QueryCallersTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let file_path = input["file_path"].as_str()
+        let file_path = input["file_path"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
-        let function_name = input["function_name"].as_str()
+        let function_name = input["function_name"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 function_name 参数".to_string()))?;
         let recursive = input["recursive"].as_bool().unwrap_or(false);
 
@@ -122,7 +122,8 @@ impl Tool for QueryCallersTool {
 
         if callers.is_empty() {
             return Ok(ToolResult::text(format!(
-                "未找到调用 '{}' (文件: {}) 的函数", function_name, file_path
+                "未找到调用 '{}' (文件: {}) 的函数",
+                function_name, file_path
             )));
         }
 
@@ -221,9 +222,11 @@ impl Tool for QueryCalleesTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let file_path = input["file_path"].as_str()
+        let file_path = input["file_path"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
-        let function_name = input["function_name"].as_str()
+        let function_name = input["function_name"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 function_name 参数".to_string()))?;
         let recursive = input["recursive"].as_bool().unwrap_or(false);
 
@@ -238,7 +241,8 @@ impl Tool for QueryCalleesTool {
 
         if callees.is_empty() {
             return Ok(ToolResult::text(format!(
-                "'{}' (文件: {}) 未调用任何已知函数", function_name, file_path
+                "'{}' (文件: {}) 未调用任何已知函数",
+                function_name, file_path
             )));
         }
 
@@ -348,13 +352,17 @@ impl Tool for FindCallPathTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let source_file = input["source_file"].as_str()
+        let source_file = input["source_file"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 source_file 参数".to_string()))?;
-        let source_function = input["source_function"].as_str()
+        let source_function = input["source_function"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 source_function 参数".to_string()))?;
-        let sink_file = input["sink_file"].as_str()
+        let sink_file = input["sink_file"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 sink_file 参数".to_string()))?;
-        let sink_function = input["sink_function"].as_str()
+        let sink_function = input["sink_function"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 sink_function 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
@@ -365,7 +373,8 @@ impl Tool for FindCallPathTool {
                 let summary = if path.crosses_files {
                     format!(
                         "找到调用路径: {} 跳, 跨越 {} 个文件",
-                        path.total_hops, path.files_in_path.len()
+                        path.total_hops,
+                        path.files_in_path.len()
                     )
                 } else {
                     format!("找到调用路径: {} 跳 (同文件)", path.total_hops)
@@ -382,20 +391,18 @@ impl Tool for FindCallPathTool {
                     Some(summary),
                 ))
             }
-            None => {
-                Ok(ToolResult::json(
-                    serde_json::json!({
-                        "path_exists": false,
-                        "source": { "file": source_file, "function": source_function },
-                        "sink": { "file": sink_file, "function": sink_function },
-                        "message": format!(
-                            "在调用图中未找到从 '{}' ({}) 到 '{}' ({}) 的路径",
-                            source_function, source_file, sink_function, sink_file
-                        ),
-                    }),
-                    Some("未找到调用路径: source 和 sink 之间没有可达的调用链".to_string()),
-                ))
-            }
+            None => Ok(ToolResult::json(
+                serde_json::json!({
+                    "path_exists": false,
+                    "source": { "file": source_file, "function": source_function },
+                    "sink": { "file": sink_file, "function": sink_function },
+                    "message": format!(
+                        "在调用图中未找到从 '{}' ({}) 到 '{}' ({}) 的路径",
+                        source_function, source_file, sink_function, sink_file
+                    ),
+                }),
+                Some("未找到调用路径: source 和 sink 之间没有可达的调用链".to_string()),
+            )),
         }
     }
 }
@@ -487,13 +494,18 @@ impl Tool for ResolveMethodCallTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let file_path = input["file_path"].as_str()
+        let file_path = input["file_path"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
-        let line = input["line"].as_u64()
-            .ok_or_else(|| ToolError::InvalidArgument("缺少 line 参数".to_string()))? as usize;
-        let receiver = input["receiver"].as_str()
+        let line = input["line"]
+            .as_u64()
+            .ok_or_else(|| ToolError::InvalidArgument("缺少 line 参数".to_string()))?
+            as usize;
+        let receiver = input["receiver"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 receiver 参数".to_string()))?;
-        let method = input["method"].as_str()
+        let method = input["method"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 method 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
@@ -503,7 +515,8 @@ impl Tool for ResolveMethodCallTool {
 
         if targets.is_empty() {
             return Ok(ToolResult::text(format!(
-                "未找到 {}.{}() ({}:{}) 的解析目标", receiver, method, file_path, line
+                "未找到 {}.{}() ({}:{}) 的解析目标",
+                receiver, method, file_path, line
             )));
         }
 
@@ -511,8 +524,11 @@ impl Tool for ResolveMethodCallTool {
         let summary = format!(
             "找到 {} 个候选目标, 最佳: {} ({}:{} 置信度 {:.0}%) [{}]",
             targets.len(),
-            best.function_name, best.file_path, best.line,
-            best.confidence * 100.0, best.resolution_method
+            best.function_name,
+            best.file_path,
+            best.line,
+            best.confidence * 100.0,
+            best.resolution_method
         );
 
         Ok(ToolResult::json(
@@ -585,7 +601,8 @@ impl Tool for GetTypeHierarchyTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let class_name = input["class_name"].as_str()
+        let class_name = input["class_name"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 class_name 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
@@ -595,22 +612,19 @@ impl Tool for GetTypeHierarchyTool {
             Some(chain) => {
                 let summary = format!(
                     "{} ({}) — {} 个父类, {} 个子类, {} 个方法",
-                    chain.class_name, chain.kind,
+                    chain.class_name,
+                    chain.kind,
                     chain.parent_classes.len(),
                     chain.child_classes.len(),
                     chain.methods.len(),
                 );
 
-                Ok(ToolResult::json(
-                    serde_json::json!(chain),
-                    Some(summary),
-                ))
+                Ok(ToolResult::json(serde_json::json!(chain), Some(summary)))
             }
-            None => {
-                Ok(ToolResult::text(format!(
-                    "未找到类 '{}' 的类型信息（可能在项目中不存在或被排除）", class_name
-                )))
-            }
+            None => Ok(ToolResult::text(format!(
+                "未找到类 '{}' 的类型信息（可能在项目中不存在或被排除）",
+                class_name
+            ))),
         }
     }
 }
@@ -771,9 +785,11 @@ impl Tool for TraceVariableFlowTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let file_path = input["file_path"].as_str()
+        let file_path = input["file_path"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
-        let function_name = input["function_name"].as_str()
+        let function_name = input["function_name"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 function_name 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
@@ -786,7 +802,8 @@ impl Tool for TraceVariableFlowTool {
                 "'{}' 可到达 {} 个 sink: {}",
                 function_name,
                 flow.total_sinks_reached,
-                flow.flows_to_sinks.iter()
+                flow.flows_to_sinks
+                    .iter()
                     .map(|f| format!("{}({})", f.sink_function, f.vulnerability_type))
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -859,10 +876,7 @@ impl Tool for GetGraphStatsTool {
             stats.middleware_count,
         );
 
-        Ok(ToolResult::json(
-            serde_json::json!(stats),
-            Some(summary),
-        ))
+        Ok(ToolResult::json(serde_json::json!(stats), Some(summary)))
     }
 }
 
@@ -920,7 +934,8 @@ impl Tool for ListFunctionsTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
-        let file_path = input["file_path"].as_str()
+        let file_path = input["file_path"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
@@ -929,7 +944,8 @@ impl Tool for ListFunctionsTool {
 
         if functions.is_empty() {
             return Ok(ToolResult::text(format!(
-                "文件 '{}' 中没有被索引的函数", file_path
+                "文件 '{}' 中没有被索引的函数",
+                file_path
             )));
         }
 
@@ -963,9 +979,7 @@ impl Tool for ListFunctionsTool {
 // ── 注册所有调用图查询工具 ──────────────────────────────
 
 /// 注册所有调用图查询工具到 ToolRegistry
-pub async fn register_call_graph_tools(
-    registry: &Arc<ToolRegistry>,
-) {
+pub async fn register_call_graph_tools(registry: &Arc<ToolRegistry>) {
     // project_path 现在从 input JSON 中读取，构造时传空字符串
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(QueryCallersTool::new(String::new())),

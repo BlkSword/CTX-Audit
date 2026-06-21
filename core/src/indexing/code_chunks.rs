@@ -6,8 +6,8 @@
 //! 将代码分割成语义单元（函数、类、方法等）用于嵌入和检索
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Safely truncate a string slice to a maximum byte length, respecting UTF-8 character boundaries.
 /// This prevents panics when the truncation point falls inside a multi-byte character.
@@ -226,15 +226,26 @@ impl Default for ChunkConfig {
             include_comments: false,
             split_large_functions: true,
             file_extensions: vec![
-                "rs".to_string(), "js".to_string(), "ts".to_string(),
-                "jsx".to_string(), "tsx".to_string(), "py".to_string(),
-                "java".to_string(), "go".to_string(), "c".to_string(),
-                "cpp".to_string(), "h".to_string(), "hpp".to_string(),
+                "rs".to_string(),
+                "js".to_string(),
+                "ts".to_string(),
+                "jsx".to_string(),
+                "tsx".to_string(),
+                "py".to_string(),
+                "java".to_string(),
+                "go".to_string(),
+                "c".to_string(),
+                "cpp".to_string(),
+                "h".to_string(),
+                "hpp".to_string(),
             ],
             exclude_dirs: vec![
-                "node_modules".to_string(), "target".to_string(),
-                ".git".to_string(), "dist".to_string(),
-                "build".to_string(), "vendor".to_string(),
+                "node_modules".to_string(),
+                "target".to_string(),
+                ".git".to_string(),
+                "dist".to_string(),
+                "build".to_string(),
+                "vendor".to_string(),
             ],
         }
     }
@@ -295,8 +306,9 @@ impl CodeChunker {
         // 检查排除目录
         let path_str = path.to_string_lossy();
         for exclude in &self.config.exclude_dirs {
-            if path_str.contains(&format!("/{}", exclude)) ||
-               path_str.contains(&format!("\\{}", exclude)) {
+            if path_str.contains(&format!("/{}", exclude))
+                || path_str.contains(&format!("\\{}", exclude))
+            {
                 return false;
             }
         }
@@ -378,12 +390,12 @@ impl CodeChunker {
                 let final_end = actual_end.min(end_line);
 
                 if final_end >= *start_line {
-                    let block_content: String =
-                        lines[start_line.saturating_sub(1)..final_end.min(lines.len())]
-                            .iter()
-                            .cloned()
-                            .collect::<Vec<&str>>()
-                            .join("\n");
+                    let block_content: String = lines
+                        [start_line.saturating_sub(1)..final_end.min(lines.len())]
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<&str>>()
+                        .join("\n");
 
                     // 检查大小限制
                     if block_content.len() >= self.config.min_chunk_size {
@@ -402,12 +414,8 @@ impl CodeChunker {
                         if chunk.content.len() > self.config.max_chunk_size
                             && self.config.split_large_functions
                         {
-                            let sub_chunks = self.split_large_chunk(
-                                chunk,
-                                &lines,
-                                *start_line,
-                                final_end,
-                            );
+                            let sub_chunks =
+                                self.split_large_chunk(chunk, &lines, *start_line, final_end);
                             chunks.extend(sub_chunks);
                         } else {
                             chunks.push(chunk);
@@ -460,7 +468,10 @@ impl CodeChunker {
 
                     // Update class indent tracking: if this line is at or below the class indent, we left the class
                     if let Some(ci) = current_class_indent {
-                        if !trimmed.is_empty() && line_indent <= ci && !trimmed.starts_with("class ") {
+                        if !trimmed.is_empty()
+                            && line_indent <= ci
+                            && !trimmed.starts_with("class ")
+                        {
                             current_class_indent = None;
                         }
                     }
@@ -486,7 +497,8 @@ impl CodeChunker {
                             let name = self.extract_js_function_name(trimmed);
                             blocks.push((name, ChunkType::Function, i + 1));
                         }
-                    } else if trimmed.starts_with("class ") || trimmed.starts_with("export class ") {
+                    } else if trimmed.starts_with("class ") || trimmed.starts_with("export class ")
+                    {
                         let name = self.extract_js_class_name(trimmed);
                         blocks.push((name, ChunkType::Class, i + 1));
                     }
@@ -509,7 +521,9 @@ impl CodeChunker {
                 "go" => {
                     if trimmed.starts_with("func ") {
                         let name = self.extract_go_function_name(trimmed);
-                        let chunk_type = if trimmed.contains(")") && trimmed[trimmed.find(")").unwrap_or(0)..].contains("(") {
+                        let chunk_type = if trimmed.contains(")")
+                            && trimmed[trimmed.find(")").unwrap_or(0)..].contains("(")
+                        {
                             ChunkType::Method
                         } else {
                             ChunkType::Function
@@ -524,8 +538,10 @@ impl CodeChunker {
                     }
                 }
                 "c" | "cpp" | "h" | "hpp" => {
-                    if trimmed.contains("(") && trimmed.contains(")")
-                        && (trimmed.ends_with("{") || lines.get(i + 1).map(|l| l.trim() == "{").unwrap_or(false))
+                    if trimmed.contains("(")
+                        && trimmed.contains(")")
+                        && (trimmed.ends_with("{")
+                            || lines.get(i + 1).map(|l| l.trim() == "{").unwrap_or(false))
                     {
                         let name = self.extract_c_function_name(trimmed);
                         let chunk_type = if trimmed.contains("::") {
@@ -701,12 +717,7 @@ impl CodeChunker {
 
     fn extract_python_function_name(&self, line: &str) -> String {
         let after_def = line.split("def ").nth(1).unwrap_or("");
-        after_def
-            .split('(')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string()
+        after_def.split('(').next().unwrap_or("").trim().to_string()
     }
 
     fn extract_python_class_name(&self, line: &str) -> String {
@@ -913,14 +924,8 @@ mod tests {
 
     #[test]
     fn test_detect_language() {
-        assert_eq!(
-            CodeChunker::detect_language(Path::new("main.rs")),
-            "rust"
-        );
-        assert_eq!(
-            CodeChunker::detect_language(Path::new("app.py")),
-            "python"
-        );
+        assert_eq!(CodeChunker::detect_language(Path::new("main.rs")), "rust");
+        assert_eq!(CodeChunker::detect_language(Path::new("app.py")), "python");
         assert_eq!(
             CodeChunker::detect_language(Path::new("index.js")),
             "javascript"

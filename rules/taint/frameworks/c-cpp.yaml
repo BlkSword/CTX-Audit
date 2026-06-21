@@ -1,0 +1,254 @@
+kind: taint-rules
+name: "C/C++ Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "c_cli_args"
+    name: "C/C++ CLI Arguments"
+    description: "Command-line arguments from main argv"
+    patterns:
+      - "argv["
+      - "argc"
+    languages: ["c", "cpp"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "c_env_input"
+    name: "C/C++ Environment"
+    description: "Environment variables"
+    patterns:
+      - "getenv("
+      - "secure_getenv("
+    languages: ["c", "cpp"]
+    severity: "Medium"
+    category: "Environment"
+    ast_patterns: []
+
+  - id: "c_stdin_input"
+    name: "C/C++ Standard Input"
+    description: "Data read from standard input or console"
+    patterns:
+      - "scanf("
+      - "gets("
+      - "fgets("
+      - "getchar("
+      - "read("
+      - "recv("
+      - "recvfrom("
+      - "std::cin"
+    languages: ["c", "cpp"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "c_file_input"
+    name: "C/C++ File Input"
+    description: "Data read from files"
+    patterns:
+      - "fread("
+      - "fscanf("
+      - "fgetc("
+      - "fgets("
+      - "read("
+      - "pread("
+      - "std::ifstream"
+      - "std::getline"
+    languages: ["c", "cpp"]
+    severity: "Medium"
+    category: "FileInput"
+    ast_patterns: []
+
+sinks:
+  - id: "c_sql_exec"
+    name: "C/C++ SQL Execution"
+    description: "SQL execution via database client libraries"
+    match_mode: "Substring"
+    patterns:
+      - "mysql_query("
+      - "mysql_real_query("
+      - "sqlite3_exec("
+      - "sqlite3_prepare("
+      - "sqlite3_prepare_v2("
+      - "PQexec("
+      - "PQexecParams("
+      - "PQprepare("
+      - "SQLExecDirect("
+      - "SQLPrepare("
+    languages: ["c", "cpp"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "c_cmd_exec"
+    name: "C/C++ Command Execution"
+    description: "OS command execution functions"
+    match_mode: "Substring"
+    patterns:
+      - "system("
+      - "popen("
+      - "_popen("
+      - "execl("
+      - "execv("
+      - "execle("
+      - "execve("
+      - "execvp("
+      - "execvpe("
+      - "CreateProcess"
+      - "ShellExecute"
+      - "WinExec("
+      - "std::system("
+    languages: ["c", "cpp"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "c_ssrf"
+    name: "C/C++ SSRF"
+    description: "Outbound network requests with user-controlled URLs"
+    match_mode: "Substring"
+    patterns:
+      - "curl_easy_setopt"
+      - "curl_easy_perform"
+      - "socket("
+      - "connect("
+      - "sendto("
+      - "URLDownloadToFile"
+      - "WinHttpOpenRequest"
+      - "WinHttpSendRequest"
+    languages: ["c", "cpp"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "c_buffer_overflow"
+    name: "C/C++ Buffer Overflow"
+    description: "Unsafe string and memory operations"
+    match_mode: "Substring"
+    patterns:
+      - "strcpy("
+      - "strncpy("
+      - "strcat("
+      - "strncat("
+      - "sprintf("
+      - "vsprintf("
+      - "gets("
+      - "memcpy("
+      - "memmove("
+      - "wcscpy("
+      - "wcscat("
+      - "std::strcpy"
+      - "std::strcat"
+    languages: ["c", "cpp"]
+    vulnerability_type: "BufferOverflow"
+    severity: "Critical"
+    cwe_id: "CWE-120"
+    sensitive_params: [0, 1]
+    ast_patterns: []
+
+  - id: "c_format_string"
+    name: "C/C++ Format String"
+    description: "Format string functions with user-controlled format"
+    match_mode: "Substring"
+    patterns:
+      - "printf("
+      - "fprintf("
+      - "sprintf("
+      - "snprintf("
+      - "vprintf("
+      - "vfprintf("
+      - "vsprintf("
+      - "vsnprintf("
+      - "syslog("
+      - "std::printf"
+      - "std::fprintf"
+    languages: ["c", "cpp"]
+    vulnerability_type: "FormatString"
+    severity: "Critical"
+    cwe_id: "CWE-134"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "c_file_path"
+    name: "C/C++ File Path"
+    description: "File system operations with user-controlled paths"
+    match_mode: "Substring"
+    patterns:
+      - "fopen("
+      - "open("
+      - "creat("
+      - "remove("
+      - "rename("
+      - "access("
+      - "chmod("
+      - "chown("
+      - "std::ofstream"
+      - "std::fstream"
+      - "CreateFile"
+    languages: ["c", "cpp"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "c_deserialization"
+    name: "C/C++ Unsafe Deserialization"
+    description: "XML, JSON, and binary deserialization"
+    match_mode: "Substring"
+    patterns:
+      - "xmlReadMemory"
+      - "xmlParseFile"
+      - "json_tokener_parse"
+      - "cJSON_Parse"
+      - "yaml_parser_load"
+      - "unserialize"
+      - "Deserialize"
+    languages: ["c", "cpp"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "c_memory_alloc"
+    name: "C/C++ Memory Allocation"
+    description: "Memory allocation with user-controlled size"
+    match_mode: "Substring"
+    patterns:
+      - "malloc("
+      - "calloc("
+      - "realloc("
+      - "new char["
+      - "new unsigned char["
+      - "alloca("
+    languages: ["c", "cpp"]
+    vulnerability_type: "BufferOverflow"
+    severity: "High"
+    cwe_id: "CWE-131"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "strlcpy"
+    description: "BSD safe string copy"
+  - pattern: "strlcat"
+    description: "BSD safe string concatenation"
+  - pattern: "snprintf"
+    description: "Bounded formatted output"
+  - pattern: "realpath"
+    description: "Canonicalize file path"
+  - pattern: "getcwd"
+    description: "Get current working directory"
+  - pattern: "strncpy_s"
+    description: "Microsoft safe string copy"
+  - pattern: "std::string"
+    description: "C++ safe string class"
+  - pattern: "std::vector"
+    description: "C++ safe container"

@@ -61,12 +61,27 @@ sinks:
   - id: "django_raw_sql"
     name: "Django Raw SQL"
     description: "Raw SQL query execution in Django ORM"
+    match_mode: "Semantic"
+    namespaces:
+      - "django.db"
+      - "django.db.connection"
+      - "django.db.backends"
+    receiver_patterns:
+      - "cursor"
+      - "connection"
+      - "objects"
+      - "queryset"
+      - "qs"
     patterns:
-      - ".raw("
-      - ".extra("
-      - "cursor.execute"
-      - "connection.cursor"
+      - ".raw"
+      - ".extra"
+      - ".execute"
       - "RawSQL("
+    exact_matches:
+      - "cursor.execute"
+      - "connection.cursor().execute"
+      - "User.objects.raw"
+      - "Model.objects.raw"
     languages: ["python"]
     vulnerability_type: "SqlInjection"
     severity: "Critical"
@@ -77,6 +92,7 @@ sinks:
   - id: "django_template_unsafe"
     name: "Django Unsafe Template Output"
     description: "Marking content as safe bypasses auto-escaping"
+    match_mode: "Substring"
     patterns:
       - "mark_safe"
       - "SafeString"
@@ -92,7 +108,17 @@ sinks:
   - id: "django_os_command"
     name: "Django OS Command"
     description: "OS command execution in Django views"
+    match_mode: "Semantic"
+    namespaces:
+      - "os"
+      - "subprocess"
     patterns:
+      - ".system"
+      - ".call"
+      - ".Popen"
+      - ".run"
+      - ".popen"
+    exact_matches:
       - "os.system"
       - "subprocess.call"
       - "subprocess.Popen"
@@ -108,11 +134,21 @@ sinks:
   - id: "django_file_operations"
     name: "Django File Operations"
     description: "File operations with user-controlled paths"
+    match_mode: "Semantic"
+    namespaces:
+      - "django.core.files.storage"
+      - "django.core.files"
+    receiver_patterns:
+      - "default_storage"
+      - "storage"
     patterns:
+      - ".open"
+      - ".save"
+      - "File("
       - "open("
+    exact_matches:
       - "default_storage.open"
       - "default_storage.save"
-      - "File("
     languages: ["python"]
     vulnerability_type: "PathTraversal"
     severity: "High"
@@ -123,7 +159,17 @@ sinks:
   - id: "django_pickle"
     name: "Django Pickle Deserialization"
     description: "Pickle deserialization of untrusted data"
+    match_mode: "Semantic"
+    namespaces:
+      - "pickle"
+      - "cPickle"
+      - "yaml"
+      - "PyYAML"
     patterns:
+      - ".loads"
+      - ".load"
+      - ".unsafe_load"
+    exact_matches:
       - "pickle.loads"
       - "pickle.load"
       - "cPickle.loads"

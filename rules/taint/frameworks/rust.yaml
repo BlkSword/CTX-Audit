@@ -1,0 +1,236 @@
+kind: taint-rules
+name: "Rust Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "rust_cli_args"
+    name: "Rust CLI Arguments"
+    description: "Command-line arguments and environment variables"
+    patterns:
+      - "std::env::args"
+      - "std::env::var"
+      - "env::args"
+      - "env::var"
+      - "std::env::vars"
+    languages: ["rust"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "rust_network_input"
+    name: "Rust Network Input"
+    description: "HTTP request parameters from web frameworks"
+    patterns:
+      - "Query"
+      - "Path"
+      - "Form"
+      - "Json"
+      - "extract()"
+      - "req.uri()"
+      - "request.uri()"
+      - "req.headers()"
+      - "TcpStream"
+    languages: ["rust"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "rust_file_input"
+    name: "Rust File Input"
+    description: "Data read from files"
+    patterns:
+      - "std::fs::read_to_string"
+      - "std::fs::read"
+      - "File::open"
+      - "BufReader.read_line"
+      - "BufReader.read_to_string"
+    languages: ["rust"]
+    severity: "Medium"
+    category: "FileInput"
+    ast_patterns: []
+
+sinks:
+  - id: "rust_sql_exec"
+    name: "Rust SQL Execution"
+    description: "SQL execution via sqlx, diesel, tokio-postgres, rusqlite"
+    match_mode: "Semantic"
+    namespaces:
+      - "sqlx"
+      - "diesel"
+      - "tokio_postgres"
+      - "rusqlite"
+      - "mysql"
+      - "tokio_mysql"
+    receiver_patterns:
+      - "conn"
+      - "connection"
+      - "pool"
+      - "client"
+      - "db"
+    patterns:
+      - ".query"
+      - ".query_as"
+      - ".execute"
+      - ".batch_execute"
+      - ".run"
+    exact_matches:
+      - "sqlx::query"
+      - "sqlx::query_as"
+      - "conn.query"
+      - "connection.query"
+      - "pool.query"
+      - "client.query"
+    languages: ["rust"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "rust_cmd_exec"
+    name: "Rust Command Execution"
+    description: "OS command execution via std::process::Command"
+    match_mode: "Semantic"
+    namespaces:
+      - "std::process"
+      - "std::os::unix::process"
+      - "tokio::process"
+      - "async_process"
+    receiver_patterns:
+      - "command"
+      - "cmd"
+    patterns:
+      - "Command::new"
+      - ".arg"
+      - ".args"
+      - ".spawn"
+      - ".output"
+      - ".status"
+    exact_matches:
+      - "std::process::Command::new"
+      - "Command::new"
+      - "tokio::process::Command::new"
+    languages: ["rust"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "rust_ssrf"
+    name: "Rust SSRF"
+    description: "Outbound HTTP requests with user-controlled URLs"
+    match_mode: "Semantic"
+    namespaces:
+      - "reqwest"
+      - "hyper"
+      - "ureq"
+      - "surf"
+      - "awc"
+      - "isahc"
+    receiver_patterns:
+      - "client"
+      - "request"
+    patterns:
+      - ".get"
+      - ".post"
+      - ".put"
+      - ".delete"
+      - ".request"
+      - ".send"
+    exact_matches:
+      - "reqwest::get"
+      - "Client::get"
+      - "Client::post"
+      - "ureq::get"
+      - "ureq::post"
+    languages: ["rust"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "rust_deserialization"
+    name: "Rust Unsafe Deserialization"
+    description: "Deserialization via serde and other crates"
+    match_mode: "Semantic"
+    namespaces:
+      - "serde_json"
+      - "serde_yaml"
+      - "serde_xml_rs"
+      - "bincode"
+      - "rmp_serde"
+    receiver_patterns:
+      - "deserializer"
+    patterns:
+      - "::from_str"
+      - "::from_slice"
+      - "::from_reader"
+    exact_matches:
+      - "serde_json::from_str"
+      - "serde_json::from_slice"
+      - "serde_yaml::from_str"
+      - "bincode::deserialize"
+    languages: ["rust"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "rust_file_path"
+    name: "Rust File Path"
+    description: "File system operations with user-controlled paths"
+    match_mode: "Semantic"
+    namespaces:
+      - "std::fs"
+      - "std::path"
+    patterns:
+      - "File::open"
+      - "File::create"
+      - "std::fs::read"
+      - "std::fs::write"
+      - "std::fs::read_to_string"
+      - "std::fs::remove_file"
+      - "std::fs::rename"
+    exact_matches:
+      - "std::fs::File::open"
+      - "std::fs::File::create"
+      - "std::fs::read"
+      - "std::fs::write"
+    languages: ["rust"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "rust_unsafe"
+    name: "Rust Unsafe Memory"
+    description: "Unsafe memory operations that may lead to buffer overflows"
+    match_mode: "Substring"
+    patterns:
+      - "std::ptr::copy"
+      - "std::ptr::copy_nonoverlapping"
+      - "std::ptr::write"
+      - "std::ptr::read"
+      - "std::mem::transmute"
+    languages: ["rust"]
+    vulnerability_type: "BufferOverflow"
+    severity: "High"
+    cwe_id: "CWE-120"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "sqlx::query!"
+    description: "sqlx compile-time checked query macro"
+  - pattern: "execute!"
+    description: "Diesel compile-time checked query macro"
+  - pattern: "regex::Regex"
+    description: "Regex validation"
+  - pattern: "url::Url::parse"
+    description: "URL parsing validation"
+  - pattern: "sanitize"
+    description: "Generic sanitization"

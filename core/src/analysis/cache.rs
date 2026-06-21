@@ -124,11 +124,15 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
 
     /// 获取缓存值
     pub fn get(&self, key: &str) -> Option<T> {
-        let mut stats = self.stats.write()
+        let mut stats = self
+            .stats
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         stats.total_requests += 1;
 
-        let mut cache = self.cache.write()
+        let mut cache = self
+            .cache
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         if let Some(entry) = cache.get_mut(key) {
             if entry.is_expired(self.max_age_ms) {
@@ -147,11 +151,15 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
 
     /// 获取缓存值（带文件修改检查）
     pub fn get_with_mtime(&self, key: &str, current_mtime: Option<u64>) -> Option<T> {
-        let mut stats = self.stats.write()
+        let mut stats = self
+            .stats
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         stats.total_requests += 1;
 
-        let mut cache = self.cache.write()
+        let mut cache = self
+            .cache
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         if let Some(entry) = cache.get_mut(key) {
             if entry.is_expired(self.max_age_ms) || entry.is_file_modified(current_mtime) {
@@ -181,7 +189,9 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
         file_mtime: Option<u64>,
         file_hash: Option<String>,
     ) {
-        let mut cache = self.cache.write()
+        let mut cache = self
+            .cache
+            .write()
             .expect("cache lock poisoned - another thread panicked");
 
         // 如果超过最大条目数，删除最久未访问的条目
@@ -192,7 +202,9 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
         let entry = CacheEntry::new(value, file_mtime, file_hash);
         cache.insert(key, entry);
 
-        let mut stats = self.stats.write()
+        let mut stats = self
+            .stats
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         stats.size = cache.len();
     }
@@ -215,10 +227,14 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
 
     /// 删除缓存条目
     pub fn remove(&self, key: &str) -> Option<T> {
-        let mut cache = self.cache.write()
+        let mut cache = self
+            .cache
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         let entry = cache.remove(key)?;
-        let mut stats = self.stats.write()
+        let mut stats = self
+            .stats
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         stats.size = cache.len();
         Some(entry.value)
@@ -226,31 +242,38 @@ impl<T: Clone + Send + Sync> MemoryCache<T> {
 
     /// 清空缓存
     pub fn clear(&self) {
-        let mut cache = self.cache.write()
+        let mut cache = self
+            .cache
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         cache.clear();
-        let mut stats = self.stats.write()
+        let mut stats = self
+            .stats
+            .write()
             .expect("cache lock poisoned - another thread panicked");
         stats.size = 0;
     }
 
     /// 获取统计信息
     pub fn stats(&self) -> CacheStats {
-        self.stats.read()
+        self.stats
+            .read()
             .expect("cache lock poisoned - another thread panicked")
             .clone()
     }
 
     /// 获取缓存大小
     pub fn len(&self) -> usize {
-        self.cache.read()
+        self.cache
+            .read()
             .expect("cache lock poisoned - another thread panicked")
             .len()
     }
 
     /// 检查缓存是否为空
     pub fn is_empty(&self) -> bool {
-        self.cache.read()
+        self.cache
+            .read()
             .expect("cache lock poisoned - another thread panicked")
             .is_empty()
     }
@@ -343,7 +366,7 @@ impl CacheManager {
     /// 创建新的缓存管理器
     pub fn new() -> Self {
         Self {
-            ast_cache: AstCache::new(500, 3600 * 1000),    // 500 条，1 小时
+            ast_cache: AstCache::new(500, 3600 * 1000), // 500 条，1 小时
             analysis_cache: AnalysisCache::new(200, 1800 * 1000), // 200 条，30 分钟
             taint_cache: TaintCache::new(300, 1800 * 1000), // 300 条，30 分钟
         }
@@ -386,9 +409,7 @@ impl TotalCacheStats {
         let total_requests = self.ast_stats.total_requests
             + self.analysis_stats.total_requests
             + self.taint_stats.total_requests;
-        let total_hits = self.ast_stats.hits
-            + self.analysis_stats.hits
-            + self.taint_stats.hits;
+        let total_hits = self.ast_stats.hits + self.analysis_stats.hits + self.taint_stats.hits;
 
         if total_requests == 0 {
             0.0
@@ -473,13 +494,16 @@ mod tests {
     fn test_cache_manager() {
         let manager = CacheManager::new();
 
-        manager.ast_cache.set("file1.py".to_string(), AstCacheEntry {
-            file_path: "file1.py".to_string(),
-            language: "python".to_string(),
-            ast_json: "{}".to_string(),
-            symbols: vec![],
-            parse_time_ms: 10,
-        });
+        manager.ast_cache.set(
+            "file1.py".to_string(),
+            AstCacheEntry {
+                file_path: "file1.py".to_string(),
+                language: "python".to_string(),
+                ast_json: "{}".to_string(),
+                symbols: vec![],
+                parse_time_ms: 10,
+            },
+        );
 
         assert!(!manager.ast_cache.is_empty());
     }

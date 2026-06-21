@@ -41,23 +41,39 @@ pub fn detect_callback_hints(code: &str) -> Vec<CallbackTaintHint> {
         let trimmed = line.trim();
 
         // .then(param => ...)
-        if let Some(hint) = extract_callback_hint(trimmed, ".then(", line_num, CallbackHintType::PromiseThen) {
+        if let Some(hint) =
+            extract_callback_hint(trimmed, ".then(", line_num, CallbackHintType::PromiseThen)
+        {
             hints.push(hint);
         }
 
         // .catch(param => ...)
-        if let Some(hint) = extract_callback_hint(trimmed, ".catch(", line_num, CallbackHintType::PromiseCatch) {
+        if let Some(hint) =
+            extract_callback_hint(trimmed, ".catch(", line_num, CallbackHintType::PromiseCatch)
+        {
             hints.push(hint);
         }
 
         // .forEach(param => ...) 和 .map(param => ...)
-        if let Some(hint) = extract_callback_hint(trimmed, ".forEach(", line_num, CallbackHintType::ArrayCallback) {
+        if let Some(hint) = extract_callback_hint(
+            trimmed,
+            ".forEach(",
+            line_num,
+            CallbackHintType::ArrayCallback,
+        ) {
             hints.push(hint);
         }
-        if let Some(hint) = extract_callback_hint(trimmed, ".map(", line_num, CallbackHintType::ArrayCallback) {
+        if let Some(hint) =
+            extract_callback_hint(trimmed, ".map(", line_num, CallbackHintType::ArrayCallback)
+        {
             hints.push(hint);
         }
-        if let Some(hint) = extract_callback_hint(trimmed, ".filter(", line_num, CallbackHintType::ArrayCallback) {
+        if let Some(hint) = extract_callback_hint(
+            trimmed,
+            ".filter(",
+            line_num,
+            CallbackHintType::ArrayCallback,
+        ) {
             hints.push(hint);
         }
 
@@ -72,7 +88,12 @@ pub fn detect_callback_hints(code: &str) -> Vec<CallbackTaintHint> {
 }
 
 /// 从一行代码中提取回调参数提示
-fn extract_callback_hint(line: &str, method: &str, line_num: usize, hint_type: CallbackHintType) -> Option<CallbackTaintHint> {
+fn extract_callback_hint(
+    line: &str,
+    method: &str,
+    line_num: usize,
+    hint_type: CallbackHintType,
+) -> Option<CallbackTaintHint> {
     let pos = line.find(method)?;
     let rest = &line[pos + method.len()..];
 
@@ -146,9 +167,19 @@ fn extract_function_expr_param(rest: &str) -> Option<String> {
 
 /// HTTP 库列表（这些库的回调最后一个参数是外部响应体）
 const HTTP_REQUEST_LIBS: &[&str] = &[
-    "needle.get", "needle.post", "needle.put", "needle.patch", "needle.delete", "needle.request",
-    "request(", "http.get", "http.request", "https.get", "https.request",
-    "got(", "superagent",
+    "needle.get",
+    "needle.post",
+    "needle.put",
+    "needle.patch",
+    "needle.delete",
+    "needle.request",
+    "request(",
+    "http.get",
+    "http.request",
+    "https.get",
+    "https.request",
+    "got(",
+    "superagent",
     "fetch(",
 ];
 

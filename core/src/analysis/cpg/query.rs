@@ -69,7 +69,8 @@ impl CodePropertyGraph {
 
     /// 查询：哪些函数调用了 func_id？
     pub fn callers_of(&self, func_id: &str) -> Vec<&CallGraphNode> {
-        self.call_graph.get_all_callers(func_id)
+        self.call_graph
+            .get_all_callers(func_id)
             .iter()
             .filter_map(|id| self.call_graph.nodes.get(id))
             .collect()
@@ -77,19 +78,15 @@ impl CodePropertyGraph {
 
     /// 查询：func_id 调用了哪些函数？
     pub fn callees_of(&self, func_id: &str) -> Vec<&CallGraphNode> {
-        self.call_graph.get_all_callees(func_id)
+        self.call_graph
+            .get_all_callees(func_id)
             .iter()
             .filter_map(|id| self.call_graph.nodes.get(id))
             .collect()
     }
 
     /// 查询：变量 var 在 node_id 处的到达定义
-    pub fn reaching_definitions(
-        &self,
-        func_id: &str,
-        var: &str,
-        node_id: usize,
-    ) -> Vec<usize> {
+    pub fn reaching_definitions(&self, func_id: &str, var: &str, node_id: usize) -> Vec<usize> {
         if let Some(func_cpg) = self.functions.get(func_id) {
             return func_cpg.cfg.get_reaching_definitions(var, node_id);
         }
@@ -109,11 +106,7 @@ impl CodePropertyGraph {
     }
 
     /// 查询：变量的别名 AccessPath 集合
-    pub fn resolve_aliases(
-        &self,
-        func_id: &str,
-        var: &str,
-    ) -> HashSet<AccessPath> {
+    pub fn resolve_aliases(&self, func_id: &str, var: &str) -> HashSet<AccessPath> {
         if let Some(func_cpg) = self.functions.get(func_id) {
             return func_cpg.alias_map.resolve(var);
         }
@@ -128,8 +121,15 @@ impl CodePropertyGraph {
         let cfg = &func_cpg.cfg;
 
         // 向前查找最近的 ConditionHeader 支配者
-        for pred_id in &cfg.nodes.get(node_id).map(|n| n.predecessors.clone()).unwrap_or_default() {
-            if let Some(ctx) = Self::find_condition_context(cfg, func_cpg, node_id, *pred_id, &mut HashSet::new()) {
+        for pred_id in &cfg
+            .nodes
+            .get(node_id)
+            .map(|n| n.predecessors.clone())
+            .unwrap_or_default()
+        {
+            if let Some(ctx) =
+                Self::find_condition_context(cfg, func_cpg, node_id, *pred_id, &mut HashSet::new())
+            {
                 return ctx;
             }
         }
@@ -159,8 +159,12 @@ impl CodePropertyGraph {
         // 如果是 ConditionHeader，检查边类型
         if node.node_type == crate::analysis::enhanced_dataflow::EnhancedNodeType::ConditionHeader {
             // 查找从 current 到 original_node 路径上的第一条边类型
-            if let Some(edge_type) = Self::find_edge_type_to(cfg, current, original_node, &mut HashSet::new()) {
-                let condition_expr = func_cpg.node_meta.get(&current)
+            if let Some(edge_type) =
+                Self::find_edge_type_to(cfg, current, original_node, &mut HashSet::new())
+            {
+                let condition_expr = func_cpg
+                    .node_meta
+                    .get(&current)
                     .and_then(|m| m.condition.as_ref())
                     .map(|c| c.expr.clone());
                 return Some(BranchContext {
@@ -173,7 +177,9 @@ impl CodePropertyGraph {
 
         // 继续向前搜索
         for pred_id in &node.predecessors {
-            if let Some(ctx) = Self::find_condition_context(cfg, func_cpg, original_node, *pred_id, visited) {
+            if let Some(ctx) =
+                Self::find_condition_context(cfg, func_cpg, original_node, *pred_id, visited)
+            {
                 return Some(ctx);
             }
         }

@@ -9,7 +9,7 @@ mod report;
 mod terminal;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use miette::{Result, IntoDiagnostic};
+use miette::{IntoDiagnostic, Result};
 
 /// CTX-Audit - 安全分析守护进程工具包
 ///
@@ -196,7 +196,10 @@ enum Commands {
         output_path: String,
 
         /// 忽略的目录（逗号分隔）
-        #[arg(long, default_value = "node_modules,.git,target,build,dist,__pycache__,vendor")]
+        #[arg(
+            long,
+            default_value = "node_modules,.git,target,build,dist,__pycache__,vendor"
+        )]
         ignore: String,
 
         /// 通过守护进程执行
@@ -427,8 +430,16 @@ async fn main() -> Result<()> {
             symbols,
             daemon,
         } => {
-            commands::analyze::execute(file, start_line, end_line, ast, symbols, cli.output.as_str(), daemon)
-                .await
+            commands::analyze::execute(
+                file,
+                start_line,
+                end_line,
+                ast,
+                symbols,
+                cli.output.as_str(),
+                daemon,
+            )
+            .await
         }
 
         Commands::Findings { action } => match action {
@@ -481,10 +492,9 @@ async fn main() -> Result<()> {
             daemon,
         } => commands::watch::execute(path, severity, "sarif", output_path, ignore, daemon).await,
 
-        Commands::Mcp => {
-            commands::mcp::run_mcp_server().await
-                .map_err(|e| miette::miette!("MCP server error: {}", e))
-        }
+        Commands::Mcp => commands::mcp::run_mcp_server()
+            .await
+            .map_err(|e| miette::miette!("MCP server error: {}", e)),
 
         Commands::Rules { action } => match action {
             RulesAction::List { rules } => commands::rules::list(rules).await,
@@ -542,7 +552,10 @@ fn generate_completion(shell: &str) {
             println!("# PowerShell completion for {}", name);
             println!("# Add to PowerShell profile");
             println!();
-            println!("Invoke-Expression -Command (& '{}' --completion powershell) | Out-String", name);
+            println!(
+                "Invoke-Expression -Command (& '{}' --completion powershell) | Out-String",
+                name
+            );
         }
         _ => {
             eprintln!("Unknown shell: {}", shell);

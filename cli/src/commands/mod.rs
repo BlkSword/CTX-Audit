@@ -3,11 +3,11 @@
 
 //! CLI 命令实现
 
-pub mod scan;
 pub mod analyze;
-pub mod findings;
 pub mod config;
-pub mod watch;
 pub mod daemon;
+pub mod findings;
 pub mod mcp;
 pub mod rules;
+pub mod scan;
+pub mod watch;

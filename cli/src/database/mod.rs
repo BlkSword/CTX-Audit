@@ -5,19 +5,22 @@
 //!
 //! 提供 SQLite 数据库连接、表创建、迁移工具
 
-mod models;
-mod schema;
 mod migrations;
+mod models;
 mod queries;
+mod schema;
 
-pub use models::{Finding, FindingStatus, Severity, AuditStatus, UpdateFinding, DbConversation, DbConversationMessage, CreateConversation, CreateConversationMessage, CreateProject, CreateFinding};
-pub use schema::*;
 pub use migrations::*;
+pub use models::{
+    AuditStatus, CreateConversation, CreateConversationMessage, CreateFinding, CreateProject,
+    DbConversation, DbConversationMessage, Finding, FindingStatus, Severity, UpdateFinding,
+};
 pub use queries::*;
+pub use schema::*;
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
-use sqlx::{Sqlite, Pool, Row};
+use sqlx::{Pool, Row, Sqlite};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tracing::{debug, info};
@@ -55,7 +58,10 @@ impl Database {
 
         info!("Database connected: {:?}", path);
 
-        Ok(Self { pool, path: path.to_path_buf() })
+        Ok(Self {
+            pool,
+            path: path.to_path_buf(),
+        })
     }
 
     /// 创建一个内存数据库占位符（用于测试或临时场景）
@@ -73,8 +79,8 @@ impl Database {
 
     /// 获取默认数据库路径
     pub fn default_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get config directory"))?;
+        let config_dir =
+            dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Failed to get config directory"))?;
 
         let ctx_audit_dir = config_dir.join("ctx-audit");
         Ok(ctx_audit_dir.join("audit.db"))
@@ -164,10 +170,8 @@ pub async fn migrate_from_tauri() -> Result<()> {
     info!("Found Tauri database at {:?}", tauri_db_path);
 
     // 连接到 Tauri 数据库
-    let tauri_options = SqliteConnectOptions::from_str(
-        tauri_db_path.to_str().unwrap(),
-    )?
-    .read_only(true);
+    let tauri_options =
+        SqliteConnectOptions::from_str(tauri_db_path.to_str().unwrap())?.read_only(true);
 
     let tauri_pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -176,22 +180,18 @@ pub async fn migrate_from_tauri() -> Result<()> {
         .context("Failed to connect to Tauri database")?;
 
     // 读取 audits 数据
-    let audit_rows = sqlx::query(
-        "SELECT id, project_id, status, severity, created_at FROM audits",
-    )
-    .fetch_all(&tauri_pool)
-    .await
-    .unwrap_or_default();
+    let audit_rows = sqlx::query("SELECT id, project_id, status, severity, created_at FROM audits")
+        .fetch_all(&tauri_pool)
+        .await
+        .unwrap_or_default();
 
     info!("Migrating {} audit records from Tauri", audit_rows.len());
 
     // 读取 settings
-    let setting_rows = sqlx::query(
-        "SELECT key, value FROM settings",
-    )
-    .fetch_all(&tauri_pool)
-    .await
-    .unwrap_or_default();
+    let setting_rows = sqlx::query("SELECT key, value FROM settings")
+        .fetch_all(&tauri_pool)
+        .await
+        .unwrap_or_default();
 
     // 写入新数据库（使用默认路径）
     let db = Database::with_default_path().await?;
@@ -220,13 +220,11 @@ pub async fn migrate_from_tauri() -> Result<()> {
         let key: String = row.get("key");
         let value: String = row.get("value");
 
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-        )
-        .bind(&key)
-        .bind(&value)
-        .execute(db.pool())
-        .await;
+        let _ = sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+            .bind(&key)
+            .bind(&value)
+            .execute(db.pool())
+            .await;
     }
 
     tauri_pool.close().await;

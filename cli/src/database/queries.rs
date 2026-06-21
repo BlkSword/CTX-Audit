@@ -35,47 +35,40 @@ impl ProjectQueries {
 
     /// 列出所有项目
     pub async fn list(pool: &Pool<Sqlite>) -> Result<Vec<Project>> {
-        let projects = sqlx::query_as::<_, Project>(
-            "SELECT * FROM projects ORDER BY updated_at DESC"
-        )
-        .fetch_all(pool)
-        .await?;
+        let projects =
+            sqlx::query_as::<_, Project>("SELECT * FROM projects ORDER BY updated_at DESC")
+                .fetch_all(pool)
+                .await?;
 
         Ok(projects)
     }
 
     /// 根据路径获取项目
     pub async fn get_by_path(pool: &Pool<Sqlite>, path: &str) -> Result<Option<Project>> {
-        let project = sqlx::query_as::<_, Project>(
-            "SELECT * FROM projects WHERE path = ?"
-        )
-        .bind(path)
-        .fetch_optional(pool)
-        .await?;
+        let project = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE path = ?")
+            .bind(path)
+            .fetch_optional(pool)
+            .await?;
 
         Ok(project)
     }
 
     /// 根据 UUID 获取项目
     pub async fn get_by_uuid(pool: &Pool<Sqlite>, uuid: &str) -> Result<Option<Project>> {
-        let project = sqlx::query_as::<_, Project>(
-            "SELECT * FROM projects WHERE uuid = ?"
-        )
-        .bind(uuid)
-        .fetch_optional(pool)
-        .await?;
+        let project = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE uuid = ?")
+            .bind(uuid)
+            .fetch_optional(pool)
+            .await?;
 
         Ok(project)
     }
 
     /// 根据 ID 获取项目
     pub async fn get_by_id(pool: &Pool<Sqlite>, id: i64) -> Result<Option<Project>> {
-        let project = sqlx::query_as::<_, Project>(
-            "SELECT * FROM projects WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+        let project = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
 
         Ok(project)
     }
@@ -93,14 +86,12 @@ impl ProjectQueries {
     /// 更新项目活跃状态
     pub async fn set_active(pool: &Pool<Sqlite>, id: i64, is_active: bool) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        sqlx::query(
-            "UPDATE projects SET is_active = ?, updated_at = ? WHERE id = ?"
-        )
-        .bind(is_active)
-        .bind(&now)
-        .bind(id)
-        .execute(pool)
-        .await?;
+        sqlx::query("UPDATE projects SET is_active = ?, updated_at = ? WHERE id = ?")
+            .bind(is_active)
+            .bind(&now)
+            .bind(id)
+            .execute(pool)
+            .await?;
 
         Ok(())
     }
@@ -158,20 +149,22 @@ impl AuditSessionQueries {
 
     /// 根据 ID 获取会话
     pub async fn get_by_id(pool: &Pool<Sqlite>, id: i64) -> Result<Option<AuditSession>> {
-        let session = sqlx::query_as::<_, AuditSession>(
-            "SELECT * FROM audit_sessions WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+        let session =
+            sqlx::query_as::<_, AuditSession>("SELECT * FROM audit_sessions WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
 
         Ok(session)
     }
 
     /// 列出项目的所有审计会话
-    pub async fn list_by_project(pool: &Pool<Sqlite>, project_id: i64) -> Result<Vec<AuditSession>> {
+    pub async fn list_by_project(
+        pool: &Pool<Sqlite>,
+        project_id: i64,
+    ) -> Result<Vec<AuditSession>> {
         let sessions = sqlx::query_as::<_, AuditSession>(
-            "SELECT * FROM audit_sessions WHERE project_id = ? ORDER BY started_at DESC"
+            "SELECT * FROM audit_sessions WHERE project_id = ? ORDER BY started_at DESC",
         )
         .bind(project_id)
         .fetch_all(pool)
@@ -260,24 +253,23 @@ impl FindingQueries {
 
     /// 根据 ID 获取漏洞
     pub async fn get_by_id(pool: &Pool<Sqlite>, id: i64) -> Result<Option<Finding>> {
-        let finding = sqlx::query_as::<_, Finding>(
-            "SELECT * FROM findings WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+        let finding = sqlx::query_as::<_, Finding>("SELECT * FROM findings WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
 
         Ok(finding)
     }
 
     /// 根据 finding_id 获取漏洞
-    pub async fn get_by_finding_id(pool: &Pool<Sqlite>, finding_id: &str) -> Result<Option<Finding>> {
-        let finding = sqlx::query_as::<_, Finding>(
-            "SELECT * FROM findings WHERE finding_id = ?"
-        )
-        .bind(finding_id)
-        .fetch_optional(pool)
-        .await?;
+    pub async fn get_by_finding_id(
+        pool: &Pool<Sqlite>,
+        finding_id: &str,
+    ) -> Result<Option<Finding>> {
+        let finding = sqlx::query_as::<_, Finding>("SELECT * FROM findings WHERE finding_id = ?")
+            .bind(finding_id)
+            .fetch_optional(pool)
+            .await?;
 
         Ok(finding)
     }
@@ -324,7 +316,10 @@ impl FindingQueries {
     }
 
     /// 统计漏洞数量
-    pub async fn count_by_severity(pool: &Pool<Sqlite>, project_id: Option<i64>) -> Result<Vec<(String, i64)>> {
+    pub async fn count_by_severity(
+        pool: &Pool<Sqlite>,
+        project_id: Option<i64>,
+    ) -> Result<Vec<(String, i64)>> {
         let query = if let Some(pid) = project_id {
             "SELECT severity, COUNT(*) as count FROM findings WHERE project_id = ? GROUP BY severity"
         } else {
@@ -373,7 +368,7 @@ impl AgentEventQueries {
     /// 获取会话的所有事件
     pub async fn list_by_session(pool: &Pool<Sqlite>, session_id: i64) -> Result<Vec<AgentEvent>> {
         let events = sqlx::query_as::<_, AgentEvent>(
-            "SELECT * FROM agent_events WHERE session_id = ? ORDER BY timestamp ASC"
+            "SELECT * FROM agent_events WHERE session_id = ? ORDER BY timestamp ASC",
         )
         .bind(session_id)
         .fetch_all(pool)
@@ -421,7 +416,7 @@ impl ProjectFileQueries {
     /// 获取项目的所有文件
     pub async fn list_by_project(pool: &Pool<Sqlite>, project_id: i64) -> Result<Vec<ProjectFile>> {
         let files = sqlx::query_as::<_, ProjectFile>(
-            "SELECT * FROM project_files WHERE project_id = ? ORDER BY file_path"
+            "SELECT * FROM project_files WHERE project_id = ? ORDER BY file_path",
         )
         .bind(project_id)
         .fetch_all(pool)
@@ -437,7 +432,7 @@ impl ProjectFileQueries {
         file_path: &str,
     ) -> Result<Option<ProjectFile>> {
         let file = sqlx::query_as::<_, ProjectFile>(
-            "SELECT * FROM project_files WHERE project_id = ? AND file_path = ?"
+            "SELECT * FROM project_files WHERE project_id = ? AND file_path = ?",
         )
         .bind(project_id)
         .bind(file_path)
@@ -482,11 +477,7 @@ impl SymbolQueries {
     }
 
     /// 搜索符号
-    pub async fn search(
-        pool: &Pool<Sqlite>,
-        project_id: i64,
-        query: &str,
-    ) -> Result<Vec<Symbol>> {
+    pub async fn search(pool: &Pool<Sqlite>, project_id: i64, query: &str) -> Result<Vec<Symbol>> {
         let symbols = sqlx::query_as::<_, Symbol>(
             "SELECT * FROM symbols WHERE project_id = ? AND symbol_name LIKE ? ORDER BY symbol_name"
         )
@@ -505,7 +496,7 @@ impl SymbolQueries {
         file_path: &str,
     ) -> Result<Vec<Symbol>> {
         let symbols = sqlx::query_as::<_, Symbol>(
-            "SELECT * FROM symbols WHERE project_id = ? AND file_path = ? ORDER BY line_number"
+            "SELECT * FROM symbols WHERE project_id = ? AND file_path = ? ORDER BY line_number",
         )
         .bind(project_id)
         .bind(file_path)
@@ -550,12 +541,10 @@ impl ConversationQueries {
 
     /// 获取对话会话
     pub async fn get_by_id(pool: &Pool<Sqlite>, id: &str) -> Result<Option<DbConversation>> {
-        let conv = sqlx::query_as::<_, DbConversation>(
-            "SELECT * FROM conversations WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+        let conv = sqlx::query_as::<_, DbConversation>("SELECT * FROM conversations WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
 
         Ok(conv)
     }
@@ -563,7 +552,10 @@ impl ConversationQueries {
     /// 列出所有对话会话
     pub async fn list(pool: &Pool<Sqlite>, limit: Option<i32>) -> Result<Vec<DbConversation>> {
         let query = if let Some(lim) = limit {
-            format!("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT {}", lim)
+            format!(
+                "SELECT * FROM conversations ORDER BY updated_at DESC LIMIT {}",
+                lim
+            )
         } else {
             "SELECT * FROM conversations ORDER BY updated_at DESC".to_string()
         };
@@ -576,9 +568,12 @@ impl ConversationQueries {
     }
 
     /// 根据项目路径列出对话会话
-    pub async fn list_by_project(pool: &Pool<Sqlite>, project_path: &str) -> Result<Vec<DbConversation>> {
+    pub async fn list_by_project(
+        pool: &Pool<Sqlite>,
+        project_path: &str,
+    ) -> Result<Vec<DbConversation>> {
         let conversations = sqlx::query_as::<_, DbConversation>(
-            "SELECT * FROM conversations WHERE project_path = ? ORDER BY updated_at DESC"
+            "SELECT * FROM conversations WHERE project_path = ? ORDER BY updated_at DESC",
         )
         .bind(project_path)
         .fetch_all(pool)
@@ -651,7 +646,7 @@ impl ConversationQueries {
         conversation_id: &str,
     ) -> Result<Vec<DbConversationMessage>> {
         let messages = sqlx::query_as::<_, DbConversationMessage>(
-            "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY timestamp ASC"
+            "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY timestamp ASC",
         )
         .bind(conversation_id)
         .fetch_all(pool)
@@ -666,7 +661,7 @@ impl ConversationQueries {
         query: &str,
     ) -> Result<Vec<DbConversationMessage>> {
         let messages = sqlx::query_as::<_, DbConversationMessage>(
-            "SELECT * FROM conversation_messages WHERE content LIKE ? ORDER BY timestamp DESC"
+            "SELECT * FROM conversation_messages WHERE content LIKE ? ORDER BY timestamp DESC",
         )
         .bind(format!("%{}%", query))
         .fetch_all(pool)
@@ -676,10 +671,7 @@ impl ConversationQueries {
     }
 
     /// 统计对话消息数和总 token 数
-    pub async fn get_stats(
-        pool: &Pool<Sqlite>,
-        conversation_id: &str,
-    ) -> Result<(i32, i32)> {
+    pub async fn get_stats(pool: &Pool<Sqlite>, conversation_id: &str) -> Result<(i32, i32)> {
         let row = sqlx::query_as::<_, (i32, i32)>(
             "SELECT COUNT(*) as msg_count, COALESCE(SUM(tokens), 0) as total_tokens FROM conversation_messages WHERE conversation_id = ?"
         )

@@ -241,7 +241,11 @@ impl TextSearchTool {
         dir_path: &'a Path,
         query: &'a str,
         case_insensitive: bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SearchResult>, std::io::Error>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<SearchResult>, std::io::Error>> + Send + 'a,
+        >,
+    > {
         Box::pin(async move {
             let mut all_results = Vec::new();
             let mut entries = fs::read_dir(dir_path).await?;
@@ -263,7 +267,9 @@ impl TextSearchTool {
 
                 if path.is_dir() {
                     // 递归搜索子目录
-                    let subdir_results = self.search_directory(&path, query, case_insensitive).await?;
+                    let subdir_results = self
+                        .search_directory(&path, query, case_insensitive)
+                        .await?;
                     all_results.extend(subdir_results);
                 } else if path.is_file() {
                     // 检查文件是否匹配包含模式
@@ -272,7 +278,8 @@ impl TextSearchTool {
                     }
 
                     // 在文件中搜索
-                    if let Ok(file_results) = self.search_in_file(&path, query, case_insensitive).await
+                    if let Ok(file_results) =
+                        self.search_in_file(&path, query, case_insensitive).await
                     {
                         all_results.extend(file_results);
                     }
@@ -406,11 +413,7 @@ impl Tool for TextSearchTool {
         };
 
         // 构建结果文本
-        let mut result_text = format!(
-            "搜索 '{}' 找到 {} 个结果:\n\n",
-            query,
-            results.len()
-        );
+        let mut result_text = format!("搜索 '{}' 找到 {} 个结果:\n\n", query, results.len());
 
         for result in &results {
             result_text.push_str(&format!(
@@ -523,7 +526,11 @@ impl RegexSearchTool {
         &'a self,
         dir_path: &'a Path,
         pattern: &'a Regex,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<SearchResult>, std::io::Error>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<SearchResult>, std::io::Error>> + Send + 'a,
+        >,
+    > {
         Box::pin(async move {
             let mut all_results = Vec::new();
             let mut entries = fs::read_dir(dir_path).await?;
@@ -722,7 +729,10 @@ impl Tool for RegexSearchTool {
 }
 
 /// 注册搜索工具
-pub async fn register_search_tools(registry: &Arc<crate::registry::ToolRegistry>, project_path: String) {
+pub async fn register_search_tools(
+    registry: &Arc<crate::registry::ToolRegistry>,
+    project_path: String,
+) {
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(TextSearchTool::new(project_path.clone())),
         Arc::new(RegexSearchTool::new(project_path)),
@@ -758,6 +768,9 @@ mod tests {
             &["target/*".to_string()]
         ));
         assert!(should_exclude("app.min.js", &["*.min.js".to_string()]));
-        assert!(!should_exclude("src/main.rs", &["node_modules/*".to_string()]));
+        assert!(!should_exclude(
+            "src/main.rs",
+            &["node_modules/*".to_string()]
+        ));
     }
 }

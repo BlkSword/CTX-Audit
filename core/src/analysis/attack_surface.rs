@@ -27,12 +27,24 @@ static RE_DS_SEARCH_PARAMS: OnceLock<Regex> = OnceLock::new();
 static RE_DS_REQUEST: OnceLock<Regex> = OnceLock::new();
 static RE_DS_REQ: OnceLock<Regex> = OnceLock::new();
 
-fn ds_formdata_re() -> &'static Regex { RE_DS_FORMDATA.get_or_init(|| Regex::new(r"formData\.(get|getAll|entries|values|has)").unwrap()) }
-fn ds_cookies_re() -> &'static Regex { RE_DS_COOKIES.get_or_init(|| Regex::new(r"cookies\(\)\.(get|getAll)").unwrap()) }
-fn ds_headers_re() -> &'static Regex { RE_DS_HEADERS.get_or_init(|| Regex::new(r"headers\(\)\.(get)").unwrap()) }
-fn ds_search_params_re() -> &'static Regex { RE_DS_SEARCH_PARAMS.get_or_init(|| Regex::new(r"searchParams\.(get|getAll)").unwrap()) }
-fn ds_request_re() -> &'static Regex { RE_DS_REQUEST.get_or_init(|| Regex::new(r"request\.(json|text|formData)\s*\(").unwrap()) }
-fn ds_req_re() -> &'static Regex { RE_DS_REQ.get_or_init(|| Regex::new(r"req\.(body|query|params)").unwrap()) }
+fn ds_formdata_re() -> &'static Regex {
+    RE_DS_FORMDATA.get_or_init(|| Regex::new(r"formData\.(get|getAll|entries|values|has)").unwrap())
+}
+fn ds_cookies_re() -> &'static Regex {
+    RE_DS_COOKIES.get_or_init(|| Regex::new(r"cookies\(\)\.(get|getAll)").unwrap())
+}
+fn ds_headers_re() -> &'static Regex {
+    RE_DS_HEADERS.get_or_init(|| Regex::new(r"headers\(\)\.(get)").unwrap())
+}
+fn ds_search_params_re() -> &'static Regex {
+    RE_DS_SEARCH_PARAMS.get_or_init(|| Regex::new(r"searchParams\.(get|getAll)").unwrap())
+}
+fn ds_request_re() -> &'static Regex {
+    RE_DS_REQUEST.get_or_init(|| Regex::new(r"request\.(json|text|formData)\s*\(").unwrap())
+}
+fn ds_req_re() -> &'static Regex {
+    RE_DS_REQ.get_or_init(|| Regex::new(r"req\.(body|query|params)").unwrap())
+}
 
 // 上下文分析
 static RE_SANITIZER: OnceLock<Regex> = OnceLock::new();
@@ -40,10 +52,23 @@ static RE_VALIDATION: OnceLock<Regex> = OnceLock::new();
 static RE_DESERIALIZATION: OnceLock<Regex> = OnceLock::new();
 static RE_PRIVILEGED_OP: OnceLock<Regex> = OnceLock::new();
 
-fn sanitizer_re() -> &'static Regex { RE_SANITIZER.get_or_init(|| Regex::new(r"sanitize|escape|encode|DOMPurify|bleach|htmlspecialchars").unwrap()) }
-fn validation_re() -> &'static Regex { RE_VALIDATION.get_or_init(|| Regex::new(r"(?i)(?:zod|joi|yup|ajv|\.safeParse|\.parse\(|validate\(|Schema|\.schema)").unwrap()) }
-fn deserialization_re() -> &'static Regex { RE_DESERIALIZATION.get_or_init(|| Regex::new(r"(?:JSON\.parse|parseModel|resolveModel|deserialize|unserialize|objectMapper\.readValue|pickle\.loads)").unwrap()) }
-fn privileged_op_re() -> &'static Regex { RE_PRIVILEGED_OP.get_or_init(|| Regex::new(r"(?:fs\.|writeFile|readFile|\.execute\s*\(|\.query\s*\(|exec\s*\(|eval\s*\(|system\s*\(|child_process|subprocess|DB::|database\.)").unwrap()) }
+fn sanitizer_re() -> &'static Regex {
+    RE_SANITIZER.get_or_init(|| {
+        Regex::new(r"sanitize|escape|encode|DOMPurify|bleach|htmlspecialchars").unwrap()
+    })
+}
+fn validation_re() -> &'static Regex {
+    RE_VALIDATION.get_or_init(|| {
+        Regex::new(r"(?i)(?:zod|joi|yup|ajv|\.safeParse|\.parse\(|validate\(|Schema|\.schema)")
+            .unwrap()
+    })
+}
+fn deserialization_re() -> &'static Regex {
+    RE_DESERIALIZATION.get_or_init(|| Regex::new(r"(?:JSON\.parse|parseModel|resolveModel|deserialize|unserialize|objectMapper\.readValue|pickle\.loads)").unwrap())
+}
+fn privileged_op_re() -> &'static Regex {
+    RE_PRIVILEGED_OP.get_or_init(|| Regex::new(r"(?:fs\.|writeFile|readFile|\.execute\s*\(|\.query\s*\(|exec\s*\(|eval\s*\(|system\s*\(|child_process|subprocess|DB::|database\.)").unwrap())
+}
 
 // 信任边界
 static RE_TB_FORMDATA: OnceLock<Regex> = OnceLock::new();
@@ -52,11 +77,21 @@ static RE_TB_SEARCH_PARAMS: OnceLock<Regex> = OnceLock::new();
 static RE_TB_COOKIES: OnceLock<Regex> = OnceLock::new();
 static RE_TB_HEADERS: OnceLock<Regex> = OnceLock::new();
 
-fn tb_formdata_re() -> &'static Regex { RE_TB_FORMDATA.get_or_init(|| Regex::new(r"formData\.(get|getAll)\s*\(").unwrap()) }
-fn tb_request_body_re() -> &'static Regex { RE_TB_REQUEST_BODY.get_or_init(|| Regex::new(r"request\.(json|text|formData)\s*\(").unwrap()) }
-fn tb_search_params_re() -> &'static Regex { RE_TB_SEARCH_PARAMS.get_or_init(|| Regex::new(r"searchParams\.(get|getAll)\s*\(").unwrap()) }
-fn tb_cookies_re() -> &'static Regex { RE_TB_COOKIES.get_or_init(|| Regex::new(r"cookies\(\)\.(get|getAll)\s*\(").unwrap()) }
-fn tb_headers_re() -> &'static Regex { RE_TB_HEADERS.get_or_init(|| Regex::new(r"headers\(\)\.(get)\s*\(").unwrap()) }
+fn tb_formdata_re() -> &'static Regex {
+    RE_TB_FORMDATA.get_or_init(|| Regex::new(r"formData\.(get|getAll)\s*\(").unwrap())
+}
+fn tb_request_body_re() -> &'static Regex {
+    RE_TB_REQUEST_BODY.get_or_init(|| Regex::new(r"request\.(json|text|formData)\s*\(").unwrap())
+}
+fn tb_search_params_re() -> &'static Regex {
+    RE_TB_SEARCH_PARAMS.get_or_init(|| Regex::new(r"searchParams\.(get|getAll)\s*\(").unwrap())
+}
+fn tb_cookies_re() -> &'static Regex {
+    RE_TB_COOKIES.get_or_init(|| Regex::new(r"cookies\(\)\.(get|getAll)\s*\(").unwrap())
+}
+fn tb_headers_re() -> &'static Regex {
+    RE_TB_HEADERS.get_or_init(|| Regex::new(r"headers\(\)\.(get)\s*\(").unwrap())
+}
 
 /// 入口点类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -194,10 +229,7 @@ impl AttackSurfaceMapper {
                 if let Ok(content) = std::fs::read_to_string(&file_path) {
                     files_scanned += 1;
 
-                    let ext = file_path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("");
+                    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
                     let file_str = file_path.to_string_lossy().to_string();
 
@@ -421,8 +453,10 @@ impl AttackSurfaceMapper {
                     let context = Self::get_context_block(content, line_num, 10);
                     let has_inline = Self::has_inline_middleware(line);
                     let auth_required = has_inline
-                        || context.contains("auth") || context.contains("jwt")
-                        || context.contains("token") || context.contains("passport");
+                        || context.contains("auth")
+                        || context.contains("jwt")
+                        || context.contains("token")
+                        || context.contains("passport");
 
                     entry_points.push(EntryPoint {
                         file_path: file_path.to_string(),
@@ -470,7 +504,10 @@ impl AttackSurfaceMapper {
     }
 
     /// 分析 Python 文件中的入口点
-    fn analyze_python_file(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
+    fn analyze_python_file(
+        file_path: &str,
+        content: &str,
+    ) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
         let mut entry_points = Vec::new();
         let mut trust_boundaries = Vec::new();
 
@@ -549,7 +586,10 @@ impl AttackSurfaceMapper {
         }
 
         // 外部可达入口点
-        if matches!(ep.entry_type, EntryType::HttpEndpoint | EntryType::ServerAction | EntryType::RscEndpoint) {
+        if matches!(
+            ep.entry_type,
+            EntryType::HttpEndpoint | EntryType::ServerAction | EntryType::RscEndpoint
+        ) {
             score += 0.15;
         }
 
@@ -561,22 +601,32 @@ impl AttackSurfaceMapper {
         }
 
         // 无输入校验
-        if !ep.context.has_input_validation && matches!(ep.entry_type,
-            EntryType::HttpEndpoint | EntryType::ServerAction | EntryType::RscEndpoint) {
+        if !ep.context.has_input_validation
+            && matches!(
+                ep.entry_type,
+                EntryType::HttpEndpoint | EntryType::ServerAction | EntryType::RscEndpoint
+            )
+        {
             score += 0.15;
-            ep.context.risk_factors.push("no_input_validation".to_string());
+            ep.context
+                .risk_factors
+                .push("no_input_validation".to_string());
         }
 
         // 数据到达反序列化
         if ep.context.reaches_deserialization {
             score += 0.15;
-            ep.context.risk_factors.push("reaches_deserialization".to_string());
+            ep.context
+                .risk_factors
+                .push("reaches_deserialization".to_string());
         }
 
         // 数据到达特权操作
         if ep.context.reaches_privileged_op {
             score += 0.1;
-            ep.context.risk_factors.push("reaches_privileged_op".to_string());
+            ep.context
+                .risk_factors
+                .push("reaches_privileged_op".to_string());
         }
 
         // 定时任务 → 内部，降低
@@ -608,7 +658,9 @@ impl AttackSurfaceMapper {
     /// 检测文件是否为 Next.js 相关文件
     fn is_nextjs_file(file_path: &str, content: &str) -> bool {
         // 'use server' 指令
-        let has_use_server = content.lines().take(5)
+        let has_use_server = content
+            .lines()
+            .take(5)
             .any(|l| l.trim() == "'use server'" || l.trim() == "\"use server\"");
         if has_use_server {
             return true;
@@ -621,22 +673,29 @@ impl AttackSurfaceMapper {
 
         // App Router 路径: app/ 目录下的 route.ts/js 或 page.tsx/jsx
         let normalized = file_path.replace('\\', "/");
-        let is_app_route = normalized.contains("/app/") &&
-            (normalized.ends_with("/route.ts") || normalized.ends_with("/route.js"));
-        let is_app_page = normalized.contains("/app/") &&
-            (normalized.ends_with("/page.tsx") || normalized.ends_with("/page.jsx") ||
-             normalized.ends_with("/page.ts") || normalized.ends_with("/page.js"));
+        let is_app_route = normalized.contains("/app/")
+            && (normalized.ends_with("/route.ts") || normalized.ends_with("/route.js"));
+        let is_app_page = normalized.contains("/app/")
+            && (normalized.ends_with("/page.tsx")
+                || normalized.ends_with("/page.jsx")
+                || normalized.ends_with("/page.ts")
+                || normalized.ends_with("/page.js"));
 
         is_app_route || is_app_page
     }
 
     /// 分析 Next.js 文件中的入口点
-    fn analyze_nextjs_file(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
+    fn analyze_nextjs_file(
+        file_path: &str,
+        content: &str,
+    ) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
         let mut entry_points = Vec::new();
         let mut trust_boundaries = Vec::new();
 
         // Server Actions: 'use server' 指令文件
-        let has_use_server = content.lines().take(5)
+        let has_use_server = content
+            .lines()
+            .take(5)
             .any(|l| l.trim() == "'use server'" || l.trim() == "\"use server\"");
 
         if has_use_server {
@@ -647,8 +706,8 @@ impl AttackSurfaceMapper {
 
         // Route Handlers: app/ 目录下的 route.ts/js
         let normalized = file_path.replace('\\', "/");
-        let is_route_handler = normalized.contains("/app/") &&
-            (normalized.ends_with("/route.ts") || normalized.ends_with("/route.js"));
+        let is_route_handler = normalized.contains("/app/")
+            && (normalized.ends_with("/route.ts") || normalized.ends_with("/route.js"));
 
         if is_route_handler {
             let route = Self::extract_nextjs_route(&normalized);
@@ -661,7 +720,10 @@ impl AttackSurfaceMapper {
     }
 
     /// 检测 Server Action 函数
-    fn detect_server_actions(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
+    fn detect_server_actions(
+        file_path: &str,
+        content: &str,
+    ) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
         let mut entry_points = Vec::new();
         let mut trust_boundaries = Vec::new();
 
@@ -669,7 +731,8 @@ impl AttackSurfaceMapper {
         let func_re = server_action_func_re();
 
         for cap in func_re.captures_iter(content) {
-            let func_name = cap.get(1)
+            let func_name = cap
+                .get(1)
                 .or_else(|| cap.get(2))
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_default();
@@ -701,7 +764,9 @@ impl AttackSurfaceMapper {
 
     /// 检测 Route Handler 函数
     fn detect_route_handlers(
-        file_path: &str, content: &str, route: Option<&str>,
+        file_path: &str,
+        content: &str,
+        route: Option<&str>,
     ) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
         let mut entry_points = Vec::new();
         let mut trust_boundaries = Vec::new();
@@ -716,10 +781,16 @@ impl AttackSurfaceMapper {
                 if line.contains(&pattern) || line.contains(&pattern_sync) {
                     let ctx = Self::get_context_block(content, line_num, 30);
                     let entry_ctx = Self::analyze_entry_context(&ctx);
-                    let auth_required = ctx.contains("auth") || ctx.contains("jwt") || ctx.contains("token");
+                    let auth_required =
+                        ctx.contains("auth") || ctx.contains("jwt") || ctx.contains("token");
 
                     // 信任边界
-                    Self::detect_nextjs_trust_boundaries(file_path, &ctx, line_num, &mut trust_boundaries);
+                    Self::detect_nextjs_trust_boundaries(
+                        file_path,
+                        &ctx,
+                        line_num,
+                        &mut trust_boundaries,
+                    );
 
                     entry_points.push(EntryPoint {
                         file_path: file_path.to_string(),
@@ -728,7 +799,11 @@ impl AttackSurfaceMapper {
                         route: route.map(|r| r.to_string()),
                         http_method: Some(method.to_string()),
                         auth_required,
-                        auth_mechanism: if auth_required { Some("Next.js middleware".to_string()) } else { None },
+                        auth_mechanism: if auth_required {
+                            Some("Next.js middleware".to_string())
+                        } else {
+                            None
+                        },
                         risk_score: 0.0,
                         function_name: Some(method.to_string()),
                         context: entry_ctx,
@@ -779,7 +854,9 @@ impl AttackSurfaceMapper {
 
     /// 检测 Next.js 信任边界
     fn detect_nextjs_trust_boundaries(
-        file_path: &str, context: &str, base_line: usize,
+        file_path: &str,
+        context: &str,
+        base_line: usize,
         trust_boundaries: &mut Vec<TrustBoundary>,
     ) {
         let patterns: &[(&str, &Regex)] = &[
@@ -826,7 +903,7 @@ impl AttackSurfaceMapper {
                 }
                 // 动态路由: [id] → :id, [...slug] → :slug*
                 if segment.starts_with('[') && segment.ends_with(']') {
-                    let inner = &segment[1..segment.len()-1];
+                    let inner = &segment[1..segment.len() - 1];
                     if inner.starts_with("...") {
                         route.push_str(&inner[3..]);
                         route.push('*');
@@ -883,11 +960,24 @@ impl AttackSurfaceMapper {
 
         // 检查常见的 auth middleware 变量名
         let auth_mw_patterns = [
-            "isLoggedIn", "isAuthenticated", "isAdmin", "isAuthorized",
-            "requireAuth", "requireLogin", "authenticate", "authenticateUser",
-            "authMiddleware", "auth", "ensureLoggedIn", "ensureAuthenticated",
-            "checkAuth", "verifyToken", "validateSession", "protect",
-            "withAuth", "withUser",
+            "isLoggedIn",
+            "isAuthenticated",
+            "isAdmin",
+            "isAuthorized",
+            "requireAuth",
+            "requireLogin",
+            "authenticate",
+            "authenticateUser",
+            "authMiddleware",
+            "auth",
+            "ensureLoggedIn",
+            "ensureAuthenticated",
+            "checkAuth",
+            "verifyToken",
+            "validateSession",
+            "protect",
+            "withAuth",
+            "withUser",
         ];
         let lower = line.to_lowercase();
         for pat in &auth_mw_patterns {
@@ -955,14 +1045,26 @@ impl AttackSurfaceMapper {
 /// 遍历项目文件
 fn walk_project(project_path: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     let ignore_dirs: HashSet<&str> = [
-        "node_modules", ".git", "target", "build", "dist",
-        "__pycache__", ".next", "vendor", ".gradle", ".idea",
-        ".mvn", "bin", "obj",
-    ].into_iter().collect();
+        "node_modules",
+        ".git",
+        "target",
+        "build",
+        "dist",
+        "__pycache__",
+        ".next",
+        "vendor",
+        ".gradle",
+        ".idea",
+        ".mvn",
+        "bin",
+        "obj",
+    ]
+    .into_iter()
+    .collect();
 
-    let source_extensions: HashSet<&str> = [
-        "java", "js", "ts", "jsx", "tsx", "py", "go", "rs",
-    ].into_iter().collect();
+    let source_extensions: HashSet<&str> = ["java", "js", "ts", "jsx", "tsx", "py", "go", "rs"]
+        .into_iter()
+        .collect();
 
     let mut result = Vec::new();
     walk_dir_recursive(project_path, &ignore_dirs, &source_extensions, &mut result);
@@ -1017,7 +1119,11 @@ public class UserController {
 }
 "#;
         let (eps, tbs) = AttackSurfaceMapper::analyze_java_file("UserController.java", code);
-        assert!(eps.len() >= 2, "Should find at least 2 endpoints, found {}", eps.len());
+        assert!(
+            eps.len() >= 2,
+            "Should find at least 2 endpoints, found {}",
+            eps.len()
+        );
         assert!(tbs.len() >= 2, "Should find at least 2 trust boundaries");
 
         let get_ep = eps.iter().find(|e| e.http_method.as_deref() == Some("GET"));
@@ -1048,7 +1154,9 @@ app.post('/api/users', auth, (req, res) => {
         let get_ep = eps.iter().find(|e| e.http_method.as_deref() == Some("GET"));
         assert!(get_ep.is_some());
         // GET /api/users/:id 不需要认证（代码中没有 auth middleware）
-        let post_ep = eps.iter().find(|e| e.http_method.as_deref() == Some("POST"));
+        let post_ep = eps
+            .iter()
+            .find(|e| e.http_method.as_deref() == Some("POST"));
         assert!(post_ep.is_some());
         // POST /api/users 有 auth middleware
         assert!(post_ep.unwrap().auth_required);
@@ -1069,7 +1177,11 @@ app.post('/api/users', auth, (req, res) => {
             context: EntryContext::default(),
         };
         let score = AttackSurfaceMapper::compute_risk_score(&mut ep);
-        assert!(score >= 0.8, "Unauthenticated POST should score >= 0.8, got {}", score);
+        assert!(
+            score >= 0.8,
+            "Unauthenticated POST should score >= 0.8, got {}",
+            score
+        );
     }
 
     #[test]
@@ -1087,7 +1199,11 @@ app.post('/api/users', auth, (req, res) => {
             context: EntryContext::default(),
         };
         let score = AttackSurfaceMapper::compute_risk_score(&mut ep);
-        assert!(score < 0.5, "Scheduled task should score < 0.5, got {}", score);
+        assert!(
+            score < 0.5,
+            "Scheduled task should score < 0.5, got {}",
+            score
+        );
     }
 
     #[test]
@@ -1106,10 +1222,16 @@ export async function deleteUser(formData: FormData) {
 }
 "#;
         let (eps, tbs) = AttackSurfaceMapper::analyze_nextjs_file("app/actions/user.ts", code);
-        assert!(eps.len() >= 2, "Should find at least 2 Server Actions, found {}", eps.len());
+        assert!(
+            eps.len() >= 2,
+            "Should find at least 2 Server Actions, found {}",
+            eps.len()
+        );
         assert!(tbs.len() >= 2, "Should find trust boundaries for formData");
 
-        let create_ep = eps.iter().find(|e| e.function_name.as_deref() == Some("createUser"));
+        let create_ep = eps
+            .iter()
+            .find(|e| e.function_name.as_deref() == Some("createUser"));
         assert!(create_ep.is_some());
         let ep = create_ep.unwrap();
         assert_eq!(ep.entry_type, EntryType::ServerAction);
@@ -1132,13 +1254,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true });
 }
 "#;
-        let (eps, tbs) = AttackSurfaceMapper::analyze_nextjs_file(
-            "src/app/api/users/route.ts", code,
-        );
+        let (eps, tbs) =
+            AttackSurfaceMapper::analyze_nextjs_file("src/app/api/users/route.ts", code);
         assert!(eps.len() >= 2, "Should find at least 2 route handlers");
         assert_eq!(eps[0].entry_type, EntryType::RscEndpoint);
 
-        let post_ep = eps.iter().find(|e| e.http_method.as_deref() == Some("POST"));
+        let post_ep = eps
+            .iter()
+            .find(|e| e.http_method.as_deref() == Some("POST"));
         assert!(post_ep.is_some());
         assert!(post_ep.unwrap().context.reaches_privileged_op);
     }
@@ -1181,6 +1304,9 @@ export async function action(formData: FormData) {
 "#;
         let ctx2 = AttackSurfaceMapper::analyze_entry_context(code_without_validation);
         assert!(!ctx2.has_input_validation, "Should NOT detect validation");
-        assert!(ctx2.reaches_privileged_op, "Should detect eval as privileged op");
+        assert!(
+            ctx2.reaches_privileged_op,
+            "Should detect eval as privileged op"
+        );
     }
 }

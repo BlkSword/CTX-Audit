@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::imports::ImportResolver;
-use super::taint::{TaintSource, TaintSink, FlowLocation, Severity, VulnerabilityType};
+use super::taint::{FlowLocation, Severity, TaintSink, TaintSource, VulnerabilityType};
 use crate::ast::{CallInfo, CallbackArg};
 
 /// 调用目标 — 方法调用的 receiver 信息
@@ -32,14 +32,22 @@ pub struct CallTarget {
 
 impl CallTarget {
     pub fn new(callee: impl Into<String>) -> Self {
-        Self { callee: callee.into(), receiver: None, raw: None }
+        Self {
+            callee: callee.into(),
+            receiver: None,
+            raw: None,
+        }
     }
 
     pub fn with_receiver(callee: impl Into<String>, receiver: impl Into<String>) -> Self {
         let callee = callee.into();
         let receiver = receiver.into();
         let raw = Some(format!("{}.{}()", receiver, callee));
-        Self { callee, receiver: Some(receiver), raw }
+        Self {
+            callee,
+            receiver: Some(receiver),
+            raw,
+        }
     }
 }
 
@@ -523,11 +531,11 @@ impl CrossFileTaintAnalyzer {
         // 4. 查找跨文件污点流
         let taint_flows = self.find_interprocedural_taint_flows();
         stats.taint_flows = taint_flows.len();
-        stats.cross_file_flows = taint_flows.iter()
+        stats.cross_file_flows = taint_flows
+            .iter()
             .filter(|f| {
                 // 跨文件 = source 和 sink 在不同文件，或路径跨多个文件
-                f.source.file_path != f.sink.file_path
-                    || f.interprocedural_path.len() > 1
+                f.source.file_path != f.sink.file_path || f.interprocedural_path.len() > 1
             })
             .count();
 
@@ -544,7 +552,11 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 分析指定文件子集（用于深度扫描，避免全项目遍历）
-    pub fn analyze_files(&mut self, project_path: &Path, files: &[PathBuf]) -> CrossFileTaintResult {
+    pub fn analyze_files(
+        &mut self,
+        project_path: &Path,
+        files: &[PathBuf],
+    ) -> CrossFileTaintResult {
         let mut stats = CrossFileAnalysisStats::default();
 
         // 只处理传入的文件列表
@@ -564,11 +576,9 @@ impl CrossFileTaintAnalyzer {
 
         let taint_flows = self.find_interprocedural_taint_flows();
         stats.taint_flows = taint_flows.len();
-        stats.cross_file_flows = taint_flows.iter()
-            .filter(|f| {
-                f.source.file_path != f.sink.file_path
-                    || f.interprocedural_path.len() > 1
-            })
+        stats.cross_file_flows = taint_flows
+            .iter()
+            .filter(|f| f.source.file_path != f.sink.file_path || f.interprocedural_path.len() > 1)
             .count();
 
         CrossFileTaintResult {
@@ -614,9 +624,9 @@ impl CrossFileTaintAnalyzer {
 
         let taint_flows = self.find_interprocedural_taint_flows();
         stats.taint_flows = taint_flows.len();
-        stats.cross_file_flows = taint_flows.iter()
-            .filter(|f| f.source.file_path != f.sink.file_path
-                || f.interprocedural_path.len() > 1)
+        stats.cross_file_flows = taint_flows
+            .iter()
+            .filter(|f| f.source.file_path != f.sink.file_path || f.interprocedural_path.len() > 1)
             .count();
 
         CrossFileTaintResult {
@@ -658,7 +668,10 @@ impl CrossFileTaintAnalyzer {
             };
 
             for symbol in &symbols {
-                if !matches!(symbol.kind, crate::ast::SymbolKind::Function | crate::ast::SymbolKind::Method) {
+                if !matches!(
+                    symbol.kind,
+                    crate::ast::SymbolKind::Function | crate::ast::SymbolKind::Method
+                ) {
                     continue;
                 }
 
@@ -666,21 +679,32 @@ impl CrossFileTaintAnalyzer {
                 let func_id = format!("{}:{}", file_path_str, func_name);
                 let func_name_clone = func_name.clone();
 
-                let calls_in_range: Vec<&CallInfo> = calls.iter()
-                    .filter(|c| c.line >= symbol.start_line as usize && c.line <= symbol.end_line as usize)
+                let calls_in_range: Vec<&CallInfo> = calls
+                    .iter()
+                    .filter(|c| {
+                        c.line >= symbol.start_line as usize && c.line <= symbol.end_line as usize
+                    })
                     .collect();
 
-                let calls_in_func: Vec<CallTarget> = calls_in_range.iter()
+                let calls_in_func: Vec<CallTarget> = calls_in_range
+                    .iter()
                     .map(|c| {
                         if c.is_method {
-                            CallTarget::with_receiver(&c.callee, c.receiver.as_deref().unwrap_or(""))
+                            CallTarget::with_receiver(
+                                &c.callee,
+                                c.receiver.as_deref().unwrap_or(""),
+                            )
                         } else {
                             CallTarget::new(&c.callee)
                         }
                     })
                     .collect();
 
-                let body_text = Self::extract_body(content, symbol.start_line as usize, symbol.end_line as usize);
+                let body_text = Self::extract_body(
+                    content,
+                    symbol.start_line as usize,
+                    symbol.end_line as usize,
+                );
                 let is_source = self.is_taint_source(&func_name, &body_text);
                 let (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
 
@@ -707,11 +731,20 @@ impl CrossFileTaintAnalyzer {
                 let mut cb_idx: usize = 0;
                 for call in &calls_in_range {
                     for cb in &call.callback_args {
-                        let cb_id = format!("{}:{}:{}:cb{}", file_path_str, func_name_clone, call.line, cb_idx);
+                        let cb_id = format!(
+                            "{}:{}:{}:cb{}",
+                            file_path_str, func_name_clone, call.line, cb_idx
+                        );
                         let cb_calls = self.extract_calls_from_body(&cb.body_text);
-                        let cb_params: Vec<FunctionParameter> = cb.params.iter().map(|p| {
-                            FunctionParameter { name: p.clone(), param_type: None, may_be_tainted: false }
-                        }).collect();
+                        let cb_params: Vec<FunctionParameter> = cb
+                            .params
+                            .iter()
+                            .map(|p| FunctionParameter {
+                                name: p.clone(),
+                                param_type: None,
+                                may_be_tainted: false,
+                            })
+                            .collect();
 
                         let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text);
                         let cb_node = CallGraphNode {
@@ -744,21 +777,27 @@ impl CrossFileTaintAnalyzer {
                 match symbol.kind {
                     crate::ast::SymbolKind::Class => {
                         self.type_hierarchy.register_type(
-                            &symbol.name, super::type_hierarchy::TypeKind::Class,
-                            &symbol.parent_classes, &file_path_str,
-                            symbol.start_line as usize, symbol.end_line as usize,
+                            &symbol.name,
+                            super::type_hierarchy::TypeKind::Class,
+                            &symbol.parent_classes,
+                            &file_path_str,
+                            symbol.start_line as usize,
+                            symbol.end_line as usize,
                         );
                     }
                     crate::ast::SymbolKind::Interface => {
                         self.type_hierarchy.register_type(
-                            &symbol.name, super::type_hierarchy::TypeKind::Interface,
-                            &symbol.parent_classes, &file_path_str,
-                            symbol.start_line as usize, symbol.end_line as usize,
+                            &symbol.name,
+                            super::type_hierarchy::TypeKind::Interface,
+                            &symbol.parent_classes,
+                            &file_path_str,
+                            symbol.start_line as usize,
+                            symbol.end_line as usize,
                         );
                     }
                     crate::ast::SymbolKind::Method => {
-                        if let Some(owner) = symbol.metadata.get("ownerClass")
-                            .and_then(|v| v.as_str())
+                        if let Some(owner) =
+                            symbol.metadata.get("ownerClass").and_then(|v| v.as_str())
                         {
                             self.type_hierarchy.register_method(
                                 owner,
@@ -794,32 +833,42 @@ impl CrossFileTaintAnalyzer {
 
         // 模式: const/let/var varName = new TypeName(...)
         // 也匹配: const/let/var varName = TypeName(...)  (无 new 的构造函数)
-        let re = regex::Regex::new(
-            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:new\s+)?(\w+)\s*\("
-        ).unwrap();
+        let re =
+            regex::Regex::new(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:new\s+)?(\w+)\s*\(").unwrap();
 
         for cap in re.captures_iter(content) {
             let var_name = cap[1].to_string();
             let type_name = cap[2].to_string();
             // 跳过明显不是类型名的变量（如小写开头的方法调用）
-            if type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            if type_name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+            {
                 var_types.entry(var_name).or_insert(type_name);
             }
         }
 
         if !var_types.is_empty() {
-self.variable_type_map.insert(normalized, var_types);
+            self.variable_type_map.insert(normalized, var_types);
         }
     }
 
     /// 解析文件导入，填充 file_import_aliases
     fn parse_file_imports(&mut self, file_path: &str, content: &str) {
-        let module = self.import_resolver.parse_file(Path::new(file_path), content);
+        let module = self
+            .import_resolver
+            .parse_file(Path::new(file_path), content);
         let mut aliases: HashMap<String, ImportResolution> = HashMap::new();
 
         for import in &module.imports {
             for symbol in &import.symbols {
-                let local_name = symbol.alias.as_ref().unwrap_or(&symbol.original_name).clone();
+                let local_name = symbol
+                    .alias
+                    .as_ref()
+                    .unwrap_or(&symbol.original_name)
+                    .clone();
                 // 跳过通配符导入 (*)
                 if local_name == "*" {
                     continue;
@@ -836,7 +885,8 @@ self.variable_type_map.insert(normalized, var_types);
         }
 
         if !aliases.is_empty() {
-            self.file_import_aliases.insert(normalize_path(file_path), aliases);
+            self.file_import_aliases
+                .insert(normalize_path(file_path), aliases);
         }
     }
 
@@ -855,7 +905,9 @@ self.variable_type_map.insert(normalized, var_types);
         };
 
         // 尝试的扩展名列表
-        let extensions = ["js", "jsx", "ts", "tsx", "py", "rs", "go", "java", "c", "cpp", "php", "rb"];
+        let extensions = [
+            "js", "jsx", "ts", "tsx", "py", "rs", "go", "java", "c", "cpp", "php", "rb",
+        ];
 
         // 1. 精确路径匹配
         if resolved.exists() && resolved.is_file() {
@@ -895,12 +947,19 @@ self.variable_type_map.insert(normalized, var_types);
     /// 产生大量 FP 跨文件流。实际 source/sink 是内层 Method 节点。
     fn filter_constructor_fps(&mut self) {
         // 收集所有节点按文件分组
-        let mut file_nodes: HashMap<String, Vec<(String, usize, usize, bool, bool)>> = HashMap::new();
+        let mut file_nodes: HashMap<String, Vec<(String, usize, usize, bool, bool)>> =
+            HashMap::new();
         for (id, node) in &self.call_graph.nodes {
             file_nodes
                 .entry(normalize_path(&node.file_path))
                 .or_default()
-                .push((id.clone(), node.start_line, node.end_line, node.is_taint_source, node.is_taint_sink));
+                .push((
+                    id.clone(),
+                    node.start_line,
+                    node.end_line,
+                    node.is_taint_source,
+                    node.is_taint_sink,
+                ));
         }
 
         let mut demote_sources: HashSet<String> = HashSet::new();
@@ -912,12 +971,14 @@ self.variable_type_map.insert(normalized, var_types);
                     continue;
                 }
                 // 检查是否存在严格嵌套且同样是 source/sink 的内层节点
-                let has_inner_source_or_sink = nodes.iter().any(|(inner_id, inner_start, inner_end, inner_is_source, inner_is_sink)| {
-                    inner_id != outer_id
-                        && *inner_start > *outer_start
-                        && *inner_end < *outer_end
-                        && (*inner_is_source || *inner_is_sink)
-                });
+                let has_inner_source_or_sink = nodes.iter().any(
+                    |(inner_id, inner_start, inner_end, inner_is_source, inner_is_sink)| {
+                        inner_id != outer_id
+                            && *inner_start > *outer_start
+                            && *inner_end < *outer_end
+                            && (*inner_is_source || *inner_is_sink)
+                    },
+                );
                 if has_inner_source_or_sink {
                     if *outer_is_source {
                         demote_sources.insert(outer_id.clone());
@@ -941,8 +1002,12 @@ self.variable_type_map.insert(normalized, var_types);
                 node.sink_type = None;
             }
         }
-        self.call_graph.taint_sources.retain(|id| !demote_sources.contains(id));
-        self.call_graph.taint_sinks.retain(|id| !demote_sinks.contains(id));
+        self.call_graph
+            .taint_sources
+            .retain(|id| !demote_sources.contains(id));
+        self.call_graph
+            .taint_sinks
+            .retain(|id| !demote_sinks.contains(id));
 
         let total = demote_sources.len() + demote_sinks.len();
         if total > 0 {
@@ -979,7 +1044,6 @@ self.variable_type_map.insert(normalized, var_types);
                 .push(id.clone());
         }
 
-
         // 收集需要添加的跨文件调用关系
         let mut cross_calls: Vec<(String, String)> = Vec::new();
 
@@ -1013,7 +1077,8 @@ self.variable_type_map.insert(normalized, var_types);
                                 if let Some(callee_ids) = file_funcs.get(lookup_name) {
                                     for callee_id in callee_ids {
                                         if callee_id != caller_id {
-                                            cross_calls.push((caller_id.clone(), callee_id.clone()));
+                                            cross_calls
+                                                .push((caller_id.clone(), callee_id.clone()));
                                             resolved = true;
                                         }
                                     }
@@ -1024,7 +1089,8 @@ self.variable_type_map.insert(normalized, var_types);
                                     for (_, callee_ids) in file_funcs {
                                         for callee_id in callee_ids {
                                             if callee_id != caller_id {
-                                                cross_calls.push((caller_id.clone(), callee_id.clone()));
+                                                cross_calls
+                                                    .push((caller_id.clone(), callee_id.clone()));
                                                 resolved = true;
                                             }
                                         }
@@ -1041,12 +1107,14 @@ self.variable_type_map.insert(normalized, var_types);
                     //   a) receiver 是 import 别名（如 UserDAO from require）
                     //   b) receiver 是局部变量，其类型是 import 别名
                     //      （如 const userDAO = new UserDAO(db) → userDAO → UserDAO → target file）
-                    let receiver_target_file: Option<String> = ct.receiver.as_ref()
-                        .and_then(|recv| {
+                    let receiver_target_file: Option<String> =
+                        ct.receiver.as_ref().and_then(|recv| {
                             // a) 直接 import 别名
                             if let Some(target) = import_aliases
                                 .and_then(|aliases| aliases.get(recv))
-                                .and_then(|res| self.resolve_module_to_file(&res.source_module, &node.file_path))
+                                .and_then(|res| {
+                                    self.resolve_module_to_file(&res.source_module, &node.file_path)
+                                })
                             {
                                 return Some(target);
                             }
@@ -1060,7 +1128,10 @@ self.variable_type_map.insert(normalized, var_types);
 
                     if let Some(callee_ids) = name_to_ids.get(&ct.callee) {
                         for callee_id in callee_ids {
-                            let callee_file = self.call_graph.nodes.get(callee_id)
+                            let callee_file = self
+                                .call_graph
+                                .nodes
+                                .get(callee_id)
                                 .map(|n| normalize_path(&n.file_path))
                                 .unwrap_or_default();
                             if callee_file != caller_file_normalized {
@@ -1084,12 +1155,15 @@ self.variable_type_map.insert(normalized, var_types);
                 // ── Phase 3: 类型层次虚方法分发 ──
                 if !resolved && ct.receiver.is_some() && !self.type_hierarchy.is_empty() {
                     let recv_name = ct.receiver.as_deref().unwrap_or("");
-                    let resolved_methods =
-                        self.type_hierarchy.resolve_virtual_method(recv_name, &ct.callee);
+                    let resolved_methods = self
+                        .type_hierarchy
+                        .resolve_virtual_method(recv_name, &ct.callee);
 
                     for rm in &resolved_methods {
                         // 在 call_graph 中查找匹配的 (file_path, method_name)
-                        if let Some(file_funcs) = file_name_to_ids.get(&normalize_path(&rm.file_path)) {
+                        if let Some(file_funcs) =
+                            file_name_to_ids.get(&normalize_path(&rm.file_path))
+                        {
                             if let Some(callee_ids) = file_funcs.get(&ct.callee) {
                                 for callee_id in callee_ids {
                                     if callee_id != caller_id {
@@ -1123,7 +1197,16 @@ self.variable_type_map.insert(normalized, var_types);
                 if path.is_dir() {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         if !name.starts_with('.')
-                            && !matches!(name, "node_modules" | "target" | "vendor" | "__pycache__" | "dist" | "build" | ".git")
+                            && !matches!(
+                                name,
+                                "node_modules"
+                                    | "target"
+                                    | "vendor"
+                                    | "__pycache__"
+                                    | "dist"
+                                    | "build"
+                                    | ".git"
+                            )
                         {
                             self.collect_files_recursive(&path, files);
                         }
@@ -1160,7 +1243,21 @@ self.variable_type_map.insert(normalized, var_types);
     /// 判断文件是否支持 AST 解析
     fn is_ast_supported(&self, path: &Path) -> bool {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        matches!(ext, "js" | "jsx" | "ts" | "tsx" | "py" | "java" | "rs" | "go" | "c" | "h" | "cpp" | "hpp" | "cc")
+        matches!(
+            ext,
+            "js" | "jsx"
+                | "ts"
+                | "tsx"
+                | "py"
+                | "java"
+                | "rs"
+                | "go"
+                | "c"
+                | "h"
+                | "cpp"
+                | "hpp"
+                | "cc"
+        )
     }
 
     /// 使用 AST 解析构建调用图（更精确的函数提取和调用关系）
@@ -1195,8 +1292,7 @@ self.variable_type_map.insert(normalized, var_types);
         for symbol in &symbols {
             if !matches!(
                 symbol.kind,
-                crate::ast::SymbolKind::Function
-                    | crate::ast::SymbolKind::Method
+                crate::ast::SymbolKind::Function | crate::ast::SymbolKind::Method
             ) {
                 continue;
             }
@@ -1209,7 +1305,9 @@ self.variable_type_map.insert(normalized, var_types);
             // 收集该函数范围内的调用（保留 CallInfo 用于回调检测）
             let calls_in_range: Vec<&CallInfo> = calls
                 .iter()
-                .filter(|c| c.line >= symbol.start_line as usize && c.line <= symbol.end_line as usize)
+                .filter(|c| {
+                    c.line >= symbol.start_line as usize && c.line <= symbol.end_line as usize
+                })
                 .collect();
 
             let calls_in_func: Vec<CallTarget> = calls_in_range
@@ -1224,10 +1322,13 @@ self.variable_type_map.insert(normalized, var_types);
                 .collect();
 
             // 检测函数参数中哪些可能是污点
-            let parameters: Vec<FunctionParameter> = self
-                .extract_ast_parameters(symbol, &content);
+            let parameters: Vec<FunctionParameter> = self.extract_ast_parameters(symbol, &content);
 
-            let body_text = Self::extract_body(&content, symbol.start_line as usize, symbol.end_line as usize);
+            let body_text = Self::extract_body(
+                &content,
+                symbol.start_line as usize,
+                symbol.end_line as usize,
+            );
             let is_source = self.is_taint_source(&func_name, &body_text);
             let (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
 
@@ -1255,15 +1356,20 @@ self.variable_type_map.insert(normalized, var_types);
             let mut cb_idx: usize = 0;
             for call in &calls_in_range {
                 for cb in &call.callback_args {
-                    let cb_id = format!("{}:{}:{}:cb{}", file_path_str, func_name_clone, call.line, cb_idx);
+                    let cb_id = format!(
+                        "{}:{}:{}:cb{}",
+                        file_path_str, func_name_clone, call.line, cb_idx
+                    );
                     let cb_calls = self.extract_calls_from_body(&cb.body_text);
-                    let cb_params: Vec<FunctionParameter> = cb.params.iter().map(|p| {
-                        FunctionParameter {
+                    let cb_params: Vec<FunctionParameter> = cb
+                        .params
+                        .iter()
+                        .map(|p| FunctionParameter {
                             name: p.clone(),
                             param_type: None,
                             may_be_tainted: is_source,
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
                     let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text);
                     let cb_node = CallGraphNode {
@@ -1325,8 +1431,7 @@ self.variable_type_map.insert(normalized, var_types);
                     );
                 }
                 crate::ast::SymbolKind::Method => {
-                    if let Some(owner) = symbol.metadata.get("ownerClass")
-                        .and_then(|v| v.as_str())
+                    if let Some(owner) = symbol.metadata.get("ownerClass").and_then(|v| v.as_str())
                     {
                         self.type_hierarchy.register_method(
                             owner,
@@ -1355,7 +1460,11 @@ self.variable_type_map.insert(normalized, var_types);
     ) -> Vec<FunctionParameter> {
         let mut params = Vec::new();
         let func_name = &symbol.name;
-        let body_text = Self::extract_body(content, symbol.start_line as usize, symbol.end_line as usize);
+        let body_text = Self::extract_body(
+            content,
+            symbol.start_line as usize,
+            symbol.end_line as usize,
+        );
         let is_source = self.is_taint_source(func_name, &body_text);
 
         // 尝试从 symbol 的 metadata 中提取参数
@@ -1525,7 +1634,11 @@ self.variable_type_map.insert(normalized, var_types);
             }
             "java" => {
                 // public void name() 或 private String name()
-                if line.contains("(") && (line.contains("public") || line.contains("private") || line.contains("protected")) {
+                if line.contains("(")
+                    && (line.contains("public")
+                        || line.contains("private")
+                        || line.contains("protected"))
+                {
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     for part in parts {
                         if part.contains('(') {
@@ -1591,7 +1704,9 @@ self.variable_type_map.insert(normalized, var_types);
                                 // name: type 或 name=default
                                 let parts: Vec<&str> = param.split(':').collect();
                                 let name = parts[0].split('=').next().unwrap_or("").trim();
-                                let t = parts.get(1).map(|s| s.split('=').next().unwrap_or("").trim().to_string());
+                                let t = parts
+                                    .get(1)
+                                    .map(|s| s.split('=').next().unwrap_or("").trim().to_string());
                                 (name.to_string(), t)
                             }
                             "javascript" | "typescript" => {
@@ -1605,7 +1720,10 @@ self.variable_type_map.insert(normalized, var_types);
                                 // Type name
                                 let parts: Vec<&str> = param.split_whitespace().collect();
                                 if parts.len() >= 2 {
-                                    (parts[parts.len() - 1].to_string(), Some(parts[0].to_string()))
+                                    (
+                                        parts[parts.len() - 1].to_string(),
+                                        Some(parts[0].to_string()),
+                                    )
                                 } else {
                                     (param.to_string(), None)
                                 }
@@ -1613,7 +1731,10 @@ self.variable_type_map.insert(normalized, var_types);
                             "rust" => {
                                 // name: Type
                                 let parts: Vec<&str> = param.split(':').collect();
-                                (parts[0].trim().to_string(), parts.get(1).map(|s| s.trim().to_string()))
+                                (
+                                    parts[0].trim().to_string(),
+                                    parts.get(1).map(|s| s.trim().to_string()),
+                                )
                             }
                             "go" => {
                                 // name Type 或 Type
@@ -1651,9 +1772,25 @@ self.variable_type_map.insert(normalized, var_types);
         let mut seen = HashSet::new();
 
         const KEYWORDS: &[&str] = &[
-            "if", "for", "while", "switch", "return", "print", "console",
-            "self", "new", "typeof", "instanceof", "throw", "delete",
-            "class", "import", "export", "from", "async", "await",
+            "if",
+            "for",
+            "while",
+            "switch",
+            "return",
+            "print",
+            "console",
+            "self",
+            "new",
+            "typeof",
+            "instanceof",
+            "throw",
+            "delete",
+            "class",
+            "import",
+            "export",
+            "from",
+            "async",
+            "await",
         ];
 
         for line in lines {
@@ -1666,7 +1803,10 @@ self.variable_type_map.insert(normalized, var_types);
             let mut i = 0;
 
             while i < chars.len() {
-                if chars[i] == '.' && i + 1 < chars.len() && (chars[i + 1].is_alphabetic() || chars[i + 1] == '_') {
+                if chars[i] == '.'
+                    && i + 1 < chars.len()
+                    && (chars[i + 1].is_alphabetic() || chars[i + 1] == '_')
+                {
                     // .method( 模式
                     i += 1;
                     let start = i;
@@ -1712,7 +1852,10 @@ self.variable_type_map.insert(normalized, var_types);
 
     /// 查找函数结束位置
     fn find_function_end(&self, lines: &[&str], start: usize, language: &str) -> usize {
-        let base_indent = lines[start].chars().take_while(|c| c.is_whitespace()).count();
+        let base_indent = lines[start]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .count();
         let mut end = start + 1;
 
         match language {
@@ -1779,13 +1922,42 @@ self.variable_type_map.insert(normalized, var_types);
     fn param_may_be_tainted(name: &str) -> bool {
         let lower = name.to_lowercase();
         const TAINT_PARAM_NAMES: &[&str] = &[
-            "req", "request", "ctx", "context", "input", "data", "payload",
-            "query", "params", "body", "form", "user_input", "user",
-            "id", "name", "url", "path", "file", "filename", "command",
-            "cmd", "sql", "html", "xml", "json", "token", "key",
-            "password", "secret", "msg", "message", "content",
+            "req",
+            "request",
+            "ctx",
+            "context",
+            "input",
+            "data",
+            "payload",
+            "query",
+            "params",
+            "body",
+            "form",
+            "user_input",
+            "user",
+            "id",
+            "name",
+            "url",
+            "path",
+            "file",
+            "filename",
+            "command",
+            "cmd",
+            "sql",
+            "html",
+            "xml",
+            "json",
+            "token",
+            "key",
+            "password",
+            "secret",
+            "msg",
+            "message",
+            "content",
         ];
-        TAINT_PARAM_NAMES.iter().any(|p| lower == *p || lower.contains(p))
+        TAINT_PARAM_NAMES
+            .iter()
+            .any(|p| lower == *p || lower.contains(p))
     }
 
     /// 按函数名判断是否是污点源（兜底：教学/测试代码的语义命名）
@@ -1795,8 +1967,8 @@ self.variable_type_map.insert(normalized, var_types);
 
         // 精确匹配（全词）
         const EXACT: &[&str] = &[
-            "get", "read", "input", "fetch", "receive", "request",
-            "parse", "load", "open", "recv", "accept",
+            "get", "read", "input", "fetch", "receive", "request", "parse", "load", "open", "recv",
+            "accept",
         ];
         if EXACT.iter().any(|p| lower == *p) {
             return true;
@@ -1804,21 +1976,54 @@ self.variable_type_map.insert(normalized, var_types);
 
         // 前缀匹配（兼容 snake_case 和 camelCase）
         const PREFIX: &[&str] = &[
-            "get_user", "get_input", "get_data", "get_param", "get_query",
-            "getuser", "getinput", "getdata", "getparam", "getquery",
-            "getrequest", "getpayload",
-            "read_file", "read_input", "read_data",
-            "readfile", "readinput", "readdata",
-            "fetch_data", "fetch_url", "fetch_api",
-            "fetchdata", "fetchurl", "fetchapi",
-            "receive_data", "receive_input", "receive_message",
-            "receivedata", "receiveinput", "receivemessage",
-            "parse_input", "parse_data", "parse_request", "parse_body",
-            "parseinput", "parsedata", "parserequest", "parsebody",
-            "load_data", "load_file", "load_input",
-            "loaddata", "loadfile", "loadinput",
-            "request_input", "request_data",
-            "requestinput", "requestdata",
+            "get_user",
+            "get_input",
+            "get_data",
+            "get_param",
+            "get_query",
+            "getuser",
+            "getinput",
+            "getdata",
+            "getparam",
+            "getquery",
+            "getrequest",
+            "getpayload",
+            "read_file",
+            "read_input",
+            "read_data",
+            "readfile",
+            "readinput",
+            "readdata",
+            "fetch_data",
+            "fetch_url",
+            "fetch_api",
+            "fetchdata",
+            "fetchurl",
+            "fetchapi",
+            "receive_data",
+            "receive_input",
+            "receive_message",
+            "receivedata",
+            "receiveinput",
+            "receivemessage",
+            "parse_input",
+            "parse_data",
+            "parse_request",
+            "parse_body",
+            "parseinput",
+            "parsedata",
+            "parserequest",
+            "parsebody",
+            "load_data",
+            "load_file",
+            "load_input",
+            "loaddata",
+            "loadfile",
+            "loadinput",
+            "request_input",
+            "request_data",
+            "requestinput",
+            "requestdata",
         ];
         if PREFIX.iter().any(|p| lower.starts_with(p)) {
             return true;
@@ -1826,15 +2031,19 @@ self.variable_type_map.insert(normalized, var_types);
 
         // 后缀匹配
         const SUFFIX: &[&str] = &[
-            "_input", "_data", "_request", "_payload", "_query",
-            "_params", "_body", "_form", "_message",
-            "input", "data", "request", "payload", "query",
+            "_input", "_data", "_request", "_payload", "_query", "_params", "_body", "_form",
+            "_message", "input", "data", "request", "payload", "query",
         ];
-        if SUFFIX.iter().any(|p| lower.ends_with(p) && lower.len() > p.len()) {
+        if SUFFIX
+            .iter()
+            .any(|p| lower.ends_with(p) && lower.len() > p.len())
+        {
             return true;
         }
 
-        self.source_patterns.iter().any(|s| s.matches(func_name, "*"))
+        self.source_patterns
+            .iter()
+            .any(|s| s.matches(func_name, "*"))
     }
 
     /// 检查是否是污点源：函数名兜底 + 函数体内容匹配（核心修复）
@@ -1856,8 +2065,8 @@ self.variable_type_map.insert(normalized, var_types);
 
         // 精确匹配（全词）
         const EXACT: &[&str] = &[
-            "execute", "exec", "query", "write", "send", "eval",
-            "system", "run", "open", "redirect",
+            "execute", "exec", "query", "write", "send", "eval", "system", "run", "open",
+            "redirect",
         ];
         if EXACT.iter().any(|p| lower == *p) {
             return true;
@@ -1865,11 +2074,22 @@ self.variable_type_map.insert(normalized, var_types);
 
         // 前缀匹配（兼容 snake_case 和 camelCase）
         const PREFIX: &[&str] = &[
-            "execute_", "exec_", "query_", "send_", "write_",
-            "eval_", "system_", "run_command", "run_query",
-            "redirect_to", "redirect_url",
-            "executecommand", "runcommand", "runquery",
-            "redirectto", "redirecturl",
+            "execute_",
+            "exec_",
+            "query_",
+            "send_",
+            "write_",
+            "eval_",
+            "system_",
+            "run_command",
+            "run_query",
+            "redirect_to",
+            "redirect_url",
+            "executecommand",
+            "runcommand",
+            "runquery",
+            "redirectto",
+            "redirecturl",
         ];
         if PREFIX.iter().any(|p| lower.starts_with(p)) {
             return true;
@@ -1877,8 +2097,8 @@ self.variable_type_map.insert(normalized, var_types);
 
         // 后缀匹配
         const SUFFIX: &[&str] = &[
-            "_execute", "_exec", "_query", "_write", "_send",
-            "_eval", "_system", "_command", "_sql", "_shell",
+            "_execute", "_exec", "_query", "_write", "_send", "_eval", "_system", "_command",
+            "_sql", "_shell",
         ];
         if SUFFIX.iter().any(|p| lower.ends_with(p)) {
             return true;
@@ -2019,7 +2239,8 @@ self.variable_type_map.insert(normalized, var_types);
         }
 
         // 跨文件衰减
-        let files: HashSet<&str> = call_path.iter()
+        let files: HashSet<&str> = call_path
+            .iter()
             .filter_map(|id| id.split(':').next())
             .collect();
         if files.len() > 1 {
@@ -2032,7 +2253,9 @@ self.variable_type_map.insert(normalized, var_types);
 
         // 动态节点衰减
         let has_dynamic = call_path.iter().any(|func_id| {
-            self.call_graph.nodes.get(func_id)
+            self.call_graph
+                .nodes
+                .get(func_id)
                 .map(|n| n.calls.iter().any(|c| c.callee == "<dynamic>"))
                 .unwrap_or(false)
         });
@@ -2047,61 +2270,141 @@ self.variable_type_map.insert(normalized, var_types);
     /// 默认污点源模式（按代码内容匹配，用于 is_taint_source 的函数体匹配）
     fn default_source_patterns() -> Vec<TaintSource> {
         vec![
-            TaintSource::new("http_request_body", "HTTP Request", vec![
-                "req.body", "req.query", "req.params", "req.headers", "req.cookies",
-                "request.body", "request.query", "request.params",
-                "req.get(", "req.param(", "req.header(",
-            ]),
-            TaintSource::new("process_input", "Process Input", vec![
-                "process.argv", "process.env", "process.stdin",
-                "os.environ", "sys.argv",
-            ]),
-            TaintSource::new("file_input", "File Input", vec![
-                "fs.readFile", "readFileSync", "createReadStream",
-                "fread", "fopen",
-            ]),
+            TaintSource::new(
+                "http_request_body",
+                "HTTP Request",
+                vec![
+                    "req.body",
+                    "req.query",
+                    "req.params",
+                    "req.headers",
+                    "req.cookies",
+                    "request.body",
+                    "request.query",
+                    "request.params",
+                    "req.get(",
+                    "req.param(",
+                    "req.header(",
+                ],
+            ),
+            TaintSource::new(
+                "process_input",
+                "Process Input",
+                vec![
+                    "process.argv",
+                    "process.env",
+                    "process.stdin",
+                    "os.environ",
+                    "sys.argv",
+                ],
+            ),
+            TaintSource::new(
+                "file_input",
+                "File Input",
+                vec![
+                    "fs.readFile",
+                    "readFileSync",
+                    "createReadStream",
+                    "fread",
+                    "fopen",
+                ],
+            ),
             // 泛化兜底：匹配按安全语义命名的教学/测试代码（仅供 by-name 兜底使用）
-            TaintSource::new("user_input_named", "User Input (named)", vec![
-                "getuserinput", "get_input", "get_user", "read_input",
-                "scanf", "prompt",
-            ]),
+            TaintSource::new(
+                "user_input_named",
+                "User Input (named)",
+                vec![
+                    "getuserinput",
+                    "get_input",
+                    "get_user",
+                    "read_input",
+                    "scanf",
+                    "prompt",
+                ],
+            ),
         ]
     }
 
     /// 默认污点汇模式（按代码内容匹配）
     fn default_sink_patterns() -> Vec<TaintSink> {
         vec![
-            TaintSink::new("code_injection", "Code Injection", vec![
-                "eval(", "new Function(", "vm.runIn", "vm.Script",
-            ], VulnerabilityType::CodeInjection),
-            TaintSink::new("command_injection", "Command Injection", vec![
-                "exec(", "execSync(", "spawn(", "child_process", "system(", "popen(",
-            ], VulnerabilityType::CommandInjection),
-            TaintSink::new("sql_injection", "SQL Injection", vec![
-                ".query(", ".execute(", "executeQuery",
-            ], VulnerabilityType::SqlInjection),
-            TaintSink::new("nosql_injection", "NoSQL Injection", vec![
-                ".findOne(", ".find(", "collection.find", "db.collection", "$where",
-            ], VulnerabilityType::NoSqlInjection),
-            TaintSink::new("ssrf", "SSRF", vec![
-                "http.request", "https.request", "fetch(", "axios", "needle.get",
-            ], VulnerabilityType::ServerSideRequestForgery),
-            TaintSink::new("xss", "XSS", vec![
-                "res.write(", "res.send(", "innerHTML", "response.write(",
-            ], VulnerabilityType::CrossSiteScripting),
-            TaintSink::new("path_traversal", "Path Traversal", vec![
-                "writeFile", "writeFileSync", "createWriteStream", "fs.open",
-            ], VulnerabilityType::PathTraversal),
-            TaintSink::new("open_redirect", "Open Redirect", vec![
-                "redirect(", "res.redirect",
-            ], VulnerabilityType::OpenRedirect),
+            TaintSink::new(
+                "code_injection",
+                "Code Injection",
+                vec!["eval(", "new Function(", "vm.runIn", "vm.Script"],
+                VulnerabilityType::CodeInjection,
+            ),
+            TaintSink::new(
+                "command_injection",
+                "Command Injection",
+                vec![
+                    "exec(",
+                    "execSync(",
+                    "spawn(",
+                    "child_process",
+                    "system(",
+                    "popen(",
+                ],
+                VulnerabilityType::CommandInjection,
+            ),
+            TaintSink::new(
+                "sql_injection",
+                "SQL Injection",
+                vec![".query(", ".execute(", "executeQuery"],
+                VulnerabilityType::SqlInjection,
+            ),
+            TaintSink::new(
+                "nosql_injection",
+                "NoSQL Injection",
+                vec![
+                    ".findOne(",
+                    ".find(",
+                    "collection.find",
+                    "db.collection",
+                    "$where",
+                ],
+                VulnerabilityType::NoSqlInjection,
+            ),
+            TaintSink::new(
+                "ssrf",
+                "SSRF",
+                vec![
+                    "http.request",
+                    "https.request",
+                    "fetch(",
+                    "axios",
+                    "needle.get",
+                ],
+                VulnerabilityType::ServerSideRequestForgery,
+            ),
+            TaintSink::new(
+                "xss",
+                "XSS",
+                vec!["res.write(", "res.send(", "innerHTML", "response.write("],
+                VulnerabilityType::CrossSiteScripting,
+            ),
+            TaintSink::new(
+                "path_traversal",
+                "Path Traversal",
+                vec!["writeFile", "writeFileSync", "createWriteStream", "fs.open"],
+                VulnerabilityType::PathTraversal,
+            ),
+            TaintSink::new(
+                "open_redirect",
+                "Open Redirect",
+                vec!["redirect(", "res.redirect"],
+                VulnerabilityType::OpenRedirect,
+            ),
         ]
     }
 
     /// 注入中间件虚拟边：将 Express app.use() 中间件连接到同文件的路由 handler
     fn inject_middleware_edges(&mut self) {
         for mw in &self.middleware_model.express_middleware.clone() {
-            let mw_func_id = self.call_graph.nodes.iter()
+            let mw_func_id = self
+                .call_graph
+                .nodes
+                .iter()
                 .find(|(_, node)| {
                     node.name == mw.handler_name
                         && normalize_path(&node.file_path) == normalize_path(&mw.handler_file)
@@ -2114,24 +2417,39 @@ self.variable_type_map.insert(normalized, var_types);
                     let normalized_file = normalize_path(&mw.handler_file);
                     if let Some(aliases) = self.file_import_aliases.get(&normalized_file) {
                         if let Some(resolution) = aliases.get(&mw.handler_name) {
-                            if let Some(target_file) =
-                                self.resolve_module_to_file(&resolution.source_module, &mw.handler_file)
+                            if let Some(target_file) = self
+                                .resolve_module_to_file(&resolution.source_module, &mw.handler_file)
                             {
                                 let target_norm = normalize_path(&target_file);
-                                if let Some(id) = self.call_graph.nodes.iter()
-                                    .find(|(_, n)| n.name == resolution.original_export_name
-                                        && normalize_path(&n.file_path) == target_norm)
+                                if let Some(id) = self
+                                    .call_graph
+                                    .nodes
+                                    .iter()
+                                    .find(|(_, n)| {
+                                        n.name == resolution.original_export_name
+                                            && normalize_path(&n.file_path) == target_norm
+                                    })
                                     .map(|(id, _)| id.clone())
                                 {
                                     id
-                                } else { continue; }
-                            } else { continue; }
-                        } else { continue; }
-                    } else { continue; }
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
             };
 
-            let route_lines = self.middleware_model.get_express_route_lines(&mw.handler_file);
+            let route_lines = self
+                .middleware_model
+                .get_express_route_lines(&mw.handler_file);
             for &line in route_lines {
                 for (route_id, route_node) in &self.call_graph.nodes.clone() {
                     if normalize_path(&route_node.file_path) == normalize_path(&mw.handler_file)
@@ -2188,7 +2506,8 @@ impl CrossFileTaintAnalyzer {
             in_degree.insert(id, node.calls.len());
         }
 
-        let mut queue: VecDeque<&String> = in_degree.iter()
+        let mut queue: VecDeque<&String> = in_degree
+            .iter()
             .filter(|(_, &deg)| deg == 0)
             .map(|(&id, _)| id)
             .collect();
@@ -2222,11 +2541,15 @@ impl CrossFileTaintAnalyzer {
     fn compute_single_summary(&self, func_id: &str) -> Option<FunctionSummary> {
         // 优先使用 CPG 摘要
         if let Some(func_cpg) = self.cpg_cache.get(func_id) {
-            let taint_flows = self.cpg_taint_flows.get(func_id)
+            let taint_flows = self
+                .cpg_taint_flows
+                .get(func_id)
                 .cloned()
                 .unwrap_or_default();
 
-            let sink_names: Vec<&str> = self.sink_patterns.iter()
+            let sink_names: Vec<&str> = self
+                .sink_patterns
+                .iter()
                 .flat_map(|s| s.patterns.iter().map(|p| p.as_str()))
                 .collect();
 
@@ -2288,49 +2611,70 @@ impl CrossFileTaintAnalyzer {
     fn infer_vuln_type(&self, func_name: &str) -> VulnerabilityType {
         let lower = func_name.to_lowercase();
 
-        if lower.contains("exec") || lower.contains("system") || lower.contains("spawn")
-            || lower.contains("runtime") || lower.contains("processbuilder")
-            || lower.contains("shell_exec") || lower.contains("passthru")
+        if lower.contains("exec")
+            || lower.contains("system")
+            || lower.contains("spawn")
+            || lower.contains("runtime")
+            || lower.contains("processbuilder")
+            || lower.contains("shell_exec")
+            || lower.contains("passthru")
         {
             return VulnerabilityType::CommandInjection;
         }
 
-        if lower.contains("query") || lower.contains("sql") || lower.contains("cursor")
-            || lower.contains("jdbctemplate") || lower.contains("statement")
-            || lower.contains("preparedstatement") || lower.contains("database")
+        if lower.contains("query")
+            || lower.contains("sql")
+            || lower.contains("cursor")
+            || lower.contains("jdbctemplate")
+            || lower.contains("statement")
+            || lower.contains("preparedstatement")
+            || lower.contains("database")
         {
             return VulnerabilityType::SqlInjection;
         }
 
-        if lower.contains("eval") || lower.contains("compile") || lower.contains("scriptengine")
-            || lower.contains("groovyshell") || lower.contains("__import__")
+        if lower.contains("eval")
+            || lower.contains("compile")
+            || lower.contains("scriptengine")
+            || lower.contains("groovyshell")
+            || lower.contains("__import__")
         {
             return VulnerabilityType::CodeInjection;
         }
 
         if (lower.contains("open") && !lower.contains("response"))
-            || lower.contains("readfile") || lower.contains("writefile")
-            || lower.contains("fileinputstream") || lower.contains("fileoutputstream")
+            || lower.contains("readfile")
+            || lower.contains("writefile")
+            || lower.contains("fileinputstream")
+            || lower.contains("fileoutputstream")
         {
             return VulnerabilityType::PathTraversal;
         }
 
-        if lower.contains("fetch") || lower.contains("httpclient") || lower.contains("urlconnection")
-            || lower.contains("resttemplate") || lower.contains("webclient")
+        if lower.contains("fetch")
+            || lower.contains("httpclient")
+            || lower.contains("urlconnection")
+            || lower.contains("resttemplate")
+            || lower.contains("webclient")
             || lower.contains("sendrequest")
         {
             return VulnerabilityType::ServerSideRequestForgery;
         }
 
-        if lower.contains("innerhtml") || lower.contains("document.write")
-            || lower.contains("getwriter") || lower.contains("dangerouslysetinnerhtml")
+        if lower.contains("innerhtml")
+            || lower.contains("document.write")
+            || lower.contains("getwriter")
+            || lower.contains("dangerouslysetinnerhtml")
         {
             return VulnerabilityType::CrossSiteScripting;
         }
 
-        if lower.contains("deserialize") || lower.contains("readobject")
-            || lower.contains("objectinputstream") || lower.contains("readvalue")
-            || lower.contains("pickle") || lower.contains("unserialize")
+        if lower.contains("deserialize")
+            || lower.contains("readobject")
+            || lower.contains("objectinputstream")
+            || lower.contains("readvalue")
+            || lower.contains("pickle")
+            || lower.contains("unserialize")
         {
             return VulnerabilityType::InsecureDeserialization;
         }
@@ -2366,10 +2710,9 @@ impl CrossFileTaintAnalyzer {
         };
 
         // 查找匹配的摘要
-        let summary = summaries.values().find(|s| {
-            s.func_name == callee_name ||
-            s.func_id.contains(callee_name)
-        });
+        let summary = summaries
+            .values()
+            .find(|s| s.func_name == callee_name || s.func_id.contains(callee_name));
 
         if let Some(summary) = summary {
             for (param_idx, affects_return) in &summary.taint_propagation {
@@ -2467,7 +2810,9 @@ impl ContextAssembler {
         let file_str = file_path.replace('\\', "/");
 
         // 1. 找到该文件中的所有函数
-        let file_funcs = self.call_graph.file_functions
+        let file_funcs = self
+            .call_graph
+            .file_functions
             .get(&file_str)
             .cloned()
             .unwrap_or_default();
@@ -2551,9 +2896,7 @@ impl ContextAssembler {
                         {
                             upstream_validation.push(format!(
                                 "{}:{} ({})",
-                                caller.file_path,
-                                cfunc.start_line,
-                                cfunc.name,
+                                caller.file_path, cfunc.start_line, cfunc.name,
                             ));
                         }
                     }
@@ -2674,22 +3017,45 @@ mod tests {
         graph.add_node(callee);
         graph.add_call("test.py:main", "test.py:helper");
 
-        assert!(graph.nodes.get("test.py:main").unwrap().calls.iter().any(|c| c.callee == "test.py:helper".to_string()));
-        assert!(graph.nodes.get("test.py:helper").unwrap().called_by.contains(&"test.py:main".to_string()));
+        assert!(graph
+            .nodes
+            .get("test.py:main")
+            .unwrap()
+            .calls
+            .iter()
+            .any(|c| c.callee == "test.py:helper".to_string()));
+        assert!(graph
+            .nodes
+            .get("test.py:helper")
+            .unwrap()
+            .called_by
+            .contains(&"test.py:main".to_string()));
     }
 
     #[test]
     fn test_extract_function_name_python() {
         let analyzer = CrossFileTaintAnalyzer::new();
-        assert_eq!(analyzer.extract_function_name("def main():", "python"), Some("main".to_string()));
-        assert_eq!(analyzer.extract_function_name("def get_user(id):", "python"), Some("get_user".to_string()));
+        assert_eq!(
+            analyzer.extract_function_name("def main():", "python"),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            analyzer.extract_function_name("def get_user(id):", "python"),
+            Some("get_user".to_string())
+        );
     }
 
     #[test]
     fn test_extract_function_name_javascript() {
         let analyzer = CrossFileTaintAnalyzer::new();
-        assert_eq!(analyzer.extract_function_name("function main() {", "javascript"), Some("main".to_string()));
-        assert_eq!(analyzer.extract_function_name("const helper = () =>", "javascript"), Some("helper".to_string()));
+        assert_eq!(
+            analyzer.extract_function_name("function main() {", "javascript"),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            analyzer.extract_function_name("const helper = () =>", "javascript"),
+            Some("helper".to_string())
+        );
     }
 
     #[test]
@@ -2713,11 +3079,26 @@ mod tests {
         assert!(!analyzer.is_taint_sink("format", "").0);
         // 核心修复：函数体内容匹配（返回具体漏洞类型）
         assert!(analyzer.is_taint_sink("handler", "eval(req.body.x);").0);
-        assert_eq!(analyzer.is_taint_sink("handler", "eval(req.body.x);").1, Some(VulnerabilityType::CodeInjection));
+        assert_eq!(
+            analyzer.is_taint_sink("handler", "eval(req.body.x);").1,
+            Some(VulnerabilityType::CodeInjection)
+        );
         assert!(analyzer.is_taint_sink("callback", "needle.get(url);").0);
-        assert_eq!(analyzer.is_taint_sink("callback", "needle.get(url);").1, Some(VulnerabilityType::ServerSideRequestForgery));
-        assert!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});").0);
-        assert_eq!(analyzer.is_taint_sink("callback", "usersCol.findOne({userName});").1, Some(VulnerabilityType::NoSqlInjection));
+        assert_eq!(
+            analyzer.is_taint_sink("callback", "needle.get(url);").1,
+            Some(VulnerabilityType::ServerSideRequestForgery)
+        );
+        assert!(
+            analyzer
+                .is_taint_sink("callback", "usersCol.findOne({userName});")
+                .0
+        );
+        assert_eq!(
+            analyzer
+                .is_taint_sink("callback", "usersCol.findOne({userName});")
+                .1,
+            Some(VulnerabilityType::NoSqlInjection)
+        );
     }
 
     #[test]
@@ -2760,29 +3141,53 @@ def execute_query(query):
         let result = analyzer.analyze_project(&tmp_dir);
 
         // 验证调用图被构建
-        assert!(result.stats.files_analyzed >= 2, "Should analyze at least 2 files, got {}", result.stats.files_analyzed);
-        assert!(result.stats.total_functions >= 3, "Should find at least 3 functions, got {}", result.stats.total_functions);
+        assert!(
+            result.stats.files_analyzed >= 2,
+            "Should analyze at least 2 files, got {}",
+            result.stats.files_analyzed
+        );
+        assert!(
+            result.stats.total_functions >= 3,
+            "Should find at least 3 functions, got {}",
+            result.stats.total_functions
+        );
 
         // 验证 taint sources 和 sinks 被识别
         // get_user_input 包含 "get" → is_taint_source
         // execute_query 包含 "execute" → is_taint_sink
-        assert!(result.stats.taint_sources > 0, "Should find taint sources, got {}", result.stats.taint_sources);
-        assert!(result.stats.taint_sinks > 0, "Should find taint sinks, got {}", result.stats.taint_sinks);
+        assert!(
+            result.stats.taint_sources > 0,
+            "Should find taint sources, got {}",
+            result.stats.taint_sources
+        );
+        assert!(
+            result.stats.taint_sinks > 0,
+            "Should find taint sinks, got {}",
+            result.stats.taint_sinks
+        );
 
         // 验证跨文件调用关系被解析
         // handle_request (source.py) 调用 execute_query (sink.py) → 应建立跨文件调用边
-        let has_cross_file_calls = result.call_graph.nodes.values()
-            .any(|n| n.calls.iter().any(|c| {
+        let has_cross_file_calls = result.call_graph.nodes.values().any(|n| {
+            n.calls.iter().any(|c| {
                 if let Some(callee) = result.call_graph.nodes.get(&c.callee) {
                     callee.file_path != n.file_path
                 } else {
                     false
                 }
-            }));
-        assert!(has_cross_file_calls, "Should resolve cross-file call relationships");
+            })
+        });
+        assert!(
+            has_cross_file_calls,
+            "Should resolve cross-file call relationships"
+        );
 
         // 验证检测到 taint 流（source → sink 路径）
-        assert!(result.stats.taint_flows > 0, "Should detect taint flows from source to sink, got {}", result.stats.taint_flows);
+        assert!(
+            result.stats.taint_flows > 0,
+            "Should detect taint flows from source to sink, got {}",
+            result.stats.taint_flows
+        );
 
         // 清理
         let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -2817,16 +3222,26 @@ function executeCommand(cmd) {
         let result = analyzer.analyze_project(&tmp_dir);
 
         assert!(result.stats.files_analyzed >= 2);
-        assert!(result.stats.taint_sources > 0, "handleRequest should be identified as taint source");
-        assert!(result.stats.taint_sinks > 0, "executeCommand should be identified as taint sink");
+        assert!(
+            result.stats.taint_sources > 0,
+            "handleRequest should be identified as taint source"
+        );
+        assert!(
+            result.stats.taint_sinks > 0,
+            "executeCommand should be identified as taint sink"
+        );
 
         // handlerRequest calls processInput (cross-file)
-        let has_cross = result.call_graph.nodes.values()
-            .any(|n| n.calls.iter().any(|c| {
-                result.call_graph.nodes.get(&c.callee)
+        let has_cross = result.call_graph.nodes.values().any(|n| {
+            n.calls.iter().any(|c| {
+                result
+                    .call_graph
+                    .nodes
+                    .get(&c.callee)
                     .map(|callee| callee.file_path != n.file_path)
                     .unwrap_or(false)
-            }));
+            })
+        });
         assert!(has_cross, "Should resolve cross-file JS call relationships");
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -2886,13 +3301,19 @@ function executeQuery(query) {
         let result = analyzer.analyze_project(&tmp_dir);
 
         // 验证 import alias 被正确解析
-        let has_import_resolved_call = result.call_graph.nodes.values()
-            .any(|n| n.file_path.ends_with("handler.js")
+        let has_import_resolved_call = result.call_graph.nodes.values().any(|n| {
+            n.file_path.ends_with("handler.js")
                 && n.calls.iter().any(|c| {
-                    result.call_graph.nodes.get(&c.callee)
-                        .map(|callee| callee.name == "executeQuery" && callee.file_path.ends_with("db.js"))
+                    result
+                        .call_graph
+                        .nodes
+                        .get(&c.callee)
+                        .map(|callee| {
+                            callee.name == "executeQuery" && callee.file_path.ends_with("db.js")
+                        })
                         .unwrap_or(false)
-                }));
+                })
+        });
         assert!(has_import_resolved_call,
             "import {{ executeQuery as runQuery }} should resolve runQuery() -> executeQuery in db.js");
 
@@ -2926,15 +3347,23 @@ function executeQuery(query) {
         let mut analyzer = CrossFileTaintAnalyzer::new();
         let result = analyzer.analyze_project(&tmp_dir);
 
-        let has_import_resolved_call = result.call_graph.nodes.values()
-            .any(|n| n.file_path.ends_with("handler.js")
+        let has_import_resolved_call = result.call_graph.nodes.values().any(|n| {
+            n.file_path.ends_with("handler.js")
                 && n.calls.iter().any(|c| {
-                    result.call_graph.nodes.get(&c.callee)
-                        .map(|callee| callee.name == "executeQuery" && callee.file_path.ends_with("db.js"))
+                    result
+                        .call_graph
+                        .nodes
+                        .get(&c.callee)
+                        .map(|callee| {
+                            callee.name == "executeQuery" && callee.file_path.ends_with("db.js")
+                        })
                         .unwrap_or(false)
-                }));
-        assert!(has_import_resolved_call,
-            "import {{ executeQuery }} should resolve executeQuery() -> executeQuery in db.js");
+                })
+        });
+        assert!(
+            has_import_resolved_call,
+            "import {{ executeQuery }} should resolve executeQuery() -> executeQuery in db.js"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -2965,13 +3394,19 @@ def execute_query(query):
         let mut analyzer = CrossFileTaintAnalyzer::new();
         let result = analyzer.analyze_project(&tmp_dir);
 
-        let has_import_resolved_call = result.call_graph.nodes.values()
-            .any(|n| n.file_path.ends_with("handler.py")
+        let has_import_resolved_call = result.call_graph.nodes.values().any(|n| {
+            n.file_path.ends_with("handler.py")
                 && n.calls.iter().any(|c| {
-                    result.call_graph.nodes.get(&c.callee)
-                        .map(|callee| callee.name == "execute_query" && callee.file_path.ends_with("db.py"))
+                    result
+                        .call_graph
+                        .nodes
+                        .get(&c.callee)
+                        .map(|callee| {
+                            callee.name == "execute_query" && callee.file_path.ends_with("db.py")
+                        })
                         .unwrap_or(false)
-                }));
+                })
+        });
         assert!(has_import_resolved_call,
             "from db import execute_query as run_query should resolve run_query() → execute_query in db.py");
 
@@ -3005,15 +3440,21 @@ function exec(cmd) {
         let mut analyzer = CrossFileTaintAnalyzer::new();
         let result = analyzer.analyze_project(&tmp_dir);
 
-        let has_import_resolved_call = result.call_graph.nodes.values()
-            .any(|n| n.file_path.ends_with("handler.js")
+        let has_import_resolved_call = result.call_graph.nodes.values().any(|n| {
+            n.file_path.ends_with("handler.js")
                 && n.calls.iter().any(|c| {
-                    result.call_graph.nodes.get(&c.callee)
+                    result
+                        .call_graph
+                        .nodes
+                        .get(&c.callee)
                         .map(|callee| callee.name == "exec" && callee.file_path.ends_with("db.js"))
                         .unwrap_or(false)
-                }));
-        assert!(has_import_resolved_call,
-            "const {{ exec }} = require('./db') should resolve exec() -> exec in db.js");
+                })
+        });
+        assert!(
+            has_import_resolved_call,
+            "const {{ exec }} = require('./db') should resolve exec() -> exec in db.js"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -3045,9 +3486,11 @@ def execute_query(query):
         let mut analyzer = CrossFileTaintAnalyzer::new();
         let result = analyzer.analyze_project(&tmp_dir);
 
-        assert!(result.stats.taint_flows > 0,
+        assert!(
+            result.stats.taint_flows > 0,
             "Global name matching fallback should still work: {}",
-            result.stats.taint_flows);
+            result.stats.taint_flows
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -3077,18 +3520,30 @@ function setup() {
         let result = analyzer.analyze_project(&tmp_dir);
 
         // 验证回调节点存在
-        let has_callback = result.call_graph.nodes.values()
+        let has_callback = result
+            .call_graph
+            .nodes
+            .values()
             .any(|n| n.is_callback && n.name.starts_with("<callback@"));
-        assert!(has_callback, "Arrow function callback should be registered as synthetic CallGraphNode");
+        assert!(
+            has_callback,
+            "Arrow function callback should be registered as synthetic CallGraphNode"
+        );
 
         // 验证回调内的调用被提取（exec）
-        let has_exec_in_callback = result.call_graph.nodes.values()
+        let has_exec_in_callback = result
+            .call_graph
+            .nodes
+            .values()
             .filter(|n| n.is_callback)
             .any(|n| n.calls.iter().any(|c| c.callee == "exec"));
         assert!(has_exec_in_callback, "Callback should contain 'exec' call");
 
         // 验证 setup → callback 的边
-        let has_edge = result.call_graph.nodes.values()
+        let has_edge = result
+            .call_graph
+            .nodes
+            .values()
             .filter(|n| n.is_callback)
             .any(|cb| cb.called_by.iter().any(|caller| caller.contains("setup")));
         assert!(has_edge, "setup() should have edge to callback node");
@@ -3118,11 +3573,17 @@ function fetchData(url) {
         let mut analyzer = CrossFileTaintAnalyzer::new();
         let result = analyzer.analyze_project(&tmp_dir);
 
-        let cb_count = result.call_graph.nodes.values()
+        let cb_count = result
+            .call_graph
+            .nodes
+            .values()
             .filter(|n| n.is_callback)
             .count();
-        assert!(cb_count >= 1,
-            "Promise .then() callbacks should be registered, got {} callback(s)", cb_count);
+        assert!(
+            cb_count >= 1,
+            "Promise .then() callbacks should be registered, got {} callback(s)",
+            cb_count
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -3147,10 +3608,15 @@ function setupMiddleware(app) {
         let mut analyzer = CrossFileTaintAnalyzer::new();
         let result = analyzer.analyze_project(&tmp_dir);
 
-        let has_function_expr_cb = result.call_graph.nodes.values()
+        let has_function_expr_cb = result
+            .call_graph
+            .nodes
+            .values()
             .any(|n| n.is_callback && n.parameters.iter().any(|p| p.name == "req"));
-        assert!(has_function_expr_cb,
-            "function expression callback should be registered with correct params");
+        assert!(
+            has_function_expr_cb,
+            "function expression callback should be registered with correct params"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -3183,9 +3649,15 @@ function query(sql) {
         let result = analyzer.analyze_project(&tmp_dir);
 
         // 验证 CallTarget 类型（calls 字段现在是 Vec<CallTarget>）
-        let handler_node = result.call_graph.nodes.values()
+        let handler_node = result
+            .call_graph
+            .nodes
+            .values()
             .find(|n| n.name == "handleRequest");
-        assert!(handler_node.is_some(), "handleRequest should exist in call graph");
+        assert!(
+            handler_node.is_some(),
+            "handleRequest should exist in call graph"
+        );
         let handler = handler_node.unwrap();
         assert!(!handler.calls.is_empty(), "handleRequest should have calls");
 

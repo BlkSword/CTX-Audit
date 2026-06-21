@@ -70,6 +70,16 @@ impl TaintSource {
     }
 }
 
+/// 污点汇匹配模式
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum MatchMode {
+    /// 子串匹配（默认，兼容旧行为）
+    #[default]
+    Substring,
+    /// 语义匹配：优先使用 namespaces / receiver_patterns / exact_matches
+    Semantic,
+}
+
 /// 污点汇 - 危险函数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaintSink {
@@ -82,7 +92,7 @@ pub struct TaintSink {
     /// 描述
     pub description: String,
 
-    /// 匹配模式（函数名）
+    /// 匹配模式（函数名或函数名片段）
     pub patterns: Vec<String>,
 
     /// 语言
@@ -103,6 +113,26 @@ pub struct TaintSink {
     /// AST 匹配模式（可选，用于精确匹配）
     #[serde(default)]
     pub ast_patterns: Vec<AstPattern>,
+
+    /// 匹配模式：子串或语义优先
+    #[serde(default)]
+    pub match_mode: MatchMode,
+
+    /// 库/模块命名空间前缀（语义匹配用）
+    /// 示例: ["mysql2", "pg", "sqlite3", "django.db"]
+    #[serde(default)]
+    pub namespaces: Vec<String>,
+
+    /// 接收者名称/类型模式（语义匹配用）
+    /// 用于方法调用 obj.method()，要求接收者名称匹配
+    /// 示例: ["connection", "pool", "client", "cursor", "db"]
+    #[serde(default)]
+    pub receiver_patterns: Vec<String>,
+
+    /// 精确完整函数名匹配（语义匹配用）
+    /// 示例: ["cursor.execute", "child_process.exec", "Runtime.exec"]
+    #[serde(default)]
+    pub exact_matches: Vec<String>,
 }
 
 impl TaintSink {
@@ -119,25 +149,129 @@ impl TaintSink {
             cwe_id: None,
             sensitive_params: vec![0],
             ast_patterns: Vec::new(),
+            match_mode: MatchMode::default(),
+            namespaces: Vec::new(),
+            receiver_patterns: Vec::new(),
+            exact_matches: Vec::new(),
         }
     }
 
-    /// 检查是否匹配给定的函数名
+    /// 检查当前 sink 是否配置了语义匹配约束
+    pub fn has_semantic_constraints(&self) -> bool {
+        self.match_mode == MatchMode::Semantic
+            || !self.namespaces.is_empty()
+            || !self.receiver_patterns.is_empty()
+            || !self.exact_matches.is_empty()
+    }
+
+    /// 检查是否匹配给定的函数名（兼容旧接口）
     pub fn matches(&self, func_name: &str, language: &str) -> bool {
+        self.matches_with_context(func_name, None, language)
+    }
+
+    /// 检查是否匹配给定的函数名，可选携带接收者上下文
+    ///
+    /// 匹配优先级：
+    /// 1. exact_matches 全等匹配
+    /// 2. namespaces + patterns 组合匹配
+    /// 3. receiver_patterns + patterns 组合匹配
+    /// 4. 回退到 patterns 子串匹配（当 match_mode 不为 Semantic 且未命中语义规则时）
+    pub fn matches_with_context(
+        &self,
+        func_name: &str,
+        receiver: Option<&str>,
+        language: &str,
+    ) -> bool {
         // language 为 "*" 或 "" 时视为通配符，匹配所有语言
-        // 否则需要 sink 的 languages 列表包含 "*" 或匹配 language
         if language != "*" && language != "" {
             if !self.languages.iter().any(|l| l == "*" || l == language) {
                 return false;
             }
         }
 
-        // 检查模式
+        let has_semantic = self.has_semantic_constraints();
+
+        // 1. exact_matches 全等匹配
+        if !self.exact_matches.is_empty() {
+            for exact in &self.exact_matches {
+                if func_name == exact.as_str() {
+                    return true;
+                }
+            }
+        }
+
+        // 2. namespaces + patterns 组合匹配
+        if !self.namespaces.is_empty() && !self.patterns.is_empty() {
+            for namespace in &self.namespaces {
+                // namespace 可以是库前缀，func_name 形如 "mysql2.createConnection().query"
+                if func_name.starts_with(namespace)
+                    || func_name.contains(&format!("{}.", namespace))
+                    || func_name.contains(&format!("{}::", namespace))
+                {
+                    for pattern in &self.patterns {
+                        if Self::pattern_matches_func_name(pattern, func_name) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. receiver_patterns + patterns 组合匹配
+        if let Some(recv) = receiver {
+            if !self.receiver_patterns.is_empty() && !self.patterns.is_empty() {
+                let recv_lower = recv.to_lowercase();
+                for receiver_pattern in &self.receiver_patterns {
+                    if recv_lower.contains(&receiver_pattern.to_lowercase()) {
+                        for pattern in &self.patterns {
+                            if Self::pattern_matches_func_name(pattern, func_name) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. 回退到 patterns 子串匹配
+        // 当 match_mode 为 Semantic 时，若已配置语义字段但未命中，则不再回退
+        // 避免语义规则被旧子串规则稀释
+        if self.match_mode == MatchMode::Semantic && has_semantic {
+            return false;
+        }
+
         for pattern in &self.patterns {
-            if func_name.contains(pattern) || pattern == func_name {
+            if Self::pattern_matches_func_name(pattern, func_name) {
                 return true;
             }
         }
+
+        false
+    }
+
+    /// 检查单个 pattern 是否匹配函数名。
+    ///
+    /// 支持多种写法：
+    /// - pattern 以 `.` 开头（如 `.query`），匹配方法调用 `obj.query` 中的 `query`
+    /// - pattern 以 `(` 结尾（如 `eval(`），去掉 `(` 后匹配函数名 `eval`
+    /// - 其他 pattern 按原始子串匹配
+    fn pattern_matches_func_name(pattern: &str, func_name: &str) -> bool {
+        if func_name.contains(pattern) || pattern == func_name {
+            return true;
+        }
+
+        // 归一化：去掉前导 . 和尾随 (，用于方法名/函数名匹配
+        let normalized = pattern
+            .trim_start_matches('.')
+            .trim_end_matches('(')
+            .trim_end();
+
+        if !normalized.is_empty()
+            && (func_name == normalized || func_name.ends_with(&format!(".{}", normalized)))
+        {
+            return true;
+        }
+
         false
     }
 }
@@ -380,6 +514,10 @@ pub enum VulnerabilityType {
     HeaderInjection,
     /// 缓存投毒
     CachePoisoning,
+    /// 缓冲区溢出
+    BufferOverflow,
+    /// 格式化字符串
+    FormatString,
     /// 通用
     Generic,
 }
@@ -401,6 +539,8 @@ impl std::fmt::Display for VulnerabilityType {
             VulnerabilityType::OpenRedirect => write!(f, "Open Redirect"),
             VulnerabilityType::HeaderInjection => write!(f, "Header Injection"),
             VulnerabilityType::CachePoisoning => write!(f, "Cache Poisoning"),
+            VulnerabilityType::BufferOverflow => write!(f, "Buffer Overflow"),
+            VulnerabilityType::FormatString => write!(f, "Format String"),
             VulnerabilityType::Generic => write!(f, "Potential Security Issue"),
         }
     }
@@ -424,24 +564,20 @@ static EXTRACT_PATTERNS: Lazy<Vec<regex::Regex>> = Lazy::new(|| {
 });
 
 /// Pre-compiled regex for function parameter extraction (Fix 8)
-static PARAM_PATTERN: Lazy<Option<regex::Regex>> = Lazy::new(|| {
-    regex::Regex::new(r#"(?:def|function|func|fn)\s+\w+\s*\(([^)]+)\)"#).ok()
-});
+static PARAM_PATTERN: Lazy<Option<regex::Regex>> =
+    Lazy::new(|| regex::Regex::new(r#"(?:def|function|func|fn)\s+\w+\s*\(([^)]+)\)"#).ok());
 
 /// Pre-compiled regex for assignment propagation detection
-static ASSIGNMENT_RE: Lazy<Option<regex::Regex>> = Lazy::new(|| {
-    regex::Regex::new(r#"(\w+)\s*=\s*([^=].*)"#).ok()
-});
+static ASSIGNMENT_RE: Lazy<Option<regex::Regex>> =
+    Lazy::new(|| regex::Regex::new(r#"(\w+)\s*=\s*([^=].*)"#).ok());
 
 /// Pre-compiled regex for call propagation detection
-static CALL_RE: Lazy<Option<regex::Regex>> = Lazy::new(|| {
-    regex::Regex::new(r#"(?:(\w+)\s*[:=]+\s*)?(\w+)\s*\(([^)]*)\)"#).ok()
-});
+static CALL_RE: Lazy<Option<regex::Regex>> =
+    Lazy::new(|| regex::Regex::new(r#"(?:(\w+)\s*[:=]+\s*)?(\w+)\s*\(([^)]*)\)"#).ok());
 
 /// Pre-compiled regex for function name extraction
-static FUNC_NAME_RE: Lazy<Option<regex::Regex>> = Lazy::new(|| {
-    regex::Regex::new(r#"(\w+)\s*\("#).ok()
-});
+static FUNC_NAME_RE: Lazy<Option<regex::Regex>> =
+    Lazy::new(|| regex::Regex::new(r#"(\w+)\s*\("#).ok());
 
 /// 污点分析器
 pub struct TaintAnalyzer {
@@ -741,6 +877,10 @@ impl TaintAnalyzer {
                 cwe_id: Some("CWE-89".to_string()),
                 sensitive_params: vec![0],
                 ast_patterns: vec![],
+                match_mode: MatchMode::default(),
+                namespaces: vec![],
+                receiver_patterns: vec![],
+                exact_matches: vec![],
             },
             // 命令执行
             TaintSink {
@@ -765,6 +905,10 @@ impl TaintAnalyzer {
                 cwe_id: Some("CWE-78".to_string()),
                 sensitive_params: vec![0],
                 ast_patterns: vec![],
+                match_mode: MatchMode::default(),
+                namespaces: vec![],
+                receiver_patterns: vec![],
+                exact_matches: vec![],
             },
             // 文件路径操作
             TaintSink {
@@ -790,6 +934,10 @@ impl TaintAnalyzer {
                 cwe_id: Some("CWE-22".to_string()),
                 sensitive_params: vec![0],
                 ast_patterns: vec![],
+                match_mode: MatchMode::default(),
+                namespaces: vec![],
+                receiver_patterns: vec![],
+                exact_matches: vec![],
             },
             // HTML 输出
             TaintSink {
@@ -810,6 +958,10 @@ impl TaintAnalyzer {
                 cwe_id: Some("CWE-79".to_string()),
                 sensitive_params: vec![0],
                 ast_patterns: vec![],
+                match_mode: MatchMode::default(),
+                namespaces: vec![],
+                receiver_patterns: vec![],
+                exact_matches: vec![],
             },
             // SSRF
             TaintSink {
@@ -834,6 +986,10 @@ impl TaintAnalyzer {
                 cwe_id: Some("CWE-918".to_string()),
                 sensitive_params: vec![0],
                 ast_patterns: vec![],
+                match_mode: MatchMode::default(),
+                namespaces: vec![],
+                receiver_patterns: vec![],
+                exact_matches: vec![],
             },
             // eval
             TaintSink {
@@ -854,6 +1010,10 @@ impl TaintAnalyzer {
                 cwe_id: Some("CWE-94".to_string()),
                 sensitive_params: vec![0],
                 ast_patterns: vec![],
+                match_mode: MatchMode::default(),
+                namespaces: vec![],
+                receiver_patterns: vec![],
+                exact_matches: vec![],
             },
         ]
     }
@@ -885,7 +1045,10 @@ impl TaintAnalyzer {
             Sanitizer {
                 pattern: "escape".to_string(),
                 description: "转义函数".to_string(),
-                targets: vec![VulnerabilityType::CrossSiteScripting, VulnerabilityType::SqlInjection],
+                targets: vec![
+                    VulnerabilityType::CrossSiteScripting,
+                    VulnerabilityType::SqlInjection,
+                ],
             },
             Sanitizer {
                 pattern: "sanitize".to_string(),
@@ -938,7 +1101,12 @@ impl TaintAnalyzer {
     /// 基于 AST 的污点追踪（增强版）
     ///
     /// 这个方法分析代码中的变量传播路径，追踪污点从源到汇的完整路径
-    pub fn analyze_with_propagation(&self, code: &str, file_path: &str, language: &str) -> Vec<TaintFlow> {
+    pub fn analyze_with_propagation(
+        &self,
+        code: &str,
+        file_path: &str,
+        language: &str,
+    ) -> Vec<TaintFlow> {
         let mut flows = Vec::new();
         let lines: Vec<&str> = code.lines().collect();
 
@@ -968,12 +1136,8 @@ impl TaintAnalyzer {
                 let sanitized = self.check_sanitization_with_steps(&propagation_steps);
 
                 // 计算置信度
-                let confidence = self.calculate_confidence(
-                    &propagation_steps,
-                    sanitized,
-                    source_def,
-                    sink_def,
-                );
+                let confidence =
+                    self.calculate_confidence(&propagation_steps, sanitized, source_def, sink_def);
 
                 // 构建污点流路径
                 let path = self.build_flow_path(
@@ -1025,9 +1189,14 @@ impl TaintAnalyzer {
                 if let Some(caps) = re.captures(line) {
                     if let Some(params) = caps.get(1) {
                         for param in params.as_str().split(',') {
-                            let param = param.trim()
-                                .split(':').next().unwrap_or("")
-                                .split('=').next().unwrap_or("")
+                            let param = param
+                                .trim()
+                                .split(':')
+                                .next()
+                                .unwrap_or("")
+                                .split('=')
+                                .next()
+                                .unwrap_or("")
                                 .trim();
                             if !param.is_empty() && param != "self" && param != "this" {
                                 vars.push(param.to_string());
@@ -1061,13 +1230,18 @@ impl TaintAnalyzer {
             let line_trimmed = line.trim();
 
             // 跳过空行和注释
-            if line_trimmed.is_empty() || line_trimmed.starts_with("//") ||
-               line_trimmed.starts_with("#") || line_trimmed.starts_with("/*") {
+            if line_trimmed.is_empty()
+                || line_trimmed.starts_with("//")
+                || line_trimmed.starts_with("#")
+                || line_trimmed.starts_with("/*")
+            {
                 continue;
             }
 
             // 检测赋值传播
-            if let Some(step) = self.detect_assignment_propagation(line_num, line_trimmed, &current_tainted) {
+            if let Some(step) =
+                self.detect_assignment_propagation(line_num, line_trimmed, &current_tainted)
+            {
                 // 更新污染变量集合
                 if let Some(ref to_var) = step.to_var {
                     current_tainted.insert(to_var.clone());
@@ -1076,7 +1250,9 @@ impl TaintAnalyzer {
             }
 
             // 检测函数调用传播
-            if let Some(step) = self.detect_call_propagation(line_num, line_trimmed, &current_tainted) {
+            if let Some(step) =
+                self.detect_call_propagation(line_num, line_trimmed, &current_tainted)
+            {
                 if let Some(ref to_var) = step.to_var {
                     current_tainted.insert(to_var.clone());
                 }
@@ -1116,9 +1292,12 @@ impl TaintAnalyzer {
         // 检查右侧是否包含污染变量
         for tainted in tainted_vars {
             if value.contains(tainted) {
-                let step_type = if value.contains('+') || value.contains("format!") ||
-                                   value.contains("f'") || value.contains("f\"") ||
-                                   value.contains("${") {
+                let step_type = if value.contains('+')
+                    || value.contains("format!")
+                    || value.contains("f'")
+                    || value.contains("f\"")
+                    || value.contains("${")
+                {
                     PropagationStepType::ConcatAssignment
                 } else {
                     PropagationStepType::DirectAssignment
@@ -1194,7 +1373,9 @@ impl TaintAnalyzer {
 
     /// 基于传播步骤检查净化
     fn check_sanitization_with_steps(&self, steps: &[PropagationStep]) -> bool {
-        steps.iter().any(|step| step.step_type == PropagationStepType::Sanitization)
+        steps
+            .iter()
+            .any(|step| step.step_type == PropagationStepType::Sanitization)
     }
 
     /// 计算置信度
@@ -1270,7 +1451,9 @@ impl TaintAnalyzer {
                 PropagationStepType::Dereference => FlowNodeType::IndexAccess,
             };
 
-            let symbol = step.to_var.clone()
+            let symbol = step
+                .to_var
+                .clone()
                 .or_else(|| step.function_name.clone())
                 .unwrap_or_else(|| "unknown".to_string());
 
@@ -1346,6 +1529,74 @@ mod tests {
     }
 
     #[test]
+    fn test_taint_sink_semantic_exact_match() {
+        let sink = TaintSink {
+            id: "sql".to_string(),
+            name: "SQL".to_string(),
+            description: String::new(),
+            patterns: vec![".query".to_string()],
+            languages: vec!["*".to_string()],
+            vulnerability_type: VulnerabilityType::SqlInjection,
+            severity: Severity::Critical,
+            cwe_id: None,
+            sensitive_params: vec![0],
+            ast_patterns: vec![],
+            match_mode: MatchMode::Semantic,
+            namespaces: vec![],
+            receiver_patterns: vec!["connection".to_string(), "pool".to_string()],
+            exact_matches: vec!["cursor.execute".to_string()],
+        };
+
+        // exact_matches 应命中
+        assert!(sink.matches("cursor.execute", "python"));
+        // receiver_patterns + patterns 应命中
+        assert!(sink.matches_with_context("query", Some("connection"), "python"));
+        assert!(sink.matches_with_context("query", Some("pool"), "python"));
+        // 不匹配的 receiver 不应命中
+        assert!(!sink.matches_with_context("query", Some("document"), "python"));
+        // Semantic 模式未命中时不应回退到 substring
+        assert!(!sink.matches("myObj.query()", "python"));
+    }
+
+    #[test]
+    fn test_taint_sink_namespace_match() {
+        let sink = TaintSink {
+            id: "cmd".to_string(),
+            name: "Command".to_string(),
+            description: String::new(),
+            patterns: vec![".exec".to_string()],
+            languages: vec!["*".to_string()],
+            vulnerability_type: VulnerabilityType::CommandInjection,
+            severity: Severity::Critical,
+            cwe_id: None,
+            sensitive_params: vec![0],
+            ast_patterns: vec![],
+            match_mode: MatchMode::Semantic,
+            namespaces: vec!["child_process".to_string()],
+            receiver_patterns: vec![],
+            exact_matches: vec![],
+        };
+
+        assert!(sink.matches("child_process.exec(cmd)", "javascript"));
+        assert!(!sink.matches("myObject.exec(cmd)", "javascript"));
+    }
+
+    #[test]
+    fn test_taint_sink_substring_fallback() {
+        let sink = TaintSink::new(
+            "eval",
+            "Eval",
+            vec!["eval("],
+            VulnerabilityType::CodeInjection,
+        );
+        // 未配置语义字段时保持原有 substring 行为
+        assert!(sink.matches("eval(user_input)", "javascript"));
+        // substring 行为本身较宽，safe_eval( 也会被命中；
+        // 若需避免此类误报，应使用 Semantic 模式
+        assert!(sink.matches("safe_eval(user_input)", "javascript"));
+    }
+
+    #[test]
     fn test_analyzer_creation() {
         let analyzer = TaintAnalyzer::new();
         assert!(!analyzer.sources.is_empty());
@@ -1367,10 +1618,7 @@ cursor.execute(query)
 
     #[test]
     fn test_vulnerability_type_display() {
-        assert_eq!(
-            VulnerabilityType::SqlInjection.to_string(),
-            "SQL Injection"
-        );
+        assert_eq!(VulnerabilityType::SqlInjection.to_string(), "SQL Injection");
         assert_eq!(
             VulnerabilityType::CommandInjection.to_string(),
             "Command Injection"

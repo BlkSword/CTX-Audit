@@ -8,7 +8,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
-use ctx_audit_daemon::{state::DaemonState, engine::AnalysisEngine, server::Server, VERSION};
+use ctx_audit_daemon::{engine::AnalysisEngine, server::Server, state::DaemonState, VERSION};
 
 #[derive(Parser, Debug)]
 #[command(name = "ctx-audit-daemon")]
@@ -46,11 +46,7 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("[PANIC] {}", msg);
 
         // 写 panic 日志
-        let log_line = format!(
-            "[{}] PANIC: {}\n",
-            chrono::Utc::now().to_rfc3339(),
-            msg
-        );
+        let log_line = format!("[{}] PANIC: {}\n", chrono::Utc::now().to_rfc3339(), msg);
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -144,7 +140,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(project_path) = args.project {
         info!("预加载项目: {}", project_path);
         let mut projects = state.projects.write().await;
-        projects.insert(project_path.clone(), ctx_audit_daemon::state::ProjectState::new(project_path));
+        projects.insert(
+            project_path.clone(),
+            ctx_audit_daemon::state::ProjectState::new(project_path),
+        );
     }
 
     // 创建并启动服务器

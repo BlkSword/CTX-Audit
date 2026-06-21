@@ -13,11 +13,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use super::cross_file::{
-    CallGraph, CallGraphNode, CallTarget, CrossFileTaintResult,
-    normalize_path,
+    normalize_path, CallGraph, CallGraphNode, CallTarget, CrossFileTaintResult,
 };
-use super::type_hierarchy::{TypeHierarchy, ResolvedMethod};
 use super::middleware::MiddlewareModel;
+use super::type_hierarchy::{ResolvedMethod, TypeHierarchy};
 
 // ── 查询结果类型 ──────────────────────────────────────────
 
@@ -231,11 +230,7 @@ impl CallGraphQueryEngine {
     ///
     /// 根据 file_path + function_name 查找匹配的 CallGraphNode，
     /// 返回所有直接调用者（含 receiver 信息）。
-    pub fn query_callers(
-        &self,
-        file_path: &str,
-        function_name: &str,
-    ) -> Vec<CallerEvidence> {
+    pub fn query_callers(&self, file_path: &str, function_name: &str) -> Vec<CallerEvidence> {
         let normalized_file = normalize_path(file_path);
         let target_ids = self.find_func_ids(&normalized_file, function_name);
 
@@ -245,7 +240,9 @@ impl CallGraphQueryEngine {
                 for caller_id in &target_node.called_by {
                     if let Some(caller_node) = self.call_graph.nodes.get(caller_id) {
                         // 查找 caller → target 的 CallTarget（获取 receiver 信息）
-                        let receiver = caller_node.calls.iter()
+                        let receiver = caller_node
+                            .calls
+                            .iter()
                             .find(|ct| ct.callee == *target_id || ct.callee == target_node.name)
                             .and_then(|ct| ct.receiver.clone());
 
@@ -268,11 +265,7 @@ impl CallGraphQueryEngine {
     }
 
     /// 递归查询：谁（直接或间接）调用了指定函数？
-    pub fn query_all_callers(
-        &self,
-        file_path: &str,
-        function_name: &str,
-    ) -> Vec<CallerEvidence> {
+    pub fn query_all_callers(&self, file_path: &str, function_name: &str) -> Vec<CallerEvidence> {
         let normalized_file = normalize_path(file_path);
         let target_ids = self.find_func_ids(&normalized_file, function_name);
 
@@ -305,11 +298,7 @@ impl CallGraphQueryEngine {
     // ── 被调用者查询 ──────────────────────────────────
 
     /// 查询：指定函数调用了谁？
-    pub fn query_callees(
-        &self,
-        file_path: &str,
-        function_name: &str,
-    ) -> Vec<CalleeEvidence> {
+    pub fn query_callees(&self, file_path: &str, function_name: &str) -> Vec<CalleeEvidence> {
         let normalized_file = normalize_path(file_path);
         let func_ids = self.find_func_ids(&normalized_file, function_name);
 
@@ -354,11 +343,7 @@ impl CallGraphQueryEngine {
     }
 
     /// 递归查询：指定函数直接或间接调用的所有函数
-    pub fn query_all_callees(
-        &self,
-        file_path: &str,
-        function_name: &str,
-    ) -> Vec<CalleeEvidence> {
+    pub fn query_all_callees(&self, file_path: &str, function_name: &str) -> Vec<CalleeEvidence> {
         let normalized_file = normalize_path(file_path);
         let func_ids = self.find_func_ids(&normalized_file, function_name);
 
@@ -554,9 +539,9 @@ impl CallGraphQueryEngine {
         if let Some(aliases) = self.file_import_aliases.get(&normalized_file) {
             if let Some(resolution) = aliases.get(receiver) {
                 // 构建目标文件路径
-                if let Some(target_file) = self.resolve_module_to_file(
-                    &resolution.source_module, file_path,
-                ) {
+                if let Some(target_file) =
+                    self.resolve_module_to_file(&resolution.source_module, file_path)
+                {
                     let target_normalized = normalize_path(&target_file);
                     // 在目标文件中查找匹配的函数
                     for (_, node) in &self.call_graph.nodes {
@@ -609,7 +594,11 @@ impl CallGraphQueryEngine {
         }
 
         // 按置信度降序
-        results.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results
     }
 
@@ -619,19 +608,26 @@ impl CallGraphQueryEngine {
     pub fn query_type_chain(&self, class_name: &str) -> Option<TypeChainResult> {
         let type_info = self.type_hierarchy.types.get(class_name)?;
 
-        let parent_classes = self.type_hierarchy.extends_map
+        let parent_classes = self
+            .type_hierarchy
+            .extends_map
             .get(class_name)
             .cloned()
             .unwrap_or_default();
 
         // 查找子类（谁继承了当前类）
-        let child_classes: Vec<String> = self.type_hierarchy.extends_map.iter()
+        let child_classes: Vec<String> = self
+            .type_hierarchy
+            .extends_map
+            .iter()
             .filter(|(_, parents)| parents.contains(&class_name.to_string()))
             .map(|(child, _)| child.clone())
             .collect();
 
         // 查找接口实现
-        let interface_implementations = self.type_hierarchy.implementations
+        let interface_implementations = self
+            .type_hierarchy
+            .implementations
             .get(class_name)
             .cloned()
             .unwrap_or_default();
@@ -671,15 +667,14 @@ impl CallGraphQueryEngine {
     // ── 中间件查询 ────────────────────────────────────
 
     /// 查询：哪些中间件影响指定文件的路由？
-    pub fn query_middleware_for_file(
-        &self,
-        file_path: &str,
-    ) -> Vec<MiddlewareEvidence> {
+    pub fn query_middleware_for_file(&self, file_path: &str) -> Vec<MiddlewareEvidence> {
         let normalized_file = normalize_path(file_path);
         let mut results = Vec::new();
 
         // Express 中间件
-        let route_lines: Vec<usize> = self.middleware_model.express_routes
+        let route_lines: Vec<usize> = self
+            .middleware_model
+            .express_routes
             .get(&normalized_file)
             .cloned()
             .unwrap_or_default();
@@ -689,18 +684,24 @@ impl CallGraphQueryEngine {
 
             // 同文件中间件影响所有路由
             let affects_routes: Vec<RouteEvidence> = if mw_file_normalized == normalized_file {
-                route_lines.iter().map(|&line| RouteEvidence {
-                    file_path: normalized_file.clone(),
-                    line,
-                    route_function: None,
-                }).collect()
+                route_lines
+                    .iter()
+                    .map(|&line| RouteEvidence {
+                        file_path: normalized_file.clone(),
+                        line,
+                        route_function: None,
+                    })
+                    .collect()
             } else {
                 // 跨文件中间件（如通过 import）影响目标文件的所有路由
-                route_lines.iter().map(|&line| RouteEvidence {
-                    file_path: normalized_file.clone(),
-                    line,
-                    route_function: None,
-                }).collect()
+                route_lines
+                    .iter()
+                    .map(|&line| RouteEvidence {
+                        file_path: normalized_file.clone(),
+                        line,
+                        route_function: None,
+                    })
+                    .collect()
             };
 
             if !affects_routes.is_empty() || mw_file_normalized == normalized_file {
@@ -760,14 +761,18 @@ impl CallGraphQueryEngine {
     /// 查询：获取指定文件中的所有 Express 路由
     pub fn query_routes_in_file(&self, file_path: &str) -> Vec<RouteEvidence> {
         let normalized_file = normalize_path(file_path);
-        self.middleware_model.express_routes
+        self.middleware_model
+            .express_routes
             .get(&normalized_file)
             .map(|lines| {
-                lines.iter().map(|&line| RouteEvidence {
-                    file_path: normalized_file.clone(),
-                    line,
-                    route_function: None,
-                }).collect()
+                lines
+                    .iter()
+                    .map(|&line| RouteEvidence {
+                        file_path: normalized_file.clone(),
+                        line,
+                        route_function: None,
+                    })
+                    .collect()
             })
             .unwrap_or_default()
     }
@@ -775,11 +780,7 @@ impl CallGraphQueryEngine {
     // ── 回调查询 ────────────────────────────────────
 
     /// 查询：函数 X 注册了哪些匿名回调？
-    pub fn query_callbacks(
-        &self,
-        file_path: &str,
-        function_name: &str,
-    ) -> Vec<CallbackEvidence> {
+    pub fn query_callbacks(&self, file_path: &str, function_name: &str) -> Vec<CallbackEvidence> {
         let normalized_file = normalize_path(file_path);
         let func_ids = self.find_func_ids(&normalized_file, function_name);
 
@@ -790,9 +791,13 @@ impl CallGraphQueryEngine {
                 for ct in &node.calls {
                     if let Some(callee_node) = self.call_graph.nodes.get(&ct.callee) {
                         if callee_node.is_callback {
-                            let cb_calls: Vec<CalleeEvidence> = callee_node.calls.iter()
+                            let cb_calls: Vec<CalleeEvidence> = callee_node
+                                .calls
+                                .iter()
                                 .map(|cb_ct| {
-                                    if let Some(cb_callee) = self.call_graph.nodes.get(&cb_ct.callee) {
+                                    if let Some(cb_callee) =
+                                        self.call_graph.nodes.get(&cb_ct.callee)
+                                    {
                                         CalleeEvidence {
                                             callee_function: cb_callee.name.clone(),
                                             callee_file: Some(cb_callee.file_path.clone()),
@@ -816,7 +821,9 @@ impl CallGraphQueryEngine {
                                 })
                                 .collect();
 
-                            let params: Vec<String> = callee_node.parameters.iter()
+                            let params: Vec<String> = callee_node
+                                .parameters
+                                .iter()
                                 .map(|p| p.name.clone())
                                 .collect();
 
@@ -845,11 +852,7 @@ impl CallGraphQueryEngine {
     /// 查询：从 source 函数出发，哪些污点流到达了 sink？
     ///
     /// 利用调用图的 BFS 查找所有从 source 到任意 sink 的路径。
-    pub fn trace_variable_flow(
-        &self,
-        file_path: &str,
-        function_name: &str,
-    ) -> VariableFlowResult {
+    pub fn trace_variable_flow(&self, file_path: &str, function_name: &str) -> VariableFlowResult {
         let normalized_file = normalize_path(file_path);
         let source_ids = self.find_func_ids(&normalized_file, function_name);
 
@@ -898,7 +901,8 @@ impl CallGraphQueryEngine {
             }
         }
 
-        let source_node = source_ids.first()
+        let source_node = source_ids
+            .first()
             .and_then(|id| self.call_graph.nodes.get(id));
 
         VariableFlowResult {
@@ -916,20 +920,30 @@ impl CallGraphQueryEngine {
     /// 获取调用图统计概览
     pub fn query_graph_stats(&self) -> GraphStats {
         let total_nodes = self.call_graph.nodes.len();
-        let callback_nodes = self.call_graph.nodes.values()
+        let callback_nodes = self
+            .call_graph
+            .nodes
+            .values()
             .filter(|n| n.is_callback)
             .count();
         let taint_sources = self.call_graph.taint_sources.len();
         let taint_sinks = self.call_graph.taint_sinks.len();
-        let total_edges: usize = self.call_graph.nodes.values()
-            .map(|n| n.calls.len())
-            .sum();
-        let cross_file_edges: usize = self.call_graph.nodes.values()
-            .flat_map(|n| n.calls.iter().filter(|ct| {
-                self.call_graph.nodes.get(&ct.callee)
-                    .map(|callee| normalize_path(&callee.file_path) != normalize_path(&n.file_path))
-                    .unwrap_or(false)
-            }))
+        let total_edges: usize = self.call_graph.nodes.values().map(|n| n.calls.len()).sum();
+        let cross_file_edges: usize = self
+            .call_graph
+            .nodes
+            .values()
+            .flat_map(|n| {
+                n.calls.iter().filter(|ct| {
+                    self.call_graph
+                        .nodes
+                        .get(&ct.callee)
+                        .map(|callee| {
+                            normalize_path(&callee.file_path) != normalize_path(&n.file_path)
+                        })
+                        .unwrap_or(false)
+                })
+            })
             .count();
         let total_files = self.call_graph.file_functions.len();
         let type_count = self.type_hierarchy.len();
@@ -957,10 +971,12 @@ impl CallGraphQueryEngine {
     /// 获取文件中所有函数
     pub fn query_functions_in_file(&self, file_path: &str) -> Vec<FunctionInfo> {
         let normalized_file = normalize_path(file_path);
-        self.call_graph.file_functions
+        self.call_graph
+            .file_functions
             .get(&normalized_file)
             .map(|func_ids| {
-                func_ids.iter()
+                func_ids
+                    .iter()
                     .filter_map(|id| self.call_graph.nodes.get(id))
                     .map(|node| FunctionInfo {
                         name: node.name.clone(),
@@ -980,7 +996,9 @@ impl CallGraphQueryEngine {
 
     /// 获取所有 taint sources
     pub fn query_all_sources(&self) -> Vec<FunctionInfo> {
-        self.call_graph.taint_sources.iter()
+        self.call_graph
+            .taint_sources
+            .iter()
             .filter_map(|id| self.call_graph.nodes.get(id))
             .map(|node| FunctionInfo {
                 name: node.name.clone(),
@@ -998,7 +1016,9 @@ impl CallGraphQueryEngine {
 
     /// 获取所有 taint sinks
     pub fn query_all_sinks(&self) -> Vec<FunctionInfo> {
-        self.call_graph.taint_sinks.iter()
+        self.call_graph
+            .taint_sinks
+            .iter()
             .filter_map(|id| self.call_graph.nodes.get(id))
             .map(|node| FunctionInfo {
                 name: node.name.clone(),
@@ -1026,9 +1046,12 @@ impl CallGraphQueryEngine {
 
         // 回退：在该文件中搜索同名函数
         if let Some(func_ids) = self.call_graph.file_functions.get(normalized_file) {
-            let matches: Vec<String> = func_ids.iter()
+            let matches: Vec<String> = func_ids
+                .iter()
                 .filter(|id| {
-                    self.call_graph.nodes.get(*id)
+                    self.call_graph
+                        .nodes
+                        .get(*id)
                         .map(|n| n.name == function_name)
                         .unwrap_or(false)
                 })
@@ -1040,7 +1063,9 @@ impl CallGraphQueryEngine {
         }
 
         // 最终回退：全局搜索
-        self.call_graph.nodes.iter()
+        self.call_graph
+            .nodes
+            .iter()
             .filter(|(_, n)| n.name == function_name)
             .map(|(id, _)| id.clone())
             .collect()
@@ -1056,15 +1081,24 @@ impl CallGraphQueryEngine {
             "SqlInjection".to_string()
         } else if lower.contains("eval") || lower.contains("compile") {
             "CodeInjection".to_string()
-        } else if lower.contains("open") || lower.contains("readfile") || lower.contains("writefile") {
+        } else if lower.contains("open")
+            || lower.contains("readfile")
+            || lower.contains("writefile")
+        {
             "PathTraversal".to_string()
-        } else if lower.contains("fetch") || lower.contains("httpclient") || lower.contains("request") {
+        } else if lower.contains("fetch")
+            || lower.contains("httpclient")
+            || lower.contains("request")
+        {
             "ServerSideRequestForgery".to_string()
         } else if lower.contains("innerhtml") || lower.contains("document.write") {
             "CrossSiteScripting".to_string()
         } else if lower.contains("redirect") || lower.contains("sendredirect") {
             "OpenRedirect".to_string()
-        } else if lower.contains("deserialize") || lower.contains("pickle") || lower.contains("unserialize") {
+        } else if lower.contains("deserialize")
+            || lower.contains("pickle")
+            || lower.contains("unserialize")
+        {
             "InsecureDeserialization".to_string()
         } else {
             "Generic".to_string()
@@ -1084,7 +1118,9 @@ impl CallGraphQueryEngine {
             importing_dir.join(source_module)
         };
 
-        let extensions = ["js", "jsx", "ts", "tsx", "py", "rs", "go", "java", "c", "cpp", "php", "rb"];
+        let extensions = [
+            "js", "jsx", "ts", "tsx", "py", "rs", "go", "java", "c", "cpp", "php", "rb",
+        ];
 
         if resolved.exists() && resolved.is_file() {
             return Some(resolved.to_string_lossy().to_string());
@@ -1147,8 +1183,8 @@ pub struct FunctionInfo {
 mod tests {
     use super::*;
     use crate::analysis::cross_file::{CallGraph, CallGraphNode};
-    use crate::analysis::type_hierarchy::TypeHierarchy;
     use crate::analysis::middleware::MiddlewareModel;
+    use crate::analysis::type_hierarchy::TypeHierarchy;
     use std::sync::Arc;
 
     fn make_test_engine() -> CallGraphQueryEngine {
@@ -1159,10 +1195,11 @@ mod tests {
             id: "handler.js:handleRequest".into(),
             name: "handleRequest".into(),
             file_path: "handler.js".into(),
-            start_line: 1, end_line: 10,
+            start_line: 1,
+            end_line: 10,
             parameters: vec![],
             return_type: None,
-            calls: vec![],  // populated by add_call
+            calls: vec![], // populated by add_call
             called_by: vec![],
             is_external: false,
             is_taint_source: true,
@@ -1176,10 +1213,11 @@ mod tests {
             id: "db.js:executeQuery".into(),
             name: "executeQuery".into(),
             file_path: "db.js".into(),
-            start_line: 1, end_line: 5,
+            start_line: 1,
+            end_line: 5,
             parameters: vec![],
             return_type: None,
-            calls: vec![],  // populated by add_call
+            calls: vec![], // populated by add_call
             called_by: vec![],
             is_external: false,
             is_taint_source: false,
@@ -1193,7 +1231,8 @@ mod tests {
             id: "db.js:exec".into(),
             name: "exec".into(),
             file_path: "db.js".into(),
-            start_line: 7, end_line: 10,
+            start_line: 7,
+            end_line: 10,
             parameters: vec![],
             return_type: None,
             calls: vec![],
@@ -1211,8 +1250,12 @@ mod tests {
         cg.add_call("db.js:executeQuery", "db.js:exec");
 
         // Set up file_functions
-        cg.file_functions.insert("handler.js".into(), vec!["handler.js:handleRequest".into()]);
-        cg.file_functions.insert("db.js".into(), vec!["db.js:executeQuery".into(), "db.js:exec".into()]);
+        cg.file_functions
+            .insert("handler.js".into(), vec!["handler.js:handleRequest".into()]);
+        cg.file_functions.insert(
+            "db.js".into(),
+            vec!["db.js:executeQuery".into(), "db.js:exec".into()],
+        );
 
         CallGraphQueryEngine::new(
             Arc::new(cg),
@@ -1235,17 +1278,18 @@ mod tests {
     fn test_query_callees() {
         let engine = make_test_engine();
         let callees = engine.query_callees("handler.js", "handleRequest");
-        assert!(callees.len() >= 1, "Expected at least 1 callee, got {}", callees.len());
+        assert!(
+            callees.len() >= 1,
+            "Expected at least 1 callee, got {}",
+            callees.len()
+        );
         assert!(callees.iter().any(|c| c.callee_function == "executeQuery"));
     }
 
     #[test]
     fn test_find_call_path() {
         let engine = make_test_engine();
-        let path = engine.find_call_path(
-            "handler.js", "handleRequest",
-            "db.js", "exec",
-        );
+        let path = engine.find_call_path("handler.js", "handleRequest", "db.js", "exec");
         assert!(path.is_some());
         let p = path.unwrap();
         assert_eq!(p.total_hops, 2);
@@ -1257,10 +1301,7 @@ mod tests {
     fn test_find_call_path_no_path() {
         let engine = make_test_engine();
         // exec doesn't call anything
-        let path = engine.find_call_path(
-            "db.js", "exec",
-            "handler.js", "handleRequest",
-        );
+        let path = engine.find_call_path("db.js", "exec", "handler.js", "handleRequest");
         assert!(path.is_none());
     }
 
@@ -1283,8 +1324,16 @@ mod tests {
         assert_eq!(stats.taint_sources, 1);
         assert_eq!(stats.taint_sinks, 1);
         // edges include both the originals and the ones added by add_call
-        assert!(stats.total_edges >= 2, "Expected at least 2 edges, got {}", stats.total_edges);
-        assert!(stats.cross_file_edges >= 1, "Expected at least 1 cross-file edge, got {}", stats.cross_file_edges);
+        assert!(
+            stats.total_edges >= 2,
+            "Expected at least 2 edges, got {}",
+            stats.total_edges
+        );
+        assert!(
+            stats.cross_file_edges >= 1,
+            "Expected at least 1 cross-file edge, got {}",
+            stats.cross_file_edges
+        );
     }
 
     #[test]
@@ -1295,7 +1344,8 @@ mod tests {
             id: "app.js:setup".into(),
             name: "setup".into(),
             file_path: "app.js".into(),
-            start_line: 1, end_line: 10,
+            start_line: 1,
+            end_line: 10,
             parameters: vec![],
             return_type: None,
             calls: vec![CallTarget::new("app.js:setup:5:cb0")],
@@ -1312,12 +1362,13 @@ mod tests {
             id: "app.js:setup:5:cb0".into(),
             name: "<callback@5>".into(),
             file_path: "app.js".into(),
-            start_line: 2, end_line: 4,
-            parameters: vec![
-                crate::analysis::cross_file::FunctionParameter {
-                    name: "req".into(), param_type: None, may_be_tainted: true,
-                }
-            ],
+            start_line: 2,
+            end_line: 4,
+            parameters: vec![crate::analysis::cross_file::FunctionParameter {
+                name: "req".into(),
+                param_type: None,
+                may_be_tainted: true,
+            }],
             return_type: None,
             calls: vec![CallTarget::new("exec")],
             called_by: vec!["app.js:setup".into()],
@@ -1329,7 +1380,10 @@ mod tests {
             parent_call_site: Some(5),
         });
 
-        cg.file_functions.insert("app.js".into(), vec!["app.js:setup".into(), "app.js:setup:5:cb0".into()]);
+        cg.file_functions.insert(
+            "app.js".into(),
+            vec!["app.js:setup".into(), "app.js:setup:5:cb0".into()],
+        );
         cg.add_call("app.js:setup", "app.js:setup:5:cb0");
 
         let engine = CallGraphQueryEngine::new(

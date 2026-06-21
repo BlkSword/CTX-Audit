@@ -83,7 +83,11 @@ impl VarTaintState {
         let t = self.tainted_on.len();
 
         if s == 0 && t == 0 {
-            if self.sanitized { 0.3 } else { 0.85 }
+            if self.sanitized {
+                0.3
+            } else {
+                0.85
+            }
         } else if t == 0 && s > 0 {
             0.3
         } else if s == 0 && t > 0 {
@@ -268,7 +272,9 @@ impl PathSensitiveState {
         let mut merged = PathSensitiveState::new();
 
         // 收集所有 AccessPath
-        let mut all_paths: Vec<AccessPath> = true_state.access_taint.keys()
+        let mut all_paths: Vec<AccessPath> = true_state
+            .access_taint
+            .keys()
             .chain(false_state.access_taint.keys())
             .cloned()
             .collect();
@@ -283,16 +289,16 @@ impl PathSensitiveState {
                 (Some(tv), Some(fv)) => {
                     let mut merged_vt = tv.clone();
                     for pc in &fv.sanitized_on {
-                        if !merged_vt.sanitized_on.iter().any(|p|
+                        if !merged_vt.sanitized_on.iter().any(|p| {
                             p.condition_node_id == pc.condition_node_id && p.branch == pc.branch
-                        ) {
+                        }) {
                             merged_vt.sanitized_on.push(pc.clone());
                         }
                     }
                     for pc in &fv.tainted_on {
-                        if !merged_vt.tainted_on.iter().any(|p|
+                        if !merged_vt.tainted_on.iter().any(|p| {
                             p.condition_node_id == pc.condition_node_id && p.branch == pc.branch
-                        ) {
+                        }) {
                             merged_vt.tainted_on.push(pc.clone());
                         }
                     }
@@ -302,9 +308,11 @@ impl PathSensitiveState {
                         merged_vt.sanitized = true;
                     }
                     for step in &fv.propagation_steps {
-                        if !merged_vt.propagation_steps.iter().any(|s|
-                            s.line == step.line && s.step_type == step.step_type
-                        ) {
+                        if !merged_vt
+                            .propagation_steps
+                            .iter()
+                            .any(|s| s.line == step.line && s.step_type == step.step_type)
+                        {
                             merged_vt.propagation_steps.push(step.clone());
                         }
                     }
@@ -368,8 +376,10 @@ mod tests {
     #[test]
     fn test_var_taint_confidence_partial_sanitization() {
         let mut vt = VarTaintState::from_taint(1, "input".into(), vec![]);
-        vt.sanitized_on.push(make_pc(5, EdgeType::TrueBranch, "isSafe(x)"));
-        vt.tainted_on.push(make_pc(5, EdgeType::FalseBranch, "isSafe(x)"));
+        vt.sanitized_on
+            .push(make_pc(5, EdgeType::TrueBranch, "isSafe(x)"));
+        vt.tainted_on
+            .push(make_pc(5, EdgeType::FalseBranch, "isSafe(x)"));
         assert!((vt.confidence() - 0.5).abs() < 0.01);
     }
 
@@ -378,7 +388,9 @@ mod tests {
         let mut true_state = PathSensitiveState::new();
         let mut true_vt = VarTaintState::from_taint(1, "x".into(), vec![]);
         true_vt.sanitized = true;
-        true_vt.sanitized_on.push(make_pc(5, EdgeType::TrueBranch, "isSafe(x)"));
+        true_vt
+            .sanitized_on
+            .push(make_pc(5, EdgeType::TrueBranch, "isSafe(x)"));
         true_state.insert_var("x".into(), true_vt);
 
         let mut false_state = PathSensitiveState::new();
@@ -410,9 +422,11 @@ mod tests {
 
     #[test]
     fn test_mark_sanitized_with_path_condition() {
-        let mut state = PathSensitiveState::with_conditions(vec![
-            make_pc(5, EdgeType::TrueBranch, "isSafe(x)"),
-        ]);
+        let mut state = PathSensitiveState::with_conditions(vec![make_pc(
+            5,
+            EdgeType::TrueBranch,
+            "isSafe(x)",
+        )]);
         state.insert_var("x".into(), VarTaintState::from_taint(1, "x".into(), vec![]));
 
         state.mark_sanitized("x", Some("isSafe".into()));
@@ -466,7 +480,10 @@ mod tests {
     #[test]
     fn test_simple_var_backward_compat() {
         let mut state = PathSensitiveState::new();
-        state.insert_var("input".into(), VarTaintState::from_taint(1, "input".into(), vec![]));
+        state.insert_var(
+            "input".into(),
+            VarTaintState::from_taint(1, "input".into(), vec![]),
+        );
 
         assert!(state.get_var("input").is_some());
         assert!(state.is_var_tainted("input"));

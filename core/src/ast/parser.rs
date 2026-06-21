@@ -1,5 +1,6 @@
 use crate::ast::symbol::{
-    ArgInfo, Assignment, CallInfo, CallbackArg, Field, FunctionBody, NodeInfo, ReturnInfo, Symbol, SymbolKind,
+    ArgInfo, Assignment, CallInfo, CallbackArg, Field, FunctionBody, NodeInfo, ReturnInfo, Symbol,
+    SymbolKind,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -929,7 +930,11 @@ impl ASTParser {
     }
 
     /// 提取文件中的所有函数体（按函数粒度）
-    pub fn extract_function_bodies(&mut self, file_path: &Path, content: &str) -> Vec<FunctionBody> {
+    pub fn extract_function_bodies(
+        &mut self,
+        file_path: &Path,
+        content: &str,
+    ) -> Vec<FunctionBody> {
         let ext = file_path
             .extension()
             .and_then(|s| s.to_str())
@@ -958,7 +963,9 @@ impl ASTParser {
         file_path: &Path,
         content: &str,
     ) -> (Vec<FunctionBody>, Vec<Assignment>, Vec<CallInfo>) {
-        if let Some((_, bodies, assignments, calls)) = self.extract_all_for_taint_with_tree(file_path, content) {
+        if let Some((_, bodies, assignments, calls)) =
+            self.extract_all_for_taint_with_tree(file_path, content)
+        {
             (bodies, assignments, calls)
         } else {
             (Vec::new(), Vec::new(), Vec::new())
@@ -971,7 +978,12 @@ impl ASTParser {
         &mut self,
         file_path: &Path,
         content: &str,
-    ) -> Option<(tree_sitter::Tree, Vec<FunctionBody>, Vec<Assignment>, Vec<CallInfo>)> {
+    ) -> Option<(
+        tree_sitter::Tree,
+        Vec<FunctionBody>,
+        Vec<Assignment>,
+        Vec<CallInfo>,
+    )> {
         let ext = file_path
             .extension()
             .and_then(|s| s.to_str())
@@ -1002,11 +1014,7 @@ impl ASTParser {
         Some((tree, bodies, assignments, calls))
     }
 
-    fn collect_assignments_generic(
-        node: &Node,
-        content: &str,
-        results: &mut Vec<Assignment>,
-    ) {
+    fn collect_assignments_generic(node: &Node, content: &str, results: &mut Vec<Assignment>) {
         let kind = node.kind();
         if matches!(
             kind,
@@ -1035,8 +1043,8 @@ impl ASTParser {
             }
         }
 
-        // let 声明（Rust/Go）
-        if matches!(kind, "let_declaration" | "let_statement" | "short_var_declaration") {
+        // let 声明（Rust）与 Go 短变量声明
+        if matches!(kind, "let_declaration" | "let_statement") {
             if let Some(pattern) = node.child_by_field_name("pattern") {
                 if let Some(value) = node.child_by_field_name("value") {
                     let target = content[pattern.byte_range()].to_string();
@@ -1050,6 +1058,31 @@ impl ASTParser {
                             column: pattern.start_position().column,
                             byte_start: pattern.start_byte(),
                             byte_end: pattern.end_byte(),
+                        },
+                        source_expr,
+                        source_vars,
+                        line: node.start_position().row + 1,
+                        column: node.start_position().column,
+                    });
+                }
+            }
+        }
+
+        // Go 短变量声明：id := expr
+        if kind == "short_var_declaration" {
+            if let Some(left) = node.child_by_field_name("left") {
+                if let Some(right) = node.child_by_field_name("right") {
+                    let target = content[left.byte_range()].to_string();
+                    let source_expr = content[right.byte_range()].to_string();
+                    let source_vars = Self::collect_identifiers(&right, content);
+
+                    results.push(Assignment {
+                        target,
+                        target_node: NodeInfo {
+                            line: left.start_position().row + 1,
+                            column: left.start_position().column,
+                            byte_start: left.start_byte(),
+                            byte_end: left.end_byte(),
                         },
                         source_expr,
                         source_vars,
@@ -1091,11 +1124,92 @@ impl ASTParser {
             }
         }
 
+        // Java 局部变量声明：Type name = value;
+        if kind == "local_variable_declaration" {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "variable_declarator" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if let Some(value_node) = child.child_by_field_name("value") {
+                            let target = content[name_node.byte_range()].to_string();
+                            let source_expr = content[value_node.byte_range()].to_string();
+                            let source_vars = Self::collect_identifiers(&value_node, content);
+
+                            results.push(Assignment {
+                                target,
+                                target_node: NodeInfo {
+                                    line: name_node.start_position().row + 1,
+                                    column: name_node.start_position().column,
+                                    byte_start: name_node.start_byte(),
+                                    byte_end: name_node.end_byte(),
+                                },
+                                source_expr,
+                                source_vars,
+                                line: child.start_position().row + 1,
+                                column: child.start_position().column,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // C/C++ 变量声明：Type name = value;
+        if kind == "declaration" {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "init_declarator" {
+                    if let Some(declarator_node) = child.child_by_field_name("declarator") {
+                        if let Some(value_node) = child.child_by_field_name("value") {
+                            let target =
+                                Self::extract_declarator_identifier(&declarator_node, content)
+                                    .unwrap_or_else(|| {
+                                        content[declarator_node.byte_range()].to_string()
+                                    });
+                            let source_expr = content[value_node.byte_range()].to_string();
+                            let source_vars = Self::collect_identifiers(&value_node, content);
+
+                            results.push(Assignment {
+                                target,
+                                target_node: NodeInfo {
+                                    line: declarator_node.start_position().row + 1,
+                                    column: declarator_node.start_position().column,
+                                    byte_start: declarator_node.start_byte(),
+                                    byte_end: declarator_node.end_byte(),
+                                },
+                                source_expr,
+                                source_vars,
+                                line: child.start_position().row + 1,
+                                column: child.start_position().column,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // 递归遍历子节点
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             Self::collect_assignments_generic(&child, content, results);
         }
+    }
+
+    /// 从 C/C++ 声明符中提取最内层标识符名。
+    ///
+    /// 例如 `char *user = argv[1];` 的声明符是 `pointer_declarator > identifier`，
+    /// 需要返回 `"user"` 而非 `"*user"`，否则后续污点传播会把变量名识别错。
+    fn extract_declarator_identifier(node: &Node, content: &str) -> Option<String> {
+        if node.kind() == "identifier" {
+            return Some(content[node.byte_range()].to_string());
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(name) = Self::extract_declarator_identifier(&child, content) {
+                return Some(name);
+            }
+        }
+        None
     }
 
     fn collect_calls_recursive(node: &Node, content: &str, results: &mut Vec<CallInfo>) {
@@ -1104,15 +1218,29 @@ impl ASTParser {
             kind,
             "call_expression" | "call" | "method_invocation" | "function_call"
         ) {
-            let func_node = node.child_by_field_name("function")
+            let func_node = node
+                .child_by_field_name("function")
                 .or_else(|| node.child_by_field_name("name"));
 
             let args_node = node.child_by_field_name("arguments");
 
             if let Some(func_node) = func_node {
                 let callee_text = content[func_node.byte_range()].to_string();
-                let (is_method, receiver, callee_name) =
-                    Self::parse_callee(&func_node, &callee_text, content);
+
+                // Java method_invocation 的字段在节点本身（object/name），
+                // 而不是 function/name 子节点，需要特殊处理以保留接收者信息。
+                let (is_method, receiver, callee_name) = if kind == "method_invocation" {
+                    let recv = node
+                        .child_by_field_name("object")
+                        .map(|n| content[n.byte_range()].to_string());
+                    let name = node
+                        .child_by_field_name("name")
+                        .map(|n| content[n.byte_range()].to_string())
+                        .unwrap_or_else(|| callee_text.clone());
+                    (recv.is_some(), recv, name)
+                } else {
+                    Self::parse_callee(&func_node, &callee_text, content)
+                };
 
                 let arguments = if let Some(args_node) = args_node {
                     Self::parse_arguments(&args_node, content)
@@ -1152,11 +1280,25 @@ impl ASTParser {
     ) -> (bool, Option<String>, String) {
         let kind = func_node.kind();
 
-        if kind == "member_expression" || kind == "attribute" || kind == "field_expression" {
-            if let Some(obj) = func_node.child_by_field_name("object") {
-                // tree-sitter-javascript uses "property", Java/C# use "field"
-                if let Some(prop) = func_node.child_by_field_name("field")
+        if kind == "member_expression"
+            || kind == "attribute"
+            || kind == "field_expression"
+            || kind == "selector_expression"
+        {
+            // 不同语言对“对象.方法”的字段命名不同：
+            // - JS/TS: member_expression -> object / property
+            // - Python: attribute -> object / attribute
+            // - Rust: field_expression -> value / field
+            // - Go: selector_expression -> operand / field
+            if let Some(obj) = func_node
+                .child_by_field_name("object")
+                .or_else(|| func_node.child_by_field_name("value"))
+                .or_else(|| func_node.child_by_field_name("operand"))
+            {
+                if let Some(prop) = func_node
+                    .child_by_field_name("field")
                     .or_else(|| func_node.child_by_field_name("property"))
+                    .or_else(|| func_node.child_by_field_name("attribute"))
                 {
                     let receiver = content[obj.byte_range()].to_string();
                     let method = content[prop.byte_range()].to_string();
@@ -1204,8 +1346,12 @@ impl ASTParser {
             // Java: lambda_expression
             let is_callback = matches!(
                 kind,
-                "arrow_function" | "function_expression" | "function_declaration"
-                    | "function_definition" | "lambda" | "lambda_expression"
+                "arrow_function"
+                    | "function_expression"
+                    | "function_declaration"
+                    | "function_definition"
+                    | "lambda"
+                    | "lambda_expression"
             );
 
             if is_callback {
@@ -1360,12 +1506,15 @@ impl ASTParser {
                         // Extract method name from left side for the FunctionBody name
                         let method_name = extract_last_name(&left, content);
                         if !method_name.is_empty() && method_name != "this" {
-                            let typed_params = if let Some(params_node) = right.child_by_field_name("parameters") {
+                            let typed_params = if let Some(params_node) =
+                                right.child_by_field_name("parameters")
+                            {
                                 Self::extract_typed_params(&params_node, content)
                             } else {
                                 Vec::new()
                             };
-                            let params: Vec<String> = typed_params.iter().map(|tp| tp.name.clone()).collect();
+                            let params: Vec<String> =
+                                typed_params.iter().map(|tp| tp.name.clone()).collect();
 
                             let body_node = right.child_by_field_name("body");
                             let (start_line, end_line, body_text) = if let Some(body) = body_node {
@@ -1392,7 +1541,9 @@ impl ASTParser {
                             });
                             // Recurse into the body to find nested callbacks (e.g., HTTP response callbacks)
                             if let Some(body_node) = right.child_by_field_name("body") {
-                                Self::collect_function_bodies_recursive(&body_node, content, results);
+                                Self::collect_function_bodies_recursive(
+                                    &body_node, content, results,
+                                );
                             }
                             return; // Don't recurse further — already extracted the function
                         }
@@ -1415,7 +1566,8 @@ impl ASTParser {
         );
 
         if is_function {
-            let name = node.child_by_field_name("name")
+            let name = node
+                .child_by_field_name("name")
                 .map(|n| content[n.byte_range()].to_string())
                 .unwrap_or_else(|| format!("<anonymous@{}>", node.start_position().row + 1));
 
@@ -1465,7 +1617,10 @@ impl ASTParser {
     }
 
     /// 提取带类型注解的参数列表
-    fn extract_typed_params(params_node: &Node, content: &str) -> Vec<crate::ast::symbol::TypedParam> {
+    fn extract_typed_params(
+        params_node: &Node,
+        content: &str,
+    ) -> Vec<crate::ast::symbol::TypedParam> {
         use crate::ast::symbol::TypedParam;
         let mut params = Vec::new();
         let mut cursor = params_node.walk();
@@ -1496,7 +1651,10 @@ impl ASTParser {
                 let type_annotation = Self::extract_type_annotation(&child, content);
 
                 if !name.is_empty() && name != "self" && name != "this" {
-                    params.push(TypedParam { name, type_annotation });
+                    params.push(TypedParam {
+                        name,
+                        type_annotation,
+                    });
                 }
             }
         }
@@ -1516,7 +1674,14 @@ impl ASTParser {
                 // type_annotation 节点内部有 type_identifier 或 predefined_type
                 let mut inner_cursor = child.walk();
                 for inner_child in child.children(&mut inner_cursor) {
-                    if matches!(inner_child.kind(), "type_identifier" | "predefined_type" | "generic_type" | "union_type" | "array_type") {
+                    if matches!(
+                        inner_child.kind(),
+                        "type_identifier"
+                            | "predefined_type"
+                            | "generic_type"
+                            | "union_type"
+                            | "array_type"
+                    ) {
                         return Some(content[inner_child.byte_range()].to_string());
                     }
                 }
@@ -1536,7 +1701,13 @@ impl ASTParser {
                 let type_str = parts[1].trim();
                 // 清理: 去掉默认值等
                 let type_str = type_str.split('=').next().unwrap_or(type_str).trim();
-                if !type_str.is_empty() && type_str.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false) {
+                if !type_str.is_empty()
+                    && type_str
+                        .chars()
+                        .next()
+                        .map(|c| c.is_alphabetic())
+                        .unwrap_or(false)
+                {
                     return Some(type_str.to_string());
                 }
             }
@@ -1570,10 +1741,33 @@ impl ASTParser {
         ) {
             let name = content[node.byte_range()].to_string();
             let keywords = [
-                "true", "false", "null", "None", "undefined", "self", "this",
-                "super", "class", "function", "return", "if", "else", "for",
-                "while", "let", "const", "var", "new", "typeof", "instanceof",
-                "async", "await", "import", "export", "from", "as",
+                "true",
+                "false",
+                "null",
+                "None",
+                "undefined",
+                "self",
+                "this",
+                "super",
+                "class",
+                "function",
+                "return",
+                "if",
+                "else",
+                "for",
+                "while",
+                "let",
+                "const",
+                "var",
+                "new",
+                "typeof",
+                "instanceof",
+                "async",
+                "await",
+                "import",
+                "export",
+                "from",
+                "as",
             ];
             if !keywords.contains(&name.as_str()) && !seen.contains(&name) {
                 seen.insert(name.clone());
@@ -1672,7 +1866,12 @@ impl ASTParser {
 
         let parser = match self.parsers.get_mut(&ext) {
             Some(p) => p,
-            None => return (Err(format!("Unsupported file extension: {}", ext)), Vec::new()),
+            None => {
+                return (
+                    Err(format!("Unsupported file extension: {}", ext)),
+                    Vec::new(),
+                )
+            }
         };
 
         let tree = match parser.parse(content, None) {
@@ -1697,7 +1896,6 @@ impl ASTParser {
         (symbols, calls)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

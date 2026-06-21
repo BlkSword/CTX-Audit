@@ -7,8 +7,8 @@
 //! 替代 cross_file.rs 中基于 heuristics 的 compute_single_summary。
 
 use crate::analysis::alias::AccessPath;
-use crate::analysis::cross_file::{FunctionSummary, SinkReachability};
 use crate::analysis::cpg::FunctionCPG;
+use crate::analysis::cross_file::{FunctionSummary, SinkReachability};
 use crate::analysis::taint::{TaintFlow, VulnerabilityType};
 
 /// 从 FunctionCPG 的污点分析结果自动生成函数摘要
@@ -32,7 +32,8 @@ pub fn compute_summary_from_cpg(
         let param_path = AccessPath::simple(param_name);
 
         // 检查是否有 TaintFlow 从该参数的行开始
-        let param_flows: Vec<&TaintFlow> = taint_flows.iter()
+        let param_flows: Vec<&TaintFlow> = taint_flows
+            .iter()
             .filter(|f| {
                 // 源在参数行附近（±2 行容差）
                 let source_line = f.source.line;
@@ -71,7 +72,10 @@ pub fn compute_summary_from_cpg(
     // 也从调用图中提取 sink 信息（补充 CPG 未覆盖的）
     for node_meta in func_cpg.node_meta.values() {
         if let Some(ref call) = node_meta.call_info {
-            if sink_names.iter().any(|s| call.callee.contains(s) || s.contains(&call.callee)) {
+            if sink_names
+                .iter()
+                .any(|s| call.callee.contains(s) || s.contains(&call.callee))
+            {
                 // 找到 sink 调用 — 检查是否有对应的 param_idx
                 let already = direct_sinks.iter().any(|ds| ds.sink_line == call.line);
                 if !already {
@@ -106,32 +110,43 @@ fn infer_vuln_type(func_name: &str) -> VulnerabilityType {
     let lower = func_name.to_lowercase();
 
     // SQL 先检查（cursor.execute 包含 exec，需在命令注入前匹配）
-    if lower.contains("query") || lower.contains("sql") || lower.contains("cursor")
-        || lower.contains("jdbctemplate") || lower.contains("preparedstatement")
+    if lower.contains("query")
+        || lower.contains("sql")
+        || lower.contains("cursor")
+        || lower.contains("jdbctemplate")
+        || lower.contains("preparedstatement")
         || lower.contains("database")
     {
         return VulnerabilityType::SqlInjection;
     }
 
-    if lower.contains("exec") || lower.contains("system") || lower.contains("spawn")
-        || lower.contains("shell_exec") || lower.contains("passthru")
+    if lower.contains("exec")
+        || lower.contains("system")
+        || lower.contains("spawn")
+        || lower.contains("shell_exec")
+        || lower.contains("passthru")
     {
         return VulnerabilityType::CommandInjection;
     }
 
-    if lower.contains("eval") || lower.contains("compile") || lower.contains("__import__")
-    {
+    if lower.contains("eval") || lower.contains("compile") || lower.contains("__import__") {
         return VulnerabilityType::CodeInjection;
     }
 
-    if lower.contains("fetch") || lower.contains("axios") || lower.contains("request")
-        || lower.contains("http") || lower.contains("urllib")
+    if lower.contains("fetch")
+        || lower.contains("axios")
+        || lower.contains("request")
+        || lower.contains("http")
+        || lower.contains("urllib")
     {
         return VulnerabilityType::ServerSideRequestForgery;
     }
 
-    if lower.contains("write") || lower.contains("read") || lower.contains("open")
-        || lower.contains("file") || lower.contains("fs.")
+    if lower.contains("write")
+        || lower.contains("read")
+        || lower.contains("open")
+        || lower.contains("file")
+        || lower.contains("fs.")
     {
         return VulnerabilityType::PathTraversal;
     }
@@ -145,28 +160,49 @@ mod tests {
 
     #[test]
     fn test_infer_vuln_type_command_injection() {
-        assert!(matches!(infer_vuln_type("exec"), VulnerabilityType::CommandInjection));
-        assert!(matches!(infer_vuln_type("child_process.exec"), VulnerabilityType::CommandInjection));
+        assert!(matches!(
+            infer_vuln_type("exec"),
+            VulnerabilityType::CommandInjection
+        ));
+        assert!(matches!(
+            infer_vuln_type("child_process.exec"),
+            VulnerabilityType::CommandInjection
+        ));
     }
 
     #[test]
     fn test_infer_vuln_type_sql_injection() {
-        assert!(matches!(infer_vuln_type("cursor.execute"), VulnerabilityType::SqlInjection));
-        assert!(matches!(infer_vuln_type("db.query"), VulnerabilityType::SqlInjection));
+        assert!(matches!(
+            infer_vuln_type("cursor.execute"),
+            VulnerabilityType::SqlInjection
+        ));
+        assert!(matches!(
+            infer_vuln_type("db.query"),
+            VulnerabilityType::SqlInjection
+        ));
     }
 
     #[test]
     fn test_infer_vuln_type_code_injection() {
-        assert!(matches!(infer_vuln_type("eval"), VulnerabilityType::CodeInjection));
+        assert!(matches!(
+            infer_vuln_type("eval"),
+            VulnerabilityType::CodeInjection
+        ));
     }
 
     #[test]
     fn test_infer_vuln_type_ssrf() {
-        assert!(matches!(infer_vuln_type("fetch"), VulnerabilityType::ServerSideRequestForgery));
+        assert!(matches!(
+            infer_vuln_type("fetch"),
+            VulnerabilityType::ServerSideRequestForgery
+        ));
     }
 
     #[test]
     fn test_infer_vuln_type_unknown() {
-        assert!(matches!(infer_vuln_type("some_unknown_func"), VulnerabilityType::Generic));
+        assert!(matches!(
+            infer_vuln_type("some_unknown_func"),
+            VulnerabilityType::Generic
+        ));
     }
 }

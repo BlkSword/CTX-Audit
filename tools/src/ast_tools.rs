@@ -6,12 +6,14 @@
 //! 集成 deepaudit-core 的 AST 引擎功能到工具系统
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::collections::HashMap;
 
+use crate::bridge::{
+    ToolCategory, ToolDefinition, ToolError, ToolParameter, ToolParameterType, ToolResult,
+};
 use crate::registry::{Tool, ToolRegistry};
-use crate::bridge::{ToolCategory, ToolDefinition, ToolParameter, ToolParameterType, ToolResult, ToolError};
 
 use deepaudit_core::{ASTEngine, QueryEngine, Symbol};
 
@@ -23,7 +25,10 @@ pub struct SearchSymbolTool {
 
 impl SearchSymbolTool {
     pub fn new(project_path: String, ast_engine: Arc<ASTEngine>) -> Self {
-        Self { project_path, ast_engine }
+        Self {
+            project_path,
+            ast_engine,
+        }
     }
 }
 
@@ -88,9 +93,7 @@ impl Tool for SearchSymbolTool {
             })?;
 
         // 限制结果数量
-        let symbols: Vec<_> = symbols.into_iter()
-            .take(limit)
-            .collect();
+        let symbols: Vec<_> = symbols.into_iter().take(limit).collect();
 
         if symbols.is_empty() {
             return Ok(ToolResult::text(format!("未找到匹配 '{}' 的符号", query)));
@@ -132,7 +135,10 @@ pub struct GetFileStructureTool {
 
 impl GetFileStructureTool {
     pub fn new(project_path: String, ast_engine: Arc<ASTEngine>) -> Self {
-        Self { project_path, ast_engine }
+        Self {
+            project_path,
+            ast_engine,
+        }
     }
 }
 
@@ -151,8 +157,8 @@ impl Tool for GetFileStructureTool {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new(self.name(), self.description(), self.category())
-            .add_parameter(ToolParameter {
+        ToolDefinition::new(self.name(), self.description(), self.category()).add_parameter(
+            ToolParameter {
                 name: "file_path".to_string(),
                 param_type: ToolParameterType::String,
                 description: "文件路径（相对于项目根目录）".to_string(),
@@ -162,7 +168,8 @@ impl Tool for GetFileStructureTool {
                 format: Some("path".to_string()),
                 items: None,
                 properties: None,
-            })
+            },
+        )
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
@@ -173,15 +180,23 @@ impl Tool for GetFileStructureTool {
         let full_path = Path::new(&self.project_path).join(file_path);
 
         if !full_path.exists() {
-            return Ok(ToolResult::error(format!("文件不存在: {}", file_path), None));
+            return Ok(ToolResult::error(
+                format!("文件不存在: {}", file_path),
+                None,
+            ));
         }
 
         // 获取文件结构
-        let symbols = self.ast_engine.get_file_structure(&full_path.to_string_lossy())
+        let symbols = self
+            .ast_engine
+            .get_file_structure(&full_path.to_string_lossy())
             .map_err(|e| ToolError::ExecutionFailed(format!("获取文件结构失败: {}", e)))?;
 
         if symbols.is_empty() {
-            return Ok(ToolResult::text(format!("文件 '{}' 不包含任何符号", file_path)));
+            return Ok(ToolResult::text(format!(
+                "文件 '{}' 不包含任何符号",
+                file_path
+            )));
         }
 
         // 按类型分组
@@ -228,7 +243,12 @@ impl Tool for GetFileStructureTool {
         if !other.is_empty() {
             result.push_str("其他:\n");
             for item in &other {
-                result.push_str(&format!("  • {} ({} 行 {})\n", item.name, item.kind_to_string(), item.start_line));
+                result.push_str(&format!(
+                    "  • {} ({} 行 {})\n",
+                    item.name,
+                    item.kind_to_string(),
+                    item.start_line
+                ));
             }
         }
 
@@ -244,7 +264,10 @@ pub struct FindReferencesTool {
 
 impl FindReferencesTool {
     pub fn new(project_path: String, ast_engine: Arc<ASTEngine>) -> Self {
-        Self { project_path, ast_engine }
+        Self {
+            project_path,
+            ast_engine,
+        }
     }
 }
 
@@ -263,8 +286,8 @@ impl Tool for FindReferencesTool {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new(self.name(), self.description(), self.category())
-            .add_parameter(ToolParameter {
+        ToolDefinition::new(self.name(), self.description(), self.category()).add_parameter(
+            ToolParameter {
                 name: "symbol_name".to_string(),
                 param_type: ToolParameterType::String,
                 description: "符号名称（函数/方法名）".to_string(),
@@ -274,7 +297,8 @@ impl Tool for FindReferencesTool {
                 format: None,
                 items: None,
                 properties: None,
-            })
+            },
+        )
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
@@ -283,7 +307,9 @@ impl Tool for FindReferencesTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 symbol_name 参数".to_string()))?;
 
         // 查找调用点
-        let call_sites = self.ast_engine.find_call_sites(symbol_name)
+        let call_sites = self
+            .ast_engine
+            .find_call_sites(symbol_name)
             .map_err(|e| ToolError::ExecutionFailed(format!("查找引用失败: {}", e)))?;
 
         if call_sites.is_empty() {
@@ -295,7 +321,10 @@ impl Tool for FindReferencesTool {
         // 按文件分组
         let mut by_file: HashMap<String, Vec<&Symbol>> = HashMap::new();
         for site in &call_sites {
-            by_file.entry(site.file_path.clone()).or_insert_with(Vec::new).push(site);
+            by_file
+                .entry(site.file_path.clone())
+                .or_insert_with(Vec::new)
+                .push(site);
         }
 
         for (file, sites) in by_file {
@@ -318,7 +347,10 @@ pub struct GetCallGraphTool {
 
 impl GetCallGraphTool {
     pub fn new(project_path: String, ast_engine: Arc<ASTEngine>) -> Self {
-        Self { project_path, ast_engine }
+        Self {
+            project_path,
+            ast_engine,
+        }
     }
 }
 
@@ -370,7 +402,9 @@ impl Tool for GetCallGraphTool {
         let max_depth = input["max_depth"].as_u64().unwrap_or(5) as usize;
 
         // 获取调用图
-        let call_graph = self.ast_engine.get_call_graph(entry, max_depth)
+        let call_graph = self
+            .ast_engine
+            .get_call_graph(entry, max_depth)
             .map_err(|e| ToolError::ExecutionFailed(format!("获取调用图失败: {}", e)))?;
 
         let result = serde_json::to_string_pretty(&call_graph)
@@ -388,7 +422,10 @@ pub struct GetClassHierarchyTool {
 
 impl GetClassHierarchyTool {
     pub fn new(project_path: String, ast_engine: Arc<ASTEngine>) -> Self {
-        Self { project_path, ast_engine }
+        Self {
+            project_path,
+            ast_engine,
+        }
     }
 }
 
@@ -407,8 +444,8 @@ impl Tool for GetClassHierarchyTool {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::new(self.name(), self.description(), self.category())
-            .add_parameter(ToolParameter {
+        ToolDefinition::new(self.name(), self.description(), self.category()).add_parameter(
+            ToolParameter {
                 name: "class_name".to_string(),
                 param_type: ToolParameterType::String,
                 description: "类名".to_string(),
@@ -418,7 +455,8 @@ impl Tool for GetClassHierarchyTool {
                 format: None,
                 items: None,
                 properties: None,
-            })
+            },
+        )
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
@@ -427,7 +465,9 @@ impl Tool for GetClassHierarchyTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 class_name 参数".to_string()))?;
 
         // 获取类层次结构
-        let hierarchy = self.ast_engine.get_class_hierarchy(class_name)
+        let hierarchy = self
+            .ast_engine
+            .get_class_hierarchy(class_name)
             .map_err(|e| ToolError::ExecutionFailed(format!("获取类层次结构失败: {}", e)))?;
 
         // 检查是否是错误
@@ -452,7 +492,10 @@ pub struct IndexProjectTool {
 
 impl IndexProjectTool {
     pub fn new(project_path: String, ast_engine: Arc<ASTEngine>) -> Self {
-        Self { project_path, ast_engine }
+        Self {
+            project_path,
+            ast_engine,
+        }
     }
 }
 
@@ -476,11 +519,15 @@ impl Tool for IndexProjectTool {
 
     async fn execute(&self, _input: serde_json::Value) -> Result<ToolResult, ToolError> {
         // 扫描项目
-        let file_count = self.ast_engine.scan_project(&self.project_path)
+        let file_count = self
+            .ast_engine
+            .scan_project(&self.project_path)
             .map_err(|e| ToolError::ExecutionFailed(format!("项目索引失败: {}", e)))?;
 
         // 获取统计信息
-        let stats = self.ast_engine.get_statistics()
+        let stats = self
+            .ast_engine
+            .get_statistics()
             .map_err(|e| ToolError::ExecutionFailed(format!("获取统计信息失败: {}", e)))?;
 
         let result = format!(
@@ -500,12 +547,30 @@ pub async fn register_ast_tools(
     ast_engine: Arc<ASTEngine>,
 ) {
     let tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(SearchSymbolTool::new(project_path.clone(), ast_engine.clone())),
-        Arc::new(GetFileStructureTool::new(project_path.clone(), ast_engine.clone())),
-        Arc::new(FindReferencesTool::new(project_path.clone(), ast_engine.clone())),
-        Arc::new(GetCallGraphTool::new(project_path.clone(), ast_engine.clone())),
-        Arc::new(GetClassHierarchyTool::new(project_path.clone(), ast_engine.clone())),
-        Arc::new(IndexProjectTool::new(project_path.clone(), ast_engine.clone())),
+        Arc::new(SearchSymbolTool::new(
+            project_path.clone(),
+            ast_engine.clone(),
+        )),
+        Arc::new(GetFileStructureTool::new(
+            project_path.clone(),
+            ast_engine.clone(),
+        )),
+        Arc::new(FindReferencesTool::new(
+            project_path.clone(),
+            ast_engine.clone(),
+        )),
+        Arc::new(GetCallGraphTool::new(
+            project_path.clone(),
+            ast_engine.clone(),
+        )),
+        Arc::new(GetClassHierarchyTool::new(
+            project_path.clone(),
+            ast_engine.clone(),
+        )),
+        Arc::new(IndexProjectTool::new(
+            project_path.clone(),
+            ast_engine.clone(),
+        )),
     ];
 
     for tool in tools {

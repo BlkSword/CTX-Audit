@@ -202,45 +202,50 @@ impl FlowGraph {
         let mut uses = Vec::new();
 
         // 简单的分析逻辑
-        let node_type = if line.contains("if ") || line.contains("else if ") || line.contains("switch") {
-            FlowNodeType::Condition
-        } else if line.contains("for ") || line.contains("while ") || line.contains("loop") {
-            FlowNodeType::LoopHeader
-        } else if line.contains("return ") {
-            FlowNodeType::Return
-        } else if line.contains("(") && line.contains(")") && !line.contains("=") {
-            FlowNodeType::Call
-        } else if line.contains("=") || line.contains(":=") {
-            // 提取定义的变量
-            if let Some(eq_pos) = line.find('=') {
-                let left = &line[..eq_pos];
-                for word in left.split_whitespace() {
-                    let word = word.trim_matches(&['*', '&', 'm', 'u', 't', 'l', 'e', ' '] as &[_]);
-                    if !word.is_empty() && word.chars().next().unwrap().is_alphabetic() {
-                        defs.push(word.to_string());
+        let node_type =
+            if line.contains("if ") || line.contains("else if ") || line.contains("switch") {
+                FlowNodeType::Condition
+            } else if line.contains("for ") || line.contains("while ") || line.contains("loop") {
+                FlowNodeType::LoopHeader
+            } else if line.contains("return ") {
+                FlowNodeType::Return
+            } else if line.contains("(") && line.contains(")") && !line.contains("=") {
+                FlowNodeType::Call
+            } else if line.contains("=") || line.contains(":=") {
+                // 提取定义的变量
+                if let Some(eq_pos) = line.find('=') {
+                    let left = &line[..eq_pos];
+                    for word in left.split_whitespace() {
+                        let word =
+                            word.trim_matches(&['*', '&', 'm', 'u', 't', 'l', 'e', ' '] as &[_]);
+                        if !word.is_empty() && word.chars().next().unwrap().is_alphabetic() {
+                            defs.push(word.to_string());
+                        }
                     }
                 }
-            }
-            // 提取使用的变量
-            let right = if let Some(eq_pos) = line.find('=') {
-                &line[eq_pos + 1..]
-            } else {
-                line
-            };
-            for word in right.split(&[' ', '(', ')', '+', '-', '*', '/', ',', ';']) {
-                let word = word.trim();
-                if !word.is_empty()
-                    && word.chars().next().unwrap().is_alphabetic()
-                    && !defs.contains(&word.to_string())
-                    && !["if", "else", "for", "while", "return", "let", "var", "const"].contains(&word)
-                {
-                    uses.push(word.to_string());
+                // 提取使用的变量
+                let right = if let Some(eq_pos) = line.find('=') {
+                    &line[eq_pos + 1..]
+                } else {
+                    line
+                };
+                for word in right.split(&[' ', '(', ')', '+', '-', '*', '/', ',', ';']) {
+                    let word = word.trim();
+                    if !word.is_empty()
+                        && word.chars().next().unwrap().is_alphabetic()
+                        && !defs.contains(&word.to_string())
+                        && ![
+                            "if", "else", "for", "while", "return", "let", "var", "const",
+                        ]
+                        .contains(&word)
+                    {
+                        uses.push(word.to_string());
+                    }
                 }
-            }
-            FlowNodeType::Assignment
-        } else {
-            FlowNodeType::Statement
-        };
+                FlowNodeType::Assignment
+            } else {
+                FlowNodeType::Statement
+            };
 
         (node_type, defs, uses)
     }
@@ -317,7 +322,11 @@ impl FlowFact for AvailableExpressionsFact {
 
     fn join(&self, other: &Self) -> Self {
         Self {
-            expressions: self.expressions.intersection(&other.expressions).cloned().collect(),
+            expressions: self
+                .expressions
+                .intersection(&other.expressions)
+                .cloned()
+                .collect(),
         }
     }
 
@@ -453,7 +462,11 @@ impl FlowFact for ReachingDefinitionsFact {
 
     fn join(&self, other: &Self) -> Self {
         Self {
-            definitions: self.definitions.union(&other.definitions).cloned().collect(),
+            definitions: self
+                .definitions
+                .union(&other.definitions)
+                .cloned()
+                .collect(),
         }
     }
 
@@ -524,7 +537,8 @@ pub trait DataFlowAnalysis {
                         if preds.is_empty() {
                             Self::Fact::top()
                         } else {
-                            preds.iter()
+                            preds
+                                .iter()
                                 .filter_map(|p| out_facts.get(p))
                                 .fold(Self::Fact::top(), |acc, f| acc.join(f))
                         }
@@ -534,7 +548,8 @@ pub trait DataFlowAnalysis {
                         if succs.is_empty() {
                             Self::Fact::top()
                         } else {
-                            succs.iter()
+                            succs
+                                .iter()
                                 .filter_map(|s| in_facts.get(s))
                                 .fold(Self::Fact::top(), |acc, f| acc.join(f))
                         }
@@ -545,7 +560,10 @@ pub trait DataFlowAnalysis {
                 let new_out = self.transfer(node, &new_in);
 
                 // 检查是否变化
-                let old_out = out_facts.get(&node_id).cloned().unwrap_or_else(Self::Fact::top);
+                let old_out = out_facts
+                    .get(&node_id)
+                    .cloned()
+                    .unwrap_or_else(Self::Fact::top);
                 if !new_out.less_equal(&old_out) || !old_out.less_equal(&new_out) {
                     changed = true;
                 }

@@ -10,7 +10,7 @@ use anyhow::Result;
 use std::io::Write;
 
 use ctx_audit_tools::FindingData;
-use deepaudit_core::sarif::{SarifConverter, FindingInput};
+use deepaudit_core::sarif::{FindingInput, SarifConverter};
 
 /// 输出格式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +50,7 @@ pub struct OutputFormatter;
 
 impl OutputFormatter {
     /// 格式化漏洞列表
-    pub fn format_findings(
-        findings: &[FindingData],
-        format: OutputFormat,
-    ) -> Result<String> {
+    pub fn format_findings(findings: &[FindingData], format: OutputFormat) -> Result<String> {
         match format {
             OutputFormat::Text => Self::format_findings_text(findings),
             OutputFormat::Json => Self::format_findings_json(findings),
@@ -70,8 +67,16 @@ impl OutputFormatter {
         output.push_str(&format!("共发现 {} 个漏洞\n\n", findings.len()));
 
         for (i, finding) in findings.iter().enumerate() {
-            output.push_str(&format!("#{} [{}] {}\n", i + 1, finding.severity, finding.title.as_ref().unwrap_or(&"未命名漏洞".to_string())));
-            output.push_str(&format!("  位置: {}:{}\n", finding.file_path, finding.start_line));
+            output.push_str(&format!(
+                "#{} [{}] {}\n",
+                i + 1,
+                finding.severity,
+                finding.title.as_ref().unwrap_or(&"未命名漏洞".to_string())
+            ));
+            output.push_str(&format!(
+                "  位置: {}:{}\n",
+                finding.file_path, finding.start_line
+            ));
             output.push_str(&format!("  描述: {}\n", finding.description));
 
             if let Some(code) = &finding.code_snippet {
@@ -142,12 +147,19 @@ impl OutputFormatter {
 
         for severity in ["critical", "high", "medium", "low", "info"] {
             if let Some(findings) = by_severity.get(severity) {
-                output.push_str(&format!("## {} ({})\n\n", severity.to_uppercase(), findings.len()));
+                output.push_str(&format!(
+                    "## {} ({})\n\n",
+                    severity.to_uppercase(),
+                    findings.len()
+                ));
 
                 for finding in findings {
                     let title = finding.title.as_deref().unwrap_or("未命名漏洞");
                     output.push_str(&format!("### {}\n\n", title));
-                    output.push_str(&format!("- **位置**: `{}:{}`\n", finding.file_path, finding.start_line));
+                    output.push_str(&format!(
+                        "- **位置**: `{}:{}`\n",
+                        finding.file_path, finding.start_line
+                    ));
                     output.push_str(&format!("- **描述**: {}\n", finding.description));
 
                     if let Some(cwe) = &finding.cwe_id {
@@ -217,11 +229,7 @@ impl OutputManager {
     }
 
     /// 写入漏洞报告
-    pub fn write_findings<W: Write>(
-        &self,
-        writer: &mut W,
-        findings: &[FindingData],
-    ) -> Result<()> {
+    pub fn write_findings<W: Write>(&self, writer: &mut W, findings: &[FindingData]) -> Result<()> {
         let output = OutputFormatter::format_findings(findings, self.format)?;
         writeln!(writer, "{}", output)?;
         Ok(())

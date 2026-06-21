@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
-use tracing::{info, error, debug, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::engine::AnalysisEngine;
 use crate::protocol::{CacheStats, Envelope, Request, RequestCommand, Response};
@@ -147,11 +147,16 @@ async fn handle_client(
         let request: Request = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
-                let err = Envelope::new("error", Response::Error {
-                    code: "parse_error".to_string(),
-                    message: format!("无效请求: {}", e),
-                });
-                writer.write_all(format!("{}\n", serde_json::to_string(&err)?).as_bytes()).await?;
+                let err = Envelope::new(
+                    "error",
+                    Response::Error {
+                        code: "parse_error".to_string(),
+                        message: format!("无效请求: {}", e),
+                    },
+                );
+                writer
+                    .write_all(format!("{}\n", serde_json::to_string(&err)?).as_bytes())
+                    .await?;
                 continue;
             }
         };
@@ -159,16 +164,28 @@ async fn handle_client(
         // 认证检查（Ping 除外）
         if !matches!(request.command, RequestCommand::Ping) {
             if !validate_token(&request, auth_token) {
-                let err = Envelope::new("error", Response::Error {
-                    code: "unauthorized".to_string(),
-                    message: "认证失败: 无效或缺失 auth_token".to_string(),
-                });
-                writer.write_all(format!("{}\n", serde_json::to_string(&err)?).as_bytes()).await?;
+                let err = Envelope::new(
+                    "error",
+                    Response::Error {
+                        code: "unauthorized".to_string(),
+                        message: "认证失败: 无效或缺失 auth_token".to_string(),
+                    },
+                );
+                writer
+                    .write_all(format!("{}\n", serde_json::to_string(&err)?).as_bytes())
+                    .await?;
                 continue;
             }
         }
 
-        let response = handle_request(request.command, &state, &engine, &shutdown_tx, watchers.clone()).await;
+        let response = handle_request(
+            request.command,
+            &state,
+            &engine,
+            &shutdown_tx,
+            watchers.clone(),
+        )
+        .await;
         let envelope = Envelope::new(uuid::Uuid::new_v4().to_string(), response);
         let json = serde_json::to_string(&envelope)?;
         writer.write_all(format!("{}\n", json).as_bytes()).await?;
@@ -224,12 +241,14 @@ async fn handle_request(
             Response::Ack {
                 message: "shutting_down".to_string(),
             }
-        },
+        }
 
         RequestCommand::LoadProject { path } => {
             let mut projects = state.projects.write().await;
             if projects.contains_key(&path) {
-                Response::Ack { message: "already_loaded".to_string() }
+                Response::Ack {
+                    message: "already_loaded".to_string(),
+                }
             } else {
                 projects.insert(path.clone(), crate::state::ProjectState::new(path.clone()));
                 info!("项目已加载: {}", path);
@@ -241,11 +260,20 @@ async fn handle_request(
                         warn!("项目预索引失败: {} — {}", path_clone, e);
                     }
                 });
-                Response::Ack { message: "loaded".to_string() }
+                Response::Ack {
+                    message: "loaded".to_string(),
+                }
             }
         }
 
-        RequestCommand::Scan { path, deep, enable_taint, enable_cross_file, severity_filter, pattern_filter } => {
+        RequestCommand::Scan {
+            path,
+            deep,
+            enable_taint,
+            enable_cross_file,
+            severity_filter,
+            pattern_filter,
+        } => {
             let eff_taint = enable_taint || deep || enable_cross_file;
             let eff_cross_file = enable_cross_file || deep;
             match engine.scan(&path, eff_taint, eff_cross_file).await {
@@ -260,7 +288,10 @@ async fn handle_request(
                     }
 
                     Response::ScanResult {
-                        findings: findings.into_iter().map(|f| serde_json::to_value(f).unwrap_or_default()).collect(),
+                        findings: findings
+                            .into_iter()
+                            .map(|f| serde_json::to_value(f).unwrap_or_default())
+                            .collect(),
                         duration_ms: output.duration_ms,
                         files_scanned: output.files_scanned,
                     }
@@ -272,20 +303,25 @@ async fn handle_request(
             }
         }
 
-        RequestCommand::Analyze { file_path, start_line, end_line, show_ast, show_symbols } => {
-            match engine.analyze_file(&file_path, start_line, end_line, show_ast, show_symbols) {
-                Ok(content) => Response::AnalysisResult { content },
-                Err(e) => Response::Error {
-                    code: "analyze_failed".to_string(),
-                    message: e.to_string(),
-                },
-            }
-        }
+        RequestCommand::Analyze {
+            file_path,
+            start_line,
+            end_line,
+            show_ast,
+            show_symbols,
+        } => match engine.analyze_file(&file_path, start_line, end_line, show_ast, show_symbols) {
+            Ok(content) => Response::AnalysisResult { content },
+            Err(e) => Response::Error {
+                code: "analyze_failed".to_string(),
+                message: e.to_string(),
+            },
+        },
 
-        RequestCommand::TraceTaint { file_path } => {
-            match engine.trace_taint(&file_path) {
-                Ok(flows) => {
-                    let flow_values: Vec<serde_json::Value> = flows.iter().map(|f| {
+        RequestCommand::TraceTaint { file_path } => match engine.trace_taint(&file_path) {
+            Ok(flows) => {
+                let flow_values: Vec<serde_json::Value> = flows
+                    .iter()
+                    .map(|f| {
                         serde_json::json!({
                             "source": f.source.symbol,
                             "source_line": f.source.line,
@@ -293,15 +329,15 @@ async fn handle_request(
                             "sink_line": f.sink.line,
                             "vulnerability_type": format!("{:?}", f.vulnerability_type),
                         })
-                    }).collect();
-                    Response::TaintResult { flows: flow_values }
-                }
-                Err(e) => Response::Error {
-                    code: "taint_failed".to_string(),
-                    message: e.to_string(),
-                },
+                    })
+                    .collect();
+                Response::TaintResult { flows: flow_values }
             }
-        }
+            Err(e) => Response::Error {
+                code: "taint_failed".to_string(),
+                message: e.to_string(),
+            },
+        },
 
         RequestCommand::QuerySymbols { query, limit } => {
             let projects = state.projects.read().await;
@@ -345,17 +381,18 @@ async fn handle_request(
             }
         }
 
-        RequestCommand::CrossFileAnalysis { path } => {
-            match engine.cross_file_analysis(&path) {
-                Ok(result) => Response::CrossFileTaintResult { result },
-                Err(e) => Response::Error {
-                    code: "cross_file_failed".to_string(),
-                    message: e.to_string(),
-                },
-            }
-        }
+        RequestCommand::CrossFileAnalysis { path } => match engine.cross_file_analysis(&path) {
+            Ok(result) => Response::CrossFileTaintResult { result },
+            Err(e) => Response::Error {
+                code: "cross_file_failed".to_string(),
+                message: e.to_string(),
+            },
+        },
 
-        RequestCommand::WatchStart { path, ignore_patterns } => {
+        RequestCommand::WatchStart {
+            path,
+            ignore_patterns,
+        } => {
             // 检查是否已有监控
             {
                 let active = watchers.read().await;
@@ -369,9 +406,14 @@ async fn handle_request(
                 sarif_output_path: format!(".ctx-audit/{}.sarif", sanitize_project_name(&path)),
                 ignore_patterns: if ignore_patterns.is_empty() {
                     vec![
-                        "node_modules".into(), ".git".into(), "target".into(),
-                        "build".into(), "dist".into(), "__pycache__".into(),
-                        ".next".into(), "vendor".into(),
+                        "node_modules".into(),
+                        ".git".into(),
+                        "target".into(),
+                        "build".into(),
+                        "dist".into(),
+                        "__pycache__".into(),
+                        ".next".into(),
+                        "vendor".into(),
                     ]
                 } else {
                     ignore_patterns
@@ -388,7 +430,10 @@ async fn handle_request(
                 let mut watcher = FileWatcher::new(watcher_config);
                 match watcher.initial_scan() {
                     Ok(delta) => {
-                        info!("[文件监控] {}: 初始扫描完成, {} 个文件", path_clone, delta.total_files);
+                        info!(
+                            "[文件监控] {}: 初始扫描完成, {} 个文件",
+                            path_clone, delta.total_files
+                        );
                     }
                     Err(e) => {
                         warn!("[文件监控] {}: 初始扫描失败: {}", path_clone, e);
@@ -447,55 +492,113 @@ async fn handle_request(
         }
 
         // ── 调用图查询命令 ──────────────────────────
-
-        RequestCommand::QueryCallers { project_path, file_path, function_name, recursive } => {
-            match engine.graph_query_callers(&project_path, &file_path, &function_name, recursive.unwrap_or(false)) {
+        RequestCommand::QueryCallers {
+            project_path,
+            file_path,
+            function_name,
+            recursive,
+        } => {
+            match engine.graph_query_callers(
+                &project_path,
+                &file_path,
+                &function_name,
+                recursive.unwrap_or(false),
+            ) {
                 Ok(result) => Response::GraphQueryResult { result },
-                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+                Err(e) => Response::Error {
+                    code: "graph_query_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
-        RequestCommand::QueryCallees { project_path, file_path, function_name, recursive } => {
-            match engine.graph_query_callees(&project_path, &file_path, &function_name, recursive.unwrap_or(false)) {
+        RequestCommand::QueryCallees {
+            project_path,
+            file_path,
+            function_name,
+            recursive,
+        } => {
+            match engine.graph_query_callees(
+                &project_path,
+                &file_path,
+                &function_name,
+                recursive.unwrap_or(false),
+            ) {
                 Ok(result) => Response::GraphQueryResult { result },
-                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+                Err(e) => Response::Error {
+                    code: "graph_query_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
-        RequestCommand::FindCallPath { project_path, source_file, source_function, sink_file, sink_function } => {
-            match engine.graph_find_call_path(&project_path, &source_file, &source_function, &sink_file, &sink_function) {
+        RequestCommand::FindCallPath {
+            project_path,
+            source_file,
+            source_function,
+            sink_file,
+            sink_function,
+        } => {
+            match engine.graph_find_call_path(
+                &project_path,
+                &source_file,
+                &source_function,
+                &sink_file,
+                &sink_function,
+            ) {
                 Ok(result) => Response::GraphQueryResult { result },
-                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+                Err(e) => Response::Error {
+                    code: "graph_query_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
         RequestCommand::GetGraphStats { project_path } => {
             match engine.graph_get_stats(&project_path) {
                 Ok(result) => Response::GraphQueryResult { result },
-                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
+                Err(e) => Response::Error {
+                    code: "graph_query_failed".into(),
+                    message: e.to_string(),
+                },
             }
         }
 
-        RequestCommand::ListFileFunctions { project_path, file_path } => {
-            match engine.graph_list_functions(&project_path, &file_path) {
-                Ok(result) => Response::GraphQueryResult { result },
-                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
-            }
-        }
+        RequestCommand::ListFileFunctions {
+            project_path,
+            file_path,
+        } => match engine.graph_list_functions(&project_path, &file_path) {
+            Ok(result) => Response::GraphQueryResult { result },
+            Err(e) => Response::Error {
+                code: "graph_query_failed".into(),
+                message: e.to_string(),
+            },
+        },
 
-        RequestCommand::TraceVariableFlow { project_path, file_path, function_name } => {
-            match engine.graph_trace_flow(&project_path, &file_path, &function_name) {
-                Ok(result) => Response::GraphQueryResult { result },
-                Err(e) => Response::Error { code: "graph_query_failed".into(), message: e.to_string() },
-            }
-        }
+        RequestCommand::TraceVariableFlow {
+            project_path,
+            file_path,
+            function_name,
+        } => match engine.graph_trace_flow(&project_path, &file_path, &function_name) {
+            Ok(result) => Response::GraphQueryResult { result },
+            Err(e) => Response::Error {
+                code: "graph_query_failed".into(),
+                message: e.to_string(),
+            },
+        },
     }
 }
 
 /// 将项目路径转为安全的文件名
 fn sanitize_project_name(path: &str) -> String {
     path.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .to_string()
@@ -534,7 +637,8 @@ fn write_token_file(token: &str) -> anyhow::Result<()> {
 pub fn read_token_file() -> Option<String> {
     let path = token_file_path();
     if path.exists() {
-        std::fs::read_to_string(&path).ok()
+        std::fs::read_to_string(&path)
+            .ok()
             .map(|s| s.trim().to_string())
     } else {
         None
@@ -563,7 +667,10 @@ async fn write_heartbeat_async(state: &DaemonState, engine: &AnalysisEngine) {
             "scan_caches": mem_stats.scan_count,
         },
     });
-    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&content).unwrap_or_default()) {
+    if let Err(e) = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&content).unwrap_or_default(),
+    ) {
         debug!("心跳写入失败: {}", e);
     }
 }
@@ -574,7 +681,8 @@ pub fn spawn_heartbeat_task(
     engine: Arc<AnalysisEngine>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
-    let heartbeat_secs = read_daemon_config_u64("heartbeat_interval_secs", DEFAULT_HEARTBEAT_INTERVAL_SECS);
+    let heartbeat_secs =
+        read_daemon_config_u64("heartbeat_interval_secs", DEFAULT_HEARTBEAT_INTERVAL_SECS);
 
     tokio::spawn(async move {
         let interval = tokio::time::Duration::from_secs(heartbeat_secs);
@@ -626,7 +734,8 @@ fn write_pid_file(addr: &str) -> anyhow::Result<()> {
 pub fn read_pid_file() -> Option<serde_json::Value> {
     let path = pid_file_path();
     if path.exists() {
-        std::fs::read_to_string(&path).ok()
+        std::fs::read_to_string(&path)
+            .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
     } else {
         None

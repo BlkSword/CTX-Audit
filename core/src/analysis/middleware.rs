@@ -66,7 +66,8 @@ impl MiddlewareModel {
         }
 
         if !found_routes.is_empty() {
-            self.express_routes.insert(file_path.to_string(), found_routes);
+            self.express_routes
+                .insert(file_path.to_string(), found_routes);
         }
         if !found_middleware.is_empty() {
             self.express_middleware.extend(found_middleware);
@@ -99,7 +100,10 @@ impl MiddlewareModel {
 
     /// 获取指定文件的所有 Express 路由行号
     pub fn get_express_route_lines(&self, file_path: &str) -> &[usize] {
-        self.express_routes.get(file_path).map(|v| v.as_slice()).unwrap_or(&[])
+        self.express_routes
+            .get(file_path)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// 获取所有 Express 中间件注册
@@ -110,8 +114,16 @@ impl MiddlewareModel {
     /// 检测行是否为 Express 路由注册
     fn is_express_route_line(line: &str) -> bool {
         let patterns = [
-            "app.get(", "app.post(", "app.put(", "app.delete(", "app.patch(",
-            "router.get(", "router.post(", "router.put(", "router.delete(", "router.patch(",
+            "app.get(",
+            "app.post(",
+            "app.put(",
+            "app.delete(",
+            "app.patch(",
+            "router.get(",
+            "router.post(",
+            "router.put(",
+            "router.delete(",
+            "router.patch(",
         ];
         patterns.iter().any(|p| line.contains(p))
     }
@@ -120,9 +132,9 @@ impl MiddlewareModel {
     fn extract_use_handler(line: &str) -> Option<String> {
         let start = line.find(".use(")?;
         let after = &line[start + 5..]; // skip ".use("
-        // 情况1: app.use(express.json()) — 内置中间件，跳过
-        // 情况2: app.use(authMiddleware) — 命名函数引用
-        // 情况3: app.use('/path', handler) — 路径前缀 + handler
+                                        // 情况1: app.use(express.json()) — 内置中间件，跳过
+                                        // 情况2: app.use(authMiddleware) — 命名函数引用
+                                        // 情况3: app.use('/path', handler) — 路径前缀 + handler
 
         let args_str = if let Some(end) = after.find(')') {
             &after[..end]
@@ -159,10 +171,7 @@ impl MiddlewareModel {
 /// 扫描项目中的中间件模式
 pub fn scan_middleware(file_path: &Path, content: &str, model: &mut MiddlewareModel) {
     let path_str = file_path.to_string_lossy();
-    let file_name = file_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     // Express/Node.js
     if matches!(
@@ -231,13 +240,20 @@ MIDDLEWARE = [
         model.scan_django_settings(code);
 
         assert_eq!(model.django_middleware.len(), 3);
-        assert!(model.django_middleware.iter().any(|m| m.contains("SecurityMiddleware")));
+        assert!(model
+            .django_middleware
+            .iter()
+            .any(|m| m.contains("SecurityMiddleware")));
     }
 
     #[test]
     fn test_is_express_route_line() {
-        assert!(MiddlewareModel::is_express_route_line("app.get('/x', handler)"));
-        assert!(MiddlewareModel::is_express_route_line("router.post('/y', h)"));
+        assert!(MiddlewareModel::is_express_route_line(
+            "app.get('/x', handler)"
+        ));
+        assert!(MiddlewareModel::is_express_route_line(
+            "router.post('/y', h)"
+        ));
         assert!(!MiddlewareModel::is_express_route_line("app.use(auth)"));
         assert!(!MiddlewareModel::is_express_route_line("  const x = 1;"));
     }

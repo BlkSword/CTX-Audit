@@ -133,9 +133,17 @@ sinks:
   - id: "react_eval"
     name: "eval in React"
     description: "Dynamic code execution in React components or server actions"
+    match_mode: "Semantic"
+    namespaces:
+      - "vm"
     patterns:
       - "eval("
       - "new Function("
+      - "Function("
+      - ".runInContext"
+      - ".runInNewContext"
+      - ".compileFunction"
+    exact_matches:
       - "vm.runInContext"
       - "vm.runInNewContext"
       - "vm.compileFunction"
@@ -149,6 +157,7 @@ sinks:
   - id: "nextjs_dynamic_import"
     name: "Dynamic Import with User Input"
     description: "Dynamic import() with user-controlled path"
+    match_mode: "Substring"
     patterns:
       - "import("
     languages: ["javascript", "typescript"]
@@ -161,11 +170,21 @@ sinks:
   - id: "nextjs_redirect"
     name: "Next.js Redirect"
     description: "Redirect with user-controlled URL — open redirect and SSRF vector"
+    match_mode: "Semantic"
+    namespaces:
+      - "next"
+      - "next/navigation"
+      - "next/server"
     patterns:
       - "redirect("
       - "permanentRedirect("
-      - "NextResponse.redirect("
-      - "NextResponse.rewrite("
+      - ".redirect("
+      - ".rewrite("
+      - ".json("
+    exact_matches:
+      - "NextResponse.redirect"
+      - "NextResponse.rewrite"
+      - "NextResponse.json"
     languages: ["javascript", "typescript"]
     vulnerability_type: "OpenRedirect"
     severity: "High"

@@ -69,28 +69,54 @@ pub enum RequestCommand {
     CrossFileAnalysis { path: String },
 
     /// 启动文件监控
-    WatchStart { path: String, ignore_patterns: Vec<String> },
+    WatchStart {
+        path: String,
+        ignore_patterns: Vec<String>,
+    },
 
     /// 停止文件监控
     WatchStop { path: String },
 
     /// 查询调用图：谁调用了指定函数
-    QueryCallers { project_path: String, file_path: String, function_name: String, recursive: Option<bool> },
+    QueryCallers {
+        project_path: String,
+        file_path: String,
+        function_name: String,
+        recursive: Option<bool>,
+    },
 
     /// 查询调用图：指定函数调用了谁
-    QueryCallees { project_path: String, file_path: String, function_name: String, recursive: Option<bool> },
+    QueryCallees {
+        project_path: String,
+        file_path: String,
+        function_name: String,
+        recursive: Option<bool>,
+    },
 
     /// 查找 source→sink 调用路径
-    FindCallPath { project_path: String, source_file: String, source_function: String, sink_file: String, sink_function: String },
+    FindCallPath {
+        project_path: String,
+        source_file: String,
+        source_function: String,
+        sink_file: String,
+        sink_function: String,
+    },
 
     /// 获取调用图统计
     GetGraphStats { project_path: String },
 
     /// 列出文件中被索引的函数
-    ListFileFunctions { project_path: String, file_path: String },
+    ListFileFunctions {
+        project_path: String,
+        file_path: String,
+    },
 
     /// 追踪变量流
-    TraceVariableFlow { project_path: String, file_path: String, function_name: String },
+    TraceVariableFlow {
+        project_path: String,
+        file_path: String,
+        function_name: String,
+    },
 }
 
 /// IPC 响应
@@ -164,7 +190,10 @@ pub struct Envelope {
 
 impl Envelope {
     pub fn new(id: impl Into<String>, payload: Response) -> Self {
-        Self { id: id.into(), payload }
+        Self {
+            id: id.into(),
+            payload,
+        }
     }
 }
 
@@ -210,7 +239,12 @@ mod tests {
         let parsed: Request = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.auth_token.unwrap(), "tok");
         match parsed.command {
-            RequestCommand::Scan { path, deep, severity_filter, .. } => {
+            RequestCommand::Scan {
+                path,
+                deep,
+                severity_filter,
+                ..
+            } => {
                 assert_eq!(path, "/test/project");
                 assert!(deep);
                 assert_eq!(severity_filter.unwrap(), "high");
@@ -246,9 +280,12 @@ mod tests {
 
     #[test]
     fn test_envelope_wraps_response() {
-        let env = Envelope::new("msg-1", Response::Ack {
-            message: "ok".into(),
-        });
+        let env = Envelope::new(
+            "msg-1",
+            Response::Ack {
+                message: "ok".into(),
+            },
+        );
         let json = serde_json::to_string(&env).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["id"], "msg-1");

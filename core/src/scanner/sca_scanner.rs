@@ -42,13 +42,23 @@ pub struct ScaSeverityMapping {
     // < medium → low
 }
 
-fn default_critical_threshold() -> f64 { 9.0 }
-fn default_high_threshold() -> f64 { 7.0 }
-fn default_medium_threshold() -> f64 { 4.0 }
+fn default_critical_threshold() -> f64 {
+    9.0
+}
+fn default_high_threshold() -> f64 {
+    7.0
+}
+fn default_medium_threshold() -> f64 {
+    4.0
+}
 
 impl Default for ScaSeverityMapping {
     fn default() -> Self {
-        Self { critical: 9.0, high: 7.0, medium: 4.0 }
+        Self {
+            critical: 9.0,
+            high: 7.0,
+            medium: 4.0,
+        }
     }
 }
 
@@ -96,10 +106,18 @@ pub struct ScaScanOptions {
     pub fail_offline: bool,
 }
 
-fn default_true() -> bool { true }
-fn default_severity_threshold() -> String { "low".to_string() }
-fn default_cache_ttl_hours() -> u64 { 24 }
-fn default_osv_timeout_sec() -> u64 { 30 }
+fn default_true() -> bool {
+    true
+}
+fn default_severity_threshold() -> String {
+    "low".to_string()
+}
+fn default_cache_ttl_hours() -> u64 {
+    24
+}
+fn default_osv_timeout_sec() -> u64 {
+    30
+}
 
 impl Default for ScaScanOptions {
     fn default() -> Self {
@@ -314,17 +332,35 @@ impl ScaScanner {
 
             // 解析 package==version, package>=version, package~=version 等
             let (name, version) = if let Some(pos) = line.find("==") {
-                (&line[..pos], line[pos + 2..].split(',').next().unwrap_or("").to_string())
+                (
+                    &line[..pos],
+                    line[pos + 2..].split(',').next().unwrap_or("").to_string(),
+                )
             } else if let Some(pos) = line.find(">=") {
-                (&line[..pos], line[pos + 2..].split(',').next().unwrap_or("").to_string())
+                (
+                    &line[..pos],
+                    line[pos + 2..].split(',').next().unwrap_or("").to_string(),
+                )
             } else if let Some(pos) = line.find("~=") {
-                (&line[..pos], line[pos + 2..].split(',').next().unwrap_or("").to_string())
+                (
+                    &line[..pos],
+                    line[pos + 2..].split(',').next().unwrap_or("").to_string(),
+                )
             } else if let Some(pos) = line.find("<=") {
-                (&line[..pos], line[pos + 2..].split(',').next().unwrap_or("").to_string())
+                (
+                    &line[..pos],
+                    line[pos + 2..].split(',').next().unwrap_or("").to_string(),
+                )
             } else if let Some(pos) = line.find('>') {
-                (&line[..pos], line[pos + 1..].split(',').next().unwrap_or("").to_string())
+                (
+                    &line[..pos],
+                    line[pos + 1..].split(',').next().unwrap_or("").to_string(),
+                )
             } else if let Some(pos) = line.find('<') {
-                (&line[..pos], line[pos + 1..].split(',').next().unwrap_or("").to_string())
+                (
+                    &line[..pos],
+                    line[pos + 1..].split(',').next().unwrap_or("").to_string(),
+                )
             } else if let Some(pos) = line.find('!') {
                 (&line[..pos], "".to_string())
             } else {
@@ -476,9 +512,7 @@ impl ScaScanner {
                                     if i >= chunk.len() {
                                         break;
                                     }
-                                    let vulns = result
-                                        .map(|r| r.vulns)
-                                        .unwrap_or_default();
+                                    let vulns = result.map(|r| r.vulns).unwrap_or_default();
                                     if !vulns.is_empty() {
                                         results.push((chunk[i].clone(), vulns));
                                     }
@@ -521,14 +555,22 @@ impl ScaScanner {
         file_path: &str,
     ) -> Finding {
         let mapping = &self.options.severity_mapping;
-        let severity = vuln.severity.as_ref()
+        let severity = vuln
+            .severity
+            .as_ref()
             .and_then(|s| s.first())
             .map(|s| {
                 if s.score_type == "CVSS_V3" {
                     if let Ok(score) = s.score.parse::<f64>() {
-                        if score >= mapping.critical { return "critical".to_string(); }
-                        if score >= mapping.high { return "high".to_string(); }
-                        if score >= mapping.medium { return "medium".to_string(); }
+                        if score >= mapping.critical {
+                            return "critical".to_string();
+                        }
+                        if score >= mapping.high {
+                            return "high".to_string();
+                        }
+                        if score >= mapping.medium {
+                            return "medium".to_string();
+                        }
                         return "low".to_string();
                     }
                 }
@@ -545,9 +587,7 @@ impl ScaScanner {
         };
         let description = format!(
             "Vulnerable dependency: {}@{} — {}",
-            dep.name,
-            dep.version,
-            summary_text,
+            dep.name, dep.version, summary_text,
         );
 
         let trail = vec![
@@ -606,29 +646,31 @@ impl Scanner for ScaScanner {
         // 过滤忽略的生态
         let deps: Vec<Dependency> = deps
             .into_iter()
-            .filter(|d| !self.options.ignore_ecosystems.iter().any(|e| e.eq_ignore_ascii_case(&d.ecosystem)))
+            .filter(|d| {
+                !self
+                    .options
+                    .ignore_ecosystems
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(&d.ecosystem))
+            })
             .collect();
 
         // 过滤忽略的包
-        let deps: Vec<Dependency> = deps
-            .into_iter()
-            .filter(|d| {
-                let pkg_key = format!("{}@{}", d.name, d.version);
-                !self.options.ignore_packages.iter().any(|p| {
-                    p.eq_ignore_ascii_case(&d.name) || p.eq_ignore_ascii_case(&pkg_key)
+        let deps: Vec<Dependency> =
+            deps.into_iter()
+                .filter(|d| {
+                    let pkg_key = format!("{}@{}", d.name, d.version);
+                    !self.options.ignore_packages.iter().any(|p| {
+                        p.eq_ignore_ascii_case(&d.name) || p.eq_ignore_ascii_case(&pkg_key)
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
         if deps.is_empty() {
             return Vec::new();
         }
 
-        tracing::info!(
-            "SCA: Found {} dependencies in {}",
-            deps.len(),
-            filename,
-        );
+        tracing::info!("SCA: Found {} dependencies in {}", deps.len(), filename,);
 
         // 加载缓存，分离已缓存和未缓存的依赖
         let mut cache = Self::load_cache();
@@ -641,16 +683,21 @@ impl Scanner for ScaScanner {
         for dep in &deps {
             let key = Self::cache_key(dep);
             if let Some(cached) = cache.get(&key) {
-                let vulns: Vec<OsvVulnerability> = cached.vulns.iter().map(|cv| {
-                    OsvVulnerability {
+                let vulns: Vec<OsvVulnerability> = cached
+                    .vulns
+                    .iter()
+                    .map(|cv| OsvVulnerability {
                         id: cv.id.clone(),
                         summary: cv.summary.clone(),
                         severity: cv.severity.as_ref().map(|s| {
-                            vec![OsvSeverity { score_type: "CVSS_V3".into(), score: s.clone() }]
+                            vec![OsvSeverity {
+                                score_type: "CVSS_V3".into(),
+                                score: s.clone(),
+                            }]
                         }),
                         aliases: cv.aliases.clone(),
-                    }
-                }).collect();
+                    })
+                    .collect();
                 cached_results.push((dep.clone(), vulns));
             } else {
                 uncached_deps.push(dep.clone());
@@ -659,7 +706,10 @@ impl Scanner for ScaScanner {
 
         // 查询未缓存的依赖
         let mut new_results = if !uncached_deps.is_empty() {
-            tracing::info!("SCA: Querying OSV for {} uncached deps", uncached_deps.len());
+            tracing::info!(
+                "SCA: Querying OSV for {} uncached deps",
+                uncached_deps.len()
+            );
             match self.query_osv(&uncached_deps).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -674,16 +724,29 @@ impl Scanner for ScaScanner {
         // 缓存新结果
         for (dep, vulns) in &new_results {
             let key = Self::cache_key(dep);
-            let cached_vulns: Vec<CachedVuln> = vulns.iter().map(|v| {
-                let severity = v.severity.as_ref().and_then(|s| s.first()).map(|s| s.score.clone());
-                CachedVuln {
-                    id: v.id.clone(),
-                    summary: v.summary.clone(),
-                    severity,
-                    aliases: v.aliases.clone(),
-                }
-            }).collect();
-            cache.insert(key, CachedScaResult { cached_at: now, vulns: cached_vulns });
+            let cached_vulns: Vec<CachedVuln> = vulns
+                .iter()
+                .map(|v| {
+                    let severity = v
+                        .severity
+                        .as_ref()
+                        .and_then(|s| s.first())
+                        .map(|s| s.score.clone());
+                    CachedVuln {
+                        id: v.id.clone(),
+                        summary: v.summary.clone(),
+                        severity,
+                        aliases: v.aliases.clone(),
+                    }
+                })
+                .collect();
+            cache.insert(
+                key,
+                CachedScaResult {
+                    cached_at: now,
+                    vulns: cached_vulns,
+                },
+            );
         }
 
         if !cache.is_empty() {
@@ -698,11 +761,18 @@ impl Scanner for ScaScanner {
         let findings: Vec<Finding> = cached_results
             .iter()
             .flat_map(|(dep, vulns)| {
-                vulns.iter().map(|v| self.vuln_to_finding(dep, v, &file_path_str))
+                vulns
+                    .iter()
+                    .map(|v| self.vuln_to_finding(dep, v, &file_path_str))
             })
             .filter(|f| {
                 // 过滤忽略的漏洞 ID
-                if self.options.ignore_vulns.iter().any(|id| f.vuln_type.ends_with(id)) {
+                if self
+                    .options
+                    .ignore_vulns
+                    .iter()
+                    .any(|id| f.vuln_type.ends_with(id))
+                {
                     return false;
                 }
                 // 过滤低于阈值的严重程度
@@ -751,7 +821,8 @@ mod tests {
         assert_eq!(deps.len(), 3);
 
         // HashMap iteration order is non-deterministic, check by name
-        let versions: HashMap<&str, &str> = deps.iter()
+        let versions: HashMap<&str, &str> = deps
+            .iter()
             .map(|d| (d.name.as_str(), d.version.as_str()))
             .collect();
         assert_eq!(versions.get("express"), Some(&"4.18.2"));

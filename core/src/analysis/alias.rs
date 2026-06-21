@@ -214,19 +214,17 @@ pub fn detect_destructuring(assign: &Assignment) -> AliasDetection {
                 let original = pieces[0].trim();
                 let alias_name = pieces[1].trim();
                 if !original.is_empty() && !alias_name.is_empty() {
-                    detection.new_aliases.push((
-                        alias_name.to_string(),
-                        source_path.extend(original),
-                    ));
+                    detection
+                        .new_aliases
+                        .push((alias_name.to_string(), source_path.extend(original)));
                 }
             } else {
                 // 简单: { body }
                 let name = part.trim();
                 if !name.is_empty() && is_valid_identifier(name) {
-                    detection.new_aliases.push((
-                        name.to_string(),
-                        source_path.extend(name),
-                    ));
+                    detection
+                        .new_aliases
+                        .push((name.to_string(), source_path.extend(name)));
                 }
             }
         }
@@ -244,10 +242,9 @@ pub fn detect_destructuring(assign: &Assignment) -> AliasDetection {
                 continue;
             }
             if is_valid_identifier(part) {
-                detection.new_aliases.push((
-                    part.to_string(),
-                    source_path.extend(&format!("[{}]", idx)),
-                ));
+                detection
+                    .new_aliases
+                    .push((part.to_string(), source_path.extend(&format!("[{}]", idx))));
             }
         }
     }
@@ -274,9 +271,7 @@ pub fn detect_property_access(assign: &Assignment) -> AliasDetection {
     if is_pure_member_expression(source) {
         let path = AccessPath::from_dotted(source);
         if path.depth() > 1 {
-            detection
-                .new_aliases
-                .push((target.to_string(), path));
+            detection.new_aliases.push((target.to_string(), path));
         }
     }
 
@@ -299,11 +294,13 @@ pub fn detect_simple_alias(assign: &Assignment) -> AliasDetection {
     }
 
     // 条件: source_vars 恰好一个，且 source_expr 等于该变量名（无运算符）
-    if assign.source_vars.len() == 1 && source == assign.source_vars[0] && is_valid_identifier(source) {
-        detection.new_aliases.push((
-            target.to_string(),
-            AccessPath::simple(source),
-        ));
+    if assign.source_vars.len() == 1
+        && source == assign.source_vars[0]
+        && is_valid_identifier(source)
+    {
+        detection
+            .new_aliases
+            .push((target.to_string(), AccessPath::simple(source)));
     }
 
     detection
@@ -332,10 +329,14 @@ pub fn detect_await_alias(assign: &Assignment) -> AliasDetection {
     // 对于简单的 member_expression（如 await response.json()），用表达式作为路径
     // 对于纯标识符（如 await promise），直接别名
     if is_valid_identifier(inner) {
-        detection.new_aliases.push((target.to_string(), AccessPath::simple(inner)));
+        detection
+            .new_aliases
+            .push((target.to_string(), AccessPath::simple(inner)));
     } else if let Some(first_ident) = inner.split('.').next() {
         if is_valid_identifier(first_ident) {
-            detection.new_aliases.push((target.to_string(), AccessPath::simple(first_ident)));
+            detection
+                .new_aliases
+                .push((target.to_string(), AccessPath::simple(first_ident)));
         }
     }
 
@@ -402,7 +403,10 @@ fn is_pure_member_expression(expr: &str) -> bool {
         return false;
     }
     // 不应包含: 运算符、括号、分号、空格(除了属性链内的)
-    let forbidden = ['+', '-', '*', '/', '%', '(', ')', ';', '=', '<', '>', '!', '&', '|', '?', ':', ',', '[', ']', '{', '}'];
+    let forbidden = [
+        '+', '-', '*', '/', '%', '(', ')', ';', '=', '<', '>', '!', '&', '|', '?', ':', ',', '[',
+        ']', '{', '}',
+    ];
     if expr.chars().any(|c| forbidden.contains(&c)) {
         return false;
     }

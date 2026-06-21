@@ -7,8 +7,8 @@
 //! 复用 `TaintSource`/`TaintSink`（已有 Serialize/Deserialize），
 //! 实现零转换反序列化。
 
+use crate::analysis::taint::{TaintSink, TaintSource};
 use serde::{Deserialize, Serialize};
-use crate::analysis::taint::{TaintSource, TaintSink};
 
 /// 污点规则集（YAML 顶层容器）
 ///

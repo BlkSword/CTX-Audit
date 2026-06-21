@@ -382,15 +382,13 @@ impl ReportExporter {
     /// 导出到文件
     pub fn export_to_file(&self, report: &AuditReport, path: &Path) -> Result<(), String> {
         let content = self.export(report)?;
-        std::fs::write(path, content)
-            .map_err(|e| format!("写入文件失败: {}", e))?;
+        std::fs::write(path, content).map_err(|e| format!("写入文件失败: {}", e))?;
         Ok(())
     }
 
     /// 导出为 JSON
     fn export_json(&self, report: &AuditReport) -> Result<String, String> {
-        serde_json::to_string_pretty(report)
-            .map_err(|e| format!("JSON 序列化失败: {}", e))
+        serde_json::to_string_pretty(report).map_err(|e| format!("JSON 序列化失败: {}", e))
     }
 
     /// 导出为 Markdown
@@ -398,41 +396,80 @@ impl ReportExporter {
         let mut md = String::new();
 
         // 标题
-        md.push_str(&format!("# {} - 安全审计报告\n\n", report.metadata.project_name));
+        md.push_str(&format!(
+            "# {} - 安全审计报告\n\n",
+            report.metadata.project_name
+        ));
 
         // 元数据
         md.push_str("## 报告信息\n\n");
-        md.push_str(&format!("- **生成时间**: {}\n", report.metadata.generated_at));
-        md.push_str(&format!("- **审计工具**: {} v{}\n", report.metadata.tool_info.name, report.metadata.tool_info.version));
+        md.push_str(&format!(
+            "- **生成时间**: {}\n",
+            report.metadata.generated_at
+        ));
+        md.push_str(&format!(
+            "- **审计工具**: {} v{}\n",
+            report.metadata.tool_info.name, report.metadata.tool_info.version
+        ));
         md.push_str("\n");
 
         // 统计摘要
         md.push_str("## 漏洞统计\n\n");
         md.push_str("| 严重程度 | 数量 |\n");
         md.push_str("|----------|------|\n");
-        md.push_str(&format!("| [!!!] 严重 | {} |\n", report.statistics.critical_count));
-        md.push_str(&format!("| [!!] 高危 | {} |\n", report.statistics.high_count));
-        md.push_str(&format!("| [!] 中危 | {} |\n", report.statistics.medium_count));
+        md.push_str(&format!(
+            "| [!!!] 严重 | {} |\n",
+            report.statistics.critical_count
+        ));
+        md.push_str(&format!(
+            "| [!!] 高危 | {} |\n",
+            report.statistics.high_count
+        ));
+        md.push_str(&format!(
+            "| [!] 中危 | {} |\n",
+            report.statistics.medium_count
+        ));
         md.push_str(&format!("| [*] 低危 | {} |\n", report.statistics.low_count));
-        md.push_str(&format!("| [i] 信息 | {} |\n", report.statistics.info_count));
-        md.push_str(&format!("| **总计** | **{}** |\n", report.statistics.total_count));
+        md.push_str(&format!(
+            "| [i] 信息 | {} |\n",
+            report.statistics.info_count
+        ));
+        md.push_str(&format!(
+            "| **总计** | **{}** |\n",
+            report.statistics.total_count
+        ));
         md.push_str("\n");
 
         // 漏洞详情
         md.push_str("## 漏洞详情\n\n");
         for finding in &report.findings {
-            md.push_str(&format!("### {} - {}\n\n", finding.severity.display_name(), finding.title));
+            md.push_str(&format!(
+                "### {} - {}\n\n",
+                finding.severity.display_name(),
+                finding.title
+            ));
             md.push_str(&format!("- **ID**: {}\n", finding.id));
             md.push_str(&format!("- **类型**: {}\n", finding.vuln_type));
             md.push_str(&format!("- **严重程度**: {}\n", finding.severity));
-            md.push_str(&format!("- **置信度**: {:.0}%\n", finding.confidence * 100.0));
+            md.push_str(&format!(
+                "- **置信度**: {:.0}%\n",
+                finding.confidence * 100.0
+            ));
 
             if !finding.file_path.is_empty() {
-                md.push_str(&format!("- **位置**: `{}:{}:{}`\n", finding.file_path, finding.line, finding.column));
+                md.push_str(&format!(
+                    "- **位置**: `{}:{}:{}`\n",
+                    finding.file_path, finding.line, finding.column
+                ));
             }
 
             if let Some(ref cwe) = finding.cwe {
-                md.push_str(&format!("- **CWE**: [{}]({}{})\n", cwe, "https://cwe.mitre.org/data/definitions/", cwe.replace("CWE-", "")));
+                md.push_str(&format!(
+                    "- **CWE**: [{}]({}{})\n",
+                    cwe,
+                    "https://cwe.mitre.org/data/definitions/",
+                    cwe.replace("CWE-", "")
+                ));
             }
 
             md.push_str("\n");
@@ -453,7 +490,10 @@ impl ReportExporter {
             for repair in &report.repairs {
                 md.push_str(&format!("### 漏洞 {} 的修复\n\n", repair.finding_id));
                 md.push_str(&format!("{}\n\n", repair.explanation));
-                md.push_str(&format!("**原代码:**\n```\n{}\n```\n\n", repair.original_code));
+                md.push_str(&format!(
+                    "**原代码:**\n```\n{}\n```\n\n",
+                    repair.original_code
+                ));
                 md.push_str(&format!("**修复后:**\n```\n{}\n```\n\n", repair.fixed_code));
             }
         }
@@ -500,14 +540,19 @@ impl ReportExporter {
 "#);
 
         // 标题
-        html.push_str(&format!("<h1>{} - 安全审计报告</h1>\n", report.metadata.project_name));
+        html.push_str(&format!(
+            "<h1>{} - 安全审计报告</h1>\n",
+            report.metadata.project_name
+        ));
 
         // 元数据
         html.push_str("<div class=\"meta\">\n");
-        html.push_str(&format!("<p>生成时间: {} | 工具: {} v{}</p>\n",
+        html.push_str(&format!(
+            "<p>生成时间: {} | 工具: {} v{}</p>\n",
             report.metadata.generated_at,
             report.metadata.tool_info.name,
-            report.metadata.tool_info.version));
+            report.metadata.tool_info.version
+        ));
         html.push_str("</div>\n");
 
         // 统计卡片
@@ -542,10 +587,7 @@ impl ReportExporter {
 
         for finding in &report.findings {
             let severity_class = format!("{:?}", finding.severity).to_lowercase();
-            html.push_str(&format!(
-                "<div class=\"finding {}\">\n",
-                severity_class
-            ));
+            html.push_str(&format!("<div class=\"finding {}\">\n", severity_class));
 
             html.push_str(&format!(
                 "<h3><span class=\"severity-badge {}\">{}</span>{} - {}</h3>\n",
@@ -558,9 +600,15 @@ impl ReportExporter {
             html.push_str("<div class=\"meta\">\n");
             html.push_str(&format!("<strong>类型:</strong> {} | ", finding.vuln_type));
             if !finding.file_path.is_empty() {
-                html.push_str(&format!("<strong>位置:</strong> <code>{}:{}:{}</code> | ", finding.file_path, finding.line, finding.column));
+                html.push_str(&format!(
+                    "<strong>位置:</strong> <code>{}:{}:{}</code> | ",
+                    finding.file_path, finding.line, finding.column
+                ));
             }
-            html.push_str(&format!("<strong>置信度:</strong> {:.0}%", finding.confidence * 100.0));
+            html.push_str(&format!(
+                "<strong>置信度:</strong> {:.0}%",
+                finding.confidence * 100.0
+            ));
             html.push_str("</div>\n");
 
             html.push_str(&format!("<p>{}</p>\n", finding.description));
@@ -593,9 +641,18 @@ impl ReportExporter {
         // Tool info
         let mut tool = serde_json::Map::new();
         let mut driver = serde_json::Map::new();
-        driver.insert("name".to_string(), serde_json::json!(report.metadata.tool_info.name));
-        driver.insert("version".to_string(), serde_json::json!(report.metadata.tool_info.version));
-        driver.insert("informationUri".to_string(), serde_json::json!("https://github.com/ctx-audit"));
+        driver.insert(
+            "name".to_string(),
+            serde_json::json!(report.metadata.tool_info.name),
+        );
+        driver.insert(
+            "version".to_string(),
+            serde_json::json!(report.metadata.tool_info.version),
+        );
+        driver.insert(
+            "informationUri".to_string(),
+            serde_json::json!("https://github.com/ctx-audit"),
+        );
         tool.insert("driver".to_string(), serde_json::Value::Object(driver));
         run.insert("tool".to_string(), serde_json::Value::Object(tool));
 
@@ -605,7 +662,10 @@ impl ReportExporter {
             let mut result = serde_json::Map::new();
 
             result.insert("ruleId".to_string(), serde_json::json!(finding.vuln_type));
-            result.insert("level".to_string(), serde_json::json!(finding.severity.sarif_level()));
+            result.insert(
+                "level".to_string(),
+                serde_json::json!(finding.severity.sarif_level()),
+            );
 
             // Message
             let mut message = serde_json::Map::new();
@@ -618,7 +678,10 @@ impl ReportExporter {
                 let mut physical_location = serde_json::Map::new();
                 let mut artifact_location = serde_json::Map::new();
                 artifact_location.insert("uri".to_string(), serde_json::json!(finding.file_path));
-                physical_location.insert("artifactLocation".to_string(), serde_json::Value::Object(artifact_location));
+                physical_location.insert(
+                    "artifactLocation".to_string(),
+                    serde_json::Value::Object(artifact_location),
+                );
 
                 if finding.line > 0 {
                     let mut region = serde_json::Map::new();
@@ -626,10 +689,14 @@ impl ReportExporter {
                     if finding.column > 0 {
                         region.insert("startColumn".to_string(), serde_json::json!(finding.column));
                     }
-                    physical_location.insert("region".to_string(), serde_json::Value::Object(region));
+                    physical_location
+                        .insert("region".to_string(), serde_json::Value::Object(region));
                 }
 
-                location.insert("physicalLocation".to_string(), serde_json::Value::Object(physical_location));
+                location.insert(
+                    "physicalLocation".to_string(),
+                    serde_json::Value::Object(physical_location),
+                );
                 result.insert("locations".to_string(), serde_json::json!([location]));
             }
 
@@ -639,8 +706,7 @@ impl ReportExporter {
         run.insert("results".to_string(), serde_json::Value::Array(results));
         sarif.insert("runs".to_string(), serde_json::json!([run]));
 
-        serde_json::to_string_pretty(&sarif)
-            .map_err(|e| format!("SARIF 序列化失败: {}", e))
+        serde_json::to_string_pretty(&sarif).map_err(|e| format!("SARIF 序列化失败: {}", e))
     }
 }
 
@@ -687,16 +753,33 @@ mod tests {
 
     #[test]
     fn test_export_format_from_extension() {
-        assert_eq!(ExportFormat::from_extension("json"), Some(ExportFormat::Json));
-        assert_eq!(ExportFormat::from_extension("md"), Some(ExportFormat::Markdown));
-        assert_eq!(ExportFormat::from_extension("html"), Some(ExportFormat::Html));
-        assert_eq!(ExportFormat::from_extension("sarif"), Some(ExportFormat::Sarif));
+        assert_eq!(
+            ExportFormat::from_extension("json"),
+            Some(ExportFormat::Json)
+        );
+        assert_eq!(
+            ExportFormat::from_extension("md"),
+            Some(ExportFormat::Markdown)
+        );
+        assert_eq!(
+            ExportFormat::from_extension("html"),
+            Some(ExportFormat::Html)
+        );
+        assert_eq!(
+            ExportFormat::from_extension("sarif"),
+            Some(ExportFormat::Sarif)
+        );
     }
 
     #[test]
     fn test_export_json() {
         let mut report = AuditReport::new("test-project");
-        report.add_finding(FindingEntry::new("v1", "XSS", Severity::Medium, "XSS Vulnerability"));
+        report.add_finding(FindingEntry::new(
+            "v1",
+            "XSS",
+            Severity::Medium,
+            "XSS Vulnerability",
+        ));
 
         let exporter = ReportExporter::new(ExportFormat::Json);
         let result = exporter.export(&report);
@@ -710,7 +793,12 @@ mod tests {
     #[test]
     fn test_export_markdown() {
         let mut report = AuditReport::new("test-project");
-        report.add_finding(FindingEntry::new("v1", "SQL_INJECTION", Severity::Critical, "SQL Injection"));
+        report.add_finding(FindingEntry::new(
+            "v1",
+            "SQL_INJECTION",
+            Severity::Critical,
+            "SQL Injection",
+        ));
 
         let exporter = ReportExporter::new(ExportFormat::Markdown);
         let result = exporter.export(&report);
@@ -742,7 +830,7 @@ mod tests {
         let mut report = AuditReport::new("test-project");
         report.add_finding(
             FindingEntry::new("v1", "SQL_INJECTION", Severity::High, "SQL Injection")
-                .with_location("src/db.rs", 42, 10)
+                .with_location("src/db.rs", 42, 10),
         );
 
         let exporter = ReportExporter::new(ExportFormat::Sarif);

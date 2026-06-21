@@ -231,10 +231,8 @@ impl ImportResolver {
         }
 
         // 记录文件到模块的映射
-        self.file_to_module.insert(
-            file_path.to_string_lossy().to_string(),
-            module.name.clone(),
-        );
+        self.file_to_module
+            .insert(file_path.to_string_lossy().to_string(), module.name.clone());
 
         // 存储模块
         let module_name = module.name.clone();
@@ -307,11 +305,15 @@ impl ImportResolver {
                         }
                     }
                     // 多行 CommonJS require: const {\n  Foo\n} = require('...')
-                    if (trimmed.starts_with("const {") || trimmed.starts_with("let {") || trimmed.starts_with("var {"))
-                        && !trimmed.contains("require(") && !trimmed.contains("=")
+                    if (trimmed.starts_with("const {")
+                        || trimmed.starts_with("let {")
+                        || trimmed.starts_with("var {"))
+                        && !trimmed.contains("require(")
+                        && !trimmed.contains("=")
                     {
                         if let Some(merged) = self.try_merge_multiline_require(content, line_idx) {
-                            if let Some(import) = self.parse_commonjs_require(&merged, line_idx + 1) {
+                            if let Some(import) = self.parse_commonjs_require(&merged, line_idx + 1)
+                            {
                                 imports.push(import);
                             }
                         }
@@ -326,8 +328,10 @@ impl ImportResolver {
                         }
                     }
                     // Rust pub 导出
-                    if trimmed.contains("pub fn ") || trimmed.contains("pub struct ")
-                        || trimmed.contains("pub enum ") || trimmed.contains("pub trait ")
+                    if trimmed.contains("pub fn ")
+                        || trimmed.contains("pub struct ")
+                        || trimmed.contains("pub enum ")
+                        || trimmed.contains("pub trait ")
                     {
                         if let Some(export) = self.parse_rust_export(trimmed, line_idx + 1) {
                             exports.push(export);
@@ -344,7 +348,12 @@ impl ImportResolver {
                     if trimmed.starts_with("func ") {
                         if let Some(name) = trimmed.strip_prefix("func ") {
                             let name = name.split('(').next().unwrap_or("").trim();
-                            if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                            if name
+                                .chars()
+                                .next()
+                                .map(|c| c.is_uppercase())
+                                .unwrap_or(false)
+                            {
                                 exports.push(ExportInfo {
                                     name: name.to_string(),
                                     symbol_type: SymbolType::Function,
@@ -805,7 +814,12 @@ impl ImportResolver {
             let parts: Vec<&str> = content.rsplit('.').collect();
             if parts.len() >= 2 {
                 let name = parts[0].to_string();
-                let source = parts[1..].iter().rev().cloned().collect::<Vec<_>>().join(".");
+                let source = parts[1..]
+                    .iter()
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(".");
                 (source, name)
             } else {
                 (content.to_string(), "*".to_string())
@@ -839,17 +853,15 @@ impl ImportResolver {
             };
             (name.to_string(), SymbolType::Function, true)
         } else if content.starts_with("function ") {
-            let name = content
-                .split("function ")
-                .nth(1)?
-                .split('(')
-                .next()?
-                .trim();
+            let name = content.split("function ").nth(1)?.split('(').next()?.trim();
             (name.to_string(), SymbolType::Function, false)
         } else if content.starts_with("class ") {
             let name = content.split("class ").nth(1)?.split('{').next()?.trim();
             (name.to_string(), SymbolType::Class, false)
-        } else if content.starts_with("const ") || content.starts_with("let ") || content.starts_with("var ") {
+        } else if content.starts_with("const ")
+            || content.starts_with("let ")
+            || content.starts_with("var ")
+        {
             let rest = content.split_whitespace().nth(1)?;
             let name = rest.split('=').next()?.trim();
             (name.to_string(), SymbolType::Constant, false)
@@ -870,9 +882,7 @@ impl ImportResolver {
 
     /// 查找符号定义
     pub fn find_symbol_definition(&self, symbol_name: &str) -> Option<&SymbolInfo> {
-        self.symbol_table
-            .get(symbol_name)
-            .and_then(|v| v.first())
+        self.symbol_table.get(symbol_name).and_then(|v| v.first())
     }
 
     /// 获取模块的所有导出

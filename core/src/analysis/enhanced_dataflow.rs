@@ -198,7 +198,10 @@ impl EnhancedFlowGraph {
     pub fn add_edge(&mut self, from: usize, to: usize, edge_type: EdgeType) {
         if let Some(from_node) = self.nodes.get_mut(from) {
             if !from_node.successors.iter().any(|e| e.target == to) {
-                from_node.successors.push(ControlFlowEdge { target: to, edge_type });
+                from_node.successors.push(ControlFlowEdge {
+                    target: to,
+                    edge_type,
+                });
             }
         }
         if let Some(to_node) = self.nodes.get_mut(to) {
@@ -210,7 +213,10 @@ impl EnhancedFlowGraph {
 
     /// 获取节点的所有前驱
     pub fn predecessors(&self, id: usize) -> Vec<usize> {
-        self.nodes.get(id).map(|n| n.predecessors.clone()).unwrap_or_default()
+        self.nodes
+            .get(id)
+            .map(|n| n.predecessors.clone())
+            .unwrap_or_default()
     }
 
     /// 获取节点的所有后继
@@ -223,7 +229,8 @@ impl EnhancedFlowGraph {
 
     /// 获取 from → to 的边类型（供路径敏感分析使用）
     pub fn edge_type_between(&self, from: usize, to: usize) -> Option<EdgeType> {
-        self.nodes.get(from)
+        self.nodes
+            .get(from)
             .and_then(|n| n.successors.iter().find(|e| e.target == to))
             .map(|e| e.edge_type)
     }
@@ -267,7 +274,8 @@ impl EnhancedFlowGraph {
                         let mut intersection: HashSet<usize> = (0..n).collect();
                         for pred in &preds {
                             if let Some(pred_doms) = self.dominators.get(pred) {
-                                intersection = intersection.intersection(pred_doms).cloned().collect();
+                                intersection =
+                                    intersection.intersection(pred_doms).cloned().collect();
                             }
                         }
                         intersection.insert(node_id);
@@ -282,7 +290,10 @@ impl EnhancedFlowGraph {
 
     /// 检查节点 A 是否支配节点 B
     pub fn dominates(&self, a: usize, b: usize) -> bool {
-        self.dominators.get(&b).map(|doms| doms.contains(&a)).unwrap_or(false)
+        self.dominators
+            .get(&b)
+            .map(|doms| doms.contains(&a))
+            .unwrap_or(false)
     }
 
     /// 查找从节点 A 到节点 B 的路径
@@ -401,16 +412,40 @@ impl<'a> CFGBuilder<'a> {
             match node_type {
                 EnhancedNodeType::ConditionHeader => {
                     // 处理 if 语句
-                    let condition_id = self.create_node(EnhancedNodeType::ConditionHeader, line, line_num, &defs, &uses, scope_stack.len() - 1);
-                    self.graph.add_edge(current_id, condition_id, EdgeType::Sequential);
+                    let condition_id = self.create_node(
+                        EnhancedNodeType::ConditionHeader,
+                        line,
+                        line_num,
+                        &defs,
+                        &uses,
+                        scope_stack.len() - 1,
+                    );
+                    self.graph
+                        .add_edge(current_id, condition_id, EdgeType::Sequential);
 
                     // 解析 if 块
-                    let (true_end, true_next_i) = self.parse_block(lines, i + 1, condition_id, EdgeType::TrueBranch, &mut scope_stack);
+                    let (true_end, true_next_i) = self.parse_block(
+                        lines,
+                        i + 1,
+                        condition_id,
+                        EdgeType::TrueBranch,
+                        &mut scope_stack,
+                    );
 
                     // 检查是否有 else
-                    let else_start = if true_next_i < lines.len() && lines[true_next_i].trim().starts_with("else") {
-                        let else_id = self.create_node(EnhancedNodeType::FalseBranch, "else", true_next_i + 1, &[], &[], scope_stack.len() - 1);
-                        self.graph.add_edge(condition_id, else_id, EdgeType::FalseBranch);
+                    let else_start = if true_next_i < lines.len()
+                        && lines[true_next_i].trim().starts_with("else")
+                    {
+                        let else_id = self.create_node(
+                            EnhancedNodeType::FalseBranch,
+                            "else",
+                            true_next_i + 1,
+                            &[],
+                            &[],
+                            scope_stack.len() - 1,
+                        );
+                        self.graph
+                            .add_edge(condition_id, else_id, EdgeType::FalseBranch);
                         Some(else_id)
                     } else {
                         None
@@ -418,41 +453,82 @@ impl<'a> CFGBuilder<'a> {
 
                     // 处理 else 块（如果有）
                     let (false_end, false_next_i) = if let Some(else_id) = else_start {
-                        self.parse_block(lines, true_next_i + 1, else_id, EdgeType::Sequential, &mut scope_stack)
+                        self.parse_block(
+                            lines,
+                            true_next_i + 1,
+                            else_id,
+                            EdgeType::Sequential,
+                            &mut scope_stack,
+                        )
                     } else {
                         (Some(condition_id), true_next_i)
                     };
 
                     // 创建合并点
-                    let merge_id = self.create_node(EnhancedNodeType::Statement, "[merge]", line_num, &[], &[], scope_stack.len() - 1);
+                    let merge_id = self.create_node(
+                        EnhancedNodeType::Statement,
+                        "[merge]",
+                        line_num,
+                        &[],
+                        &[],
+                        scope_stack.len() - 1,
+                    );
 
                     if let Some(true_end) = true_end {
-                        self.graph.add_edge(true_end, merge_id, EdgeType::Sequential);
+                        self.graph
+                            .add_edge(true_end, merge_id, EdgeType::Sequential);
                     }
                     if let Some(false_end) = false_end {
                         if false_end != condition_id {
-                            self.graph.add_edge(false_end, merge_id, EdgeType::Sequential);
+                            self.graph
+                                .add_edge(false_end, merge_id, EdgeType::Sequential);
                         }
                     }
                     if else_start.is_none() {
-                        self.graph.add_edge(condition_id, merge_id, EdgeType::FalseBranch);
+                        self.graph
+                            .add_edge(condition_id, merge_id, EdgeType::FalseBranch);
                     }
 
                     current_id = merge_id;
-                    i = if else_start.is_some() { false_next_i } else { true_next_i };
+                    i = if else_start.is_some() {
+                        false_next_i
+                    } else {
+                        true_next_i
+                    };
                 }
                 EnhancedNodeType::LoopHeader => {
                     // 处理循环
-                    let loop_id = self.create_node(EnhancedNodeType::LoopHeader, line, line_num, &defs, &uses, scope_stack.len() - 1);
-                    self.graph.add_edge(current_id, loop_id, EdgeType::Sequential);
+                    let loop_id = self.create_node(
+                        EnhancedNodeType::LoopHeader,
+                        line,
+                        line_num,
+                        &defs,
+                        &uses,
+                        scope_stack.len() - 1,
+                    );
+                    self.graph
+                        .add_edge(current_id, loop_id, EdgeType::Sequential);
 
                     loop_stack.push((loop_id, self.graph.exit)); // 暂时用 exit 作为循环退出点
 
                     // 解析循环体
-                    let (body_end, next_i) = self.parse_block(lines, i + 1, loop_id, EdgeType::TrueBranch, &mut scope_stack);
+                    let (body_end, next_i) = self.parse_block(
+                        lines,
+                        i + 1,
+                        loop_id,
+                        EdgeType::TrueBranch,
+                        &mut scope_stack,
+                    );
 
                     // 创建循环退出点
-                    let loop_exit_id = self.create_node(EnhancedNodeType::Statement, "[loop_exit]", line_num, &[], &[], scope_stack.len() - 1);
+                    let loop_exit_id = self.create_node(
+                        EnhancedNodeType::Statement,
+                        "[loop_exit]",
+                        line_num,
+                        &[],
+                        &[],
+                        scope_stack.len() - 1,
+                    );
 
                     // 添加循环回边
                     if let Some(body_end) = body_end {
@@ -460,7 +536,8 @@ impl<'a> CFGBuilder<'a> {
                     }
 
                     // 添加循环退出边
-                    self.graph.add_edge(loop_id, loop_exit_id, EdgeType::LoopExit);
+                    self.graph
+                        .add_edge(loop_id, loop_exit_id, EdgeType::LoopExit);
 
                     // 更新循环栈中的退出点
                     if let Some(last) = loop_stack.last_mut() {
@@ -472,9 +549,18 @@ impl<'a> CFGBuilder<'a> {
                     i = next_i;
                 }
                 EnhancedNodeType::Return => {
-                    let return_id = self.create_node(EnhancedNodeType::Return, line, line_num, &defs, &uses, scope_stack.len() - 1);
-                    self.graph.add_edge(current_id, return_id, EdgeType::Sequential);
-                    self.graph.add_edge(return_id, self.graph.exit, EdgeType::Return);
+                    let return_id = self.create_node(
+                        EnhancedNodeType::Return,
+                        line,
+                        line_num,
+                        &defs,
+                        &uses,
+                        scope_stack.len() - 1,
+                    );
+                    self.graph
+                        .add_edge(current_id, return_id, EdgeType::Sequential);
+                    self.graph
+                        .add_edge(return_id, self.graph.exit, EdgeType::Return);
 
                     // Return 后面的代码可能是死代码，但仍然处理
                     current_id = return_id;
@@ -482,8 +568,16 @@ impl<'a> CFGBuilder<'a> {
                 }
                 _ => {
                     // 普通语句
-                    let node_id = self.create_node(node_type, line, line_num, &defs, &uses, scope_stack.len() - 1);
-                    self.graph.add_edge(current_id, node_id, EdgeType::Sequential);
+                    let node_id = self.create_node(
+                        node_type,
+                        line,
+                        line_num,
+                        &defs,
+                        &uses,
+                        scope_stack.len() - 1,
+                    );
+                    self.graph
+                        .add_edge(current_id, node_id, EdgeType::Sequential);
                     current_id = node_id;
                     i += 1;
                 }
@@ -492,7 +586,8 @@ impl<'a> CFGBuilder<'a> {
 
         // 连接最后一个节点到出口
         if current_id != self.graph.entry && current_id != self.graph.exit {
-            self.graph.add_edge(current_id, self.graph.exit, EdgeType::Sequential);
+            self.graph
+                .add_edge(current_id, self.graph.exit, EdgeType::Sequential);
         }
     }
 
@@ -544,7 +639,14 @@ impl<'a> CFGBuilder<'a> {
             let line_num = i + 1;
             let (node_type, defs, uses) = Self::analyze_line(line);
 
-            let node_id = self.create_node(node_type, line, line_num, &defs, &uses, scope_stack.len() - 1);
+            let node_id = self.create_node(
+                node_type,
+                line,
+                line_num,
+                &defs,
+                &uses,
+                scope_stack.len() - 1,
+            );
 
             if last_node.is_none() {
                 self.graph.add_edge(entry_id, node_id, edge_type);
@@ -596,14 +698,20 @@ impl<'a> CFGBuilder<'a> {
         let line_lower = line.to_lowercase();
 
         // 检测控制结构
-        if line_lower.starts_with("if ") || line_lower.starts_with("if(") || line_lower.contains(" else if ") {
+        if line_lower.starts_with("if ")
+            || line_lower.starts_with("if(")
+            || line_lower.contains(" else if ")
+        {
             Self::extract_variables(line, &mut uses);
             return (EnhancedNodeType::ConditionHeader, defs, uses);
         }
 
-        if line_lower.starts_with("for ") || line_lower.starts_with("for(")
-            || line_lower.starts_with("while ") || line_lower.starts_with("while(")
-            || line_lower.starts_with("loop ") {
+        if line_lower.starts_with("for ")
+            || line_lower.starts_with("for(")
+            || line_lower.starts_with("while ")
+            || line_lower.starts_with("while(")
+            || line_lower.starts_with("loop ")
+        {
             Self::extract_variables(line, &mut uses);
             return (EnhancedNodeType::LoopHeader, defs, uses);
         }
@@ -624,7 +732,11 @@ impl<'a> CFGBuilder<'a> {
             if let Some(eq_pos) = line.find('=') {
                 // 检查是否是比较运算符
                 let before_eq: String = line.chars().take(eq_pos).collect();
-                if before_eq.ends_with('=') || before_eq.ends_with('!') || before_eq.ends_with('<') || before_eq.ends_with('>') {
+                if before_eq.ends_with('=')
+                    || before_eq.ends_with('!')
+                    || before_eq.ends_with('<')
+                    || before_eq.ends_with('>')
+                {
                     Self::extract_variables(line, &mut uses);
                     return (EnhancedNodeType::ConditionHeader, defs, uses);
                 }
@@ -652,11 +764,19 @@ impl<'a> CFGBuilder<'a> {
     }
 
     fn extract_variables(code: &str, vars: &mut Vec<String>) {
-        for word in code.split(&[' ', '(', ')', '+', '-', '*', '/', ',', ';', '[', ']', '{', '}', '<', '>', '=', '!', '&', '|']) {
+        for word in code.split(&[
+            ' ', '(', ')', '+', '-', '*', '/', ',', ';', '[', ']', '{', '}', '<', '>', '=', '!',
+            '&', '|',
+        ]) {
             let word = word.trim();
             if !word.is_empty()
                 && word.chars().next().unwrap().is_alphabetic()
-                && !["if", "else", "for", "while", "return", "let", "var", "const", "fn", "func", "function", "def", "class", "import", "from", "true", "false", "null", "none", "and", "or", "not"].contains(&word)
+                && ![
+                    "if", "else", "for", "while", "return", "let", "var", "const", "fn", "func",
+                    "function", "def", "class", "import", "from", "true", "false", "null", "none",
+                    "and", "or", "not",
+                ]
+                .contains(&word)
             {
                 if !vars.contains(&word.to_string()) {
                     vars.push(word.to_string());
@@ -724,7 +844,8 @@ impl<'a> AstCFGBuilder<'a> {
 
         // 连接最后一个节点到出口
         if current_id != self.graph.entry && current_id != self.graph.exit {
-            self.graph.add_edge(current_id, self.graph.exit, EdgeType::Sequential);
+            self.graph
+                .add_edge(current_id, self.graph.exit, EdgeType::Sequential);
         }
     }
 
@@ -759,7 +880,10 @@ impl<'a> AstCFGBuilder<'a> {
         }
 
         // 循环
-        if matches!(kind, "for_statement" | "for_in_statement" | "while_statement" | "for" | "while" | "loop") {
+        if matches!(
+            kind,
+            "for_statement" | "for_in_statement" | "while_statement" | "for" | "while" | "loop"
+        ) {
             return self.process_loop(node, content, prev_id, scope_depth);
         }
 
@@ -767,10 +891,17 @@ impl<'a> AstCFGBuilder<'a> {
         if matches!(kind, "return_statement" | "return") {
             let uses = self.extract_uses(node, content);
             let ret_id = self.create_node(
-                EnhancedNodeType::Return, code_display, line, line, &[], &uses, scope_depth,
+                EnhancedNodeType::Return,
+                code_display,
+                line,
+                line,
+                &[],
+                &uses,
+                scope_depth,
             );
             self.graph.add_edge(prev_id, ret_id, EdgeType::Sequential);
-            self.graph.add_edge(ret_id, self.graph.exit, EdgeType::Return);
+            self.graph
+                .add_edge(ret_id, self.graph.exit, EdgeType::Return);
             return ret_id;
         }
 
@@ -780,7 +911,10 @@ impl<'a> AstCFGBuilder<'a> {
         }
 
         // 块语句（递归处理子节点）
-        if matches!(kind, "block" | "statement_block" | "body" | "suite" | "block_stmt") {
+        if matches!(
+            kind,
+            "block" | "statement_block" | "body" | "suite" | "block_stmt"
+        ) {
             let mut current = prev_id;
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -790,15 +924,30 @@ impl<'a> AstCFGBuilder<'a> {
         }
 
         // 赋值语句
-        if matches!(kind, "assignment_expression" | "assignment" | "augmented_assignment"
-            | "let_declaration" | "let_statement" | "short_var_declaration"
-            | "variable_declarator" | "lexical_declaration" | "variable_declaration")
-        {
+        if matches!(
+            kind,
+            "assignment_expression"
+                | "assignment"
+                | "augmented_assignment"
+                | "let_declaration"
+                | "let_statement"
+                | "short_var_declaration"
+                | "variable_declarator"
+                | "lexical_declaration"
+                | "variable_declaration"
+        ) {
             let (defs, uses) = self.extract_defs_uses(node, content);
             let assign_id = self.create_node(
-                EnhancedNodeType::Assignment, code_display, line, line, &defs, &uses, scope_depth,
+                EnhancedNodeType::Assignment,
+                code_display,
+                line,
+                line,
+                &defs,
+                &uses,
+                scope_depth,
             );
-            self.graph.add_edge(prev_id, assign_id, EdgeType::Sequential);
+            self.graph
+                .add_edge(prev_id, assign_id, EdgeType::Sequential);
             return assign_id;
         }
 
@@ -810,7 +959,10 @@ impl<'a> AstCFGBuilder<'a> {
                 let children: Vec<Node> = node.children(&mut cursor).collect();
                 if children.len() == 1 {
                     let inner = &children[0];
-                    if matches!(inner.kind(), "call_expression" | "call" | "assignment_expression") {
+                    if matches!(
+                        inner.kind(),
+                        "call_expression" | "call" | "assignment_expression"
+                    ) {
                         return self.process_node(inner, content, prev_id, scope_depth);
                     }
                 }
@@ -818,7 +970,13 @@ impl<'a> AstCFGBuilder<'a> {
 
             let uses = self.extract_uses(node, content);
             let call_id = self.create_node(
-                EnhancedNodeType::Call, code_display, line, line, &[], &uses, scope_depth,
+                EnhancedNodeType::Call,
+                code_display,
+                line,
+                line,
+                &[],
+                &uses,
+                scope_depth,
             );
             self.graph.add_edge(prev_id, call_id, EdgeType::Sequential);
             return call_id;
@@ -842,7 +1000,13 @@ impl<'a> AstCFGBuilder<'a> {
 
         // 条件节点
         let cond_id = self.create_node(
-            EnhancedNodeType::ConditionHeader, code_display, line, line, &[], &uses, scope_depth,
+            EnhancedNodeType::ConditionHeader,
+            code_display,
+            line,
+            line,
+            &[],
+            &uses,
+            scope_depth,
         );
         self.graph.add_edge(prev_id, cond_id, EdgeType::Sequential);
 
@@ -892,7 +1056,13 @@ impl<'a> AstCFGBuilder<'a> {
 
         // 合并点
         let merge_id = self.create_node(
-            EnhancedNodeType::Statement, "[merge]", line, line, &[], &[], scope_depth,
+            EnhancedNodeType::Statement,
+            "[merge]",
+            line,
+            line,
+            &[],
+            &[],
+            scope_depth,
         );
 
         if let Some(te) = true_end {
@@ -903,7 +1073,8 @@ impl<'a> AstCFGBuilder<'a> {
         }
         if false_end.is_none() {
             // 没有 else：条件不满足直接到 merge
-            self.graph.add_edge(cond_id, merge_id, EdgeType::FalseBranch);
+            self.graph
+                .add_edge(cond_id, merge_id, EdgeType::FalseBranch);
         }
 
         merge_id
@@ -922,7 +1093,13 @@ impl<'a> AstCFGBuilder<'a> {
         let uses = self.extract_uses(node, content);
 
         let loop_id = self.create_node(
-            EnhancedNodeType::LoopHeader, code_display, line, line, &[], &uses, scope_depth,
+            EnhancedNodeType::LoopHeader,
+            code_display,
+            line,
+            line,
+            &[],
+            &uses,
+            scope_depth,
         );
         self.graph.add_edge(prev_id, loop_id, EdgeType::Sequential);
 
@@ -946,7 +1123,13 @@ impl<'a> AstCFGBuilder<'a> {
 
         // 循环退出
         let exit_id = self.create_node(
-            EnhancedNodeType::Statement, "[loop_exit]", line, line, &[], &[], scope_depth,
+            EnhancedNodeType::Statement,
+            "[loop_exit]",
+            line,
+            line,
+            &[],
+            &[],
+            scope_depth,
         );
         self.graph.add_edge(loop_id, exit_id, EdgeType::LoopExit);
 
@@ -963,7 +1146,13 @@ impl<'a> AstCFGBuilder<'a> {
         let line = node.start_position().row + 1;
 
         let try_id = self.create_node(
-            EnhancedNodeType::Statement, "try", line, line, &[], &[], scope_depth,
+            EnhancedNodeType::Statement,
+            "try",
+            line,
+            line,
+            &[],
+            &[],
+            scope_depth,
         );
         self.graph.add_edge(prev_id, try_id, EdgeType::Sequential);
 
@@ -980,7 +1169,13 @@ impl<'a> AstCFGBuilder<'a> {
         // handler (catch)
         if let Some(handler) = node.child_by_field_name("handler") {
             let catch_id = self.create_node(
-                EnhancedNodeType::Catch, "catch", line, line, &[], &[], scope_depth,
+                EnhancedNodeType::Catch,
+                "catch",
+                line,
+                line,
+                &[],
+                &[],
+                scope_depth,
             );
             self.graph.add_edge(try_id, catch_id, EdgeType::Exception);
 
@@ -1038,15 +1233,41 @@ impl<'a> AstCFGBuilder<'a> {
         let kind = node.kind();
         if matches!(
             kind,
-            "identifier" | "identifier_pattern" | "variable_name"
-            | "property_identifier" | "field_identifier"
+            "identifier"
+                | "identifier_pattern"
+                | "variable_name"
+                | "property_identifier"
+                | "field_identifier"
         ) {
             let name = content[node.byte_range()].to_string();
             let keywords = [
-                "true", "false", "null", "None", "undefined", "self", "this",
-                "super", "class", "function", "return", "if", "else", "for",
-                "while", "let", "const", "var", "new", "typeof", "instanceof",
-                "async", "await", "import", "export", "from", "as",
+                "true",
+                "false",
+                "null",
+                "None",
+                "undefined",
+                "self",
+                "this",
+                "super",
+                "class",
+                "function",
+                "return",
+                "if",
+                "else",
+                "for",
+                "while",
+                "let",
+                "const",
+                "var",
+                "new",
+                "typeof",
+                "instanceof",
+                "async",
+                "await",
+                "import",
+                "export",
+                "from",
+                "as",
             ];
             if !keywords.contains(&name.as_str()) && !seen.contains(&name) {
                 seen.insert(name.clone());
@@ -1095,7 +1316,10 @@ return y
         let graph = EnhancedFlowGraph::from_code(code, "test.py", "main");
 
         // 应该有条件节点
-        let has_condition = graph.nodes.iter().any(|n| n.node_type == EnhancedNodeType::ConditionHeader);
+        let has_condition = graph
+            .nodes
+            .iter()
+            .any(|n| n.node_type == EnhancedNodeType::ConditionHeader);
         assert!(has_condition);
     }
 
@@ -1108,7 +1332,10 @@ for i in range(10):
         let graph = EnhancedFlowGraph::from_code(code, "test.py", "main");
 
         // 应该有循环节点
-        let has_loop = graph.nodes.iter().any(|n| n.node_type == EnhancedNodeType::LoopHeader);
+        let has_loop = graph
+            .nodes
+            .iter()
+            .any(|n| n.node_type == EnhancedNodeType::LoopHeader);
         assert!(has_loop);
     }
 
@@ -1128,7 +1355,10 @@ for i in range(10):
         let graph = EnhancedFlowGraph::from_code(code, "test.py", "main");
 
         // 找到最后一个使用 x 的节点
-        let use_node = graph.nodes.iter().find(|n| n.uses.contains(&"x".to_string()));
+        let use_node = graph
+            .nodes
+            .iter()
+            .find(|n| n.uses.contains(&"x".to_string()));
         assert!(use_node.is_some());
 
         if let Some(node) = use_node {

@@ -3,9 +3,9 @@
 
 //! 守护进程状态管理
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 /// 守护进程全局状态
 pub struct DaemonState {
@@ -99,7 +99,11 @@ impl ProjectInfo {
             frameworks.push("django".to_string());
         }
 
-        Self { tech_stack, frameworks, project_type }
+        Self {
+            tech_stack,
+            frameworks,
+            project_type,
+        }
     }
 }
 

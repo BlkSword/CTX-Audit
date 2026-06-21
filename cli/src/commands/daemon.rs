@@ -29,7 +29,10 @@ pub async fn start(project: Option<String>) -> Result<()> {
             DaemonClient::cleanup_stale_files();
         }
         HeartbeatStatus::Stale { pid, .. } => {
-            renderer.warning(&format!("检测到过期心跳 (PID: {})，daemon 可能已崩溃，清理残留文件", pid));
+            renderer.warning(&format!(
+                "检测到过期心跳 (PID: {})，daemon 可能已崩溃，清理残留文件",
+                pid
+            ));
             DaemonClient::cleanup_stale_files();
         }
         HeartbeatStatus::ShuttingDown => {
@@ -52,7 +55,10 @@ pub async fn start(project: Option<String>) -> Result<()> {
     let daemon_bin = std::env::current_exe()
         .map(|p| {
             let bin_dir = p.parent().unwrap_or(std::path::Path::new("."));
-            bin_dir.join("ctx-audit-daemon").to_string_lossy().to_string()
+            bin_dir
+                .join("ctx-audit-daemon")
+                .to_string_lossy()
+                .to_string()
         })
         .unwrap_or_else(|_| "ctx-audit-daemon".to_string());
 
@@ -112,7 +118,13 @@ pub async fn status() -> Result<()> {
 
     // 先通过心跳文件快速判断
     match DaemonClient::check_heartbeat() {
-        HeartbeatStatus::Alive { pid, version, uptime_secs, age_secs, .. } => {
+        HeartbeatStatus::Alive {
+            pid,
+            version,
+            uptime_secs,
+            age_secs,
+            ..
+        } => {
             renderer.success(&format!(
                 "心跳正常 (PID: {}, v{}, 运行 {}秒, 心跳 {}秒前)",
                 pid, version, uptime_secs, age_secs
@@ -153,7 +165,10 @@ async fn show_status(renderer: &mut TerminalRenderer) -> Result<()> {
     let response = client.ping().await.map_err(|e| miette::miette!("{}", e))?;
 
     match response {
-        Response::Pong { version, uptime_secs } => {
+        Response::Pong {
+            version,
+            uptime_secs,
+        } => {
             renderer.success(&format!("守护进程运行中 (v{})", version));
             renderer.info(&format!("  运行时间: {}秒", uptime_secs));
         }
@@ -164,13 +179,24 @@ async fn show_status(renderer: &mut TerminalRenderer) -> Result<()> {
 
     // 查询详细信息
     match client.status().await {
-        Ok(Response::StatusInfo { pid, uptime_secs, loaded_projects, cache_stats }) => {
+        Ok(Response::StatusInfo {
+            pid,
+            uptime_secs,
+            loaded_projects,
+            cache_stats,
+        }) => {
             renderer.info(&format!("  PID: {}", pid));
             renderer.info(&format!("  运行时间: {}秒", uptime_secs));
-            renderer.info(&format!("  已加载项目: {}",
-                if loaded_projects.is_empty() { "无".to_string() } else { loaded_projects.join(", ") }
+            renderer.info(&format!(
+                "  已加载项目: {}",
+                if loaded_projects.is_empty() {
+                    "无".to_string()
+                } else {
+                    loaded_projects.join(", ")
+                }
             ));
-            renderer.info(&format!("  缓存: AST={}, Taint={}, Scan={}",
+            renderer.info(&format!(
+                "  缓存: AST={}, Taint={}, Scan={}",
                 cache_stats.ast_cache_entries,
                 cache_stats.taint_cache_entries,
                 cache_stats.scan_cache_entries,

@@ -9,10 +9,12 @@ use async_trait::async_trait;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::bridge::{
+    ToolCategory, ToolDefinition, ToolError, ToolParameter, ToolParameterType, ToolResult,
+};
 use crate::registry::{Tool, ToolRegistry};
-use crate::bridge::{ToolCategory, ToolDefinition, ToolParameter, ToolParameterType, ToolResult, ToolError};
 
-use deepaudit_core::{TaintAnalyzer, EnhancedTaintAnalyzer, AstTaintAnalyzer};
+use deepaudit_core::{AstTaintAnalyzer, EnhancedTaintAnalyzer, TaintAnalyzer};
 
 /// 污点追踪工具
 ///
@@ -144,9 +146,9 @@ impl Tool for TraceTaintTool {
         let full_path = Path::new(&self.project_path).join(file_path);
 
         // 读取文件内容
-        let content = tokio::fs::read_to_string(&full_path)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("无法读取文件 '{}': {}", file_path, e)))?;
+        let content = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("无法读取文件 '{}': {}", file_path, e))
+        })?;
 
         // 推断语言
         let language = Self::infer_language(file_path);
@@ -171,16 +173,23 @@ impl Tool for TraceTaintTool {
         };
 
         // 过滤漏洞类型
-        let vuln_types: Option<Vec<String>> = input["vulnerability_types"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_lowercase())).collect());
+        let vuln_types: Option<Vec<String>> = input["vulnerability_types"].as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                .collect()
+        });
 
         let filtered_flows = if let Some(ref types) = vuln_types {
-            flows.into_iter()
+            flows
+                .into_iter()
                 .filter(|flow| {
                     let flow_type = format!("{:?}", flow.vulnerability_type).to_lowercase();
-                    types.iter().any(|t| flow_type.contains(&t.to_lowercase().replace("_", "")) ||
-                                          t.to_lowercase().replace("_", "").contains(&flow_type.replace("_", "")))
+                    types.iter().any(|t| {
+                        flow_type.contains(&t.to_lowercase().replace("_", ""))
+                            || t.to_lowercase()
+                                .replace("_", "")
+                                .contains(&flow_type.replace("_", ""))
+                    })
                 })
                 .collect()
         } else {
@@ -200,34 +209,37 @@ impl Tool for TraceTaintTool {
         }
 
         // 构建结构化结果
-        let results: Vec<serde_json::Value> = filtered_flows.iter().map(|flow| {
-            serde_json::json!({
-                "id": flow.id,
-                "vulnerability_type": format!("{}", flow.vulnerability_type),
-                "severity": format!("{}", flow.severity),
-                "confidence": flow.confidence,
-                "source": {
-                    "file": flow.source.file_path,
-                    "line": flow.source.line,
-                    "symbol": flow.source.symbol,
-                    "code": flow.source.code_snippet,
-                },
-                "sink": {
-                    "file": flow.sink.file_path,
-                    "line": flow.sink.line,
-                    "symbol": flow.sink.symbol,
-                    "code": flow.sink.code_snippet,
-                },
-                "propagation_path": flow.path.iter().map(|node| {
-                    serde_json::json!({
-                        "type": format!("{:?}", node.node_type),
-                        "line": node.line,
-                        "symbol": node.symbol,
-                        "code": node.code_snippet,
-                    })
-                }).collect::<Vec<_>>(),
+        let results: Vec<serde_json::Value> = filtered_flows
+            .iter()
+            .map(|flow| {
+                serde_json::json!({
+                    "id": flow.id,
+                    "vulnerability_type": format!("{}", flow.vulnerability_type),
+                    "severity": format!("{}", flow.severity),
+                    "confidence": flow.confidence,
+                    "source": {
+                        "file": flow.source.file_path,
+                        "line": flow.source.line,
+                        "symbol": flow.source.symbol,
+                        "code": flow.source.code_snippet,
+                    },
+                    "sink": {
+                        "file": flow.sink.file_path,
+                        "line": flow.sink.line,
+                        "symbol": flow.sink.symbol,
+                        "code": flow.sink.code_snippet,
+                    },
+                    "propagation_path": flow.path.iter().map(|node| {
+                        serde_json::json!({
+                            "type": format!("{:?}", node.node_type),
+                            "line": node.line,
+                            "symbol": node.symbol,
+                            "code": node.code_snippet,
+                        })
+                    }).collect::<Vec<_>>(),
+                })
             })
-        }).collect();
+            .collect();
 
         // 生成文本摘要
         let mut summary = format!("发现 {} 条污点流:\n\n", filtered_flows.len());
@@ -322,7 +334,10 @@ impl Tool for GlobalTaintAnalysisTool {
         let scan_path = Path::new(&self.project_path).join(sub_path);
 
         if !scan_path.exists() {
-            return Err(ToolError::ExecutionFailed(format!("目录不存在: {}", sub_path)));
+            return Err(ToolError::ExecutionFailed(format!(
+                "目录不存在: {}",
+                sub_path
+            )));
         }
 
         // 收集要分析的文件
@@ -340,7 +355,8 @@ impl Tool for GlobalTaintAnalysisTool {
         // 分析每个文件
         for file_path in &files_to_analyze {
             if let Ok(content) = tokio::fs::read_to_string(file_path).await {
-                let relative_path = file_path.strip_prefix(&self.project_path)
+                let relative_path = file_path
+                    .strip_prefix(&self.project_path)
                     .unwrap_or(file_path)
                     .to_string_lossy()
                     .to_string();
@@ -369,18 +385,21 @@ impl Tool for GlobalTaintAnalysisTool {
             all_flows.len()
         );
 
-        let results: Vec<serde_json::Value> = all_flows.iter().map(|flow| {
-            serde_json::json!({
-                "id": flow.id,
-                "vulnerability_type": format!("{}", flow.vulnerability_type),
-                "severity": format!("{}", flow.severity),
-                "confidence": flow.confidence,
-                "source_file": flow.source.file_path,
-                "source_line": flow.source.line,
-                "sink_file": flow.sink.file_path,
-                "sink_line": flow.sink.line,
+        let results: Vec<serde_json::Value> = all_flows
+            .iter()
+            .map(|flow| {
+                serde_json::json!({
+                    "id": flow.id,
+                    "vulnerability_type": format!("{}", flow.vulnerability_type),
+                    "severity": format!("{}", flow.severity),
+                    "confidence": flow.confidence,
+                    "source_file": flow.source.file_path,
+                    "source_line": flow.source.line,
+                    "sink_file": flow.sink.file_path,
+                    "sink_line": flow.sink.line,
+                })
             })
-        }).collect();
+            .collect();
 
         Ok(ToolResult::json(
             serde_json::json!({
@@ -402,7 +421,12 @@ pub fn collect_files(dir: &Path, pattern: Option<&str>, files: &mut Vec<std::pat
             if path.is_dir() {
                 // 跳过隐藏目录和常见的非代码目录
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if !name.starts_with('.') && !matches!(name, "node_modules" | "target" | "vendor" | "__pycache__" | "dist" | "build") {
+                    if !name.starts_with('.')
+                        && !matches!(
+                            name,
+                            "node_modules" | "target" | "vendor" | "__pycache__" | "dist" | "build"
+                        )
+                    {
                         collect_files(&path, pattern, files);
                     }
                 }
@@ -429,15 +453,24 @@ pub fn collect_files(dir: &Path, pattern: Option<&str>, files: &mut Vec<std::pat
 fn is_code_file(ext: &str) -> bool {
     matches!(
         ext.to_lowercase().as_str(),
-        "py" | "js" | "jsx" | "ts" | "tsx" | "java" | "rs" | "go" | "c" | "cpp" | "h" | "hpp" | "php" | "rb"
+        "py" | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "java"
+            | "rs"
+            | "go"
+            | "c"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "php"
+            | "rb"
     )
 }
 
 /// 注册污点分析工具
-pub async fn register_taint_tools(
-    registry: &Arc<ToolRegistry>,
-    project_path: String,
-) {
+pub async fn register_taint_tools(registry: &Arc<ToolRegistry>, project_path: String) {
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(TraceTaintTool::new(project_path.clone())),
         Arc::new(GlobalTaintAnalysisTool::new(project_path)),

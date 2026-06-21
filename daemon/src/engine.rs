@@ -21,9 +21,12 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 
 use deepaudit_core::ast_api::{ASTEngine, ASTParser, QueryEngine, Symbol};
-use deepaudit_core::scanning::{Finding, Scanner, RegexScanner, ScanResult, scan_directory_deep_with_rules, scan_directory_deep_with_rules_progress, scan_directory_with_rules};
-use deepaudit_core::taint::{AstTaintAnalyzer, TaintFlow, CrossFileTaintAnalyzer};
-use deepaudit_core::watcher::{FileSnapshot, DeltaResult};
+use deepaudit_core::scanning::{
+    scan_directory_deep_with_rules, scan_directory_deep_with_rules_progress,
+    scan_directory_with_rules, Finding, RegexScanner, ScanResult, Scanner,
+};
+use deepaudit_core::taint::{AstTaintAnalyzer, CrossFileTaintAnalyzer, TaintFlow};
+use deepaudit_core::watcher::{DeltaResult, FileSnapshot};
 use rayon::prelude::*;
 
 // ────────────────────────────────────────────────────────
@@ -111,14 +114,34 @@ impl AnalysisEngine {
                     if let Ok(val) = toml::from_str::<toml::Value>(&content) {
                         let daemon = val.get("daemon");
                         (
-                            daemon.and_then(|d| d.get("rules_reload_interval_secs")).and_then(|v| v.as_integer()).unwrap_or(30) as u64,
-                            daemon.and_then(|d| d.get("ast_idle_secs")).and_then(|v| v.as_integer()).unwrap_or(3600) as u64,
-                            daemon.and_then(|d| d.get("ast_max_memory_mb")).and_then(|v| v.as_integer()).unwrap_or(512) as usize * 1024 * 1024,
-                            daemon.and_then(|d| d.get("scan_cache_idle_secs")).and_then(|v| v.as_integer()).unwrap_or(7200) as u64,
+                            daemon
+                                .and_then(|d| d.get("rules_reload_interval_secs"))
+                                .and_then(|v| v.as_integer())
+                                .unwrap_or(30) as u64,
+                            daemon
+                                .and_then(|d| d.get("ast_idle_secs"))
+                                .and_then(|v| v.as_integer())
+                                .unwrap_or(3600) as u64,
+                            daemon
+                                .and_then(|d| d.get("ast_max_memory_mb"))
+                                .and_then(|v| v.as_integer())
+                                .unwrap_or(512) as usize
+                                * 1024
+                                * 1024,
+                            daemon
+                                .and_then(|d| d.get("scan_cache_idle_secs"))
+                                .and_then(|v| v.as_integer())
+                                .unwrap_or(7200) as u64,
                         )
-                    } else { (30, 3600, 512 * 1024 * 1024, 7200) }
-                } else { (30, 3600, 512 * 1024 * 1024, 7200) }
-            } else { (30, 3600, 512 * 1024 * 1024, 7200) };
+                    } else {
+                        (30, 3600, 512 * 1024 * 1024, 7200)
+                    }
+                } else {
+                    (30, 3600, 512 * 1024 * 1024, 7200)
+                }
+            } else {
+                (30, 3600, 512 * 1024 * 1024, 7200)
+            };
 
         Self {
             ast_engines: RwLock::new(HashMap::new()),
@@ -137,7 +160,12 @@ impl AnalysisEngine {
     ///
     /// 首次调用：全量扫描，缓存结果。
     /// 后续调用：检测变更文件，只重新扫描变更部分，合并缓存。
-    pub async fn scan(&self, path: &str, enable_taint: bool, enable_cross_file: bool) -> Result<ScanOutput> {
+    pub async fn scan(
+        &self,
+        path: &str,
+        enable_taint: bool,
+        enable_cross_file: bool,
+    ) -> Result<ScanOutput> {
         let start = Instant::now();
         let project_path = Path::new(path);
 
@@ -149,9 +177,14 @@ impl AnalysisEngine {
                 let mut caches = self.scan_caches.write().await;
                 caches.entry(path.to_string()).or_insert_with(|| {
                     let ignore = vec![
-                        "node_modules".into(), ".git".into(), "target".into(),
-                        "build".into(), "dist".into(), "__pycache__".into(),
-                        "vendor".into(), ".next".into(),
+                        "node_modules".into(),
+                        ".git".into(),
+                        "target".into(),
+                        "build".into(),
+                        "dist".into(),
+                        "__pycache__".into(),
+                        "vendor".into(),
+                        ".next".into(),
                     ];
                     TimestampedScanCache {
                         cache: RwLock::new(ProjectScanCache {
@@ -176,12 +209,16 @@ impl AnalysisEngine {
         let mut cache = ts_cache.cache.write().await;
 
         // 检测变更
-        let delta = cache.snapshot.detect_changes()
+        let delta = cache
+            .snapshot
+            .detect_changes()
             .map_err(|e| anyhow::anyhow!("变更检测失败: {}", e))?;
 
         if !delta.has_changes() && !cache.entries.is_empty() {
             // 无变更，直接返回缓存
-            let all_findings: Vec<Finding> = cache.entries.values()
+            let all_findings: Vec<Finding> = cache
+                .entries
+                .values()
                 .flat_map(|e| e.findings.clone())
                 .collect();
             let duration = start.elapsed().as_millis() as u64;
@@ -196,7 +233,9 @@ impl AnalysisEngine {
         }
 
         // 有变更：确定需要重新扫描的文件
-        let changed_set: std::collections::HashSet<PathBuf> = delta.changed_files.iter()
+        let changed_set: std::collections::HashSet<PathBuf> = delta
+            .changed_files
+            .iter()
             .chain(delta.added_files.iter())
             .cloned()
             .collect();
@@ -211,17 +250,23 @@ impl AnalysisEngine {
         if cache.entries.is_empty() {
             drop(cache);
             drop(caches);
-            return self.full_scan(path, enable_taint, enable_cross_file, start).await;
+            return self
+                .full_scan(path, enable_taint, enable_cross_file, start)
+                .await;
         }
 
         // 增量：只扫描变更文件
         tracing::info!(
             "[增量扫描] 变更: {} 个文件 (新增: {}, 修改: {}, 删除: {})",
-            delta.total_changes(), delta.added_files.len(),
-            delta.changed_files.len(), delta.deleted_files.len()
+            delta.total_changes(),
+            delta.added_files.len(),
+            delta.changed_files.len(),
+            delta.deleted_files.len()
         );
 
-        let (new_findings, file_hashes) = self.scan_files(path, &changed_set, enable_taint, enable_cross_file).await?;
+        let (new_findings, file_hashes) = self
+            .scan_files(path, &changed_set, enable_taint, enable_cross_file)
+            .await?;
 
         // 更新缓存：移除变更文件的旧 findings，加入新的
         for file_path in &changed_set {
@@ -232,7 +277,10 @@ impl AnalysisEngine {
         // 按文件分组新 findings
         let mut by_file: HashMap<String, Vec<Finding>> = HashMap::with_capacity(changed_set.len());
         for f in &new_findings {
-            by_file.entry(f.file_path.clone()).or_default().push(f.clone());
+            by_file
+                .entry(f.file_path.clone())
+                .or_default()
+                .push(f.clone());
         }
 
         // 计算变更文件的 content hash 并缓存（优先使用 scan_files 中已计算的 hash）
@@ -240,19 +288,25 @@ impl AnalysisEngine {
             let rel = path_relative_to(project_path, file_path);
             let full = project_path.join(&rel);
             let full_str = full.to_string_lossy().to_string();
-            let hash = file_hashes.get(&full_str)
+            let hash = file_hashes
+                .get(&full_str)
                 .copied()
                 .unwrap_or_else(|| hash_file_content(&full));
             let findings = by_file.get(&rel).cloned().unwrap_or_default();
-            cache.entries.insert(rel.clone(), FileFindings {
-                relative_path: rel,
-                findings,
-                content_hash: hash,
-            });
+            cache.entries.insert(
+                rel.clone(),
+                FileFindings {
+                    relative_path: rel,
+                    findings,
+                    content_hash: hash,
+                },
+            );
         }
 
         // 合并所有 findings
-        let all_findings: Vec<Finding> = cache.entries.values()
+        let all_findings: Vec<Finding> = cache
+            .entries
+            .values()
             .flat_map(|e| e.findings.clone())
             .collect();
 
@@ -272,7 +326,13 @@ impl AnalysisEngine {
     }
 
     /// 全量扫描（首次或强制）
-    async fn full_scan(&self, path: &str, enable_taint: bool, enable_cross_file: bool, start: Instant) -> Result<ScanOutput> {
+    async fn full_scan(
+        &self,
+        path: &str,
+        enable_taint: bool,
+        enable_cross_file: bool,
+        start: Instant,
+    ) -> Result<ScanOutput> {
         // 检测规则目录（项目级 > 内置）
         let project_rules = Path::new(path).join(".ctx-audit/rules");
         let builtin_rules = Path::new("rules");
@@ -290,11 +350,20 @@ impl AnalysisEngine {
             let mut opts = deepaudit_core::scanning::ScanOptions::default();
             opts.enable_taint = enable_taint;
             opts.enable_cross_file = enable_cross_file;
-            scan_directory_deep_with_rules_progress(path, rules_dir.as_deref(), None, None, Some(opts), None).await
-                .map_err(|e| anyhow::anyhow!("{}", e))?
+            scan_directory_deep_with_rules_progress(
+                path,
+                rules_dir.as_deref(),
+                None,
+                None,
+                Some(opts),
+                None,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?
         } else {
             ScanResult {
-                findings: scan_directory_with_rules(path, rules_dir.as_deref(), None, None).await
+                findings: scan_directory_with_rules(path, rules_dir.as_deref(), None, None)
+                    .await
                     .map_err(|e| anyhow::anyhow!("{}", e))?,
                 attack_surface: Default::default(),
                 cross_file_result: None,
@@ -323,11 +392,14 @@ impl AnalysisEngine {
             for (rel, file_findings) in by_file {
                 let full = project_path.join(&rel);
                 let hash = hash_file_content(&full);
-                cache.entries.insert(rel.clone(), FileFindings {
-                    relative_path: rel,
-                    findings: file_findings,
-                    content_hash: hash,
-                });
+                cache.entries.insert(
+                    rel.clone(),
+                    FileFindings {
+                        relative_path: rel,
+                        findings: file_findings,
+                        content_hash: hash,
+                    },
+                );
             }
 
             cache.total_findings = total;
@@ -372,7 +444,11 @@ impl AnalysisEngine {
                 // 文件大小检查
                 match std::fs::metadata(file_path) {
                     Ok(meta) if meta.len() > MAX_FILE_SIZE => {
-                        tracing::warn!("跳过大文件 ({}MB): {:?}", meta.len() / 1024 / 1024, file_path);
+                        tracing::warn!(
+                            "跳过大文件 ({}MB): {:?}",
+                            meta.len() / 1024 / 1024,
+                            file_path
+                        );
                         return None;
                     }
                     Err(_) => return None,
@@ -383,7 +459,8 @@ impl AnalysisEngine {
                 // 在内存中顺便计算 hash，避免后续二次读取
                 let content_hash = hash_content(&content);
 
-                let file_findings = rt_handle.block_on(regex_scanner.scan_file(file_path, &content));
+                let file_findings =
+                    rt_handle.block_on(regex_scanner.scan_file(file_path, &content));
 
                 let cached = if enable_taint && !file_findings.is_empty() {
                     Some((file_path.to_string_lossy().to_string(), content))
@@ -410,9 +487,8 @@ impl AnalysisEngine {
         // 如果启用污点分析，对有 findings 的文件做 taint 分析（复用 content cache）
         if enable_taint && !all_findings.is_empty() {
             let mut taint_analyzer = AstTaintAnalyzer::new();
-            let files_with_findings: std::collections::HashSet<String> = all_findings.iter()
-                .map(|f| f.file_path.clone())
-                .collect();
+            let files_with_findings: std::collections::HashSet<String> =
+                all_findings.iter().map(|f| f.file_path.clone()).collect();
 
             for file_path_str in &files_with_findings {
                 let p = Path::new(file_path_str);
@@ -437,8 +513,7 @@ impl AnalysisEngine {
                         severity: format!("{:?}", flow.severity).to_lowercase(),
                         description: format!(
                             "Taint flow: {}:{} → {}:{}",
-                            flow.source.symbol, flow.source.line,
-                            flow.sink.symbol, flow.sink.line
+                            flow.source.symbol, flow.source.line, flow.sink.symbol, flow.sink.line
                         ),
                         analysis_trail: None,
                         llm_output: None,
@@ -494,18 +569,28 @@ impl AnalysisEngine {
 
         let start = start_line.unwrap_or(1).max(1) - 1;
         let end = end_line.unwrap_or(lines.len()).min(lines.len());
-        result.insert("snippet".to_string(), json!(
-            lines[start..end].iter().enumerate().map(|(i, s)| {
-                json!({ "line": start + i + 1, "content": s })
-            }).collect::<Vec<_>>()
-        ));
+        result.insert(
+            "snippet".to_string(),
+            json!(lines[start..end]
+                .iter()
+                .enumerate()
+                .map(|(i, s)| { json!({ "line": start + i + 1, "content": s }) })
+                .collect::<Vec<_>>()),
+        );
 
-        let language = path.extension()
+        let language = path
+            .extension()
             .and_then(|e| e.to_str())
             .map(|e| match e {
-                "py" => "python", "js" => "javascript", "ts" | "tsx" => "typescript",
-                "java" => "java", "rs" => "rust", "go" => "go",
-                "c" | "h" => "c", "cpp" | "cc" | "cxx" | "hpp" => "cpp", _ => e,
+                "py" => "python",
+                "js" => "javascript",
+                "ts" | "tsx" => "typescript",
+                "java" => "java",
+                "rs" => "rust",
+                "go" => "go",
+                "c" | "h" => "c",
+                "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+                _ => e,
             })
             .unwrap_or("unknown")
             .to_string();
@@ -516,12 +601,16 @@ impl AnalysisEngine {
             match parser.parse_file(path, &code) {
                 Ok(_tree) => {
                     let calls = parser.extract_calls(path, &code);
-                    result.insert("calls".to_string(), json!(
-                        calls.iter().map(|c| json!({
-                            "name": c.callee,
-                            "line": c.line,
-                        })).collect::<Vec<_>>()
-                    ));
+                    result.insert(
+                        "calls".to_string(),
+                        json!(calls
+                            .iter()
+                            .map(|c| json!({
+                                "name": c.callee,
+                                "line": c.line,
+                            }))
+                            .collect::<Vec<_>>()),
+                    );
                 }
                 Err(e) => {
                     result.insert("parse_error".to_string(), json!(e));
@@ -541,15 +630,19 @@ impl AnalysisEngine {
         let taint_flows = taint_analyzer.analyze_file(path, &code);
         result.insert("taint_flow_count".to_string(), json!(taint_flows.len()));
         if !taint_flows.is_empty() {
-            result.insert("taint_flows".to_string(), json!(
-                taint_flows.iter().map(|f| json!({
-                    "source": f.source.symbol,
-                    "sink": f.sink.symbol,
-                    "vulnerability_type": format!("{:?}", f.vulnerability_type),
-                    "source_line": f.source.line,
-                    "sink_line": f.sink.line,
-                })).collect::<Vec<_>>()
-            ));
+            result.insert(
+                "taint_flows".to_string(),
+                json!(taint_flows
+                    .iter()
+                    .map(|f| json!({
+                        "source": f.source.symbol,
+                        "sink": f.sink.symbol,
+                        "vulnerability_type": format!("{:?}", f.vulnerability_type),
+                        "source_line": f.source.line,
+                        "sink_line": f.sink.line,
+                    }))
+                    .collect::<Vec<_>>()),
+            );
         }
 
         Ok(serde_json::Value::Object(result))
@@ -571,9 +664,7 @@ impl AnalysisEngine {
         // 使用项目级缓存目录，而非 temp
         let cache_dir = std::path::Path::new(project_path).join(".ctx-audit/cache/ast");
         let _ = std::fs::create_dir_all(&cache_dir);
-        let engine = Arc::new(ASTEngine::new(
-            cache_dir.to_string_lossy().as_ref(),
-        ));
+        let engine = Arc::new(ASTEngine::new(cache_dir.to_string_lossy().as_ref()));
         engine.use_repository(project_path);
 
         match engine.scan_project(project_path) {
@@ -583,11 +674,14 @@ impl AnalysisEngine {
 
         let estimated_bytes = estimate_ast_bytes(&engine);
         let mut engines = self.ast_engines.write().await;
-        engines.insert(project_path.to_string(), TimestampedEngine {
-            engine,
-            last_accessed: std::sync::Mutex::new(std::time::Instant::now()),
-            estimated_bytes,
-        });
+        engines.insert(
+            project_path.to_string(),
+            TimestampedEngine {
+                engine,
+                last_accessed: std::sync::Mutex::new(std::time::Instant::now()),
+                estimated_bytes,
+            },
+        );
         Ok(())
     }
 
@@ -609,13 +703,19 @@ impl AnalysisEngine {
             match ts_engine.engine.search_symbols(query) {
                 Ok(results) => {
                     let limit = limit.unwrap_or(50);
-                    Ok(results.iter().take(limit).map(|s| json!({
-                        "name": s.name,
-                        "kind": format!("{:?}", s.kind),
-                        "file": s.file_path,
-                        "line": s.start_line,
-                        "end_line": s.end_line,
-                    })).collect())
+                    Ok(results
+                        .iter()
+                        .take(limit)
+                        .map(|s| {
+                            json!({
+                                "name": s.name,
+                                "kind": format!("{:?}", s.kind),
+                                "file": s.file_path,
+                                "line": s.start_line,
+                                "end_line": s.end_line,
+                            })
+                        })
+                        .collect())
                 }
                 Err(e) => anyhow::bail!("符号查询失败: {}", e),
             }
@@ -656,47 +756,56 @@ impl AnalysisEngine {
 
         let summaries = analyzer.compute_function_summaries(std::path::Path::new(project_path));
 
-        let cross_file_flows: Vec<serde_json::Value> = result.taint_flows.iter()
+        let cross_file_flows: Vec<serde_json::Value> = result
+            .taint_flows
+            .iter()
             .filter(|f| f.source.file_path != f.sink.file_path)
-            .map(|f| json!({
-                "id": f.id,
-                "source": {
-                    "file": f.source.file_path,
-                    "line": f.source.line,
-                    "symbol": f.source.symbol,
-                },
-                "sink": {
-                    "file": f.sink.file_path,
-                    "line": f.sink.line,
-                    "symbol": f.sink.symbol,
-                },
-                "vulnerability_type": format!("{:?}", f.vulnerability_type),
-                "severity": format!("{:?}", f.severity),
-                "confidence": f.confidence,
-                "path_steps": f.interprocedural_path.iter().map(|s| json!({
-                    "type": format!("{:?}", s.step_type),
-                    "file": s.file_path,
-                    "function": s.function_name,
-                    "line": s.line,
-                    "variable": s.variable,
-                })).collect::<Vec<_>>(),
-            }))
+            .map(|f| {
+                json!({
+                    "id": f.id,
+                    "source": {
+                        "file": f.source.file_path,
+                        "line": f.source.line,
+                        "symbol": f.source.symbol,
+                    },
+                    "sink": {
+                        "file": f.sink.file_path,
+                        "line": f.sink.line,
+                        "symbol": f.sink.symbol,
+                    },
+                    "vulnerability_type": format!("{:?}", f.vulnerability_type),
+                    "severity": format!("{:?}", f.severity),
+                    "confidence": f.confidence,
+                    "path_steps": f.interprocedural_path.iter().map(|s| json!({
+                        "type": format!("{:?}", s.step_type),
+                        "file": s.file_path,
+                        "function": s.function_name,
+                        "line": s.line,
+                        "variable": s.variable,
+                    })).collect::<Vec<_>>(),
+                })
+            })
             .collect();
 
-        let summary_list: Vec<serde_json::Value> = summaries.values().map(|s| json!({
-            "func_id": s.func_id,
-            "func_name": s.func_name,
-            "file_path": s.file_path,
-            "taint_propagation": s.taint_propagation.iter().map(|(idx, affects_return)| {
-                json!({"param_index": idx, "affects_return": affects_return})
-            }).collect::<Vec<_>>(),
-            "direct_sinks": s.direct_sinks.iter().map(|sk| json!({
-                "sink_name": sk.sink_name,
-                "from_param": sk.from_param,
-                "sanitized": sk.sanitized,
-                "vuln_type": format!("{:?}", sk.vuln_type),
-            })).collect::<Vec<_>>(),
-        })).collect();
+        let summary_list: Vec<serde_json::Value> = summaries
+            .values()
+            .map(|s| {
+                json!({
+                    "func_id": s.func_id,
+                    "func_name": s.func_name,
+                    "file_path": s.file_path,
+                    "taint_propagation": s.taint_propagation.iter().map(|(idx, affects_return)| {
+                        json!({"param_index": idx, "affects_return": affects_return})
+                    }).collect::<Vec<_>>(),
+                    "direct_sinks": s.direct_sinks.iter().map(|sk| json!({
+                        "sink_name": sk.sink_name,
+                        "from_param": sk.from_param,
+                        "sanitized": sk.sanitized,
+                        "vuln_type": format!("{:?}", sk.vuln_type),
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
 
         Ok(json!({
             "project_path": result.project_path,
@@ -719,14 +828,21 @@ impl AnalysisEngine {
 
     // ── 调用图查询 ──────────────────────────────────
 
-    fn build_query_engine_for_project(&self, project_path: &str) -> anyhow::Result<deepaudit_core::CallGraphQueryEngine> {
+    fn build_query_engine_for_project(
+        &self,
+        project_path: &str,
+    ) -> anyhow::Result<deepaudit_core::CallGraphQueryEngine> {
         let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
         let result = analyzer.analyze_project(std::path::Path::new(project_path));
         Ok(deepaudit_core::CallGraphQueryEngine::from_result(&result))
     }
 
     pub fn graph_query_callers(
-        &self, project_path: &str, file_path: &str, function_name: &str, recursive: bool,
+        &self,
+        project_path: &str,
+        file_path: &str,
+        function_name: &str,
+        recursive: bool,
     ) -> anyhow::Result<serde_json::Value> {
         let engine = self.build_query_engine_for_project(project_path)?;
         let callers = if recursive {
@@ -738,7 +854,11 @@ impl AnalysisEngine {
     }
 
     pub fn graph_query_callees(
-        &self, project_path: &str, file_path: &str, function_name: &str, recursive: bool,
+        &self,
+        project_path: &str,
+        file_path: &str,
+        function_name: &str,
+        recursive: bool,
     ) -> anyhow::Result<serde_json::Value> {
         let engine = self.build_query_engine_for_project(project_path)?;
         let callees = if recursive {
@@ -750,7 +870,12 @@ impl AnalysisEngine {
     }
 
     pub fn graph_find_call_path(
-        &self, project_path: &str, source_file: &str, source_function: &str, sink_file: &str, sink_function: &str,
+        &self,
+        project_path: &str,
+        source_file: &str,
+        source_function: &str,
+        sink_file: &str,
+        sink_function: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let engine = self.build_query_engine_for_project(project_path)?;
         let path = engine.find_call_path(source_file, source_function, sink_file, sink_function);
@@ -763,14 +888,21 @@ impl AnalysisEngine {
         Ok(serde_json::to_value(stats)?)
     }
 
-    pub fn graph_list_functions(&self, project_path: &str, file_path: &str) -> anyhow::Result<serde_json::Value> {
+    pub fn graph_list_functions(
+        &self,
+        project_path: &str,
+        file_path: &str,
+    ) -> anyhow::Result<serde_json::Value> {
         let engine = self.build_query_engine_for_project(project_path)?;
         let functions = engine.query_functions_in_file(file_path);
         Ok(serde_json::to_value(functions)?)
     }
 
     pub fn graph_trace_flow(
-        &self, project_path: &str, file_path: &str, function_name: &str,
+        &self,
+        project_path: &str,
+        file_path: &str,
+        function_name: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let engine = self.build_query_engine_for_project(project_path)?;
         let flow = engine.trace_variable_flow(file_path, function_name);
@@ -801,7 +933,11 @@ impl AnalysisEngine {
         let caches = self.scan_caches.read().await;
         let scan_count = caches.len();
 
-        MemoryStats { ast_count, ast_bytes, scan_count }
+        MemoryStats {
+            ast_count,
+            ast_bytes,
+            scan_count,
+        }
     }
 
     // ── 内存淘汰 ─────────────────────────────────────
@@ -816,10 +952,15 @@ impl AnalysisEngine {
             Err(_) => return 0, // 正在被占用，跳过本次淘汰
         };
 
-        let expired: Vec<String> = engines.iter()
+        let expired: Vec<String> = engines
+            .iter()
             .filter_map(|(k, v)| {
                 let last = v.last_accessed.lock().ok()?;
-                if last.elapsed().as_secs() > max_idle_secs { Some(k.clone()) } else { None }
+                if last.elapsed().as_secs() > max_idle_secs {
+                    Some(k.clone())
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -830,7 +971,8 @@ impl AnalysisEngine {
 
         let total: usize = engines.values().map(|v| v.estimated_bytes).sum();
         if total > max_total_bytes {
-            let mut entries: Vec<(String, std::time::Duration, usize)> = engines.iter()
+            let mut entries: Vec<(String, std::time::Duration, usize)> = engines
+                .iter()
                 .filter_map(|(k, v)| {
                     let last = v.last_accessed.lock().ok()?;
                     Some((k.clone(), last.elapsed(), v.estimated_bytes))
@@ -840,7 +982,9 @@ impl AnalysisEngine {
 
             let mut freed = 0usize;
             for (key, _, bytes) in entries {
-                if total - freed <= max_total_bytes { break; }
+                if total - freed <= max_total_bytes {
+                    break;
+                }
                 engines.remove(&key);
                 freed += bytes;
                 evicted += 1;
@@ -862,10 +1006,15 @@ impl AnalysisEngine {
             Err(_) => return 0,
         };
 
-        let expired: Vec<String> = caches.iter()
+        let expired: Vec<String> = caches
+            .iter()
             .filter_map(|(k, v)| {
                 let last = v.last_accessed.lock().ok()?;
-                if last.elapsed().as_secs() > max_idle_secs { Some(k.clone()) } else { None }
+                if last.elapsed().as_secs() > max_idle_secs {
+                    Some(k.clone())
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -886,7 +1035,9 @@ impl AnalysisEngine {
         let key = rules_dir.unwrap_or("none");
         let now = std::time::Instant::now();
         let should_log = match rules_cache.get(key) {
-            Some((last_time, _)) => now.duration_since(*last_time).as_secs() > self.rules_reload_interval_secs,
+            Some((last_time, _)) => {
+                now.duration_since(*last_time).as_secs() > self.rules_reload_interval_secs
+            }
             None => true,
         };
         drop(rules_cache);
@@ -914,8 +1065,8 @@ impl AnalysisEngine {
 
 /// 计算文件的 content hash
 fn hash_file_content(path: &Path) -> u64 {
-    use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
     match std::fs::read_to_string(path) {
         Ok(content) => {
@@ -951,8 +1102,8 @@ async fn cache_entries_count(
 /// 估算 AST Engine 的内存占用
 /// 计算内存中内容的 hash（避免二次文件 IO）
 fn hash_content(content: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
@@ -960,7 +1111,9 @@ fn hash_content(content: &str) -> u64 {
 }
 
 fn estimate_ast_bytes(engine: &ASTEngine) -> usize {
-    engine.get_statistics().ok()
+    engine
+        .get_statistics()
+        .ok()
         .and_then(|s| s.get("total_nodes").and_then(|v| v.as_u64()))
         .map(|n| n as usize * 512)
         .unwrap_or(0)

@@ -9,8 +9,10 @@ use async_trait::async_trait;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::bridge::{
+    ToolCategory, ToolDefinition, ToolError, ToolParameter, ToolParameterType, ToolResult,
+};
 use crate::registry::{Tool, ToolRegistry};
-use crate::bridge::{ToolCategory, ToolDefinition, ToolParameter, ToolParameterType, ToolResult, ToolError};
 
 /// 漏洞模式检测工具
 ///
@@ -34,15 +36,15 @@ impl DetectVulnerabilityPatternsTool {
                 category: "sql_injection".to_string(),
                 severity: "high".to_string(),
                 patterns: vec![
-                    r#"["']SELECT.*\+.*"#,           // 'SELECT' + var
-                    r#"["']INSERT.*\+.*"#,           // 'INSERT' + var
-                    r#"["']UPDATE.*\+.*"#,           // 'UPDATE' + var
-                    r#"["']DELETE.*\+.*"#,           // 'DELETE' + var
-                    r#"f["'].*SELECT.*\{.*\}.*"#,    // f'SELECT ... {var}'
-                    r#"f["'].*INSERT.*\{.*\}.*"#,    // f'INSERT ... {var}'
-                    r#"\$\{.*\}.*SELECT.*"#,         // ${var} SELECT
-                    r#"execute\(.*\+.*\)"#,          // execute(query + var)
-                    r#"query\(.*\+.*\)"#,            // query(sql + var)
+                    r#"["']SELECT.*\+.*"#,        // 'SELECT' + var
+                    r#"["']INSERT.*\+.*"#,        // 'INSERT' + var
+                    r#"["']UPDATE.*\+.*"#,        // 'UPDATE' + var
+                    r#"["']DELETE.*\+.*"#,        // 'DELETE' + var
+                    r#"f["'].*SELECT.*\{.*\}.*"#, // f'SELECT ... {var}'
+                    r#"f["'].*INSERT.*\{.*\}.*"#, // f'INSERT ... {var}'
+                    r#"\$\{.*\}.*SELECT.*"#,      // ${var} SELECT
+                    r#"execute\(.*\+.*\)"#,       // execute(query + var)
+                    r#"query\(.*\+.*\)"#,         // query(sql + var)
                 ],
                 cwe: Some("CWE-89".to_string()),
                 description: "通过字符串拼接构造 SQL 查询，可能导致 SQL 注入".to_string(),
@@ -63,7 +65,7 @@ impl DetectVulnerabilityPatternsTool {
                     r#"Runtime\.getRuntime\(\)\.exec\(.*\+.*\)"#,
                     r#"ProcessBuilder.*\(.*\+.*\)"#,
                     r#"child_process\.exec\(.*\+.*\)"#,
-                    r#"`.*\$\{.*\}.*`"#,  // Template literal command
+                    r#"`.*\$\{.*\}.*`"#, // Template literal command
                 ],
                 cwe: Some("CWE-78".to_string()),
                 description: "用户输入直接拼接到系统命令中执行".to_string(),
@@ -140,7 +142,7 @@ impl DetectVulnerabilityPatternsTool {
                     r#"(?i)access_token\s*=\s*["'][^"']{16,}["']"#,
                     r#"sk-[a-zA-Z0-9]{48,}"#,
                     r#"sk-ant-[a-zA-Z0-9-]{80,}"#,
-                    r#"AKIA[0-9A-Z]{16}"#,  // AWS Access Key
+                    r#"AKIA[0-9A-Z]{16}"#, // AWS Access Key
                 ],
                 cwe: Some("CWE-798".to_string()),
                 description: "代码中包含硬编码的敏感信息".to_string(),
@@ -223,14 +225,21 @@ impl DetectVulnerabilityPatternsTool {
     }
 
     /// 检测代码中的漏洞模式
-    fn detect_patterns(code: &str, file_path: &str, categories: Option<&[String]>) -> Vec<PatternMatch> {
+    fn detect_patterns(
+        code: &str,
+        file_path: &str,
+        categories: Option<&[String]>,
+    ) -> Vec<PatternMatch> {
         let patterns = Self::get_builtin_patterns();
         let mut matches = Vec::new();
 
         for pattern in &patterns {
             // 如果指定了类别，只检测匹配的类别
             if let Some(cats) = categories {
-                if !cats.iter().any(|c| pattern.category.contains(&c.to_lowercase())) {
+                if !cats
+                    .iter()
+                    .any(|c| pattern.category.contains(&c.to_lowercase()))
+                {
                     continue;
                 }
             }
@@ -239,7 +248,12 @@ impl DetectVulnerabilityPatternsTool {
                 if let Ok(re) = regex::Regex::new(pattern_regex) {
                     for cap in re.find_iter(code) {
                         let line_num = code[..cap.start()].lines().count() + 1;
-                        let line_content = code.lines().nth(line_num - 1).unwrap_or("").trim().to_string();
+                        let line_content = code
+                            .lines()
+                            .nth(line_num - 1)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
 
                         matches.push(PatternMatch {
                             pattern_id: pattern.id.clone(),
@@ -329,17 +343,19 @@ impl Tool for DetectVulnerabilityPatternsTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
 
         // 获取类别过滤
-        let categories: Option<Vec<String>> = input["categories"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
+        let categories: Option<Vec<String>> = input["categories"].as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        });
 
         // 构建完整路径
         let full_path = Path::new(&self.project_path).join(file_path);
 
         // 读取文件内容
-        let content = tokio::fs::read_to_string(&full_path)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("无法读取文件 '{}': {}", file_path, e)))?;
+        let content = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("无法读取文件 '{}': {}", file_path, e))
+        })?;
 
         // 检测漏洞模式
         let matches = Self::detect_patterns(&content, file_path, categories.as_deref());
@@ -371,14 +387,8 @@ impl Tool for DetectVulnerabilityPatternsTool {
         // 生成摘要
         let mut summary = format!("发现 {} 个潜在的漏洞模式:\n\n", sorted_matches.len());
         for (i, m) in sorted_matches.iter().enumerate() {
-            summary.push_str(&format!(
-                "{}. {} ({})\n",
-                i + 1, m.name, m.severity
-            ));
-            summary.push_str(&format!(
-                "   位置: {}:{}\n",
-                m.file_path, m.line
-            ));
+            summary.push_str(&format!("{}. {} ({})\n", i + 1, m.name, m.severity));
+            summary.push_str(&format!("   位置: {}:{}\n", m.file_path, m.line));
             summary.push_str(&format!(
                 "   代码: {}\n\n",
                 if m.matched_text.len() > 60 {
@@ -390,20 +400,23 @@ impl Tool for DetectVulnerabilityPatternsTool {
         }
 
         // 构建结构化结果
-        let results: Vec<serde_json::Value> = sorted_matches.iter().map(|m| {
-            serde_json::json!({
-                "pattern_id": m.pattern_id,
-                "name": m.name,
-                "category": m.category,
-                "severity": m.severity,
-                "file_path": m.file_path,
-                "line": m.line,
-                "matched_text": m.matched_text,
-                "cwe": m.cwe,
-                "description": m.description,
-                "recommendation": m.recommendation,
+        let results: Vec<serde_json::Value> = sorted_matches
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "pattern_id": m.pattern_id,
+                    "name": m.name,
+                    "category": m.category,
+                    "severity": m.severity,
+                    "file_path": m.file_path,
+                    "line": m.line,
+                    "matched_text": m.matched_text,
+                    "cwe": m.cwe,
+                    "description": m.description,
+                    "recommendation": m.recommendation,
+                })
             })
-        }).collect();
+            .collect();
 
         Ok(ToolResult::json(
             serde_json::json!({
@@ -475,7 +488,10 @@ impl Tool for BatchPatternScanTool {
         let scan_path = Path::new(&self.project_path).join(sub_path);
 
         if !scan_path.exists() {
-            return Err(ToolError::ExecutionFailed(format!("目录不存在: {}", sub_path)));
+            return Err(ToolError::ExecutionFailed(format!(
+                "目录不存在: {}",
+                sub_path
+            )));
         }
 
         // 收集要分析的文件
@@ -492,12 +508,17 @@ impl Tool for BatchPatternScanTool {
         // 分析每个文件
         for file_path in &files_to_analyze {
             if let Ok(content) = tokio::fs::read_to_string(file_path).await {
-                let relative_path = file_path.strip_prefix(&self.project_path)
+                let relative_path = file_path
+                    .strip_prefix(&self.project_path)
                     .unwrap_or(file_path)
                     .to_string_lossy()
                     .to_string();
 
-                let matches = DetectVulnerabilityPatternsTool::detect_patterns(&content, &relative_path, None);
+                let matches = DetectVulnerabilityPatternsTool::detect_patterns(
+                    &content,
+                    &relative_path,
+                    None,
+                );
 
                 if !matches.is_empty() {
                     files_with_issues.push(relative_path.clone());
@@ -520,17 +541,20 @@ impl Tool for BatchPatternScanTool {
             severity_counts
         );
 
-        let results: Vec<serde_json::Value> = all_matches.iter().map(|m| {
-            serde_json::json!({
-                "pattern_id": m.pattern_id,
-                "name": m.name,
-                "category": m.category,
-                "severity": m.severity,
-                "file_path": m.file_path,
-                "line": m.line,
-                "cwe": m.cwe,
+        let results: Vec<serde_json::Value> = all_matches
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "pattern_id": m.pattern_id,
+                    "name": m.name,
+                    "category": m.category,
+                    "severity": m.severity,
+                    "file_path": m.file_path,
+                    "line": m.line,
+                    "cwe": m.cwe,
+                })
             })
-        }).collect();
+            .collect();
 
         Ok(ToolResult::json(
             serde_json::json!({
@@ -577,10 +601,7 @@ struct PatternMatch {
 use serde::{Deserialize, Serialize};
 
 /// 注册模式检测工具
-pub async fn register_pattern_tools(
-    registry: &Arc<ToolRegistry>,
-    project_path: String,
-) {
+pub async fn register_pattern_tools(registry: &Arc<ToolRegistry>, project_path: String) {
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(DetectVulnerabilityPatternsTool::new(project_path.clone())),
         Arc::new(BatchPatternScanTool::new(project_path)),
@@ -639,7 +660,7 @@ os.system("ls " + path)
         let sql_only = DetectVulnerabilityPatternsTool::detect_patterns(
             code,
             "test.py",
-            Some(&["sql_injection".to_string()])
+            Some(&["sql_injection".to_string()]),
         );
 
         // 当过滤只看 SQL 注入时，应该只返回 SQL 注入相关的匹配

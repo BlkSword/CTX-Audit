@@ -477,7 +477,10 @@ impl Tool for ReadFileTool {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
 
-        let start_line = input["start_line"].as_u64().map(|v| v as usize).unwrap_or(1);
+        let start_line = input["start_line"]
+            .as_u64()
+            .map(|v| v as usize)
+            .unwrap_or(1);
         let end_line = input["end_line"].as_u64().map(|v| v as usize);
 
         // 智能处理路径：提取相对于项目根目录的相对路径
@@ -486,26 +489,31 @@ impl Tool for ReadFileTool {
 
         // 路径遍历验证：确保解析后的路径仍在项目目录内
         {
-            let canonical_project = std::path::Path::new(&self.project_path).canonicalize()
+            let canonical_project = std::path::Path::new(&self.project_path)
+                .canonicalize()
                 .map_err(|e| ToolError::ExecutionFailed(format!("Invalid project path: {}", e)))?;
             let check_path = if full_path.exists() {
-                full_path.canonicalize()
+                full_path
+                    .canonicalize()
                     .map_err(|e| ToolError::ExecutionFailed(format!("Invalid path: {}", e)))?
             } else if let Some(parent) = full_path.parent() {
-                parent.canonicalize()
+                parent
+                    .canonicalize()
                     .map_err(|e| ToolError::ExecutionFailed(format!("Invalid path: {}", e)))?
             } else {
                 full_path.clone()
             };
             if !check_path.starts_with(&canonical_project) {
-                return Err(ToolError::ExecutionFailed("Path traversal detected: path escapes project directory".to_string()));
+                return Err(ToolError::ExecutionFailed(
+                    "Path traversal detected: path escapes project directory".to_string(),
+                ));
             }
         }
 
         // 读取文件
-        let content = tokio::fs::read_to_string(&full_path)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("无法读取文件 '{}': {}", relative_path, e)))?;
+        let content = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("无法读取文件 '{}': {}", relative_path, e))
+        })?;
 
         // 处理行范围
         let lines: Vec<&str> = content.lines().collect();
@@ -594,19 +602,24 @@ impl Tool for ListFilesTool {
 
         // 路径遍历验证
         {
-            let canonical_project = std::path::Path::new(&self.project_path).canonicalize()
+            let canonical_project = std::path::Path::new(&self.project_path)
+                .canonicalize()
                 .map_err(|e| ToolError::ExecutionFailed(format!("Invalid project path: {}", e)))?;
             let check_path = if full_path.exists() {
-                full_path.canonicalize()
+                full_path
+                    .canonicalize()
                     .map_err(|e| ToolError::ExecutionFailed(format!("Invalid path: {}", e)))?
             } else if let Some(parent) = full_path.parent() {
-                parent.canonicalize()
+                parent
+                    .canonicalize()
                     .map_err(|e| ToolError::ExecutionFailed(format!("Invalid path: {}", e)))?
             } else {
                 full_path.clone()
             };
             if !check_path.starts_with(&canonical_project) {
-                return Err(ToolError::ExecutionFailed("Path traversal detected: path escapes project directory".to_string()));
+                return Err(ToolError::ExecutionFailed(
+                    "Path traversal detected: path escapes project directory".to_string(),
+                ));
             }
         }
 
@@ -615,8 +628,11 @@ impl Tool for ListFilesTool {
             .map_err(|e| ToolError::ExecutionFailed(format!("无法读取目录: {}", e)))?;
 
         let mut result = Vec::new();
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| ToolError::ExecutionFailed(format!("读取目录失败: {}", e)))? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("读取目录失败: {}", e)))?
+        {
             let entry_path = entry.path();
 
             // 应用模式过滤
@@ -753,9 +769,7 @@ impl Tool for ReportFindingTool {
         let description = input["description"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgument("缺少 description 参数".to_string()))?;
-        let severity = input["severity"]
-            .as_str()
-            .unwrap_or("medium");
+        let severity = input["severity"].as_str().unwrap_or("medium");
         let file_path = input["file_path"]
             .as_str()
             .or_else(|| input["file"].as_str())
@@ -764,7 +778,11 @@ impl Tool for ReportFindingTool {
         // 支持多种 line_number 格式：整数、字符串数字，默认为 0
         let line_number = input["line_number"]
             .as_u64()
-            .or_else(|| input["line_number"].as_str().and_then(|s| s.parse::<u64>().ok()))
+            .or_else(|| {
+                input["line_number"]
+                    .as_str()
+                    .and_then(|s| s.parse::<u64>().ok())
+            })
             .or_else(|| input["line"].as_u64())
             .or_else(|| input["line"].as_str().and_then(|s| s.parse::<u64>().ok()))
             .or_else(|| input["start_line"].as_u64())
@@ -801,10 +819,12 @@ impl Tool for ReportFindingTool {
             start_line: line_number as u32,
             code_snippet,
             recommendation,
-            fix_suggestions: input.get("fix_suggestions")
+            fix_suggestions: input
+                .get("fix_suggestions")
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.clone()),
-            confidence: input.get("confidence")
+            confidence: input
+                .get("confidence")
                 .and_then(|v| v.as_f64())
                 .map(|v| v as f32),
             ..Default::default()
@@ -874,10 +894,7 @@ impl Tool for FinishAnalysisTool {
 }
 
 /// 注册所有内置工具
-pub async fn register_built_in_tools(
-    registry: &Arc<ToolRegistry>,
-    project_path: String,
-) {
+pub async fn register_built_in_tools(registry: &Arc<ToolRegistry>, project_path: String) {
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool::new(project_path.clone())),
         Arc::new(ListFilesTool::new(project_path.clone())),
@@ -948,8 +965,14 @@ mod tests {
         let tool = ReadFileTool::new("D:\\project\\myproject".to_string());
 
         // 路径以项目目录名开头
-        assert_eq!(tool.extract_relative_path("myproject/src/main.rs"), "src/main.rs");
-        assert_eq!(tool.extract_relative_path("myproject/lib/utils.js"), "lib/utils.js");
+        assert_eq!(
+            tool.extract_relative_path("myproject/src/main.rs"),
+            "src/main.rs"
+        );
+        assert_eq!(
+            tool.extract_relative_path("myproject/lib/utils.js"),
+            "lib/utils.js"
+        );
     }
 
     #[test]
@@ -958,8 +981,11 @@ mod tests {
 
         // 绝对路径包含项目目录
         let result = tool.extract_relative_path("D:\\project\\myproject\\src\\main.rs");
-        assert!(result == "src/main.rs" || result == "src\\main.rs",
-            "Expected relative path, got: {}", result);
+        assert!(
+            result == "src/main.rs" || result == "src\\main.rs",
+            "Expected relative path, got: {}",
+            result
+        );
     }
 
     #[test]
@@ -968,7 +994,10 @@ mod tests {
 
         // Windows 风格绝对路径
         let result = tool.extract_relative_path("C:\\Users\\test\\halo-2.21.9\\src\\main.rs");
-        assert!(result.contains("src"),
-            "Expected path containing 'src', got: {}", result);
+        assert!(
+            result.contains("src"),
+            "Expected path containing 'src', got: {}",
+            result
+        );
     }
 }

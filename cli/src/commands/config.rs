@@ -26,16 +26,28 @@ pub async fn show(key: Option<String>, _reveal: bool) -> Result<()> {
         renderer.print("当前配置:");
         renderer.print(&format!("  扫描线程数:       {}", cfg.scan.threads));
         renderer.print(&format!("  包含测试文件:     {}", cfg.scan.include_tests));
-        renderer.print(&format!("  最大文件大小:     {} MB", cfg.scan.max_file_size_mb));
-        renderer.print(&format!("  内存预算:         {} MB", cfg.scan.memory_budget_mb));
+        renderer.print(&format!(
+            "  最大文件大小:     {} MB",
+            cfg.scan.max_file_size_mb
+        ));
+        renderer.print(&format!(
+            "  内存预算:         {} MB",
+            cfg.scan.memory_budget_mb
+        ));
         renderer.print(&format!("  批次大小:         {}", cfg.scan.batch_size));
         renderer.print(&format!("  去重行容差:       {}", cfg.scan.line_tolerance));
         renderer.print(&format!("  默认深度扫描:     {}", cfg.scan.deep));
         renderer.print(&format!("  输出格式:         {}", cfg.output.format));
-        renderer.print(&format!("  缓存启用:         {}", cfg.advanced.enable_cache));
+        renderer.print(&format!(
+            "  缓存启用:         {}",
+            cfg.advanced.enable_cache
+        ));
         renderer.print(&format!("  日志级别:         {}", cfg.advanced.log_level));
         renderer.print(&format!("  SCA 启用:         {}", cfg.sca.enabled));
-        renderer.print(&format!("  SCA 最低严重程度: {}", cfg.sca.severity_threshold));
+        renderer.print(&format!(
+            "  SCA 最低严重程度: {}",
+            cfg.sca.severity_threshold
+        ));
         renderer.print(&format!("  守护进程地址:     {}", cfg.daemon.listen_addr));
     }
 
@@ -47,8 +59,13 @@ pub async fn set(key: String, value: String) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
     let mut config_manager = ConfigManager::new(None).map_err(|e| miette::miette!("{}", e))?;
 
-    config_manager.set(&key, value.clone()).map_err(|e| miette::miette!("{}", e))?;
-    config_manager.save().await.map_err(|e| miette::miette!("{}", e))?;
+    config_manager
+        .set(&key, value.clone())
+        .map_err(|e| miette::miette!("{}", e))?;
+    config_manager
+        .save()
+        .await
+        .map_err(|e| miette::miette!("{}", e))?;
 
     renderer.success(&format!("配置已更新: {} = {}", key, value));
 
@@ -60,8 +77,13 @@ pub async fn remove(key: String) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
     let mut config_manager = ConfigManager::new(None).map_err(|e| miette::miette!("{}", e))?;
 
-    config_manager.remove(&key).map_err(|e| miette::miette!("{}", e))?;
-    config_manager.save().await.map_err(|e| miette::miette!("{}", e))?;
+    config_manager
+        .remove(&key)
+        .map_err(|e| miette::miette!("{}", e))?;
+    config_manager
+        .save()
+        .await
+        .map_err(|e| miette::miette!("{}", e))?;
 
     renderer.success(&format!("配置已重置: {}", key));
 
@@ -76,7 +98,9 @@ pub async fn list(_verbose: bool) -> Result<()> {
     println!("扫描配置:");
     println!("  scan.threads                  - 并行线程数 (默认 4)");
     println!("  scan.include_tests            - 是否包含测试文件 (默认 false)");
-    println!("  scan.exclude_patterns         - 排除模式 (JSON 数组, 如 [\"node_modules\",\".git\"])");
+    println!(
+        "  scan.exclude_patterns         - 排除模式 (JSON 数组, 如 [\"node_modules\",\".git\"])"
+    );
     println!("  scan.max_file_size_mb         - 单文件最大扫描大小 MB (默认 10)");
     println!("  scan.memory_budget_mb         - 扫描内存预算 MB (默认 500)");
     println!("  scan.batch_size               - 并行批次大小 (默认 100)");
@@ -185,8 +209,7 @@ pub async fn reset(confirm: bool) -> Result<()> {
 
 /// 获取配置文件路径
 fn get_config_path() -> Result<PathBuf, miette::Error> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| miette::miette!("无法获取配置目录"))?;
+    let config_dir = dirs::config_dir().ok_or_else(|| miette::miette!("无法获取配置目录"))?;
 
     Ok(config_dir.join("ctx-audit").join("config.toml"))
 }

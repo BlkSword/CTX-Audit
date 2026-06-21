@@ -10,15 +10,13 @@ use miette::Result;
 use crate::terminal::TerminalRenderer;
 use ctx_audit_daemon::client::DaemonClient;
 use ctx_audit_daemon::protocol::Response;
+use deepaudit_core::sarif::{FindingInput, SarifConverter};
 use deepaudit_core::scanning::{
-    scan_directory, scan_directory_deep,
-    scan_directory_with_rules, scan_directory_deep_with_rules,
-    scan_directory_with_rules_progress, scan_directory_deep_with_rules_progress,
-    scan_directory_with_opts,
-    Finding, ScaScanOptions, ScaSeverityMapping,
-    ScanOptions, ScanPhase, ScanProgress,
+    scan_directory, scan_directory_deep, scan_directory_deep_with_rules,
+    scan_directory_deep_with_rules_progress, scan_directory_with_opts, scan_directory_with_rules,
+    scan_directory_with_rules_progress, Finding, ScaScanOptions, ScaSeverityMapping, ScanOptions,
+    ScanPhase, ScanProgress,
 };
-use deepaudit_core::sarif::{SarifConverter, FindingInput};
 use std::sync::Arc;
 
 /// 严重程度排序值
@@ -35,12 +33,15 @@ fn severity_rank(s: &str) -> u8 {
 
 /// 加载扫描配置（合并配置文件 + CLI 覆盖）
 fn load_scan_filter_config(cli_min_severity: Option<String>) -> (String, usize, Vec<String>, bool) {
-    let config = crate::config::ConfigManager::new(None)
-        .ok()
-        .map(|m| {
-            let scan = &m.config().scan;
-            (scan.min_severity.clone(), scan.context_lines, scan.exclude_extra.clone(), scan.include_tests)
-        });
+    let config = crate::config::ConfigManager::new(None).ok().map(|m| {
+        let scan = &m.config().scan;
+        (
+            scan.min_severity.clone(),
+            scan.context_lines,
+            scan.exclude_extra.clone(),
+            scan.include_tests,
+        )
+    });
 
     match config {
         Some((min_sev, ctx_lines, extra_excludes, include_tests)) => {
@@ -103,13 +104,57 @@ pub async fn execute(
     // 守护进程模式
     if daemon {
         if graph_output.is_some() || query_mode {
-            renderer.warning("--graph-output 和 --query-mode 在 daemon 模式下不可用，降级为本地扫描");
-            return scan_local(path, rules_dir, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, exclude_dirs, &mut renderer, sca_options, graph_output, query_mode).await;
+            renderer
+                .warning("--graph-output 和 --query-mode 在 daemon 模式下不可用，降级为本地扫描");
+            return scan_local(
+                path,
+                rules_dir,
+                severity,
+                effective_min_severity,
+                pattern,
+                output_path,
+                output_format,
+                enable_taint,
+                enable_cross_file,
+                exclude_dirs,
+                &mut renderer,
+                sca_options,
+                graph_output,
+                query_mode,
+            )
+            .await;
         }
-        return scan_via_daemon(path, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, &mut renderer).await;
+        return scan_via_daemon(
+            path,
+            severity,
+            effective_min_severity,
+            pattern,
+            output_path,
+            output_format,
+            enable_taint,
+            enable_cross_file,
+            &mut renderer,
+        )
+        .await;
     }
 
-    scan_local(path, rules_dir, severity, effective_min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, exclude_dirs, &mut renderer, sca_options, graph_output, query_mode).await
+    scan_local(
+        path,
+        rules_dir,
+        severity,
+        effective_min_severity,
+        pattern,
+        output_path,
+        output_format,
+        enable_taint,
+        enable_cross_file,
+        exclude_dirs,
+        &mut renderer,
+        sca_options,
+        graph_output,
+        query_mode,
+    )
+    .await
 }
 
 /// 从配置文件 + CLI flag 构建 SCA 选项
@@ -147,12 +192,17 @@ fn build_sca_options(cli_enabled: bool) -> ScaScanOptions {
 
 /// 从配置文件构建 ScanOptions
 fn build_scan_options() -> ScanOptions {
-    let config = crate::config::ConfigManager::new(None)
-        .ok()
-        .map(|m| {
-            let scan = &m.config().scan;
-            (scan.threads, scan.max_file_size_mb, scan.memory_budget_mb, scan.batch_size, scan.line_tolerance, scan.include_tests)
-        });
+    let config = crate::config::ConfigManager::new(None).ok().map(|m| {
+        let scan = &m.config().scan;
+        (
+            scan.threads,
+            scan.max_file_size_mb,
+            scan.memory_budget_mb,
+            scan.batch_size,
+            scan.line_tolerance,
+            scan.include_tests,
+        )
+    });
 
     match config {
         Some((threads, max_mb, mem_mb, batch, tol, include_tests)) => ScanOptions {
@@ -172,12 +222,10 @@ fn build_scan_options() -> ScanOptions {
 /// 构建完整排除列表：配置文件 exclude_patterns + exclude_extra + CLI --exclude
 /// 配置文件为准：若文件存在则完全使用文件中的 exclude_patterns，否则使用代码默认值
 fn build_exclude_dirs(cli_excludes: Vec<String>) -> Vec<String> {
-    let config = crate::config::ConfigManager::new(None)
-        .ok()
-        .map(|m| {
-            let scan = &m.config().scan;
-            (scan.exclude_patterns.clone(), scan.exclude_extra.clone())
-        });
+    let config = crate::config::ConfigManager::new(None).ok().map(|m| {
+        let scan = &m.config().scan;
+        (scan.exclude_patterns.clone(), scan.exclude_extra.clone())
+    });
 
     // 配置文件存在时以其 exclude_patterns 为准；不存在时 Default impl 提供完整默认值
     let (base_patterns, extra_patterns) = match config {
@@ -185,13 +233,38 @@ fn build_exclude_dirs(cli_excludes: Vec<String>) -> Vec<String> {
         None => {
             // ConfigManager 加载失败（路径找不到等极端情况），使用硬编码默认值
             let defaults = vec![
-                "node_modules", ".git", "target", "build", "dist", "vendor",
-                "__pycache__", ".gradle", ".idea", ".vscode", ".cache",
-                "bower_components", ".next", ".nuxt", "coverage",
-                "test", "tests", "__tests__", "spec", "fixtures", "e2e",
-                "examples", "example", "scripts",
-                "*.min.js", "*.min.css", "*.bundle.js", "*.chunk.js",
-                "*.map", ".env.*", "*.test.*", "*.spec.*",
+                "node_modules",
+                ".git",
+                "target",
+                "build",
+                "dist",
+                "vendor",
+                "__pycache__",
+                ".gradle",
+                ".idea",
+                ".vscode",
+                ".cache",
+                "bower_components",
+                ".next",
+                ".nuxt",
+                "coverage",
+                "test",
+                "tests",
+                "__tests__",
+                "spec",
+                "fixtures",
+                "e2e",
+                "examples",
+                "example",
+                "scripts",
+                "*.min.js",
+                "*.min.css",
+                "*.bundle.js",
+                "*.chunk.js",
+                "*.map",
+                ".env.*",
+                "*.test.*",
+                "*.spec.*",
             ];
             (defaults.iter().map(|s| s.to_string()).collect(), vec![])
         }
@@ -263,38 +336,59 @@ async fn scan_local(
     let pb = renderer.progress_bar(0); // total will be set dynamically
     pb.set_style(
         indicatif::ProgressStyle::with_template(
-            "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ETA:{eta} {msg}"
+            "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ETA:{eta} {msg}",
         )
         .expect("valid template")
-        .progress_chars("##>-")
+        .progress_chars("##>-"),
     );
     pb.set_message("准备扫描...");
 
     let pb_clone = pb.clone();
-    let progress_cb: Option<Arc<dyn Fn(ScanProgress) + Send + Sync>> = Some(Arc::new(move |p: ScanProgress| {
-        let label = match p.phase {
-            ScanPhase::FileWalking => "文件收集",
-            ScanPhase::ScaScanning => "SCA 扫描",
-            ScanPhase::RuleScanning => "规则扫描",
-            ScanPhase::CandidateSelection => "候选选取",
-            ScanPhase::TaintAnalysis => "污点分析",
-            ScanPhase::CrossFileAnalysis => "跨文件分析",
-        };
-        if p.total > 0 {
-            pb_clone.set_length(p.total as u64);
-        }
-        pb_clone.set_position(p.current as u64);
-        pb_clone.set_message(format!("[{}] {}", label, p.message));
-    }));
+    let progress_cb: Option<Arc<dyn Fn(ScanProgress) + Send + Sync>> =
+        Some(Arc::new(move |p: ScanProgress| {
+            let label = match p.phase {
+                ScanPhase::FileWalking => "文件收集",
+                ScanPhase::ScaScanning => "SCA 扫描",
+                ScanPhase::RuleScanning => "规则扫描",
+                ScanPhase::CandidateSelection => "候选选取",
+                ScanPhase::TaintAnalysis => "污点分析",
+                ScanPhase::CrossFileAnalysis => "跨文件分析",
+            };
+            if p.total > 0 {
+                pb_clone.set_length(p.total as u64);
+            }
+            pb_clone.set_position(p.current as u64);
+            pb_clone.set_message(format!("[{}] {}", label, p.message));
+        }));
 
     let rules_ref = rules_dir.as_deref();
-    let exclude_opt = if all_excludes.is_empty() { None } else { Some(all_excludes) };
+    let exclude_opt = if all_excludes.is_empty() {
+        None
+    } else {
+        Some(all_excludes)
+    };
     let sca_opt = Some(sca_options);
     let findings_result = if enable_taint || enable_cross_file {
-        scan_directory_deep_with_rules_progress(&path, rules_ref, exclude_opt, sca_opt, Some(scan_opts), progress_cb).await
-            .map(|r| r.findings)
+        scan_directory_deep_with_rules_progress(
+            &path,
+            rules_ref,
+            exclude_opt,
+            sca_opt,
+            Some(scan_opts),
+            progress_cb,
+        )
+        .await
+        .map(|r| r.findings)
     } else {
-        scan_directory_with_opts(&path, rules_ref, exclude_opt, sca_opt, scan_opts, progress_cb).await
+        scan_directory_with_opts(
+            &path,
+            rules_ref,
+            exclude_opt,
+            sca_opt,
+            scan_opts,
+            progress_cb,
+        )
+        .await
     };
 
     pb.finish_with_message("完成");
@@ -394,7 +488,13 @@ async fn scan_local(
             (format.to_string(), output_path.clone())
         };
 
-        save_scan_results(&effective_file_path, &filtered_findings, &effective_format, renderer).await?;
+        save_scan_results(
+            &effective_file_path,
+            &filtered_findings,
+            &effective_format,
+            renderer,
+        )
+        .await?;
     }
 
     // --graph-output: 单独构建并导出调用图
@@ -405,14 +505,18 @@ async fn scan_local(
         let engine = deepaudit_core::CallGraphQueryEngine::from_result(&result);
 
         let stats = engine.query_graph_stats();
-        let all_functions: Vec<_> = engine.query_files().iter()
+        let all_functions: Vec<_> = engine
+            .query_files()
+            .iter()
             .flat_map(|f| engine.query_functions_in_file(f))
             .collect();
-        let all_callers: Vec<_> = all_functions.iter()
+        let all_callers: Vec<_> = all_functions
+            .iter()
             .flat_map(|f| engine.query_callers(&f.id.split(':').next().unwrap_or(""), &f.name))
             .take(500)
             .collect();
-        let all_callees: Vec<_> = all_functions.iter()
+        let all_callees: Vec<_> = all_functions
+            .iter()
             .flat_map(|f| engine.query_callees(&f.id.split(':').next().unwrap_or(""), &f.name))
             .take(500)
             .collect();
@@ -443,11 +547,17 @@ async fn scan_local(
 
         renderer.info(&format!(
             "调用图已就绪: {} 节点, {} 边, {} 跨文件边, {} source, {} sink, {} 类型, {} 中间件",
-            stats.total_nodes, stats.total_edges, stats.cross_file_edges,
-            stats.taint_sources, stats.taint_sinks,
-            stats.type_count, stats.middleware_count,
+            stats.total_nodes,
+            stats.total_edges,
+            stats.cross_file_edges,
+            stats.taint_sources,
+            stats.taint_sinks,
+            stats.type_count,
+            stats.middleware_count,
         ));
-        renderer.info("调用图已加载到内存，可通过 MCP 工具查询 (query_callers, trace_variable_flow 等)");
+        renderer.info(
+            "调用图已加载到内存，可通过 MCP 工具查询 (query_callers, trace_variable_flow 等)",
+        );
     }
 
     Ok(())
@@ -466,22 +576,12 @@ async fn save_scan_results(
     }
 
     let content = match format {
-        "llm" => {
-            to_llm_json(findings)
-        }
-        "json" => {
-            serde_json::to_string_pretty(findings)
-                .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?
-        }
-        "sarif" => {
-            to_sarif(findings)
-        }
-        "markdown" => {
-            to_markdown(findings)
-        }
-        _ => {
-            to_text(findings)
-        }
+        "llm" => to_llm_json(findings),
+        "json" => serde_json::to_string_pretty(findings)
+            .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?,
+        "sarif" => to_sarif(findings),
+        "markdown" => to_markdown(findings),
+        _ => to_text(findings),
     };
 
     tokio::fs::write(output_path, content)
@@ -495,27 +595,30 @@ async fn save_scan_results(
 /// 转换为 SARIF 格式 — 使用统一 SarifConverter
 fn to_sarif(findings: &[Finding]) -> String {
     let converter = SarifConverter::new();
-    let inputs: Vec<FindingInput> = findings.iter().map(|f| FindingInput {
-        id: Some(f.finding_id.clone()),
-        title: Some(f.vuln_type.clone()),
-        description: f.description.clone(),
-        severity: f.severity.clone(),
-        category: f.vuln_type.clone(),
-        cwe_id: None, // core::Finding 没有 cwe_id 字段
-        file_path: f.file_path.clone(),
-        start_line: f.line_start as u32,
-        end_line: Some(f.line_end as u32),
-        start_column: None,
-        end_column: None,
-        code_snippet: None,
-        recommendation: None,
-        status: "detected".to_string(),
-        verification_status: None,
-        discovered_by: Some(f.detector.clone()),
-        code_flows: None,
-        fix_suggestions: None,
-        confidence: None,
-    }).collect();
+    let inputs: Vec<FindingInput> = findings
+        .iter()
+        .map(|f| FindingInput {
+            id: Some(f.finding_id.clone()),
+            title: Some(f.vuln_type.clone()),
+            description: f.description.clone(),
+            severity: f.severity.clone(),
+            category: f.vuln_type.clone(),
+            cwe_id: None, // core::Finding 没有 cwe_id 字段
+            file_path: f.file_path.clone(),
+            start_line: f.line_start as u32,
+            end_line: Some(f.line_end as u32),
+            start_column: None,
+            end_column: None,
+            code_snippet: None,
+            recommendation: None,
+            status: "detected".to_string(),
+            verification_status: None,
+            discovered_by: Some(f.detector.clone()),
+            code_flows: None,
+            fix_suggestions: None,
+            confidence: None,
+        })
+        .collect();
 
     converter.convert_to_json(&inputs).unwrap_or_default()
 }
@@ -523,7 +626,10 @@ fn to_sarif(findings: &[Finding]) -> String {
 /// 转换为 Markdown 格式
 fn to_markdown(findings: &[Finding]) -> String {
     let mut md = String::from("# 扫描报告\n\n");
-    md.push_str(&format!("**生成时间**: {}\n\n", chrono::Utc::now().to_rfc3339()));
+    md.push_str(&format!(
+        "**生成时间**: {}\n\n",
+        chrono::Utc::now().to_rfc3339()
+    ));
     md.push_str(&format!("**漏洞数量**: {}\n\n", findings.len()));
 
     // 按严重程度分组
@@ -537,10 +643,17 @@ fn to_markdown(findings: &[Finding]) -> String {
 
     for severity in ["critical", "high", "medium", "low", "info"] {
         if let Some(items) = by_severity.get(severity) {
-            md.push_str(&format!("## {} ({})\n\n", severity.to_uppercase(), items.len()));
+            md.push_str(&format!(
+                "## {} ({})\n\n",
+                severity.to_uppercase(),
+                items.len()
+            ));
             for finding in items {
                 md.push_str(&format!("### {}\n\n", finding.vuln_type));
-                md.push_str(&format!("**文件**: {}:{}\n\n", finding.file_path, finding.line_start));
+                md.push_str(&format!(
+                    "**文件**: {}:{}\n\n",
+                    finding.file_path, finding.line_start
+                ));
                 md.push_str(&format!("**描述**: {}\n\n", finding.description));
             }
         }
@@ -556,8 +669,16 @@ fn to_text(findings: &[Finding]) -> String {
     text.push_str(&format!("漏洞数量: {}\n\n", findings.len()));
 
     for (i, finding) in findings.iter().enumerate() {
-        text.push_str(&format!("[{}] {} - {}\n", i + 1, finding.severity.to_uppercase(), finding.vuln_type));
-        text.push_str(&format!("    文件: {}:{}\n", finding.file_path, finding.line_start));
+        text.push_str(&format!(
+            "[{}] {} - {}\n",
+            i + 1,
+            finding.severity.to_uppercase(),
+            finding.vuln_type
+        ));
+        text.push_str(&format!(
+            "    文件: {}:{}\n",
+            finding.file_path, finding.line_start
+        ));
         text.push_str(&format!("    描述: {}\n", finding.description));
         if let Some(ref trail) = finding.analysis_trail {
             if !trail.is_empty() {
@@ -588,93 +709,87 @@ fn to_llm_json(findings: &[Finding]) -> String {
         }
     }
 
-    let findings_json: Vec<Value> = findings.iter().map(|f| {
-        let mut obj = json!({
-            "id": f.finding_id,
-            "severity": f.severity,
-            "vulnerability_type": f.vuln_type,
-            "detector": f.detector,
-            "file": f.file_path,
-            "line": f.line_start,
-            "end_line": f.line_end,
-            "description": f.description,
-            "code_context": f.code_snippet,
-        });
+    let findings_json: Vec<Value> = findings
+        .iter()
+        .map(|f| {
+            let mut obj = json!({
+                "id": f.finding_id,
+                "severity": f.severity,
+                "vulnerability_type": f.vuln_type,
+                "detector": f.detector,
+                "file": f.file_path,
+                "line": f.line_start,
+                "end_line": f.line_end,
+                "description": f.description,
+                "code_context": f.code_snippet,
+            });
 
-        // 文件角色标签
-        if let Some(ref role) = f.file_role {
-            obj.as_object_mut().unwrap().insert(
-                "file_role".to_string(),
-                json!(role),
-            );
-        }
-
-        // 安全屏障
-        if let Some(ref barriers) = f.barriers {
-            if !barriers.is_empty() {
-                obj.as_object_mut().unwrap().insert(
-                    "barriers".to_string(),
-                    json!(barriers),
-                );
+            // 文件角色标签
+            if let Some(ref role) = f.file_role {
+                obj.as_object_mut()
+                    .unwrap()
+                    .insert("file_role".to_string(), json!(role));
             }
-        }
 
-        // 标记原因
-        if let Some(ref hint) = f.reasoning_hint {
-            obj.as_object_mut().unwrap().insert(
-                "reasoning_hint".to_string(),
-                json!(hint),
-            );
-        }
-
-        if let Some(ref trail) = f.analysis_trail {
-            if !trail.is_empty() {
-                obj.as_object_mut().unwrap().insert(
-                    "taint_chain".to_string(),
-                    json!(trail),
-                );
+            // 安全屏障
+            if let Some(ref barriers) = f.barriers {
+                if !barriers.is_empty() {
+                    obj.as_object_mut()
+                        .unwrap()
+                        .insert("barriers".to_string(), json!(barriers));
+                }
             }
-        }
 
-        if let Some(ref source) = f.source_snippet {
-            obj.as_object_mut().unwrap().insert(
-                "source_snippet".to_string(),
-                json!(source),
-            );
-        }
-
-        if let Some(ref sink) = f.sink_snippet {
-            obj.as_object_mut().unwrap().insert(
-                "sink_snippet".to_string(),
-                json!(sink),
-            );
-        }
-
-        if let Some(conf) = f.confidence {
-            obj.as_object_mut().unwrap().insert(
-                "confidence".to_string(),
-                json!(format!("{:.2}", conf)),
-            );
-        }
-
-        if let Some(count) = f.corroboration_count {
-            obj.as_object_mut().unwrap().insert(
-                "corroboration_count".to_string(),
-                json!(count),
-            );
-        }
-
-        if let Some(ref llm_out) = f.llm_output {
-            if !llm_out.is_empty() {
-                obj.as_object_mut().unwrap().insert(
-                    "llm_analysis".to_string(),
-                    json!(llm_out),
-                );
+            // 标记原因
+            if let Some(ref hint) = f.reasoning_hint {
+                obj.as_object_mut()
+                    .unwrap()
+                    .insert("reasoning_hint".to_string(), json!(hint));
             }
-        }
 
-        obj
-    }).collect();
+            if let Some(ref trail) = f.analysis_trail {
+                if !trail.is_empty() {
+                    obj.as_object_mut()
+                        .unwrap()
+                        .insert("taint_chain".to_string(), json!(trail));
+                }
+            }
+
+            if let Some(ref source) = f.source_snippet {
+                obj.as_object_mut()
+                    .unwrap()
+                    .insert("source_snippet".to_string(), json!(source));
+            }
+
+            if let Some(ref sink) = f.sink_snippet {
+                obj.as_object_mut()
+                    .unwrap()
+                    .insert("sink_snippet".to_string(), json!(sink));
+            }
+
+            if let Some(conf) = f.confidence {
+                obj.as_object_mut()
+                    .unwrap()
+                    .insert("confidence".to_string(), json!(format!("{:.2}", conf)));
+            }
+
+            if let Some(count) = f.corroboration_count {
+                obj.as_object_mut()
+                    .unwrap()
+                    .insert("corroboration_count".to_string(), json!(count));
+            }
+
+            if let Some(ref llm_out) = f.llm_output {
+                if !llm_out.is_empty() {
+                    obj.as_object_mut()
+                        .unwrap()
+                        .insert("llm_analysis".to_string(), json!(llm_out));
+                }
+            }
+
+            obj
+        })
+        .collect();
 
     let result = json!({
         "scan_summary": {
@@ -707,7 +822,23 @@ async fn scan_via_daemon(
         Err(e) => {
             renderer.warning(&format!("连接守护进程失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, vec![], renderer, ScaScanOptions::default(), None, false).await;
+            return scan_local(
+                path,
+                None,
+                severity,
+                min_severity,
+                pattern,
+                output_path,
+                output_format,
+                enable_taint,
+                enable_cross_file,
+                vec![],
+                renderer,
+                ScaScanOptions::default(),
+                None,
+                false,
+            )
+            .await;
         }
     };
 
@@ -716,23 +847,55 @@ async fn scan_via_daemon(
     pb.set_message("扫描中...");
 
     let deep = enable_taint && enable_cross_file;
-    let response = match client.scan(path.clone(), deep, enable_taint, enable_cross_file, severity.clone(), pattern.clone()).await {
+    let response = match client
+        .scan(
+            path.clone(),
+            deep,
+            enable_taint,
+            enable_cross_file,
+            severity.clone(),
+            pattern.clone(),
+        )
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             pb.finish_with_message("守护进程扫描失败");
             renderer.warning(&format!("守护进程扫描失败: {}", e));
             renderer.info("降级为本地扫描模式...");
-            return scan_local(path, None, severity, min_severity, pattern, output_path, output_format, enable_taint, enable_cross_file, vec![], renderer, ScaScanOptions::default(), None, false).await;
+            return scan_local(
+                path,
+                None,
+                severity,
+                min_severity,
+                pattern,
+                output_path,
+                output_format,
+                enable_taint,
+                enable_cross_file,
+                vec![],
+                renderer,
+                ScaScanOptions::default(),
+                None,
+                false,
+            )
+            .await;
         }
     };
 
     pb.finish_with_message("扫描完成");
 
     match response {
-        Response::ScanResult { findings, duration_ms, files_scanned } => {
+        Response::ScanResult {
+            findings,
+            duration_ms,
+            files_scanned,
+        } => {
             renderer.success(&format!(
                 "扫描完成！发现 {} 个问题 (耗时 {}ms, 扫描 {} 个文件)",
-                findings.len(), duration_ms, files_scanned
+                findings.len(),
+                duration_ms,
+                files_scanned
             ));
 
             for finding in &findings {
@@ -748,7 +911,8 @@ async fn scan_via_daemon(
 
             if let Some(output_path) = output_path {
                 // 将 JSON values 转回 Finding 结构用于格式化输出
-                let parsed_findings: Vec<Finding> = findings.iter()
+                let parsed_findings: Vec<Finding> = findings
+                    .iter()
                     .filter_map(|v| serde_json::from_value(v.clone()).ok())
                     .collect();
 
@@ -759,27 +923,30 @@ async fn scan_via_daemon(
                 let content = match output_format {
                     "sarif" => {
                         let converter = SarifConverter::new();
-                        let inputs: Vec<FindingInput> = parsed_findings.iter().map(|f| FindingInput {
-                            id: Some(f.finding_id.clone()),
-                            title: Some(f.vuln_type.clone()),
-                            description: f.description.clone(),
-                            severity: f.severity.clone(),
-                            category: f.vuln_type.clone(),
-                            cwe_id: None,
-                            file_path: f.file_path.clone(),
-                            start_line: f.line_start as u32,
-                            end_line: Some(f.line_end as u32),
-                            start_column: None,
-                            end_column: None,
-                            code_snippet: None,
-                            recommendation: None,
-                            status: "detected".to_string(),
-                            verification_status: None,
-                            discovered_by: Some(f.detector.clone()),
-                            code_flows: None,
-                            fix_suggestions: None,
-                            confidence: None,
-                        }).collect();
+                        let inputs: Vec<FindingInput> = parsed_findings
+                            .iter()
+                            .map(|f| FindingInput {
+                                id: Some(f.finding_id.clone()),
+                                title: Some(f.vuln_type.clone()),
+                                description: f.description.clone(),
+                                severity: f.severity.clone(),
+                                category: f.vuln_type.clone(),
+                                cwe_id: None,
+                                file_path: f.file_path.clone(),
+                                start_line: f.line_start as u32,
+                                end_line: Some(f.line_end as u32),
+                                start_column: None,
+                                end_column: None,
+                                code_snippet: None,
+                                recommendation: None,
+                                status: "detected".to_string(),
+                                verification_status: None,
+                                discovered_by: Some(f.detector.clone()),
+                                code_flows: None,
+                                fix_suggestions: None,
+                                confidence: None,
+                            })
+                            .collect();
                         converter.convert_to_json(&inputs).unwrap_or_default()
                     }
                     "markdown" => to_markdown(&parsed_findings),
@@ -787,7 +954,8 @@ async fn scan_via_daemon(
                         .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?,
                     _ => to_text(&parsed_findings),
                 };
-                tokio::fs::write(&output_path, content).await
+                tokio::fs::write(&output_path, content)
+                    .await
                     .map_err(|e| miette::miette!("写入文件失败: {}", e))?;
                 renderer.info(&format!("结果已保存到: {}", output_path));
             }

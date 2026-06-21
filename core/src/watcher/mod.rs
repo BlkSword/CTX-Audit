@@ -7,7 +7,7 @@
 
 mod delta;
 
-pub use delta::{FileSnapshot, DeltaResult};
+pub use delta::{DeltaResult, FileSnapshot};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -71,9 +71,7 @@ pub enum WatchEvent {
     },
 
     /// 检测到文件变更
-    FilesChanged {
-        changed_files: Vec<String>,
-    },
+    FilesChanged { changed_files: Vec<String> },
 
     /// 增量扫描完成
     IncrementalScanComplete {
@@ -84,15 +82,10 @@ pub enum WatchEvent {
     },
 
     /// SARIF 文件已更新
-    SarifUpdated {
-        path: String,
-        total_findings: usize,
-    },
+    SarifUpdated { path: String, total_findings: usize },
 
     /// 错误
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// 文件变更事件（原始）
@@ -200,9 +193,9 @@ impl FileWatcher {
     /// 获取变更文件列表（用于增量扫描）
     pub fn get_changed_source_files(&self, delta: &DeltaResult) -> Vec<PathBuf> {
         let source_extensions = [
-            ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".rs", ".go",
-            ".php", ".rb", ".c", ".cpp", ".h", ".hpp", ".cs", ".kt",
-            ".swift", ".scala", ".lua", ".r", ".sql", ".html", ".vue",
+            ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".rs", ".go", ".php", ".rb", ".c",
+            ".cpp", ".h", ".hpp", ".cs", ".kt", ".swift", ".scala", ".lua", ".r", ".sql", ".html",
+            ".vue",
         ];
 
         delta
@@ -222,10 +215,7 @@ impl FileWatcher {
     ///
     /// 使用 AstTaintAnalyzer 对变更文件进行污点分析，
     /// 返回新发现的漏洞（不会重新分析未变更的文件）。
-    pub fn incremental_scan(
-        &mut self,
-        delta: &DeltaResult,
-    ) -> IncrementalScanResult {
+    pub fn incremental_scan(&mut self, delta: &DeltaResult) -> IncrementalScanResult {
         let start = Instant::now();
 
         // 获取变更的源码文件
@@ -264,14 +254,15 @@ impl FileWatcher {
                         severity: format!("{:?}", flow.severity),
                         description: format!(
                             "{:?}: {} -> {}",
-                            flow.vulnerability_type,
-                            flow.source.symbol,
-                            flow.sink.symbol,
+                            flow.vulnerability_type, flow.source.symbol, flow.sink.symbol,
                         ),
                         analysis_trail: Some(
-                            flow.path.iter().map(|n| {
-                                format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
-                            }).collect()
+                            flow.path
+                                .iter()
+                                .map(|n| {
+                                    format!("{:?}:{} - {:?}", n.node_type, n.line, n.code_snippet)
+                                })
+                                .collect(),
                         ),
                         llm_output: None,
                         confidence: None,
@@ -335,9 +326,8 @@ impl FileWatcher {
 /// 判断文件是否是需要扫描的源码文件
 pub fn is_source_file(path: &Path) -> bool {
     let source_extensions = [
-        "py", "js", "ts", "tsx", "jsx", "java", "rs", "go",
-        "php", "rb", "c", "cpp", "h", "hpp", "cs", "kt",
-        "swift", "scala", "lua", "sql", "html", "vue",
+        "py", "js", "ts", "tsx", "jsx", "java", "rs", "go", "php", "rb", "c", "cpp", "h", "hpp",
+        "cs", "kt", "swift", "scala", "lua", "sql", "html", "vue",
     ];
 
     path.extension()

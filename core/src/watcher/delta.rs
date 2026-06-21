@@ -49,7 +49,9 @@ pub struct DeltaResult {
 impl DeltaResult {
     /// 是否有任何变更
     pub fn has_changes(&self) -> bool {
-        !self.added_files.is_empty() || !self.changed_files.is_empty() || !self.deleted_files.is_empty()
+        !self.added_files.is_empty()
+            || !self.changed_files.is_empty()
+            || !self.deleted_files.is_empty()
     }
 
     /// 所有变更文件的总数
@@ -199,15 +201,16 @@ impl FileSnapshot {
 
     /// 检查目录是否应该忽略
     fn should_ignore_directory(&self, name: &str) -> bool {
-        self.ignore_patterns.iter().any(|pattern| {
-            name == pattern || name.starts_with('.') && pattern == ".*"
-        }) || name.starts_with('.')
+        self.ignore_patterns
+            .iter()
+            .any(|pattern| name == pattern || name.starts_with('.') && pattern == ".*")
+            || name.starts_with('.')
     }
 
     /// 计算文件的 content hash（使用简单快速的 hash）
     fn hash_file(&self, path: &Path) -> Result<u64> {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
         let content = std::fs::read(path)?;
         let mut hasher = DefaultHasher::new();

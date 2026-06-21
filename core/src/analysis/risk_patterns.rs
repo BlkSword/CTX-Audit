@@ -6,9 +6,7 @@
 //! 检测架构级安全风险模式，结合入口点分析、数据流启发式和防护缺失检测。
 //! 用于发现 0-day 漏洞候选项，辅助 LLM 进行深度安全推理。
 
-use crate::analysis::attack_surface::{
-    AttackSurface, EntryPoint, EntryType,
-};
+use crate::analysis::attack_surface::{AttackSurface, EntryPoint, EntryType};
 use crate::rules::model::Severity;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -168,25 +166,31 @@ impl RiskPatternScanner {
 
     /// 获取模式 ID 列表
     pub fn pattern_ids(&self) -> Vec<&str> {
-        self.patterns.iter().map(|p| p.pattern.id.as_str()).collect()
+        self.patterns
+            .iter()
+            .map(|p| p.pattern.id.as_str())
+            .collect()
     }
 
     // ── 内部方法 ──
 
     fn load_yaml(content: &str) -> Result<Vec<RiskPattern>, String> {
-        let file: RiskPatternFile = serde_yaml::from_str(content)
-            .map_err(|e| format!("YAML parse error: {}", e))?;
+        let file: RiskPatternFile =
+            serde_yaml::from_str(content).map_err(|e| format!("YAML parse error: {}", e))?;
         Ok(file.patterns)
     }
 
     fn compile_pattern(pattern: RiskPattern) -> Option<CompiledPattern> {
         let compile = |conditions: &[PatternCondition]| -> Vec<CompiledCondition> {
-            conditions.iter().filter_map(|c| {
-                Regex::new(&c.pattern).ok().map(|regex| CompiledCondition {
-                    original: c.clone(),
-                    regex,
+            conditions
+                .iter()
+                .filter_map(|c| {
+                    Regex::new(&c.pattern).ok().map(|regex| CompiledCondition {
+                        original: c.clone(),
+                        regex,
+                    })
                 })
-            }).collect()
+                .collect()
         };
 
         let source_conditions = compile(&pattern.source_conditions);
@@ -232,20 +236,25 @@ impl RiskPatternScanner {
 
             // 检查 source conditions（在入口点上下文中）
             let source_matched = Self::check_conditions(
-                &compiled.source_conditions, &context_block, &ep.file_path, file_content,
+                &compiled.source_conditions,
+                &context_block,
+                &ep.file_path,
+                file_content,
             );
             let has_source = !compiled.source_conditions.is_empty();
 
             // 检查 sink conditions（在文件内容中）
             let sink_matched = Self::check_conditions(
-                &compiled.sink_conditions, file_content, &ep.file_path, file_content,
+                &compiled.sink_conditions,
+                file_content,
+                &ep.file_path,
+                file_content,
             );
             let has_sink = !compiled.sink_conditions.is_empty();
 
             // 检查 missing patterns（防护模式应该存在但不存在）
-            let missing_detected = Self::check_missing(
-                &compiled.missing_conditions, &context_block, file_content,
-            );
+            let missing_detected =
+                Self::check_missing(&compiled.missing_conditions, &context_block, file_content);
             let has_missing = !compiled.missing_conditions.is_empty();
 
             // 计算 confidence
@@ -253,7 +262,9 @@ impl RiskPatternScanner {
                 has_source && !source_matched.is_empty(),
                 has_sink && !sink_matched.is_empty(),
                 has_missing && missing_detected,
-                has_source, has_sink, has_missing,
+                has_source,
+                has_sink,
+                has_missing,
             );
 
             if confidence < 0.4 {
@@ -322,11 +333,7 @@ impl RiskPatternScanner {
         evidence
     }
 
-    fn check_missing(
-        conditions: &[CompiledCondition],
-        context: &str,
-        file_content: &str,
-    ) -> bool {
+    fn check_missing(conditions: &[CompiledCondition], context: &str, file_content: &str) -> bool {
         // "missing" 意味着防护模式**不**存在 → 所有条件都不匹配时为 true
         if conditions.is_empty() {
             return true; // 无 missing 条件视为匹配
@@ -377,9 +384,14 @@ impl RiskPatternScanner {
     fn merge_matches(matches: Vec<RiskPatternMatch>) -> Vec<RiskPatternMatch> {
         let mut merged: HashMap<String, RiskPatternMatch> = HashMap::new();
         for m in matches {
-            let key = format!("{}-{}",
+            let key = format!(
+                "{}-{}",
                 m.pattern_id,
-                m.affected_entries.first().map(|e| &e.file_path).unwrap_or(&String::new()));
+                m.affected_entries
+                    .first()
+                    .map(|e| &e.file_path)
+                    .unwrap_or(&String::new())
+            );
             match merged.entry(key) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     let existing = e.get_mut();
@@ -410,7 +422,10 @@ mod tests {
     #[test]
     fn test_load_builtin_patterns() {
         let scanner = RiskPatternScanner::new(Path::new("."));
-        assert!(scanner.pattern_count() >= 5, "Should load at least 5 built-in patterns");
+        assert!(
+            scanner.pattern_count() >= 5,
+            "Should load at least 5 built-in patterns"
+        );
         let ids = scanner.pattern_ids();
         assert!(ids.contains(&"unvalidated-input-to-deserialization"));
         assert!(ids.contains(&"prototype-pollution-vector"));
@@ -451,7 +466,10 @@ export async function createUser(formData: FormData) {
         std::fs::write("test.ts", test_code).unwrap();
 
         let matches = scanner.scan(&surface, Path::new("."));
-        assert!(!matches.is_empty(), "Should find at least one risk pattern match");
+        assert!(
+            !matches.is_empty(),
+            "Should find at least one risk pattern match"
+        );
 
         // 清理
         let _ = std::fs::remove_file("test.ts");
@@ -467,6 +485,9 @@ export async function createUser(formData: FormData) {
             stats: Default::default(),
         };
         let matches = scanner.scan(&surface, Path::new("."));
-        assert!(matches.is_empty(), "Empty surface should produce no matches");
+        assert!(
+            matches.is_empty(),
+            "Empty surface should produce no matches"
+        );
     }
 }

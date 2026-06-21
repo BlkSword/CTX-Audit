@@ -9,7 +9,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::taint::{TaintSource, TaintSink, TaintFlow, FlowLocation, FlowNode, FlowNodeType, Severity, VulnerabilityType};
+use super::taint::{
+    FlowLocation, FlowNode, FlowNodeType, Severity, TaintFlow, TaintSink, TaintSource,
+    VulnerabilityType,
+};
 
 /// 变量污点信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +107,9 @@ impl EnhancedTaintAnalyzer {
 
         // 3. 对每个汇点，检查是否有污点变量到达
         for (sink_loc, sink_def) in &sinks {
-            if let Some(flow) = self.trace_to_sink(&tainted_vars, sink_loc, sink_def, &lines, file_path) {
+            if let Some(flow) =
+                self.trace_to_sink(&tainted_vars, sink_loc, sink_def, &lines, file_path)
+            {
                 flows.push(flow);
             }
         }
@@ -225,7 +230,11 @@ impl EnhancedTaintAnalyzer {
             }
             // 确保是赋值而不是比较
             let before_eq: String = line.chars().take(eq_pos).collect();
-            if before_eq.ends_with('=') || before_eq.ends_with('!') || before_eq.ends_with('<') || before_eq.ends_with('>') {
+            if before_eq.ends_with('=')
+                || before_eq.ends_with('!')
+                || before_eq.ends_with('<')
+                || before_eq.ends_with('>')
+            {
                 return; // 比较运算符
             }
 
@@ -249,7 +258,11 @@ impl EnhancedTaintAnalyzer {
             for (tainted_name, taint) in tainted_vars.iter() {
                 if source.contains(tainted_name) && !taint.is_sanitized {
                     // 传播污点
-                    let new_var_name = target_clean.split('.').next().unwrap_or(target_clean).to_string();
+                    let new_var_name = target_clean
+                        .split('.')
+                        .next()
+                        .unwrap_or(target_clean)
+                        .to_string();
 
                     if Self::is_valid_var_name(&new_var_name) && new_var_name != *tainted_name {
                         let mut new_taint = taint.clone();
@@ -369,7 +382,9 @@ impl EnhancedTaintAnalyzer {
                             line: taint.source_line,
                             column: None,
                             symbol: taint.name.clone(),
-                            code_snippet: lines.get(taint.source_line - 1).map(|s| s.trim().to_string()),
+                            code_snippet: lines
+                                .get(taint.source_line - 1)
+                                .map(|s| s.trim().to_string()),
                         },
                         sink: sink_loc.clone(),
                         path,
@@ -470,28 +485,82 @@ impl EnhancedTaintAnalyzer {
     fn default_sanitizers() -> Vec<SanitizerPattern> {
         vec![
             // Python
-            SanitizerPattern { pattern: "escape".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "quote".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "sanitize".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "clean".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "html.escape".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "bleach.clean".to_string(), affects_vars: true },
+            SanitizerPattern {
+                pattern: "escape".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "quote".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "sanitize".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "clean".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "html.escape".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "bleach.clean".to_string(),
+                affects_vars: true,
+            },
             // JavaScript
-            SanitizerPattern { pattern: "encodeURIComponent".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "escapeHtml".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "DOMPurify".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "validator.escape".to_string(), affects_vars: true },
+            SanitizerPattern {
+                pattern: "encodeURIComponent".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "escapeHtml".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "DOMPurify".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "validator.escape".to_string(),
+                affects_vars: true,
+            },
             // Java
-            SanitizerPattern { pattern: "StringEscapeUtils".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "ESAPI.encoder".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "PreparedStatement".to_string(), affects_vars: true },
+            SanitizerPattern {
+                pattern: "StringEscapeUtils".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "ESAPI.encoder".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "PreparedStatement".to_string(),
+                affects_vars: true,
+            },
             // PHP
-            SanitizerPattern { pattern: "htmlspecialchars".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "mysqli_real_escape".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "pg_escape".to_string(), affects_vars: true },
+            SanitizerPattern {
+                pattern: "htmlspecialchars".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "mysqli_real_escape".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "pg_escape".to_string(),
+                affects_vars: true,
+            },
             // General SQL
-            SanitizerPattern { pattern: "parameterized".to_string(), affects_vars: true },
-            SanitizerPattern { pattern: "bind_param".to_string(), affects_vars: true },
+            SanitizerPattern {
+                pattern: "parameterized".to_string(),
+                affects_vars: true,
+            },
+            SanitizerPattern {
+                pattern: "bind_param".to_string(),
+                affects_vars: true,
+            },
         ]
     }
 
@@ -532,7 +601,10 @@ mod tests {
         );
 
         assert_eq!(
-            analyzer.extract_tainted_variable("let input = document.getElementById('input').value", "javascript"),
+            analyzer.extract_tainted_variable(
+                "let input = document.getElementById('input').value",
+                "javascript"
+            ),
             Some("input".to_string())
         );
     }

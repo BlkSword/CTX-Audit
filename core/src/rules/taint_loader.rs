@@ -6,11 +6,11 @@
 //! 从 YAML 文件目录加载 TaintRuleSet，聚合成统一的 LoadedTaintRules。
 //! 目录不存在或无匹配文件时返回空结果（不报错）。
 
-use std::path::Path;
 use anyhow::{Context, Result};
+use std::path::Path;
 use walkdir::WalkDir;
 
-use crate::analysis::taint::{TaintSource, TaintSink};
+use crate::analysis::taint::{TaintSink, TaintSource};
 use crate::rules::taint_model::TaintRuleSet;
 
 /// 加载后的聚合结果
@@ -80,11 +80,7 @@ pub fn load_taint_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<LoadedTaintR
             }
             Err(e) => {
                 // 非 taint-rules 格式的 YAML 文件（如普通 Rule），跳过不报错
-                tracing::debug!(
-                    "Skipped non-taint YAML file {:?}: {}",
-                    file_path,
-                    e
-                );
+                tracing::debug!("Skipped non-taint YAML file {:?}: {}", file_path, e);
             }
         }
     }
@@ -135,7 +131,10 @@ sanitizers:
         assert_eq!(rule_set.sinks.len(), 1);
         assert_eq!(rule_set.sanitizers.len(), 1);
         assert_eq!(rule_set.sources[0].id, "test_source");
-        assert_eq!(rule_set.sinks[0].vulnerability_type, crate::analysis::taint::VulnerabilityType::CodeInjection);
+        assert_eq!(
+            rule_set.sinks[0].vulnerability_type,
+            crate::analysis::taint::VulnerabilityType::CodeInjection
+        );
     }
 
     #[test]
@@ -180,8 +179,6 @@ version: "1.0"
         let rules_dir = std::path::Path::new(&manifest_dir)
             .parent()
             .unwrap()
-            .parent()
-            .unwrap()
             .join("rules")
             .join("taint");
 
@@ -192,20 +189,61 @@ version: "1.0"
 
         let loaded = load_taint_rules_from_dir(&rules_dir).unwrap();
 
-        // 应该有 generic + 4 个框架规则包的内容
-        assert!(!loaded.sources.is_empty(), "Should have sources from rule files");
-        assert!(!loaded.sinks.is_empty(), "Should have sinks from rule files");
-        assert!(!loaded.sanitizer_patterns.is_empty(), "Should have sanitizers");
+        // 应该有 generic + 框架规则包的内容
+        assert!(
+            !loaded.sources.is_empty(),
+            "Should have sources from rule files"
+        );
+        assert!(
+            !loaded.sinks.is_empty(),
+            "Should have sinks from rule files"
+        );
+        assert!(
+            !loaded.sanitizer_patterns.is_empty(),
+            "Should have sanitizers"
+        );
 
         // 验证关键框架特定的 source 存在
         let source_ids: Vec<&str> = loaded.sources.iter().map(|s| s.id.as_str()).collect();
-        assert!(source_ids.iter().any(|id| id.contains("formdata") || id.contains("react")),
-            "Should have React/FormData sources, got: {:?}", source_ids);
+        assert!(
+            source_ids
+                .iter()
+                .any(|id| id.contains("formdata") || id.contains("react")),
+            "Should have React/FormData sources, got: {:?}",
+            source_ids
+        );
 
         // 验证关键框架特定的 sink 存在
         let sink_ids: Vec<&str> = loaded.sinks.iter().map(|s| s.id.as_str()).collect();
-        assert!(sink_ids.iter().any(|id| id.contains("django") || id.contains("spring")),
-            "Should have Django/Spring sinks, got: {:?}", sink_ids);
+        assert!(
+            sink_ids
+                .iter()
+                .any(|id| id.contains("django") || id.contains("spring")),
+            "Should have Django/Spring sinks, got: {:?}",
+            sink_ids
+        );
+
+        // 验证新增语言规则被加载
+        assert!(
+            sink_ids.iter().any(|id| id.starts_with("rust_")),
+            "Should have Rust sinks, got: {:?}",
+            sink_ids
+        );
+        assert!(
+            sink_ids.iter().any(|id| id.starts_with("go_")),
+            "Should have Go sinks, got: {:?}",
+            sink_ids
+        );
+        assert!(
+            sink_ids.iter().any(|id| id.starts_with("java_")),
+            "Should have Java sinks, got: {:?}",
+            sink_ids
+        );
+        assert!(
+            sink_ids.iter().any(|id| id.starts_with("c_")),
+            "Should have C/C++ sinks, got: {:?}",
+            sink_ids
+        );
 
         println!(
             "Loaded {} sources, {} sinks, {} sanitizers from {:?}",

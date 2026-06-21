@@ -22,7 +22,7 @@ use crate::analysis::enhanced_dataflow::EnhancedFlowGraph;
 use crate::ast::symbol::{Assignment, CallInfo, TypedParam};
 
 pub use builder::CPGBuilder;
-pub use path_taint::{PathSensitiveState, PathCondition, VarTaintState};
+pub use path_taint::{PathCondition, PathSensitiveState, VarTaintState};
 pub use query::{BranchContext, CodePropertyGraph};
 pub use summary::compute_summary_from_cpg;
 

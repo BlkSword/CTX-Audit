@@ -47,15 +47,32 @@ sinks:
   - id: "spring_jdbc_query"
     name: "Spring JDBC Query"
     description: "JDBC query execution with potential SQL injection"
+    match_mode: "Semantic"
+    namespaces:
+      - "org.springframework.jdbc.core"
+      - "java.sql"
+      - "javax.persistence"
+    receiver_patterns:
+      - "jdbcTemplate"
+      - "statement"
+      - "stmt"
+      - "entityManager"
+      - "session"
     patterns:
+      - ".query"
+      - ".update"
+      - ".execute"
+      - "createQuery"
+      - "createNativeQuery"
+      - "nativeQuery"
+    exact_matches:
       - "JdbcTemplate.query"
       - "JdbcTemplate.update"
       - "JdbcTemplate.execute"
-      - "nativeQuery"
-      - "createQuery"
-      - "createNativeQuery"
       - "Statement.execute"
       - "PreparedStatement.execute"
+      - "createQuery"
+      - "createNativeQuery"
     languages: ["java"]
     vulnerability_type: "SqlInjection"
     severity: "Critical"
@@ -66,9 +83,18 @@ sinks:
   - id: "spring_runtime_exec"
     name: "Java Runtime Exec"
     description: "System command execution"
+    match_mode: "Semantic"
+    namespaces:
+      - "java.lang.Runtime"
+      - "java.lang.ProcessBuilder"
     patterns:
-      - "Runtime.getRuntime().exec"
+      - ".exec"
+      - ".command"
+      - ".start"
       - "ProcessBuilder"
+    exact_matches:
+      - "Runtime.getRuntime().exec"
+      - "ProcessBuilder.command"
       - "ProcessBuilder.start"
     languages: ["java"]
     vulnerability_type: "CommandInjection"
@@ -80,9 +106,17 @@ sinks:
   - id: "spring_script_engine"
     name: "Java Script Engine Eval"
     description: "Script engine dynamic code evaluation"
+    match_mode: "Semantic"
+    namespaces:
+      - "javax.script"
+      - "groovy.lang"
     patterns:
-      - "ScriptEngine.eval"
+      - ".eval"
+      - ".evaluate"
+      - ".parse"
       - "ScriptEngineManager"
+    exact_matches:
+      - "ScriptEngine.eval"
       - "GroovyShell.evaluate"
       - "GroovyShell.parse"
     languages: ["java"]
@@ -95,6 +129,7 @@ sinks:
   - id: "spring_file_operations"
     name: "Java File Operations"
     description: "File operations with user-controlled paths"
+    match_mode: "Substring"
     patterns:
       - "new FileInputStream"
       - "new FileOutputStream"
@@ -112,6 +147,7 @@ sinks:
   - id: "spring_deserialization"
     name: "Java Insecure Deserialization"
     description: "Java native deserialization of untrusted data"
+    match_mode: "Substring"
     patterns:
       - "ObjectInputStream"
       - "readObject"
@@ -129,10 +165,17 @@ sinks:
   - id: "spring_ssti"
     name: "Spring Template Injection"
     description: "Spring SpEL or template expression evaluation"
+    match_mode: "Semantic"
+    namespaces:
+      - "org.springframework.expression"
     patterns:
       - "SpelExpressionParser"
       - "parseExpression"
       - "ExpressionParser"
+      - ".getValue"
+    exact_matches:
+      - "SpelExpressionParser.parseExpression"
+      - "parseExpression"
       - "getValue"
     languages: ["java"]
     vulnerability_type: "CodeInjection"

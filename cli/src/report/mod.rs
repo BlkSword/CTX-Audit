@@ -8,6 +8,6 @@
 mod exporter;
 
 pub use exporter::{
-    AuditReport, ReportMetadata, ReportStatistics, ReportExporter, ExportFormat,
-    FindingEntry, Severity, RepairEntry, PoCEntry, ToolInfo,
+    AuditReport, ExportFormat, FindingEntry, PoCEntry, RepairEntry, ReportExporter, ReportMetadata,
+    ReportStatistics, Severity, ToolInfo,
 };

@@ -25,7 +25,14 @@ fn test_scan_local() {
 #[test]
 fn test_scan_json_output() {
     let output = Command::new(cli_bin())
-        .args(["-o", "json", "scan", ".", "-o", ".ctx-audit/test_results.json"])
+        .args([
+            "-o",
+            "json",
+            "scan",
+            ".",
+            "-o",
+            ".ctx-audit/test_results.json",
+        ])
         .output()
         .expect("Failed to run scan with JSON output");
     if !output.status.success() {
@@ -63,7 +70,14 @@ fn test_analyze_file() {
 #[test]
 fn test_scan_sarif_output() {
     let output = Command::new(cli_bin())
-        .args(["-o", "sarif", "scan", ".", "-o", ".ctx-audit/test_results.sarif"])
+        .args([
+            "-o",
+            "sarif",
+            "scan",
+            ".",
+            "-o",
+            ".ctx-audit/test_results.sarif",
+        ])
         .output()
         .expect("Failed to run SARIF scan");
     if !output.status.success() {

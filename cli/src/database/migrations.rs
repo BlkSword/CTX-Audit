@@ -48,11 +48,13 @@ pub async fn run_migrations(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<()> {
     .await?;
 
     // 获取已应用的迁移
-    let applied: Vec<(i32,)> = sqlx::query_as("SELECT version FROM schema_migrations ORDER BY version")
-        .fetch_all(pool)
-        .await?;
+    let applied: Vec<(i32,)> =
+        sqlx::query_as("SELECT version FROM schema_migrations ORDER BY version")
+            .fetch_all(pool)
+            .await?;
 
-    let applied_versions: std::collections::HashSet<i32> = applied.into_iter().map(|(v,)| v).collect();
+    let applied_versions: std::collections::HashSet<i32> =
+        applied.into_iter().map(|(v,)| v).collect();
 
     // 运行未应用的迁移
     for migration in get_migrations() {
@@ -70,13 +72,11 @@ pub async fn run_migrations(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<()> {
             sqlx::query(migration.sql).execute(pool).await?;
         }
 
-        sqlx::query(
-            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
-        )
-        .bind(migration.version)
-        .bind(migration.name)
-        .execute(pool)
-        .await?;
+        sqlx::query("INSERT INTO schema_migrations (version, name) VALUES (?, ?)")
+            .bind(migration.version)
+            .bind(migration.name)
+            .execute(pool)
+            .await?;
     }
 
     Ok(())

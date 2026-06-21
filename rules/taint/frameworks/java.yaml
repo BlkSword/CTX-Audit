@@ -1,0 +1,285 @@
+kind: taint-rules
+name: "Java Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "java_http_request"
+    name: "Java HTTP Request"
+    description: "Servlet/Jakarta request parameters and headers"
+    patterns:
+      - "request.getParameter"
+      - "request.getParameterValues"
+      - "request.getHeader"
+      - "request.getHeaders"
+      - "request.getQueryString"
+      - "request.getInputStream"
+      - "request.getReader"
+      - "req.getParameter"
+      - "req.getHeader"
+      - "HttpServletRequest"
+      - "ServletRequest"
+    languages: ["java"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "java_command_args"
+    name: "Java Command-Line Arguments"
+    description: "Main method arguments and system properties"
+    patterns:
+      - "args["
+      - "System.getProperty"
+      - "System.getenv"
+    languages: ["java"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "java_file_input"
+    name: "Java File Input"
+    description: "Data read from files or streams"
+    patterns:
+      - "Files.readString"
+      - "Files.readAllBytes"
+      - "Files.readAllLines"
+      - "FileInputStream"
+      - "FileReader"
+      - "BufferedReader.readLine"
+      - "Scanner.next"
+      - "Scanner.nextLine"
+    languages: ["java"]
+    severity: "Medium"
+    category: "FileInput"
+    ast_patterns: []
+
+sinks:
+  - id: "java_sql_exec"
+    name: "Java SQL Execution"
+    description: "SQL execution via JDBC, MyBatis, JPA, and Spring JDBC"
+    match_mode: "Semantic"
+    namespaces:
+      - "java.sql"
+      - "javax.sql"
+      - "org.springframework.jdbc"
+      - "org.apache.ibatis"
+      - "jakarta.persistence"
+      - "javax.persistence"
+    receiver_patterns:
+      - "statement"
+      - "stmt"
+      - "connection"
+      - "conn"
+      - "template"
+      - "mapper"
+      - "query"
+      - "session"
+    patterns:
+      - ".executeQuery"
+      - ".execute"
+      - ".executeUpdate"
+      - ".query"
+      - ".selectOne"
+      - ".selectList"
+      - ".update"
+    exact_matches:
+      - "Statement.executeQuery"
+      - "Statement.execute"
+      - "Statement.executeUpdate"
+      - "PreparedStatement.executeQuery"
+      - "Connection.createStatement().executeQuery"
+      - "jdbcTemplate.query"
+      - "jdbcTemplate.execute"
+    languages: ["java"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_cmd_exec"
+    name: "Java Command Execution"
+    description: "OS command execution via Runtime and ProcessBuilder"
+    match_mode: "Semantic"
+    namespaces:
+      - "java.lang.Runtime"
+      - "java.lang.ProcessBuilder"
+      - "Runtime"
+      - "ProcessBuilder"
+    receiver_patterns:
+      - "runtime"
+      - "process"
+      - "builder"
+    patterns:
+      - ".exec"
+      - ".command"
+      - ".start"
+      - ".inheritIO"
+    exact_matches:
+      - "Runtime.exec"
+      - "ProcessBuilder.command"
+      - "ProcessBuilder.start"
+    languages: ["java"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_ssrf"
+    name: "Java SSRF"
+    description: "Outbound URL connections and HTTP clients"
+    match_mode: "Semantic"
+    namespaces:
+      - "java.net"
+      - "java.net.http"
+      - "org.apache.http"
+      - "okhttp3"
+      - "feign"
+      - "org.springframework.web.client"
+    receiver_patterns:
+      - "url"
+      - "client"
+      - "connection"
+      - "request"
+    patterns:
+      - ".openConnection"
+      - ".openStream"
+      - ".getInputStream"
+      - ".send"
+      - ".execute"
+      - ".newCall"
+    exact_matches:
+      - "URL.openConnection"
+      - "HttpClient.send"
+      - "HttpURLConnection.getInputStream"
+      - "RestTemplate.getForObject"
+      - "RestTemplate.postForObject"
+      - "OkHttpClient.newCall"
+    languages: ["java"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_deserialization"
+    name: "Java Unsafe Deserialization"
+    description: "ObjectInputStream, ObjectMapper, and XMLDecoder deserialization"
+    match_mode: "Semantic"
+    namespaces:
+      - "java.io.ObjectInputStream"
+      - "com.fasterxml.jackson.databind"
+      - "java.beans.XMLDecoder"
+      - "org.apache.commons.collections"
+      - "XStream"
+    receiver_patterns:
+      - "objectInputStream"
+      - "objectMapper"
+      - "xmlDecoder"
+      - "xstream"
+    patterns:
+      - ".readObject"
+      - ".readValue"
+      - ".read"
+      - ".fromXML"
+    exact_matches:
+      - "ObjectInputStream.readObject"
+      - "ObjectMapper.readValue"
+      - "XMLDecoder.readObject"
+      - "XStream.fromXML"
+    languages: ["java"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_file_path"
+    name: "Java File Path"
+    description: "File system operations with user-controlled paths"
+    match_mode: "Semantic"
+    namespaces:
+      - "java.io"
+      - "java.nio.file"
+    patterns:
+      - "new File("
+      - "new FileInputStream("
+      - "new FileOutputStream("
+      - "new FileReader("
+      - "new FileWriter("
+      - "Files.readString"
+      - "Files.write"
+      - "Files.copy"
+      - "Files.move"
+      - "Files.delete"
+    exact_matches:
+      - "File("
+      - "FileInputStream("
+      - "FileOutputStream("
+    languages: ["java"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_el_injection"
+    name: "Java Expression Language Injection"
+    description: "EL and SpEL expression evaluation"
+    match_mode: "Semantic"
+    namespaces:
+      - "javax.el"
+      - "jakarta.el"
+      - "org.springframework.expression"
+    patterns:
+      - ".createValueExpression"
+      - ".getValue"
+      - ".setValue"
+      - ".parseExpression"
+      - ".evaluate"
+    exact_matches:
+      - "ExpressionFactory.createValueExpression"
+      - "ValueExpression.getValue"
+      - "SpelExpressionParser.parseExpression"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-917"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_ldap"
+    name: "Java LDAP Injection"
+    description: "LDAP search and lookup with user-controlled filters"
+    match_mode: "Semantic"
+    namespaces:
+      - "javax.naming.directory"
+      - "javax.naming.ldap"
+    patterns:
+      - ".search"
+      - ".lookup"
+    exact_matches:
+      - "DirContext.search"
+      - "InitialDirContext.search"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "High"
+    cwe_id: "CWE-90"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "PreparedStatement"
+    description: "JDBC parameterized query"
+  - pattern: "BindParam"
+    description: "JPA/ORM parameter binding"
+  - pattern: "ESAPI"
+    description: "OWASP ESAPI encoder"
+  - pattern: "StringEscapeUtils"
+    description: "Apache Commons string escaping"
+  - pattern: "HtmlUtils"
+    description: "Spring HTML utilities"
+  - pattern: "URLEncoder.encode"
+    description: "URL encoding"
+  - pattern: "Validator"
+    description: "Bean validation"

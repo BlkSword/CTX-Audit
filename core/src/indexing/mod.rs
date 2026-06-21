@@ -8,5 +8,5 @@
 pub mod code_chunks;
 pub mod vector_store;
 
-pub use code_chunks::{CodeChunk, CodeChunker, ChunkType, ChunkConfig};
-pub use vector_store::{VectorStore, SearchResult, VectorStoreError};
+pub use code_chunks::{ChunkConfig, ChunkType, CodeChunk, CodeChunker};
+pub use vector_store::{SearchResult, VectorStore, VectorStoreError};

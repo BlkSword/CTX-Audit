@@ -14,13 +14,15 @@ use ctx_audit_daemon::protocol::{RequestCommand, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use deepaudit_core::scanning::{Finding, ScanOptions, scan_directory, scan_directory_deep_with_rules_progress};
 use deepaudit_core::ast_api::ASTParser;
-use deepaudit_core::taint::{AstTaintAnalyzer, CrossFileTaintAnalyzer};
 use deepaudit_core::attack_surface::{AttackSurfaceMapper, RiskPatternScanner};
 use deepaudit_core::rules::model::Rule;
-use deepaudit_core::rules::taint_model::TaintRuleSet;
 use deepaudit_core::rules::model::RuleSet;
+use deepaudit_core::rules::taint_model::TaintRuleSet;
+use deepaudit_core::scanning::{
+    scan_directory, scan_directory_deep_with_rules_progress, Finding, ScanOptions,
+};
+use deepaudit_core::taint::{AstTaintAnalyzer, CrossFileTaintAnalyzer};
 
 // ── MCP Protocol Types ──────────────────────────────────
 
@@ -674,13 +676,34 @@ async fn handle_tool_call(name: &str, arguments: &Value) -> Value {
 async fn tool_security_scan(args: &Value) -> Value {
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
     let deep = args.get("deep").and_then(|v| v.as_bool()).unwrap_or(false);
-    let taint_arg = args.get("enable_taint").and_then(|v| v.as_bool()).unwrap_or(false);
-    let cross_file_arg = args.get("enable_cross_file").and_then(|v| v.as_bool()).unwrap_or(false);
-    let severity = args.get("severity").and_then(|v| v.as_str()).map(String::from);
-    let pattern = args.get("pattern").and_then(|v| v.as_str()).map(String::from);
-    let file_role_filter = args.get("file_role_filter").and_then(|v| v.as_str()).map(String::from);
-    let min_severity = args.get("min_severity").and_then(|v| v.as_str()).map(String::from);
-    let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(true);
+    let taint_arg = args
+        .get("enable_taint")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let cross_file_arg = args
+        .get("enable_cross_file")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let severity = args
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let file_role_filter = args
+        .get("file_role_filter")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let min_severity = args
+        .get("min_severity")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let include_details = args
+        .get("include_details")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     let enable_taint = taint_arg || deep || cross_file_arg;
     let enable_cross_file = cross_file_arg || deep;
@@ -689,7 +712,8 @@ async fn tool_security_scan(args: &Value) -> Value {
         let mut opts = ScanOptions::default();
         opts.enable_taint = enable_taint;
         opts.enable_cross_file = enable_cross_file;
-        scan_directory_deep_with_rules_progress(path, None, None, None, Some(opts), None).await
+        scan_directory_deep_with_rules_progress(path, None, None, None, Some(opts), None)
+            .await
             .map(|r| r.findings)
     } else {
         scan_directory(path).await
@@ -708,70 +732,104 @@ async fn tool_security_scan(args: &Value) -> Value {
             if let Some(role) = &file_role_filter {
                 let role_lower = role.to_lowercase();
                 filtered.retain(|f| {
-                    f.file_role.as_deref().unwrap_or("production").to_lowercase() == role_lower
+                    f.file_role
+                        .as_deref()
+                        .unwrap_or("production")
+                        .to_lowercase()
+                        == role_lower
                 });
             }
             if let Some(min_sev) = &min_severity {
                 let rank = |s: &str| match s {
-                    "critical" => 0, "high" => 1, "medium" => 2, "low" => 3, "info" => 4, _ => 5,
+                    "critical" => 0,
+                    "high" => 1,
+                    "medium" => 2,
+                    "low" => 3,
+                    "info" => 4,
+                    _ => 5,
                 };
                 let min_rank = rank(min_sev);
                 filtered.retain(|f| rank(&f.severity.to_lowercase()) <= min_rank);
             }
 
             let summary = format_security_findings(&filtered);
-            let details: Vec<Value> = filtered.iter().map(|f| {
-                let mut obj = serde_json::json!({
-                    "id": f.finding_id,
-                    "severity": f.severity,
-                    "vulnerability_type": f.vuln_type,
-                    "detector": f.detector,
-                    "file": f.file_path,
-                    "line": f.line_start,
-                    "end_line": f.line_end,
-                    "description": f.description,
-                });
+            let details: Vec<Value> = filtered
+                .iter()
+                .map(|f| {
+                    let mut obj = serde_json::json!({
+                        "id": f.finding_id,
+                        "severity": f.severity,
+                        "vulnerability_type": f.vuln_type,
+                        "detector": f.detector,
+                        "file": f.file_path,
+                        "line": f.line_start,
+                        "end_line": f.line_end,
+                        "description": f.description,
+                    });
 
-                if let Some(ref role) = f.file_role {
-                    obj.as_object_mut().unwrap().insert("file_role".into(), serde_json::json!(role));
-                }
-                if let Some(ref barriers) = f.barriers {
-                    if !barriers.is_empty() {
-                        obj.as_object_mut().unwrap().insert("barriers".into(), serde_json::json!(barriers));
+                    if let Some(ref role) = f.file_role {
+                        obj.as_object_mut()
+                            .unwrap()
+                            .insert("file_role".into(), serde_json::json!(role));
                     }
-                }
-                if let Some(ref hint) = f.reasoning_hint {
-                    obj.as_object_mut().unwrap().insert("reasoning_hint".into(), serde_json::json!(hint));
-                }
-
-                if include_details {
-                    if let Some(ref ctx) = f.code_snippet {
-                        obj.as_object_mut().unwrap().insert("code_context".into(), serde_json::json!(ctx));
-                    }
-                    if let Some(ref trail) = f.analysis_trail {
-                        if !trail.is_empty() {
-                            obj.as_object_mut().unwrap().insert("taint_chain".into(), serde_json::json!(trail));
+                    if let Some(ref barriers) = f.barriers {
+                        if !barriers.is_empty() {
+                            obj.as_object_mut()
+                                .unwrap()
+                                .insert("barriers".into(), serde_json::json!(barriers));
                         }
                     }
-                    if let Some(ref src) = f.source_snippet {
-                        obj.as_object_mut().unwrap().insert("source_snippet".into(), serde_json::json!(src));
+                    if let Some(ref hint) = f.reasoning_hint {
+                        obj.as_object_mut()
+                            .unwrap()
+                            .insert("reasoning_hint".into(), serde_json::json!(hint));
                     }
-                    if let Some(ref snk) = f.sink_snippet {
-                        obj.as_object_mut().unwrap().insert("sink_snippet".into(), serde_json::json!(snk));
-                    }
-                    if let Some(conf) = f.confidence {
-                        obj.as_object_mut().unwrap().insert("confidence".into(), serde_json::json!(format!("{:.2}", conf)));
-                    }
-                    if let Some(count) = f.corroboration_count {
-                        obj.as_object_mut().unwrap().insert("corroboration_count".into(), serde_json::json!(count));
-                    }
-                    if let Some(ref evidence) = f.evidence_refs {
-                        obj.as_object_mut().unwrap().insert("evidence_refs".into(), serde_json::to_value(evidence).unwrap_or_default());
-                    }
-                }
 
-                obj
-            }).collect();
+                    if include_details {
+                        if let Some(ref ctx) = f.code_snippet {
+                            obj.as_object_mut()
+                                .unwrap()
+                                .insert("code_context".into(), serde_json::json!(ctx));
+                        }
+                        if let Some(ref trail) = f.analysis_trail {
+                            if !trail.is_empty() {
+                                obj.as_object_mut()
+                                    .unwrap()
+                                    .insert("taint_chain".into(), serde_json::json!(trail));
+                            }
+                        }
+                        if let Some(ref src) = f.source_snippet {
+                            obj.as_object_mut()
+                                .unwrap()
+                                .insert("source_snippet".into(), serde_json::json!(src));
+                        }
+                        if let Some(ref snk) = f.sink_snippet {
+                            obj.as_object_mut()
+                                .unwrap()
+                                .insert("sink_snippet".into(), serde_json::json!(snk));
+                        }
+                        if let Some(conf) = f.confidence {
+                            obj.as_object_mut().unwrap().insert(
+                                "confidence".into(),
+                                serde_json::json!(format!("{:.2}", conf)),
+                            );
+                        }
+                        if let Some(count) = f.corroboration_count {
+                            obj.as_object_mut()
+                                .unwrap()
+                                .insert("corroboration_count".into(), serde_json::json!(count));
+                        }
+                        if let Some(ref evidence) = f.evidence_refs {
+                            obj.as_object_mut().unwrap().insert(
+                                "evidence_refs".into(),
+                                serde_json::to_value(evidence).unwrap_or_default(),
+                            );
+                        }
+                    }
+
+                    obj
+                })
+                .collect();
 
             serde_json::json!({
                 "content": [
@@ -790,15 +848,26 @@ async fn tool_security_scan(args: &Value) -> Value {
 async fn tool_scan_file(args: &Value) -> Value {
     let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return serde_json::json!({
-            "content": [{"type": "text", "text": "Missing required parameter: file_path"}],
-            "isError": true
-        }),
+        None => {
+            return serde_json::json!({
+                "content": [{"type": "text", "text": "Missing required parameter: file_path"}],
+                "isError": true
+            })
+        }
     };
 
-    let show_symbols = args.get("show_symbols").and_then(|v| v.as_bool()).unwrap_or(true);
-    let start_line = args.get("start_line").and_then(|v| v.as_u64()).map(|n| n as usize);
-    let end_line = args.get("end_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let show_symbols = args
+        .get("show_symbols")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let start_line = args
+        .get("start_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let end_line = args
+        .get("end_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
 
     // Try daemon first, fallback to local
     let result = try_daemon_analyze(file_path, start_line, end_line, show_symbols).await;
@@ -819,32 +888,45 @@ async fn tool_scan_file(args: &Value) -> Value {
 
             let code = match std::fs::read_to_string(path) {
                 Ok(c) => c,
-                Err(e) => return serde_json::json!({
-                    "content": [{"type": "text", "text": format!("Failed to read file: {}", e)}],
-                    "isError": true
-                }),
+                Err(e) => {
+                    return serde_json::json!({
+                        "content": [{"type": "text", "text": format!("Failed to read file: {}", e)}],
+                        "isError": true
+                    })
+                }
             };
 
             let mut result = serde_json::Map::new();
             result.insert("file_path".into(), serde_json::json!(file_path));
-            result.insert("language".into(), serde_json::json!(
-                path.extension().and_then(|e| e.to_str()).unwrap_or("unknown")
-            ));
-            result.insert("total_lines".into(), serde_json::json!(code.lines().count()));
+            result.insert(
+                "language".into(),
+                serde_json::json!(path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("unknown")),
+            );
+            result.insert(
+                "total_lines".into(),
+                serde_json::json!(code.lines().count()),
+            );
 
             // Taint analysis
             let mut taint_analyzer = AstTaintAnalyzer::new();
             let flows = taint_analyzer.analyze_file(path, &code);
             if !flows.is_empty() {
-                result.insert("taint_flows".into(), serde_json::json!(
-                    flows.iter().map(|f| serde_json::json!({
-                        "source": f.source.symbol,
-                        "source_line": f.source.line,
-                        "sink": f.sink.symbol,
-                        "sink_line": f.sink.line,
-                        "type": format!("{:?}", f.vulnerability_type),
-                    })).collect::<Vec<_>>()
-                ));
+                result.insert(
+                    "taint_flows".into(),
+                    serde_json::json!(flows
+                        .iter()
+                        .map(|f| serde_json::json!({
+                            "source": f.source.symbol,
+                            "source_line": f.source.line,
+                            "sink": f.sink.symbol,
+                            "sink_line": f.sink.line,
+                            "type": format!("{:?}", f.vulnerability_type),
+                        }))
+                        .collect::<Vec<_>>()),
+                );
             }
 
             serde_json::json!({
@@ -863,17 +945,30 @@ async fn tool_daemon_status() -> Value {
             let mut info = serde_json::Map::new();
             info.insert("running".into(), serde_json::json!(true));
 
-            if let Ok(Response::Pong { version, uptime_secs }) = ping_resp {
+            if let Ok(Response::Pong {
+                version,
+                uptime_secs,
+            }) = ping_resp
+            {
                 info.insert("version".into(), serde_json::json!(version));
                 info.insert("uptime_secs".into(), serde_json::json!(uptime_secs));
             }
-            if let Ok(Response::StatusInfo { pid, loaded_projects, cache_stats, .. }) = status_resp {
+            if let Ok(Response::StatusInfo {
+                pid,
+                loaded_projects,
+                cache_stats,
+                ..
+            }) = status_resp
+            {
                 info.insert("pid".into(), serde_json::json!(pid));
                 info.insert("projects".into(), serde_json::json!(loaded_projects));
-                info.insert("cache".into(), serde_json::json!({
-                    "ast": cache_stats.ast_cache_entries,
-                    "scan": cache_stats.scan_cache_entries,
-                }));
+                info.insert(
+                    "cache".into(),
+                    serde_json::json!({
+                        "ast": cache_stats.ast_cache_entries,
+                        "scan": cache_stats.scan_cache_entries,
+                    }),
+                );
             }
 
             serde_json::json!({
@@ -911,41 +1006,56 @@ async fn tool_get_taint_path(args: &Value) -> Value {
 
     // Apply filters
     if let Some(src) = source_filter {
-        flows.retain(|f| f.source.symbol.contains(src) || f.source.symbol.to_lowercase().contains(&src.to_lowercase()));
+        flows.retain(|f| {
+            f.source.symbol.contains(src)
+                || f.source.symbol.to_lowercase().contains(&src.to_lowercase())
+        });
     }
     if let Some(snk) = sink_filter {
-        flows.retain(|f| f.sink.symbol.contains(snk) || f.sink.symbol.to_lowercase().contains(&snk.to_lowercase()));
+        flows.retain(|f| {
+            f.sink.symbol.contains(snk)
+                || f.sink.symbol.to_lowercase().contains(&snk.to_lowercase())
+        });
     }
 
     if flows.is_empty() {
         return text_response("No taint flows found matching the criteria.");
     }
 
-    let details: Vec<Value> = flows.iter().map(|f| {
-        let path_steps: Vec<Value> = f.path.iter().map(|node| serde_json::json!({
-            "type": format!("{:?}", node.node_type),
-            "line": node.line,
-            "symbol": node.symbol,
-            "code_snippet": node.code_snippet,
-        })).collect();
+    let details: Vec<Value> = flows
+        .iter()
+        .map(|f| {
+            let path_steps: Vec<Value> = f
+                .path
+                .iter()
+                .map(|node| {
+                    serde_json::json!({
+                        "type": format!("{:?}", node.node_type),
+                        "line": node.line,
+                        "symbol": node.symbol,
+                        "code_snippet": node.code_snippet,
+                    })
+                })
+                .collect();
 
-        serde_json::json!({
-            "vulnerability_type": format!("{:?}", f.vulnerability_type),
-            "severity": format!("{:?}", f.severity).to_lowercase(),
-            "confidence": f.confidence,
-            "source": {
-                "symbol": f.source.symbol,
-                "line": f.source.line,
-                "code_snippet": f.source.code_snippet,
-            },
-            "sink": {
-                "symbol": f.sink.symbol,
-                "line": f.sink.line,
-                "code_snippet": f.sink.code_snippet,
-            },
-            "propagation_path": path_steps,
+            serde_json::json!({
+                "vulnerability_type": format!("{:?}", f.vulnerability_type),
+                "severity": format!("{:?}", f.severity).to_lowercase(),
+                "confidence": f.confidence,
+                "source": {
+                    "symbol": f.source.symbol,
+                    "line": f.source.line,
+                    "code_snippet": f.source.code_snippet,
+                },
+                "sink": {
+                    "symbol": f.sink.symbol,
+                    "line": f.sink.line,
+                    "code_snippet": f.sink.code_snippet,
+                },
+                "propagation_path": path_steps,
+            })
         })
-    }).collect();
+        .collect();
 
     let summary = format!("Found {} taint flow(s):\n", flows.len());
     serde_json::json!({
@@ -984,48 +1094,64 @@ async fn tool_get_data_flow(args: &Value) -> Value {
     let calls = parser.extract_calls(&path_buf, &code);
 
     // Find definitions (where the variable is assigned)
-    let definitions: Vec<Value> = assignments.iter()
+    let definitions: Vec<Value> = assignments
+        .iter()
         .filter(|a| a.target == variable || a.target.contains(variable))
-        .map(|a| serde_json::json!({
-            "line": a.line,
-            "target": a.target,
-            "source_expr": a.source_expr,
-            "source_vars": a.source_vars,
-        }))
+        .map(|a| {
+            serde_json::json!({
+                "line": a.line,
+                "target": a.target,
+                "source_expr": a.source_expr,
+                "source_vars": a.source_vars,
+            })
+        })
         .collect();
 
     // Find uses (where the variable is referenced in calls)
-    let uses: Vec<Value> = calls.iter()
-        .filter(|c| c.arguments.iter().any(|arg| arg.referenced_vars.contains(&variable.to_string())))
-        .map(|c| serde_json::json!({
-            "line": c.line,
-            "callee": c.callee,
-            "arguments": c.arguments.iter().map(|a| &a.text).collect::<Vec<_>>(),
-        }))
+    let uses: Vec<Value> = calls
+        .iter()
+        .filter(|c| {
+            c.arguments
+                .iter()
+                .any(|arg| arg.referenced_vars.contains(&variable.to_string()))
+        })
+        .map(|c| {
+            serde_json::json!({
+                "line": c.line,
+                "callee": c.callee,
+                "arguments": c.arguments.iter().map(|a| &a.text).collect::<Vec<_>>(),
+            })
+        })
         .collect();
 
     // Find uses in assignments (where variable is in source_vars)
-    let propagated_to: Vec<Value> = assignments.iter()
+    let propagated_to: Vec<Value> = assignments
+        .iter()
         .filter(|a| a.source_vars.contains(&variable.to_string()) && a.target != variable)
-        .map(|a| serde_json::json!({
-            "line": a.line,
-            "target": a.target,
-            "source_expr": a.source_expr,
-        }))
+        .map(|a| {
+            serde_json::json!({
+                "line": a.line,
+                "target": a.target,
+                "source_expr": a.source_expr,
+            })
+        })
         .collect();
 
     // Check if variable is tainted
     let mut taint_analyzer = AstTaintAnalyzer::new();
     let flows = taint_analyzer.analyze_file(path, &code);
-    let taint_status: Vec<Value> = flows.iter()
+    let taint_status: Vec<Value> = flows
+        .iter()
         .filter(|f| f.source.symbol == variable || f.path.iter().any(|n| n.symbol == variable))
-        .map(|f| serde_json::json!({
-            "is_tainted": true,
-            "source": f.source.symbol,
-            "sink": f.sink.symbol,
-            "vulnerability_type": format!("{:?}", f.vulnerability_type),
-            "confidence": f.confidence,
-        }))
+        .map(|f| {
+            serde_json::json!({
+                "is_tainted": true,
+                "source": f.source.symbol,
+                "sink": f.sink.symbol,
+                "vulnerability_type": format!("{:?}", f.vulnerability_type),
+                "confidence": f.confidence,
+            })
+        })
         .collect();
 
     let result = serde_json::json!({
@@ -1053,12 +1179,16 @@ async fn tool_check_sanitizer(args: &Value) -> Value {
     let analyzer = AstTaintAnalyzer::new();
 
     // Check against sanitizer patterns
-    let matches: Vec<Value> = analyzer.sanitizer_patterns().iter()
+    let matches: Vec<Value> = analyzer
+        .sanitizer_patterns()
+        .iter()
         .filter(|p| func_name.contains(p.as_str()))
-        .map(|p| serde_json::json!({
-            "matched_pattern": p,
-            "function_name": func_name,
-        }))
+        .map(|p| {
+            serde_json::json!({
+                "matched_pattern": p,
+                "function_name": func_name,
+            })
+        })
         .collect();
 
     // Also check YAML taint rules for sanitizer descriptions
@@ -1250,25 +1380,37 @@ async fn tool_get_call_graph(args: &Value) -> Value {
     let mut analyzer = CrossFileTaintAnalyzer::new();
     let result = analyzer.analyze_project(std::path::Path::new(project_path));
 
-    let nodes: Vec<Value> = result.call_graph.nodes.values()
+    let nodes: Vec<Value> = result
+        .call_graph
+        .nodes
+        .values()
         .take(100) // Limit output
-        .map(|n| serde_json::json!({
-            "id": n.id,
-            "name": n.name,
-            "file": n.file_path,
-            "line": n.start_line,
-            "calls_count": n.calls.len(),
-            "called_by_count": n.called_by.len(),
-            "is_taint_source": n.is_taint_source,
-            "is_taint_sink": n.is_taint_sink,
-        }))
+        .map(|n| {
+            serde_json::json!({
+                "id": n.id,
+                "name": n.name,
+                "file": n.file_path,
+                "line": n.start_line,
+                "calls_count": n.calls.len(),
+                "called_by_count": n.called_by.len(),
+                "is_taint_source": n.is_taint_source,
+                "is_taint_sink": n.is_taint_sink,
+            })
+        })
         .collect();
 
-    let edges: Vec<Value> = result.call_graph.nodes.values()
-        .flat_map(|n| n.calls.iter().map(move |c| serde_json::json!({
-            "caller": n.id,
-            "callee": c,
-        })))
+    let edges: Vec<Value> = result
+        .call_graph
+        .nodes
+        .values()
+        .flat_map(|n| {
+            n.calls.iter().map(move |c| {
+                serde_json::json!({
+                    "caller": n.id,
+                    "callee": c,
+                })
+            })
+        })
         .take(200)
         .collect();
 
@@ -1311,13 +1453,19 @@ async fn tool_get_code_context(args: &Value) -> Value {
         (s as usize, e as usize)
     } else {
         let center = args.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-        let ctx = args.get("context_lines").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let ctx = args
+            .get("context_lines")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
         (center.saturating_sub(ctx), (center + ctx).min(total_lines))
     };
 
     let start = start.max(1);
     let end = end.min(total_lines);
-    let center_line = args.get("line").and_then(|v| v.as_u64()).map(|l| l as usize);
+    let center_line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .map(|l| l as usize);
 
     let mut code_output = String::new();
     for i in start..=end {
@@ -1350,21 +1498,48 @@ async fn tool_get_project_info(args: &Value) -> Value {
 
     // 语言检测
     let lang_extensions: HashMap<&str, &str> = [
-        (".py", "Python"), (".js", "JavaScript"), (".ts", "TypeScript"),
-        (".tsx", "TypeScript (JSX)"), (".jsx", "JavaScript (JSX)"),
-        (".java", "Java"), (".rs", "Rust"), (".go", "Go"),
-        (".c", "C"), (".cpp", "C++"), (".h", "C/C++ Header"),
-        (".php", "PHP"), (".rb", "Ruby"), (".cs", "C#"),
-        (".kt", "Kotlin"), (".swift", "Swift"), (".scala", "Scala"),
-        (".vue", "Vue"), (".html", "HTML"),
-    ].iter().cloned().collect();
+        (".py", "Python"),
+        (".js", "JavaScript"),
+        (".ts", "TypeScript"),
+        (".tsx", "TypeScript (JSX)"),
+        (".jsx", "JavaScript (JSX)"),
+        (".java", "Java"),
+        (".rs", "Rust"),
+        (".go", "Go"),
+        (".c", "C"),
+        (".cpp", "C++"),
+        (".h", "C/C++ Header"),
+        (".php", "PHP"),
+        (".rb", "Ruby"),
+        (".cs", "C#"),
+        (".kt", "Kotlin"),
+        (".swift", "Swift"),
+        (".scala", "Scala"),
+        (".vue", "Vue"),
+        (".html", "HTML"),
+    ]
+    .iter()
+    .cloned()
+    .collect();
 
     let mut language_counts: HashMap<String, usize> = HashMap::new();
     let mut total_source_files = 0usize;
     let mut top_dirs: HashMap<String, usize> = HashMap::new();
 
-    let ignore_dirs = ["node_modules", ".git", "target", "build", "dist", "vendor",
-        "__pycache__", ".gradle", ".idea", ".vscode", ".cache", ".next"];
+    let ignore_dirs = [
+        "node_modules",
+        ".git",
+        "target",
+        "build",
+        "dist",
+        "vendor",
+        "__pycache__",
+        ".gradle",
+        ".idea",
+        ".vscode",
+        ".cache",
+        ".next",
+    ];
 
     for entry in ignore::WalkBuilder::new(path).hidden(false).build() {
         if let Ok(entry) = entry {
@@ -1405,17 +1580,42 @@ async fn tool_get_project_info(args: &Value) -> Value {
 
     // 包管理器检测
     let mut package_managers = Vec::new();
-    if path.join("package.json").exists() { package_managers.push("npm".to_string()); }
-    if path.join("yarn.lock").exists() { package_managers.push("yarn".to_string()); }
-    if path.join("pnpm-lock.yaml").exists() { package_managers.push("pnpm".to_string()); }
-    if path.join("requirements.txt").exists() || path.join("Pipfile").exists() { package_managers.push("pip".to_string()); }
-    if path.join("Cargo.toml").exists() { package_managers.push("cargo".to_string()); }
-    if path.join("go.sum").exists() { package_managers.push("go modules".to_string()); }
-    if path.join("pom.xml").exists() { package_managers.push("maven".to_string()); }
-    if path.join("build.gradle").exists() { package_managers.push("gradle".to_string()); }
+    if path.join("package.json").exists() {
+        package_managers.push("npm".to_string());
+    }
+    if path.join("yarn.lock").exists() {
+        package_managers.push("yarn".to_string());
+    }
+    if path.join("pnpm-lock.yaml").exists() {
+        package_managers.push("pnpm".to_string());
+    }
+    if path.join("requirements.txt").exists() || path.join("Pipfile").exists() {
+        package_managers.push("pip".to_string());
+    }
+    if path.join("Cargo.toml").exists() {
+        package_managers.push("cargo".to_string());
+    }
+    if path.join("go.sum").exists() {
+        package_managers.push("go modules".to_string());
+    }
+    if path.join("pom.xml").exists() {
+        package_managers.push("maven".to_string());
+    }
+    if path.join("build.gradle").exists() {
+        package_managers.push("gradle".to_string());
+    }
 
-    let top_langs = languages.iter().take(3).map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", ");
-    let frameworks_str = if frameworks.is_empty() { "none detected".to_string() } else { frameworks.join(", ") };
+    let top_langs = languages
+        .iter()
+        .take(3)
+        .map(|(l, _)| l.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let frameworks_str = if frameworks.is_empty() {
+        "none detected".to_string()
+    } else {
+        frameworks.join(", ")
+    };
 
     let result = serde_json::json!({
         "project_path": project_path,
@@ -1470,12 +1670,21 @@ async fn tool_validate_finding(args: &Value) -> Value {
 
     // 验证 verdict
     if !["true_positive", "false_positive", "needs_review"].contains(&verdict) {
-        return error_response(&format!("Invalid verdict: '{}'. Must be true_positive, false_positive, or needs_review", verdict));
+        return error_response(&format!(
+            "Invalid verdict: '{}'. Must be true_positive, false_positive, or needs_review",
+            verdict
+        ));
     }
 
-    let file_path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let file_path = args
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-    let vuln_type = args.get("vulnerability_type").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let vuln_type = args
+        .get("vulnerability_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let severity_override = args.get("severity_override").and_then(|v| v.as_str());
 
     // 写入审计日志
@@ -1508,7 +1717,10 @@ async fn tool_validate_finding(args: &Value) -> Value {
 
     audit_log.push(entry);
 
-    if let Err(e) = std::fs::write(&audit_log_path, serde_json::to_string_pretty(&audit_log).unwrap_or_default()) {
+    if let Err(e) = std::fs::write(
+        &audit_log_path,
+        serde_json::to_string_pretty(&audit_log).unwrap_or_default(),
+    ) {
         return error_response(&format!("Failed to write audit log: {}", e));
     }
 
@@ -1531,7 +1743,10 @@ async fn tool_validate_finding(args: &Value) -> Value {
             ignored.insert(key, serde_json::json!(reasoning));
         }
 
-        if let Err(e) = std::fs::write(&baseline_path, serde_json::to_string_pretty(&baseline).unwrap_or_default()) {
+        if let Err(e) = std::fs::write(
+            &baseline_path,
+            serde_json::to_string_pretty(&baseline).unwrap_or_default(),
+        ) {
             return error_response(&format!("Failed to write baseline: {}", e));
         }
     }
@@ -1547,8 +1762,16 @@ async fn tool_validate_finding(args: &Value) -> Value {
         "Finding {} recorded as {}. {}Entry written to .ctx-audit/audit_log.json{}",
         finding_id,
         verdict_label,
-        if severity_override.is_some() { format!("Severity overridden to {}. ", severity_override.unwrap()) } else { String::new() },
-        if verdict == "false_positive" { " and .ctx-audit/baseline.json (future scans will suppress this finding)" } else { "" }
+        if severity_override.is_some() {
+            format!("Severity overridden to {}. ", severity_override.unwrap())
+        } else {
+            String::new()
+        },
+        if verdict == "false_positive" {
+            " and .ctx-audit/baseline.json (future scans will suppress this finding)"
+        } else {
+            ""
+        }
     ))
 }
 
@@ -1573,17 +1796,22 @@ async fn tool_list_rules(args: &Value) -> Value {
                 let p = entry.path();
                 if p.is_file() {
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if ext != "yaml" && ext != "yml" { continue; }
+                    if ext != "yaml" && ext != "yml" {
+                        continue;
+                    }
                     if let Ok(content) = std::fs::read_to_string(&p) {
                         // 尝试解析为 RuleSet
                         if let Ok(rs) = serde_yaml::from_str::<RuleSet>(&content) {
                             for rule in &rs.rules {
                                 let matches_filter = {
                                     let cat_ok = category_filter.map_or(true, |cf| {
-                                        rule.category.as_deref().map_or(false, |c| c.to_lowercase().contains(&cf.to_lowercase()))
+                                        rule.category.as_deref().map_or(false, |c| {
+                                            c.to_lowercase().contains(&cf.to_lowercase())
+                                        })
                                     });
                                     let lang_ok = language_filter.map_or(true, |lf| {
-                                        rule.language.to_lowercase().contains(&lf.to_lowercase()) || rule.language == "all"
+                                        rule.language.to_lowercase().contains(&lf.to_lowercase())
+                                            || rule.language == "all"
                                     });
                                     cat_ok && lang_ok
                                 };
@@ -1605,10 +1833,13 @@ async fn tool_list_rules(args: &Value) -> Value {
                         else if let Ok(rule) = serde_yaml::from_str::<Rule>(&content) {
                             let matches_filter = {
                                 let cat_ok = category_filter.map_or(true, |cf| {
-                                    rule.category.as_deref().map_or(false, |c| c.to_lowercase().contains(&cf.to_lowercase()))
+                                    rule.category.as_deref().map_or(false, |c| {
+                                        c.to_lowercase().contains(&cf.to_lowercase())
+                                    })
                                 });
                                 let lang_ok = language_filter.map_or(true, |lf| {
-                                    rule.language.to_lowercase().contains(&lf.to_lowercase()) || rule.language == "all"
+                                    rule.language.to_lowercase().contains(&lf.to_lowercase())
+                                        || rule.language == "all"
                                 });
                                 cat_ok && lang_ok
                             };
@@ -1634,7 +1865,12 @@ async fn tool_list_rules(args: &Value) -> Value {
     // 加载 taint 规则（简要信息）
     let taint_dir = std::path::Path::new("rules/taint");
     if taint_dir.exists() {
-        fn visit_taint_yaml(dir: &std::path::Path, rules: &mut Vec<Value>, cat_filter: Option<&str>, lang_filter: Option<&str>) {
+        fn visit_taint_yaml(
+            dir: &std::path::Path,
+            rules: &mut Vec<Value>,
+            cat_filter: Option<&str>,
+            lang_filter: Option<&str>,
+        ) {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let p = entry.path();
@@ -1642,7 +1878,9 @@ async fn tool_list_rules(args: &Value) -> Value {
                         visit_taint_yaml(&p, rules, cat_filter, lang_filter);
                     } else if p.is_file() {
                         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                        if ext != "yaml" && ext != "yml" { continue; }
+                        if ext != "yaml" && ext != "yml" {
+                            continue;
+                        }
                         if let Ok(content) = std::fs::read_to_string(&p) {
                             if let Ok(ts) = serde_yaml::from_str::<TaintRuleSet>(&content) {
                                 rules.push(serde_json::json!({
@@ -1666,10 +1904,15 @@ async fn tool_list_rules(args: &Value) -> Value {
         visit_taint_yaml(taint_dir, &mut all_rules, category_filter, language_filter);
     }
 
-    let summary = format!("Loaded {} rule(s){}{}.",
+    let summary = format!(
+        "Loaded {} rule(s){}{}.",
         all_rules.len(),
-        category_filter.map(|c| format!(" (category: {})", c)).unwrap_or_default(),
-        language_filter.map(|l| format!(" (language: {})", l)).unwrap_or_default(),
+        category_filter
+            .map(|c| format!(" (category: {})", c))
+            .unwrap_or_default(),
+        language_filter
+            .map(|l| format!(" (language: {})", l))
+            .unwrap_or_default(),
     );
 
     serde_json::json!({
@@ -1689,17 +1932,24 @@ async fn try_daemon_analyze(
     show_symbols: bool,
 ) -> Option<serde_json::Map<String, Value>> {
     let mut client = DaemonClient::connect().await.ok()?;
-    let response = client.send_request(RequestCommand::Analyze {
-        file_path: file_path.to_string(),
-        start_line,
-        end_line,
-        show_ast: false,
-        show_symbols,
-    }).await.ok()?;
+    let response = client
+        .send_request(RequestCommand::Analyze {
+            file_path: file_path.to_string(),
+            start_line,
+            end_line,
+            show_ast: false,
+            show_symbols,
+        })
+        .await
+        .ok()?;
 
     match response {
         Response::AnalysisResult { content } => {
-            if let Value::Object(map) = content { Some(map) } else { None }
+            if let Value::Object(map) = content {
+                Some(map)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -1707,14 +1957,17 @@ async fn try_daemon_analyze(
 
 async fn try_daemon_cross_file(project_path: &str) -> Option<Value> {
     let mut client = DaemonClient::connect().await.ok()?;
-    let response = client.send_request(RequestCommand::CrossFileAnalysis {
-        path: project_path.to_string(),
-    }).await.ok()?;
+    let response = client
+        .send_request(RequestCommand::CrossFileAnalysis {
+            path: project_path.to_string(),
+        })
+        .await
+        .ok()?;
 
     match response {
-        Response::CrossFileTaintResult { result } => {
-            Some(text_response(&serde_json::to_string_pretty(&result).unwrap_or_default()))
-        }
+        Response::CrossFileTaintResult { result } => Some(text_response(
+            &serde_json::to_string_pretty(&result).unwrap_or_default(),
+        )),
         _ => None,
     }
 }
@@ -1723,19 +1976,24 @@ async fn try_daemon_call_graph(project_path: &str, entry: &str, depth: usize) ->
     let mut client = DaemonClient::connect().await.ok()?;
 
     // Try to load project first
-    let _ = client.send_request(RequestCommand::LoadProject {
-        path: project_path.to_string(),
-    }).await;
+    let _ = client
+        .send_request(RequestCommand::LoadProject {
+            path: project_path.to_string(),
+        })
+        .await;
 
-    let response = client.send_request(RequestCommand::GetCallGraph {
-        entry: entry.to_string(),
-        depth: Some(depth),
-    }).await.ok()?;
+    let response = client
+        .send_request(RequestCommand::GetCallGraph {
+            entry: entry.to_string(),
+            depth: Some(depth),
+        })
+        .await
+        .ok()?;
 
     match response {
-        Response::CallGraphResult { graph } => {
-            Some(text_response(&serde_json::to_string_pretty(&graph).unwrap_or_default()))
-        }
+        Response::CallGraphResult { graph } => Some(text_response(
+            &serde_json::to_string_pretty(&graph).unwrap_or_default(),
+        )),
         _ => None,
     }
 }
@@ -1778,7 +2036,9 @@ fn get_sanitizer_descriptions() -> Vec<(String, String)> {
 
 // ── 调用图查询工具实现 ──────────────────────────────────
 
-fn build_query_engine_for_mcp(project_path: &str) -> Result<deepaudit_core::CallGraphQueryEngine, String> {
+fn build_query_engine_for_mcp(
+    project_path: &str,
+) -> Result<deepaudit_core::CallGraphQueryEngine, String> {
     let path = std::path::Path::new(project_path);
     if !path.exists() {
         return Err(format!("Project path not found: {}", project_path));
@@ -1790,15 +2050,21 @@ fn build_query_engine_for_mcp(project_path: &str) -> Result<deepaudit_core::Call
 
 async fn tool_query_callers(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
     let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing file_path"),
+        Some(p) => p,
+        None => return error_response("Missing file_path"),
     };
     let function_name = match args.get("function_name").and_then(|v| v.as_str()) {
-        Some(n) => n, None => return error_response("Missing function_name"),
+        Some(n) => n,
+        None => return error_response("Missing function_name"),
     };
-    let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+    let recursive = args
+        .get("recursive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let engine = match build_query_engine_for_mcp(project_path) {
         Ok(e) => e,
@@ -1814,8 +2080,12 @@ async fn tool_query_callers(args: &Value) -> Value {
     let text = if callers.is_empty() {
         format!("No callers found for '{}' in {}", function_name, file_path)
     } else {
-        format!("Found {} caller(s) for '{}'{}", callers.len(), function_name,
-            if recursive { " (recursive)" } else { "" })
+        format!(
+            "Found {} caller(s) for '{}'{}",
+            callers.len(),
+            function_name,
+            if recursive { " (recursive)" } else { "" }
+        )
     };
 
     serde_json::json!({
@@ -1833,15 +2103,21 @@ async fn tool_query_callers(args: &Value) -> Value {
 
 async fn tool_query_callees(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
     let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing file_path"),
+        Some(p) => p,
+        None => return error_response("Missing file_path"),
     };
     let function_name = match args.get("function_name").and_then(|v| v.as_str()) {
-        Some(n) => n, None => return error_response("Missing function_name"),
+        Some(n) => n,
+        None => return error_response("Missing function_name"),
     };
-    let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+    let recursive = args
+        .get("recursive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let engine = match build_query_engine_for_mcp(project_path) {
         Ok(e) => e,
@@ -1855,10 +2131,17 @@ async fn tool_query_callees(args: &Value) -> Value {
     };
 
     let text = if callees.is_empty() {
-        format!("'{}' in {} calls no known functions", function_name, file_path)
+        format!(
+            "'{}' in {} calls no known functions",
+            function_name, file_path
+        )
     } else {
-        format!("'{}' calls {} function(s){}", function_name, callees.len(),
-            if recursive { " (recursive)" } else { "" })
+        format!(
+            "'{}' calls {} function(s){}",
+            function_name,
+            callees.len(),
+            if recursive { " (recursive)" } else { "" }
+        )
     };
 
     serde_json::json!({
@@ -1876,19 +2159,24 @@ async fn tool_query_callees(args: &Value) -> Value {
 
 async fn tool_find_call_path(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
     let source_file = match args.get("source_file").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing source_file"),
+        Some(p) => p,
+        None => return error_response("Missing source_file"),
     };
     let source_function = match args.get("source_function").and_then(|v| v.as_str()) {
-        Some(n) => n, None => return error_response("Missing source_function"),
+        Some(n) => n,
+        None => return error_response("Missing source_function"),
     };
     let sink_file = match args.get("sink_file").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing sink_file"),
+        Some(p) => p,
+        None => return error_response("Missing sink_file"),
     };
     let sink_function = match args.get("sink_function").and_then(|v| v.as_str()) {
-        Some(n) => n, None => return error_response("Missing sink_function"),
+        Some(n) => n,
+        None => return error_response("Missing sink_function"),
     };
 
     let engine = match build_query_engine_for_mcp(project_path) {
@@ -1901,7 +2189,11 @@ async fn tool_find_call_path(args: &Value) -> Value {
     match result {
         Some(path) => {
             let text = if path.crosses_files {
-                format!("PATH FOUND: {} hops across {} files", path.total_hops, path.files_in_path.len())
+                format!(
+                    "PATH FOUND: {} hops across {} files",
+                    path.total_hops,
+                    path.files_in_path.len()
+                )
             } else {
                 format!("PATH FOUND: {} hops (same file)", path.total_hops)
             };
@@ -1932,19 +2224,24 @@ async fn tool_find_call_path(args: &Value) -> Value {
 
 async fn tool_resolve_method_call(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
     let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing file_path"),
+        Some(p) => p,
+        None => return error_response("Missing file_path"),
     };
     let line = match args.get("line").and_then(|v| v.as_u64()) {
-        Some(l) => l as usize, None => return error_response("Missing line"),
+        Some(l) => l as usize,
+        None => return error_response("Missing line"),
     };
     let receiver = match args.get("receiver").and_then(|v| v.as_str()) {
-        Some(r) => r, None => return error_response("Missing receiver"),
+        Some(r) => r,
+        None => return error_response("Missing receiver"),
     };
     let method = match args.get("method").and_then(|v| v.as_str()) {
-        Some(m) => m, None => return error_response("Missing method"),
+        Some(m) => m,
+        None => return error_response("Missing method"),
     };
 
     let engine = match build_query_engine_for_mcp(project_path) {
@@ -1956,15 +2253,21 @@ async fn tool_resolve_method_call(args: &Value) -> Value {
 
     if targets.is_empty() {
         text_response(&format!(
-            "No resolved targets for {}.{}() at {}:{}", receiver, method, file_path, line
+            "No resolved targets for {}.{}() at {}:{}",
+            receiver, method, file_path, line
         ))
     } else {
         let best = &targets[0];
         let text = format!(
             "Found {} candidate(s) for {}.{}() — best: {} ({}:{} confidence {:.0}%) via {}",
-            targets.len(), receiver, method,
-            best.function_name, best.file_path, best.line,
-            best.confidence * 100.0, best.resolution_method
+            targets.len(),
+            receiver,
+            method,
+            best.function_name,
+            best.file_path,
+            best.line,
+            best.confidence * 100.0,
+            best.resolution_method
         );
 
         serde_json::json!({
@@ -1982,10 +2285,12 @@ async fn tool_resolve_method_call(args: &Value) -> Value {
 
 async fn tool_query_type_hierarchy(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
     let class_name = match args.get("class_name").and_then(|v| v.as_str()) {
-        Some(n) => n, None => return error_response("Missing class_name"),
+        Some(n) => n,
+        None => return error_response("Missing class_name"),
     };
 
     let engine = match build_query_engine_for_mcp(project_path) {
@@ -1997,7 +2302,8 @@ async fn tool_query_type_hierarchy(args: &Value) -> Value {
         Some(chain) => {
             let text = format!(
                 "{} ({}) — {} parents, {} children, {} methods",
-                chain.class_name, chain.kind,
+                chain.class_name,
+                chain.kind,
                 chain.parent_classes.len(),
                 chain.child_classes.len(),
                 chain.methods.len(),
@@ -2015,7 +2321,8 @@ async fn tool_query_type_hierarchy(args: &Value) -> Value {
 
 async fn tool_query_middleware_chain(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
 
     let engine = match build_query_engine_for_mcp(project_path) {
@@ -2028,7 +2335,9 @@ async fn tool_query_middleware_chain(args: &Value) -> Value {
         let routes = engine.query_routes_in_file(file_path);
         let text = format!(
             "File '{}': {} middleware, {} routes",
-            file_path, mw.len(), routes.len()
+            file_path,
+            mw.len(),
+            routes.len()
         );
         serde_json::json!({
             "content": [
@@ -2054,13 +2363,16 @@ async fn tool_query_middleware_chain(args: &Value) -> Value {
 
 async fn tool_trace_variable_flow(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
     let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing file_path"),
+        Some(p) => p,
+        None => return error_response("Missing file_path"),
     };
     let function_name = match args.get("function_name").and_then(|v| v.as_str()) {
-        Some(n) => n, None => return error_response("Missing function_name"),
+        Some(n) => n,
+        None => return error_response("Missing function_name"),
     };
 
     let engine = match build_query_engine_for_mcp(project_path) {
@@ -2073,10 +2385,13 @@ async fn tool_trace_variable_flow(args: &Value) -> Value {
     let text = if flow.total_sinks_reached > 0 {
         format!(
             "'{}' reaches {} sink(s): {}",
-            function_name, flow.total_sinks_reached,
-            flow.flows_to_sinks.iter()
+            function_name,
+            flow.total_sinks_reached,
+            flow.flows_to_sinks
+                .iter()
                 .map(|f| format!("{}({})", f.sink_function, f.vulnerability_type))
-                .collect::<Vec<_>>().join(", ")
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     } else {
         format!("'{}' reaches no sinks", function_name)
@@ -2096,7 +2411,8 @@ async fn tool_trace_variable_flow(args: &Value) -> Value {
 
 async fn tool_get_graph_stats_handler(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
 
     let engine = match build_query_engine_for_mcp(project_path) {
@@ -2116,10 +2432,12 @@ async fn tool_get_graph_stats_handler(args: &Value) -> Value {
 
 async fn tool_list_file_functions(args: &Value) -> Value {
     let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing project_path"),
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
     };
     let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
-        Some(p) => p, None => return error_response("Missing file_path"),
+        Some(p) => p,
+        None => return error_response("Missing file_path"),
     };
 
     let engine = match build_query_engine_for_mcp(project_path) {
@@ -2139,7 +2457,11 @@ async fn tool_list_file_functions(args: &Value) -> Value {
 
     let text = format!(
         "{} functions in '{}': {} sources, {} sinks, {} callbacks",
-        functions.len(), file_path, sources.len(), sinks.len(), cbs.len(),
+        functions.len(),
+        file_path,
+        sources.len(),
+        sinks.len(),
+        cbs.len(),
     );
 
     serde_json::json!({
@@ -2161,7 +2483,11 @@ async fn tool_start_audit_session_with_state(state: &McpServerState, args: &Valu
         Some(p) => p.to_string(),
         None => return error_response("Missing required parameter: project_path"),
     };
-    let session_type = args.get("session_type").and_then(|v| v.as_str()).unwrap_or("targeted").to_string();
+    let session_type = args
+        .get("session_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("targeted")
+        .to_string();
 
     let session_uuid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -2173,7 +2499,11 @@ async fn tool_start_audit_session_with_state(state: &McpServerState, args: &Valu
         started_at: now.clone(),
     };
 
-    state.audit.active_sessions.borrow_mut().insert(session_uuid.clone(), ctx);
+    state
+        .audit
+        .active_sessions
+        .borrow_mut()
+        .insert(session_uuid.clone(), ctx);
 
     let summary = format!(
         "🔍 Audit session started\n  Session: {}\n  Project: {}\n  Type: {}\n  Time: {}\n\nNext: run security_scan or cross_file_analysis to get findings, then use start_investigation to drill down.",
@@ -2201,13 +2531,24 @@ async fn tool_start_investigation_with_state(state: &McpServerState, args: &Valu
         None => return error_response("Missing required parameter: finding_id"),
     };
     let finding_file = args.get("finding_file").and_then(|v| v.as_str());
-    let finding_line = args.get("finding_line").and_then(|v| v.as_u64()).map(|n| n as usize);
-    let hypothesis = args.get("hypothesis").and_then(|v| v.as_str()).map(String::from);
+    let finding_line = args
+        .get("finding_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let hypothesis = args
+        .get("hypothesis")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     // 检查会话是否存在
     let project_path = match state.audit.active_sessions.borrow().get(&session_uuid) {
         Some(s) => s.project_path.clone(),
-        None => return error_response(&format!("Session not found: {}. Use start_audit_session first.", session_uuid)),
+        None => {
+            return error_response(&format!(
+                "Session not found: {}. Use start_audit_session first.",
+                session_uuid
+            ))
+        }
     };
 
     let investigation_id = uuid::Uuid::new_v4().to_string();
@@ -2254,7 +2595,11 @@ async fn tool_start_investigation_with_state(state: &McpServerState, args: &Valu
         started_at: now.clone(),
     };
 
-    state.audit.active_investigations.borrow_mut().insert(investigation_id.clone(), ctx);
+    state
+        .audit
+        .active_investigations
+        .borrow_mut()
+        .insert(investigation_id.clone(), ctx);
 
     let summary = format!(
         "🕵️ Investigation started\n  ID: {}\n  Finding: {}\n  Session: {}\n  Time: {}\n\nSuggested tools to verify this finding:",
@@ -2298,12 +2643,22 @@ async fn tool_log_investigation_step_with_state(state: &McpServerState, args: &V
         reasoning,
     };
 
-    let step_count = match state.audit.active_investigations.borrow_mut().get_mut(&investigation_id) {
+    let step_count = match state
+        .audit
+        .active_investigations
+        .borrow_mut()
+        .get_mut(&investigation_id)
+    {
         Some(inv) => {
             inv.steps.push(step);
             inv.steps.len()
         }
-        None => return error_response(&format!("Investigation not found: {}. Use start_investigation first.", investigation_id)),
+        None => {
+            return error_response(&format!(
+                "Investigation not found: {}. Use start_investigation first.",
+                investigation_id
+            ))
+        }
     };
 
     serde_json::json!({
@@ -2325,10 +2680,18 @@ async fn tool_conclude_investigation_with_state(state: &McpServerState, args: &V
         None => return error_response("Missing required parameter: reasoning"),
     };
     let confidence = args.get("confidence").and_then(|v| v.as_f64());
-    let severity_override = args.get("severity_override").and_then(|v| v.as_str()).map(String::from);
+    let severity_override = args
+        .get("severity_override")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     // 获取调查上下文
-    let inv = match state.audit.active_investigations.borrow_mut().remove(&investigation_id) {
+    let inv = match state
+        .audit
+        .active_investigations
+        .borrow_mut()
+        .remove(&investigation_id)
+    {
         Some(inv) => inv,
         None => return error_response(&format!("Investigation not found: {}", investigation_id)),
     };
@@ -2368,7 +2731,10 @@ async fn tool_conclude_investigation_with_state(state: &McpServerState, args: &V
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&log_path, serde_json::to_string_pretty(&log_entries).unwrap_or_default());
+    let _ = std::fs::write(
+        &log_path,
+        serde_json::to_string_pretty(&log_entries).unwrap_or_default(),
+    );
 
     // 如果是 FP，同时更新 baseline.json
     if verdict == "false_positive" {
@@ -2387,7 +2753,10 @@ async fn tool_conclude_investigation_with_state(state: &McpServerState, args: &V
                 ignored.insert(inv.finding_id.clone(), serde_json::json!(reasoning));
             }
         }
-        let _ = std::fs::write(&baseline_path, serde_json::to_string_pretty(&baseline).unwrap_or_default());
+        let _ = std::fs::write(
+            &baseline_path,
+            serde_json::to_string_pretty(&baseline).unwrap_or_default(),
+        );
     }
 
     let verdict_label = match verdict.as_str() {
@@ -2424,7 +2793,10 @@ async fn tool_conclude_audit_session_with_state(state: &McpServerState, args: &V
     // 统计所有调查结果
     let investigations: Vec<InvestigationContext> = {
         let invs = state.audit.active_investigations.borrow();
-        invs.values().filter(|i| i.session_uuid == session_uuid).cloned().collect()
+        invs.values()
+            .filter(|i| i.session_uuid == session_uuid)
+            .cloned()
+            .collect()
     };
 
     let total = investigations.len();
@@ -2440,12 +2812,25 @@ async fn tool_conclude_audit_session_with_state(state: &McpServerState, args: &V
         Vec::new()
     };
 
-    let tp_count = log_entries.iter().filter(|e| e["verdict"].as_str() == Some("true_positive")).count();
-    let fp_count = log_entries.iter().filter(|e| e["verdict"].as_str() == Some("false_positive")).count();
-    let review_count = log_entries.iter().filter(|e| e["verdict"].as_str() == Some("needs_review")).count();
+    let tp_count = log_entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("true_positive"))
+        .count();
+    let fp_count = log_entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("false_positive"))
+        .count();
+    let review_count = log_entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("needs_review"))
+        .count();
 
     // 移除会话
-    let session_info = state.audit.active_sessions.borrow_mut().remove(&session_uuid);
+    let session_info = state
+        .audit
+        .active_sessions
+        .borrow_mut()
+        .remove(&session_uuid);
 
     let summary = format!(
         "📋 Audit session concluded\n  Session: {}\n  Project: {}\n  Investigations: {} total\n  ✅ True Positives: {}\n  ❌ False Positives: {}\n  ⚠️ Needs Review: {}\n  Active investigations at close: {}\n\n{}",
@@ -2500,10 +2885,7 @@ fn format_security_findings(findings: &[Finding]) -> String {
 
     let has_evidence = findings.iter().any(|f| f.evidence_refs.is_some());
 
-    let mut summary = format!(
-        "Found {} security findings:\n",
-        findings.len()
-    );
+    let mut summary = format!("Found {} security findings:\n", findings.len());
 
     for sev in &["critical", "high", "medium", "low", "info"] {
         if let Some(count) = counts.get(*sev) {
@@ -2632,7 +3014,8 @@ pub async fn run_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let id = request.id.unwrap_or(Value::Null);
-        let result = handle_request_with_state(&state, request.method.clone(), &request.params).await;
+        let result =
+            handle_request_with_state(&state, request.method.clone(), &request.params).await;
 
         let response = JsonRpcResponse {
             jsonrpc: "2.0",
@@ -2654,8 +3037,14 @@ async fn tool_get_attack_surface(args: &Value) -> Value {
         Some(p) => p,
         None => return error_response("Missing required parameter: project_path"),
     };
-    let min_risk_score = args.get("min_risk_score").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
-    let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(true);
+    let min_risk_score = args
+        .get("min_risk_score")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.3) as f32;
+    let include_details = args
+        .get("include_details")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     let path = std::path::Path::new(project_path);
     if !path.exists() {
@@ -2665,7 +3054,9 @@ async fn tool_get_attack_surface(args: &Value) -> Value {
     let surface = AttackSurfaceMapper::map_project(path);
 
     // 过滤低风险入口点
-    let filtered_entries: Vec<Value> = surface.entry_points.iter()
+    let filtered_entries: Vec<Value> = surface
+        .entry_points
+        .iter()
         .filter(|ep| ep.risk_score >= min_risk_score)
         .map(|ep| {
             let mut entry = serde_json::json!({
@@ -2692,13 +3083,17 @@ async fn tool_get_attack_surface(args: &Value) -> Value {
         })
         .collect();
 
-    let trust_bounds: Vec<Value> = surface.trust_boundaries.iter()
-        .map(|tb| serde_json::json!({
-            "file_path": tb.file_path,
-            "line": tb.line,
-            "description": tb.description,
-            "source": tb.source,
-        }))
+    let trust_bounds: Vec<Value> = surface
+        .trust_boundaries
+        .iter()
+        .map(|tb| {
+            serde_json::json!({
+                "file_path": tb.file_path,
+                "line": tb.line,
+                "description": tb.description,
+                "source": tb.source,
+            })
+        })
         .collect();
 
     let summary = format!(
@@ -2750,9 +3145,14 @@ async fn tool_analyze_risk_patterns(args: &Value) -> Value {
     let mut scanner = RiskPatternScanner::new(path);
 
     // 可选: 过滤特定 pattern IDs
-    let requested_ids: Option<Vec<String>> = args.get("pattern_ids")
+    let requested_ids: Option<Vec<String>> = args
+        .get("pattern_ids")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
 
     // 扫描
     let mut matches = scanner.scan(&surface, path);
@@ -2763,7 +3163,12 @@ async fn tool_analyze_risk_patterns(args: &Value) -> Value {
     }
 
     let severity_order = |s: &str| match s {
-        "critical" => 0, "high" => 1, "medium" => 2, "low" => 3, "info" => 4, _ => 5,
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        "low" => 3,
+        "info" => 4,
+        _ => 5,
     };
     if let Some(min_sev) = args.get("min_severity").and_then(|v| v.as_str()) {
         let min_rank = severity_order(min_sev);
@@ -2780,34 +3185,50 @@ async fn tool_analyze_risk_patterns(args: &Value) -> Value {
         scanner.pattern_count(),
     );
 
-    let match_details: Vec<Value> = matches.iter().map(|m| {
-        let evidence: Vec<Value> = m.evidence.iter().take(5).map(|e| serde_json::json!({
-            "file": e.file_path,
-            "line": e.line,
-            "matched": e.matched_pattern,
-            "code": e.code_snippet,
-            "type": e.context_type,
-        })).collect();
+    let match_details: Vec<Value> = matches
+        .iter()
+        .map(|m| {
+            let evidence: Vec<Value> = m
+                .evidence
+                .iter()
+                .take(5)
+                .map(|e| {
+                    serde_json::json!({
+                        "file": e.file_path,
+                        "line": e.line,
+                        "matched": e.matched_pattern,
+                        "code": e.code_snippet,
+                        "type": e.context_type,
+                    })
+                })
+                .collect();
 
-        let affected: Vec<Value> = m.affected_entries.iter().map(|a| serde_json::json!({
-            "file": a.file_path,
-            "line": a.line,
-            "type": a.entry_type,
-            "function": a.function_name,
-            "route": a.route,
-        })).collect();
+            let affected: Vec<Value> = m
+                .affected_entries
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "file": a.file_path,
+                        "line": a.line,
+                        "type": a.entry_type,
+                        "function": a.function_name,
+                        "route": a.route,
+                    })
+                })
+                .collect();
 
-        serde_json::json!({
-            "pattern_id": m.pattern_id,
-            "pattern_name": m.pattern_name,
-            "severity": format!("{:?}", m.severity).to_lowercase(),
-            "confidence": m.confidence,
-            "cwe": m.cwe,
-            "risk_factors": m.risk_factors,
-            "affected_entries": affected,
-            "evidence": evidence,
+            serde_json::json!({
+                "pattern_id": m.pattern_id,
+                "pattern_name": m.pattern_name,
+                "severity": format!("{:?}", m.severity).to_lowercase(),
+                "confidence": m.confidence,
+                "cwe": m.cwe,
+                "risk_factors": m.risk_factors,
+                "affected_entries": affected,
+                "evidence": evidence,
+            })
         })
-    }).collect();
+        .collect();
 
     let output = serde_json::json!({
         "total_matches": matches.len(),
@@ -2833,7 +3254,10 @@ async fn tool_add_custom_rule(args: &Value) -> Value {
         Some(t) => t,
         None => return error_response("Missing required parameter: rule_type"),
     };
-    let validate_only = args.get("validate_only").and_then(|v| v.as_bool()).unwrap_or(false);
+    let validate_only = args
+        .get("validate_only")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // 大小限制
     if rule_content.len() > 65536 {
@@ -2855,29 +3279,33 @@ async fn tool_add_custom_rule(args: &Value) -> Value {
     match rule_type {
         "pattern" => {
             // 尝试解析为 RuleSet 或单个 Rule
-            let validation_result = if let Ok(rs) = serde_yaml::from_value::<RuleSet>(yaml_value.clone()) {
-                Ok((rs.name.clone(), rs.rules.len(), "ruleset"))
-            } else if let Ok(rule) = serde_yaml::from_value::<Rule>(yaml_value.clone()) {
-                // 验证必填字段
-                if rule.id.is_empty() {
-                    return error_response("Pattern rule missing required field: id");
-                }
-                if rule.name.is_empty() {
-                    return error_response("Pattern rule missing required field: name");
-                }
-                if rule.pattern.is_none() && rule.patterns.is_none() && rule.query.is_none() {
-                    return error_response("Pattern rule must have at least one of: pattern, patterns, query");
-                }
-                Ok((rule.name.clone(), 1, "rule"))
-            } else {
-                Err("Could not parse as RuleSet or Rule. Check YAML structure.".to_string())
-            };
+            let validation_result =
+                if let Ok(rs) = serde_yaml::from_value::<RuleSet>(yaml_value.clone()) {
+                    Ok((rs.name.clone(), rs.rules.len(), "ruleset"))
+                } else if let Ok(rule) = serde_yaml::from_value::<Rule>(yaml_value.clone()) {
+                    // 验证必填字段
+                    if rule.id.is_empty() {
+                        return error_response("Pattern rule missing required field: id");
+                    }
+                    if rule.name.is_empty() {
+                        return error_response("Pattern rule missing required field: name");
+                    }
+                    if rule.pattern.is_none() && rule.patterns.is_none() && rule.query.is_none() {
+                        return error_response(
+                            "Pattern rule must have at least one of: pattern, patterns, query",
+                        );
+                    }
+                    Ok((rule.name.clone(), 1, "rule"))
+                } else {
+                    Err("Could not parse as RuleSet or Rule. Check YAML structure.".to_string())
+                };
 
             match validation_result {
                 Ok((name, count, kind)) => {
                     if validate_only {
                         return text_response(&format!(
-                            "Validation OK: {} '{}' with {} rule(s)", kind, name, count
+                            "Validation OK: {} '{}' with {} rule(s)",
+                            kind, name, count
                         ));
                     }
                     write_rule_file(rule_content, rule_type, &extract_rule_id(&yaml_value))
@@ -2890,7 +3318,8 @@ async fn tool_add_custom_rule(args: &Value) -> Value {
                 Ok(ts) => {
                     if ts.kind != "taint-rules" {
                         return error_response(&format!(
-                            "Taint rule must have kind='taint-rules', got '{}'", ts.kind
+                            "Taint rule must have kind='taint-rules', got '{}'",
+                            ts.kind
                         ));
                     }
                     if ts.sources.is_empty() && ts.sinks.is_empty() {
@@ -2907,7 +3336,10 @@ async fn tool_add_custom_rule(args: &Value) -> Value {
                 Err(e) => error_response(&format!("Failed to parse taint rule: {}", e)),
             }
         }
-        _ => error_response(&format!("Unknown rule_type: '{}'. Must be 'pattern' or 'taint'", rule_type)),
+        _ => error_response(&format!(
+            "Unknown rule_type: '{}'. Must be 'pattern' or 'taint'",
+            rule_type
+        )),
     }
 }
 
@@ -2926,7 +3358,8 @@ fn write_rule_file(content: &str, rule_type: &str, id_base: &str) -> Value {
 
     text_response(&format!(
         "Rule written to {} (type: {}). Daemon will hot-reload within 30s.",
-        filepath.display(), rule_type
+        filepath.display(),
+        rule_type
     ))
 }
 
@@ -2939,13 +3372,23 @@ fn extract_rule_id(yaml: &serde_yaml::Value) -> String {
 
 fn slugify(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_string()
 }
 
-async fn handle_request_with_state(state: &McpServerState, method: String, params: &Value) -> Value {
+async fn handle_request_with_state(
+    state: &McpServerState,
+    method: String,
+    params: &Value,
+) -> Value {
     match method.as_str() {
         "initialize" => {
             serde_json::json!({
@@ -2980,7 +3423,10 @@ async fn handle_request_with_state(state: &McpServerState, method: String, param
             for t in tool_definitions() {
                 // 避免与 ToolRegistry 中的同名工具重复
                 let name = t.name;
-                if tools.iter().any(|existing| existing["name"].as_str() == Some(name)) {
+                if tools
+                    .iter()
+                    .any(|existing| existing["name"].as_str() == Some(name))
+                {
                     continue;
                 }
                 tools.push(serde_json::json!({
@@ -2994,7 +3440,10 @@ async fn handle_request_with_state(state: &McpServerState, method: String, param
         }
         "tools/call" => {
             let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
 
             // 先尝试 ToolRegistry
             if let Some(tool) = state.tool_registry.get_tool(tool_name) {
@@ -3008,11 +3457,21 @@ async fn handle_request_with_state(state: &McpServerState, method: String, param
             } else {
                 // 审计会话工具（需要 state 访问）
                 match tool_name {
-                    "start_audit_session" => tool_start_audit_session_with_state(state, &arguments).await,
-                    "start_investigation" => tool_start_investigation_with_state(state, &arguments).await,
-                    "log_investigation_step" => tool_log_investigation_step_with_state(state, &arguments).await,
-                    "conclude_investigation" => tool_conclude_investigation_with_state(state, &arguments).await,
-                    "conclude_audit_session" => tool_conclude_audit_session_with_state(state, &arguments).await,
+                    "start_audit_session" => {
+                        tool_start_audit_session_with_state(state, &arguments).await
+                    }
+                    "start_investigation" => {
+                        tool_start_investigation_with_state(state, &arguments).await
+                    }
+                    "log_investigation_step" => {
+                        tool_log_investigation_step_with_state(state, &arguments).await
+                    }
+                    "conclude_investigation" => {
+                        tool_conclude_investigation_with_state(state, &arguments).await
+                    }
+                    "conclude_audit_session" => {
+                        tool_conclude_audit_session_with_state(state, &arguments).await
+                    }
                     // 回退到 MCP 独有工具（不需要 state）
                     _ => handle_tool_call(tool_name, &arguments).await,
                 }

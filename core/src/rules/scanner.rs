@@ -2,9 +2,9 @@ use crate::rules::model::Rule;
 use crate::scanner::{Finding, Scanner};
 use async_trait::async_trait;
 use regex::Regex;
-use std::path::PathBuf;
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 use uuid::Uuid;
 
@@ -86,7 +86,10 @@ impl RuleScanner {
                 }
             }
         }
-        Self { compiled_rules, context_lines }
+        Self {
+            compiled_rules,
+            context_lines,
+        }
     }
 
     /// 同步扫描文件（可在任意线程调用，不需要 async runtime）
@@ -195,7 +198,12 @@ fn create_finding(
     content: &str,
     context_lines: usize,
 ) -> Finding {
-    let code_snippet = Some(crate::scanner::extract_code_context(content, line_start, line_end, context_lines));
+    let code_snippet = Some(crate::scanner::extract_code_context(
+        content,
+        line_start,
+        line_end,
+        context_lines,
+    ));
     let file_path = path.to_string_lossy().to_string();
     let vuln_type = rule.cwe.clone().unwrap_or_else(|| "Unknown".to_string());
 
@@ -205,7 +213,11 @@ fn create_finding(
     // 安全屏障检测
     let barriers = {
         let b = crate::scanner::detect_barriers(content, line_start, line_end, &vuln_type);
-        if b.is_empty() { None } else { Some(b) }
+        if b.is_empty() {
+            None
+        } else {
+            Some(b)
+        }
     };
 
     // 根据角色和屏障调整严重程度

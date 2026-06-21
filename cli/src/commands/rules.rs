@@ -15,10 +15,7 @@ pub async fn list(rules_dir: Option<String>) -> Result<()> {
 
     let search_dirs = match &rules_dir {
         Some(dir) => vec![dir.clone()],
-        None => vec![
-            ".ctx-audit/rules".to_string(),
-            "rules".to_string(),
-        ],
+        None => vec![".ctx-audit/rules".to_string(), "rules".to_string()],
     };
 
     let mut total = 0;
@@ -107,7 +104,8 @@ pub async fn validate(rules_dir: Option<String>) -> Result<()> {
 
         if serde_yaml::from_str::<deepaudit_core::rules::model::RuleSet>(&content).is_ok()
             || serde_yaml::from_str::<deepaudit_core::rules::model::Rule>(&content).is_ok()
-            || content.contains("kind: taint-rules")  // taint rules have different schema
+            || content.contains("kind: taint-rules")
+        // taint rules have different schema
         {
             renderer.success(&format!("  ✓ {}", file_name));
             valid += 1;

@@ -59,12 +59,20 @@ impl TypeHierarchy {
     }
 
     /// 注册一个类型（类/接口/结构体）
-    pub fn register_type(&mut self, name: &str, kind: TypeKind, parent_classes: &[String],
-                         file_path: &str, start_line: usize, end_line: usize) {
+    pub fn register_type(
+        &mut self,
+        name: &str,
+        kind: TypeKind,
+        parent_classes: &[String],
+        file_path: &str,
+        start_line: usize,
+        end_line: usize,
+    ) {
         let type_name = name.to_string();
         // 更新 extends_map
         if !parent_classes.is_empty() {
-            self.extends_map.insert(type_name.clone(), parent_classes.to_vec());
+            self.extends_map
+                .insert(type_name.clone(), parent_classes.to_vec());
         }
         // 对于接口，记录在 implementations 中
         for parent in parent_classes {
@@ -75,7 +83,8 @@ impl TypeHierarchy {
                     .push(type_name.clone());
             }
         }
-        self.types.entry(type_name.clone())
+        self.types
+            .entry(type_name.clone())
             .or_insert_with(|| TypeInfo {
                 name: type_name,
                 kind,
@@ -180,10 +189,15 @@ mod tests {
     #[test]
     fn test_register_type_with_parent() {
         let mut h = TypeHierarchy::new();
-        h.register_type("Dog", TypeKind::Class, &["Animal".to_string()],
-                         "animals.js", 1, 10);
-        h.register_type("Animal", TypeKind::Class, &[],
-                         "animals.js", 15, 25);
+        h.register_type(
+            "Dog",
+            TypeKind::Class,
+            &["Animal".to_string()],
+            "animals.js",
+            1,
+            10,
+        );
+        h.register_type("Animal", TypeKind::Class, &[], "animals.js", 15, 25);
 
         assert_eq!(h.len(), 2);
         assert!(h.extends_map.contains_key("Dog"));
@@ -193,25 +207,51 @@ mod tests {
     #[test]
     fn test_resolve_virtual_method_inheritance() {
         let mut h = TypeHierarchy::new();
-        h.register_type("Animal", TypeKind::Class, &[],
-                         "animals.js", 1, 10);
-        h.register_type("Dog", TypeKind::Class, &["Animal".to_string()],
-                         "animals.js", 15, 30);
-        h.register_type("Cat", TypeKind::Class, &["Animal".to_string()],
-                         "animals.js", 35, 50);
+        h.register_type("Animal", TypeKind::Class, &[], "animals.js", 1, 10);
+        h.register_type(
+            "Dog",
+            TypeKind::Class,
+            &["Animal".to_string()],
+            "animals.js",
+            15,
+            30,
+        );
+        h.register_type(
+            "Cat",
+            TypeKind::Class,
+            &["Animal".to_string()],
+            "animals.js",
+            35,
+            50,
+        );
 
-        h.register_method("Animal", MethodSignature {
-            name: "speak".into(), file_path: "animals.js".into(),
-            start_line: 5, is_static: false,
-        });
-        h.register_method("Dog", MethodSignature {
-            name: "speak".into(), file_path: "animals.js".into(),
-            start_line: 20, is_static: false,
-        });
-        h.register_method("Cat", MethodSignature {
-            name: "meow".into(), file_path: "animals.js".into(),
-            start_line: 40, is_static: false,
-        });
+        h.register_method(
+            "Animal",
+            MethodSignature {
+                name: "speak".into(),
+                file_path: "animals.js".into(),
+                start_line: 5,
+                is_static: false,
+            },
+        );
+        h.register_method(
+            "Dog",
+            MethodSignature {
+                name: "speak".into(),
+                file_path: "animals.js".into(),
+                start_line: 20,
+                is_static: false,
+            },
+        );
+        h.register_method(
+            "Cat",
+            MethodSignature {
+                name: "meow".into(),
+                file_path: "animals.js".into(),
+                start_line: 40,
+                is_static: false,
+            },
+        );
 
         // Dog.speak() — should find Dog.speak and Animal.speak
         let methods = h.resolve_virtual_method("Dog", "speak");
@@ -233,21 +273,42 @@ mod tests {
     #[test]
     fn test_resolve_virtual_method_interface() {
         let mut h = TypeHierarchy::new();
-        h.register_type("Speaker", TypeKind::Interface, &[],
-                         "types.ts", 1, 5);
-        h.register_type("Dog", TypeKind::Class, &["Speaker".to_string()],
-                         "dog.ts", 1, 20);
-        h.register_type("Cat", TypeKind::Class, &["Speaker".to_string()],
-                         "cat.ts", 1, 20);
+        h.register_type("Speaker", TypeKind::Interface, &[], "types.ts", 1, 5);
+        h.register_type(
+            "Dog",
+            TypeKind::Class,
+            &["Speaker".to_string()],
+            "dog.ts",
+            1,
+            20,
+        );
+        h.register_type(
+            "Cat",
+            TypeKind::Class,
+            &["Speaker".to_string()],
+            "cat.ts",
+            1,
+            20,
+        );
 
-        h.register_method("Dog", MethodSignature {
-            name: "speak".into(), file_path: "dog.ts".into(),
-            start_line: 10, is_static: false,
-        });
-        h.register_method("Cat", MethodSignature {
-            name: "speak".into(), file_path: "cat.ts".into(),
-            start_line: 10, is_static: false,
-        });
+        h.register_method(
+            "Dog",
+            MethodSignature {
+                name: "speak".into(),
+                file_path: "dog.ts".into(),
+                start_line: 10,
+                is_static: false,
+            },
+        );
+        h.register_method(
+            "Cat",
+            MethodSignature {
+                name: "speak".into(),
+                file_path: "cat.ts".into(),
+                start_line: 10,
+                is_static: false,
+            },
+        );
 
         // Speaker.speak() — should find all implementations
         let methods = h.resolve_virtual_method("Speaker", "speak");
@@ -259,8 +320,7 @@ mod tests {
     #[test]
     fn test_resolve_virtual_method_not_found() {
         let mut h = TypeHierarchy::new();
-        h.register_type("Animal", TypeKind::Class, &[],
-                         "test.js", 1, 10);
+        h.register_type("Animal", TypeKind::Class, &[], "test.js", 1, 10);
 
         let methods = h.resolve_virtual_method("Animal", "nonexistent");
         assert!(methods.is_empty());

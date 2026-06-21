@@ -31,13 +31,24 @@ pub async fn execute(
     }
 
     if daemon {
-        return analyze_via_daemon(file, start_line, end_line, show_ast, show_symbols, output_format, &mut renderer).await;
+        return analyze_via_daemon(
+            file,
+            start_line,
+            end_line,
+            show_ast,
+            show_symbols,
+            output_format,
+            &mut renderer,
+        )
+        .await;
     }
 
     renderer.info(&format!("分析文件: {}", file));
 
     // 读取文件内容
-    let content = tokio::fs::read_to_string(&file).await.map_err(|e| miette::miette!("{}", e))?;
+    let content = tokio::fs::read_to_string(&file)
+        .await
+        .map_err(|e| miette::miette!("{}", e))?;
     let lines: Vec<&str> = content.lines().collect();
 
     // 确定行范围
@@ -71,10 +82,14 @@ pub async fn execute(
         let mut classes = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
-            if trimmed.contains("fn ") || trimmed.contains("function ") || trimmed.contains("def ") {
+            if trimmed.contains("fn ") || trimmed.contains("function ") || trimmed.contains("def ")
+            {
                 functions.push(i + 1);
             }
-            if trimmed.contains("class ") || trimmed.contains("struct ") || trimmed.contains("interface ") {
+            if trimmed.contains("class ")
+                || trimmed.contains("struct ")
+                || trimmed.contains("interface ")
+            {
                 classes.push(i + 1);
             }
         }
@@ -100,18 +115,25 @@ async fn analyze_via_daemon(
     output_format: &str,
     renderer: &mut TerminalRenderer,
 ) -> Result<()> {
-    let mut client = DaemonClient::connect().await
-        .map_err(|e| miette::miette!("连接守护进程失败: {} (使用 'ctx-audit daemon start' 启动)", e))?;
+    let mut client = DaemonClient::connect().await.map_err(|e| {
+        miette::miette!(
+            "连接守护进程失败: {} (使用 'ctx-audit daemon start' 启动)",
+            e
+        )
+    })?;
 
     renderer.info(&format!("通过守护进程分析: {}", file));
 
-    let response = client.send_request(RequestCommand::Analyze {
-        file_path: file.clone(),
-        start_line: Some(start_line),
-        end_line,
-        show_ast,
-        show_symbols,
-    }).await.map_err(|e| miette::miette!("分析请求失败: {}", e))?;
+    let response = client
+        .send_request(RequestCommand::Analyze {
+            file_path: file.clone(),
+            start_line: Some(start_line),
+            end_line,
+            show_ast,
+            show_symbols,
+        })
+        .await
+        .map_err(|e| miette::miette!("分析请求失败: {}", e))?;
 
     match response {
         Response::AnalysisResult { content } => {
@@ -135,7 +157,8 @@ async fn analyze_via_daemon(
                         renderer.print("\n代码片段:");
                         for line in snippet {
                             let line_num = line.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let line_content = line.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                            let line_content =
+                                line.get("content").and_then(|v| v.as_str()).unwrap_or("");
                             println!("  {}: {}", line_num, line_content);
                         }
                     }
@@ -158,10 +181,15 @@ async fn analyze_via_daemon(
                         if !flows.is_empty() {
                             renderer.print(&format!("\n污点流 ({}):", flows.len()));
                             for flow in flows {
-                                let source = flow.get("source").and_then(|v| v.as_str()).unwrap_or("?");
+                                let source =
+                                    flow.get("source").and_then(|v| v.as_str()).unwrap_or("?");
                                 let sink = flow.get("sink").and_then(|v| v.as_str()).unwrap_or("?");
-                                let src_line = flow.get("source_line").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let snk_line = flow.get("sink_line").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let src_line = flow
+                                    .get("source_line")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let snk_line =
+                                    flow.get("sink_line").and_then(|v| v.as_u64()).unwrap_or(0);
                                 println!("  {}:{} → {}:{}", source, src_line, sink, snk_line);
                             }
                         }

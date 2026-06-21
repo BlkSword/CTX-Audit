@@ -11,10 +11,10 @@ use std::time::Duration;
 use crate::terminal::TerminalRenderer;
 use ctx_audit_daemon::client::DaemonClient;
 use ctx_audit_daemon::protocol::Response;
-use deepaudit_core::watcher::{FileWatcher, WatcherConfig, WatchEvent, is_source_file};
+use deepaudit_core::sarif::{FindingInput, SarifConverter};
 use deepaudit_core::scanning::{scan_directory, Finding};
-use deepaudit_core::sarif::{SarifConverter, FindingInput};
 use deepaudit_core::taint::TaintAnalyzer;
+use deepaudit_core::watcher::{is_source_file, FileWatcher, WatchEvent, WatcherConfig};
 
 /// 执行 watch 命令
 pub async fn execute(
@@ -26,7 +26,14 @@ pub async fn execute(
     daemon: bool,
 ) -> Result<()> {
     if daemon {
-        return watch_via_daemon(path, severity, output_format.to_string(), output_path, ignore).await;
+        return watch_via_daemon(
+            path,
+            severity,
+            output_format.to_string(),
+            output_path,
+            ignore,
+        )
+        .await;
     }
 
     let mut renderer = TerminalRenderer::new();
@@ -59,7 +66,8 @@ pub async fn execute(
     renderer.info("");
     renderer.info("[Watch] 执行初始全量扫描...");
 
-    let initial_result = watcher.initial_scan()
+    let initial_result = watcher
+        .initial_scan()
         .map_err(|e| miette::miette!("初始扫描失败: {}", e))?;
 
     renderer.success(&format!(
@@ -96,7 +104,9 @@ pub async fn execute(
                     continue;
                 }
 
-                let changed_source_files: Vec<_> = delta.changed_files.iter()
+                let changed_source_files: Vec<_> = delta
+                    .changed_files
+                    .iter()
                     .chain(delta.added_files.iter())
                     .filter(|p| is_source_file(p))
                     .collect();
@@ -127,10 +137,12 @@ pub async fn execute(
                 let full_findings = run_scan(&path, &severity).await;
 
                 // 合并增量结果：保留未变更文件的 findings，替换变更文件的
-                let changed_set: std::collections::HashSet<String> = changed_source_files.iter()
+                let changed_set: std::collections::HashSet<String> = changed_source_files
+                    .iter()
                     .filter_map(|p| p.to_str().map(|s| s.to_string()))
                     .collect();
-                let mut merged_findings: Vec<_> = full_findings.into_iter()
+                let mut merged_findings: Vec<_> = full_findings
+                    .into_iter()
                     .filter(|f| !changed_set.contains(&f.file_path))
                     .collect();
                 merged_findings.extend(incremental_result.findings.clone());
@@ -178,32 +190,32 @@ async fn run_scan(path: &str, severity: &Option<String>) -> Vec<Finding> {
 }
 
 /// 生成并保存 SARIF 文件
-async fn generate_and_save_sarif(
-    findings: &[Finding],
-    output_path: &str,
-) -> anyhow::Result<()> {
+async fn generate_and_save_sarif(findings: &[Finding], output_path: &str) -> anyhow::Result<()> {
     let converter = SarifConverter::new();
-    let inputs: Vec<FindingInput> = findings.iter().map(|f| FindingInput {
-        id: Some(f.finding_id.clone()),
-        title: Some(f.vuln_type.clone()),
-        description: f.description.clone(),
-        severity: f.severity.clone(),
-        category: f.vuln_type.clone(),
-        cwe_id: None,
-        file_path: f.file_path.clone(),
-        start_line: f.line_start as u32,
-        end_line: Some(f.line_end as u32),
-        start_column: None,
-        end_column: None,
-        code_snippet: None,
-        recommendation: None,
-        status: "detected".to_string(),
-        verification_status: None,
-        discovered_by: Some(f.detector.clone()),
-        code_flows: None,
-        fix_suggestions: None,
-        confidence: None,
-    }).collect();
+    let inputs: Vec<FindingInput> = findings
+        .iter()
+        .map(|f| FindingInput {
+            id: Some(f.finding_id.clone()),
+            title: Some(f.vuln_type.clone()),
+            description: f.description.clone(),
+            severity: f.severity.clone(),
+            category: f.vuln_type.clone(),
+            cwe_id: None,
+            file_path: f.file_path.clone(),
+            start_line: f.line_start as u32,
+            end_line: Some(f.line_end as u32),
+            start_column: None,
+            end_column: None,
+            code_snippet: None,
+            recommendation: None,
+            status: "detected".to_string(),
+            verification_status: None,
+            discovered_by: Some(f.detector.clone()),
+            code_flows: None,
+            fix_suggestions: None,
+            confidence: None,
+        })
+        .collect();
 
     let sarif_json = converter.convert_to_json(&inputs)?;
     tokio::fs::write(output_path, sarif_json).await?;
@@ -236,11 +248,15 @@ async fn watch_via_daemon(
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    let mut client = DaemonClient::connect().await
+    let mut client = DaemonClient::connect()
+        .await
         .map_err(|e| miette::miette!("连接守护进程失败: {}", e))?;
 
     renderer.info(&format!("[Watch] 通过守护进程监控: {}", path));
-    renderer.info(&format!("[Watch] 输出: {} ({})", output_path, output_format));
+    renderer.info(&format!(
+        "[Watch] 输出: {} ({})",
+        output_path, output_format
+    ));
     renderer.info("[Watch] 按 Ctrl+C 停止");
 
     // 初始扫描
@@ -250,22 +266,29 @@ async fn watch_via_daemon(
     loop {
         tokio::time::sleep(check_interval).await;
 
-        let response = client.scan(
-            path.clone(),
-            false,
-            false,
-            false,
-            severity.clone(),
-            None,
-        ).await;
+        let response = client
+            .scan(path.clone(), false, false, false, severity.clone(), None)
+            .await;
 
         match response {
-            Ok(Response::ScanResult { findings, duration_ms, .. }) => {
+            Ok(Response::ScanResult {
+                findings,
+                duration_ms,
+                ..
+            }) => {
                 let count = findings.len() as i64;
 
                 if count != last_count {
-                    let diff = if last_count >= 0 { count - last_count } else { count };
-                    let diff_str = if diff > 0 { format!("+{}", diff) } else { format!("{}", diff) };
+                    let diff = if last_count >= 0 {
+                        count - last_count
+                    } else {
+                        count
+                    };
+                    let diff_str = if diff > 0 {
+                        format!("+{}", diff)
+                    } else {
+                        format!("{}", diff)
+                    };
 
                     renderer.success(&format!(
                         "[Watch] 扫描完成: {} 个漏洞 ({}) — 耗时 {}ms",
@@ -276,7 +299,8 @@ async fn watch_via_daemon(
                     let content = match output_format.as_str() {
                         "sarif" => {
                             let converter = SarifConverter::new();
-                            let inputs: Vec<FindingInput> = findings.iter()
+                            let inputs: Vec<FindingInput> = findings
+                                .iter()
                                 .filter_map(|f| serde_json::from_value(f.clone()).ok())
                                 .map(|f: Finding| FindingInput {
                                     id: Some(f.finding_id),
@@ -298,7 +322,8 @@ async fn watch_via_daemon(
                                     code_flows: None,
                                     fix_suggestions: None,
                                     confidence: None,
-                                }).collect();
+                                })
+                                .collect();
                             converter.convert_to_json(&inputs).unwrap_or_default()
                         }
                         "json" => serde_json::to_string_pretty(&findings).unwrap_or_default(),

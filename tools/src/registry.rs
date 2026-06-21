@@ -10,8 +10,8 @@ use tokio::sync::RwLock;
 
 // 导入 bridge 中定义的类型
 use crate::bridge::{
-    ToolCategory, ToolDefinition, ToolParameter, ToolParameterType,
-    ToolResult, ToolError, FindingData,
+    FindingData, ToolCategory, ToolDefinition, ToolError, ToolParameter, ToolParameterType,
+    ToolResult,
 };
 
 /// 工具 Trait

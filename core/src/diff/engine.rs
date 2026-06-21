@@ -183,7 +183,8 @@ impl DiffEngine {
         let files_a_set: HashMap<String, PathBuf> = files_a
             .into_iter()
             .map(|p| {
-                let relative_path = p.strip_prefix(dir_a)
+                let relative_path = p
+                    .strip_prefix(dir_a)
                     .unwrap_or_else(|_| p.as_path())
                     .to_string_lossy()
                     .to_string();
@@ -194,7 +195,8 @@ impl DiffEngine {
         let files_b_set: HashMap<String, PathBuf> = files_b
             .into_iter()
             .map(|p| {
-                let relative_path = p.strip_prefix(dir_b)
+                let relative_path = p
+                    .strip_prefix(dir_b)
                     .unwrap_or_else(|_| p.as_path())
                     .to_string_lossy()
                     .to_string();
@@ -733,10 +735,7 @@ impl DiffEngine {
                 metadata_a.len()
             )
         } else {
-            format!(
-                "[二进制文件] 大小: {} 字节",
-                metadata_a.len()
-            )
+            format!("[二进制文件] 大小: {} 字节", metadata_a.len())
         };
 
         Ok(FileDiff {

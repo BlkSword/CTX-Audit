@@ -5,29 +5,29 @@
 //!
 //! 支持内置工具和外部工具适配器
 
-pub mod registry;
-pub mod executor;
-pub mod bridge;
-pub mod external;
 pub mod ast_tools;
+pub mod bridge;
+pub mod call_graph_tools;
+pub mod executor;
+pub mod external;
+pub mod pattern_tools;
+pub mod registry;
 pub mod search_tools;
 pub mod taint_tools;
-pub mod pattern_tools;
-pub mod call_graph_tools;
 
 // 重新导出常用类型
-pub use registry::{ToolRegistry, Tool};
-pub use executor::ToolExecutor;
-pub use bridge::{register_built_in_tools, register_all_tools};
 pub use ast_tools::register_ast_tools;
+pub use bridge::{register_all_tools, register_built_in_tools};
+pub use executor::ToolExecutor;
+pub use pattern_tools::register_pattern_tools;
+pub use registry::{Tool, ToolRegistry};
 pub use search_tools::register_search_tools;
 pub use taint_tools::register_taint_tools;
-pub use pattern_tools::register_pattern_tools;
 
 // 重新导出模型类型
 pub use bridge::{
-    ToolCategory, ToolDefinition, ToolParameter, ToolParameterType,
-    ToolResult, ToolError, ToolErrorCode, FindingData,
+    FindingData, ToolCategory, ToolDefinition, ToolError, ToolErrorCode, ToolParameter,
+    ToolParameterType, ToolResult,
 };
 
 /// 工具系统版本

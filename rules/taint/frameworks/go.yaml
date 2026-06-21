@@ -1,0 +1,252 @@
+kind: taint-rules
+name: "Go Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "go_http_request"
+    name: "Go HTTP Request"
+    description: "HTTP request parameters, headers, and body from net/http"
+    patterns:
+      - "r.URL.Query().Get"
+      - "r.URL.Query().GetAll"
+      - "r.FormValue"
+      - "r.PostFormValue"
+      - "r.Header.Get"
+      - "r.Header.Values"
+      - "r.Body"
+      - "r.Cookie"
+      - "req.URL.Query().Get"
+      - "req.FormValue"
+      - "http.Request"
+      - "gin.Context"
+      - "c.Query"
+      - "c.Param"
+      - "c.PostForm"
+      - "c.GetHeader"
+      - "echo.Context"
+    languages: ["go"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "go_cli_env"
+    name: "Go CLI and Environment"
+    description: "Command-line arguments and environment variables"
+    patterns:
+      - "os.Args"
+      - "os.Getenv"
+      - "os.Getpid"
+    languages: ["go"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "go_file_input"
+    name: "Go File Input"
+    description: "Data read from files or standard input"
+    patterns:
+      - "os.ReadFile"
+      - "ioutil.ReadFile"
+      - "ioutil.ReadAll"
+      - "bufio.Scanner.Text"
+      - "bufio.Reader.ReadString"
+      - "os.Stdin"
+    languages: ["go"]
+    severity: "Medium"
+    category: "FileInput"
+    ast_patterns: []
+
+sinks:
+  - id: "go_sql_exec"
+    name: "Go SQL Execution"
+    description: "SQL execution via database/sql and ORMs"
+    match_mode: "Semantic"
+    namespaces:
+      - "database/sql"
+      - "gorm.io"
+      - "github.com/jinzhu/gorm"
+      - "github.com/go-xorm"
+      - "upper.io"
+    receiver_patterns:
+      - "db"
+      - "tx"
+      - "conn"
+      - "stmt"
+      - "orm"
+      - "gorm"
+    patterns:
+      - ".Query"
+      - ".QueryRow"
+      - ".Exec"
+      - ".Raw"
+      - ".Prepare"
+    exact_matches:
+      - "db.Query"
+      - "db.QueryRow"
+      - "db.Exec"
+      - "db.Raw"
+      - "tx.Query"
+      - "tx.Exec"
+      - "stmt.Query"
+      - "stmt.Exec"
+    languages: ["go"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "go_cmd_exec"
+    name: "Go Command Execution"
+    description: "OS command execution via os/exec"
+    match_mode: "Semantic"
+    namespaces:
+      - "os/exec"
+      - "golang.org/x/sys/execabs"
+    receiver_patterns:
+      - "cmd"
+      - "command"
+    patterns:
+      - "exec.Command"
+      - "exec.CommandContext"
+      - ".Run"
+      - ".Output"
+      - ".CombinedOutput"
+      - ".Start"
+    exact_matches:
+      - "exec.Command"
+      - "exec.CommandContext"
+      - "os/exec.Command"
+    languages: ["go"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "go_ssrf"
+    name: "Go SSRF"
+    description: "Outbound HTTP requests with user-controlled URLs"
+    match_mode: "Semantic"
+    namespaces:
+      - "net/http"
+      - "github.com/go-resty"
+      - "github.com/parnurzeal/gorequest"
+    receiver_patterns:
+      - "client"
+      - "http"
+    patterns:
+      - "http.Get"
+      - "http.Post"
+      - "http.PostForm"
+      - "http.Do"
+      - "http.Head"
+      - ".Get"
+      - ".Post"
+      - ".Do"
+    exact_matches:
+      - "http.Get"
+      - "http.Post"
+      - "http.PostForm"
+      - "http.Head"
+      - "Client.Do"
+      - "http.Client.Do"
+    languages: ["go"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "go_deserialization"
+    name: "Go Unsafe Deserialization"
+    description: "JSON, YAML, and Gob deserialization"
+    match_mode: "Semantic"
+    namespaces:
+      - "encoding/json"
+      - "encoding/gob"
+      - "gopkg.in/yaml"
+      - "github.com/go-yaml/yaml"
+      - "sigs.k8s.io/yaml"
+    patterns:
+      - "json.Unmarshal"
+      - "json.NewDecoder"
+      - "gob.Decode"
+      - "gob.NewDecoder"
+      - "yaml.Unmarshal"
+      - "yaml.UnmarshalStrict"
+    exact_matches:
+      - "json.Unmarshal"
+      - "json.NewDecoder"
+      - "gob.Decode"
+      - "yaml.Unmarshal"
+    languages: ["go"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "go_file_path"
+    name: "Go File Path"
+    description: "File system operations with user-controlled paths"
+    match_mode: "Semantic"
+    namespaces:
+      - "os"
+      - "io/ioutil"
+    patterns:
+      - "os.Open"
+      - "os.OpenFile"
+      - "os.Create"
+      - "os.ReadFile"
+      - "os.WriteFile"
+      - "ioutil.WriteFile"
+      - "ioutil.ReadFile"
+      - "os.Remove"
+      - "os.Rename"
+    exact_matches:
+      - "os.Open"
+      - "os.OpenFile"
+      - "os.Create"
+      - "os.WriteFile"
+    languages: ["go"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "go_template_injection"
+    name: "Go Template Injection"
+    description: "text/template and html/template execution with user input"
+    match_mode: "Semantic"
+    namespaces:
+      - "text/template"
+      - "html/template"
+    patterns:
+      - "template.Parse"
+      - "template.New"
+      - "template.Execute"
+      - ".Execute"
+      - ".ExecuteTemplate"
+    exact_matches:
+      - "template.Execute"
+      - "template.ExecuteTemplate"
+    languages: ["go"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "html/template"
+    description: "HTML auto-escaping template"
+  - pattern: "url.Parse"
+    description: "URL parsing validation"
+  - pattern: "strconv.Atoi"
+    description: "Integer parsing"
+  - pattern: "strconv.ParseInt"
+    description: "Integer parsing"
+  - pattern: "validator"
+    description: "Go validator package"

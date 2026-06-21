@@ -199,11 +199,7 @@ impl VectorStore {
     }
 
     /// 余弦相似度搜索
-    pub fn search(
-        &self,
-        query: &[f32],
-        k: usize,
-    ) -> Result<Vec<SearchResult>, VectorStoreError> {
+    pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<SearchResult>, VectorStoreError> {
         if self.entries.is_empty() {
             return Err(VectorStoreError::EmptyStore);
         }
