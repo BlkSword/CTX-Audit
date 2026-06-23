@@ -253,4 +253,106 @@ version: "1.0"
             rules_dir,
         );
     }
+
+    #[test]
+    fn test_framework_rules_contain_expected_entries() {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let rules_dir = std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap()
+            .join("rules")
+            .join("taint");
+
+        if !rules_dir.exists() {
+            eprintln!("Skipping framework rules test: {:?} not found", rules_dir);
+            return;
+        }
+
+        let loaded = load_taint_rules_from_dir(&rules_dir).unwrap();
+
+        // Java source 包含 OWASP 常用入口
+        let java_http_request = loaded
+            .sources
+            .iter()
+            .find(|s| s.id == "java_http_request")
+            .expect("java_http_request source should exist");
+        assert!(
+            java_http_request.patterns.iter().any(|p| p.contains("getCookies")),
+            "java_http_request should cover request.getCookies"
+        );
+        assert!(
+            java_http_request.patterns.iter().any(|p| p.contains("getParameterMap")),
+            "java_http_request should cover request.getParameterMap"
+        );
+
+        // Java sink 包含 XSS / XPath / SQL prepare
+        let sink_ids: Vec<&str> = loaded.sinks.iter().map(|s| s.id.as_str()).collect();
+        assert!(sink_ids.contains(&"java_xss_output"), "java_xss_output sink should exist");
+        assert!(sink_ids.contains(&"java_xpath"), "java_xpath sink should exist");
+
+        let java_sql = loaded
+            .sinks
+            .iter()
+            .find(|s| s.id == "java_sql_exec")
+            .expect("java_sql_exec sink should exist");
+        assert!(
+            java_sql.patterns.iter().any(|p| p.contains("prepareStatement")),
+            "java_sql_exec should cover prepareStatement"
+        );
+        assert!(
+            java_sql.patterns.iter().any(|p| p.contains("prepareCall")),
+            "java_sql_exec should cover prepareCall"
+        );
+
+        // Java file path sink 应使用 Substring 模式以确保 new File* 能命中
+        let java_file_path = loaded
+            .sinks
+            .iter()
+            .find(|s| s.id == "java_file_path")
+            .expect("java_file_path sink should exist");
+        assert!(
+            matches!(
+                java_file_path.match_mode,
+                crate::analysis::taint::MatchMode::Substring
+            ),
+            "java_file_path should use Substring matching for constructor calls"
+        );
+
+        // C/C++ sink 包含宽字符和新增 format/path 函数
+        let c_buffer = loaded
+            .sinks
+            .iter()
+            .find(|s| s.id == "c_buffer_overflow")
+            .expect("c_buffer_overflow sink should exist");
+        assert!(
+            c_buffer.patterns.iter().any(|p| p.contains("wcsncpy")),
+            "c_buffer_overflow should cover wcsncpy"
+        );
+
+        let c_format = loaded
+            .sinks
+            .iter()
+            .find(|s| s.id == "c_format_string")
+            .expect("c_format_string sink should exist");
+        assert!(
+            c_format.patterns.iter().any(|p| p.contains("fwprintf")),
+            "c_format_string should cover fwprintf"
+        );
+
+        let c_path = loaded
+            .sinks
+            .iter()
+            .find(|s| s.id == "c_file_path")
+            .expect("c_file_path sink should exist");
+        assert!(
+            c_path.patterns.iter().any(|p| p.contains("freopen")),
+            "c_file_path should cover freopen"
+        );
+
+        // snprintf 不应作为全局 sanitizer，否则 user-controlled format 的 snprintf 会被误判为已净化
+        assert!(
+            !loaded.sanitizer_patterns.iter().any(|p| p == "snprintf"),
+            "snprintf should not be a global sanitizer for format-string taint"
+        );
+    }
 }

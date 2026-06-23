@@ -1431,8 +1431,22 @@ pub async fn scan_directory_deep_with_rules_progress(
             .map(|fp| std::path::PathBuf::from(fp))
             .collect();
 
+        // 加载与 Stage B 一致的 YAML 污点规则，注入跨文件分析器
+        let rules_dir = std::path::PathBuf::from("rules/taint");
+        let (taint_sources, taint_sinks) =
+            crate::rules::taint_loader::load_taint_rules_from_dir(&rules_dir)
+                .map(|loaded| (loaded.sources, loaded.sinks))
+                .unwrap_or_default();
+
         let cross_file_result = if !taint_files.is_empty() {
-            let mut analyzer = crate::analysis::cross_file::CrossFileTaintAnalyzer::new();
+            let mut analyzer = if !taint_sources.is_empty() || !taint_sinks.is_empty() {
+                crate::analysis::cross_file::CrossFileTaintAnalyzer::with_rules(
+                    taint_sources,
+                    taint_sinks,
+                )
+            } else {
+                crate::analysis::cross_file::CrossFileTaintAnalyzer::new()
+            };
             // 注入 Stage B 的 CPG 缓存，使 compute_single_summary 使用精确摘要
             if !accumulated_cpg.is_empty() {
                 analyzer.set_cpg_cache(accumulated_cpg, accumulated_flows);

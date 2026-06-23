@@ -9,11 +9,18 @@ sources:
     patterns:
       - "request.getParameter"
       - "request.getParameterValues"
+      - "request.getParameterMap"
+      - "request.getParameterNames"
       - "request.getHeader"
       - "request.getHeaders"
       - "request.getQueryString"
+      - "request.getCookies"
       - "request.getInputStream"
       - "request.getReader"
+      - "request.getRemoteUser"
+      - "request.getServletPath"
+      - "request.getPathInfo"
+      - "request.getRequestURI"
       - "req.getParameter"
       - "req.getHeader"
       - "HttpServletRequest"
@@ -77,6 +84,8 @@ sinks:
       - ".executeQuery"
       - ".execute"
       - ".executeUpdate"
+      - ".prepareStatement"
+      - ".prepareCall"
       - ".query"
       - ".selectOne"
       - ".selectList"
@@ -197,10 +206,7 @@ sinks:
   - id: "java_file_path"
     name: "Java File Path"
     description: "File system operations with user-controlled paths"
-    match_mode: "Semantic"
-    namespaces:
-      - "java.io"
-      - "java.nio.file"
+    match_mode: "Substring"
     patterns:
       - "new File("
       - "new FileInputStream("
@@ -265,6 +271,52 @@ sinks:
     vulnerability_type: "CodeInjection"
     severity: "High"
     cwe_id: "CWE-90"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_xss_output"
+    name: "Java XSS Output"
+    description: "Writing user-controlled data to HTTP response output"
+    match_mode: "Semantic"
+    receiver_patterns:
+      - "response"
+      - "writer"
+      - "out"
+      - "outputStream"
+    patterns:
+      - ".print"
+      - ".println"
+      - ".write"
+    exact_matches:
+      - "PrintWriter.println"
+      - "PrintWriter.print"
+      - "PrintWriter.write"
+      - "ServletOutputStream.write"
+    languages: ["java"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "High"
+    cwe_id: "CWE-79"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_xpath"
+    name: "Java XPath Injection"
+    description: "XPath evaluation with user-controlled expressions"
+    match_mode: "Semantic"
+    namespaces:
+      - "javax.xml.xpath"
+    receiver_patterns:
+      - "xpath"
+    patterns:
+      - ".evaluate"
+      - ".compile"
+    exact_matches:
+      - "XPath.evaluate"
+      - "XPath.compile"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "High"
+    cwe_id: "CWE-643"
     sensitive_params: [0]
     ast_patterns: []
 

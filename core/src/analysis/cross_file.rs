@@ -477,6 +477,9 @@ pub struct CrossFileTaintAnalyzer {
     type_hierarchy: super::type_hierarchy::TypeHierarchy,
     /// 框架中间件模型（Express app.use, Django MIDDLEWARE）
     middleware_model: super::middleware::MiddlewareModel,
+    /// 调用点参数缓存：key = "caller_func_id:call_line"，value = 该调用的参数列表
+    /// 用于跨文件摘要传播时判断 caller 的污点变量是否传入 callee 的敏感参数
+    call_site_args: HashMap<String, Vec<crate::ast::ArgInfo>>,
 }
 
 impl CrossFileTaintAnalyzer {
@@ -493,7 +496,22 @@ impl CrossFileTaintAnalyzer {
             variable_type_map: HashMap::new(),
             type_hierarchy: super::type_hierarchy::TypeHierarchy::new(),
             middleware_model: super::middleware::MiddlewareModel::new(),
+            call_site_args: HashMap::new(),
         }
+    }
+
+    /// 使用外部加载的 YAML 污点规则创建分析器
+    ///
+    /// 让跨文件分析复用 Stage B 的 taint 规则（如 rules/taint/frameworks/*.yaml），
+    /// 而不是只依赖默认硬编码规则。
+    pub fn with_rules(
+        sources: Vec<super::taint::TaintSource>,
+        sinks: Vec<super::taint::TaintSink>,
+    ) -> Self {
+        let mut analyzer = Self::new();
+        analyzer.source_patterns = sources;
+        analyzer.sink_patterns = sinks;
+        analyzer
     }
 
     /// 注入 CPG 缓存（从 scan pipeline Stage B 传入）
@@ -1321,6 +1339,12 @@ impl CrossFileTaintAnalyzer {
                 })
                 .collect();
 
+            // 缓存每个调用点的参数，供摘要传播使用
+            for c in &calls_in_range {
+                let site_key = format!("{}:{}", func_id, c.line);
+                self.call_site_args.insert(site_key, c.arguments.clone());
+            }
+
             // 检测函数参数中哪些可能是污点
             let parameters: Vec<FunctionParameter> = self.extract_ast_parameters(symbol, &content);
 
@@ -1330,7 +1354,19 @@ impl CrossFileTaintAnalyzer {
                 symbol.end_line as usize,
             );
             let is_source = self.is_taint_source(&func_name, &body_text);
-            let (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
+
+            // 优先按函数体内的具体调用判断 sink（能处理 Semantic 规则如 stmt.executeQuery）
+            let (mut is_sink, mut sink_type) = (false, None);
+            for call in &calls_in_range {
+                if let Some(vt) = self.is_sink_call(call) {
+                    is_sink = true;
+                    sink_type = Some(vt);
+                    break;
+                }
+            }
+            if !is_sink {
+                (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
+            }
 
             let node = CallGraphNode {
                 id: func_id.clone(),
@@ -2121,6 +2157,24 @@ impl CrossFileTaintAnalyzer {
             return (true, None);
         }
         (false, None)
+    }
+
+    /// 判断单个函数调用是否命中某个 sink 规则（支持 Semantic 规则）
+    fn is_sink_call(&self, call: &CallInfo) -> Option<VulnerabilityType> {
+        for s in &self.sink_patterns {
+            // 先按 callee + receiver 做语义匹配
+            if s.matches_with_context(&call.callee, call.receiver.as_deref(), "*") {
+                return Some(s.vulnerability_type);
+            }
+            // 再按完整调用表达式做子串/语义匹配（如 stmt.executeQuery）
+            if let Some(receiver) = &call.receiver {
+                let qualified = format!("{}.{}", receiver, call.callee);
+                if s.matches_with_context(&qualified, Some(receiver), "*") {
+                    return Some(s.vulnerability_type);
+                }
+            }
+        }
+        None
     }
 
     /// 从文件内容按行范围提取函数体文本
@@ -3660,6 +3714,71 @@ function query(sql) {
         );
         let handler = handler_node.unwrap();
         assert!(!handler.calls.is_empty(), "handleRequest should have calls");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_java_cross_file_taint_with_yaml_rules() {
+        // 验证注入 YAML 规则后，跨文件分析能发现 Java 多文件 source->sink 链路
+        let tmp_dir = std::env::temp_dir().join("ctx_audit_java_cross_file_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let controller_code = r#"
+import javax.servlet.http.HttpServletRequest;
+
+public class Controller {
+    private final UserDao userDao = new UserDao();
+
+    public void doGet(HttpServletRequest request) throws Exception {
+        String id = request.getParameter("id");
+        userDao.findById(id);
+    }
+}
+"#;
+        let dao_code = r#"
+import java.sql.Statement;
+
+public class UserDao {
+    private Statement stmt;
+
+    public void findById(String userId) throws Exception {
+        String sql = "SELECT * FROM users WHERE id = " + userId;
+        stmt.executeQuery(sql);
+    }
+}
+"#;
+
+        std::fs::write(tmp_dir.join("Controller.java"), controller_code).unwrap();
+        std::fs::write(tmp_dir.join("UserDao.java"), dao_code).unwrap();
+
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let rules_dir = std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap()
+            .join("rules")
+            .join("taint");
+
+        let loaded = crate::rules::taint_loader::load_taint_rules_from_dir(&rules_dir)
+            .expect("load taint rules");
+        let mut analyzer = CrossFileTaintAnalyzer::with_rules(loaded.sources, loaded.sinks);
+        let result = analyzer.analyze_project(&tmp_dir);
+
+        assert!(
+            result.stats.taint_flows > 0,
+            "跨文件分析应发现 Controller.doGet -> UserDao.findById -> executeQuery 的污点流，实际 {} 条",
+            result.stats.taint_flows
+        );
+
+        let has_controller_to_dao = result.taint_flows.iter().any(|f| {
+            f.source.file_path.ends_with("Controller.java")
+                && f.sink.file_path.ends_with("UserDao.java")
+        });
+        assert!(
+            has_controller_to_dao,
+            "应存在从 Controller.java 到 UserDao.java 的跨文件污点流"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }

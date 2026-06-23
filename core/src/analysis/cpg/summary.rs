@@ -29,20 +29,21 @@ pub fn compute_summary_from_cpg(
 
     for (param_idx, param) in sig.params.iter().enumerate() {
         let param_name = &param.name;
-        let param_path = AccessPath::simple(param_name);
 
-        // 检查是否有 TaintFlow 从该参数的行开始
+        // 收集从该参数出发的污点流。
+        // source.symbol 与参数名精确匹配，或参数作为对象/数组根（如 input.xxx / input[0]）。
         let param_flows: Vec<&TaintFlow> = taint_flows
             .iter()
             .filter(|f| {
-                // 源在参数行附近（±2 行容差）
-                let source_line = f.source.line;
-                (source_line as i64 - sig.start_line as i64).abs() <= 2
-                    || f.source.symbol.contains(param_name)
+                let src = f.source.symbol.trim();
+                src == param_name
+                    || src.starts_with(&format!("{}.", param_name))
+                    || src.starts_with(&format!("{}[", param_name))
             })
             .collect();
 
-        // 参数是否影响返回值：如果有任何 flow 的路径经过该参数
+        // 参数存在污点流：保守认为它可能影响返回值（caller 需继续追踪）。
+        // 后续可通过返回语句分析进一步精确化。
         let affects_return = !param_flows.is_empty();
         taint_propagation.push((param_idx, affects_return));
 

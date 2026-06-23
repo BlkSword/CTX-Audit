@@ -177,9 +177,36 @@ target/tmp/report_java_*.md
 target/tmp/report_juliet_*.md
 ```
 
-## 8. 限制说明
+## 8. 后续优化（已实施）
+
+基于基准测试暴露的短板，已完成以下规则层与引擎层优化：
+
+1. **Java/C/C++ 污点规则补全**
+   - Java：`java_file_path` 改为 `Substring` 匹配，`java_sql_exec` 补充 `prepareStatement`/`prepareCall`，新增 `java_xss_output`、`java_xpath`，source 补充 `getCookies`/`getParameterMap`/`getReader` 等 OWASP 常用入口。
+   - C/C++：buffer overflow 补充 `wcsncpy`/`wcscat`/`wcsncat`/`strncpy`；format string 补充 `fwprintf`/`swprintf`/`wprintf`；path traversal 补充 `freopen`/`unlink`/`chdir` 等；移除对 `snprintf` 的全局 sanitizer 误判。
+
+2. **跨文件分析注入 YAML 规则**
+   - `CrossFileTaintAnalyzer` 新增 `with_rules` 构造函数，深度扫描 Stage C 把 Stage B 已加载的 YAML 规则（`rules/taint/frameworks/*.yaml`）注入跨文件分析器，而不是只使用硬编码默认规则。
+
+3. **调用级 sink 识别**
+   - 跨文件调用图构建时，对每个 `CallInfo` 使用 `matches_with_context(callee, receiver, *)` 判断是否为 sink，解决 Semantic 规则（如 `stmt.executeQuery`）无法通过函数体文本匹配的问题。
+
+4. **函数摘要精细化**
+   - `compute_summary_from_cpg` 改用参数名精确/前缀匹配（而非行号容差）来识别参数出发的污点流，使 `direct_sinks` 更准确。
+
+5. **跨文件回归测试**
+   - 新增 `test_java_cross_file_taint_with_yaml_rules`：Controller.doGet 读取 `request.getParameter` 并调用 `UserDao.findById`，最终 `stmt.executeQuery` 在另一个文件。注入规则后，跨文件分析能发现该链路。
+
+6. **构建验证**
+   - `cargo test -p deepaudit-core --lib`：206 个测试全部通过。
+   - `cargo build --release --bin ctx-audit`：release CLI 编译成功。
+
+> 注：按你的要求，未重新跑 OWASP/Juliet 静态基准得分，上述优化效果主要通过新增回归测试与代码/规则改动本身验证。
+
+## 9. 限制说明
 
 - Juliet 评估基于抽样（CWE-121/122/134 的 s01/s02），不能代表整个 Juliet 全集。
 - 评估按“文件+行号+CWE”对齐，对跨多行的复杂 flaw 可能存在容差内匹配偏差。
 - 工具输出中部分发现的 `vuln_type` 为通用名称，已按 `benchmarks/evaluate.py` 中的映射表归一化到 CWE；若映射不全，可能导致 TP 被计入 FP/FN。
 - 本次测试未对规则做针对性调优，结果反映的是当前代码与规则状态。
+- 跨文件摘要传播目前仍以函数级 source/sink 匹配为主，参数级精确传播和返回污点追踪是下一步方向。
