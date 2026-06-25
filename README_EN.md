@@ -39,7 +39,7 @@ CTX-Audit is a code security analysis engine designed for LLM-assisted auditing.
 - **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
 - **Data flow tracking**: Powered by CPG (Code Property Graph) engine — fuses CFG + AST metadata + alias maps into a unified structure. Supports path-sensitive analysis (conditional sanitization detection), AccessPath prefix matching (`req.body` → `req.body.name`), destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
 - **LLM autonomous audit loop**: Exposes 31 tools (including call graph query + audit session tools) via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → evidence collection → investigative verification → TP/FP verdict → rule generation → re-validation"
-- **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), confidence scoring, multi-engine corroboration, baseline suppression
+- **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), rule-level sanitizer mechanism (skip findings when `setSecure`/`escape`/`encodeForHtml` etc. appears before the match), confidence scoring, multi-engine corroboration, baseline suppression
 - **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
 - **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
 
@@ -367,6 +367,9 @@ severity = "medium"                # Exact severity filter (optional)
 min_severity = "medium"            # Minimum severity threshold (filters low/info)
 context_lines = 3                  # Code context lines (±N lines)
 deep = false                       # Enable deep scan by default
+# Deep scan taint limits
+taint_max_candidate_files = 5000   # Max files to inspect when resolving sources across the repo
+taint_max_file_kb = 500            # Skip individual source files larger than N KB during deep taint resolution
 
 # Exclude dirs/file patterns (fully config-driven, defaults generated on first run)
 exclude_patterns = [
@@ -475,8 +478,8 @@ Each project can place project-level files in the `.ctx-audit/` directory:
 - **Call graph construction**: Auto-extracts function nodes and call relationships, supports anonymous callback registration (arrow functions/function expressions) and independent HTTP response callback body analysis
 - **Cross-file resolution**: Two-phase call resolution — Phase 1 via Import/Require alias exact matching to target file and export name, Phase 2 global name fallback + receiver narrowing
 - **Method call tracking**: `CallTarget` preserves `obj.method()` receiver info, supports both `property` and `field` AST field names (JS/Java compatible)
-- **Function summaries**: Bottom-up computation of each function's taint propagation signature
-- **Path tracing**: BFS search for source→sink cross-file call paths, with sink detection in Return nodes
+- **Function summaries**: Bottom-up computation of each function's taint propagation signature; summaries now include `param_to_calls` to track downstream call arguments reached by each parameter, enabling multi-hop propagation through renames/field accesses
+- **Path tracing**: BFS search for source→sink cross-file call paths, with sink detection in Return nodes and return-value LHS back-propagation to the caller
 - **Context assembly**: Identifies callers, callees, and trust boundaries
 - **CPG auto-summaries**: FunctionCPG cache from Stage B is passed to Stage C, auto-generating precise function summaries (replacing heuristic guesses) with accurate sink line numbers and param→return propagation
 - **Path-sensitive analysis**: Branch-aware taint propagation — `if (isSafe(x))` True branch auto-marks sanitized, reducing false positives under conditional guards
@@ -598,8 +601,8 @@ CTX-Audit supports user-written custom YAML rules, placed in `.ctx-audit/rules/`
 
 **Two rule types**:
 
-1. **Pattern Rules** — Regex-based code pattern matching (e.g. `rules/command-injection.yaml`)
-2. **Taint Rules** — Define taint sources, sinks, and sanitizers (e.g. `rules/taint/generic-taint.yaml`)
+1. **Pattern Rules** — Regex-based code pattern matching (e.g. `rules/command-injection.yaml`), with optional `sanitizers` list for pre-match sanitization detection
+2. **Taint Rules** — Define taint sources, sinks, and sanitizers (e.g. `rules/taint/generic-taint.yaml`), where each sink can declare `sanitizers`
 
 **Rule priority**: `--rules` flag > `.ctx-audit/rules/` > built-in `rules/`
 
@@ -944,7 +947,7 @@ Benchmarks based on the [Next.js](https://github.com/vercel/next.js) repository 
 
 **Performance tips**:
 - Quick scan merges attack surface mapping and rule scanning into a single file pass — no extra overhead
-- Deep scan on large projects automatically limits candidate files (top 200 by severity) and processes in batches to prevent OOM
+- Deep scan on large projects limits candidate files via `scan.taint_max_candidate_files` and file size via `scan.taint_max_file_kb` to prevent OOM
 - Daemon mode uses content-hash caching — unchanged files are skipped in incremental scans
 - SCA first-run is slower (network requests); subsequent runs use a 24h local cache
 - Use `--exclude` to append exclusions for irrelevant directories and reduce scan file count
@@ -953,7 +956,7 @@ Benchmarks based on the [Next.js](https://github.com/vercel/next.js) repository 
 
 ```bash
 cargo build --release        # Build (ctx-audit + ctx-audit-daemon)
-cargo test --workspace       # Run tests (188 tests)
+cargo test --workspace       # Run tests (210+ tests)
 cargo fmt                    # Format
 cargo clippy                 # Lint
 ```
@@ -974,8 +977,9 @@ cargo clippy                 # Lint
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |
 | Config-driven | All exclusions, severity thresholds, and engine toggles via config.toml |
-| Test Coverage | 188 tests |
+| Test Coverage | 210+ tests |
 | NodeGoat Benchmark | 7/7 ground truth hits (eval/redirect/ReDoS/IDOR/NoSQL/SSRF/XSS), 25+ findings |
+| WebGoat Real-Project Validation | `--deep` scan detects CWE-502 XStream deserialization, CWE-259 hardcoded password, CWE-22 path traversal, etc.; CWE-614 false positives reduced from 7 to 3 via the sanitizer mechanism |
 
 ## License
 

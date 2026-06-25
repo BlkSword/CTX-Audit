@@ -39,7 +39,7 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 - **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
 - **数据流追踪**：基于 CPG（代码属性图）引擎，融合 CFG + AST 元数据 + 别名映射，支持路径敏感分析（条件净化检测）、属性路径前缀匹配（`req.body` → `req.body.name`）、AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
 - **LLM 自主审计闭环**：通过 MCP 协议暴露 31 个工具（含调用图查询 + 审计会话），LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → 调查式验证 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
-- **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、置信度评分、多引擎交叉确认、基线抑制
+- **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、规则级 sanitizer 机制（命中前存在 `setSecure`/`escape`/`encodeForHtml` 等净化代码即跳过）、置信度评分、多引擎交叉确认、基线抑制
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
 
@@ -368,6 +368,8 @@ severity = "medium"                # 精确严重程度过滤 (可选)
 min_severity = "medium"            # 最低严重程度阈值 (过滤 low/info)
 context_lines = 3                  # 代码上下文行数 (±N 行)
 deep = false                       # 是否默认启用深度扫描
+taint_max_candidate_files = 5000   # 深度扫描 AST 候选文件上限
+taint_max_file_kb = 500            # 深度扫描单文件大小上限 (KB)
 
 # 排除目录/文件模式（完全由配置文件控制，首次运行生成默认值）
 exclude_patterns = [
@@ -476,8 +478,8 @@ key 格式为 `文件路径:行号:漏洞类型`，value 为忽略原因。扫�
 - **调用图构建**：自动提取项目函数节点和调用关系，支持匿名回调注册（箭头函数/函数表达式）和 HTTP 响应回调体独立分析
 - **跨文件解析**：两阶段调用解析——Phase 1 通过 Import/Require 别名精确匹配目标文件和导出名，Phase 2 全局名称回退 + receiver 缩小范围
 - **方法调用追踪**：`CallTarget` 保留 `obj.method()` 的 receiver 信息，支持 `property` 和 `field` AST 字段名（JS/Java 兼容）
-- **函数摘要**：自底向上计算每个函数的污点传播签名
-- **路径追踪**：BFS 查找 source→sink 的跨文件调用路径，支持 Return 节点中的 sink 检测
+- **函数摘要**：自底向上计算每个函数的污点传播签名；摘要新增 `param_to_calls`，记录参数通过数据流到达的下游调用参数，支持中间函数重命名/字段访问后的多跳传播
+- **路径追踪**：BFS 查找 source→sink 的跨文件调用路径，支持 Return 节点中的 sink 检测，并支持 callee 返回值赋值给 caller LHS 变量的回传
 - **上下文组装**：识别 callers、callees、信任边界
 - **CPG 自动摘要**：Stage B 构建的 FunctionCPG 缓存传递给 Stage C，自动生成精确函数摘要
 - **路径敏感分析**：条件分支感知的污点传播，`if (isSafe(x))` 的 True 分支自动标记净化
@@ -599,8 +601,8 @@ CTX-Audit 支持用户编写自定义 YAML 规则，放置在 `.ctx-audit/rules/
 
 **两种规则类型**：
 
-1. **Pattern Rules** — 基于正则的代码模式匹配（如 `rules/command-injection.yaml`）
-2. **Taint Rules** — 定义污点源、汇和净化函数（如 `rules/taint/generic-taint.yaml`）
+1. **Pattern Rules** — 基于正则的代码模式匹配（如 `rules/command-injection.yaml`），支持可选 `sanitizers` 列表用于命中前净化检测
+2. **Taint Rules** — 定义污点源、汇和净化函数（如 `rules/taint/generic-taint.yaml`），每个 sink 可声明 `sanitizers`
 
 **规则优先级**：`--rules` 参数 > `.ctx-audit/rules/` > 内置 `rules/`
 
@@ -946,7 +948,7 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 
 **性能提示**：
 - 快速扫描已合并攻击面映射与规则扫描为单次文件遍历，无需额外开销
-- 大型项目深度扫描自动限制候选文件数（top 200 by severity），分批处理避免 OOM
+- 大型项目深度扫描通过 `scan.taint_max_candidate_files` / `scan.taint_max_file_kb` 限制候选文件数和文件大小，避免 OOM
 - 守护进程模式下增量扫描利用 content-hash 缓存，无变更文件跳过扫描
 - SCA 首次扫描较慢（网络请求），后续使用 24h 本地缓存
 - `--exclude` 排除不关心的目录可显著减少扫描文件数
@@ -955,7 +957,7 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 
 ```bash
 cargo build --release        # 构建（ctx-audit + ctx-audit-daemon）
-cargo test --workspace       # 运行测试（188 个测试）
+cargo test --workspace       # 运行测试（210+ 个测试）
 cargo fmt                    # 格式化
 cargo clippy                 # 代码检查
 ```
@@ -966,7 +968,7 @@ cargo clippy                 # 代码检查
 |------|------|
 | CPG 分析引擎 | CFG + AST 元数据 + 别名映射融合，路径敏感污点传播，AccessPath 属性路径追踪，12 语言 AST，30+ sanitizer |
 | 动态语言追踪 | AccessPath + AliasMap + 解构 + 属性访问 + await + Promise 链 |
-| 跨文件追踪 | 调用图 + Import-Aware 别名解析 + Callback 注册 + CallTarget receiver 追踪 + 类型层次虚方法分发 + 框架中间件虚拟边 + CPG 自动摘要 + BFS 路径查找 + 构造函数 FP 过滤 + 回调体独立分析 |
+| 跨文件追踪 | 调用图 + Import-Aware 别名解析 + Callback 注册 + CallTarget receiver 追踪 + 类型层次虚方法分发 + 框架中间件虚拟边 + CPG 自动摘要 + `param_to_calls` 多跳传播 + 返回值 LHS 回传 + BFS 路径查找 + 构造函数 FP 过滤 + 回调体独立分析 |
 | TypeScript 集成 | 类型注解 → 自动污点源识别（HttpRequest, Request 等） |
 | 模式匹配规则 | 40 条模式规则 + 5 条污点规则，覆盖 6 语言 + 6 框架 |
 | 误报控制 | 文件角色分类 + 安全屏障检测 + 多引擎置信度融合 + 基线抑制 |
@@ -976,8 +978,9 @@ cargo clippy                 # 代码检查
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
 | 配置驱动 | 所有排除项、严重程度阈值、引擎开关均可通过 config.toml 控制 |
-| 测试覆盖 | 188 个测试 |
+| 测试覆盖 | 210+ 个测试 |
 | NodeGoat Benchmark | 7/7 ground truth 命中（eval/重定向/ReDoS/IDOR/NoSQL/SSRF/XSS），25+ findings |
+| WebGoat 真实项目验证 | `--deep` 扫描检出 CWE-502 XStream 反序列化、CWE-259 硬编码密码、CWE-22 路径遍历等；CWE-614 误报经 sanitizer 机制从 7 降至 3 |
 
 ## 许可证
 
