@@ -28,6 +28,13 @@ pub struct CallTarget {
     /// 完整调用表达式文本（用于回退匹配）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
+    /// 调用点行号（1-based），用于在 call_site_args 中定位实参
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl CallTarget {
@@ -36,6 +43,7 @@ impl CallTarget {
             callee: callee.into(),
             receiver: None,
             raw: None,
+            line: 0,
         }
     }
 
@@ -47,7 +55,13 @@ impl CallTarget {
             callee,
             receiver: Some(receiver),
             raw,
+            line: 0,
         }
+    }
+
+    pub fn with_line(mut self, line: usize) -> Self {
+        self.line = line;
+        self
     }
 }
 
@@ -65,11 +79,12 @@ impl From<&str> for CallTarget {
 
 impl From<CallInfo> for CallTarget {
     fn from(c: CallInfo) -> Self {
-        if c.is_method {
+        let base = if c.is_method {
             Self::with_receiver(c.callee, c.receiver.unwrap_or_default())
         } else {
             Self::new(c.callee)
-        }
+        };
+        base.with_line(c.line)
     }
 }
 
@@ -706,16 +721,7 @@ impl CrossFileTaintAnalyzer {
 
                 let calls_in_func: Vec<CallTarget> = calls_in_range
                     .iter()
-                    .map(|c| {
-                        if c.is_method {
-                            CallTarget::with_receiver(
-                                &c.callee,
-                                c.receiver.as_deref().unwrap_or(""),
-                            )
-                        } else {
-                            CallTarget::new(&c.callee)
-                        }
-                    })
+                    .map(|c| CallTarget::from((*c).clone()))
                     .collect();
 
                 let body_text = Self::extract_body(
@@ -1330,13 +1336,7 @@ impl CrossFileTaintAnalyzer {
 
             let calls_in_func: Vec<CallTarget> = calls_in_range
                 .iter()
-                .map(|c| {
-                    if c.is_method {
-                        CallTarget::with_receiver(&c.callee, c.receiver.as_deref().unwrap_or(""))
-                    } else {
-                        CallTarget::new(&c.callee)
-                    }
-                })
+                .map(|c| CallTarget::from((*c).clone()))
                 .collect();
 
             // 缓存每个调用点的参数，供摘要传播使用
@@ -2177,6 +2177,314 @@ impl CrossFileTaintAnalyzer {
         None
     }
 
+    /// 计算当前调用图中所有函数的摘要（不复建调用图）
+    fn compute_function_summaries_from_current_graph(&self) -> HashMap<String, FunctionSummary> {
+        let sorted = self.topological_sort();
+        let mut summaries = HashMap::new();
+        for func_id in sorted {
+            if let Some(summary) = self.compute_single_summary(&func_id) {
+                summaries.insert(func_id, summary);
+            }
+        }
+        summaries
+    }
+
+    /// 获取函数入口处的初始污点变量集合
+    ///
+    /// 优先从 CPG taint flows 的 source.symbol 提取；若无 CPG，对 source 函数做简单行扫描兜底。
+    fn initial_tainted_variables(&self, func_id: &str) -> HashSet<String> {
+        let mut vars = HashSet::new();
+
+        // 1. 优先使用 Stage B 传来的精确污点流
+        if let Some(flows) = self.cpg_taint_flows.get(func_id) {
+            for flow in flows {
+                vars.insert(flow.source.symbol.clone());
+            }
+        }
+
+        // 2. CPG 缺失时，对 source 函数做简单文本兜底
+        if vars.is_empty() {
+            if let Some(node) = self.call_graph.nodes.get(func_id) {
+                if node.is_taint_source {
+                    if let Ok(content) = std::fs::read_to_string(&node.file_path) {
+                        let body =
+                            Self::extract_body(&content, node.start_line, node.end_line);
+                        for line in body.lines() {
+                            for source in &self.source_patterns {
+                                if source.matches(line, "*") {
+                                    if let Some(var) = Self::extract_var_from_source_line(line) {
+                                        vars.insert(var);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        vars
+    }
+
+    /// 从一行 source 赋值中提取左值变量名
+    fn extract_var_from_source_line(line: &str) -> Option<String> {
+        let line = line.trim();
+        let left = if let Some(pos) = line.find(":=") {
+            line[..pos].trim()
+        } else if let Some(pos) = line.find('=') {
+            line[..pos].trim()
+        } else {
+            return None;
+        };
+
+        let left = left
+            .strip_prefix("let ")
+            .or_else(|| left.strip_prefix("var "))
+            .or_else(|| left.strip_prefix("const "))
+            .or_else(|| left.strip_prefix("auto "))
+            .or_else(|| left.strip_prefix("mut "))
+            .or_else(|| left.strip_prefix("final "))
+            .unwrap_or(left);
+
+        let var_part = if left.contains(':') {
+            left.split(':')
+                .next()
+                .unwrap_or(left)
+                .split_whitespace()
+                .last()
+                .unwrap_or(left)
+        } else {
+            left.split_whitespace().last().unwrap_or(left)
+        };
+
+        let var_name = var_part
+            .trim_start_matches('*')
+            .trim_start_matches('&')
+            .split(':')
+            .next()
+            .unwrap_or(var_part)
+            .split('.')
+            .next()
+            .unwrap_or(var_part)
+            .split('[')
+            .next()
+            .unwrap_or(var_part)
+            .trim()
+            .to_string();
+
+        if !var_name.is_empty()
+            && var_name
+                .chars()
+                .next()
+                .map(|c| c.is_alphabetic() || c == '_')
+                .unwrap_or(false)
+        {
+            Some(var_name)
+        } else {
+            None
+        }
+    }
+
+    /// 基于函数摘要的参数级跨文件污点传播
+    ///
+    /// 相比原 find_interprocedural_taint_flows 的纯调用图 BFS，这里会：
+    /// - 跟踪每个函数内哪些变量被污染
+    /// - 在调用点根据实参→形参映射传播污染
+    /// - 仅当 callee 摘要显示污染参数能到达 sink 时才生成 flow
+    fn propagate_taint_with_summaries(&self) -> Vec<InterproceduralTaintFlow> {
+        let summaries = self.compute_function_summaries_from_current_graph();
+        let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
+        let mut flows = Vec::new();
+
+        for source_id in &self.call_graph.taint_sources {
+            let initial_vars = self.initial_tainted_variables(source_id);
+            if initial_vars.is_empty() {
+                continue;
+            }
+
+            // visited[func_id] = 该函数已出现过的污点变量集合
+            let mut visited: HashMap<String, HashSet<String>> = HashMap::new();
+            let mut queue: VecDeque<(String, HashSet<String>, Vec<String>)> = VecDeque::new();
+
+            visited
+                .entry(source_id.clone())
+                .or_default()
+                .extend(initial_vars.iter().cloned());
+            queue.push_back((
+                source_id.clone(),
+                initial_vars.clone(),
+                vec![source_id.clone()],
+            ));
+
+            while let Some((current_id, current_tainted, path)) = queue.pop_front() {
+                // 当前函数本身是 sink，且内部污点能命中 sink（已有 CPG 单文件结果兜底）
+                if sink_set.contains(&current_id) && current_id != *source_id {
+                    if let (Some(source_node), Some(sink_node)) = (
+                        self.call_graph.nodes.get(source_id),
+                        self.call_graph.nodes.get(&current_id),
+                    ) {
+                        let vuln_type = sink_node.sink_type.unwrap_or(VulnerabilityType::Generic);
+                        flows.push(self.build_interprocedural_flow(
+                            source_node,
+                            sink_node,
+                            &path,
+                            vuln_type,
+                            "summary_direct_sink",
+                        ));
+                    }
+                }
+
+                let Some(node) = self.call_graph.nodes.get(&current_id) else {
+                    continue;
+                };
+
+                for ct in &node.calls {
+                    let callee_id = &ct.callee;
+                    if callee_id == &current_id {
+                        continue;
+                    }
+                    let Some(callee_node) = self.call_graph.nodes.get(callee_id) else {
+                        continue;
+                    };
+
+                    // 通过调用点参数映射，判断 caller 的哪些污点变量传入 callee 的哪些形参
+                    let site_key = format!("{}:{}", current_id, ct.line);
+                    let mut callee_tainted: HashSet<String> = HashSet::new();
+                    if let Some(args) = self.call_site_args.get(&site_key) {
+                        for (param_idx, arg) in args.iter().enumerate() {
+                            if param_idx >= callee_node.parameters.len() {
+                                break;
+                            }
+                            if arg
+                                .referenced_vars
+                                .iter()
+                                .any(|v| current_tainted.contains(v))
+                            {
+                                callee_tainted
+                                    .insert(callee_node.parameters[param_idx].name.clone());
+                            }
+                        }
+                    }
+
+                    if callee_tainted.is_empty() {
+                        continue;
+                    }
+
+                    // 查询 callee 摘要：污染参数是否到达 sink
+                    if let Some(summary) = summaries.get(callee_id) {
+                        for ds in &summary.direct_sinks {
+                            if ds.from_param < callee_node.parameters.len()
+                                && callee_tainted
+                                    .contains(&callee_node.parameters[ds.from_param].name)
+                            {
+                                if let Some(source_node) = self.call_graph.nodes.get(source_id) {
+                                    let mut sink_path = path.clone();
+                                    sink_path.push(callee_id.clone());
+                                    flows.push(self.build_interprocedural_flow(
+                                        source_node,
+                                        callee_node,
+                                        &sink_path,
+                                        ds.vuln_type.clone(),
+                                        "summary_param_to_sink",
+                                    ));
+                                }
+                            }
+                        }
+
+                        // 若污染参数影响返回值，把返回值作为 caller 中新的污点变量
+                        for (param_idx, affects_return) in &summary.taint_propagation {
+                            if *affects_return
+                                && *param_idx < callee_node.parameters.len()
+                                && callee_tainted
+                                    .contains(&callee_node.parameters[*param_idx].name)
+                            {
+                                // 使用占位符表示 callee 返回值；后续若赋值给 caller 变量，
+                                // 可结合 CPG/AST 继续精确化
+                                let _ = format!("__return_{}", callee_id);
+                            }
+                        }
+                    }
+
+                    // 继续进入 callee 内部传播（参数级 forward）
+                    let prev = visited.entry(callee_id.clone()).or_default();
+                    let new_vars: HashSet<String> = callee_tainted
+                        .difference(prev)
+                        .cloned()
+                        .collect();
+                    if !new_vars.is_empty() {
+                        prev.extend(new_vars.iter().cloned());
+                        let mut new_path = path.clone();
+                        new_path.push(callee_id.clone());
+                        let mut next_tainted = callee_tainted;
+                        // 保留在 callee 内可能继续使用的原始污点别名（形参名）
+                        next_tainted.retain(|v| callee_node.parameters.iter().any(|p| p.name == *v));
+                        if !next_tainted.is_empty() {
+                            queue.push_back((callee_id.clone(), next_tainted, new_path));
+                        }
+                    }
+                }
+            }
+        }
+
+        flows
+    }
+
+    /// 构造一个 InterproceduralTaintFlow
+    fn build_interprocedural_flow(
+        &self,
+        source: &CallGraphNode,
+        sink: &CallGraphNode,
+        path: &[String],
+        vuln_type: VulnerabilityType,
+        factor: &str,
+    ) -> InterproceduralTaintFlow {
+        let mut interprocedural_path = Vec::new();
+        for func_id in path {
+            if let Some(func) = self.call_graph.nodes.get(func_id) {
+                interprocedural_path.push(InterproceduralStep {
+                    step_type: if func_id == &source.id {
+                        InterproceduralStepType::Source
+                    } else if func_id == &sink.id {
+                        InterproceduralStepType::Sink
+                    } else {
+                        InterproceduralStepType::ParameterIn
+                    },
+                    file_path: func.file_path.clone(),
+                    function_name: func.name.clone(),
+                    line: func.start_line,
+                    variable: String::new(),
+                    code: None,
+                });
+            }
+        }
+
+        let (confidence, mut confidence_factors) = self.calculate_flow_confidence(path);
+        confidence_factors.push(format!("summary:{}", factor));
+
+        InterproceduralTaintFlow {
+            id: uuid::Uuid::new_v4().to_string(),
+            source: FlowLocation {
+                file_path: source.file_path.clone(),
+                line: source.start_line,
+                column: None,
+                symbol: source.name.clone(),
+                code_snippet: None,
+            },
+            sink: FlowLocation {
+                file_path: sink.file_path.clone(),
+                line: sink.start_line,
+                column: None,
+                symbol: sink.name.clone(),
+                code_snippet: None,
+            },
+            interprocedural_path,
+            vulnerability_type: vuln_type,
+            severity: Severity::High,
+            confidence,
+            confidence_factors,
+        }
+    }
+
     /// 从文件内容按行范围提取函数体文本
     fn extract_body(content: &str, start_line: usize, end_line: usize) -> String {
         content
@@ -2189,7 +2497,19 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 查找过程间污点流
+    ///
+    /// 优先使用基于函数摘要的参数级传播；若摘要传播未产生结果，
+    /// 回退到纯调用图 BFS。
     fn find_interprocedural_taint_flows(&self) -> Vec<InterproceduralTaintFlow> {
+        let summary_flows = self.propagate_taint_with_summaries();
+        if !summary_flows.is_empty() {
+            return summary_flows;
+        }
+        self.find_interprocedural_taint_flows_fallback()
+    }
+
+    /// 纯调用图 BFS 兜底：从 source 函数出发，沿调用图找到所有可达 sink 函数
+    fn find_interprocedural_taint_flows_fallback(&self) -> Vec<InterproceduralTaintFlow> {
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let mut flows = Vec::new();
 
@@ -3778,6 +4098,65 @@ public class UserDao {
         assert!(
             has_controller_to_dao,
             "应存在从 Controller.java 到 UserDao.java 的跨文件污点流"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_java_cross_file_no_false_positive_on_safe_param() {
+        // 污点传入 helper 的非敏感参数，不应生成跨文件 flow
+        let tmp_dir = std::env::temp_dir().join("ctx_audit_java_cross_fp_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let controller_code = r#"
+import javax.servlet.http.HttpServletRequest;
+
+public class Controller {
+    private final Helper helper = new Helper();
+
+    public void doGet(HttpServletRequest request) {
+        String id = request.getParameter("id");
+        helper.log(id);
+    }
+}
+"#;
+        let helper_code = r#"
+public class Helper {
+    public String log(String msg) {
+        return msg.trim();
+    }
+
+    public void query(String sql) throws Exception {
+        stmt.executeQuery(sql);
+    }
+}
+"#;
+
+        std::fs::write(tmp_dir.join("Controller.java"), controller_code).unwrap();
+        std::fs::write(tmp_dir.join("Helper.java"), helper_code).unwrap();
+
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let rules_dir = std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap()
+            .join("rules")
+            .join("taint");
+
+        let loaded = crate::rules::taint_loader::load_taint_rules_from_dir(&rules_dir)
+            .expect("load taint rules");
+        let mut analyzer = CrossFileTaintAnalyzer::with_rules(loaded.sources, loaded.sinks);
+        let result = analyzer.analyze_project(&tmp_dir);
+
+        // Controller -> Helper.log 不是 sink，不应产生 flow
+        let has_false_flow = result.taint_flows.iter().any(|f| {
+            f.source.file_path.ends_with("Controller.java")
+                && f.sink.file_path.ends_with("Helper.java")
+        });
+        assert!(
+            !has_false_flow,
+            "污点传入 log() 这种非敏感参数时不应生成跨文件 flow"
         );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
