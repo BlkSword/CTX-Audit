@@ -34,6 +34,11 @@ pub struct Rule {
     /// 参考链接
     #[serde(skip_serializing_if = "Option::is_none")]
     pub references: Option<Vec<String>>,
+    /// 可选的净化函数/模式列表。
+    /// 当规则命中后，如果匹配位置之前出现任一 sanitizer 模式，引擎会跳过该发现。
+    /// 这是通用的规则级去误报机制，任何 regex/AST 规则均可声明。
+    #[serde(default)]
+    pub sanitizers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]

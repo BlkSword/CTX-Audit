@@ -8,8 +8,9 @@
 
 use crate::analysis::alias::AccessPath;
 use crate::analysis::cpg::FunctionCPG;
-use crate::analysis::cross_file::{FunctionSummary, SinkReachability};
-use crate::analysis::taint::{TaintFlow, VulnerabilityType};
+use crate::analysis::cross_file::{FunctionSummary, ParamToCall, SinkReachability};
+use crate::analysis::taint::{TaintFlow, TaintSink, VulnerabilityType};
+use std::collections::HashMap;
 
 /// 从 FunctionCPG 的污点分析结果自动生成函数摘要
 ///
@@ -19,7 +20,8 @@ use crate::analysis::taint::{TaintFlow, VulnerabilityType};
 pub fn compute_summary_from_cpg(
     func_cpg: &FunctionCPG,
     taint_flows: &[TaintFlow],
-    sink_names: &[&str],
+    body_text: &str,
+    sink_rules: &[TaintSink],
 ) -> FunctionSummary {
     let sig = &func_cpg.signature;
     let func_id = sig.id();
@@ -58,11 +60,13 @@ pub fn compute_summary_from_cpg(
             });
 
             if !already_recorded {
+                let (sanitized, sanitizer) =
+                    detect_sink_sanitization(body_text, sink_symbol, sink_rules);
                 direct_sinks.push(SinkReachability {
                     sink_name: sink_symbol.clone(),
                     from_param: param_idx,
-                    sanitized: flow.confidence < 0.5,
-                    sanitizer: None,
+                    sanitized: flow.confidence < 0.5 || sanitized,
+                    sanitizer,
                     sink_line: flow.sink.line,
                     vuln_type,
                 });
@@ -70,23 +74,64 @@ pub fn compute_summary_from_cpg(
         }
     }
 
+    // 构建“变量 -> 下游调用参数”映射，用于 param_to_calls
+    let mut var_to_calls: HashMap<String, Vec<(String, usize, usize)>> = HashMap::new();
+    for node_meta in func_cpg.node_meta.values() {
+        if let Some(ref call) = node_meta.call_info {
+            for (arg_idx, arg) in call.arguments.iter().enumerate() {
+                for var in &arg.referenced_vars {
+                    var_to_calls
+                        .entry(var.clone())
+                        .or_default()
+                        .push((call.callee.clone(), arg_idx, call.line));
+                }
+            }
+        }
+    }
+
+    let mut param_to_calls = Vec::new();
+    for (param_idx, param) in sig.params.iter().enumerate() {
+        let param_name = &param.name;
+        for flow in taint_flows.iter().filter(|f| {
+            let src = f.source.symbol.trim();
+            src == param_name
+                || src.starts_with(&format!("{}.", param_name))
+                || src.starts_with(&format!("{}[", param_name))
+        }) {
+            let sink_var = flow.sink.symbol.trim();
+            if let Some(calls) = var_to_calls.get(sink_var) {
+                for (callee, arg_idx, call_line) in calls {
+                    param_to_calls.push(crate::analysis::cross_file::ParamToCall {
+                        param_idx,
+                        callee: callee.clone(),
+                        arg_idx: *arg_idx,
+                        call_line: *call_line,
+                    });
+                }
+            }
+        }
+    }
+
     // 也从调用图中提取 sink 信息（补充 CPG 未覆盖的）
     for node_meta in func_cpg.node_meta.values() {
         if let Some(ref call) = node_meta.call_info {
-            if sink_names
-                .iter()
-                .any(|s| call.callee.contains(s) || s.contains(&call.callee))
-            {
+            if sink_rules.iter().any(|rule| {
+                rule.patterns
+                    .iter()
+                    .any(|p| call.callee.contains(p) || p.contains(&call.callee))
+            }) {
                 // 找到 sink 调用 — 检查是否有对应的 param_idx
                 let already = direct_sinks.iter().any(|ds| ds.sink_line == call.line);
                 if !already {
                     // 无法确定是哪个参数到达的，标记为 param 0
                     if direct_sinks.iter().all(|ds| ds.sink_name != call.callee) {
+                        let (sanitized, sanitizer) =
+                            detect_sink_sanitization(body_text, &call.callee, sink_rules);
                         direct_sinks.push(SinkReachability {
                             sink_name: call.callee.clone(),
                             from_param: 0,
-                            sanitized: false,
-                            sanitizer: None,
+                            sanitized: sanitized,
+                            sanitizer,
                             sink_line: call.line,
                             vuln_type: infer_vuln_type(&call.callee),
                         });
@@ -102,8 +147,69 @@ pub fn compute_summary_from_cpg(
         file_path: sig.file_path.clone(),
         taint_propagation,
         direct_sinks,
+        param_to_calls,
         body_hash: None,
     }
+}
+
+/// 通用 sink 净化检测。
+///
+/// 遍历 `sink_rules`，找出其 sink pattern 与 `sink_symbol` 匹配的规则；
+/// 若该规则声明了 sanitizers，且 `body_text` 中在 sink 出现之前存在任一 sanitizer
+/// 模式，则判定已净化。
+fn detect_sink_sanitization(
+    body_text: &str,
+    sink_symbol: &str,
+    sink_rules: &[TaintSink],
+) -> (bool, Option<String>) {
+    let lines: Vec<&str> = body_text.lines().collect();
+    if lines.is_empty() {
+        return (false, None);
+    }
+
+    for rule in sink_rules {
+        if rule.sanitizers.is_empty() {
+            continue;
+        }
+        // 该规则是否与当前 sink 相关
+        let relevant = rule.patterns.iter().any(|p| {
+            let pl = p.to_lowercase();
+            let sl = sink_symbol.to_lowercase();
+            sl.contains(&pl) || pl.contains(&sl)
+        });
+        if !relevant {
+            continue;
+        }
+
+        // 找到该规则 sink pattern 首次出现的行号
+        let mut sink_line: Option<usize> = None;
+        for (idx, line) in lines.iter().enumerate() {
+            let lower = line.to_lowercase();
+            if rule
+                .patterns
+                .iter()
+                .any(|p| lower.contains(&p.to_lowercase()))
+            {
+                sink_line = Some(idx);
+                break;
+            }
+        }
+        let Some(sl) = sink_line else {
+            continue;
+        };
+
+        // 检查 sink 之前（含同行）是否出现 sanitizer
+        for (idx, line) in lines.iter().enumerate().take(sl + 1) {
+            let lower = line.to_lowercase();
+            for san in &rule.sanitizers {
+                if lower.contains(&san.to_lowercase()) {
+                    return (true, Some(san.clone()));
+                }
+            }
+        }
+    }
+
+    (false, None)
 }
 
 /// 从 sink 函数名推断漏洞类型

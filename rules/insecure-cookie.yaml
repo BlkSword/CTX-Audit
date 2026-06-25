@@ -9,5 +9,9 @@ description: 检测不安全的Cookie设置：缺少Secure或HttpOnly标志
 id: insecure-cookie
 language: all
 name: Insecure Cookie Configuration
-pattern: (?i)(setCookie\s*\(|res\.cookie\s*\(|response\.addCookie\s*\(|res\.setHeader\s*\(\s*['\"]Set-Cookie['\"])
+pattern: (?i)(res\.cookie\s*\(|response\.addCookie\s*\(|res\.setHeader\s*\(\s*['\"]Set-Cookie['\"])
+sanitizers:
+  - setSecure
+  - setHttpOnly
+  - setSameSite
 severity: medium

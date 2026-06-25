@@ -133,6 +133,13 @@ pub struct TaintSink {
     /// 示例: ["cursor.execute", "child_process.exec", "Runtime.exec"]
     #[serde(default)]
     pub exact_matches: Vec<String>,
+
+    /// 可选的净化函数/方法模式。
+    /// 当 sink 匹配后，如果函数体中在 sink 之前出现任一 sanitizer 模式，
+    /// 引擎会将该 sink 视为已净化，从而减少误报。
+    /// 示例: ["setSecure", "setHttpOnly", "encodeForHtml"]
+    #[serde(default)]
+    pub sanitizers: Vec<String>,
 }
 
 impl TaintSink {
@@ -153,6 +160,7 @@ impl TaintSink {
             namespaces: Vec::new(),
             receiver_patterns: Vec::new(),
             exact_matches: Vec::new(),
+            sanitizers: Vec::new(),
         }
     }
 
@@ -881,6 +889,7 @@ impl TaintAnalyzer {
                 namespaces: vec![],
                 receiver_patterns: vec![],
                 exact_matches: vec![],
+                sanitizers: vec![],
             },
             // 命令执行
             TaintSink {
@@ -909,6 +918,7 @@ impl TaintAnalyzer {
                 namespaces: vec![],
                 receiver_patterns: vec![],
                 exact_matches: vec![],
+                sanitizers: vec![],
             },
             // 文件路径操作
             TaintSink {
@@ -938,6 +948,7 @@ impl TaintAnalyzer {
                 namespaces: vec![],
                 receiver_patterns: vec![],
                 exact_matches: vec![],
+                sanitizers: vec![],
             },
             // HTML 输出
             TaintSink {
@@ -962,6 +973,7 @@ impl TaintAnalyzer {
                 namespaces: vec![],
                 receiver_patterns: vec![],
                 exact_matches: vec![],
+                sanitizers: vec![],
             },
             // SSRF
             TaintSink {
@@ -990,6 +1002,7 @@ impl TaintAnalyzer {
                 namespaces: vec![],
                 receiver_patterns: vec![],
                 exact_matches: vec![],
+                sanitizers: vec![],
             },
             // eval
             TaintSink {
@@ -1014,6 +1027,7 @@ impl TaintAnalyzer {
                 namespaces: vec![],
                 receiver_patterns: vec![],
                 exact_matches: vec![],
+                sanitizers: vec![],
             },
         ]
     }
@@ -1545,6 +1559,7 @@ mod tests {
             namespaces: vec![],
             receiver_patterns: vec!["connection".to_string(), "pool".to_string()],
             exact_matches: vec!["cursor.execute".to_string()],
+            sanitizers: vec![],
         };
 
         // exact_matches 应命中
@@ -1575,6 +1590,7 @@ mod tests {
             namespaces: vec!["child_process".to_string()],
             receiver_patterns: vec![],
             exact_matches: vec![],
+            sanitizers: vec![],
         };
 
         assert!(sink.matches("child_process.exec(cmd)", "javascript"));

@@ -414,8 +414,25 @@ pub struct FunctionSummary {
     /// 从参数直接到达的 sink
     pub direct_sinks: Vec<SinkReachability>,
 
+    /// 参数通过数据流到达的下游调用参数。
+    /// 用于跨文件多跳传播：若参数 p 被污染，则这些 callee 的第 arg_idx 个参数也被污染。
+    pub param_to_calls: Vec<ParamToCall>,
+
     /// 函数体摘要哈希（用于缓存失效）
     pub body_hash: Option<String>,
+}
+
+/// 参数到下游调用参数的映射
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParamToCall {
+    /// 当前函数参数索引
+    pub param_idx: usize,
+    /// 被调函数名
+    pub callee: String,
+    /// 实参索引
+    pub arg_idx: usize,
+    /// 调用点行号
+    pub call_line: usize,
 }
 
 /// Sink 可达性：描述某个参数可以到达哪个 sink
@@ -2148,7 +2165,7 @@ impl CrossFileTaintAnalyzer {
     fn is_taint_sink(&self, func_name: &str, body: &str) -> (bool, Option<VulnerabilityType>) {
         // 优先按函数体内容匹配（可确定漏洞类型）
         for s in &self.sink_patterns {
-            if s.matches(body, "*") {
+            if s.matches(body, "*") && !Self::is_body_sanitized_for_sink(body, s) {
                 return (true, Some(s.vulnerability_type));
             }
         }
@@ -2157,6 +2174,46 @@ impl CrossFileTaintAnalyzer {
             return (true, None);
         }
         (false, None)
+    }
+
+    /// 通用 sink 净化检测：若规则声明了 sanitizers，且函数体中在 sink 出现之前
+    /// 存在任一 sanitizer 模式，则判定该 sink 已被净化。
+    fn is_body_sanitized_for_sink(body: &str, sink: &TaintSink) -> bool {
+        if sink.sanitizers.is_empty() {
+            return false;
+        }
+
+        let lines: Vec<&str> = body.lines().collect();
+
+        // 收集 sink 模式首次出现的行号
+        let mut first_sink_line: Option<usize> = None;
+        for (idx, line) in lines.iter().enumerate() {
+            let lower = line.to_lowercase();
+            for pat in &sink.patterns {
+                if lower.contains(&pat.to_lowercase()) {
+                    first_sink_line = Some(idx);
+                    break;
+                }
+            }
+            if first_sink_line.is_some() {
+                break;
+            }
+        }
+        let Some(sink_line) = first_sink_line else {
+            return false;
+        };
+
+        // 检查是否有 sanitizer 出现在 sink 之前（同一行也视为已净化）
+        for (idx, line) in lines.iter().enumerate().take(sink_line + 1) {
+            let lower = line.to_lowercase();
+            for san in &sink.sanitizers {
+                if lower.contains(&san.to_lowercase()) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// 判断单个函数调用是否命中某个 sink 规则（支持 Semantic 规则）
@@ -2316,7 +2373,7 @@ impl CrossFileTaintAnalyzer {
                 vec![source_id.clone()],
             ));
 
-            while let Some((current_id, current_tainted, path)) = queue.pop_front() {
+            while let Some((current_id, mut current_tainted, path)) = queue.pop_front() {
                 // 当前函数本身是 sink，且内部污点能命中 sink（已有 CPG 单文件结果兜底）
                 if sink_set.contains(&current_id) && current_id != *source_id {
                     if let (Some(source_node), Some(sink_node)) = (
@@ -2337,6 +2394,16 @@ impl CrossFileTaintAnalyzer {
                 let Some(node) = self.call_graph.nodes.get(&current_id) else {
                     continue;
                 };
+
+                // 预读当前函数源码，用于返回值污点 LHS 提取
+                let current_lines: Vec<String> =
+                    std::fs::read_to_string(&node.file_path)
+                        .map(|c| {
+                            c.lines()
+                                .map(|l| l.to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default();
 
                 for ct in &node.calls {
                     let callee_id = &ct.callee;
@@ -2366,6 +2433,30 @@ impl CrossFileTaintAnalyzer {
                         }
                     }
 
+                    // 利用函数摘要的 param_to_calls 补充重命名/字段访问等数据流
+                    if let Some(current_summary) = summaries.get(&current_id) {
+                        let tainted_param_indices: Vec<(usize, &str)> = node
+                            .parameters
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, p)| current_tainted.contains(&p.name))
+                            .map(|(i, p)| (i, p.name.as_str()))
+                            .collect();
+                        for (param_idx, _) in tainted_param_indices {
+                            for ptc in current_summary.param_to_calls.iter().filter(|ptc| {
+                                ptc.param_idx == param_idx
+                                    && ptc.callee == ct.callee
+                                    && ptc.call_line == ct.line
+                            }) {
+                                if ptc.arg_idx < callee_node.parameters.len() {
+                                    callee_tainted.insert(
+                                        callee_node.parameters[ptc.arg_idx].name.clone(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     if callee_tainted.is_empty() {
                         continue;
                     }
@@ -2373,6 +2464,9 @@ impl CrossFileTaintAnalyzer {
                     // 查询 callee 摘要：污染参数是否到达 sink
                     if let Some(summary) = summaries.get(callee_id) {
                         for ds in &summary.direct_sinks {
+                            if ds.sanitized {
+                                continue;
+                            }
                             if ds.from_param < callee_node.parameters.len()
                                 && callee_tainted
                                     .contains(&callee_node.parameters[ds.from_param].name)
@@ -2391,16 +2485,20 @@ impl CrossFileTaintAnalyzer {
                             }
                         }
 
-                        // 若污染参数影响返回值，把返回值作为 caller 中新的污点变量
+                        // 若污染参数影响返回值，尝试把赋值 LHS 变量也标记为污点
                         for (param_idx, affects_return) in &summary.taint_propagation {
                             if *affects_return
                                 && *param_idx < callee_node.parameters.len()
                                 && callee_tainted
                                     .contains(&callee_node.parameters[*param_idx].name)
                             {
-                                // 使用占位符表示 callee 返回值；后续若赋值给 caller 变量，
-                                // 可结合 CPG/AST 继续精确化
-                                let _ = format!("__return_{}", callee_id);
+                                if let Some(lhs) = Self::extract_call_assignment_lhs(
+                                    &current_lines,
+                                    ct.line,
+                                    &ct.callee,
+                                ) {
+                                    current_tainted.insert(lhs);
+                                }
                             }
                         }
                     }
@@ -2494,6 +2592,57 @@ impl CrossFileTaintAnalyzer {
             .map(|(_, l)| l)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// 从函数调用所在行提取赋值左值变量名。
+    /// 用于返回值污点传播：若 `x = callee(...)` 且 callee 的返回值被污染，则 x 也被污染。
+    fn extract_call_assignment_lhs(lines: &[String], call_line: usize, callee: &str) -> Option<String> {
+        let idx = call_line.saturating_sub(1);
+        let line = lines.get(idx)?;
+
+        // 要求行内包含 callee(
+        if !line.contains(&format!("{}(", callee)) {
+            return None;
+        }
+
+        // 简单赋值：LHS = ...callee(...
+        let eq_pos = line.find('=')?;
+        let rhs = &line[eq_pos + 1..];
+        if !rhs.contains(&format!("{}(", callee)) {
+            return None;
+        }
+
+        let lhs = line[..eq_pos].trim();
+        // 去除类型声明、final、var/let/const 等前缀，取最后一个标识符
+        let var_name = lhs
+            .split_whitespace()
+            .last()
+            .unwrap_or(lhs)
+            .trim_start_matches('*')
+            .trim_start_matches('&')
+            .split(':')
+            .next()
+            .unwrap_or(lhs)
+            .split('.')
+            .next()
+            .unwrap_or(lhs)
+            .split('[')
+            .next()
+            .unwrap_or(lhs)
+            .trim()
+            .to_string();
+
+        if !var_name.is_empty()
+            && var_name
+                .chars()
+                .next()
+                .map(|c| c.is_alphabetic() || c == '_')
+                .unwrap_or(false)
+        {
+            Some(var_name)
+        } else {
+            None
+        }
     }
 
     /// 查找过程间污点流
@@ -2921,13 +3070,22 @@ impl CrossFileTaintAnalyzer {
                 .cloned()
                 .unwrap_or_default();
 
-            let sink_names: Vec<&str> = self
-                .sink_patterns
-                .iter()
-                .flat_map(|s| s.patterns.iter().map(|p| p.as_str()))
-                .collect();
+            let body_text = if let Ok(content) = std::fs::read_to_string(&func_cpg.signature.file_path) {
+                Self::extract_body(
+                    &content,
+                    func_cpg.signature.start_line,
+                    func_cpg.signature.end_line,
+                )
+            } else {
+                String::new()
+            };
 
-            let summary = super::cpg::compute_summary_from_cpg(func_cpg, &taint_flows, &sink_names);
+            let summary = super::cpg::compute_summary_from_cpg(
+                func_cpg,
+                &taint_flows,
+                &body_text,
+                &self.sink_patterns,
+            );
             if !summary.taint_propagation.is_empty() || !summary.direct_sinks.is_empty() {
                 return Some(summary);
             }
@@ -2971,12 +3129,33 @@ impl CrossFileTaintAnalyzer {
             }
         }
 
+        // 启发式 param_to_calls：参数名直接出现在调用实参中
+        let mut param_to_calls = Vec::new();
+        for (param_idx, param) in node.parameters.iter().enumerate() {
+            for ct in &node.calls {
+                let site_key = format!("{}:{}", func_id, ct.line);
+                if let Some(args) = self.call_site_args.get(&site_key) {
+                    for (arg_idx, arg) in args.iter().enumerate() {
+                        if arg.referenced_vars.iter().any(|v| v == &param.name) {
+                            param_to_calls.push(ParamToCall {
+                                param_idx,
+                                callee: ct.callee.clone(),
+                                arg_idx,
+                                call_line: ct.line,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         Some(FunctionSummary {
             func_id: func_id.to_string(),
             func_name: node.name.clone(),
             file_path: node.file_path.clone(),
             taint_propagation,
             direct_sinks,
+            param_to_calls,
             body_hash: None,
         })
     }
@@ -4157,6 +4336,71 @@ public class Helper {
         assert!(
             !has_false_flow,
             "污点传入 log() 这种非敏感参数时不应生成跨文件 flow"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_java_cross_file_multi_hop_with_rename() {
+        // source -> helper (rename) -> sink，验证 param_to_calls 能支撑多跳传播
+        let tmp_dir = std::env::temp_dir().join("ctx_audit_java_multi_hop_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let a_code = r#"
+import javax.servlet.http.HttpServletRequest;
+
+public class Controller {
+    private final Helper helper = new Helper();
+
+    public void doGet(HttpServletRequest request) {
+        String id = request.getParameter("id");
+        helper.process(id);
+    }
+}
+"#;
+        let b_code = r#"
+public class Helper {
+    public void process(String input) {
+        String sql = "SELECT * FROM users WHERE id = '" + input + "'";
+        Dao dao = new Dao();
+        dao.run(sql);
+    }
+}
+"#;
+        let c_code = r#"
+public class Dao {
+    public void run(String query) throws Exception {
+        stmt.executeQuery(query);
+    }
+}
+"#;
+
+        std::fs::write(tmp_dir.join("Controller.java"), a_code).unwrap();
+        std::fs::write(tmp_dir.join("Helper.java"), b_code).unwrap();
+        std::fs::write(tmp_dir.join("Dao.java"), c_code).unwrap();
+
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let rules_dir = std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap()
+            .join("rules")
+            .join("taint");
+
+        let loaded = crate::rules::taint_loader::load_taint_rules_from_dir(&rules_dir)
+            .expect("load taint rules");
+        let mut analyzer = CrossFileTaintAnalyzer::with_rules(loaded.sources, loaded.sinks);
+        let result = analyzer.analyze_project(&tmp_dir);
+
+        let has_flow = result.taint_flows.iter().any(|f| {
+            f.source.file_path.ends_with("Controller.java")
+                && f.sink.file_path.ends_with("Dao.java")
+        });
+        assert!(
+            has_flow,
+            "应发现 Controller -> Helper -> Dao 的多跳跨文件污点流，实际 {} 条",
+            result.stats.taint_flows
         );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);

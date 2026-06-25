@@ -112,6 +112,9 @@ impl RuleScanner {
                     for cap in regex.captures_iter(content) {
                         if let Some(m) = cap.get(0) {
                             let start_pos = m.start();
+                            if is_sanitized_before(content, start_pos, &compiled.rule.sanitizers) {
+                                continue;
+                            }
                             let end_pos = m.end();
 
                             // Convert byte offset to line number
@@ -154,6 +157,14 @@ impl RuleScanner {
                             for m in matches {
                                 if let Some(capture) = m.captures.first() {
                                     let node = capture.node;
+                                    let start_byte = node.start_byte();
+                                    if is_sanitized_before(
+                                        content,
+                                        start_byte,
+                                        &compiled.rule.sanitizers,
+                                    ) {
+                                        continue;
+                                    }
                                     let start_pos = node.start_position();
                                     let end_pos = node.end_position();
 
@@ -187,6 +198,19 @@ impl Scanner for RuleScanner {
     async fn scan_file(&self, path: &PathBuf, content: &str) -> Vec<Finding> {
         self.scan_file_sync(path, content)
     }
+}
+
+/// 检查匹配位置之前是否出现任一 sanitizer 模式。
+/// 用于规则级去误报：命中点之前存在净化代码，则跳过该发现。
+fn is_sanitized_before(content: &str, pos: usize, sanitizers: &[String]) -> bool {
+    if sanitizers.is_empty() || pos == 0 {
+        return false;
+    }
+    let prefix = &content[..pos.min(content.len())];
+    let prefix_lower = prefix.to_lowercase();
+    sanitizers
+        .iter()
+        .any(|s| prefix_lower.contains(&s.to_lowercase()))
 }
 
 fn create_finding(
@@ -271,6 +295,25 @@ fn get_language_for_rule(language: &str) -> Option<Language> {
         "json" => Some(tree_sitter_json::LANGUAGE.into()),
         "html" => Some(tree_sitter_html::LANGUAGE.into()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_sanitized_before_skips_when_sanitizer_precedes() {
+        let content = "cookie.setSecure(true);\nresponse.addCookie(cookie);";
+        let sanitizers = vec!["setSecure".to_string()];
+        assert!(is_sanitized_before(content, content.len(), &sanitizers));
+    }
+
+    #[test]
+    fn test_is_sanitized_before_no_skip_when_sanitizer_absent() {
+        let content = "response.addCookie(cookie);";
+        let sanitizers = vec!["setSecure".to_string()];
+        assert!(!is_sanitized_before(content, content.len(), &sanitizers));
     }
 }
 

@@ -67,6 +67,10 @@ pub struct ScanOptions {
     pub enable_taint: bool,
     /// 启用跨文件污点追踪（需要 enable_taint）
     pub enable_cross_file: bool,
+    /// 深度扫描时进入 AST 污点分析的候选文件上限（默认 5000）
+    pub taint_max_candidate_files: usize,
+    /// 深度扫描时单个 AST 候选文件大小上限（KB，默认 500）
+    pub taint_max_file_kb: usize,
 }
 
 impl Default for ScanOptions {
@@ -80,6 +84,8 @@ impl Default for ScanOptions {
             include_tests: false,
             enable_taint: false,
             enable_cross_file: false,
+            taint_max_candidate_files: 5000,
+            taint_max_file_kb: 500,
         }
     }
 }
@@ -1106,6 +1112,15 @@ pub async fn scan_directory_deep_with_rules_progress(
     // 先执行基础扫描（收集文件内容缓存）
     let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);
     let include_tests = scan_opts.as_ref().map(|o| o.include_tests).unwrap_or(false);
+    let max_candidate_files = scan_opts
+        .as_ref()
+        .map(|o| o.taint_max_candidate_files)
+        .unwrap_or(5000);
+    let max_taint_file_kb = scan_opts
+        .as_ref()
+        .map(|o| o.taint_max_file_kb)
+        .unwrap_or(500);
+
     // 保存排除列表副本用于二次收集
     let excludes_for_secondary = exclude_dirs.clone();
     let (mut findings, mut content_cache) = scan_directory_with_rules_inner(
@@ -1131,9 +1146,7 @@ pub async fn scan_directory_deep_with_rules_progress(
 
     // Stage B: AST 污点分析（enable_taint = true）
     // C1: 候选文件选择 — 基于 AST 支持的文件类型，不依赖 rule findings
-    const MAX_CANDIDATE_FILES: usize = 5000;
     const TAINT_BATCH_SIZE: usize = 50;
-    const MAX_TAINT_FILE_KB: usize = 500;
 
     // 如果 content_cache 中 AST 文件不足，做第二轮收集
     // （内存预算可能提前终止了主扫描循环，导致 AST 文件未被缓存）
@@ -1141,7 +1154,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         .keys()
         .filter(|fp| is_ast_supported_file(std::path::Path::new(fp)))
         .count();
-    if ast_in_cache < MAX_CANDIDATE_FILES {
+    if ast_in_cache < max_candidate_files {
         let excludes = excludes_for_secondary.unwrap_or_else(|| {
             vec![
                 "node_modules".to_string(),
@@ -1152,7 +1165,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         });
         let mut extra_cached = 0;
         for entry in ignore::WalkBuilder::new(path).hidden(false).build() {
-            if extra_cached >= MAX_CANDIDATE_FILES - ast_in_cache {
+            if extra_cached >= max_candidate_files - ast_in_cache {
                 break;
             }
             if let Ok(entry) = entry {
@@ -1168,12 +1181,12 @@ pub async fn scan_directory_deep_with_rules_progress(
                     continue;
                 }
                 if let Ok(meta) = std::fs::metadata(p) {
-                    if meta.len() as usize > MAX_TAINT_FILE_KB * 1024 {
+                    if meta.len() as usize > max_taint_file_kb * 1024 {
                         continue;
                     }
                 }
                 if let Ok(content) = std::fs::read_to_string(p) {
-                    if content.len() <= MAX_TAINT_FILE_KB * 1024 {
+                    if content.len() <= max_taint_file_kb * 1024 {
                         content_cache.insert(p_str, content);
                         extra_cached += 1;
                     }
@@ -1186,9 +1199,9 @@ pub async fn scan_directory_deep_with_rules_progress(
     let candidate_files: Vec<String> = content_cache
         .iter()
         .filter(|(fp, _)| is_ast_supported_file(std::path::Path::new(fp)))
-        .filter(|(_, content)| content.len() <= MAX_TAINT_FILE_KB * 1024)
+        .filter(|(_, content)| content.len() <= max_taint_file_kb * 1024)
         .map(|(fp, _)| fp.clone())
-        .take(MAX_CANDIDATE_FILES)
+        .take(max_candidate_files)
         .collect();
 
     tracing::debug!(
@@ -1201,7 +1214,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         cb(ScanProgress {
             phase: ScanPhase::CandidateSelection,
             current: candidate_files.len(),
-            total: MAX_CANDIDATE_FILES,
+            total: max_candidate_files,
             message: format!("选取候选文件: {} 个文件进入深度分析", candidate_files.len()),
         });
     }
@@ -1239,7 +1252,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                 } else {
                     return None;
                 };
-                if content.len() > MAX_TAINT_FILE_KB * 1024 {
+                if content.len() > max_taint_file_kb * 1024 {
                     return None;
                 }
                 Some((file_path_str.clone(), content))

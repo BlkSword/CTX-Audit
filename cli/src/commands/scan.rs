@@ -201,20 +201,26 @@ fn build_scan_options() -> ScanOptions {
             scan.batch_size,
             scan.line_tolerance,
             scan.include_tests,
+            scan.taint_max_candidate_files,
+            scan.taint_max_file_kb,
         )
     });
 
     match config {
-        Some((threads, max_mb, mem_mb, batch, tol, include_tests)) => ScanOptions {
-            threads,
-            max_file_size: max_mb * 1024 * 1024,
-            memory_budget: mem_mb * 1024 * 1024,
-            batch_size: batch,
-            line_tolerance: tol,
-            include_tests,
-            enable_taint: false,
-            enable_cross_file: false,
-        },
+        Some((threads, max_mb, mem_mb, batch, tol, include_tests, max_cand, max_kb)) => {
+            ScanOptions {
+                threads,
+                max_file_size: max_mb * 1024 * 1024,
+                memory_budget: mem_mb * 1024 * 1024,
+                batch_size: batch,
+                line_tolerance: tol,
+                include_tests,
+                enable_taint: false,
+                enable_cross_file: false,
+                taint_max_candidate_files: max_cand,
+                taint_max_file_kb: max_kb,
+            }
+        }
         None => ScanOptions::default(),
     }
 }

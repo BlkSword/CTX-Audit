@@ -100,6 +100,14 @@ pub struct ScanConfig {
     /// 是否默认启用深度扫描
     #[serde(default)]
     pub deep: bool,
+
+    /// 深度扫描 AST 候选文件上限（默认 5000）
+    #[serde(default = "default_taint_max_candidate_files")]
+    pub taint_max_candidate_files: usize,
+
+    /// 深度扫描单文件大小上限（KB，默认 500）
+    #[serde(default = "default_taint_max_file_kb")]
+    pub taint_max_file_kb: usize,
 }
 
 fn default_threads() -> usize {
@@ -165,6 +173,12 @@ fn default_min_severity() -> String {
 fn default_context_lines() -> usize {
     3
 }
+fn default_taint_max_candidate_files() -> usize {
+    5000
+}
+fn default_taint_max_file_kb() -> usize {
+    500
+}
 
 impl Default for ScanConfig {
     fn default() -> Self {
@@ -182,6 +196,8 @@ impl Default for ScanConfig {
             min_severity: "medium".to_string(),
             context_lines: 3,
             deep: false,
+            taint_max_candidate_files: 5000,
+            taint_max_file_kb: 500,
         }
     }
 }
@@ -543,6 +559,12 @@ impl ConfigManager {
                 Some(serde_json::to_string(&self.config.scan.exclude_extra).unwrap_or_default())
             }
             "scan.deep" => Some(self.config.scan.deep.to_string()),
+            "scan.taint_max_candidate_files" => {
+                Some(self.config.scan.taint_max_candidate_files.to_string())
+            },
+            "scan.taint_max_file_kb" => {
+                Some(self.config.scan.taint_max_file_kb.to_string())
+            },
             // output.*
             "output.format" => Some(self.config.output.format.clone()),
             "output.color" => Some(self.config.output.color.to_string()),
@@ -627,6 +649,14 @@ impl ConfigManager {
             }
             "scan.deep" => {
                 self.config.scan.deep = value.parse().context("无效的布尔值")?;
+            }
+            "scan.taint_max_candidate_files" => {
+                self.config.scan.taint_max_candidate_files =
+                    value.parse().context("无效的候选文件数")?;
+            }
+            "scan.taint_max_file_kb" => {
+                self.config.scan.taint_max_file_kb =
+                    value.parse().context("无效的文件大小上限")?;
             }
             "scan.min_severity" => {
                 let valid = ["critical", "high", "medium", "low"];
