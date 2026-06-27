@@ -19,10 +19,12 @@ use deepaudit_core::scanning::{
 };
 use deepaudit_core::CallGraphQueryEngine;
 
+pub mod blackboard;
 pub mod evidence;
 pub mod heuristics;
 pub mod llm;
 pub mod llm_client;
+pub mod prompts;
 pub mod report;
 pub mod supervisor;
 
@@ -98,12 +100,19 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
 
     let session_id = uuid::Uuid::new_v4().to_string();
 
+    // Blackboard 共享状态
+    let blackboard = Arc::new(tokio::sync::RwLock::new(blackboard::BlackboardState::new(
+        session_id.clone(),
+        project_path_str.clone(),
+    )));
+
     // ── HYPOTHESIZE → VERIFY → JUDGE：并发 Actor 调度 ─────────────
     let llm_client = create_llm_client(&agent_config);
     let supervisor = Supervisor::new(
         config.project_path.clone(),
         query_engine.map(Arc::new),
         llm_client,
+        blackboard.clone(),
         agent_config.triage_concurrency,
     );
 
@@ -114,6 +123,10 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
 
     // ── 汇总并持久化 ─────────────────────────────────────────────
     write_audit_log(&config.project_path, &results)?;
+    {
+        let bb = blackboard.read().await;
+        bb.save(&config.project_path)?;
+    }
 
     let report = AuditReport {
         session_id,

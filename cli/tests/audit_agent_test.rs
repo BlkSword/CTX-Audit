@@ -71,6 +71,12 @@ app.listen(3000);
         "audit_log.json should be created under project .ctx-audit"
     );
 
+    let blackboard = project.join(".ctx-audit").join("blackboard.json");
+    assert!(
+        blackboard.exists(),
+        "blackboard.json should be created under project .ctx-audit"
+    );
+
     let content = std::fs::read_to_string(&audit_log).unwrap();
     let entries: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
     assert!(

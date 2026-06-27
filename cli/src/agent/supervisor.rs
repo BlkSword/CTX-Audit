@@ -10,12 +10,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 use tokio::task::JoinSet;
 
 use deepaudit_core::scanning::Finding;
 use deepaudit_core::CallGraphQueryEngine;
 
+use crate::agent::blackboard::BlackboardState;
 use crate::agent::evidence::{collect_evidence, Evidence};
 use crate::agent::heuristics::Verdict;
 use crate::agent::llm_client::LlmClient;
@@ -26,6 +27,7 @@ pub struct Supervisor {
     project_path: PathBuf,
     query_engine: Option<Arc<CallGraphQueryEngine>>,
     llm_client: Arc<dyn LlmClient>,
+    blackboard: Arc<RwLock<BlackboardState>>,
     concurrency: usize,
 }
 
@@ -34,12 +36,14 @@ impl Supervisor {
         project_path: PathBuf,
         query_engine: Option<Arc<CallGraphQueryEngine>>,
         llm_client: Arc<dyn LlmClient>,
+        blackboard: Arc<RwLock<BlackboardState>>,
         concurrency: usize,
     ) -> Self {
         Self {
             project_path,
             query_engine,
             llm_client,
+            blackboard,
             concurrency: concurrency.max(1),
         }
     }
@@ -63,6 +67,7 @@ impl Supervisor {
                 project_path: self.project_path.clone(),
                 query_engine: self.query_engine.clone(),
                 llm_client: self.llm_client.clone(),
+                blackboard: self.blackboard.clone(),
             };
 
             join_set.spawn(async move {
@@ -98,6 +103,7 @@ struct TriageTask {
     project_path: PathBuf,
     query_engine: Option<Arc<CallGraphQueryEngine>>,
     llm_client: Arc<dyn LlmClient>,
+    blackboard: Arc<RwLock<BlackboardState>>,
 }
 
 /// 实际调查逻辑
@@ -122,7 +128,7 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
         &triage_result.reasoning,
     );
 
-    Ok(InvestigationResult {
+    let result = InvestigationResult {
         investigation_id,
         session_id: String::new(), // 由调用方统一填充
         finding_id: task.finding.finding_id,
@@ -135,7 +141,14 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
         verdict: triage_result.verdict,
         reasoning,
         audited_at: chrono::Utc::now().to_rfc3339(),
-    })
+    };
+
+    {
+        let mut bb = task.blackboard.write().await;
+        bb.add_investigation(&result);
+    }
+
+    Ok(result)
 }
 
 fn generate_hypothesis(finding: &Finding) -> String {
