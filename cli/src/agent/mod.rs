@@ -29,11 +29,13 @@ pub mod report;
 pub mod reviewer;
 pub mod specialist;
 pub mod supervisor;
+pub mod tools;
 
 use llm_client::create_llm_client;
 use report::{AuditReport, InvestigationResult};
 use specialist::SpecialistRegistry;
 use supervisor::Supervisor;
+use tools::AgentToolContext;
 
 /// Agent 运行配置
 #[derive(Debug, Clone)]
@@ -123,9 +125,12 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
 
     // ── HYPOTHESIZE → VERIFY → JUDGE：并发 Actor 调度 ─────────────
     let llm_client = create_llm_client(&agent_config);
+    let query_engine_arc = query_engine.map(Arc::new);
+    let tool_context = query_engine_arc.clone().map(AgentToolContext::new);
+
     let supervisor = Supervisor::new(
         config.project_path.clone(),
-        query_engine.map(Arc::new),
+        query_engine_arc,
         llm_client,
         blackboard.clone(),
         agent_config.triage_concurrency,
@@ -137,7 +142,8 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     .with_reviewer(
         Arc::new(crate::agent::reviewer::RuleBasedReviewer),
         review_mode,
-    );
+    )
+    .with_tool_context(tool_context);
 
     let mut results = supervisor.run(to_investigate).await;
     for inv in &mut results {

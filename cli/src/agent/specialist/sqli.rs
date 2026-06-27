@@ -78,6 +78,7 @@ impl Specialist for SQLiSpecialist {
             "barriers_from_evidence": ctx.evidence.barriers.clone(),
             "has_effective_sanitizer": ctx.evidence.has_effective_sanitizer,
             "call_path_present": ctx.evidence.call_path.is_some(),
+            "tool_call_results": [],
         });
 
         // 若 evidence 中已有有效 sanitizer，直接判定为误报
@@ -171,6 +172,23 @@ impl Specialist for SQLiSpecialist {
             });
         }
 
+        // 尝试用工具查询 source→sink 路径
+        if let Some(path) = ctx.query_attack_path() {
+            if let Some(arr) = observations
+                .get_mut("tool_call_results")
+                .and_then(|v| v.as_array_mut())
+            {
+                arr.push(json!({"kind": "find_call_path", "total_hops": path.total_hops, "crosses_files": path.crosses_files}));
+            }
+            return Ok(SpecialistResult {
+                specialist_name: self.name().to_string(),
+                verdict: Verdict::TruePositive,
+                confidence: 0.85,
+                reasoning: "SQL sink 已识别，工具查询确认存在 source→sink 调用路径，判定为真阳性。".to_string(),
+                observations,
+            });
+        }
+
         // 仅有 sink 但无路径证据
         Ok(SpecialistResult {
             specialist_name: self.name().to_string(),
@@ -227,6 +245,7 @@ mod tests {
                 ..Evidence::default()
             },
             query_engine: None,
+            tool_context: None,
         }
     }
 

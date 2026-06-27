@@ -18,6 +18,7 @@ use deepaudit_core::CallGraphQueryEngine;
 
 use crate::agent::evidence::Evidence;
 use crate::agent::heuristics::Verdict;
+use crate::agent::tools::AgentToolContext;
 
 pub mod sqli;
 pub mod xss;
@@ -32,11 +33,42 @@ pub struct SpecialistContext {
     pub finding: Finding,
     pub evidence: Evidence,
     pub query_engine: Option<Arc<CallGraphQueryEngine>>,
+    pub tool_context: Option<AgentToolContext>,
 }
 
 impl SpecialistContext {
     pub fn code_context(&self) -> Option<&str> {
         self.evidence.code_context.as_deref()
+    }
+
+    /// 尝试从 evidence_refs 中提取 source/sink，并用工具查询调用路径
+    fn evidence_refs(&self) -> Option<&deepaudit_core::scanning::EvidenceRefs> {
+        self.evidence
+            .evidence_refs
+            .as_ref()
+            .or_else(|| self.finding.evidence_refs.as_ref())
+    }
+
+    pub fn query_attack_path(&self) -> Option<deepaudit_core::CallPath> {
+        let tc = self.tool_context.as_ref()?;
+        let refs = self.evidence_refs()?;
+        let ss = refs.source_sink_path.as_ref()?;
+        tc.try_find_attack_path(
+            &ss.source_file,
+            &ss.source_function,
+            &ss.sink_file,
+            &ss.sink_function,
+        )
+    }
+
+    /// 查询 sink 函数的直接调用者
+    pub fn query_sink_callers(&self) -> Vec<deepaudit_core::CallerEvidence> {
+        if let (Some(tc), Some(refs)) = (self.tool_context.as_ref(), self.evidence_refs()) {
+            if let Some(ref ss) = refs.source_sink_path {
+                return tc.query_callers(&ss.sink_file, &ss.sink_function);
+            }
+        }
+        Vec::new()
     }
 }
 
@@ -186,5 +218,95 @@ mod tests {
         // 置信度相同时保留基础判定
         assert_eq!(v2, Verdict::FalsePositive);
         assert!((c2 - 0.95).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_specialist_uses_tool_context_to_find_path() {
+        use std::sync::Arc;
+
+        // 构造一个确定性调用图：app.js:source -> app.js:sink
+        let source_id = "app.js:source";
+        let sink_id = "app.js:sink";
+        let mut call_graph = deepaudit_core::taint::CallGraph::new();
+        call_graph.add_node(deepaudit_core::taint::CallGraphNode {
+            id: source_id.to_string(),
+            name: "source".to_string(),
+            file_path: "app.js".to_string(),
+            start_line: 2,
+            end_line: 2,
+            parameters: Vec::new(),
+            return_type: None,
+            calls: Vec::new(),
+            called_by: Vec::new(),
+            is_external: false,
+            is_taint_source: true,
+            is_taint_sink: false,
+            sink_type: None,
+            is_callback: false,
+            parent_call_site: None,
+        });
+        call_graph.add_node(deepaudit_core::taint::CallGraphNode {
+            id: sink_id.to_string(),
+            name: "sink".to_string(),
+            file_path: "app.js".to_string(),
+            start_line: 5,
+            end_line: 5,
+            parameters: Vec::new(),
+            return_type: None,
+            calls: Vec::new(),
+            called_by: Vec::new(),
+            is_external: false,
+            is_taint_source: false,
+            is_taint_sink: true,
+            sink_type: None,
+            is_callback: false,
+            parent_call_site: None,
+        });
+        call_graph.add_call(source_id, sink_id);
+
+        let engine = Arc::new(deepaudit_core::CallGraphQueryEngine::new(
+            Arc::new(call_graph),
+            deepaudit_core::analysis::type_hierarchy::TypeHierarchy::new(),
+            deepaudit_core::analysis::middleware::MiddlewareModel::new(),
+            std::collections::HashMap::new(),
+        ));
+        let tool_context = Some(crate::agent::tools::AgentToolContext::new(engine));
+
+        let mut finding = dummy_finding("CWE-89");
+        finding.evidence_refs = Some(deepaudit_core::scanning::EvidenceRefs {
+            source_sink_path: Some(deepaudit_core::scanning::SourceSinkEvidence {
+                source_file: "app.js".to_string(),
+                source_function: "source".to_string(),
+                source_line: 2,
+                sink_file: "app.js".to_string(),
+                sink_function: "sink".to_string(),
+                sink_line: 5,
+                path_length: 0,
+                path_steps: Vec::new(),
+            }),
+            sanitizer_chain: Vec::new(),
+            middleware_coverage: Vec::new(),
+            graph_snapshot: None,
+        });
+
+        let ctx = SpecialistContext {
+            project_path: std::path::PathBuf::from("."),
+            finding,
+            evidence: Evidence {
+                code_context: Some("db.query(v)".to_string()),
+                evidence_refs: None,
+                ..Evidence::default()
+            },
+            query_engine: None,
+            tool_context,
+        };
+
+        let res = SQLiSpecialist.investigate(ctx).await.unwrap();
+        assert_eq!(res.verdict, Verdict::TruePositive);
+        assert!(
+            res.reasoning.contains("工具查询") || res.reasoning.contains("调用路径"),
+            "specialist 应说明通过工具查询确认路径: {}",
+            res.reasoning
+        );
     }
 }

@@ -40,6 +40,9 @@ pub struct InvestigationResult {
     pub reviews: Vec<crate::agent::reviewer::ReviewOpinion>,
     /// 最终判定置信度
     pub confidence: f64,
+    /// 工具上下文（不序列化，仅用于 reviewer/specialist 运行时查询）
+    #[serde(skip)]
+    pub tool_context: Option<crate::agent::tools::AgentToolContext>,
     pub audited_at: String,
 }
 

@@ -11,7 +11,8 @@ use serde::Serialize;
 
 use deepaudit_core::scanning::Finding;
 use deepaudit_core::{
-    CallGraphQueryEngine, CallPath, CalleeEvidence, CallerEvidence, MiddlewareEvidence,
+    scanning::EvidenceRefs, CallGraphQueryEngine, CallPath, CalleeEvidence, CallerEvidence,
+    MiddlewareEvidence,
 };
 
 /// 单个 finding 的调查证据
@@ -33,6 +34,8 @@ pub struct Evidence {
     pub barriers: Vec<String>,
     /// 是否存在有效 sanitizer
     pub has_effective_sanitizer: bool,
+    /// 原始 finding 的结构化证据引用（供 specialist/reviewer 做工具查询）
+    pub evidence_refs: Option<EvidenceRefs>,
 }
 
 impl Evidence {
@@ -89,6 +92,8 @@ pub fn collect_evidence(
     if let Some(ref barriers) = finding.barriers {
         evidence.barriers = barriers.clone();
     }
+
+    evidence.evidence_refs = finding.evidence_refs.clone();
 
     if let Some(ref trail) = finding.analysis_trail {
         evidence.taint_steps = Some(trail.clone());

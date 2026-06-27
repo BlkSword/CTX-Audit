@@ -95,7 +95,32 @@ impl Reviewer for RuleBasedReviewer {
             }
         }
 
-        // 4. 其他情况证据不足
+        // 4. 工具查询：若 evidence_refs 提供 source→sink，确认调用路径存在 → 真阳性
+        if let Some(ref tc) = result.tool_context {
+            if let Some(ref refs) = result.evidence.evidence_refs {
+                if let Some(ref ss) = refs.source_sink_path {
+                    if tc
+                        .try_find_attack_path(
+                            &ss.source_file,
+                            &ss.source_function,
+                            &ss.sink_file,
+                            &ss.sink_function,
+                        )
+                        .is_some()
+                    {
+                        return Ok(ReviewOpinion {
+                            reviewer_name: "rule_based".to_string(),
+                            agrees_with_primary: primary == Verdict::TruePositive,
+                            verdict: Verdict::TruePositive,
+                            confidence: 0.85,
+                            reasoning: "Reviewer 通过调用图工具确认 source→sink 路径存在，判定为真阳性。".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 5. 其他情况证据不足
         Ok(ReviewOpinion {
             reviewer_name: "rule_based".to_string(),
             agrees_with_primary: false,
@@ -157,6 +182,7 @@ mod tests {
             specialist_result: None,
             reviews: Vec::new(),
             confidence: 0.8,
+            tool_context: None,
             audited_at: chrono::Utc::now().to_rfc3339(),
         }
     }

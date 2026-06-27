@@ -25,6 +25,7 @@ use crate::agent::reviewer::{apply_review, Reviewer};
 use crate::agent::specialist::{
     merge_specialist_verdict, SpecialistContext, SpecialistRegistry, SpecialistResult,
 };
+use crate::agent::tools::AgentToolContext;
 
 /// 调度器
 pub struct Supervisor {
@@ -37,6 +38,7 @@ pub struct Supervisor {
     specialist_registry: Arc<SpecialistRegistry>,
     review_mode: String,
     reviewer: Arc<dyn Reviewer>,
+    tool_context: Option<AgentToolContext>,
 }
 
 impl Supervisor {
@@ -57,6 +59,7 @@ impl Supervisor {
             specialist_registry: Arc::new(SpecialistRegistry::with_defaults()),
             review_mode: "off".to_string(),
             reviewer: Arc::new(crate::agent::reviewer::RuleBasedReviewer),
+            tool_context: None,
         }
     }
 
@@ -71,6 +74,12 @@ impl Supervisor {
     pub fn with_reviewer(mut self, reviewer: Arc<dyn Reviewer>, review_mode: String) -> Self {
         self.reviewer = reviewer;
         self.review_mode = review_mode;
+        self
+    }
+
+    /// 注入 Agent 工具上下文（缓存的 CallGraphQueryEngine）
+    pub fn with_tool_context(mut self, tool_context: Option<AgentToolContext>) -> Self {
+        self.tool_context = tool_context;
         self
     }
 
@@ -98,6 +107,7 @@ impl Supervisor {
                 specialist_registry: self.specialist_registry.clone(),
                 review_mode: self.review_mode.clone(),
                 reviewer: self.reviewer.clone(),
+                tool_context: self.tool_context.clone(),
             };
 
             join_set.spawn(async move {
@@ -138,6 +148,7 @@ struct TriageTask {
     specialist_registry: Arc<SpecialistRegistry>,
     review_mode: String,
     reviewer: Arc<dyn Reviewer>,
+    tool_context: Option<AgentToolContext>,
 }
 
 /// 实际调查逻辑
@@ -165,6 +176,7 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
                 finding: task.finding.clone(),
                 evidence: evidence.clone(),
                 query_engine: task.query_engine.clone(),
+                tool_context: task.tool_context.clone(),
             };
             match specialist.investigate(ctx).await {
                 Ok(sp) => {
@@ -229,6 +241,7 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
         specialist_result: specialist_result_json,
         reviews: Vec::new(),
         confidence: primary_confidence,
+        tool_context: task.tool_context.clone(),
         audited_at: chrono::Utc::now().to_rfc3339(),
     };
 
