@@ -32,6 +32,10 @@ pub struct Config {
     /// 守护进程配置
     #[serde(default)]
     pub daemon: DaemonConfig,
+
+    /// Agent 配置
+    #[serde(default)]
+    pub agent: AgentConfig,
 }
 
 impl Default for Config {
@@ -42,6 +46,7 @@ impl Default for Config {
             advanced: AdvancedConfig::default(),
             sca: ScaConfig::default(),
             daemon: DaemonConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 }
@@ -451,6 +456,117 @@ impl Default for DaemonConfig {
     }
 }
 
+// ── Agent 配置 ──────────────────────────────────────────
+
+/// Agent 配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// 是否启用 Agent（默认 true）
+    #[serde(default = "default_true_val")]
+    pub enabled: bool,
+
+    /// 并发 triage 任务数（默认 4）
+    #[serde(default = "default_triage_concurrency")]
+    pub triage_concurrency: usize,
+
+    /// LLM 模式：noop / http / mcp_relay（默认 noop）
+    #[serde(default = "default_llm_mode")]
+    pub llm_mode: String,
+
+    /// 复核模式：off / debate / single（默认 off）
+    #[serde(default = "default_review_mode")]
+    pub review_mode: String,
+
+    /// 最大 LLM 调用次数，0 表示不限制（默认 0）
+    #[serde(default)]
+    pub max_llm_calls: usize,
+
+    /// 是否启用 Specialist Agent（默认 false）
+    #[serde(default)]
+    pub specialist_enabled: bool,
+
+    /// LLM 详细配置
+    #[serde(default)]
+    pub llm: LlmConfig,
+}
+
+fn default_triage_concurrency() -> usize {
+    4
+}
+fn default_llm_mode() -> String {
+    "noop".to_string()
+}
+fn default_review_mode() -> String {
+    "off".to_string()
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            triage_concurrency: 4,
+            llm_mode: "noop".to_string(),
+            review_mode: "off".to_string(),
+            max_llm_calls: 0,
+            specialist_enabled: false,
+            llm: LlmConfig::default(),
+        }
+    }
+}
+
+/// LLM 配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmConfig {
+    /// 提供商：openai / anthropic / ollama（默认 openai）
+    #[serde(default = "default_llm_provider")]
+    pub provider: String,
+
+    /// 模型名（默认 gpt-4o-mini）
+    #[serde(default = "default_llm_model")]
+    pub model: String,
+
+    /// API 密钥
+    #[serde(default)]
+    pub api_key: String,
+
+    /// 自定义 endpoint（可选）
+    pub endpoint: Option<String>,
+
+    /// 超时秒数（默认 60）
+    #[serde(default = "default_llm_timeout_sec")]
+    pub timeout_sec: u64,
+
+    /// 最大 token 数（默认 2048）
+    #[serde(default = "default_llm_max_tokens")]
+    pub max_tokens: usize,
+}
+
+fn default_llm_provider() -> String {
+    "openai".to_string()
+}
+fn default_llm_model() -> String {
+    "gpt-4o-mini".to_string()
+}
+fn default_llm_timeout_sec() -> u64 {
+    60
+}
+fn default_llm_max_tokens() -> usize {
+    2048
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            provider: "openai".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            api_key: String::new(),
+            endpoint: None,
+            timeout_sec: 60,
+            max_tokens: 2048,
+        }
+    }
+}
+
 // ── 配置管理器 ──────────────────────────────────────────
 
 /// 配置管理器
@@ -561,10 +677,8 @@ impl ConfigManager {
             "scan.deep" => Some(self.config.scan.deep.to_string()),
             "scan.taint_max_candidate_files" => {
                 Some(self.config.scan.taint_max_candidate_files.to_string())
-            },
-            "scan.taint_max_file_kb" => {
-                Some(self.config.scan.taint_max_file_kb.to_string())
-            },
+            }
+            "scan.taint_max_file_kb" => Some(self.config.scan.taint_max_file_kb.to_string()),
             // output.*
             "output.format" => Some(self.config.output.format.clone()),
             "output.color" => Some(self.config.output.color.to_string()),
@@ -610,6 +724,19 @@ impl ConfigManager {
             "daemon.reconnect_base_delay_ms" => {
                 Some(self.config.daemon.reconnect_base_delay_ms.to_string())
             }
+            // agent.*
+            "agent.enabled" => Some(self.config.agent.enabled.to_string()),
+            "agent.triage_concurrency" => Some(self.config.agent.triage_concurrency.to_string()),
+            "agent.llm_mode" => Some(self.config.agent.llm_mode.clone()),
+            "agent.review_mode" => Some(self.config.agent.review_mode.clone()),
+            "agent.max_llm_calls" => Some(self.config.agent.max_llm_calls.to_string()),
+            "agent.specialist_enabled" => Some(self.config.agent.specialist_enabled.to_string()),
+            "agent.llm.provider" => Some(self.config.agent.llm.provider.clone()),
+            "agent.llm.model" => Some(self.config.agent.llm.model.clone()),
+            "agent.llm.api_key" => Some(self.config.agent.llm.api_key.clone()),
+            "agent.llm.endpoint" => self.config.agent.llm.endpoint.clone(),
+            "agent.llm.timeout_sec" => Some(self.config.agent.llm.timeout_sec.to_string()),
+            "agent.llm.max_tokens" => Some(self.config.agent.llm.max_tokens.to_string()),
             _ => None,
         }
     }
@@ -655,8 +782,7 @@ impl ConfigManager {
                     value.parse().context("无效的候选文件数")?;
             }
             "scan.taint_max_file_kb" => {
-                self.config.scan.taint_max_file_kb =
-                    value.parse().context("无效的文件大小上限")?;
+                self.config.scan.taint_max_file_kb = value.parse().context("无效的文件大小上限")?;
             }
             "scan.min_severity" => {
                 let valid = ["critical", "high", "medium", "low"];
@@ -752,6 +878,45 @@ impl ConfigManager {
                 self.config.daemon.reconnect_base_delay_ms =
                     value.parse().context("无效的毫秒数")?;
             }
+            // agent.*
+            "agent.enabled" => {
+                self.config.agent.enabled = value.parse().context("无效的布尔值")?;
+            }
+            "agent.triage_concurrency" => {
+                self.config.agent.triage_concurrency = value.parse().context("无效的并发数")?;
+            }
+            "agent.llm_mode" => {
+                let valid = ["noop", "http", "mcp_relay"];
+                if !valid.contains(&value.as_str()) {
+                    anyhow::bail!("无效的 LLM 模式，可选: {}", valid.join(", "));
+                }
+                self.config.agent.llm_mode = value;
+            }
+            "agent.review_mode" => {
+                let valid = ["off", "debate", "single"];
+                if !valid.contains(&value.as_str()) {
+                    anyhow::bail!("无效的复核模式，可选: {}", valid.join(", "));
+                }
+                self.config.agent.review_mode = value;
+            }
+            "agent.max_llm_calls" => {
+                self.config.agent.max_llm_calls = value.parse().context("无效的数字")?;
+            }
+            "agent.specialist_enabled" => {
+                self.config.agent.specialist_enabled = value.parse().context("无效的布尔值")?;
+            }
+            "agent.llm.provider" => self.config.agent.llm.provider = value,
+            "agent.llm.model" => self.config.agent.llm.model = value,
+            "agent.llm.api_key" => self.config.agent.llm.api_key = value,
+            "agent.llm.endpoint" => {
+                self.config.agent.llm.endpoint = if value.is_empty() { None } else { Some(value) };
+            }
+            "agent.llm.timeout_sec" => {
+                self.config.agent.llm.timeout_sec = value.parse().context("无效的秒数")?;
+            }
+            "agent.llm.max_tokens" => {
+                self.config.agent.llm.max_tokens = value.parse().context("无效的数字")?;
+            }
             _ => anyhow::bail!("未知的配置键: {}", key),
         }
         Ok(())
@@ -797,6 +962,19 @@ impl ConfigManager {
             "daemon.heartbeat_interval_secs" => self.config.daemon.heartbeat_interval_secs = 5,
             "daemon.reconnect_max_retries" => self.config.daemon.reconnect_max_retries = 3,
             "daemon.reconnect_base_delay_ms" => self.config.daemon.reconnect_base_delay_ms = 200,
+            // agent.*
+            "agent.enabled" => self.config.agent.enabled = true,
+            "agent.triage_concurrency" => self.config.agent.triage_concurrency = 4,
+            "agent.llm_mode" => self.config.agent.llm_mode = "noop".to_string(),
+            "agent.review_mode" => self.config.agent.review_mode = "off".to_string(),
+            "agent.max_llm_calls" => self.config.agent.max_llm_calls = 0,
+            "agent.specialist_enabled" => self.config.agent.specialist_enabled = false,
+            "agent.llm.provider" => self.config.agent.llm.provider = "openai".to_string(),
+            "agent.llm.model" => self.config.agent.llm.model = "gpt-4o-mini".to_string(),
+            "agent.llm.api_key" => self.config.agent.llm.api_key.clear(),
+            "agent.llm.endpoint" => self.config.agent.llm.endpoint = None,
+            "agent.llm.timeout_sec" => self.config.agent.llm.timeout_sec = 60,
+            "agent.llm.max_tokens" => self.config.agent.llm.max_tokens = 2048,
             _ => anyhow::bail!("无法重置配置键: {}", key),
         }
         Ok(())

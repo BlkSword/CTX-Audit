@@ -4,6 +4,7 @@
 //! CLI 命令实现
 
 pub mod analyze;
+pub mod audit;
 pub mod config;
 pub mod daemon;
 pub mod findings;

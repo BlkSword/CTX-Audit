@@ -80,10 +80,11 @@ pub fn compute_summary_from_cpg(
         if let Some(ref call) = node_meta.call_info {
             for (arg_idx, arg) in call.arguments.iter().enumerate() {
                 for var in &arg.referenced_vars {
-                    var_to_calls
-                        .entry(var.clone())
-                        .or_default()
-                        .push((call.callee.clone(), arg_idx, call.line));
+                    var_to_calls.entry(var.clone()).or_default().push((
+                        call.callee.clone(),
+                        arg_idx,
+                        call.line,
+                    ));
                 }
             }
         }

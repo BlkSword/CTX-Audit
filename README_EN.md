@@ -39,6 +39,7 @@ CTX-Audit is a code security analysis engine designed for LLM-assisted auditing.
 - **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
 - **Data flow tracking**: Powered by CPG (Code Property Graph) engine — fuses CFG + AST metadata + alias maps into a unified structure. Supports path-sensitive analysis (conditional sanitization detection), AccessPath prefix matching (`req.body` → `req.body.name`), destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
 - **LLM autonomous audit loop**: Exposes 31 tools (including call graph query + audit session tools) via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → evidence collection → investigative verification → TP/FP verdict → rule generation → re-validation"
+- **Local Agent mode**: `ctx-audit audit --agent` runs the full scan → hypothesize → verify → judge loop without an external MCP host, producing an evidence-backed audit log
 - **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), rule-level sanitizer mechanism (skip findings when `setSecure`/`escape`/`encodeForHtml` etc. appears before the match), confidence scoring, multi-engine corroboration, baseline suppression
 - **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
 - **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
@@ -73,6 +74,7 @@ ctx-audit scan ./myproject --deep             # Same as above (backward compat s
 ctx-audit scan ./myproject --taint --rules ./my-rules/  # Custom rules + taint analysis
 ctx-audit analyze ./src/main.rs --symbols     # Single file analysis
 ctx-audit watch ./myproject                   # Continuous monitoring
+ctx-audit audit --agent ./myproject           # Local agent audit loop
 
 # With daemon (incremental cache, 40x+ performance boost)
 ctx-audit daemon start                        # Start the daemon
@@ -973,6 +975,7 @@ cargo clippy                 # Lint
 | False Positive Control | File role classification + security barrier detection + multi-engine confidence fusion + baseline suppression |
 | SCA Scanner | OSV API, 4 ecosystems, local cache, configurable (disabled by default) |
 | MCP Integration | 31 tools (3 scanning + 7 taint + 3 risk patterns + 4 autonomous audit + 9 call graph query + 5 audit session) |
+| Local Agent Mode | `ctx-audit audit --agent` runs SURVEY→HYPOTHESIZE→VERIFY→JUDGE and writes `.ctx-audit/audit_log.json` |
 | LLM Output | Structured JSON: code context + taint chains + file role + barriers + confidence |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |

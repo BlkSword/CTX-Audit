@@ -954,7 +954,10 @@ impl<'a> AstCFGBuilder<'a> {
         }
 
         // 函数调用（独立语句，如 execute(query)）
-        if matches!(kind, "call_expression" | "call" | "expression_statement" | "method_invocation") {
+        if matches!(
+            kind,
+            "call_expression" | "call" | "expression_statement" | "method_invocation"
+        ) {
             // expression_statement 内部可能有 call，递归看一层
             if kind == "expression_statement" {
                 let mut cursor = node.walk();

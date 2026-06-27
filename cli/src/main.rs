@@ -1,6 +1,7 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
+mod agent;
 mod commands;
 mod config;
 mod database;
@@ -111,6 +112,35 @@ enum Commands {
         /// 查询模式：构建调用图但不运行规则扫描（与 MCP 工具配合使用）
         #[arg(long)]
         query_mode: bool,
+    },
+
+    /// 自动审计（Agent 模式）
+    ///
+    /// 启动本地审计 Agent，自动完成扫描→假设→验证→判定闭环
+    Audit {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 启用 Agent 自动审计模式
+        #[arg(long)]
+        agent: bool,
+
+        /// 启用深度扫描（构建跨文件调用图，默认启用）
+        #[arg(long)]
+        deep: bool,
+
+        /// 最低严重程度阈值
+        #[arg(long)]
+        min_severity: Option<String>,
+
+        /// 最多调查的 finding 数量
+        #[arg(long)]
+        max_findings: Option<usize>,
+
+        /// 输出文件路径
+        #[arg(short, long)]
+        output: Option<String>,
     },
 
     /// 深度分析单个文件
@@ -418,6 +448,26 @@ async fn main() -> Result<()> {
                 sca,
                 graph_output,
                 query_mode,
+            )
+            .await
+        }
+
+        Commands::Audit {
+            path,
+            agent,
+            deep,
+            min_severity,
+            max_findings,
+            output,
+        } => {
+            commands::audit::execute(
+                path,
+                agent,
+                deep,
+                min_severity,
+                max_findings,
+                cli.output.as_str(),
+                output,
             )
             .await
         }

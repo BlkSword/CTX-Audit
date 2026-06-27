@@ -2264,8 +2264,7 @@ impl CrossFileTaintAnalyzer {
             if let Some(node) = self.call_graph.nodes.get(func_id) {
                 if node.is_taint_source {
                     if let Ok(content) = std::fs::read_to_string(&node.file_path) {
-                        let body =
-                            Self::extract_body(&content, node.start_line, node.end_line);
+                        let body = Self::extract_body(&content, node.start_line, node.end_line);
                         for line in body.lines() {
                             for source in &self.source_patterns {
                                 if source.matches(line, "*") {
@@ -2396,14 +2395,9 @@ impl CrossFileTaintAnalyzer {
                 };
 
                 // 预读当前函数源码，用于返回值污点 LHS 提取
-                let current_lines: Vec<String> =
-                    std::fs::read_to_string(&node.file_path)
-                        .map(|c| {
-                            c.lines()
-                                .map(|l| l.to_string())
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                let current_lines: Vec<String> = std::fs::read_to_string(&node.file_path)
+                    .map(|c| c.lines().map(|l| l.to_string()).collect())
+                    .unwrap_or_default();
 
                 for ct in &node.calls {
                     let callee_id = &ct.callee;
@@ -2449,9 +2443,8 @@ impl CrossFileTaintAnalyzer {
                                     && ptc.call_line == ct.line
                             }) {
                                 if ptc.arg_idx < callee_node.parameters.len() {
-                                    callee_tainted.insert(
-                                        callee_node.parameters[ptc.arg_idx].name.clone(),
-                                    );
+                                    callee_tainted
+                                        .insert(callee_node.parameters[ptc.arg_idx].name.clone());
                                 }
                             }
                         }
@@ -2489,8 +2482,7 @@ impl CrossFileTaintAnalyzer {
                         for (param_idx, affects_return) in &summary.taint_propagation {
                             if *affects_return
                                 && *param_idx < callee_node.parameters.len()
-                                && callee_tainted
-                                    .contains(&callee_node.parameters[*param_idx].name)
+                                && callee_tainted.contains(&callee_node.parameters[*param_idx].name)
                             {
                                 if let Some(lhs) = Self::extract_call_assignment_lhs(
                                     &current_lines,
@@ -2505,17 +2497,16 @@ impl CrossFileTaintAnalyzer {
 
                     // 继续进入 callee 内部传播（参数级 forward）
                     let prev = visited.entry(callee_id.clone()).or_default();
-                    let new_vars: HashSet<String> = callee_tainted
-                        .difference(prev)
-                        .cloned()
-                        .collect();
+                    let new_vars: HashSet<String> =
+                        callee_tainted.difference(prev).cloned().collect();
                     if !new_vars.is_empty() {
                         prev.extend(new_vars.iter().cloned());
                         let mut new_path = path.clone();
                         new_path.push(callee_id.clone());
                         let mut next_tainted = callee_tainted;
                         // 保留在 callee 内可能继续使用的原始污点别名（形参名）
-                        next_tainted.retain(|v| callee_node.parameters.iter().any(|p| p.name == *v));
+                        next_tainted
+                            .retain(|v| callee_node.parameters.iter().any(|p| p.name == *v));
                         if !next_tainted.is_empty() {
                             queue.push_back((callee_id.clone(), next_tainted, new_path));
                         }
@@ -2596,7 +2587,11 @@ impl CrossFileTaintAnalyzer {
 
     /// 从函数调用所在行提取赋值左值变量名。
     /// 用于返回值污点传播：若 `x = callee(...)` 且 callee 的返回值被污染，则 x 也被污染。
-    fn extract_call_assignment_lhs(lines: &[String], call_line: usize, callee: &str) -> Option<String> {
+    fn extract_call_assignment_lhs(
+        lines: &[String],
+        call_line: usize,
+        callee: &str,
+    ) -> Option<String> {
         let idx = call_line.saturating_sub(1);
         let line = lines.get(idx)?;
 
@@ -3070,15 +3065,16 @@ impl CrossFileTaintAnalyzer {
                 .cloned()
                 .unwrap_or_default();
 
-            let body_text = if let Ok(content) = std::fs::read_to_string(&func_cpg.signature.file_path) {
-                Self::extract_body(
-                    &content,
-                    func_cpg.signature.start_line,
-                    func_cpg.signature.end_line,
-                )
-            } else {
-                String::new()
-            };
+            let body_text =
+                if let Ok(content) = std::fs::read_to_string(&func_cpg.signature.file_path) {
+                    Self::extract_body(
+                        &content,
+                        func_cpg.signature.start_line,
+                        func_cpg.signature.end_line,
+                    )
+                } else {
+                    String::new()
+                };
 
             let summary = super::cpg::compute_summary_from_cpg(
                 func_cpg,

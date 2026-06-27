@@ -277,18 +277,30 @@ version: "1.0"
             .find(|s| s.id == "java_http_request")
             .expect("java_http_request source should exist");
         assert!(
-            java_http_request.patterns.iter().any(|p| p.contains("getCookies")),
+            java_http_request
+                .patterns
+                .iter()
+                .any(|p| p.contains("getCookies")),
             "java_http_request should cover request.getCookies"
         );
         assert!(
-            java_http_request.patterns.iter().any(|p| p.contains("getParameterMap")),
+            java_http_request
+                .patterns
+                .iter()
+                .any(|p| p.contains("getParameterMap")),
             "java_http_request should cover request.getParameterMap"
         );
 
         // Java sink 包含 XSS / XPath / SQL prepare
         let sink_ids: Vec<&str> = loaded.sinks.iter().map(|s| s.id.as_str()).collect();
-        assert!(sink_ids.contains(&"java_xss_output"), "java_xss_output sink should exist");
-        assert!(sink_ids.contains(&"java_xpath"), "java_xpath sink should exist");
+        assert!(
+            sink_ids.contains(&"java_xss_output"),
+            "java_xss_output sink should exist"
+        );
+        assert!(
+            sink_ids.contains(&"java_xpath"),
+            "java_xpath sink should exist"
+        );
 
         let java_sql = loaded
             .sinks
@@ -296,7 +308,10 @@ version: "1.0"
             .find(|s| s.id == "java_sql_exec")
             .expect("java_sql_exec sink should exist");
         assert!(
-            java_sql.patterns.iter().any(|p| p.contains("prepareStatement")),
+            java_sql
+                .patterns
+                .iter()
+                .any(|p| p.contains("prepareStatement")),
             "java_sql_exec should cover prepareStatement"
         );
         assert!(
