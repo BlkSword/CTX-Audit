@@ -3,11 +3,15 @@
 
 //! Agent 工具层
 //!
-//! 将 `CallGraphQueryEngine` 的查询能力封装为 Specialist / Reviewer 可直接调用的
-//! 确定性工具，避免重复构建调用图。
+//! 将 `ctx-audit-tools` 的 `ToolRegistry` 与缓存的 `CallGraphQueryEngine` 一起包装为
+//! Specialist / Reviewer 可直接调用的确定性工具上下文。
+//!
+//! - 同步查询方法直接命中缓存的 `CallGraphQueryEngine`，避免重复构建调用图。
+//! - `ToolRegistry` 保留给未来需要动态发现/执行工具（如 LLM tool-use）的场景。
 
 use std::sync::Arc;
 
+use ctx_audit_tools::{register_all_tools, ToolRegistry};
 use deepaudit_core::{
     CalleeEvidence, CallerEvidence, CallGraphQueryEngine, CallPath, FunctionInfo,
     MiddlewareEvidence, VariableFlowResult,
@@ -16,20 +20,70 @@ use deepaudit_core::{
 /// Agent 工具上下文
 #[derive(Clone)]
 pub struct AgentToolContext {
+    /// 工具注册表：包装 ctx-audit-tools 提供的所有内置工具
+    registry: Arc<ToolRegistry>,
+    /// 缓存的调用图查询引擎
     query_engine: Arc<CallGraphQueryEngine>,
+    /// 项目路径（用于注册表工具）
+    project_path: String,
 }
 
 impl std::fmt::Debug for AgentToolContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentToolContext")
+            .field("registry", &"<ToolRegistry>")
             .field("query_engine", &"<CallGraphQueryEngine>")
+            .field("project_path", &self.project_path)
             .finish()
     }
 }
 
 impl AgentToolContext {
+    /// 从缓存的查询引擎创建工具上下文（不填充注册表，供测试使用）
     pub fn new(query_engine: Arc<CallGraphQueryEngine>) -> Self {
-        Self { query_engine }
+        Self {
+            registry: Arc::new(ToolRegistry::new()),
+            query_engine,
+            project_path: String::new(),
+        }
+    }
+
+    /// 从缓存的查询引擎创建工具上下文，并注册所有 ctx-audit-tools 内置工具
+    pub async fn new_with_registry(
+        query_engine: Arc<CallGraphQueryEngine>,
+        project_path: impl Into<String>,
+    ) -> Self {
+        let project_path = project_path.into();
+        let registry = Arc::new(ToolRegistry::new());
+        register_all_tools(&registry, project_path.clone(), None).await;
+        Self {
+            registry,
+            query_engine,
+            project_path,
+        }
+    }
+
+    /// 直接从项目路径构建：分析项目、生成查询引擎并注册所有工具
+    pub async fn from_project(project_path: impl Into<String>) -> Self {
+        let project_path = project_path.into();
+        let mut analyzer = deepaudit_core::CrossFileTaintAnalyzer::new();
+        let result = analyzer.analyze_project(std::path::Path::new(&project_path));
+        let query_engine = Arc::new(CallGraphQueryEngine::from_result(&result));
+        Self::new_with_registry(query_engine, project_path).await
+    }
+
+    /// 获取底层工具注册表
+    pub fn registry(&self) -> &Arc<ToolRegistry> {
+        &self.registry
+    }
+
+    /// 执行注册表中的任意工具（异步）
+    pub async fn execute_tool(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Result<ctx_audit_tools::ToolResult, ctx_audit_tools::ToolError> {
+        self.registry.execute(name, input).await
     }
 
     /// 查询直接调用者
@@ -132,5 +186,14 @@ mod tests {
         let ctx = AgentToolContext::new(engine);
         let path = ctx.try_find_attack_path("a.js", "", "b.js", "sink");
         assert!(path.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tool_context_wraps_registry() {
+        let engine = build_engine(Path::new("."));
+        let ctx = AgentToolContext::new_with_registry(engine, ".").await;
+        let names = ctx.registry.list_tool_names().await;
+        assert!(!names.is_empty(), "注册表应包含 ctx-audit-tools 内置工具");
+        assert!(names.iter().any(|n| n == "find_call_path"));
     }
 }

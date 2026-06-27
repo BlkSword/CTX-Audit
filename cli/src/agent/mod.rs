@@ -126,7 +126,13 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     // ── HYPOTHESIZE → VERIFY → JUDGE：并发 Actor 调度 ─────────────
     let llm_client = create_llm_client(&agent_config);
     let query_engine_arc = query_engine.map(Arc::new);
-    let tool_context = query_engine_arc.clone().map(AgentToolContext::new);
+    let tool_context = if let Some(ref engine) = query_engine_arc {
+        Some(
+            AgentToolContext::new_with_registry(engine.clone(), project_path_str.clone()).await,
+        )
+    } else {
+        None
+    };
 
     let supervisor = Supervisor::new(
         config.project_path.clone(),
