@@ -16,7 +16,10 @@ use deepaudit_core::scanning::Finding;
 
 use crate::agent::evidence::Evidence;
 use crate::agent::heuristics::{judge_finding, Verdict};
-use crate::agent::prompts::build_triage_prompt;
+use crate::agent::investigator::{
+    parse_investigation_decision, InvestigationDecision, InvestigationMemory, ToolDescription,
+};
+use crate::agent::prompts::{build_investigation_prompt, build_triage_prompt};
 
 /// LLM triage 结果
 #[derive(Debug, Clone)]
@@ -90,6 +93,36 @@ impl LlmTriageResult {
 pub trait LlmClient: Send + Sync {
     /// 对单个 finding 做 LLM triage
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult>;
+
+    /// 调查阶段：LLM 决定下一步工具或结束调查
+    ///
+    /// 默认实现退化为基于证据的确定性决策，不调用真实 LLM。
+    async fn investigate_decision(
+        &self,
+        finding: &Finding,
+        evidence: &Evidence,
+        _memory: &InvestigationMemory,
+        _available_tools: &[ToolDescription],
+    ) -> Result<InvestigationDecision> {
+        Ok(default_investigation_decision(finding, evidence))
+    }
+}
+
+/// 默认调查决策：证据充分则直接结束，否则返回 needs_review
+fn default_investigation_decision(
+    finding: &Finding,
+    evidence: &Evidence,
+) -> InvestigationDecision {
+    let verdict = judge_finding(finding, evidence);
+    let confidence = match verdict {
+        Verdict::NeedsReview => 0.5,
+        _ => 0.85,
+    };
+    InvestigationDecision::Finish {
+        verdict,
+        confidence,
+        reasoning: format!("Noop 调查模式：基于确定性证据直接判定为 {}", verdict.as_str()),
+    }
 }
 
 /// 默认 Noop 实现：退化为规则判定器
@@ -171,6 +204,53 @@ impl LlmClient for ControlledLlmClient {
 
         self.inner.triage(finding, evidence).await
     }
+
+    async fn investigate_decision(
+        &self,
+        finding: &Finding,
+        evidence: &Evidence,
+        memory: &InvestigationMemory,
+        available_tools: &[ToolDescription],
+    ) -> Result<InvestigationDecision> {
+        // noop 模式直接退化为规则判定
+        if self.mode == "noop" {
+            return Ok(default_investigation_decision(finding, evidence));
+        }
+
+        // 明显可判定的情况直接用规则，不浪费 LLM
+        if evidence.has_effective_sanitizer {
+            return Ok(default_investigation_decision(finding, evidence));
+        }
+        if evidence.call_path.is_some()
+            && evidence.barriers.is_empty()
+            && !evidence.has_effective_sanitizer
+        {
+            return Ok(default_investigation_decision(finding, evidence));
+        }
+        if evidence.call_path.is_none()
+            && (!evidence.barriers.is_empty() || evidence.has_effective_sanitizer)
+        {
+            return Ok(default_investigation_decision(finding, evidence));
+        }
+
+        // 只有证据冲突或不足时才调用 LLM
+        if !should_call_llm(finding, evidence) {
+            return Ok(default_investigation_decision(finding, evidence));
+        }
+
+        // max_llm_calls 限制（0 表示不限制）
+        if self.max_calls > 0 {
+            let made = self.calls_made.fetch_add(1, Ordering::SeqCst);
+            if made >= self.max_calls {
+                self.calls_made.fetch_sub(1, Ordering::SeqCst);
+                return Ok(default_investigation_decision(finding, evidence));
+            }
+        }
+
+        self.inner
+            .investigate_decision(finding, evidence, memory, available_tools)
+            .await
+    }
 }
 
 /// 判断是否值得调用 LLM
@@ -214,6 +294,21 @@ impl LlmClient for HttpLlmClient {
             _ => self.call_openai_compatible(&prompt).await?,
         };
         LlmTriageResult::parse_from_json(&text)
+    }
+
+    async fn investigate_decision(
+        &self,
+        finding: &Finding,
+        evidence: &Evidence,
+        memory: &InvestigationMemory,
+        available_tools: &[ToolDescription],
+    ) -> Result<InvestigationDecision> {
+        let prompt = build_investigation_prompt(finding, evidence, memory, available_tools);
+        let text = match self.provider.as_str() {
+            "anthropic" => self.call_anthropic(&prompt).await?,
+            _ => self.call_openai_compatible(&prompt).await?,
+        };
+        parse_investigation_decision(&text)
     }
 }
 

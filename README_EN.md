@@ -39,7 +39,7 @@ CTX-Audit is a code security analysis engine designed for LLM-assisted auditing.
 - **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
 - **Data flow tracking**: Powered by CPG (Code Property Graph) engine — fuses CFG + AST metadata + alias maps into a unified structure. Supports path-sensitive analysis (conditional sanitization detection), AccessPath prefix matching (`req.body` → `req.body.name`), destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
 - **LLM autonomous audit loop**: Exposes 31 tools (including call graph query + audit session tools) via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → evidence collection → investigative verification → TP/FP verdict → rule generation → re-validation"
-- **Local Agent mode**: `ctx-audit audit --agent` runs the full scan → hypothesize → verify → judge loop without an external MCP host. It includes Supervisor concurrent scheduling, CWE Specialists (SQLi/XSS), Reviewer debate/review, and `ToolRegistry`-backed call-graph/taint tooling for deterministic evidence
+- **Local Agent mode**: `ctx-audit audit --agent` runs the full scan → hypothesize → verify → judge loop without an external MCP host. It includes Supervisor concurrent scheduling, CWE Specialists (SQLi/XSS), Reviewer debate/review, `ToolRegistry`-backed call-graph/taint tooling for deterministic evidence, and an optional **ReAct investigator (`--investigate`)** that lets the LLM dynamically pick tools each round, iteratively gather evidence, and emit a complete investigation trail
 - **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), rule-level sanitizer mechanism (skip findings when `setSecure`/`escape`/`encodeForHtml` etc. appears before the match), confidence scoring, multi-engine corroboration, baseline suppression
 - **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
 - **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
@@ -76,6 +76,7 @@ ctx-audit analyze ./src/main.rs --symbols     # Single file analysis
 ctx-audit watch ./myproject                   # Continuous monitoring
 ctx-audit audit --agent ./myproject           # Local agent audit loop
 ctx-audit audit --agent ./myproject --specialist --review-mode debate   # Enable Specialist + Reviewer debate mode
+ctx-audit audit --agent ./myproject --investigate --max-investigation-steps 5  # Enable ReAct investigator with dynamic tool selection
 
 # With daemon (incremental cache, 40x+ performance boost)
 ctx-audit daemon start                        # Start the daemon
@@ -322,19 +323,21 @@ ctx-audit audit ./project [OPTIONS]
 OPTIONS:
       --agent                 Enable local Agent autonomous audit loop
       --deep                  Enable cross-file call graph analysis (default on)
-      --specialist            Enable CWE Specialists (SQLi / XSS) deep verdicts
-      --review-mode <MODE>    Reviewer mode: off / debate / single
-      --min-severity <LEVEL>  Minimum severity threshold
-      --max-findings <N>      Maximum number of findings to investigate
-  -o, --output <FILE>         Output report path
+      --specialist                  Enable CWE Specialists (SQLi / XSS) deep verdicts
+      --review-mode <MODE>          Reviewer mode: off / debate / single
+      --investigate                 Enable ReAct investigator (requires LLM config for real tool loops)
+      --max-investigation-steps <N> Maximum investigation steps (default: 5)
+      --min-severity <LEVEL>        Minimum severity threshold
+      --max-findings <N>            Maximum number of findings to investigate
+  -o, --output <FILE>             Output report path
 ```
 
 Agent workflow:
 
 1. **Survey** — Full scan, collecting evidence_refs, code context, and call graph evidence
 2. **Hypothesize** — Generate an attack hypothesis for each finding
-3. **Verify** — Supervisor concurrently schedules Specialists (if enabled) and Reviewers, invoking call-graph/taint tools from the `ToolRegistry` to gather deterministic evidence
-4. **Judge** — Combine LLM/rule, Specialist, and Reviewer opinions into TP/FP/needs_review verdicts, written to `.ctx-audit/audit_log.json`
+3. **Verify** — Supervisor concurrently schedules Specialists (if enabled) and Reviewers; when `--investigate` is enabled, the ReAct investigator lets the LLM dynamically pick tools from the `ToolRegistry` (`find_call_path`, `query_callers`, `get_code_context`, etc.) each round, iteratively gather deterministic evidence, and record a complete investigation trail
+4. **Judge** — Combine LLM/rule, Specialist, Reviewer, and Investigator opinions into TP/FP/needs_review verdicts, written to `.ctx-audit/audit_log.json` (includes `investigation_steps`)
 
 ### `rules` — Rule Management
 
@@ -432,6 +435,24 @@ ignore_ecosystems = []             # Skipped ecosystems, e.g. ["Go"]
 critical = 9.0                     # CVSS >= 9.0 → critical
 high = 7.0                         # CVSS >= 7.0 → high
 medium = 4.0                       # CVSS >= 4.0 → medium
+
+[agent]
+enabled = true                     # Enable local Agent
+triage_concurrency = 4             # Concurrent triage task count
+llm_mode = "noop"                  # LLM mode: noop / http / mcp_relay
+review_mode = "off"                # Reviewer mode: off / debate / single
+max_llm_calls = 0                  # Max LLM calls, 0 = unlimited
+specialist_enabled = false         # Enable CWE Specialists
+investigator_enabled = false       # Enable ReAct investigator
+max_investigation_steps = 5        # Max tool steps per finding for investigator
+
+[agent.llm]
+provider = "openai"                # openai / anthropic / ollama
+model = "gpt-4o-mini"              # Model name
+api_key = ""                       # API key (or set via environment variable)
+endpoint = ""                      # Custom endpoint (optional)
+timeout_sec = 60                   # Request timeout
+max_tokens = 2048                  # Max tokens
 
 [daemon]
 listen_addr = "127.0.0.1:19527"    # Listen address
@@ -907,7 +928,7 @@ cli/                      # Command-line client
 │   └── migrations.rs     # Database migrations
 ├── report/               # Report export
 │   └── exporter.rs       # Multi-format report export
-└── agent/                # Local audit Agent (Phase 1-5)
+└── agent/                # Local audit Agent (Phase 1-6)
     ├── mod.rs            # Agent entry: scan → Supervisor scheduling → report
     ├── supervisor.rs     # Supervisor: concurrent Semaphore + Triage Actors
     ├── blackboard.rs     # Shared Blackboard + ACO pheromone / audit session state
@@ -917,6 +938,8 @@ cli/                      # Command-line client
     ├── prompts.rs        # Prompt templates
     ├── evidence.rs       # Call graph / taint / code context evidence collection
     ├── tools.rs          # Agent tool layer: wraps ToolRegistry + caches CallGraphQueryEngine
+    ├── investigator/     # ReAct autonomous investigator (Phase 6)
+    │   └── mod.rs        # LLM picks a tool each round, executes, observes, concludes
     ├── specialist/       # CWE Specialist Agents
     │   ├── mod.rs        # Specialist framework and context
     │   ├── sqli.rs       # SQL injection Specialist

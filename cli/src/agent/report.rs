@@ -43,6 +43,8 @@ pub struct InvestigationResult {
     /// 工具上下文（不序列化，仅用于 reviewer/specialist 运行时查询）
     #[serde(skip)]
     pub tool_context: Option<crate::agent::tools::AgentToolContext>,
+    /// ReAct 调查轨迹（Phase 6）
+    pub investigation_steps: Vec<crate::agent::investigator::InvestigationStep>,
     pub audited_at: String,
 }
 

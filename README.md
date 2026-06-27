@@ -39,7 +39,7 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 - **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
 - **数据流追踪**：基于 CPG（代码属性图）引擎，融合 CFG + AST 元数据 + 别名映射，支持路径敏感分析（条件净化检测）、属性路径前缀匹配（`req.body` → `req.body.name`）、AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
 - **LLM 自主审计闭环**：通过 MCP 协议暴露 31 个工具（含调用图查询 + 审计会话），LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → 调查式验证 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
-- **本地 Agent 模式**：`ctx-audit audit --agent` 无需外部 MCP 宿主即可自动执行扫描 → 假设 → 验证 → 判定闭环；内置 Supervisor 并发调度、CWE Specialist（SQLi/XSS）深度判定、Reviewer 复核/辩论，以及基于 `ToolRegistry` 的调用图/污点工具证据，输出带证据链的审计日志
+- **本地 Agent 模式**：`ctx-audit audit --agent` 无需外部 MCP 宿主即可自动执行扫描 → 假设 → 验证 → 判定闭环；内置 Supervisor 并发调度、CWE Specialist（SQLi/XSS）深度判定、Reviewer 复核/辩论、基于 `ToolRegistry` 的调用图/污点工具证据，以及可选的 **ReAct 调查器（`--investigate`）**——让 LLM 每轮动态选择工具、迭代收集证据并输出完整调查轨迹，输出带证据链的审计日志
 - **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、规则级 sanitizer 机制（命中前存在 `setSecure`/`escape`/`encodeForHtml` 等净化代码即跳过）、置信度评分、多引擎交叉确认、基线抑制
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
@@ -76,6 +76,7 @@ ctx-audit analyze ./src/main.rs --symbols     # 单文件分析
 ctx-audit watch ./myproject                   # 持续监控
 ctx-audit audit --agent ./myproject           # 本地 Agent 自动审计闭环
 ctx-audit audit --agent ./myproject --specialist --review-mode debate   # 启用 Specialist + Reviewer 辩论模式
+ctx-audit audit --agent ./myproject --investigate --max-investigation-steps 5  # 启用 ReAct 调查器，LLM 动态选工具验证
 
 # 使用守护进程（增量缓存，性能提升 40x+）
 ctx-audit daemon start                        # 启动守护进程
@@ -323,19 +324,21 @@ ctx-audit audit ./project [OPTIONS]
 OPTIONS:
       --agent                 启用本地 Agent 自动审计闭环（默认即启用）
       --deep                  启用跨文件调用图分析（默认启用）
-      --specialist            启用 CWE Specialist（SQLi / XSS）深度判定
-      --review-mode <MODE>    Reviewer 模式：off / debate / single
-      --min-severity <级别>   最低严重程度阈值
-      --max-findings <N>      最多调查的 finding 数量
-  -o, --output <文件>         输出报告路径
+      --specialist                  启用 CWE Specialist（SQLi / XSS）深度判定
+      --review-mode <MODE>          Reviewer 模式：off / debate / single
+      --investigate                 启用 ReAct 调查器（需配置 LLM 才执行真实工具循环）
+      --max-investigation-steps <N> 最大调查步数（默认 5）
+      --min-severity <级别>         最低严重程度阈值
+      --max-findings <N>            最多调查的 finding 数量
+  -o, --output <文件>               输出报告路径
 ```
 
 Agent 工作流：
 
 1. **Survey** — 全量扫描并收集 evidence_refs、代码上下文、调用图证据
 2. **Hypothesize** — 为每个 finding 生成攻击假设
-3. **Verify** — Supervisor 并发调度 Specialist（若启用）与 Reviewer，调用 `ToolRegistry` 中的调用图/污点工具补充确定性证据
-4. **Judge** — 综合 LLM/规则、Specialist、Reviewer 意见输出 TP/FP/needs_review，并写入 `.ctx-audit/audit_log.json`
+3. **Verify** — Supervisor 并发调度 Specialist（若启用）与 Reviewer；若启用 `--investigate`，ReAct 调查器会让 LLM 每轮从 `ToolRegistry` 中选择工具（`find_call_path`、`query_callers`、`get_code_context` 等），迭代收集确定性证据并记录完整调查轨迹
+4. **Judge** — 综合 LLM/规则、Specialist、Reviewer、Investigator 意见输出 TP/FP/needs_review，并写入 `.ctx-audit/audit_log.json`（含 `investigation_steps` 字段）
 
 ### `rules` — 规则管理
 
@@ -432,6 +435,24 @@ ignore_ecosystems = []             # 跳过的生态，如 ["Go"]
 critical = 9.0                     # CVSS ≥ 9.0 → critical
 high = 7.0                         # CVSS ≥ 7.0 → high
 medium = 4.0                       # CVSS ≥ 4.0 → medium
+
+[agent]
+enabled = true                     # 是否启用本地 Agent
+triage_concurrency = 4             # 并发 triage 任务数
+llm_mode = "noop"                  # LLM 模式：noop / http / mcp_relay
+review_mode = "off"                # Reviewer 模式：off / debate / single
+max_llm_calls = 0                  # 最大 LLM 调用次数，0 表示不限制
+specialist_enabled = false         # 是否启用 CWE Specialist
+investigator_enabled = false       # 是否启用 ReAct 调查器
+max_investigation_steps = 5        # 调查器每 finding 最大工具调用步数
+
+[agent.llm]
+provider = "openai"                # openai / anthropic / ollama
+model = "gpt-4o-mini"              # 模型名
+api_key = ""                       # API 密钥（也可通过环境变量设置）
+endpoint = ""                      # 自定义 endpoint（可选）
+timeout_sec = 60                   # 请求超时
+max_tokens = 2048                  # 最大 token 数
 
 [daemon]
 listen_addr = "127.0.0.1:19527"    # 监听地址
@@ -908,7 +929,7 @@ cli/                      # 命令行客户端
 │   └── migrations.rs     # 数据库迁移
 ├── report/               # 报告导出
 │   └── exporter.rs       # 多格式报告导出
-└── agent/                # 本地审计 Agent（Phase 1-5）
+└── agent/                # 本地审计 Agent（Phase 1-6）
     ├── mod.rs            # Agent 入口：扫描 → Supervisor 调度 → 报告
     ├── supervisor.rs     # Supervisor：并发 Semaphore + Triage Actor
     ├── blackboard.rs     # 共享 Blackboard + ACO 信息素/审计会话状态
@@ -918,6 +939,8 @@ cli/                      # 命令行客户端
     ├── prompts.rs        # Prompt 模板
     ├── evidence.rs       # 调用图/污点/代码上下文证据收集
     ├── tools.rs          # Agent 工具层：包装 ToolRegistry + 缓存 CallGraphQueryEngine
+    ├── investigator/     # ReAct 自主调查器（Phase 6）
+    │   └── mod.rs        # 每轮 LLM 选工具、执行、观察、下结论
     ├── specialist/       # CWE Specialist Agent
     │   ├── mod.rs        # Specialist 框架与上下文
     │   ├── sqli.rs       # SQL 注入 Specialist

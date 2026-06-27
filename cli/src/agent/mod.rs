@@ -22,6 +22,7 @@ use deepaudit_core::CallGraphQueryEngine;
 pub mod blackboard;
 pub mod evidence;
 pub mod heuristics;
+pub mod investigator;
 pub mod llm;
 pub mod llm_client;
 pub mod prompts;
@@ -56,6 +57,10 @@ pub struct AuditConfig {
     pub specialist_enabled: bool,
     /// Review 模式：off / debate / single（覆盖配置文件默认值）
     pub review_mode: String,
+    /// 是否启用 ReAct 调查器（覆盖配置文件默认值）
+    pub investigator_enabled: bool,
+    /// 最大调查步数（None 表示使用配置文件默认值）
+    pub max_investigation_steps: Option<usize>,
 }
 
 impl AuditConfig {
@@ -77,6 +82,8 @@ impl AuditConfig {
             output_path,
             specialist_enabled: false,
             review_mode: "off".to_string(),
+            investigator_enabled: false,
+            max_investigation_steps: None,
         }
     }
 }
@@ -94,6 +101,10 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     } else {
         config.review_mode.clone()
     };
+    let investigator_enabled = config.investigator_enabled || agent_config.investigator_enabled;
+    let max_investigation_steps = config
+        .max_investigation_steps
+        .unwrap_or(agent_config.max_investigation_steps);
 
     // ── SURVEY：做一次深度扫描拿到 findings ──────────────────────
     let scan_result = run_security_scan(&config).await?;
@@ -149,7 +160,8 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         Arc::new(crate::agent::reviewer::RuleBasedReviewer),
         review_mode,
     )
-    .with_tool_context(tool_context);
+    .with_tool_context(tool_context)
+    .with_investigator(investigator_enabled, max_investigation_steps);
 
     let mut results = supervisor.run(to_investigate).await;
     for inv in &mut results {
@@ -339,6 +351,7 @@ fn write_audit_log(project_path: &Path, results: &[InvestigationResult]) -> Resu
             "specialist_result": result.specialist_result,
             "reviews": result.reviews,
             "confidence": result.confidence,
+            "investigation_steps": result.investigation_steps,
             "audited_at": result.audited_at,
         });
         log.push(entry);

@@ -183,6 +183,7 @@ mod tests {
             reviews: Vec::new(),
             confidence: 0.8,
             tool_context: None,
+            investigation_steps: Vec::new(),
             audited_at: chrono::Utc::now().to_rfc3339(),
         }
     }

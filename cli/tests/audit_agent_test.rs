@@ -270,3 +270,73 @@ app.listen(3000);
 
     let _ = std::fs::remove_dir_all(&project);
 }
+/// 启用 --investigate 时，audit_log 中应包含 investigation_steps 字段
+#[test]
+fn test_audit_agent_investigator_produces_steps_field() {
+    let project = unique_test_dir();
+
+    let src = project.join("app.js");
+    std::fs::write(
+        &src,
+        r#"
+const express = require('express');
+const app = express();
+
+app.get('/greet', (req, res) => {
+    document.getElementById('out').innerHTML = req.query.name;
+    res.send('ok');
+});
+
+app.listen(3000);
+"#,
+    )
+    .unwrap();
+
+    let workspace_rules = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("rules")
+        .join("xss-detection.yaml");
+    let project_rules_dir = project.join(".ctx-audit").join("rules");
+    std::fs::create_dir_all(&project_rules_dir).unwrap();
+    std::fs::copy(
+        workspace_rules,
+        project_rules_dir.join("xss-detection.yaml"),
+    )
+    .unwrap();
+
+    let output = Command::new(cli_bin())
+        .args([
+            "audit",
+            "--agent",
+            "--investigate",
+            "--max-investigation-steps",
+            "3",
+            project.to_str().unwrap(),
+            "--max-findings",
+            "5",
+            "--min-severity",
+            "medium",
+        ])
+        .output()
+        .expect("Failed to run audit --agent --investigate");
+
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(output.status.success());
+
+    let audit_log = project.join(".ctx-audit").join("audit_log.json");
+    let content = std::fs::read_to_string(&audit_log).unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(!entries.is_empty());
+
+    for entry in &entries {
+        assert!(
+            entry.get("investigation_steps").is_some(),
+            "investigate 模式下 audit_log 每条记录都应包含 investigation_steps"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&project);
+}

@@ -485,6 +485,14 @@ pub struct AgentConfig {
     #[serde(default)]
     pub specialist_enabled: bool,
 
+    /// 是否启用 ReAct 调查器（默认 false）
+    #[serde(default)]
+    pub investigator_enabled: bool,
+
+    /// 最大调查步数（默认 5）
+    #[serde(default = "default_max_investigation_steps")]
+    pub max_investigation_steps: usize,
+
     /// LLM 详细配置
     #[serde(default)]
     pub llm: LlmConfig,
@@ -499,6 +507,9 @@ fn default_llm_mode() -> String {
 fn default_review_mode() -> String {
     "off".to_string()
 }
+fn default_max_investigation_steps() -> usize {
+    5
+}
 
 impl Default for AgentConfig {
     fn default() -> Self {
@@ -509,6 +520,8 @@ impl Default for AgentConfig {
             review_mode: "off".to_string(),
             max_llm_calls: 0,
             specialist_enabled: false,
+            investigator_enabled: false,
+            max_investigation_steps: 5,
             llm: LlmConfig::default(),
         }
     }
@@ -731,6 +744,8 @@ impl ConfigManager {
             "agent.review_mode" => Some(self.config.agent.review_mode.clone()),
             "agent.max_llm_calls" => Some(self.config.agent.max_llm_calls.to_string()),
             "agent.specialist_enabled" => Some(self.config.agent.specialist_enabled.to_string()),
+            "agent.investigator_enabled" => Some(self.config.agent.investigator_enabled.to_string()),
+            "agent.max_investigation_steps" => Some(self.config.agent.max_investigation_steps.to_string()),
             "agent.llm.provider" => Some(self.config.agent.llm.provider.clone()),
             "agent.llm.model" => Some(self.config.agent.llm.model.clone()),
             "agent.llm.api_key" => Some(self.config.agent.llm.api_key.clone()),
@@ -905,6 +920,12 @@ impl ConfigManager {
             "agent.specialist_enabled" => {
                 self.config.agent.specialist_enabled = value.parse().context("无效的布尔值")?;
             }
+            "agent.investigator_enabled" => {
+                self.config.agent.investigator_enabled = value.parse().context("无效的布尔值")?;
+            }
+            "agent.max_investigation_steps" => {
+                self.config.agent.max_investigation_steps = value.parse().context("无效的数字")?;
+            }
             "agent.llm.provider" => self.config.agent.llm.provider = value,
             "agent.llm.model" => self.config.agent.llm.model = value,
             "agent.llm.api_key" => self.config.agent.llm.api_key = value,
@@ -969,6 +990,8 @@ impl ConfigManager {
             "agent.review_mode" => self.config.agent.review_mode = "off".to_string(),
             "agent.max_llm_calls" => self.config.agent.max_llm_calls = 0,
             "agent.specialist_enabled" => self.config.agent.specialist_enabled = false,
+            "agent.investigator_enabled" => self.config.agent.investigator_enabled = false,
+            "agent.max_investigation_steps" => self.config.agent.max_investigation_steps = 5,
             "agent.llm.provider" => self.config.agent.llm.provider = "openai".to_string(),
             "agent.llm.model" => self.config.agent.llm.model = "gpt-4o-mini".to_string(),
             "agent.llm.api_key" => self.config.agent.llm.api_key.clear(),

@@ -77,6 +77,11 @@ impl AgentToolContext {
         &self.registry
     }
 
+    /// 获取缓存的调用图查询引擎
+    pub fn query_engine(&self) -> &Arc<CallGraphQueryEngine> {
+        &self.query_engine
+    }
+
     /// 执行注册表中的任意工具（异步）
     pub async fn execute_tool(
         &self,

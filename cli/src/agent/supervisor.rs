@@ -39,6 +39,8 @@ pub struct Supervisor {
     review_mode: String,
     reviewer: Arc<dyn Reviewer>,
     tool_context: Option<AgentToolContext>,
+    investigator_enabled: bool,
+    max_investigation_steps: usize,
 }
 
 impl Supervisor {
@@ -60,6 +62,8 @@ impl Supervisor {
             review_mode: "off".to_string(),
             reviewer: Arc::new(crate::agent::reviewer::RuleBasedReviewer),
             tool_context: None,
+            investigator_enabled: false,
+            max_investigation_steps: 5,
         }
     }
 
@@ -80,6 +84,13 @@ impl Supervisor {
     /// 注入 Agent 工具上下文（缓存的 CallGraphQueryEngine）
     pub fn with_tool_context(mut self, tool_context: Option<AgentToolContext>) -> Self {
         self.tool_context = tool_context;
+        self
+    }
+
+    /// 启用 ReAct 调查器
+    pub fn with_investigator(mut self, enabled: bool, max_steps: usize) -> Self {
+        self.investigator_enabled = enabled;
+        self.max_investigation_steps = max_steps.max(1);
         self
     }
 
@@ -108,6 +119,8 @@ impl Supervisor {
                 review_mode: self.review_mode.clone(),
                 reviewer: self.reviewer.clone(),
                 tool_context: self.tool_context.clone(),
+                investigator_enabled: self.investigator_enabled,
+                max_investigation_steps: self.max_investigation_steps,
             };
 
             join_set.spawn(async move {
@@ -149,6 +162,8 @@ struct TriageTask {
     review_mode: String,
     reviewer: Arc<dyn Reviewer>,
     tool_context: Option<AgentToolContext>,
+    investigator_enabled: bool,
+    max_investigation_steps: usize,
 }
 
 /// 实际调查逻辑
@@ -199,16 +214,69 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
     }
 
     // 融合 specialist 判定
-    let (verdict, primary_confidence) = if let Some(ref sp) = specialist_result {
+    let (mut verdict, mut primary_confidence) = if let Some(ref sp) = specialist_result {
         merge_specialist_verdict(triage_result.verdict, triage_result.confidence, sp)
     } else {
         (triage_result.verdict, triage_result.confidence)
     };
 
+    // ReAct 自主调查（Phase 6）：让 LLM 动态选择工具迭代收集证据
+    let mut investigation_steps = Vec::new();
+    let mut investigator_reasoning = String::new();
+    if task.investigator_enabled {
+        let investigator = crate::agent::investigator::ToolUsingInvestigator::new(
+            task.llm_client.clone(),
+            task.max_investigation_steps,
+        );
+        let ctx = SpecialistContext {
+            project_path: task.project_path.clone(),
+            finding: task.finding.clone(),
+            evidence: evidence.clone(),
+            query_engine: task.query_engine.clone(),
+            tool_context: task.tool_context.clone(),
+        };
+        match investigator.investigate(&ctx, &hypothesis).await {
+            Ok(outcome) => {
+                investigation_steps = outcome.steps;
+                investigator_reasoning = outcome.reasoning.clone();
+                // 调查器置信度更高时覆盖 verdict
+                if outcome.confidence >= primary_confidence {
+                    verdict = outcome.verdict;
+                    primary_confidence = outcome.confidence;
+                    tracing::debug!(
+                        "Investigator overridden verdict for finding {}: {:?} (conf {})",
+                        task.finding.finding_id,
+                        outcome.verdict,
+                        outcome.confidence
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Investigator failed for finding {}: {}",
+                    task.finding.finding_id,
+                    e
+                );
+            }
+        }
+    }
+
     let combined_reasoning = if let Some(ref sp) = specialist_result {
+        if investigator_reasoning.is_empty() {
+            format!(
+                "{} [Specialist {}] 补充: {}",
+                triage_result.reasoning, sp.specialist_name, sp.reasoning
+            )
+        } else {
+            format!(
+                "{} [Specialist {}] 补充: {} [Investigator] 调查结论: {}",
+                triage_result.reasoning, sp.specialist_name, sp.reasoning, investigator_reasoning
+            )
+        }
+    } else if !investigator_reasoning.is_empty() {
         format!(
-            "{} [Specialist {}] 补充: {}",
-            triage_result.reasoning, sp.specialist_name, sp.reasoning
+            "{} [Investigator] 调查结论: {}",
+            triage_result.reasoning, investigator_reasoning
         )
     } else {
         triage_result.reasoning
@@ -242,6 +310,7 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
         reviews: Vec::new(),
         confidence: primary_confidence,
         tool_context: task.tool_context.clone(),
+        investigation_steps,
         audited_at: chrono::Utc::now().to_rfc3339(),
     };
 

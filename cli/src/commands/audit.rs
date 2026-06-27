@@ -21,6 +21,8 @@ pub async fn execute(
     max_findings: Option<usize>,
     specialist: bool,
     review_mode: Option<String>,
+    investigate: bool,
+    max_investigation_steps: Option<usize>,
     output_format: &str,
     output_path: Option<String>,
 ) -> Result<()> {
@@ -47,9 +49,11 @@ pub async fn execute(
         output_path,
     );
     config.specialist_enabled = specialist;
+    config.investigator_enabled = investigate;
     if let Some(mode) = review_mode {
         config.review_mode = mode;
     }
+    config.max_investigation_steps = max_investigation_steps;
 
     match run_audit(config).await {
         Ok(report) => {

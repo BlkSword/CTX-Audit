@@ -146,6 +146,14 @@ enum Commands {
         #[arg(long, value_name = "MODE")]
         review_mode: Option<String>,
 
+        /// 启用 ReAct 调查器：让 LLM 动态选择工具迭代收集证据
+        #[arg(long)]
+        investigate: bool,
+
+        /// 最大调查步数（默认 5）
+        #[arg(long, value_name = "N")]
+        max_investigation_steps: Option<usize>,
+
         /// 输出文件路径
         #[arg(short, long)]
         output: Option<String>,
@@ -468,6 +476,8 @@ async fn main() -> Result<()> {
             max_findings,
             specialist,
             review_mode,
+            investigate,
+            max_investigation_steps,
             output,
         } => {
             commands::audit::execute(
@@ -478,6 +488,8 @@ async fn main() -> Result<()> {
                 max_findings,
                 specialist,
                 review_mode,
+                investigate,
+                max_investigation_steps,
                 cli.output.as_str(),
                 output,
             )
