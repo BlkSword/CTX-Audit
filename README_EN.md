@@ -39,7 +39,7 @@ CTX-Audit is a code security analysis engine designed for LLM-assisted auditing.
 - **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
 - **Data flow tracking**: Powered by CPG (Code Property Graph) engine — fuses CFG + AST metadata + alias maps into a unified structure. Supports path-sensitive analysis (conditional sanitization detection), AccessPath prefix matching (`req.body` → `req.body.name`), destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
 - **LLM autonomous audit loop**: Exposes 31 tools (including call graph query + audit session tools) via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → evidence collection → investigative verification → TP/FP verdict → rule generation → re-validation"
-- **Local Agent mode**: `ctx-audit audit --agent` runs the full scan → hypothesize → verify → judge loop without an external MCP host, producing an evidence-backed audit log
+- **Local Agent mode**: `ctx-audit audit --agent` runs the full scan → hypothesize → verify → judge loop without an external MCP host. It includes Supervisor concurrent scheduling, CWE Specialists (SQLi/XSS), Reviewer debate/review, and `ToolRegistry`-backed call-graph/taint tooling for deterministic evidence
 - **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), rule-level sanitizer mechanism (skip findings when `setSecure`/`escape`/`encodeForHtml` etc. appears before the match), confidence scoring, multi-engine corroboration, baseline suppression
 - **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
 - **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
@@ -75,6 +75,7 @@ ctx-audit scan ./myproject --taint --rules ./my-rules/  # Custom rules + taint a
 ctx-audit analyze ./src/main.rs --symbols     # Single file analysis
 ctx-audit watch ./myproject                   # Continuous monitoring
 ctx-audit audit --agent ./myproject           # Local agent audit loop
+ctx-audit audit --agent ./myproject --specialist --review-mode debate   # Enable Specialist + Reviewer debate mode
 
 # With daemon (incremental cache, 40x+ performance boost)
 ctx-audit daemon start                        # Start the daemon
@@ -312,6 +313,28 @@ Claude Code configuration example (`.claude/settings.json`):
   }
 }
 ```
+
+### `audit` — Local Agent Autonomous Audit
+
+```bash
+ctx-audit audit ./project [OPTIONS]
+
+OPTIONS:
+      --agent                 Enable local Agent autonomous audit loop
+      --deep                  Enable cross-file call graph analysis (default on)
+      --specialist            Enable CWE Specialists (SQLi / XSS) deep verdicts
+      --review-mode <MODE>    Reviewer mode: off / debate / single
+      --min-severity <LEVEL>  Minimum severity threshold
+      --max-findings <N>      Maximum number of findings to investigate
+  -o, --output <FILE>         Output report path
+```
+
+Agent workflow:
+
+1. **Survey** — Full scan, collecting evidence_refs, code context, and call graph evidence
+2. **Hypothesize** — Generate an attack hypothesis for each finding
+3. **Verify** — Supervisor concurrently schedules Specialists (if enabled) and Reviewers, invoking call-graph/taint tools from the `ToolRegistry` to gather deterministic evidence
+4. **Judge** — Combine LLM/rule, Specialist, and Reviewer opinions into TP/FP/needs_review verdicts, written to `.ctx-audit/audit_log.json`
 
 ### `rules` — Rule Management
 
@@ -873,7 +896,7 @@ cli/                      # Command-line client
 │   ├── analyze.rs        # Single file analysis command
 │   ├── watch.rs          # Continuous monitoring command
 │   ├── daemon.rs         # Daemon management command
-│   ├── mcp.rs            # MCP Server (17 tools)
+│   ├── mcp.rs            # MCP Server (31 tools)
 │   ├── rules.rs          # Rule management command
 │   ├── config.rs         # Configuration management command
 │   └── findings.rs       # Vulnerability management command
@@ -882,8 +905,25 @@ cli/                      # Command-line client
 │   ├── models.rs         # Data models
 │   ├── queries.rs        # Query interface
 │   └── migrations.rs     # Database migrations
-└── report/               # Report export
-    └── exporter.rs       # Multi-format report export
+├── report/               # Report export
+│   └── exporter.rs       # Multi-format report export
+└── agent/                # Local audit Agent (Phase 1-5)
+    ├── mod.rs            # Agent entry: scan → Supervisor scheduling → report
+    ├── supervisor.rs     # Supervisor: concurrent Semaphore + Triage Actors
+    ├── blackboard.rs     # Shared Blackboard + ACO pheromone / audit session state
+    ├── heuristics.rs     # Rule-based triage verdicts and confidence scoring
+    ├── llm_client.rs     # LLM client abstraction (controlled calls / Noop mode)
+    ├── llm.rs            # LLM triage implementation
+    ├── prompts.rs        # Prompt templates
+    ├── evidence.rs       # Call graph / taint / code context evidence collection
+    ├── tools.rs          # Agent tool layer: wraps ToolRegistry + caches CallGraphQueryEngine
+    ├── specialist/       # CWE Specialist Agents
+    │   ├── mod.rs        # Specialist framework and context
+    │   ├── sqli.rs       # SQL injection Specialist
+    │   └── xss.rs        # XSS Specialist
+    ├── reviewer/         # Reviewer / Debate Agent
+    │   └── mod.rs        # Rule-based reviewer (can validate attack surface via tools)
+    └── report.rs         # Agent audit report output
 
 rules/                    # Built-in rules (40 pattern + 5 taint)
 ├── *.yaml                # Pattern rules (including Next.js semantic rules)
@@ -975,7 +1015,7 @@ cargo clippy                 # Lint
 | False Positive Control | File role classification + security barrier detection + multi-engine confidence fusion + baseline suppression |
 | SCA Scanner | OSV API, 4 ecosystems, local cache, configurable (disabled by default) |
 | MCP Integration | 31 tools (3 scanning + 7 taint + 3 risk patterns + 4 autonomous audit + 9 call graph query + 5 audit session) |
-| Local Agent Mode | `ctx-audit audit --agent` runs SURVEY→HYPOTHESIZE→VERIFY→JUDGE and writes `.ctx-audit/audit_log.json` |
+| Local Agent Mode | `ctx-audit audit --agent` runs SURVEY→HYPOTHESIZE→VERIFY→JUDGE; Phase 5 integrated `ToolRegistry`, so Specialists / Reviewers can invoke call-graph/taint tools for deterministic evidence |
 | LLM Output | Structured JSON: code context + taint chains + file role + barriers + confidence |
 | Custom Rules | YAML format, daemon hot-reload |
 | Daemon | Incremental cache + heartbeat + auto-reconnect + panic recovery |

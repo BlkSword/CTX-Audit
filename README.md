@@ -39,7 +39,7 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 - **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
 - **数据流追踪**：基于 CPG（代码属性图）引擎，融合 CFG + AST 元数据 + 别名映射，支持路径敏感分析（条件净化检测）、属性路径前缀匹配（`req.body` → `req.body.name`）、AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
 - **LLM 自主审计闭环**：通过 MCP 协议暴露 31 个工具（含调用图查询 + 审计会话），LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → 调查式验证 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
-- **本地 Agent 模式**：`ctx-audit audit --agent` 无需外部 MCP 宿主即可自动执行扫描 → 假设 → 验证 → 判定闭环，输出带证据链的审计日志
+- **本地 Agent 模式**：`ctx-audit audit --agent` 无需外部 MCP 宿主即可自动执行扫描 → 假设 → 验证 → 判定闭环；内置 Supervisor 并发调度、CWE Specialist（SQLi/XSS）深度判定、Reviewer 复核/辩论，以及基于 `ToolRegistry` 的调用图/污点工具证据，输出带证据链的审计日志
 - **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、规则级 sanitizer 机制（命中前存在 `setSecure`/`escape`/`encodeForHtml` 等净化代码即跳过）、置信度评分、多引擎交叉确认、基线抑制
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
@@ -75,6 +75,7 @@ ctx-audit scan ./myproject --taint --rules ./my-rules/  # 自定义规则 + 污�
 ctx-audit analyze ./src/main.rs --symbols     # 单文件分析
 ctx-audit watch ./myproject                   # 持续监控
 ctx-audit audit --agent ./myproject           # 本地 Agent 自动审计闭环
+ctx-audit audit --agent ./myproject --specialist --review-mode debate   # 启用 Specialist + Reviewer 辩论模式
 
 # 使用守护进程（增量缓存，性能提升 40x+）
 ctx-audit daemon start                        # 启动守护进程
@@ -313,6 +314,28 @@ Claude Code 配置示例（`.claude/settings.json`）：
   }
 }
 ```
+
+### `audit` — 本地 Agent 自动审计
+
+```bash
+ctx-audit audit ./project [OPTIONS]
+
+OPTIONS:
+      --agent                 启用本地 Agent 自动审计闭环（默认即启用）
+      --deep                  启用跨文件调用图分析（默认启用）
+      --specialist            启用 CWE Specialist（SQLi / XSS）深度判定
+      --review-mode <MODE>    Reviewer 模式：off / debate / single
+      --min-severity <级别>   最低严重程度阈值
+      --max-findings <N>      最多调查的 finding 数量
+  -o, --output <文件>         输出报告路径
+```
+
+Agent 工作流：
+
+1. **Survey** — 全量扫描并收集 evidence_refs、代码上下文、调用图证据
+2. **Hypothesize** — 为每个 finding 生成攻击假设
+3. **Verify** — Supervisor 并发调度 Specialist（若启用）与 Reviewer，调用 `ToolRegistry` 中的调用图/污点工具补充确定性证据
+4. **Judge** — 综合 LLM/规则、Specialist、Reviewer 意见输出 TP/FP/needs_review，并写入 `.ctx-audit/audit_log.json`
 
 ### `rules` — 规则管理
 
@@ -874,7 +897,7 @@ cli/                      # 命令行客户端
 │   ├── analyze.rs        # 单文件分析命令
 │   ├── watch.rs          # 持续监控命令
 │   ├── daemon.rs         # 守护进程管理命令
-│   ├── mcp.rs            # MCP Server（17 个工具）
+│   ├── mcp.rs            # MCP Server（31 个工具）
 │   ├── rules.rs          # 规则管理命令
 │   ├── config.rs         # 配置管理命令
 │   └── findings.rs       # 漏洞管理命令
@@ -883,8 +906,25 @@ cli/                      # 命令行客户端
 │   ├── models.rs         # 数据模型
 │   ├── queries.rs        # 查询接口
 │   └── migrations.rs     # 数据库迁移
-└── report/               # 报告导出
-    └── exporter.rs       # 多格式报告导出
+├── report/               # 报告导出
+│   └── exporter.rs       # 多格式报告导出
+└── agent/                # 本地审计 Agent（Phase 1-5）
+    ├── mod.rs            # Agent 入口：扫描 → Supervisor 调度 → 报告
+    ├── supervisor.rs     # Supervisor：并发 Semaphore + Triage Actor
+    ├── blackboard.rs     # 共享 Blackboard + ACO 信息素/审计会话状态
+    ├── heuristics.rs     # 规则化初审判定与置信度评分
+    ├── llm_client.rs     # LLM 客户端抽象（含受控调用/Noop 模式）
+    ├── llm.rs            # LLM triage 判定实现
+    ├── prompts.rs        # Prompt 模板
+    ├── evidence.rs       # 调用图/污点/代码上下文证据收集
+    ├── tools.rs          # Agent 工具层：包装 ToolRegistry + 缓存 CallGraphQueryEngine
+    ├── specialist/       # CWE Specialist Agent
+    │   ├── mod.rs        # Specialist 框架与上下文
+    │   ├── sqli.rs       # SQL 注入 Specialist
+    │   └── xss.rs        # XSS Specialist
+    ├── reviewer/         # Reviewer / Debate Agent
+    │   └── mod.rs        # 基于规则的复核器（可借助工具验证攻击面）
+    └── report.rs         # Agent 审计报告输出
 
 rules/                    # 内置规则（40 模式 + 5 污点）
 ├── *.yaml                # 模式规则（含 Next.js 语义规则）
@@ -976,7 +1016,7 @@ cargo clippy                 # 代码检查
 | 误报控制 | 文件角色分类 + 安全屏障检测 + 多引擎置信度融合 + 基线抑制 |
 | SCA 扫描 | OSV API，4 个生态，本地缓存，可配置（默认关闭） |
 | MCP 集成 | 31 个工具（3 扫描 + 7 污点 + 3 风险模式 + 4 自主审计 + 9 调用图查询 + 5 审计会话） |
-| 本地 Agent 模式 | `ctx-audit audit --agent` 自动执行 SURVEY→HYPOTHESIZE→VERIFY→JUDGE，输出 `.ctx-audit/audit_log.json` |
+| 本地 Agent 模式 | `ctx-audit audit --agent` 自动执行 SURVEY→HYPOTHESIZE→VERIFY→JUDGE；Phase 5 已接入 `ToolRegistry`， Specialist / Reviewer 可调用调用图/污点工具获取确定性证据 |
 | LLM 输出 | 结构化 JSON：代码上下文 + 污点链 + 文件角色 + 屏障 + 置信度 |
 | 自定义规则 | YAML 格式，daemon 热加载 |
 | 守护进程 | 增量缓存 + 心跳 + 自动重连 + panic 自恢复 |
