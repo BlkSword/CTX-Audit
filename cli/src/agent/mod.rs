@@ -26,10 +26,12 @@ pub mod llm;
 pub mod llm_client;
 pub mod prompts;
 pub mod report;
+pub mod specialist;
 pub mod supervisor;
 
 use llm_client::create_llm_client;
 use report::{AuditReport, InvestigationResult};
+use specialist::SpecialistRegistry;
 use supervisor::Supervisor;
 
 /// Agent 运行配置
@@ -47,6 +49,8 @@ pub struct AuditConfig {
     pub output_format: crate::output::OutputFormat,
     /// 输出文件路径（None 则输出到 stdout）
     pub output_path: Option<String>,
+    /// 是否启用 Specialist Agent（覆盖配置文件默认值）
+    pub specialist_enabled: bool,
 }
 
 impl AuditConfig {
@@ -66,6 +70,7 @@ impl AuditConfig {
             max_findings,
             output_format,
             output_path,
+            specialist_enabled: false,
         }
     }
 }
@@ -77,6 +82,7 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     // 加载应用配置中的 agent 段
     let config_manager = crate::config::ConfigManager::new(None)?;
     let agent_config = config_manager.config().agent.clone();
+    let specialist_enabled = config.specialist_enabled || agent_config.specialist_enabled;
 
     // ── SURVEY：做一次深度扫描拿到 findings ──────────────────────
     let scan_result = run_security_scan(&config).await?;
@@ -114,6 +120,10 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         llm_client,
         blackboard.clone(),
         agent_config.triage_concurrency,
+    )
+    .with_specialists(
+        Arc::new(SpecialistRegistry::with_defaults()),
+        specialist_enabled,
     );
 
     let mut results = supervisor.run(to_investigate).await;
@@ -301,6 +311,7 @@ fn write_audit_log(project_path: &Path, results: &[InvestigationResult]) -> Resu
             "investigation_id": result.investigation_id,
             "hypothesis": result.hypothesis,
             "evidence": result.evidence.to_json(),
+            "specialist_result": result.specialist_result,
             "audited_at": result.audited_at,
         });
         log.push(entry);

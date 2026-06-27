@@ -34,6 +34,8 @@ pub struct InvestigationResult {
     pub evidence: Evidence,
     pub verdict: Verdict,
     pub reasoning: String,
+    /// Specialist 深度调查结果（若启用且命中）
+    pub specialist_result: Option<serde_json::Value>,
     pub audited_at: String,
 }
 

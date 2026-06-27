@@ -17,7 +17,7 @@ fn unique_test_dir() -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    let dir = std::env::temp_dir().join(format!("ctx-audit-agent-test-{}", ts));
+    let dir = std::env::temp_dir().join(format!("ctx-audit-agent-it-{}", ts));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -98,5 +98,84 @@ app.listen(3000);
     }
 
     // 清理
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+/// 启用 --specialist 时，audit_log 中应包含 specialist_result 字段
+#[test]
+fn test_audit_agent_specialist_produces_result() {
+    let project = unique_test_dir();
+
+    let src = project.join("app.js");
+    std::fs::write(
+        &src,
+        r#"
+const express = require('express');
+const app = express();
+
+app.get('/greet', (req, res) => {
+    document.getElementById('out').innerHTML = req.query.name;
+    res.send('ok');
+});
+
+app.listen(3000);
+"#,
+    )
+    .unwrap();
+
+    // 将 XSS 规则复制到项目级规则目录，确保集成测试环境能找到规则
+    let workspace_rules = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("rules")
+        .join("xss-detection.yaml");
+    let project_rules_dir = project.join(".ctx-audit").join("rules");
+    std::fs::create_dir_all(&project_rules_dir).unwrap();
+    std::fs::copy(
+        workspace_rules,
+        project_rules_dir.join("xss-detection.yaml"),
+    )
+    .unwrap();
+
+    let output = Command::new(cli_bin())
+        .args([
+            "audit",
+            "--agent",
+            "--specialist",
+            project.to_str().unwrap(),
+            "--max-findings",
+            "5",
+            "--min-severity",
+            "medium",
+        ])
+        .output()
+        .expect("Failed to run audit --agent --specialist");
+
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(output.status.success());
+
+    let audit_log = project.join(".ctx-audit").join("audit_log.json");
+    let content = std::fs::read_to_string(&audit_log).unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(!entries.is_empty());
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(!entries.is_empty());
+
+    let mut found_specialist = false;
+    for entry in &entries {
+        if let Some(sp) = entry.get("specialist_result") {
+            if !sp.is_null() {
+                found_specialist = true;
+                assert_eq!(sp["specialist_name"].as_str().unwrap(), "xss");
+            }
+        }
+    }
+    assert!(
+        found_specialist,
+        "至少一条审计记录应包含 xss specialist_result"
+    );
+
     let _ = std::fs::remove_dir_all(&project);
 }

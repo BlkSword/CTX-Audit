@@ -19,6 +19,7 @@ pub async fn execute(
     deep: bool,
     min_severity: Option<String>,
     max_findings: Option<usize>,
+    specialist: bool,
     output_format: &str,
     output_path: Option<String>,
 ) -> Result<()> {
@@ -36,7 +37,7 @@ pub async fn execute(
         ));
     }
 
-    let config = AuditConfig::new(
+    let mut config = AuditConfig::new(
         project_path,
         deep,
         min_severity,
@@ -44,6 +45,7 @@ pub async fn execute(
         format,
         output_path,
     );
+    config.specialist_enabled = specialist;
 
     match run_audit(config).await {
         Ok(report) => {

@@ -21,6 +21,9 @@ use crate::agent::evidence::{collect_evidence, Evidence};
 use crate::agent::heuristics::Verdict;
 use crate::agent::llm_client::LlmClient;
 use crate::agent::report::InvestigationResult;
+use crate::agent::specialist::{
+    merge_specialist_verdict, SpecialistContext, SpecialistRegistry, SpecialistResult,
+};
 
 /// 调度器
 pub struct Supervisor {
@@ -29,6 +32,8 @@ pub struct Supervisor {
     llm_client: Arc<dyn LlmClient>,
     blackboard: Arc<RwLock<BlackboardState>>,
     concurrency: usize,
+    specialist_enabled: bool,
+    specialist_registry: Arc<SpecialistRegistry>,
 }
 
 impl Supervisor {
@@ -45,7 +50,16 @@ impl Supervisor {
             llm_client,
             blackboard,
             concurrency: concurrency.max(1),
+            specialist_enabled: false,
+            specialist_registry: Arc::new(SpecialistRegistry::with_defaults()),
         }
+    }
+
+    /// 启用 Specialist Agent 并指定注册表
+    pub fn with_specialists(mut self, registry: Arc<SpecialistRegistry>, enabled: bool) -> Self {
+        self.specialist_registry = registry;
+        self.specialist_enabled = enabled;
+        self
     }
 
     /// 并发 triage 所有 finding
@@ -68,6 +82,8 @@ impl Supervisor {
                 query_engine: self.query_engine.clone(),
                 llm_client: self.llm_client.clone(),
                 blackboard: self.blackboard.clone(),
+                specialist_enabled: self.specialist_enabled,
+                specialist_registry: self.specialist_registry.clone(),
             };
 
             join_set.spawn(async move {
@@ -104,6 +120,8 @@ struct TriageTask {
     query_engine: Option<Arc<CallGraphQueryEngine>>,
     llm_client: Arc<dyn LlmClient>,
     blackboard: Arc<RwLock<BlackboardState>>,
+    specialist_enabled: bool,
+    specialist_registry: Arc<SpecialistRegistry>,
 }
 
 /// 实际调查逻辑
@@ -121,12 +139,64 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
     // 调用 LlmClient（默认 NoopLlmClient 退化为规则判定）
     let triage_result = task.llm_client.triage(&task.finding, &evidence).await?;
 
-    let reasoning = build_reasoning(
-        &task.finding,
-        &evidence,
-        &triage_result.verdict,
-        &triage_result.reasoning,
-    );
+    // 可选：调用 Specialist Agent 进行深度判定
+    let mut specialist_result: Option<SpecialistResult> = None;
+    if task.specialist_enabled {
+        let handlers = task.specialist_registry.find_handlers(&task.finding);
+        if let Some(specialist) = handlers.into_iter().next() {
+            let ctx = SpecialistContext {
+                project_path: task.project_path.clone(),
+                finding: task.finding.clone(),
+                evidence: evidence.clone(),
+                query_engine: task.query_engine.clone(),
+            };
+            match specialist.investigate(ctx).await {
+                Ok(sp) => {
+                    tracing::debug!(
+                        "Specialist {} handled finding {}",
+                        sp.specialist_name,
+                        task.finding.finding_id
+                    );
+                    specialist_result = Some(sp);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Specialist failed for finding {}: {}",
+                        task.finding.finding_id,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    // 融合 specialist 判定
+    let (verdict, _confidence) = if let Some(ref sp) = specialist_result {
+        merge_specialist_verdict(triage_result.verdict, triage_result.confidence, sp)
+    } else {
+        (triage_result.verdict, triage_result.confidence)
+    };
+
+    let combined_reasoning = if let Some(ref sp) = specialist_result {
+        format!(
+            "{} [Specialist {}] 补充: {}",
+            triage_result.reasoning, sp.specialist_name, sp.reasoning
+        )
+    } else {
+        triage_result.reasoning
+    };
+
+    let reasoning = build_reasoning(&task.finding, &evidence, &verdict, &combined_reasoning);
+
+    let specialist_result_json = specialist_result.map(|sp| {
+        serde_json::json!({
+            "specialist_name": sp.specialist_name,
+            "verdict": sp.verdict.as_str(),
+            "confidence": sp.confidence,
+            "reasoning": sp.reasoning,
+            "observations": sp.observations,
+        })
+    });
 
     let result = InvestigationResult {
         investigation_id,
@@ -138,8 +208,9 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
         severity: task.finding.severity,
         hypothesis,
         evidence,
-        verdict: triage_result.verdict,
+        verdict,
         reasoning,
+        specialist_result: specialist_result_json,
         audited_at: chrono::Utc::now().to_rfc3339(),
     };
 

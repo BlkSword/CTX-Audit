@@ -138,6 +138,10 @@ enum Commands {
         #[arg(long)]
         max_findings: Option<usize>,
 
+        /// 启用 Specialist Agent 进行 CWE 深度判定
+        #[arg(long)]
+        specialist: bool,
+
         /// 输出文件路径
         #[arg(short, long)]
         output: Option<String>,
@@ -458,6 +462,7 @@ async fn main() -> Result<()> {
             deep,
             min_severity,
             max_findings,
+            specialist,
             output,
         } => {
             commands::audit::execute(
@@ -466,6 +471,7 @@ async fn main() -> Result<()> {
                 deep,
                 min_severity,
                 max_findings,
+                specialist,
                 cli.output.as_str(),
                 output,
             )
