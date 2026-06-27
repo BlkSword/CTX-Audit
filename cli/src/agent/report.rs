@@ -36,6 +36,10 @@ pub struct InvestigationResult {
     pub reasoning: String,
     /// Specialist 深度调查结果（若启用且命中）
     pub specialist_result: Option<serde_json::Value>,
+    /// Reviewer 复核意见列表（若启用 debate/single 模式）
+    pub reviews: Vec<crate::agent::reviewer::ReviewOpinion>,
+    /// 最终判定置信度
+    pub confidence: f64,
     pub audited_at: String,
 }
 

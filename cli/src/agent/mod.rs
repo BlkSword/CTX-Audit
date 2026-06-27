@@ -26,6 +26,7 @@ pub mod llm;
 pub mod llm_client;
 pub mod prompts;
 pub mod report;
+pub mod reviewer;
 pub mod specialist;
 pub mod supervisor;
 
@@ -51,6 +52,8 @@ pub struct AuditConfig {
     pub output_path: Option<String>,
     /// 是否启用 Specialist Agent（覆盖配置文件默认值）
     pub specialist_enabled: bool,
+    /// Review 模式：off / debate / single（覆盖配置文件默认值）
+    pub review_mode: String,
 }
 
 impl AuditConfig {
@@ -71,6 +74,7 @@ impl AuditConfig {
             output_format,
             output_path,
             specialist_enabled: false,
+            review_mode: "off".to_string(),
         }
     }
 }
@@ -83,6 +87,11 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     let config_manager = crate::config::ConfigManager::new(None)?;
     let agent_config = config_manager.config().agent.clone();
     let specialist_enabled = config.specialist_enabled || agent_config.specialist_enabled;
+    let review_mode = if config.review_mode.is_empty() {
+        agent_config.review_mode.clone()
+    } else {
+        config.review_mode.clone()
+    };
 
     // ── SURVEY：做一次深度扫描拿到 findings ──────────────────────
     let scan_result = run_security_scan(&config).await?;
@@ -124,6 +133,10 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     .with_specialists(
         Arc::new(SpecialistRegistry::with_defaults()),
         specialist_enabled,
+    )
+    .with_reviewer(
+        Arc::new(crate::agent::reviewer::RuleBasedReviewer),
+        review_mode,
     );
 
     let mut results = supervisor.run(to_investigate).await;
@@ -312,6 +325,8 @@ fn write_audit_log(project_path: &Path, results: &[InvestigationResult]) -> Resu
             "hypothesis": result.hypothesis,
             "evidence": result.evidence.to_json(),
             "specialist_result": result.specialist_result,
+            "reviews": result.reviews,
+            "confidence": result.confidence,
             "audited_at": result.audited_at,
         });
         log.push(entry);

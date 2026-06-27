@@ -13,11 +13,14 @@ fn cli_bin() -> String {
 }
 
 fn unique_test_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    let dir = std::env::temp_dir().join(format!("ctx-audit-agent-it-{}", ts));
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("ctx-audit-agent-it-{}-{}", ts, n));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -175,6 +178,94 @@ app.listen(3000);
     assert!(
         found_specialist,
         "至少一条审计记录应包含 xss specialist_result"
+    );
+
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+/// 启用 --review-mode debate 时，blackboard 应更新 pheromone 且 audit_log 包含 reviews
+#[test]
+fn test_audit_agent_review_mode_debate_updates_blackboard() {
+    let project = unique_test_dir();
+
+    let src = project.join("app.js");
+    std::fs::write(
+        &src,
+        r#"
+const express = require('express');
+const app = express();
+
+app.get('/greet', (req, res) => {
+    document.getElementById('out').innerHTML = req.query.name;
+    res.send('ok');
+});
+
+app.listen(3000);
+"#,
+    )
+    .unwrap();
+
+    let workspace_rules = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("rules")
+        .join("xss-detection.yaml");
+    let project_rules_dir = project.join(".ctx-audit").join("rules");
+    std::fs::create_dir_all(&project_rules_dir).unwrap();
+    std::fs::copy(
+        workspace_rules,
+        project_rules_dir.join("xss-detection.yaml"),
+    )
+    .unwrap();
+
+    let output = Command::new(cli_bin())
+        .args([
+            "audit",
+            "--agent",
+            "--review-mode",
+            "debate",
+            project.to_str().unwrap(),
+            "--max-findings",
+            "5",
+            "--min-severity",
+            "medium",
+        ])
+        .output()
+        .expect("Failed to run audit --agent --review-mode debate");
+
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(output.status.success());
+
+    let audit_log = project.join(".ctx-audit").join("audit_log.json");
+    let content = std::fs::read_to_string(&audit_log).unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(!entries.is_empty());
+
+    let mut found_review = false;
+    for entry in &entries {
+        if let Some(reviews) = entry.get("reviews") {
+            if let Some(arr) = reviews.as_array() {
+                if !arr.is_empty() {
+                    found_review = true;
+                }
+            }
+        }
+    }
+    assert!(found_review, "debate 模式下 audit_log 应包含 reviews");
+
+    let blackboard_path = project.join(".ctx-audit").join("blackboard.json");
+    let blackboard: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&blackboard_path).unwrap()).unwrap();
+    let pheromone = blackboard
+        .get("pheromone")
+        .and_then(|p| p.get("entries"))
+        .and_then(|e| e.as_object())
+        .expect("blackboard 应包含 pheromone.entries");
+    assert!(
+        pheromone.contains_key("CWE-79"),
+        "pheromone 应包含 CWE-79 条目"
     );
 
     let _ = std::fs::remove_dir_all(&project);

@@ -42,6 +42,33 @@ impl BlackboardState {
         self.investigations.push(BlackboardInvestigation::from(inv));
     }
 
+    /// 更新某类漏洞的 pheromone（ACO 收敛）
+    pub fn update_pheromone(
+        &mut self,
+        vuln_type: &str,
+        verdict: &crate::agent::heuristics::Verdict,
+    ) {
+        let delta = match verdict {
+            crate::agent::heuristics::Verdict::TruePositive => 1.0,
+            crate::agent::heuristics::Verdict::FalsePositive => -1.0,
+            crate::agent::heuristics::Verdict::NeedsReview => 0.2,
+        };
+        let key = vuln_type.to_string();
+        let entry = self.pheromone.entries.entry(key).or_insert(0.0);
+        *entry += delta;
+        // 限制在 [-10.0, 10.0] 避免极端值
+        *entry = entry.clamp(-10.0, 10.0);
+    }
+
+    /// 判断某类漏洞是否已收敛（连续同向判定达到阈值）
+    pub fn has_converged(&self, vuln_type: &str, threshold: f64) -> bool {
+        self.pheromone
+            .entries
+            .get(vuln_type)
+            .map(|v| v.abs() >= threshold)
+            .unwrap_or(false)
+    }
+
     /// 保存到 <project_path>/.ctx-audit/blackboard.json
     pub fn save(&self, project_path: &Path) -> Result<()> {
         let dir = project_path.join(".ctx-audit");

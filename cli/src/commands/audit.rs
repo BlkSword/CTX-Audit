@@ -20,6 +20,7 @@ pub async fn execute(
     min_severity: Option<String>,
     max_findings: Option<usize>,
     specialist: bool,
+    review_mode: Option<String>,
     output_format: &str,
     output_path: Option<String>,
 ) -> Result<()> {
@@ -46,6 +47,9 @@ pub async fn execute(
         output_path,
     );
     config.specialist_enabled = specialist;
+    if let Some(mode) = review_mode {
+        config.review_mode = mode;
+    }
 
     match run_audit(config).await {
         Ok(report) => {

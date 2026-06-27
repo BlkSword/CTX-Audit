@@ -142,6 +142,10 @@ enum Commands {
         #[arg(long)]
         specialist: bool,
 
+        /// Review 模式：off / debate / single
+        #[arg(long, value_name = "MODE")]
+        review_mode: Option<String>,
+
         /// 输出文件路径
         #[arg(short, long)]
         output: Option<String>,
@@ -463,6 +467,7 @@ async fn main() -> Result<()> {
             min_severity,
             max_findings,
             specialist,
+            review_mode,
             output,
         } => {
             commands::audit::execute(
@@ -472,6 +477,7 @@ async fn main() -> Result<()> {
                 min_severity,
                 max_findings,
                 specialist,
+                review_mode,
                 cli.output.as_str(),
                 output,
             )

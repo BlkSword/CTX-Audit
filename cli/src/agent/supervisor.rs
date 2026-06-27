@@ -21,6 +21,7 @@ use crate::agent::evidence::{collect_evidence, Evidence};
 use crate::agent::heuristics::Verdict;
 use crate::agent::llm_client::LlmClient;
 use crate::agent::report::InvestigationResult;
+use crate::agent::reviewer::{apply_review, Reviewer};
 use crate::agent::specialist::{
     merge_specialist_verdict, SpecialistContext, SpecialistRegistry, SpecialistResult,
 };
@@ -34,6 +35,8 @@ pub struct Supervisor {
     concurrency: usize,
     specialist_enabled: bool,
     specialist_registry: Arc<SpecialistRegistry>,
+    review_mode: String,
+    reviewer: Arc<dyn Reviewer>,
 }
 
 impl Supervisor {
@@ -52,6 +55,8 @@ impl Supervisor {
             concurrency: concurrency.max(1),
             specialist_enabled: false,
             specialist_registry: Arc::new(SpecialistRegistry::with_defaults()),
+            review_mode: "off".to_string(),
+            reviewer: Arc::new(crate::agent::reviewer::RuleBasedReviewer),
         }
     }
 
@@ -59,6 +64,13 @@ impl Supervisor {
     pub fn with_specialists(mut self, registry: Arc<SpecialistRegistry>, enabled: bool) -> Self {
         self.specialist_registry = registry;
         self.specialist_enabled = enabled;
+        self
+    }
+
+    /// 启用 Reviewer（debate / single 模式）
+    pub fn with_reviewer(mut self, reviewer: Arc<dyn Reviewer>, review_mode: String) -> Self {
+        self.reviewer = reviewer;
+        self.review_mode = review_mode;
         self
     }
 
@@ -84,6 +96,8 @@ impl Supervisor {
                 blackboard: self.blackboard.clone(),
                 specialist_enabled: self.specialist_enabled,
                 specialist_registry: self.specialist_registry.clone(),
+                review_mode: self.review_mode.clone(),
+                reviewer: self.reviewer.clone(),
             };
 
             join_set.spawn(async move {
@@ -122,6 +136,8 @@ struct TriageTask {
     blackboard: Arc<RwLock<BlackboardState>>,
     specialist_enabled: bool,
     specialist_registry: Arc<SpecialistRegistry>,
+    review_mode: String,
+    reviewer: Arc<dyn Reviewer>,
 }
 
 /// 实际调查逻辑
@@ -171,7 +187,7 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
     }
 
     // 融合 specialist 判定
-    let (verdict, _confidence) = if let Some(ref sp) = specialist_result {
+    let (verdict, primary_confidence) = if let Some(ref sp) = specialist_result {
         merge_specialist_verdict(triage_result.verdict, triage_result.confidence, sp)
     } else {
         (triage_result.verdict, triage_result.confidence)
@@ -198,24 +214,55 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
         })
     });
 
-    let result = InvestigationResult {
+    let mut result = InvestigationResult {
         investigation_id,
         session_id: String::new(), // 由调用方统一填充
-        finding_id: task.finding.finding_id,
-        file_path: task.finding.file_path,
+        finding_id: task.finding.finding_id.clone(),
+        file_path: task.finding.file_path.clone(),
         line: task.finding.line_start,
-        vulnerability_type: task.finding.vuln_type,
-        severity: task.finding.severity,
+        vulnerability_type: task.finding.vuln_type.clone(),
+        severity: task.finding.severity.clone(),
         hypothesis,
         evidence,
         verdict,
         reasoning,
         specialist_result: specialist_result_json,
+        reviews: Vec::new(),
+        confidence: primary_confidence,
         audited_at: chrono::Utc::now().to_rfc3339(),
     };
 
+    // Debate / Single Reviewer 复核
+    if task.review_mode != "off" {
+        match task.reviewer.review(&result) {
+            Ok(opinion) => {
+                let (reviewed_verdict, review_note) =
+                    apply_review(result.verdict, result.confidence, &opinion);
+                if reviewed_verdict != result.verdict {
+                    result.verdict = reviewed_verdict;
+                    result.confidence = opinion.confidence;
+                    result.reasoning = format!("{} [Debate] {}", result.reasoning, review_note);
+                } else if !opinion.agrees_with_primary {
+                    result.reasoning = format!(
+                        "{} [Debate] Reviewer 未覆盖初审（置信度不足）：{}",
+                        result.reasoning, opinion.reasoning
+                    );
+                }
+                result.reviews.push(opinion);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Reviewer failed for finding {}: {}",
+                    task.finding.finding_id,
+                    e
+                );
+            }
+        }
+    }
+
     {
         let mut bb = task.blackboard.write().await;
+        bb.update_pheromone(&task.finding.vuln_type, &result.verdict);
         bb.add_investigation(&result);
     }
 
