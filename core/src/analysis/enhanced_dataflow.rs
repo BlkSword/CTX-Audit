@@ -691,6 +691,49 @@ impl<'a> CFGBuilder<'a> {
         id
     }
 
+    /// 检查行中是否存在不在字符串/模板字面量内的赋值 `=`。
+    /// 同时排除 `==`、`!=`、`<=`、`>=`、`=>`、`+=` 等复合运算符。
+    fn has_assignment_operator(line: &str) -> bool {
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut in_backtick = false;
+        let mut escaped = false;
+        let chars: Vec<char> = line.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if c == '\\' {
+                escaped = true;
+                continue;
+            }
+            if c == '\'' && !in_double && !in_backtick {
+                in_single = !in_single;
+                continue;
+            }
+            if c == '"' && !in_single && !in_backtick {
+                in_double = !in_double;
+                continue;
+            }
+            if c == '`' && !in_single && !in_double {
+                in_backtick = !in_backtick;
+                continue;
+            }
+            if !in_single && !in_double && !in_backtick && c == '=' {
+                let prev = if i > 0 { chars.get(i - 1).copied() } else { None };
+                let next = chars.get(i + 1).copied();
+                // 排除 ==、!=、<=、>=、=>、+=、-= 等
+                let compound_prev = matches!(prev, Some('=') | Some('!') | Some('<') | Some('>') | Some('+') | Some('-') | Some('*') | Some('/') | Some('%') | Some('&') | Some('|'));
+                let arrow = next == Some('>');
+                if !compound_prev && !arrow {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn analyze_line(line: &str) -> (EnhancedNodeType, Vec<String>, Vec<String>) {
         let mut defs = Vec::new();
         let mut uses = Vec::new();
@@ -722,13 +765,13 @@ impl<'a> CFGBuilder<'a> {
         }
 
         // 函数调用
-        if line.contains("(") && line.contains(")") && !line.contains("=") {
+        if line.contains("(") && line.contains(")") && !Self::has_assignment_operator(line) {
             Self::extract_variables(line, &mut uses);
             return (EnhancedNodeType::Call, defs, uses);
         }
 
         // 赋值语句
-        if line.contains("=") && !line.starts_with("=") {
+        if Self::has_assignment_operator(line) && !line.starts_with("=") {
             if let Some(eq_pos) = line.find('=') {
                 // 检查是否是比较运算符
                 let before_eq: String = line.chars().take(eq_pos).collect();

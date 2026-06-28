@@ -199,6 +199,7 @@ impl AstTaintAnalyzer {
                     &language,
                     &[],
                     &callback_hints,
+                    0,
                 );
                 all_flows.extend(flows);
             } else {
@@ -238,6 +239,7 @@ impl AstTaintAnalyzer {
                         EnhancedFlowGraph::from_code(&func.body_text, &file_path_str, &func.name)
                     };
 
+                    let line_offset = func.start_line.saturating_sub(1);
                     let flows = self.forward_taint_analysis(
                         &cfg,
                         &func_assignments,
@@ -247,6 +249,7 @@ impl AstTaintAnalyzer {
                         &language,
                         &func.typed_params,
                         &func_hints,
+                        line_offset,
                     );
                     all_flows.extend(flows);
                 }
@@ -307,6 +310,7 @@ impl AstTaintAnalyzer {
             &language,
             typed_params,
             callback_hints,
+            0,
         )
     }
 
@@ -332,6 +336,7 @@ impl AstTaintAnalyzer {
             .collect();
         let language = Self::detect_language(&cpg.signature.file_path);
 
+        let line_offset = cpg.signature.start_line.saturating_sub(1);
         self.forward_taint_analysis_cpg(
             &cpg.cfg,
             &assignments,
@@ -342,10 +347,14 @@ impl AstTaintAnalyzer {
             &language,
             &cpg.signature.params,
             callback_hints,
+            line_offset,
         )
     }
 
     /// 前向污点传播（worklist 算法）
+    ///
+    /// `line_offset` 用于将函数体内部相对行号转换为文件绝对行号，
+    /// 避免入口源被错误地标记为函数体起始行导致后续去重丢失。
     fn forward_taint_analysis(
         &self,
         cfg: &EnhancedFlowGraph,
@@ -356,6 +365,7 @@ impl AstTaintAnalyzer {
         language: &str,
         typed_params: &[TypedParam],
         callback_hints: &[CallbackTaintHint],
+        line_offset: usize,
     ) -> Vec<TaintFlow> {
         let mut flows = Vec::new();
 
@@ -397,6 +407,7 @@ impl AstTaintAnalyzer {
                         typed_params,
                         callback_hints,
                         language,
+                        line_offset,
                     );
                 }
 
@@ -482,6 +493,7 @@ impl AstTaintAnalyzer {
         language: &str,
         typed_params: &[TypedParam],
         callback_hints: &[CallbackTaintHint],
+        line_offset: usize,
     ) -> Vec<TaintFlow> {
         use super::cpg::{ConditionInfo, PathCondition, PathSensitiveState, VarTaintState};
         use crate::analysis::enhanced_dataflow::EdgeType;
@@ -523,6 +535,7 @@ impl AstTaintAnalyzer {
                         typed_params,
                         callback_hints,
                         language,
+                        line_offset,
                     );
                 }
 
@@ -765,6 +778,7 @@ impl AstTaintAnalyzer {
         typed_params: &[TypedParam],
         callback_hints: &[CallbackTaintHint],
         language: &str,
+        line_offset: usize,
     ) {
         use super::cpg::VarTaintState;
 
@@ -786,7 +800,7 @@ impl AstTaintAnalyzer {
                         .lines()
                         .enumerate()
                         .find(|(_, l)| l.contains(&tp.name))
-                        .map(|(i, _)| i + 1)
+                        .map(|(i, _)| i + 1 + line_offset)
                         .unwrap_or(1);
                     state.insert_var(
                         var_name,
@@ -817,7 +831,7 @@ impl AstTaintAnalyzer {
                 .lines()
                 .enumerate()
                 .find(|(_, l)| l.contains(&hint.param_name))
-                .map(|(i, _)| i + 1)
+                .map(|(i, _)| i + 1 + line_offset)
                 .unwrap_or(1);
             state.insert_var(
                 var_name,
@@ -838,7 +852,7 @@ impl AstTaintAnalyzer {
 
         // 3. 基于行扫描的污点源匹配
         for (line_idx, line) in lines.iter().enumerate() {
-            let line_num = line_idx + 1;
+            let line_num = line_idx + 1 + line_offset;
             for source in &self.sources {
                 if source.matches(line, language) {
                     if let Some(var_name) = self.extract_var_from_source(line) {
@@ -901,7 +915,7 @@ impl AstTaintAnalyzer {
                     .lines()
                     .enumerate()
                     .find(|(_, l)| l.contains(local_var))
-                    .map(|(i, _)| i + 1)
+                    .map(|(i, _)| i + 1 + line_offset)
                     .unwrap_or(1);
                 state.insert_var(
                     local_var.clone(),
@@ -1360,6 +1374,7 @@ impl AstTaintAnalyzer {
         typed_params: &[TypedParam],
         callback_hints: &[CallbackTaintHint],
         language: &str,
+        line_offset: usize,
     ) {
         let lines: Vec<&str> = code.lines().collect();
 
@@ -1378,7 +1393,7 @@ impl AstTaintAnalyzer {
                         .lines()
                         .enumerate()
                         .find(|(_, l)| l.contains(&tp.name))
-                        .map(|(i, _)| i + 1)
+                        .map(|(i, _)| i + 1 + line_offset)
                         .unwrap_or(1);
                     state.insert(
                         tp.name.clone(),
@@ -1410,7 +1425,7 @@ impl AstTaintAnalyzer {
                 .lines()
                 .enumerate()
                 .find(|(_, l)| l.contains(&hint.param_name))
-                .map(|(i, _)| i + 1)
+                .map(|(i, _)| i + 1 + line_offset)
                 .unwrap_or(1);
             state.insert(
                 hint.param_name.clone(),
@@ -1433,7 +1448,7 @@ impl AstTaintAnalyzer {
 
         // 3. 基于行扫描的污点源匹配
         for (line_idx, line) in lines.iter().enumerate() {
-            let line_num = line_idx + 1;
+            let line_num = line_idx + 1 + line_offset;
             for source in &self.sources {
                 if source.matches(line, language) {
                     let var_name = self.extract_var_from_source(line);
@@ -1496,7 +1511,7 @@ impl AstTaintAnalyzer {
                             .lines()
                             .enumerate()
                             .find(|(_, l)| l.contains(local_var.as_str()))
-                            .map(|(i, _)| i + 1)
+                            .map(|(i, _)| i + 1 + line_offset)
                             .unwrap_or(1);
 
                         state.insert(
@@ -2961,5 +2976,149 @@ eval(user_input)"#;
             "Should detect C buffer overflow via strcpy, got {} flows",
             flows.len()
         );
+    }
+
+    // ===== 回归测试：Node.js Express 常见漏洞模式 =====
+
+    fn yaml_rules_analyzer() -> AstTaintAnalyzer {
+        let rules_dir = std::path::PathBuf::from("../rules/taint");
+        AstTaintAnalyzer::from_yaml_dir(&rules_dir)
+            .unwrap_or_else(|_| AstTaintAnalyzer::new())
+    }
+
+    #[test]
+    fn test_bench_app_js_analyze_file() {
+        let code = r#"const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const { exec } = require('child_process');
+const app = express();
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+const db = new sqlite3.Database(':memory:');
+
+app.get('/user', (req, res) => {
+  const id = req.query.id;
+  db.get("SELECT * FROM users WHERE id = '" + id + "'", (err, row) => {
+    res.json(row || {});
+  });
+});
+
+app.post('/ping', (req, res) => {
+  const host = req.body.host;
+  exec('ping -c 1 ' + host, (err, stdout) => {
+    res.send(stdout);
+  });
+});
+
+app.get('/download', (req, res) => {
+  const file = req.query.file;
+  res.sendFile(__dirname + '/files/' + file);
+});
+"#;
+        let mut analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("app.js");
+        let flows = analyzer.analyze_file(&path, code);
+        assert!(flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)), "Expected SQLi");
+        assert!(flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::CommandInjection)), "Expected command injection");
+        assert!(flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::PathTraversal)), "Expected path traversal");
+    }
+
+    #[test]
+    fn test_bench_app_js_cpg() {
+        let code = r#"const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const { exec } = require('child_process');
+const app = express();
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+const db = new sqlite3.Database(':memory:');
+
+app.get('/user', (req, res) => {
+  const id = req.query.id;
+  db.get("SELECT * FROM users WHERE id = '" + id + "'", (err, row) => {
+    res.json(row || {});
+  });
+});
+
+app.post('/ping', (req, res) => {
+  const host = req.body.host;
+  exec('ping -c 1 ' + host, (err, stdout) => {
+    res.send(stdout);
+  });
+});
+
+app.get('/download', (req, res) => {
+  const file = req.query.file;
+  res.sendFile(__dirname + '/files/' + file);
+});
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("app.js");
+        let mut parser = ASTParser::new();
+        let (tree, functions, file_assignments, file_calls) =
+            parser.extract_all_for_taint_with_tree(&path, code).unwrap();
+        let callback_hints = crate::analysis::async_flow::detect_callback_hints(code);
+        let root = tree.root_node();
+        let mut all_flows = Vec::new();
+        for func in &functions {
+            let func_hints: Vec<_> = callback_hints
+                .iter()
+                .filter(|h| h.callback_start_line >= func.start_line && h.callback_start_line <= func.end_line)
+                .cloned()
+                .collect();
+            let func_assignments: Vec<_> = file_assignments
+                .iter()
+                .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+                .cloned()
+                .collect();
+            let func_calls: Vec<_> = file_calls
+                .iter()
+                .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+                .cloned()
+                .collect();
+            let body_node = AstTaintAnalyzer::find_function_body_node_static(
+                &root, func.start_line, func.end_line,
+            );
+            let func_cpg = if let Some(body_node) = body_node {
+                crate::analysis::cpg::CPGBuilder::build_function_cpg(
+                    &body_node, code, "app.js", func, &func_assignments, &func_calls,
+                )
+            } else {
+                crate::analysis::cpg::CPGBuilder::build_file_cpg(
+                    &func.body_text, "app.js", &func_assignments, &func_calls,
+                )
+            };
+            let func_flows = analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &func_hints);
+            all_flows.extend(func_flows);
+        }
+        assert!(all_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)), "Expected SQLi via CPG");
+        assert!(all_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::CommandInjection)), "Expected command injection via CPG");
+        assert!(all_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::PathTraversal)), "Expected path traversal via CPG");
+    }
+
+    #[test]
+    fn test_sqlite_get_text_cfg() {
+        let code = r#"app.get('/user', (req, res) => {
+  const id = req.query.id;
+  db.get("SELECT * FROM users WHERE id = '" + id + "'", (err, row) => {});
+});
+"#;
+        let mut analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("app.js");
+        let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
+        assert!(!flows.is_empty(), "Expected SQLi in text-based CFG");
+    }
+
+    #[test]
+    fn test_bare_exec_text_cfg() {
+        let code = r#"app.post('/ping', (req, res) => {
+  const host = req.body.host;
+  exec('ping -c 1 ' + host, (err, stdout) => {});
+});
+"#;
+        let mut analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("app.js");
+        let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
+        assert!(!flows.is_empty(), "Expected command injection in text-based CFG");
     }
 }

@@ -1267,7 +1267,10 @@ pub async fn scan_directory_deep_with_rules_progress(
                 use crate::analysis::cpg::CPGBuilder;
                 use crate::ast::parser::ASTParser;
 
-                let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
+                // 优先从 rules/taint 加载 YAML 污点规则；失败则回退到内置默认规则
+                let rules_dir = std::path::Path::new("rules/taint");
+                let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::from_yaml_dir(rules_dir)
+                    .unwrap_or_else(|_| crate::analysis::ast_taint::AstTaintAnalyzer::new());
                 let file_path = std::path::Path::new(file_path_str);
 
                 // CPG 缓存（按函数 ID 存储）

@@ -543,8 +543,8 @@ pub struct AgentConfig {
     #[serde(default = "default_review_mode")]
     pub review_mode: String,
 
-    /// 最大 LLM 调用次数，0 表示不限制（默认 0）
-    #[serde(default)]
+    /// 最大 LLM 调用次数，0 表示不限制（默认 100）
+    #[serde(default = "default_max_llm_calls")]
     pub max_llm_calls: usize,
 
     /// 是否启用 Specialist Agent（默认 false）
@@ -580,6 +580,9 @@ fn default_review_mode() -> String {
 fn default_max_investigation_steps() -> usize {
     5
 }
+fn default_max_llm_calls() -> usize {
+    100
+}
 
 impl Default for AgentConfig {
     fn default() -> Self {
@@ -588,7 +591,7 @@ impl Default for AgentConfig {
             triage_concurrency: 4,
             llm_mode: "noop".to_string(),
             review_mode: "off".to_string(),
-            max_llm_calls: 0,
+            max_llm_calls: default_max_llm_calls(),
             specialist_enabled: false,
             investigator_enabled: false,
             max_investigation_steps: 5,
@@ -1091,7 +1094,7 @@ impl ConfigManager {
             "agent.triage_concurrency" => self.config.agent.triage_concurrency = 4,
             "agent.llm_mode" => self.config.agent.llm_mode = "noop".to_string(),
             "agent.review_mode" => self.config.agent.review_mode = "off".to_string(),
-            "agent.max_llm_calls" => self.config.agent.max_llm_calls = 0,
+            "agent.max_llm_calls" => self.config.agent.max_llm_calls = 100,
             "agent.specialist_enabled" => self.config.agent.specialist_enabled = false,
             "agent.investigator_enabled" => self.config.agent.investigator_enabled = false,
             "agent.max_investigation_steps" => self.config.agent.max_investigation_steps = 5,

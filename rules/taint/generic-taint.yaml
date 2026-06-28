@@ -105,6 +105,7 @@ sinks:
       - ".raw"
       - ".run"
       - ".all"
+      - ".get"
       - ".exec"
     exact_matches:
       - "cursor.execute"
@@ -187,6 +188,7 @@ sinks:
       - "fs.open"
       - "fs.readFile"
       - "fs.writeFile"
+      - "sendFile"
       - "File("
       - "FileReader"
       - "FileWriter"
@@ -208,8 +210,8 @@ sinks:
       - "innerHTML"
       - "document.write"
       - "dangerouslySetInnerHTML"
-      - "res.write"
-      - "res.send"
+      - "res.write("
+      - "res.send("
       - "Response.Write"
     languages: ["*"]
     vulnerability_type: "CrossSiteScripting"

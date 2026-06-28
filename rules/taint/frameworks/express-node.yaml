@@ -88,12 +88,21 @@ sinks:
       - ".spawn"
       - ".execFile"
       - ".fork"
+      - "exec("
+      - "execSync("
+      - "spawn("
     exact_matches:
       - "child_process.exec"
       - "child_process.execSync"
       - "child_process.spawn"
       - "child_process.execFile"
       - "child_process.fork"
+      # 支持 const { exec } = require('child_process'); exec(...) 的解构用法
+      - "exec"
+      - "execSync"
+      - "spawn"
+      - "execFile"
+      - "fork"
     languages: ["javascript", "typescript"]
     vulnerability_type: "CommandInjection"
     severity: "Critical"
@@ -131,12 +140,14 @@ sinks:
       - ".createWriteStream"
       - ".open"
       - ".readFile"
+      - ".sendFile"
     exact_matches:
       - "fs.writeFile"
       - "fs.writeFileSync"
       - "fs.appendFile"
       - "fs.createWriteStream"
       - "fs.open"
+      - "res.sendFile"
     languages: ["javascript", "typescript"]
     vulnerability_type: "PathTraversal"
     severity: "High"

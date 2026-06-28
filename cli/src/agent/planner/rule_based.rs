@@ -77,7 +77,9 @@ impl Planner for RuleBasedPlanner {
         }
 
         // 3. 架构风险目标：增加 VerifyHypothesis（中间件 + 调用者组合验证）
-        if goal.objective.contains("架构风险") || goal.objective.contains("认证") {
+        // 若调用图为空，这类验证只会产生噪声，直接跳过
+        let has_call_graph = env.graph_stats.total_nodes > 0;
+        if has_call_graph && (goal.objective.contains("架构风险") || goal.objective.contains("认证")) {
             actions.push(Action::VerifyHypothesis {
                 hypothesis: Hypothesis {
                     statement: format!("{} 存在可被利用的安全问题", goal.objective),
