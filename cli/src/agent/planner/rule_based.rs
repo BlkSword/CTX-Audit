@@ -9,7 +9,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::agent::environment::EnvironmentModel;
-use crate::agent::planner::{Action, AuditGoal, Hypothesis, Plan, Planner, ToolCall};
+use crate::agent::planner::{Action, AuditGoal, Plan, Planner};
+use deepaudit_core::analysis::attack_surface::is_public_route;
 
 /// 基于规则的计划器
 pub struct RuleBasedPlanner {
@@ -46,11 +47,19 @@ impl Planner for RuleBasedPlanner {
         }
 
         // 2. 对关注入口点生成 ExploreEntryPoint
+        // 跳过设计上公开的端点（登录/注册/健康检查等），避免在无风险入口上浪费行动
         let focus_entries = if goal.focus_entry_points.is_empty() {
             env.high_risk_unauthenticated_entries()
                 .into_iter()
+                .filter(|e| !e.route.as_deref().map(is_public_route).unwrap_or(false))
                 .take(self.max_exploration_actions)
-                .map(|e| (e.file_path.clone(), e.function_name.clone(), e.route.clone()))
+                .map(|e| {
+                    (
+                        e.file_path.clone(),
+                        e.function_name.clone(),
+                        e.route.clone(),
+                    )
+                })
                 .collect::<Vec<_>>()
         } else {
             let focus: std::collections::HashSet<String> =
@@ -58,9 +67,18 @@ impl Planner for RuleBasedPlanner {
             env.attack_surface
                 .entry_points
                 .iter()
-                .filter(|e| focus.contains(&e.file_path))
+                .filter(|e| {
+                    focus.contains(&e.file_path)
+                        && !e.route.as_deref().map(is_public_route).unwrap_or(false)
+                })
                 .take(self.max_exploration_actions)
-                .map(|e| (e.file_path.clone(), e.function_name.clone(), e.route.clone()))
+                .map(|e| {
+                    (
+                        e.file_path.clone(),
+                        e.function_name.clone(),
+                        e.route.clone(),
+                    )
+                })
                 .collect::<Vec<_>>()
         };
 
@@ -76,32 +94,21 @@ impl Planner for RuleBasedPlanner {
             });
         }
 
-        // 3. 架构风险目标：增加 VerifyHypothesis（中间件 + 调用者组合验证）
-        // 若调用图为空，这类验证只会产生噪声，直接跳过
-        let has_call_graph = env.graph_stats.total_nodes > 0;
-        if has_call_graph && (goal.objective.contains("架构风险") || goal.objective.contains("认证")) {
-            actions.push(Action::VerifyHypothesis {
-                hypothesis: Hypothesis {
-                    statement: format!("{} 存在可被利用的安全问题", goal.objective),
-                    evidence_so_far: Vec::new(),
-                    confidence: 0.5,
-                },
-                tools: vec![
-                    ToolCall {
-                        tool_name: "get_graph_stats".to_string(),
-                        input: serde_json::json!({}),
-                        purpose: "了解调用图规模与 source/sink 分布".to_string(),
-                    },
-                    ToolCall {
-                        tool_name: "get_middleware_chain".to_string(),
-                        input: serde_json::json!({
-                            "file_path": goal.focus_entry_points.first().cloned().unwrap_or_default()
-                        }),
-                        purpose: "检查入口点是否被认证中间件覆盖".to_string(),
-                    },
-                ],
-            });
-        }
+        // 3. 架构风险目标：VerifyHypothesis（中间件 + 调用者组合验证）
+        //
+        // 当前工具只能拿到全局调用图统计和文件级中间件信息，无法定位到
+        // "具体哪个路由缺少 schema 校验 / 哪个特权操作可被未认证访问"，会持续
+        // 产生无证据支持的抽象误报。暂时禁用，待后续引入 route-level 中间件
+        // 与特权操作查询后再恢复。
+        //
+        // let has_call_graph = env.graph_stats.total_nodes > 0;
+        // let has_concrete_entry_points = !goal.focus_entry_points.is_empty();
+        // if has_call_graph
+        //     && has_concrete_entry_points
+        //     && goal.objective.contains("架构风险")
+        // {
+        //     actions.push(Action::VerifyHypothesis { ... });
+        // }
 
         Ok(Plan {
             goal: goal.clone(),

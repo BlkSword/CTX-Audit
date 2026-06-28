@@ -113,7 +113,9 @@ impl Reviewer for RuleBasedReviewer {
                             agrees_with_primary: primary == Verdict::TruePositive,
                             verdict: Verdict::TruePositive,
                             confidence: 0.85,
-                            reasoning: "Reviewer 通过调用图工具确认 source→sink 路径存在，判定为真阳性。".to_string(),
+                            reasoning:
+                                "Reviewer 通过调用图工具确认 source→sink 路径存在，判定为真阳性。"
+                                    .to_string(),
                         });
                     }
                 }

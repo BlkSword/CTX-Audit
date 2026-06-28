@@ -385,7 +385,10 @@ app.listen(3000);
     let audit_log = project.join(".ctx-audit").join("audit_log.json");
     let content = std::fs::read_to_string(&audit_log).unwrap();
     let entries: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
-    assert!(!entries.is_empty(), "auto-goal 模式下应至少调查一个 finding");
+    assert!(
+        !entries.is_empty(),
+        "auto-goal 模式下应至少调查一个 finding"
+    );
 
     let _ = std::fs::remove_dir_all(&project);
 }

@@ -118,7 +118,10 @@ impl EnvironmentModel {
 
     /// 某 finding 是否被基线抑制
     pub fn is_baselined(&self, finding: &Finding) -> bool {
-        let key = format!("{}:{}:{}", finding.file_path, finding.line_start, finding.vuln_type);
+        let key = format!(
+            "{}:{}:{}",
+            finding.file_path, finding.line_start, finding.vuln_type
+        );
         self.baseline.contains(&key)
     }
 
@@ -174,7 +177,10 @@ impl EnvironmentModel {
             "- 项目路径: {}\n",
             self.project_path.to_string_lossy()
         ));
-        s.push_str(&format!("- 总 findings: {}\n", self.project_summary.total_findings));
+        s.push_str(&format!(
+            "- 总 findings: {}\n",
+            self.project_summary.total_findings
+        ));
         s.push_str(&format!(
             "- 严重度分布: {:?}\n",
             self.project_summary.severity_counts
@@ -194,7 +200,10 @@ impl EnvironmentModel {
             self.project_summary.graph_taint_sources,
             self.project_summary.graph_taint_sinks
         ));
-        s.push_str(&format!("- 架构风险模式命中: {}\n", self.risk_matches.len()));
+        s.push_str(&format!(
+            "- 架构风险模式命中: {}\n",
+            self.risk_matches.len()
+        ));
         if !self.risk_matches.is_empty() {
             s.push_str("\n## 主要架构风险\n");
             for m in self.risk_matches.iter().take(10) {

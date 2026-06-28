@@ -11,6 +11,7 @@ use anyhow::Result;
 use crate::agent::environment::EnvironmentModel;
 use crate::agent::llm_client::LlmClient;
 use crate::agent::planner::AuditGoal;
+use deepaudit_core::analysis::attack_surface::is_public_route;
 use deepaudit_core::scanning::Finding;
 
 /// 策略模式
@@ -68,17 +69,13 @@ impl StrategyPlanner {
     pub fn new(llm_client: Arc<dyn LlmClient>, config: PlannerConfig) -> Self {
         let strategy = config.strategy;
         let has_llm = matches!(std::env::var("CTX_AUDIT_LLM_AVAILABLE").as_deref(), Ok("1"));
-        let llm_client = if strategy == PlannerStrategy::Llm
-            || (strategy == PlannerStrategy::Auto && has_llm)
-        {
-            Some(llm_client)
-        } else {
-            None
-        };
-        Self {
-            config,
-            llm_client,
-        }
+        let llm_client =
+            if strategy == PlannerStrategy::Llm || (strategy == PlannerStrategy::Auto && has_llm) {
+                Some(llm_client)
+            } else {
+                None
+            };
+        Self { config, llm_client }
     }
 
     /// 生成审计目标列表
@@ -127,7 +124,9 @@ impl StrategyPlanner {
                 .map(|ep| ep.file_path.clone())
                 .collect();
             goals.push(AuditGoal {
-                objective: "验证可被未认证/高风险入口触发的注入类漏洞（命令注入、XSS、SQLi、代码注入）".to_string(),
+                objective:
+                    "验证可被未认证/高风险入口触发的注入类漏洞（命令注入、XSS、SQLi、代码注入）"
+                        .to_string(),
                 priority: 1.0,
                 target_vuln_types: injection_types.iter().map(|s| s.to_string()).collect(),
                 target_severities: vec!["critical".to_string(), "high".to_string()],
@@ -146,17 +145,31 @@ impl StrategyPlanner {
             if covered_vuln_types.contains(&cwe) {
                 continue;
             }
+
+            // 过滤公开路由和 test/tutorial 示例代码，避免把设计上公开的端点
+            // 或教学示例当作架构风险目标
             let entry_files: Vec<String> = risk
                 .affected_entries
                 .iter()
+                .filter(|e| {
+                    if let Some(ref route) = e.route {
+                        if is_public_route(route) {
+                            return false;
+                        }
+                    }
+                    !is_test_or_tutorial_path(&e.file_path)
+                })
                 .take(5)
                 .map(|e| e.file_path.clone())
                 .collect();
+
+            // 没有具体可疑入口点时，不生成抽象的架构风险目标
+            if entry_files.is_empty() {
+                continue;
+            }
+
             goals.push(AuditGoal {
-                objective: format!(
-                    "审计架构风险：{}（{}）",
-                    risk.pattern_name, risk.pattern_id
-                ),
+                objective: format!("审计架构风险：{}（{}）", risk.pattern_name, risk.pattern_id),
                 priority: (risk.confidence as f64).clamp(0.5, 1.0),
                 target_vuln_types: vec![cwe.clone()],
                 target_severities: vec![
@@ -207,11 +220,7 @@ impl StrategyPlanner {
     }
 
     /// 根据目标对 findings 重新排序并截断
-    pub fn prioritize_findings(
-        &self,
-        env: &EnvironmentModel,
-        goals: &[AuditGoal],
-    ) -> Vec<Finding> {
+    pub fn prioritize_findings(&self, env: &EnvironmentModel, goals: &[AuditGoal]) -> Vec<Finding> {
         if goals.is_empty() {
             return env.findings.clone();
         }
@@ -244,9 +253,13 @@ impl StrategyPlanner {
             .filter(|f| !env.is_baselined(f))
             .filter(|f| {
                 let severity_ok = target_severities.contains(&f.severity)
-                    || target_severities.iter().any(|s| s.eq_ignore_ascii_case("*"));
+                    || target_severities
+                        .iter()
+                        .any(|s| s.eq_ignore_ascii_case("*"));
                 let vuln_ok = target_vuln_types.contains(&f.vuln_type)
-                    || target_vuln_types.iter().any(|v| v.eq_ignore_ascii_case("*"));
+                    || target_vuln_types
+                        .iter()
+                        .any(|v| v.eq_ignore_ascii_case("*"));
                 severity_ok && vuln_ok
             })
             .cloned()
@@ -294,6 +307,24 @@ impl StrategyPlanner {
     }
 }
 
+/// 判断路径是否属于测试、教学示例或审计临时目录，应排除在架构风险目标之外
+fn is_test_or_tutorial_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    [
+        "/test/",
+        "/tests/",
+        "/__tests__/",
+        "/tutorial/",
+        "/tutorials/",
+        "/demo/",
+        "/examples/",
+        "/fixtures/",
+        "/.ctx-audit/",
+    ]
+    .iter()
+    .any(|p| normalized.contains(p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,18 +361,20 @@ mod tests {
         });
 
         let mut surface = deepaudit_core::attack_surface::AttackSurface::default();
-        surface.entry_points.push(deepaudit_core::attack_surface::EntryPoint {
-            file_path: "app.js".to_string(),
-            line: 4,
-            entry_type: deepaudit_core::attack_surface::EntryType::HttpEndpoint,
-            route: Some("/greet".to_string()),
-            http_method: Some("GET".to_string()),
-            auth_required: false,
-            auth_mechanism: None,
-            risk_score: 0.8,
-            function_name: Some("handler".to_string()),
-            context: deepaudit_core::attack_surface::EntryContext::default(),
-        });
+        surface
+            .entry_points
+            .push(deepaudit_core::attack_surface::EntryPoint {
+                file_path: "app.js".to_string(),
+                line: 4,
+                entry_type: deepaudit_core::attack_surface::EntryType::HttpEndpoint,
+                route: Some("/greet".to_string()),
+                http_method: Some("GET".to_string()),
+                auth_required: false,
+                auth_mechanism: None,
+                risk_score: 0.8,
+                function_name: Some("handler".to_string()),
+                context: deepaudit_core::attack_surface::EntryContext::default(),
+            });
         surface.stats.total_entry_points = 1;
         surface.stats.unauthenticated_count = 1;
         surface.high_risk_files.push("app.js".to_string());
@@ -415,7 +448,10 @@ mod tests {
         let goals = planner.plan_goals(&env).await;
         assert!(!goals.is_empty());
         let first = &goals[0];
-        assert!(first.objective.contains("注入") || first.target_vuln_types.iter().any(|v| v.contains("CWE-94")));
+        assert!(
+            first.objective.contains("注入")
+                || first.target_vuln_types.iter().any(|v| v.contains("CWE-94"))
+        );
         assert!(!first.focus_entry_points.is_empty());
     }
 

@@ -128,13 +128,14 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         .unwrap_or(agent_config.max_investigation_steps);
 
     let auto_goal = config.auto_goal;
-    let strategy = config.strategy.clone().unwrap_or_else(|| {
-        match agent_config.planner.strategy {
+    let strategy = config
+        .strategy
+        .clone()
+        .unwrap_or_else(|| match agent_config.planner.strategy {
             crate::config::PlannerStrategy::Rule => "rule".to_string(),
             crate::config::PlannerStrategy::Llm => "llm".to_string(),
             crate::config::PlannerStrategy::Auto => "auto".to_string(),
-        }
-    });
+        });
     let max_goals = config.max_goals.unwrap_or(agent_config.planner.max_goals);
     let max_exploration_actions = config
         .max_exploration_actions
@@ -159,9 +160,7 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
 
     let query_engine_arc = query_engine.map(Arc::new);
     let tool_context = if let Some(ref engine) = query_engine_arc {
-        Some(
-            AgentToolContext::new_with_registry(engine.clone(), project_path_str.clone()).await,
-        )
+        Some(AgentToolContext::new_with_registry(engine.clone(), project_path_str.clone()).await)
     } else {
         None
     };

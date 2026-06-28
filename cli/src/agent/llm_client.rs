@@ -109,10 +109,7 @@ pub trait LlmClient: Send + Sync {
 }
 
 /// 默认调查决策：证据充分则直接结束，否则返回 needs_review
-fn default_investigation_decision(
-    finding: &Finding,
-    evidence: &Evidence,
-) -> InvestigationDecision {
+fn default_investigation_decision(finding: &Finding, evidence: &Evidence) -> InvestigationDecision {
     let verdict = judge_finding(finding, evidence);
     let confidence = match verdict {
         Verdict::NeedsReview => 0.5,
@@ -121,7 +118,10 @@ fn default_investigation_decision(
     InvestigationDecision::Finish {
         verdict,
         confidence,
-        reasoning: format!("Noop 调查模式：基于确定性证据直接判定为 {}", verdict.as_str()),
+        reasoning: format!(
+            "Noop 调查模式：基于确定性证据直接判定为 {}",
+            verdict.as_str()
+        ),
     }
 }
 

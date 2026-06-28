@@ -818,14 +818,32 @@ impl ConfigManager {
             "agent.review_mode" => Some(self.config.agent.review_mode.clone()),
             "agent.max_llm_calls" => Some(self.config.agent.max_llm_calls.to_string()),
             "agent.specialist_enabled" => Some(self.config.agent.specialist_enabled.to_string()),
-            "agent.investigator_enabled" => Some(self.config.agent.investigator_enabled.to_string()),
-            "agent.max_investigation_steps" => Some(self.config.agent.max_investigation_steps.to_string()),
-            "agent.planner.strategy" => Some(format!("{:?}", self.config.agent.planner.strategy).to_lowercase()),
+            "agent.investigator_enabled" => {
+                Some(self.config.agent.investigator_enabled.to_string())
+            }
+            "agent.max_investigation_steps" => {
+                Some(self.config.agent.max_investigation_steps.to_string())
+            }
+            "agent.planner.strategy" => {
+                Some(format!("{:?}", self.config.agent.planner.strategy).to_lowercase())
+            }
             "agent.planner.max_goals" => Some(self.config.agent.planner.max_goals.to_string()),
-            "agent.planner.max_exploration_actions" => Some(self.config.agent.planner.max_exploration_actions.to_string()),
-            "agent.planner.enable_proactive_scan" => Some(self.config.agent.planner.enable_proactive_scan.to_string()),
-            "agent.planner.enable_reflection" => Some(self.config.agent.planner.enable_reflection.to_string()),
-            "agent.planner.convergence_threshold" => Some(self.config.agent.planner.convergence_threshold.to_string()),
+            "agent.planner.max_exploration_actions" => Some(
+                self.config
+                    .agent
+                    .planner
+                    .max_exploration_actions
+                    .to_string(),
+            ),
+            "agent.planner.enable_proactive_scan" => {
+                Some(self.config.agent.planner.enable_proactive_scan.to_string())
+            }
+            "agent.planner.enable_reflection" => {
+                Some(self.config.agent.planner.enable_reflection.to_string())
+            }
+            "agent.planner.convergence_threshold" => {
+                Some(self.config.agent.planner.convergence_threshold.to_string())
+            }
             "agent.llm.provider" => Some(self.config.agent.llm.provider.clone()),
             "agent.llm.model" => Some(self.config.agent.llm.model.clone()),
             "agent.llm.api_key" => Some(self.config.agent.llm.api_key.clone()),
@@ -1021,16 +1039,20 @@ impl ConfigManager {
                 self.config.agent.planner.max_goals = value.parse().context("无效的数字")?;
             }
             "agent.planner.max_exploration_actions" => {
-                self.config.agent.planner.max_exploration_actions = value.parse().context("无效的数字")?;
+                self.config.agent.planner.max_exploration_actions =
+                    value.parse().context("无效的数字")?;
             }
             "agent.planner.enable_proactive_scan" => {
-                self.config.agent.planner.enable_proactive_scan = value.parse().context("无效的布尔值")?;
+                self.config.agent.planner.enable_proactive_scan =
+                    value.parse().context("无效的布尔值")?;
             }
             "agent.planner.enable_reflection" => {
-                self.config.agent.planner.enable_reflection = value.parse().context("无效的布尔值")?;
+                self.config.agent.planner.enable_reflection =
+                    value.parse().context("无效的布尔值")?;
             }
             "agent.planner.convergence_threshold" => {
-                self.config.agent.planner.convergence_threshold = value.parse().context("无效的数字")?;
+                self.config.agent.planner.convergence_threshold =
+                    value.parse().context("无效的数字")?;
             }
             "agent.llm.provider" => self.config.agent.llm.provider = value,
             "agent.llm.model" => self.config.agent.llm.model = value,
@@ -1100,10 +1122,16 @@ impl ConfigManager {
             "agent.max_investigation_steps" => self.config.agent.max_investigation_steps = 5,
             "agent.planner.strategy" => self.config.agent.planner.strategy = PlannerStrategy::Auto,
             "agent.planner.max_goals" => self.config.agent.planner.max_goals = 10,
-            "agent.planner.max_exploration_actions" => self.config.agent.planner.max_exploration_actions = 5,
-            "agent.planner.enable_proactive_scan" => self.config.agent.planner.enable_proactive_scan = false,
+            "agent.planner.max_exploration_actions" => {
+                self.config.agent.planner.max_exploration_actions = 5
+            }
+            "agent.planner.enable_proactive_scan" => {
+                self.config.agent.planner.enable_proactive_scan = false
+            }
             "agent.planner.enable_reflection" => self.config.agent.planner.enable_reflection = true,
-            "agent.planner.convergence_threshold" => self.config.agent.planner.convergence_threshold = 5.0,
+            "agent.planner.convergence_threshold" => {
+                self.config.agent.planner.convergence_threshold = 5.0
+            }
             "agent.llm.provider" => self.config.agent.llm.provider = "openai".to_string(),
             "agent.llm.model" => self.config.agent.llm.model = "gpt-4o-mini".to_string(),
             "agent.llm.api_key" => self.config.agent.llm.api_key.clear(),

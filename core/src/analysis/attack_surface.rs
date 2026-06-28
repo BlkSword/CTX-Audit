@@ -12,6 +12,45 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+// ── 公开路由白名单 ─────────────────────────────────────────
+
+/// 设计上就是公开访问的 HTTP 路由前缀/完整路径。
+/// 这些端点不应被直接报告为认证缺失漏洞。
+pub const PUBLIC_ROUTE_PATTERNS: &[&str] = &[
+    "/signup",
+    "/sign-up",
+    "/register",
+    "/login",
+    "/signin",
+    "/sign-in",
+    "/logout",
+    "/signout",
+    "/sign-out",
+    "/health",
+    "/healthz",
+    "/status",
+    "/ping",
+    "/forgot-password",
+    "/reset-password",
+    "/oauth/",
+    "/auth/",
+    "/callback/",
+];
+
+/// 判断路由是否是设计上就公开访问的端点。
+pub fn is_public_route(route: &str) -> bool {
+    let normalized = route.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return false;
+    }
+    for pat in PUBLIC_ROUTE_PATTERNS {
+        if normalized == *pat || normalized.starts_with(pat) {
+            return true;
+        }
+    }
+    false
+}
+
 // ── 预编译正则（全局缓存，避免每次调用重新编译）──────────
 
 static RE_SERVER_ACTION_FUNC: OnceLock<Regex> = OnceLock::new();

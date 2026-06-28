@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use ctx_audit_tools::{register_all_tools, ToolRegistry};
 use deepaudit_core::{
-    CalleeEvidence, CallerEvidence, CallGraphQueryEngine, CallPath, FunctionInfo,
+    CallGraphQueryEngine, CallPath, CalleeEvidence, CallerEvidence, FunctionInfo,
     MiddlewareEvidence, VariableFlowResult,
 };
 
@@ -93,8 +93,7 @@ impl AgentToolContext {
 
     /// 查询直接调用者
     pub fn query_callers(&self, file_path: &str, function_name: &str) -> Vec<CallerEvidence> {
-        self.query_engine
-            .query_callers(file_path, function_name)
+        self.query_engine.query_callers(file_path, function_name)
     }
 
     /// 递归查询所有调用者
@@ -105,8 +104,7 @@ impl AgentToolContext {
 
     /// 查询直接调用者
     pub fn query_callees(&self, file_path: &str, function_name: &str) -> Vec<CalleeEvidence> {
-        self.query_engine
-            .query_callees(file_path, function_name)
+        self.query_engine.query_callees(file_path, function_name)
     }
 
     /// 递归查询所有被调用者
@@ -123,12 +121,8 @@ impl AgentToolContext {
         sink_file: &str,
         sink_function: &str,
     ) -> Option<CallPath> {
-        self.query_engine.find_call_path(
-            source_file,
-            source_function,
-            sink_file,
-            sink_function,
-        )
+        self.query_engine
+            .find_call_path(source_file, source_function, sink_file, sink_function)
     }
 
     /// 追踪变量/函数从 source 出发到达的所有 sink

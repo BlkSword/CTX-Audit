@@ -113,12 +113,7 @@ impl ToolUsingInvestigator {
         for step_number in 1..=self.max_steps {
             let decision = self
                 .llm_client
-                .investigate_decision(
-                    &ctx.finding,
-                    &ctx.evidence,
-                    &memory,
-                    &available_tools,
-                )
+                .investigate_decision(&ctx.finding, &ctx.evidence, &memory, &available_tools)
                 .await?;
 
             match decision {
@@ -253,7 +248,10 @@ fn parameters_to_json_schema(params: &[ctx_audit_tools::ToolParameter]) -> serde
         if let Some(ref props) = p.properties {
             let mut obj = serde_json::Map::new();
             for (k, v) in props {
-                obj.insert(k.clone(), parameters_to_json_schema(std::slice::from_ref(v)));
+                obj.insert(
+                    k.clone(),
+                    parameters_to_json_schema(std::slice::from_ref(v)),
+                );
             }
             prop["properties"] = serde_json::Value::Object(obj);
         }
@@ -273,7 +271,8 @@ fn build_hardcoded_tools() -> Vec<ToolDescription> {
     vec![
         ToolDescription {
             name: "find_call_path",
-            description: "在跨文件调用图中查找从 source 函数到 sink 函数的精确调用路径，是确定性可达性证据",
+            description:
+                "在跨文件调用图中查找从 source 函数到 sink 函数的精确调用路径，是确定性可达性证据",
             parameters_schema: json!({
                 "source_file": "string",
                 "source_function": "string",
@@ -579,7 +578,8 @@ mod tests {
             _ => panic!("应为 NextTool"),
         }
 
-        let finish = r#"{"finish":true,"verdict":"true_positive","confidence":0.9,"reasoning":"路径存在"}"#;
+        let finish =
+            r#"{"finish":true,"verdict":"true_positive","confidence":0.9,"reasoning":"路径存在"}"#;
         match parse_investigation_decision(finish).unwrap() {
             InvestigationDecision::Finish {
                 verdict,
@@ -654,6 +654,9 @@ mod tests {
         assert_eq!(outcome.verdict, Verdict::TruePositive);
         assert_eq!(outcome.steps.len(), 1);
         assert_eq!(outcome.steps[0].tool_name, "find_call_path");
-        assert!(outcome.steps[0].observation.contains("找到调用路径") || outcome.steps[0].observation.contains("调用路径"));
+        assert!(
+            outcome.steps[0].observation.contains("找到调用路径")
+                || outcome.steps[0].observation.contains("调用路径")
+        );
     }
 }

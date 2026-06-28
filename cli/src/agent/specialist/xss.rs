@@ -184,7 +184,8 @@ impl Specialist for XssSpecialist {
                 specialist_name: self.name().to_string(),
                 verdict: Verdict::TruePositive,
                 confidence: 0.84,
-                reasoning: "XSS sink 已识别，工具查询确认存在 source→sink 调用路径，判定为真阳性。".to_string(),
+                reasoning: "XSS sink 已识别，工具查询确认存在 source→sink 调用路径，判定为真阳性。"
+                    .to_string(),
                 observations,
             });
         }

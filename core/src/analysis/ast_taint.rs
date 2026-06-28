@@ -2982,8 +2982,7 @@ eval(user_input)"#;
 
     fn yaml_rules_analyzer() -> AstTaintAnalyzer {
         let rules_dir = std::path::PathBuf::from("../rules/taint");
-        AstTaintAnalyzer::from_yaml_dir(&rules_dir)
-            .unwrap_or_else(|_| AstTaintAnalyzer::new())
+        AstTaintAnalyzer::from_yaml_dir(&rules_dir).unwrap_or_else(|_| AstTaintAnalyzer::new())
     }
 
     #[test]
@@ -3018,9 +3017,24 @@ app.get('/download', (req, res) => {
         let mut analyzer = yaml_rules_analyzer();
         let path = std::path::PathBuf::from("app.js");
         let flows = analyzer.analyze_file(&path, code);
-        assert!(flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)), "Expected SQLi");
-        assert!(flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::CommandInjection)), "Expected command injection");
-        assert!(flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::PathTraversal)), "Expected path traversal");
+        assert!(
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQLi"
+        );
+        assert!(
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::CommandInjection)),
+            "Expected command injection"
+        );
+        assert!(
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::PathTraversal)),
+            "Expected path traversal"
+        );
     }
 
     #[test]
@@ -3063,7 +3077,10 @@ app.get('/download', (req, res) => {
         for func in &functions {
             let func_hints: Vec<_> = callback_hints
                 .iter()
-                .filter(|h| h.callback_start_line >= func.start_line && h.callback_start_line <= func.end_line)
+                .filter(|h| {
+                    h.callback_start_line >= func.start_line
+                        && h.callback_start_line <= func.end_line
+                })
                 .cloned()
                 .collect();
             let func_assignments: Vec<_> = file_assignments
@@ -3077,23 +3094,48 @@ app.get('/download', (req, res) => {
                 .cloned()
                 .collect();
             let body_node = AstTaintAnalyzer::find_function_body_node_static(
-                &root, func.start_line, func.end_line,
+                &root,
+                func.start_line,
+                func.end_line,
             );
             let func_cpg = if let Some(body_node) = body_node {
                 crate::analysis::cpg::CPGBuilder::build_function_cpg(
-                    &body_node, code, "app.js", func, &func_assignments, &func_calls,
+                    &body_node,
+                    code,
+                    "app.js",
+                    func,
+                    &func_assignments,
+                    &func_calls,
                 )
             } else {
                 crate::analysis::cpg::CPGBuilder::build_file_cpg(
-                    &func.body_text, "app.js", &func_assignments, &func_calls,
+                    &func.body_text,
+                    "app.js",
+                    &func_assignments,
+                    &func_calls,
                 )
             };
             let func_flows = analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &func_hints);
             all_flows.extend(func_flows);
         }
-        assert!(all_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)), "Expected SQLi via CPG");
-        assert!(all_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::CommandInjection)), "Expected command injection via CPG");
-        assert!(all_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::PathTraversal)), "Expected path traversal via CPG");
+        assert!(
+            all_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQLi via CPG"
+        );
+        assert!(
+            all_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::CommandInjection)),
+            "Expected command injection via CPG"
+        );
+        assert!(
+            all_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::PathTraversal)),
+            "Expected path traversal via CPG"
+        );
     }
 
     #[test]
@@ -3119,6 +3161,9 @@ app.get('/download', (req, res) => {
         let mut analyzer = yaml_rules_analyzer();
         let path = std::path::PathBuf::from("app.js");
         let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
-        assert!(!flows.is_empty(), "Expected command injection in text-based CFG");
+        assert!(
+            !flows.is_empty(),
+            "Expected command injection in text-based CFG"
+        );
     }
 }

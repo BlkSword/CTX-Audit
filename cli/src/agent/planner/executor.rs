@@ -13,9 +13,7 @@ use deepaudit_core::scanning::Finding;
 
 use crate::agent::environment::EnvironmentModel;
 use crate::agent::heuristics::Verdict;
-use crate::agent::planner::{
-    Action, Plan, PlanExecutionMetadata, ToolCall,
-};
+use crate::agent::planner::{Action, Plan, PlanExecutionMetadata, ToolCall};
 use crate::agent::report::InvestigationResult;
 use crate::agent::supervisor::Supervisor;
 use crate::agent::tools::AgentToolContext;
@@ -102,7 +100,12 @@ impl PlanExecutor {
                     reason,
                 } => {
                     match self
-                        .execute_explore_entry_point(file_path, function_name.as_deref(), route.as_deref(), reason)
+                        .execute_explore_entry_point(
+                            file_path,
+                            function_name.as_deref(),
+                            route.as_deref(),
+                            reason,
+                        )
                         .await
                     {
                         Ok(mut invs) => {
@@ -132,17 +135,15 @@ impl PlanExecutor {
                 Action::ReScanWithRule {
                     rule_yaml,
                     rule_name,
-                } => {
-                    match self.execute_rescan_with_rule(rule_yaml, rule_name).await {
-                        Ok(()) => {
-                            meta.actions_completed += 1;
-                        }
-                        Err(e) => {
-                            meta.actions_failed += 1;
-                            tracing::warn!("ReScanWithRule 失败: {}", e);
-                        }
+                } => match self.execute_rescan_with_rule(rule_yaml, rule_name).await {
+                    Ok(()) => {
+                        meta.actions_completed += 1;
                     }
-                }
+                    Err(e) => {
+                        meta.actions_failed += 1;
+                        tracing::warn!("ReScanWithRule 失败: {}", e);
+                    }
+                },
                 Action::ReportFinding {
                     file_path,
                     line,
@@ -153,7 +154,13 @@ impl PlanExecutor {
                     reasoning,
                 } => {
                     results.push(self.build_report_result(
-                        file_path, *line, vuln_type, severity, description, *verdict, reasoning,
+                        file_path,
+                        *line,
+                        vuln_type,
+                        severity,
+                        description,
+                        *verdict,
+                        reasoning,
                     ));
                     meta.actions_completed += 1;
                     meta.new_findings += 1;
@@ -226,7 +233,11 @@ impl PlanExecutor {
                 if !obj.contains_key("project_path") {
                     obj.insert(
                         "project_path".to_string(),
-                        serde_json::json!(self.environment.project_path.to_string_lossy().to_string()),
+                        serde_json::json!(self
+                            .environment
+                            .project_path
+                            .to_string_lossy()
+                            .to_string()),
                     );
                 }
             }
@@ -236,7 +247,11 @@ impl PlanExecutor {
                         "[{}] {}\n{}",
                         call.tool_name,
                         call.purpose,
-                        if out.is_error { format!("ERROR: {}", out.text) } else { out.text }
+                        if out.is_error {
+                            format!("ERROR: {}", out.text)
+                        } else {
+                            out.text
+                        }
                     ));
                 }
                 Err(e) => {
@@ -277,12 +292,15 @@ impl PlanExecutor {
     }
 
     async fn execute_rescan_with_rule(&self, rule_yaml: &str, rule_name: &str) -> Result<()> {
-        let rules_dir = self.environment.project_path.join(".ctx-audit").join("rules");
+        let rules_dir = self
+            .environment
+            .project_path
+            .join(".ctx-audit")
+            .join("rules");
         std::fs::create_dir_all(&rules_dir)?;
         let file_name = format!("llm-generated-{}.yaml", sanitize_filename(rule_name));
         let path = rules_dir.join(&file_name);
-        std::fs::write(&path, rule_yaml)
-            .map_err(|e| anyhow::anyhow!("写入规则失败: {}", e))?;
+        std::fs::write(&path, rule_yaml).map_err(|e| anyhow::anyhow!("写入规则失败: {}", e))?;
         tracing::info!("已写入动态规则: {}", path.display());
         Ok(())
     }
@@ -321,7 +339,13 @@ impl PlanExecutor {
 
 fn sanitize_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .to_lowercase()
 }

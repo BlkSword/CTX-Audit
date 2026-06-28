@@ -721,10 +721,27 @@ impl<'a> CFGBuilder<'a> {
                 continue;
             }
             if !in_single && !in_double && !in_backtick && c == '=' {
-                let prev = if i > 0 { chars.get(i - 1).copied() } else { None };
+                let prev = if i > 0 {
+                    chars.get(i - 1).copied()
+                } else {
+                    None
+                };
                 let next = chars.get(i + 1).copied();
                 // 排除 ==、!=、<=、>=、=>、+=、-= 等
-                let compound_prev = matches!(prev, Some('=') | Some('!') | Some('<') | Some('>') | Some('+') | Some('-') | Some('*') | Some('/') | Some('%') | Some('&') | Some('|'));
+                let compound_prev = matches!(
+                    prev,
+                    Some('=')
+                        | Some('!')
+                        | Some('<')
+                        | Some('>')
+                        | Some('+')
+                        | Some('-')
+                        | Some('*')
+                        | Some('/')
+                        | Some('%')
+                        | Some('&')
+                        | Some('|')
+                );
                 let arrow = next == Some('>');
                 if !compound_prev && !arrow {
                     return true;

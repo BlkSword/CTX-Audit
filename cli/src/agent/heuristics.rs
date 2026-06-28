@@ -47,6 +47,11 @@ impl Judge for RuleBasedJudge {
 
 /// 默认启发式判定逻辑
 pub fn judge_finding(finding: &Finding, evidence: &Evidence) -> Verdict {
+    // 0. 测试、教学示例、演示代码中的命中通常是噪声，直接判为误报
+    if is_non_production_path(&finding.file_path) {
+        return Verdict::FalsePositive;
+    }
+
     // 1. 存在有效 sanitizer 或明确安全屏障 → 误报
     if evidence.has_effective_sanitizer || has_confirmed_barrier(evidence, finding) {
         return Verdict::FalsePositive;
@@ -85,4 +90,23 @@ fn has_confirmed_barrier(evidence: &Evidence, _finding: &Finding) -> bool {
         return true;
     }
     false
+}
+
+/// 判断路径是否属于测试、教学示例、演示代码等非生产目录
+fn is_non_production_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    [
+        "/test/",
+        "/tests/",
+        "/__tests__/",
+        "/tutorial/",
+        "/tutorials/",
+        "/demo/",
+        "/demos/",
+        "/examples/",
+        "/fixtures/",
+        "/.ctx-audit/",
+    ]
+    .iter()
+    .any(|p| normalized.contains(p))
 }

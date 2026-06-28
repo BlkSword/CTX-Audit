@@ -910,6 +910,15 @@ async fn scan_directory_with_rules_inner(
                             && ep.entry_type
                                 == crate::analysis::attack_surface::EntryType::HttpEndpoint
                         {
+                            // 公开端点（如 /login、/signup）不被报告为认证缺失漏洞
+                            if ep
+                                .route
+                                .as_deref()
+                                .map(crate::analysis::attack_surface::is_public_route)
+                                .unwrap_or(false)
+                            {
+                                continue;
+                            }
                             if !is_test_path(&ep.file_path) && !is_excluded(path_buf, &excludes) {
                                 attack_surface_findings.push(Finding {
                                     finding_id: format!("attack-surface-unauth-{}", ep.line),
