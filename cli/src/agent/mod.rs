@@ -20,11 +20,13 @@ use deepaudit_core::scanning::{
 use deepaudit_core::CallGraphQueryEngine;
 
 pub mod blackboard;
+pub mod environment;
 pub mod evidence;
 pub mod heuristics;
 pub mod investigator;
 pub mod llm;
 pub mod llm_client;
+pub mod planner;
 pub mod prompts;
 pub mod report;
 pub mod reviewer;
@@ -32,7 +34,14 @@ pub mod specialist;
 pub mod supervisor;
 pub mod tools;
 
+use environment::EnvironmentModel;
 use llm_client::create_llm_client;
+use planner::{
+    executor::PlanExecutor,
+    rule_based::RuleBasedPlanner,
+    strategy::{PlannerConfig, StrategyPlanner},
+    Planner,
+};
 use report::{AuditReport, InvestigationResult};
 use specialist::SpecialistRegistry;
 use supervisor::Supervisor;
@@ -61,6 +70,14 @@ pub struct AuditConfig {
     pub investigator_enabled: bool,
     /// 最大调查步数（None 表示使用配置文件默认值）
     pub max_investigation_steps: Option<usize>,
+    /// 是否启用自动目标生成（覆盖配置文件默认值）
+    pub auto_goal: bool,
+    /// 策略模式（覆盖配置文件默认值）
+    pub strategy: Option<String>,
+    /// 最大审计目标数（None 表示使用配置文件默认值）
+    pub max_goals: Option<usize>,
+    /// 每个目标最大探索行动数（None 表示使用配置文件默认值）
+    pub max_exploration_actions: Option<usize>,
 }
 
 impl AuditConfig {
@@ -84,6 +101,10 @@ impl AuditConfig {
             review_mode: "off".to_string(),
             investigator_enabled: false,
             max_investigation_steps: None,
+            auto_goal: true,
+            strategy: None,
+            max_goals: None,
+            max_exploration_actions: None,
         }
     }
 }
@@ -106,6 +127,19 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         .max_investigation_steps
         .unwrap_or(agent_config.max_investigation_steps);
 
+    let auto_goal = config.auto_goal;
+    let strategy = config.strategy.clone().unwrap_or_else(|| {
+        match agent_config.planner.strategy {
+            crate::config::PlannerStrategy::Rule => "rule".to_string(),
+            crate::config::PlannerStrategy::Llm => "llm".to_string(),
+            crate::config::PlannerStrategy::Auto => "auto".to_string(),
+        }
+    });
+    let max_goals = config.max_goals.unwrap_or(agent_config.planner.max_goals);
+    let max_exploration_actions = config
+        .max_exploration_actions
+        .unwrap_or(agent_config.planner.max_exploration_actions);
+
     // ── SURVEY：做一次深度扫描拿到 findings ──────────────────────
     let scan_result = run_security_scan(&config).await?;
 
@@ -113,29 +147,16 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
 
     // 过滤、基线抑制、攻击面排序
     let baseline = load_baseline(&config.project_path);
-    let mut findings = filter_and_prioritize_findings(
-        scan_result.findings,
+    let findings = filter_and_prioritize_findings(
+        scan_result.findings.clone(),
         &config.min_severity,
         &config.project_path,
         &baseline,
     );
 
     let total_findings = findings.len();
-    let to_investigate: Vec<Finding> = findings
-        .into_iter()
-        .take(config.max_findings.unwrap_or(usize::MAX))
-        .collect();
-
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    // Blackboard 共享状态
-    let blackboard = Arc::new(tokio::sync::RwLock::new(blackboard::BlackboardState::new(
-        session_id.clone(),
-        project_path_str.clone(),
-    )));
-
-    // ── HYPOTHESIZE → VERIFY → JUDGE：并发 Actor 调度 ─────────────
-    let llm_client = create_llm_client(&agent_config);
     let query_engine_arc = query_engine.map(Arc::new);
     let tool_context = if let Some(ref engine) = query_engine_arc {
         Some(
@@ -145,11 +166,33 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         None
     };
 
+    // ── ENVIRONMENT：构建全局环境模型 ─────────────────────────────
+    let call_graph = query_engine_arc
+        .clone()
+        .context("Agent 需要调用图引擎才能构建环境模型")?;
+    let env_arc = Arc::new(
+        EnvironmentModel::build(
+            &config.project_path,
+            &scan_result,
+            findings.clone(),
+            baseline,
+            call_graph,
+        )
+        .await?,
+    );
+    {
+        let mut bb = env_arc.blackboard.write().await;
+        bb.session_id = session_id.clone();
+    }
+
+    // ── HYPOTHESIZE → VERIFY → JUDGE：并发 Actor 调度 ─────────────
+    let llm_client = create_llm_client(&agent_config);
+
     let supervisor = Supervisor::new(
         config.project_path.clone(),
         query_engine_arc,
-        llm_client,
-        blackboard.clone(),
+        llm_client.clone(),
+        env_arc.blackboard.clone(),
         agent_config.triage_concurrency,
     )
     .with_specialists(
@@ -160,10 +203,73 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         Arc::new(crate::agent::reviewer::RuleBasedReviewer),
         review_mode,
     )
-    .with_tool_context(tool_context)
+    .with_tool_context(tool_context.clone())
     .with_investigator(investigator_enabled, max_investigation_steps);
 
-    let mut results = supervisor.run(to_investigate).await;
+    let mut results = Vec::new();
+
+    if auto_goal {
+        let planner_config = PlannerConfig {
+            strategy: planner::strategy::PlannerStrategy::from_str(&strategy),
+            max_goals,
+            max_exploration_actions,
+            enable_proactive_scan: agent_config.planner.enable_proactive_scan,
+            enable_reflection: agent_config.planner.enable_reflection,
+            convergence_threshold: agent_config.planner.convergence_threshold,
+        };
+        let strategy_planner = StrategyPlanner::new(llm_client, planner_config);
+        let goals = strategy_planner.plan_goals(&env_arc).await;
+
+        if !goals.is_empty() {
+            let planner = RuleBasedPlanner::new(max_exploration_actions);
+            let executor = PlanExecutor::new(
+                Arc::new(supervisor.clone()),
+                tool_context.clone(),
+                env_arc.clone(),
+            );
+
+            for goal in &goals {
+                if strategy_planner.has_converged(&env_arc).await {
+                    tracing::info!("所有目标相关漏洞类型已收敛，提前结束审计");
+                    break;
+                }
+                match planner.plan(&env_arc, goal).await {
+                    Ok(plan) => {
+                        tracing::info!(
+                            "执行目标: {} ({} actions)",
+                            goal.objective,
+                            plan.actions.len()
+                        );
+                        match executor.execute_plan(&plan).await {
+                            Ok((mut invs, _meta)) => {
+                                results.append(&mut invs);
+                            }
+                            Err(e) => {
+                                tracing::warn!("执行目标 {} 失败: {}", goal.objective, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("生成计划失败: {}", e);
+                    }
+                }
+            }
+        } else {
+            // 没有生成目标，回退到传统行为
+            let to_investigate: Vec<Finding> = findings
+                .into_iter()
+                .take(config.max_findings.unwrap_or(usize::MAX))
+                .collect();
+            results = supervisor.run(to_investigate).await;
+        }
+    } else {
+        let to_investigate: Vec<Finding> = findings
+            .into_iter()
+            .take(config.max_findings.unwrap_or(usize::MAX))
+            .collect();
+        results = supervisor.run(to_investigate).await;
+    }
+
     for inv in &mut results {
         inv.session_id = session_id.clone();
     }
@@ -171,7 +277,7 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     // ── 汇总并持久化 ─────────────────────────────────────────────
     write_audit_log(&config.project_path, &results)?;
     {
-        let bb = blackboard.read().await;
+        let bb = env_arc.blackboard.read().await;
         bb.save(&config.project_path)?;
     }
 

@@ -27,6 +27,8 @@ pub struct InvestigationStep {
     pub tool_input: serde_json::Value,
     pub observation: String,
     pub reasoning: String,
+    /// 反思：该步骤是否让 LLM 修正了假设或决定重规划
+    pub reflection: Option<String>,
 }
 
 /// 调查记忆：已执行步骤 + 当前假设
@@ -106,7 +108,7 @@ impl ToolUsingInvestigator {
         hypothesis: &str,
     ) -> Result<InvestigationOutcome> {
         let mut memory = InvestigationMemory::new(hypothesis);
-        let available_tools = build_available_tools();
+        let available_tools = build_available_tools(ctx.tool_context.as_ref()).await;
 
         for step_number in 1..=self.max_steps {
             let decision = self
@@ -146,6 +148,7 @@ impl ToolUsingInvestigator {
                         tool_input,
                         observation,
                         reasoning,
+                        reflection: None,
                     });
                 }
             }
@@ -198,8 +201,75 @@ impl ToolUsingInvestigator {
     }
 }
 
-/// 候选工具清单（Phase 6 先支持 8 个核心工具）
-pub fn build_available_tools() -> Vec<ToolDescription> {
+/// 候选工具清单：优先从 ToolRegistry 动态拉取真实定义，避免 ToolNotFound
+pub async fn build_available_tools(
+    tool_context: Option<&crate::agent::tools::AgentToolContext>,
+) -> Vec<ToolDescription> {
+    if let Some(ctx) = tool_context {
+        let definitions = ctx.registry().get_definitions().await;
+        let mut tools: Vec<ToolDescription> = definitions
+            .into_iter()
+            .filter(|d| {
+                // 排除报告类/完成类工具，仅保留可用于调查的证据/搜索/文件工具
+                !matches!(d.category, ctx_audit_tools::ToolCategory::Reporting)
+            })
+            .map(tool_definition_to_description)
+            .collect();
+        if !tools.is_empty() {
+            return tools;
+        }
+    }
+    // 退化：注册表未加载时返回核心硬编码工具
+    build_hardcoded_tools()
+}
+
+fn tool_definition_to_description(def: ctx_audit_tools::ToolDefinition) -> ToolDescription {
+    ToolDescription {
+        name: def.name.leak(),
+        description: def.description.leak(),
+        parameters_schema: parameters_to_json_schema(&def.parameters),
+    }
+}
+
+fn parameters_to_json_schema(params: &[ctx_audit_tools::ToolParameter]) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+    for p in params {
+        let typ = match p.param_type {
+            ctx_audit_tools::ToolParameterType::String => "string",
+            ctx_audit_tools::ToolParameterType::Number => "number",
+            ctx_audit_tools::ToolParameterType::Integer => "integer",
+            ctx_audit_tools::ToolParameterType::Boolean => "boolean",
+            ctx_audit_tools::ToolParameterType::Array => "array",
+            ctx_audit_tools::ToolParameterType::Object => "object",
+        };
+        let mut prop = serde_json::json!({
+            "type": typ,
+            "description": &p.description,
+        });
+        if let Some(ref items) = p.items {
+            prop["items"] = parameters_to_json_schema(std::slice::from_ref(items));
+        }
+        if let Some(ref props) = p.properties {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in props {
+                obj.insert(k.clone(), parameters_to_json_schema(std::slice::from_ref(v)));
+            }
+            prop["properties"] = serde_json::Value::Object(obj);
+        }
+        properties.insert(p.name.clone(), prop);
+        if p.required {
+            required.push(p.name.clone());
+        }
+    }
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    })
+}
+
+fn build_hardcoded_tools() -> Vec<ToolDescription> {
     vec![
         ToolDescription {
             name: "find_call_path",
@@ -228,41 +298,17 @@ pub fn build_available_tools() -> Vec<ToolDescription> {
             }),
         },
         ToolDescription {
-            name: "get_code_context",
-            description: "读取源代码指定行周围上下文，用于人工/LLM 代码审查",
+            name: "trace_variable_flow",
+            description: "追踪变量/函数从 source 出发到达的所有 sink",
             parameters_schema: json!({
                 "file_path": "string",
-                "line": "integer",
-                "context_lines": "integer (default 5)"
+                "function_name": "string"
             }),
         },
         ToolDescription {
-            name: "query_middleware_chain",
-            description: "查询 Express/Django 中间件覆盖情况，检测认证绕过",
-            parameters_schema: json!({
-                "file_path": "string"
-            }),
-        },
-        ToolDescription {
-            name: "check_sanitizer",
-            description: "检查函数名是否匹配已知净化器模式",
-            parameters_schema: json!({
-                "func_name": "string"
-            }),
-        },
-        ToolDescription {
-            name: "list_sources",
-            description: "列出文件中所有污点源（用户输入点）",
-            parameters_schema: json!({
-                "file_path": "string"
-            }),
-        },
-        ToolDescription {
-            name: "list_sinks",
-            description: "列出文件中所有污点汇（危险函数）",
-            parameters_schema: json!({
-                "file_path": "string"
-            }),
+            name: "get_graph_stats",
+            description: "获取调用图统计概览",
+            parameters_schema: json!({}),
         },
     ]
 }

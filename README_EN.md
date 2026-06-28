@@ -39,7 +39,7 @@ CTX-Audit is a code security analysis engine designed for LLM-assisted auditing.
 - **Multi-engine layered scanning**: Rule scanning (40 YAML rules, 6 languages) → AST taint analysis (`--taint`, single-file source→sink) → Cross-file tracking (`--cross-file`, call graph + function summaries), each engine independently controllable
 - **Data flow tracking**: Powered by CPG (Code Property Graph) engine — fuses CFG + AST metadata + alias maps into a unified structure. Supports path-sensitive analysis (conditional sanitization detection), AccessPath prefix matching (`req.body` → `req.body.name`), destructuring, Promise chain support for dynamic languages — traces full taint chains like `req.body.name → eval(data)`
 - **LLM autonomous audit loop**: Exposes 31 tools (including call graph query + audit session tools) via MCP protocol. LLMs can autonomously execute the full audit workflow: "project understanding → attack surface mapping → scanning → evidence collection → investigative verification → TP/FP verdict → rule generation → re-validation"
-- **Local Agent mode**: `ctx-audit audit --agent` runs the full scan → hypothesize → verify → judge loop without an external MCP host. It includes Supervisor concurrent scheduling, CWE Specialists (SQLi/XSS), Reviewer debate/review, `ToolRegistry`-backed call-graph/taint tooling for deterministic evidence, and an optional **ReAct investigator (`--investigate`)** that lets the LLM dynamically pick tools each round, iteratively gather evidence, and emit a complete investigation trail
+- **Local Agent mode**: `ctx-audit audit --agent` runs the full scan → hypothesize → verify → judge loop without an external MCP host. It includes Supervisor concurrent scheduling, CWE Specialists (SQLi/XSS), Reviewer debate/review, `ToolRegistry`-backed call-graph/taint tooling for deterministic evidence, and **Phase 7 complete-agent capabilities**: `EnvironmentModel` for global environment awareness, `StrategyPlanner` for automatic goal generation, `PlanExecutor` for action selection (entry-point exploration, hypothesis verification, targeted re-scanning), and the **ReAct investigator (`--investigate`)** that lets the LLM dynamically pick tools each round, iteratively gather evidence, and emit a complete investigation trail
 - **False positive control**: File role classification (production/test/build/vendor), security barrier detection (shell:false, array args, require.resolve, etc.), rule-level sanitizer mechanism (skip findings when `setSecure`/`escape`/`encodeForHtml` etc. appears before the match), confidence scoring, multi-engine corroboration, baseline suppression
 - **Incremental scanning**: Daemon stays resident in memory, content-hash change detection, ~1ms return for unchanged code
 - **Structured output**: Default LLM-oriented JSON (with code context, taint chains, barrier info, file roles), also supports SARIF, Markdown, etc.
@@ -76,7 +76,9 @@ ctx-audit analyze ./src/main.rs --symbols     # Single file analysis
 ctx-audit watch ./myproject                   # Continuous monitoring
 ctx-audit audit --agent ./myproject           # Local agent audit loop
 ctx-audit audit --agent ./myproject --specialist --review-mode debate   # Enable Specialist + Reviewer debate mode
+ctx-audit audit --agent ./myproject                                      # Auto goal generation enabled by default (Phase 7)
 ctx-audit audit --agent ./myproject --investigate --max-investigation-steps 5  # Enable ReAct investigator with dynamic tool selection
+ctx-audit audit --agent ./myproject --no-auto-goal                         # Disable auto goal generation, fall back to legacy behavior
 
 # With daemon (incremental cache, 40x+ performance boost)
 ctx-audit daemon start                        # Start the daemon
@@ -327,6 +329,10 @@ OPTIONS:
       --review-mode <MODE>          Reviewer mode: off / debate / single
       --investigate                 Enable ReAct investigator (requires LLM config for real tool loops)
       --max-investigation-steps <N> Maximum investigation steps (default: 5)
+      --no-auto-goal                Disable Phase 7 auto goal generation, fall back to legacy Supervisor
+      --strategy <MODE>             Strategy mode: auto / rule / llm (default: auto)
+      --max-goals <N>               Maximum number of audit goals
+      --max-exploration-actions <N> Maximum exploration actions per goal
       --min-severity <LEVEL>        Minimum severity threshold
       --max-findings <N>            Maximum number of findings to investigate
   -o, --output <FILE>             Output report path
@@ -335,9 +341,11 @@ OPTIONS:
 Agent workflow:
 
 1. **Survey** — Full scan, collecting evidence_refs, code context, and call graph evidence
-2. **Hypothesize** — Generate an attack hypothesis for each finding
-3. **Verify** — Supervisor concurrently schedules Specialists (if enabled) and Reviewers; when `--investigate` is enabled, the ReAct investigator lets the LLM dynamically pick tools from the `ToolRegistry` (`find_call_path`, `query_callers`, `get_code_context`, etc.) each round, iteratively gather deterministic evidence, and record a complete investigation trail
-4. **Judge** — Combine LLM/rule, Specialist, Reviewer, and Investigator opinions into TP/FP/needs_review verdicts, written to `.ctx-audit/audit_log.json` (includes `investigation_steps`)
+2. **Environment** — Build `EnvironmentModel`: integrate attack surface, architectural risk patterns, call graph stats, historical Blackboard, and baseline
+3. **Strategy** — `StrategyPlanner` automatically generates audit goals (e.g., "verify injection vulnerabilities reachable from unauthenticated entry points") and prioritizes based on risk scores and historical convergence
+4. **Plan** — `RuleBasedPlanner` / `LlmBasedPlanner` expands goals into `Action` sequences: `InvestigateFinding`, `ExploreEntryPoint`, `VerifyHypothesis`, `ReScanWithRule`
+5. **Execute** — `PlanExecutor` dispatches finding investigations, proactively explores entry points, and combines tools to verify hypotheses; when `--investigate` is enabled, the ReAct investigator lets the LLM dynamically pick tools from the `ToolRegistry` each round and records a complete investigation trail
+6. **Judge & Learn** — Combine LLM/rule, Specialist, Reviewer, and Investigator opinions into TP/FP/needs_review verdicts, written to `.ctx-audit/audit_log.json`; update Blackboard pheromones and convergence state for future audits
 
 ### `rules` — Rule Management
 
@@ -453,6 +461,14 @@ api_key = ""                       # API key (or set via environment variable)
 endpoint = ""                      # Custom endpoint (optional)
 timeout_sec = 60                   # Request timeout
 max_tokens = 2048                  # Max tokens
+
+[agent.planner]
+strategy = "auto"                  # auto / rule / llm
+max_goals = 10                     # Maximum audit goals
+max_exploration_actions = 5        # Maximum exploration actions per goal
+enable_proactive_scan = false      # Allow Agent to dynamically generate rules and re-scan
+enable_reflection = true           # Enable reflection/re-planning
+convergence_threshold = 5.0        # Pheromone convergence threshold
 
 [daemon]
 listen_addr = "127.0.0.1:19527"    # Listen address
@@ -928,10 +944,16 @@ cli/                      # Command-line client
 │   └── migrations.rs     # Database migrations
 ├── report/               # Report export
 │   └── exporter.rs       # Multi-format report export
-└── agent/                # Local audit Agent (Phase 1-6)
-    ├── mod.rs            # Agent entry: scan → Supervisor scheduling → report
+└── agent/                # Local audit Agent (Phase 1-7)
+    ├── mod.rs            # Agent entry: scan → environment model → strategy/plan → execute → report
+    ├── environment.rs    # EnvironmentModel: attack surface + risk patterns + call graph + historical Blackboard
+    ├── planner/          # Phase 7 goal orientation and action selection
+    │   ├── mod.rs        # AuditGoal / Action / Plan / Planner trait
+    │   ├── strategy.rs   # StrategyPlanner: automatically generates audit goals and priorities
+    │   ├── rule_based.rs # RuleBasedPlanner: deterministic plan generation
+    │   └── executor.rs   # PlanExecutor: dispatches Supervisor / ToolRegistry actions
     ├── supervisor.rs     # Supervisor: concurrent Semaphore + Triage Actors
-    ├── blackboard.rs     # Shared Blackboard + ACO pheromone / audit session state
+    ├── blackboard.rs     # Shared Blackboard + ACO pheromone / convergence state / evidence graph
     ├── heuristics.rs     # Rule-based triage verdicts and confidence scoring
     ├── llm_client.rs     # LLM client abstraction (controlled calls / Noop mode)
     ├── llm.rs            # LLM triage implementation

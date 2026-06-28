@@ -39,7 +39,7 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 - **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
 - **数据流追踪**：基于 CPG（代码属性图）引擎，融合 CFG + AST 元数据 + 别名映射，支持路径敏感分析（条件净化检测）、属性路径前缀匹配（`req.body` → `req.body.name`）、AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
 - **LLM 自主审计闭环**：通过 MCP 协议暴露 31 个工具（含调用图查询 + 审计会话），LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → 调查式验证 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
-- **本地 Agent 模式**：`ctx-audit audit --agent` 无需外部 MCP 宿主即可自动执行扫描 → 假设 → 验证 → 判定闭环；内置 Supervisor 并发调度、CWE Specialist（SQLi/XSS）深度判定、Reviewer 复核/辩论、基于 `ToolRegistry` 的调用图/污点工具证据，以及可选的 **ReAct 调查器（`--investigate`）**——让 LLM 每轮动态选择工具、迭代收集证据并输出完整调查轨迹，输出带证据链的审计日志
+- **本地 Agent 模式**：`ctx-audit audit --agent` 无需外部 MCP 宿主即可自动执行扫描 → 假设 → 验证 → 判定闭环；内置 Supervisor 并发调度、CWE Specialist（SQLi/XSS）深度判定、Reviewer 复核/辩论、基于 `ToolRegistry` 的调用图/污点工具证据，以及 **Phase 7 完整体 Agent 能力**：`EnvironmentModel` 全局环境感知、`StrategyPlanner` 自动目标生成、`PlanExecutor` 行动选择（入口点探索、假设验证、定向重扫描）、`ReAct 调查器（`--investigate`）`让 LLM 动态选工具迭代取证，输出带证据链的审计日志
 - **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、规则级 sanitizer 机制（命中前存在 `setSecure`/`escape`/`encodeForHtml` 等净化代码即跳过）、置信度评分、多引擎交叉确认、基线抑制
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
@@ -76,7 +76,9 @@ ctx-audit analyze ./src/main.rs --symbols     # 单文件分析
 ctx-audit watch ./myproject                   # 持续监控
 ctx-audit audit --agent ./myproject           # 本地 Agent 自动审计闭环
 ctx-audit audit --agent ./myproject --specialist --review-mode debate   # 启用 Specialist + Reviewer 辩论模式
+ctx-audit audit --agent ./myproject                                      # 默认启用自动目标生成（Phase 7）
 ctx-audit audit --agent ./myproject --investigate --max-investigation-steps 5  # 启用 ReAct 调查器，LLM 动态选工具验证
+ctx-audit audit --agent ./myproject --no-auto-goal                         # 关闭自动目标生成，回退到传统行为
 
 # 使用守护进程（增量缓存，性能提升 40x+）
 ctx-audit daemon start                        # 启动守护进程
@@ -328,6 +330,10 @@ OPTIONS:
       --review-mode <MODE>          Reviewer 模式：off / debate / single
       --investigate                 启用 ReAct 调查器（需配置 LLM 才执行真实工具循环）
       --max-investigation-steps <N> 最大调查步数（默认 5）
+      --no-auto-goal                禁用 Phase 7 自动目标生成，回退到传统 Supervisor
+      --strategy <MODE>             策略模式：auto / rule / llm（默认 auto）
+      --max-goals <N>               最大审计目标数
+      --max-exploration-actions <N> 每个目标最大探索行动数
       --min-severity <级别>         最低严重程度阈值
       --max-findings <N>            最多调查的 finding 数量
   -o, --output <文件>               输出报告路径
@@ -336,9 +342,11 @@ OPTIONS:
 Agent 工作流：
 
 1. **Survey** — 全量扫描并收集 evidence_refs、代码上下文、调用图证据
-2. **Hypothesize** — 为每个 finding 生成攻击假设
-3. **Verify** — Supervisor 并发调度 Specialist（若启用）与 Reviewer；若启用 `--investigate`，ReAct 调查器会让 LLM 每轮从 `ToolRegistry` 中选择工具（`find_call_path`、`query_callers`、`get_code_context` 等），迭代收集确定性证据并记录完整调查轨迹
-4. **Judge** — 综合 LLM/规则、Specialist、Reviewer、Investigator 意见输出 TP/FP/needs_review，并写入 `.ctx-audit/audit_log.json`（含 `investigation_steps` 字段）
+2. **Environment** — 构建 `EnvironmentModel`：整合攻击面、架构风险模式、调用图统计、历史 Blackboard、基线
+3. **Strategy** — `StrategyPlanner` 根据环境模型自动生成审计目标（如“验证未认证入口可达的注入漏洞”），并基于风险评分与历史收敛状态排序
+4. **Plan** — `RuleBasedPlanner` / `LlmBasedPlanner` 把目标展开为 `Action` 序列：`InvestigateFinding`、`ExploreEntryPoint`、`VerifyHypothesis`、`ReScanWithRule`
+5. **Execute** — `PlanExecutor` 批量派发 finding 调查、主动探索入口点、组合工具验证假设；若启用 `--investigate`，ReAct 调查器会让 LLM 每轮动态选择工具并记录完整调查轨迹
+6. **Judge & Learn** — 综合各层意见输出 TP/FP/needs_review，写入 `.ctx-audit/audit_log.json`；更新 Blackboard 信息素与收敛状态，用于下一次审计
 
 ### `rules` — 规则管理
 
@@ -453,6 +461,14 @@ api_key = ""                       # API 密钥（也可通过环境变量设置
 endpoint = ""                      # 自定义 endpoint（可选）
 timeout_sec = 60                   # 请求超时
 max_tokens = 2048                  # 最大 token 数
+
+[agent.planner]
+strategy = "auto"                  # auto / rule / llm
+max_goals = 10                     # 最大审计目标数
+max_exploration_actions = 5        # 每个目标最大探索行动数
+enable_proactive_scan = false      # 是否允许 Agent 动态生成规则并重扫描
+enable_reflection = true           # 是否启用反思/重规划
+convergence_threshold = 5.0        # 信息素收敛阈值
 
 [daemon]
 listen_addr = "127.0.0.1:19527"    # 监听地址
@@ -929,10 +945,16 @@ cli/                      # 命令行客户端
 │   └── migrations.rs     # 数据库迁移
 ├── report/               # 报告导出
 │   └── exporter.rs       # 多格式报告导出
-└── agent/                # 本地审计 Agent（Phase 1-6）
-    ├── mod.rs            # Agent 入口：扫描 → Supervisor 调度 → 报告
+└── agent/                # 本地审计 Agent（Phase 1-7）
+    ├── mod.rs            # Agent 入口：扫描 → 环境模型 → 策略/计划 → 执行 → 报告
+    ├── environment.rs    # EnvironmentModel：攻击面 + 风险模式 + 调用图 + 历史 Blackboard
+    ├── planner/          # Phase 7 目标导向与行动选择
+    │   ├── mod.rs        # AuditGoal / Action / Plan / Planner trait
+    │   ├── strategy.rs   # StrategyPlanner：自动生成审计目标与优先级
+    │   ├── rule_based.rs # RuleBasedPlanner：确定性计划生成
+    │   └── executor.rs   # PlanExecutor：调度 Supervisor / ToolRegistry 执行 Action
     ├── supervisor.rs     # Supervisor：并发 Semaphore + Triage Actor
-    ├── blackboard.rs     # 共享 Blackboard + ACO 信息素/审计会话状态
+    ├── blackboard.rs     # 共享 Blackboard + ACO 信息素/收敛状态/证据图谱
     ├── heuristics.rs     # 规则化初审判定与置信度评分
     ├── llm_client.rs     # LLM 客户端抽象（含受控调用/Noop 模式）
     ├── llm.rs            # LLM triage 判定实现

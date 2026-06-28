@@ -23,6 +23,7 @@ pub struct BlackboardState {
     pub investigations: Vec<BlackboardInvestigation>,
     pub evidence_graph: EvidenceGraph,
     pub pheromone: PheromoneTable,
+    pub convergence_state: HashMap<String, ConvergenceStatus>,
 }
 
 impl BlackboardState {
@@ -34,6 +35,7 @@ impl BlackboardState {
             investigations: Vec::new(),
             evidence_graph: EvidenceGraph::default(),
             pheromone: PheromoneTable::default(),
+            convergence_state: HashMap::new(),
         }
     }
 
@@ -54,10 +56,20 @@ impl BlackboardState {
             crate::agent::heuristics::Verdict::NeedsReview => 0.2,
         };
         let key = vuln_type.to_string();
-        let entry = self.pheromone.entries.entry(key).or_insert(0.0);
+        let entry = self.pheromone.entries.entry(key.clone()).or_insert(0.0);
         *entry += delta;
         // 限制在 [-10.0, 10.0] 避免极端值
         *entry = entry.clamp(-10.0, 10.0);
+
+        // 收敛判定：连续同向超过阈值时标记
+        let threshold = 5.0;
+        if *entry >= threshold {
+            self.convergence_state
+                .insert(key, ConvergenceStatus::TruePositive);
+        } else if *entry <= -threshold {
+            self.convergence_state
+                .insert(key, ConvergenceStatus::FalsePositive);
+        }
     }
 
     /// 判断某类漏洞是否已收敛（连续同向判定达到阈值）
@@ -147,4 +159,21 @@ pub struct EvidenceEdge {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PheromoneTable {
     pub entries: HashMap<String, f64>,
+}
+
+/// 收敛状态
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConvergenceStatus {
+    /// 尚未收敛
+    Open,
+    /// 已确认为真阳性模式
+    TruePositive,
+    /// 已确认为误报模式
+    FalsePositive,
+}
+
+impl Default for ConvergenceStatus {
+    fn default() -> Self {
+        ConvergenceStatus::Open
+    }
 }

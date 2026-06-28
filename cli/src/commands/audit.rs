@@ -23,6 +23,10 @@ pub async fn execute(
     review_mode: Option<String>,
     investigate: bool,
     max_investigation_steps: Option<usize>,
+    auto_goal: bool,
+    strategy: Option<String>,
+    max_goals: Option<usize>,
+    max_exploration_actions: Option<usize>,
     output_format: &str,
     output_path: Option<String>,
 ) -> Result<()> {
@@ -54,6 +58,10 @@ pub async fn execute(
         config.review_mode = mode;
     }
     config.max_investigation_steps = max_investigation_steps;
+    config.auto_goal = auto_goal;
+    config.strategy = strategy;
+    config.max_goals = max_goals;
+    config.max_exploration_actions = max_exploration_actions;
 
     match run_audit(config).await {
         Ok(report) => {

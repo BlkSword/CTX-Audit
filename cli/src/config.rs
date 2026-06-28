@@ -458,6 +458,72 @@ impl Default for DaemonConfig {
 
 // ── Agent 配置 ──────────────────────────────────────────
 
+/// Planner 策略
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlannerStrategy {
+    Auto,
+    Rule,
+    Llm,
+}
+
+impl Default for PlannerStrategy {
+    fn default() -> Self {
+        PlannerStrategy::Auto
+    }
+}
+
+/// Planner 配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannerConfig {
+    /// 策略模式：auto / rule / llm
+    #[serde(default)]
+    pub strategy: PlannerStrategy,
+
+    /// 最大审计目标数
+    #[serde(default = "default_max_goals")]
+    pub max_goals: usize,
+
+    /// 每个目标最大探索行动数
+    #[serde(default = "default_max_exploration_actions")]
+    pub max_exploration_actions: usize,
+
+    /// 是否启用主动重扫描
+    #[serde(default)]
+    pub enable_proactive_scan: bool,
+
+    /// 是否启用反思/重规划
+    #[serde(default = "default_true_val")]
+    pub enable_reflection: bool,
+
+    /// 收敛阈值
+    #[serde(default = "default_convergence_threshold")]
+    pub convergence_threshold: f64,
+}
+
+fn default_max_goals() -> usize {
+    10
+}
+fn default_max_exploration_actions() -> usize {
+    5
+}
+fn default_convergence_threshold() -> f64 {
+    5.0
+}
+
+impl Default for PlannerConfig {
+    fn default() -> Self {
+        Self {
+            strategy: PlannerStrategy::Auto,
+            max_goals: default_max_goals(),
+            max_exploration_actions: default_max_exploration_actions(),
+            enable_proactive_scan: false,
+            enable_reflection: true,
+            convergence_threshold: default_convergence_threshold(),
+        }
+    }
+}
+
 /// Agent 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -493,6 +559,10 @@ pub struct AgentConfig {
     #[serde(default = "default_max_investigation_steps")]
     pub max_investigation_steps: usize,
 
+    /// Planner 配置
+    #[serde(default)]
+    pub planner: PlannerConfig,
+
     /// LLM 详细配置
     #[serde(default)]
     pub llm: LlmConfig,
@@ -522,6 +592,7 @@ impl Default for AgentConfig {
             specialist_enabled: false,
             investigator_enabled: false,
             max_investigation_steps: 5,
+            planner: PlannerConfig::default(),
             llm: LlmConfig::default(),
         }
     }
@@ -746,6 +817,12 @@ impl ConfigManager {
             "agent.specialist_enabled" => Some(self.config.agent.specialist_enabled.to_string()),
             "agent.investigator_enabled" => Some(self.config.agent.investigator_enabled.to_string()),
             "agent.max_investigation_steps" => Some(self.config.agent.max_investigation_steps.to_string()),
+            "agent.planner.strategy" => Some(format!("{:?}", self.config.agent.planner.strategy).to_lowercase()),
+            "agent.planner.max_goals" => Some(self.config.agent.planner.max_goals.to_string()),
+            "agent.planner.max_exploration_actions" => Some(self.config.agent.planner.max_exploration_actions.to_string()),
+            "agent.planner.enable_proactive_scan" => Some(self.config.agent.planner.enable_proactive_scan.to_string()),
+            "agent.planner.enable_reflection" => Some(self.config.agent.planner.enable_reflection.to_string()),
+            "agent.planner.convergence_threshold" => Some(self.config.agent.planner.convergence_threshold.to_string()),
             "agent.llm.provider" => Some(self.config.agent.llm.provider.clone()),
             "agent.llm.model" => Some(self.config.agent.llm.model.clone()),
             "agent.llm.api_key" => Some(self.config.agent.llm.api_key.clone()),
@@ -926,6 +1003,32 @@ impl ConfigManager {
             "agent.max_investigation_steps" => {
                 self.config.agent.max_investigation_steps = value.parse().context("无效的数字")?;
             }
+            "agent.planner.strategy" => {
+                let valid = ["auto", "rule", "llm"];
+                if !valid.contains(&value.as_str()) {
+                    anyhow::bail!("无效的策略模式，可选: {}", valid.join(", "));
+                }
+                self.config.agent.planner.strategy = match value.as_str() {
+                    "rule" => PlannerStrategy::Rule,
+                    "llm" => PlannerStrategy::Llm,
+                    _ => PlannerStrategy::Auto,
+                };
+            }
+            "agent.planner.max_goals" => {
+                self.config.agent.planner.max_goals = value.parse().context("无效的数字")?;
+            }
+            "agent.planner.max_exploration_actions" => {
+                self.config.agent.planner.max_exploration_actions = value.parse().context("无效的数字")?;
+            }
+            "agent.planner.enable_proactive_scan" => {
+                self.config.agent.planner.enable_proactive_scan = value.parse().context("无效的布尔值")?;
+            }
+            "agent.planner.enable_reflection" => {
+                self.config.agent.planner.enable_reflection = value.parse().context("无效的布尔值")?;
+            }
+            "agent.planner.convergence_threshold" => {
+                self.config.agent.planner.convergence_threshold = value.parse().context("无效的数字")?;
+            }
             "agent.llm.provider" => self.config.agent.llm.provider = value,
             "agent.llm.model" => self.config.agent.llm.model = value,
             "agent.llm.api_key" => self.config.agent.llm.api_key = value,
@@ -992,6 +1095,12 @@ impl ConfigManager {
             "agent.specialist_enabled" => self.config.agent.specialist_enabled = false,
             "agent.investigator_enabled" => self.config.agent.investigator_enabled = false,
             "agent.max_investigation_steps" => self.config.agent.max_investigation_steps = 5,
+            "agent.planner.strategy" => self.config.agent.planner.strategy = PlannerStrategy::Auto,
+            "agent.planner.max_goals" => self.config.agent.planner.max_goals = 10,
+            "agent.planner.max_exploration_actions" => self.config.agent.planner.max_exploration_actions = 5,
+            "agent.planner.enable_proactive_scan" => self.config.agent.planner.enable_proactive_scan = false,
+            "agent.planner.enable_reflection" => self.config.agent.planner.enable_reflection = true,
+            "agent.planner.convergence_threshold" => self.config.agent.planner.convergence_threshold = 5.0,
             "agent.llm.provider" => self.config.agent.llm.provider = "openai".to_string(),
             "agent.llm.model" => self.config.agent.llm.model = "gpt-4o-mini".to_string(),
             "agent.llm.api_key" => self.config.agent.llm.api_key.clear(),

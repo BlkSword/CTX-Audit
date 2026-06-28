@@ -28,6 +28,7 @@ use crate::agent::specialist::{
 use crate::agent::tools::AgentToolContext;
 
 /// 调度器
+#[derive(Clone)]
 pub struct Supervisor {
     project_path: PathBuf,
     query_engine: Option<Arc<CallGraphQueryEngine>>,

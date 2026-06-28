@@ -340,3 +340,103 @@ app.listen(3000);
 
     let _ = std::fs::remove_dir_all(&project);
 }
+/// 默认启用 --auto-goal 时，audit 应生成包含目标导向行动的 audit_log
+#[test]
+fn test_audit_agent_auto_goal_generates_audit_log() {
+    let project = unique_test_dir();
+
+    let src = project.join("app.js");
+    std::fs::write(
+        &src,
+        r#"
+const express = require('express');
+const app = express();
+
+app.get('/greet', (req, res) => {
+    const userInput = req.query.name;
+    eval(userInput);
+    res.send('ok');
+});
+
+app.listen(3000);
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(cli_bin())
+        .args([
+            "audit",
+            "--agent",
+            project.to_str().unwrap(),
+            "--max-findings",
+            "5",
+            "--min-severity",
+            "medium",
+        ])
+        .output()
+        .expect("Failed to run audit --agent");
+
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(output.status.success());
+
+    let audit_log = project.join(".ctx-audit").join("audit_log.json");
+    let content = std::fs::read_to_string(&audit_log).unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(!entries.is_empty(), "auto-goal 模式下应至少调查一个 finding");
+
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+/// 使用 --no-auto-goal 可回退到传统 Supervisor 行为
+#[test]
+fn test_audit_agent_no_auto_goal_fallback() {
+    let project = unique_test_dir();
+
+    let src = project.join("app.js");
+    std::fs::write(
+        &src,
+        r#"
+const express = require('express');
+const app = express();
+
+app.get('/greet', (req, res) => {
+    const userInput = req.query.name;
+    eval(userInput);
+    res.send('ok');
+});
+
+app.listen(3000);
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(cli_bin())
+        .args([
+            "audit",
+            "--agent",
+            "--no-auto-goal",
+            project.to_str().unwrap(),
+            "--max-findings",
+            "5",
+            "--min-severity",
+            "medium",
+        ])
+        .output()
+        .expect("Failed to run audit --agent --no-auto-goal");
+
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(output.status.success());
+
+    let audit_log = project.join(".ctx-audit").join("audit_log.json");
+    let content = std::fs::read_to_string(&audit_log).unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap();
+    assert!(!entries.is_empty());
+
+    let _ = std::fs::remove_dir_all(&project);
+}

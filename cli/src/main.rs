@@ -154,6 +154,22 @@ enum Commands {
         #[arg(long, value_name = "N")]
         max_investigation_steps: Option<usize>,
 
+        /// 禁用自动目标生成，回退到传统 Supervisor 行为
+        #[arg(long)]
+        no_auto_goal: bool,
+
+        /// 策略模式：auto / rule / llm（默认 auto）
+        #[arg(long, value_name = "MODE")]
+        strategy: Option<String>,
+
+        /// 最大审计目标数
+        #[arg(long, value_name = "N")]
+        max_goals: Option<usize>,
+
+        /// 每个目标最大探索行动数
+        #[arg(long, value_name = "N")]
+        max_exploration_actions: Option<usize>,
+
         /// 输出文件路径
         #[arg(short, long)]
         output: Option<String>,
@@ -478,6 +494,10 @@ async fn main() -> Result<()> {
             review_mode,
             investigate,
             max_investigation_steps,
+            no_auto_goal,
+            strategy,
+            max_goals,
+            max_exploration_actions,
             output,
         } => {
             commands::audit::execute(
@@ -490,6 +510,10 @@ async fn main() -> Result<()> {
                 review_mode,
                 investigate,
                 max_investigation_steps,
+                !no_auto_goal,
+                strategy,
+                max_goals,
+                max_exploration_actions,
                 cli.output.as_str(),
                 output,
             )
