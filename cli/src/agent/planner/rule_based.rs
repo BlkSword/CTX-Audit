@@ -91,7 +91,7 @@ impl Planner for RuleBasedPlanner {
                         purpose: "了解调用图规模与 source/sink 分布".to_string(),
                     },
                     ToolCall {
-                        tool_name: "query_middleware_chain".to_string(),
+                        tool_name: "get_middleware_chain".to_string(),
                         input: serde_json::json!({
                             "file_path": goal.focus_entry_points.first().cloned().unwrap_or_default()
                         }),

@@ -25,6 +25,7 @@ pub struct PlanExecutor {
     supervisor: Arc<Supervisor>,
     tool_context: Option<AgentToolContext>,
     environment: Arc<EnvironmentModel>,
+    investigated_ids: std::sync::Mutex<HashSet<String>>,
 }
 
 impl PlanExecutor {
@@ -37,6 +38,7 @@ impl PlanExecutor {
             supervisor,
             tool_context,
             environment,
+            investigated_ids: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -51,15 +53,24 @@ impl PlanExecutor {
             ..Default::default()
         };
 
-        // 把 InvestigateFinding 批量收集，统一交给 Supervisor
+        // 把 InvestigateFinding 批量收集，统一交给 Supervisor；跳过已调查过的 finding
+        let mut previously_investigated = self.investigated_ids.lock().unwrap();
         let investigate_ids: HashSet<String> = plan
             .actions
             .iter()
             .filter_map(|a| match a {
-                Action::InvestigateFinding { finding_id, .. } => Some(finding_id.clone()),
+                Action::InvestigateFinding { finding_id, .. } => {
+                    if previously_investigated.contains(finding_id) {
+                        None
+                    } else {
+                        Some(finding_id.clone())
+                    }
+                }
                 _ => None,
             })
             .collect();
+        previously_investigated.extend(investigate_ids.iter().cloned());
+        drop(previously_investigated);
 
         if !investigate_ids.is_empty() {
             let batch: Vec<Finding> = self
