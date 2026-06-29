@@ -10,17 +10,19 @@ use async_trait::async_trait;
 
 use crate::agent::environment::EnvironmentModel;
 use crate::agent::planner::{Action, AuditGoal, Plan, Planner};
-use deepaudit_core::analysis::attack_surface::is_public_route;
+use deepaudit_core::analysis::attack_surface::is_public_route_with_patterns;
 
 /// 基于规则的计划器
 pub struct RuleBasedPlanner {
     max_exploration_actions: usize,
+    public_route_patterns: Vec<String>,
 }
 
 impl RuleBasedPlanner {
-    pub fn new(max_exploration_actions: usize) -> Self {
+    pub fn new(max_exploration_actions: usize, public_route_patterns: Vec<String>) -> Self {
         Self {
             max_exploration_actions: max_exploration_actions.max(1),
+            public_route_patterns,
         }
     }
 }
@@ -51,7 +53,12 @@ impl Planner for RuleBasedPlanner {
         let focus_entries = if goal.focus_entry_points.is_empty() {
             env.high_risk_unauthenticated_entries()
                 .into_iter()
-                .filter(|e| !e.route.as_deref().map(is_public_route).unwrap_or(false))
+                .filter(|e| {
+                    !e.route
+                        .as_deref()
+                        .map(|r| is_public_route_with_patterns(r, &self.public_route_patterns))
+                        .unwrap_or(false)
+                })
                 .take(self.max_exploration_actions)
                 .map(|e| {
                     (
@@ -69,7 +76,11 @@ impl Planner for RuleBasedPlanner {
                 .iter()
                 .filter(|e| {
                     focus.contains(&e.file_path)
-                        && !e.route.as_deref().map(is_public_route).unwrap_or(false)
+                        && !e
+                            .route
+                            .as_deref()
+                            .map(|r| is_public_route_with_patterns(r, &self.public_route_patterns))
+                            .unwrap_or(false)
                 })
                 .take(self.max_exploration_actions)
                 .map(|e| {

@@ -203,24 +203,37 @@ fn build_scan_options() -> ScanOptions {
             scan.include_tests,
             scan.taint_max_candidate_files,
             scan.taint_max_file_kb,
+            scan.public_route_patterns.clone(),
+            scan.non_production_path_patterns.clone(),
         )
     });
 
     match config {
-        Some((threads, max_mb, mem_mb, batch, tol, include_tests, max_cand, max_kb)) => {
-            ScanOptions {
-                threads,
-                max_file_size: max_mb * 1024 * 1024,
-                memory_budget: mem_mb * 1024 * 1024,
-                batch_size: batch,
-                line_tolerance: tol,
-                include_tests,
-                enable_taint: false,
-                enable_cross_file: false,
-                taint_max_candidate_files: max_cand,
-                taint_max_file_kb: max_kb,
-            }
-        }
+        Some((
+            threads,
+            max_mb,
+            mem_mb,
+            batch,
+            tol,
+            include_tests,
+            max_cand,
+            max_kb,
+            public_route_patterns,
+            non_production_path_patterns,
+        )) => ScanOptions {
+            threads,
+            max_file_size: max_mb * 1024 * 1024,
+            memory_budget: mem_mb * 1024 * 1024,
+            batch_size: batch,
+            line_tolerance: tol,
+            include_tests,
+            enable_taint: false,
+            enable_cross_file: false,
+            taint_max_candidate_files: max_cand,
+            taint_max_file_kb: max_kb,
+            public_route_patterns,
+            non_production_path_patterns,
+        },
         None => ScanOptions::default(),
     }
 }

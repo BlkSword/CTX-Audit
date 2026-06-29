@@ -12,43 +12,101 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-// ── 公开路由白名单 ─────────────────────────────────────────
+// ── 路由与路径过滤配置 ─────────────────────────────────────
 
-/// 设计上就是公开访问的 HTTP 路由前缀/完整路径。
+/// 可配置的路由/路径过滤器。
+/// 用于决定哪些 HTTP 端点属于设计上公开、哪些文件路径属于非生产代码。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteFilterConfig {
+    /// 设计上公开访问的 HTTP 路由前缀/完整路径。
+    #[serde(default = "default_public_route_patterns")]
+    pub public_route_patterns: Vec<String>,
+
+    /// 应被当作非生产代码的目录/路径片段。
+    #[serde(default = "default_non_production_path_patterns")]
+    pub non_production_path_patterns: Vec<String>,
+}
+
+impl Default for RouteFilterConfig {
+    fn default() -> Self {
+        Self {
+            public_route_patterns: default_public_route_patterns(),
+            non_production_path_patterns: default_non_production_path_patterns(),
+        }
+    }
+}
+
+/// 默认公开路由白名单。
 /// 这些端点不应被直接报告为认证缺失漏洞。
-pub const PUBLIC_ROUTE_PATTERNS: &[&str] = &[
-    "/signup",
-    "/sign-up",
-    "/register",
-    "/login",
-    "/signin",
-    "/sign-in",
-    "/logout",
-    "/signout",
-    "/sign-out",
-    "/health",
-    "/healthz",
-    "/status",
-    "/ping",
-    "/forgot-password",
-    "/reset-password",
-    "/oauth/",
-    "/auth/",
-    "/callback/",
-];
+pub fn default_public_route_patterns() -> Vec<String> {
+    vec![
+        "/signup".to_string(),
+        "/sign-up".to_string(),
+        "/register".to_string(),
+        "/login".to_string(),
+        "/signin".to_string(),
+        "/sign-in".to_string(),
+        "/logout".to_string(),
+        "/signout".to_string(),
+        "/sign-out".to_string(),
+        "/health".to_string(),
+        "/healthz".to_string(),
+        "/status".to_string(),
+        "/ping".to_string(),
+        "/forgot-password".to_string(),
+        "/reset-password".to_string(),
+        "/oauth/".to_string(),
+        "/auth/".to_string(),
+        "/callback/".to_string(),
+    ]
+}
 
-/// 判断路由是否是设计上就公开访问的端点。
-pub fn is_public_route(route: &str) -> bool {
+/// 默认非生产代码路径片段。
+pub fn default_non_production_path_patterns() -> Vec<String> {
+    vec![
+        "/test/".to_string(),
+        "/tests/".to_string(),
+        "/__tests__/".to_string(),
+        "/tutorial/".to_string(),
+        "/tutorials/".to_string(),
+        "/demo/".to_string(),
+        "/demos/".to_string(),
+        "/examples/".to_string(),
+        "/fixtures/".to_string(),
+        "/.ctx-audit/".to_string(),
+    ]
+}
+
+/// 判断路由是否在指定的公开路由列表中。
+pub fn is_public_route_with_patterns(route: &str, patterns: &[String]) -> bool {
     let normalized = route.trim().replace('\\', "/");
     if normalized.is_empty() {
         return false;
     }
-    for pat in PUBLIC_ROUTE_PATTERNS {
+    for pat in patterns {
         if normalized == *pat || normalized.starts_with(pat) {
             return true;
         }
     }
     false
+}
+
+/// 判断路由是否属于默认的公开路由白名单。
+pub fn is_public_route(route: &str) -> bool {
+    is_public_route_with_patterns(route, &default_public_route_patterns())
+}
+
+/// 判断路径是否命中指定的非生产代码模式。
+pub fn is_non_production_path_with_patterns(path: &str, patterns: &[String]) -> bool {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    patterns
+        .iter()
+        .any(|p| normalized.contains(&p.to_lowercase()))
+}
+
+/// 判断路径是否属于默认的非生产代码目录。
+pub fn is_non_production_path(path: &str) -> bool {
+    is_non_production_path_with_patterns(path, &default_non_production_path_patterns())
 }
 
 // ── 预编译正则（全局缓存，避免每次调用重新编译）──────────

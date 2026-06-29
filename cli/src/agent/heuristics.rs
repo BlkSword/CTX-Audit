@@ -9,6 +9,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use deepaudit_core::analysis::attack_surface::is_non_production_path;
 use deepaudit_core::scanning::Finding;
 
 use crate::agent::evidence::Evidence;
@@ -47,8 +48,14 @@ impl Judge for RuleBasedJudge {
 
 /// 默认启发式判定逻辑
 pub fn judge_finding(finding: &Finding, evidence: &Evidence) -> Verdict {
-    // 0. 测试、教学示例、演示代码中的命中通常是噪声，直接判为误报
-    if is_non_production_path(&finding.file_path) {
+    // 0. 非生产代码中的命中通常是噪声，直接判为误报。
+    // 优先使用扫描阶段标记的 file_role，未标记时回退到默认路径模式。
+    if finding
+        .file_role
+        .as_deref()
+        .map(|r| r.eq_ignore_ascii_case("non-production"))
+        .unwrap_or_else(|| is_non_production_path(&finding.file_path))
+    {
         return Verdict::FalsePositive;
     }
 
@@ -90,23 +97,4 @@ fn has_confirmed_barrier(evidence: &Evidence, _finding: &Finding) -> bool {
         return true;
     }
     false
-}
-
-/// 判断路径是否属于测试、教学示例、演示代码等非生产目录
-fn is_non_production_path(path: &str) -> bool {
-    let normalized = path.replace('\\', "/").to_lowercase();
-    [
-        "/test/",
-        "/tests/",
-        "/__tests__/",
-        "/tutorial/",
-        "/tutorials/",
-        "/demo/",
-        "/demos/",
-        "/examples/",
-        "/fixtures/",
-        "/.ctx-audit/",
-    ]
-    .iter()
-    .any(|p| normalized.contains(p))
 }

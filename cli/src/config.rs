@@ -113,6 +113,14 @@ pub struct ScanConfig {
     /// 深度扫描单文件大小上限（KB，默认 500）
     #[serde(default = "default_taint_max_file_kb")]
     pub taint_max_file_kb: usize,
+
+    /// 公开路由白名单（用于抑制公开端点被误报为未认证）
+    #[serde(default = "default_public_route_patterns")]
+    pub public_route_patterns: Vec<String>,
+
+    /// 非生产代码路径模式（命中时标记 finding 为 non-production）
+    #[serde(default = "default_non_production_path_patterns")]
+    pub non_production_path_patterns: Vec<String>,
 }
 
 fn default_threads() -> usize {
@@ -184,6 +192,12 @@ fn default_taint_max_candidate_files() -> usize {
 fn default_taint_max_file_kb() -> usize {
     500
 }
+fn default_public_route_patterns() -> Vec<String> {
+    deepaudit_core::analysis::attack_surface::default_public_route_patterns()
+}
+fn default_non_production_path_patterns() -> Vec<String> {
+    deepaudit_core::analysis::attack_surface::default_non_production_path_patterns()
+}
 
 impl Default for ScanConfig {
     fn default() -> Self {
@@ -203,6 +217,8 @@ impl Default for ScanConfig {
             deep: false,
             taint_max_candidate_files: 5000,
             taint_max_file_kb: 500,
+            public_route_patterns: default_public_route_patterns(),
+            non_production_path_patterns: default_non_production_path_patterns(),
         }
     }
 }
@@ -499,6 +515,14 @@ pub struct PlannerConfig {
     /// 收敛阈值
     #[serde(default = "default_convergence_threshold")]
     pub convergence_threshold: f64,
+
+    /// 公开路由白名单（与 scan 层保持一致）
+    #[serde(default = "default_public_route_patterns")]
+    pub public_route_patterns: Vec<String>,
+
+    /// 非生产代码路径模式（与 scan 层保持一致）
+    #[serde(default = "default_non_production_path_patterns")]
+    pub non_production_path_patterns: Vec<String>,
 }
 
 fn default_max_goals() -> usize {
@@ -520,6 +544,8 @@ impl Default for PlannerConfig {
             enable_proactive_scan: false,
             enable_reflection: true,
             convergence_threshold: default_convergence_threshold(),
+            public_route_patterns: default_public_route_patterns(),
+            non_production_path_patterns: default_non_production_path_patterns(),
         }
     }
 }

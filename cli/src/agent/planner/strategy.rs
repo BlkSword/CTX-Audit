@@ -11,7 +11,9 @@ use anyhow::Result;
 use crate::agent::environment::EnvironmentModel;
 use crate::agent::llm_client::LlmClient;
 use crate::agent::planner::AuditGoal;
-use deepaudit_core::analysis::attack_surface::is_public_route;
+use deepaudit_core::analysis::attack_surface::{
+    is_non_production_path_with_patterns, is_public_route_with_patterns,
+};
 use deepaudit_core::scanning::Finding;
 
 /// 策略模式
@@ -44,6 +46,8 @@ pub struct PlannerConfig {
     pub enable_proactive_scan: bool,
     pub enable_reflection: bool,
     pub convergence_threshold: f64,
+    pub public_route_patterns: Vec<String>,
+    pub non_production_path_patterns: Vec<String>,
 }
 
 impl Default for PlannerConfig {
@@ -55,6 +59,10 @@ impl Default for PlannerConfig {
             enable_proactive_scan: false,
             enable_reflection: true,
             convergence_threshold: 5.0,
+            public_route_patterns:
+                deepaudit_core::analysis::attack_surface::default_public_route_patterns(),
+            non_production_path_patterns:
+                deepaudit_core::analysis::attack_surface::default_non_production_path_patterns(),
         }
     }
 }
@@ -146,18 +154,22 @@ impl StrategyPlanner {
                 continue;
             }
 
-            // 过滤公开路由和 test/tutorial 示例代码，避免把设计上公开的端点
-            // 或教学示例当作架构风险目标
+            // 过滤公开路由和非生产代码路径，避免把设计上公开的端点
+            // 或示例/教学代码当作架构风险目标
             let entry_files: Vec<String> = risk
                 .affected_entries
                 .iter()
                 .filter(|e| {
                     if let Some(ref route) = e.route {
-                        if is_public_route(route) {
+                        if is_public_route_with_patterns(route, &self.config.public_route_patterns)
+                        {
                             return false;
                         }
                     }
-                    !is_test_or_tutorial_path(&e.file_path)
+                    !is_non_production_path_with_patterns(
+                        &e.file_path,
+                        &self.config.non_production_path_patterns,
+                    )
                 })
                 .take(5)
                 .map(|e| e.file_path.clone())
@@ -307,24 +319,6 @@ impl StrategyPlanner {
     }
 }
 
-/// 判断路径是否属于测试、教学示例或审计临时目录，应排除在架构风险目标之外
-fn is_test_or_tutorial_path(path: &str) -> bool {
-    let normalized = path.replace('\\', "/").to_lowercase();
-    [
-        "/test/",
-        "/tests/",
-        "/__tests__/",
-        "/tutorial/",
-        "/tutorials/",
-        "/demo/",
-        "/examples/",
-        "/fixtures/",
-        "/.ctx-audit/",
-    ]
-    .iter()
-    .any(|p| normalized.contains(p))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +437,10 @@ mod tests {
                 enable_proactive_scan: false,
                 enable_reflection: true,
                 convergence_threshold: 5.0,
+                public_route_patterns:
+                    deepaudit_core::analysis::attack_surface::default_public_route_patterns(),
+                non_production_path_patterns:
+                    deepaudit_core::analysis::attack_surface::default_non_production_path_patterns(),
             },
         );
         let goals = planner.plan_goals(&env).await;
@@ -467,6 +465,10 @@ mod tests {
                 enable_proactive_scan: false,
                 enable_reflection: true,
                 convergence_threshold: 5.0,
+                public_route_patterns:
+                    deepaudit_core::analysis::attack_surface::default_public_route_patterns(),
+                non_production_path_patterns:
+                    deepaudit_core::analysis::attack_surface::default_non_production_path_patterns(),
             },
         );
         let goals = planner.plan_goals(&env).await;

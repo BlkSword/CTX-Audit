@@ -92,12 +92,26 @@ impl AstTaintAnalyzer {
             dir,
         );
 
-        Ok(Self {
-            sources: loaded.sources,
-            sinks: loaded.sinks,
-            sanitizer_patterns: loaded.sanitizer_patterns,
+        Ok(Self::from_rules(
+            loaded.sources,
+            loaded.sinks,
+            loaded.sanitizer_patterns,
+        ))
+    }
+
+    /// 直接使用已加载的规则创建分析器，避免重复从磁盘读取 YAML。
+    /// 适用于批量扫描场景：规则只加载一次，每个文件构造一个轻量分析器。
+    pub fn from_rules(
+        sources: Vec<TaintSource>,
+        sinks: Vec<TaintSink>,
+        sanitizer_patterns: Vec<String>,
+    ) -> Self {
+        Self {
+            sources,
+            sinks,
+            sanitizer_patterns,
             ast_parser: ASTParser::new(),
-        })
+        }
     }
 
     /// Builder: 替换所有污点源

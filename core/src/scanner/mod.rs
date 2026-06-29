@@ -71,6 +71,10 @@ pub struct ScanOptions {
     pub taint_max_candidate_files: usize,
     /// 深度扫描时单个 AST 候选文件大小上限（KB，默认 500）
     pub taint_max_file_kb: usize,
+    /// 公开路由白名单（用于抑制公开端点被误报为未认证）
+    pub public_route_patterns: Vec<String>,
+    /// 非生产代码路径模式（命中时标记 finding 为 non-production）
+    pub non_production_path_patterns: Vec<String>,
 }
 
 impl Default for ScanOptions {
@@ -86,6 +90,9 @@ impl Default for ScanOptions {
             enable_cross_file: false,
             taint_max_candidate_files: 5000,
             taint_max_file_kb: 500,
+            public_route_patterns: crate::analysis::attack_surface::default_public_route_patterns(),
+            non_production_path_patterns:
+                crate::analysis::attack_surface::default_non_production_path_patterns(),
         }
     }
 }
@@ -861,6 +868,8 @@ async fn scan_directory_with_rules_inner(
     let rt_handle = tokio::runtime::Handle::current();
 
     let batch_size = opts.batch_size;
+    let public_route_patterns = opts.public_route_patterns.clone();
+    let non_production_path_patterns = opts.non_production_path_patterns.clone();
     let mut total_bytes_read: usize = 0;
     let total_code_files = code_files.len();
     tracing::debug!(
@@ -914,12 +923,21 @@ async fn scan_directory_with_rules_inner(
                             if ep
                                 .route
                                 .as_deref()
-                                .map(crate::analysis::attack_surface::is_public_route)
+                                .map(|r| {
+                                    crate::analysis::attack_surface::is_public_route_with_patterns(
+                                        r,
+                                        &public_route_patterns,
+                                    )
+                                })
                                 .unwrap_or(false)
                             {
                                 continue;
                             }
                             if !is_test_path(&ep.file_path) && !is_excluded(path_buf, &excludes) {
+                                let is_non_production = crate::analysis::attack_surface::is_non_production_path_with_patterns(
+                                    &ep.file_path,
+                                    &non_production_path_patterns,
+                                );
                                 attack_surface_findings.push(Finding {
                                     finding_id: format!("attack-surface-unauth-{}", ep.line),
                                     file_path: ep.file_path.clone(),
@@ -942,7 +960,11 @@ async fn scan_directory_with_rules_inner(
                                     )),
                                     source_snippet: None,
                                     sink_snippet: None,
-                                    file_role: None,
+                                    file_role: if is_non_production {
+                                        Some("non-production".to_string())
+                                    } else {
+                                        None
+                                    },
                                     barriers: None,
                                     reasoning_hint: None,
                                     evidence_refs: None,
@@ -1010,6 +1032,15 @@ async fn scan_directory_with_rules_inner(
             || fp.ends_with(".spec.js")
             || fp.ends_with(".spec.ts");
         let is_example = fp.contains("/example") || fp.contains("/demo") || fp.contains("/sample");
+        let is_non_production =
+            crate::analysis::attack_surface::is_non_production_path_with_patterns(
+                &finding.file_path,
+                &opts.non_production_path_patterns,
+            );
+
+        if is_non_production {
+            finding.file_role = Some("non-production".to_string());
+        }
 
         if !opts.include_tests && (is_test || is_example) {
             finding.confidence = Some(finding.confidence.unwrap_or(0.7) * 0.3);
@@ -1236,6 +1267,36 @@ pub async fn scan_directory_deep_with_rules_progress(
     let mut accumulated_flows: HashMap<String, Vec<crate::analysis::taint::TaintFlow>> =
         HashMap::new();
 
+    // 污点规则只加载一次，避免每个文件都重新读取 YAML
+    let rules_dir = std::path::Path::new("rules/taint");
+    let (taint_sources, taint_sinks, taint_sanitizers) =
+        if let Ok(loaded) = crate::rules::taint_loader::load_taint_rules_from_dir(rules_dir) {
+            if !loaded.sources.is_empty() || !loaded.sinks.is_empty() {
+                tracing::info!(
+                    "Loaded {} sources, {} sinks, {} sanitizers from {:?}",
+                    loaded.sources.len(),
+                    loaded.sinks.len(),
+                    loaded.sanitizer_patterns.len(),
+                    rules_dir,
+                );
+                (loaded.sources, loaded.sinks, loaded.sanitizer_patterns)
+            } else {
+                let analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
+                (
+                    analyzer.sources().to_vec(),
+                    analyzer.sinks().to_vec(),
+                    analyzer.sanitizer_patterns().to_vec(),
+                )
+            }
+        } else {
+            let analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
+            (
+                analyzer.sources().to_vec(),
+                analyzer.sinks().to_vec(),
+                analyzer.sanitizer_patterns().to_vec(),
+            )
+        };
+
     if let Some(ref cb) = progress {
         cb(ScanProgress {
             phase: ScanPhase::TaintAnalysis,
@@ -1276,10 +1337,12 @@ pub async fn scan_directory_deep_with_rules_progress(
                 use crate::analysis::cpg::CPGBuilder;
                 use crate::ast::parser::ASTParser;
 
-                // 优先从 rules/taint 加载 YAML 污点规则；失败则回退到内置默认规则
-                let rules_dir = std::path::Path::new("rules/taint");
-                let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::from_yaml_dir(rules_dir)
-                    .unwrap_or_else(|_| crate::analysis::ast_taint::AstTaintAnalyzer::new());
+                // 使用预先加载好的污点规则，避免每个文件都重新读取 YAML
+                let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::from_rules(
+                    taint_sources.clone(),
+                    taint_sinks.clone(),
+                    taint_sanitizers.clone(),
+                );
                 let file_path = std::path::Path::new(file_path_str);
 
                 // CPG 缓存（按函数 ID 存储）

@@ -215,12 +215,17 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
             enable_proactive_scan: agent_config.planner.enable_proactive_scan,
             enable_reflection: agent_config.planner.enable_reflection,
             convergence_threshold: agent_config.planner.convergence_threshold,
+            public_route_patterns: agent_config.planner.public_route_patterns.clone(),
+            non_production_path_patterns: agent_config.planner.non_production_path_patterns.clone(),
         };
         let strategy_planner = StrategyPlanner::new(llm_client, planner_config);
         let goals = strategy_planner.plan_goals(&env_arc).await;
 
         if !goals.is_empty() {
-            let planner = RuleBasedPlanner::new(max_exploration_actions);
+            let planner = RuleBasedPlanner::new(
+                max_exploration_actions,
+                agent_config.planner.public_route_patterns.clone(),
+            );
             let executor = PlanExecutor::new(
                 Arc::new(supervisor.clone()),
                 tool_context.clone(),
@@ -300,14 +305,30 @@ async fn run_security_scan(config: &AuditConfig) -> Result<ScanResult> {
         .to_str()
         .context("项目路径包含非法字符")?;
 
+    // 加载扫描配置，保持与 scan 子命令一致的默认值
+    let (public_route_patterns, non_production_path_patterns) =
+        crate::config::ConfigManager::new(None)
+            .ok()
+            .map(|m| {
+                let scan = &m.config().scan;
+                (
+                    scan.public_route_patterns.clone(),
+                    scan.non_production_path_patterns.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    deepaudit_core::analysis::attack_surface::default_public_route_patterns(),
+                    deepaudit_core::analysis::attack_surface::default_non_production_path_patterns(
+                    ),
+                )
+            });
+
     let mut opts = ScanOptions::default();
     opts.enable_taint = true;
     opts.enable_cross_file = true;
-    // Agent 需要调用图，因此即使 CLI 没传 --deep 也强制启用跨文件分析
-    if !config.deep {
-        opts.enable_taint = true;
-        opts.enable_cross_file = true;
-    }
+    opts.public_route_patterns = public_route_patterns;
+    opts.non_production_path_patterns = non_production_path_patterns;
 
     scan_directory_deep_with_rules_progress(path, None, None, None, Some(opts), None)
         .await
