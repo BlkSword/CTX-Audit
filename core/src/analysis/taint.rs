@@ -863,6 +863,32 @@ impl TaintAnalyzer {
                 category: TaintCategory::Environment,
                 ast_patterns: vec![],
             },
+            // Java HTTP 输入（增强）
+            TaintSource {
+                id: "java_http_input".to_string(),
+                name: "Java HTTP Input".to_string(),
+                description: "Java Servlet / Spring 用户输入".to_string(),
+                patterns: vec![
+                    "request.getParameter".to_string(),
+                    "request.getParameterValues".to_string(),
+                    "request.getHeader".to_string(),
+                    "request.getHeaders".to_string(),
+                    "request.getCookies".to_string(),
+                    "request.getQueryString".to_string(),
+                    "request.getInputStream".to_string(),
+                    "request.getReader".to_string(),
+                    "@RequestParam".to_string(),
+                    "@PathVariable".to_string(),
+                    "@RequestBody".to_string(),
+                    "@ModelAttribute".to_string(),
+                    "HttpServletRequest".to_string(),
+                    "ServletRequest".to_string(),
+                ],
+                languages: vec!["java".to_string()],
+                severity: Severity::High,
+                category: TaintCategory::UserInput,
+                ast_patterns: vec![],
+            },
         ]
     }
 
@@ -1035,9 +1061,116 @@ impl TaintAnalyzer {
                 exact_matches: vec![],
                 sanitizers: vec![],
             },
+            // Java SQL 执行（语义匹配，降低误报）
+            TaintSink {
+                id: "java_sql_exec".to_string(),
+                name: "Java SQL Execution".to_string(),
+                description: "Java JDBC / MyBatis SQL 执行".to_string(),
+                patterns: vec![
+                    ".execute(".to_string(),
+                    ".executeQuery(".to_string(),
+                    ".executeUpdate(".to_string(),
+                    ".executeBatch(".to_string(),
+                ],
+                languages: vec!["java".to_string()],
+                vulnerability_type: VulnerabilityType::SqlInjection,
+                severity: Severity::Critical,
+                cwe_id: Some("CWE-89".to_string()),
+                sensitive_params: vec![0],
+                ast_patterns: vec![],
+                match_mode: MatchMode::Semantic,
+                namespaces: vec![
+                    "java.sql".to_string(),
+                    "javax.sql".to_string(),
+                    "Statement".to_string(),
+                    "PreparedStatement".to_string(),
+                    "CallableStatement".to_string(),
+                ],
+                receiver_patterns: vec![
+                    "stmt".to_string(),
+                    "statement".to_string(),
+                    "ps".to_string(),
+                    "pstmt".to_string(),
+                    "connection".to_string(),
+                    "conn".to_string(),
+                    "session".to_string(),
+                ],
+                exact_matches: vec![
+                    "Statement.execute".to_string(),
+                    "Statement.executeQuery".to_string(),
+                    "Statement.executeUpdate".to_string(),
+                    "PreparedStatement.execute".to_string(),
+                    "PreparedStatement.executeQuery".to_string(),
+                    "PreparedStatement.executeUpdate".to_string(),
+                ],
+                sanitizers: vec!["prepare".to_string(), "setString".to_string()],
+            },
+            // Java 命令执行（语义匹配）
+            TaintSink {
+                id: "java_cmd_exec".to_string(),
+                name: "Java Command Execution".to_string(),
+                description: "Java Runtime / ProcessBuilder 命令执行".to_string(),
+                patterns: vec![
+                    ".exec(".to_string(),
+                    ".command(".to_string(),
+                    ".start(".to_string(),
+                ],
+                languages: vec!["java".to_string()],
+                vulnerability_type: VulnerabilityType::CommandInjection,
+                severity: Severity::Critical,
+                cwe_id: Some("CWE-78".to_string()),
+                sensitive_params: vec![0],
+                ast_patterns: vec![],
+                match_mode: MatchMode::Semantic,
+                namespaces: vec![
+                    "java.lang".to_string(),
+                    "Runtime".to_string(),
+                    "ProcessBuilder".to_string(),
+                ],
+                receiver_patterns: vec![
+                    "runtime".to_string(),
+                    "rt".to_string(),
+                    "pb".to_string(),
+                    "processBuilder".to_string(),
+                ],
+                exact_matches: vec![
+                    "Runtime.exec".to_string(),
+                    "ProcessBuilder.command".to_string(),
+                    "ProcessBuilder.start".to_string(),
+                ],
+                sanitizers: vec![],
+            },
+            // Java HTML 输出（语义匹配）
+            TaintSink {
+                id: "java_html_output".to_string(),
+                name: "Java HTML Output".to_string(),
+                description: "Java Servlet / JSP HTML 输出".to_string(),
+                patterns: vec![
+                    ".print(".to_string(),
+                    ".println(".to_string(),
+                    ".write(".to_string(),
+                ],
+                languages: vec!["java".to_string()],
+                vulnerability_type: VulnerabilityType::CrossSiteScripting,
+                severity: Severity::High,
+                cwe_id: Some("CWE-79".to_string()),
+                sensitive_params: vec![0],
+                ast_patterns: vec![],
+                match_mode: MatchMode::Semantic,
+                namespaces: vec!["javax.servlet".to_string(), "jakarta.servlet".to_string()],
+                receiver_patterns: vec![
+                    "response".to_string(),
+                    "resp".to_string(),
+                    "out".to_string(),
+                    "writer".to_string(),
+                ],
+                exact_matches: vec![],
+                sanitizers: vec!["escapeHtml".to_string(), "encodeForHTML".to_string()],
+            },
         ]
     }
 
+    /// 默认传播规则
     /// 默认传播规则
     fn default_propagation_rules() -> Vec<PropagationRule> {
         vec![
@@ -1645,5 +1778,59 @@ cursor.execute(query)
             VulnerabilityType::CommandInjection.to_string(),
             "Command Injection"
         );
+    }
+
+    #[test]
+    fn test_java_source_matches() {
+        let analyzer = TaintAnalyzer::new();
+        let java_source = analyzer
+            .sources()
+            .iter()
+            .find(|s| s.id == "java_http_input")
+            .expect("java_http_input source exists");
+        assert!(java_source.matches("String id = request.getParameter(\"id\");", "java"));
+        assert!(java_source.matches("@RequestParam String name", "java"));
+        assert!(!java_source.matches("String id = \"static\";", "java"));
+    }
+
+    #[test]
+    fn test_java_sql_sink_semantic_match() {
+        let analyzer = TaintAnalyzer::new();
+        let java_sql = analyzer
+            .sinks()
+            .iter()
+            .find(|s| s.id == "java_sql_exec")
+            .expect("java_sql_exec sink exists");
+        // 语义匹配：命中 Statement.execute
+        assert!(java_sql.matches("Statement.execute(sql)", "java"));
+        assert!(java_sql.matches("PreparedStatement.executeQuery(sql)", "java"));
+        // 语义匹配未命中时不应回退子串：random.execute 不应命中
+        assert!(!java_sql.matches("myObject.execute(sql)", "java"));
+    }
+
+    #[test]
+    fn test_java_cmd_sink_semantic_match() {
+        let analyzer = TaintAnalyzer::new();
+        let java_cmd = analyzer
+            .sinks()
+            .iter()
+            .find(|s| s.id == "java_cmd_exec")
+            .expect("java_cmd_exec sink exists");
+        assert!(java_cmd.matches("Runtime.exec(cmd)", "java"));
+        assert!(java_cmd.matches("ProcessBuilder.command(cmd).start()", "java"));
+        assert!(!java_cmd.matches("safe.exec(cmd)", "java"));
+    }
+
+    #[test]
+    fn test_java_xss_sink_matches_response_writer() {
+        let analyzer = TaintAnalyzer::new();
+        let java_xss = analyzer
+            .sinks()
+            .iter()
+            .find(|s| s.id == "java_html_output")
+            .expect("java_html_output sink exists");
+        assert!(java_xss.matches_with_context("print", Some("response"), "java"));
+        assert!(java_xss.matches_with_context("println", Some("out"), "java"));
+        assert!(!java_xss.matches_with_context("print", Some("logger"), "java"));
     }
 }
