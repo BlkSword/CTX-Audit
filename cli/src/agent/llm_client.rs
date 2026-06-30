@@ -90,7 +90,21 @@ impl LlmTriageResult {
 }
 
 /// 从文本中按平衡大括号提取 JSON Value
+///
+/// 优先从 `{"actions"` 等已知关键字处开始解析，以跳过模型可能在 JSON 前附加的自然语言前缀。
 pub fn extract_json_value(text: &str) -> Result<serde_json::Value> {
+    // 1. 优先尝试包含 actions 的对象（规划/调查场景）
+    if let Some(idx) = text.find("{\"actions\"") {
+        if let Ok(v) = extract_balanced_json(&text[idx..]) {
+            return Ok(v);
+        }
+    }
+
+    // 2. 通用大括号提取
+    extract_balanced_json(text)
+}
+
+fn extract_balanced_json(text: &str) -> Result<serde_json::Value> {
     let start = text.find('{').or_else(|| text.find('['));
     let start = start.context("LLM 响应中未找到 JSON")?;
 

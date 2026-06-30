@@ -59,6 +59,15 @@ pub fn judge_finding(finding: &Finding, evidence: &Evidence) -> Verdict {
         return Verdict::FalsePositive;
     }
 
+    // 0.5 访问控制类漏洞（UnauthenticatedEndpoint）不依赖 source→sink 污点路径；
+    //     只要没有认证/授权屏障，就视为真阳性。
+    if finding.vuln_type == "UnauthenticatedEndpoint"
+        && !evidence.has_effective_sanitizer
+        && !has_confirmed_barrier(evidence, finding)
+    {
+        return Verdict::TruePositive;
+    }
+
     // 1. 存在有效 sanitizer 或明确安全屏障 → 误报
     if evidence.has_effective_sanitizer || has_confirmed_barrier(evidence, finding) {
         return Verdict::FalsePositive;

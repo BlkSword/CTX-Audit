@@ -2844,6 +2844,29 @@ impl CrossFileTaintAnalyzer {
                     "prompt",
                 ],
             ),
+            // Java / Spring HTTP 输入
+            TaintSource::new(
+                "java_http_input",
+                "Java HTTP Input",
+                vec![
+                    "@RequestParam",
+                    "@PathVariable",
+                    "@RequestBody",
+                    "@RequestHeader",
+                    "@CookieValue",
+                    "@ModelAttribute",
+                    "HttpServletRequest",
+                    "ServletRequest",
+                    "getParameter(",
+                    "getParameterValues(",
+                    "getHeader(",
+                    "getHeaders(",
+                    "getQueryString(",
+                    "getInputStream(",
+                    "getReader(",
+                    "getCookies(",
+                ],
+            ),
         ]
     }
 
@@ -2866,13 +2889,26 @@ impl CrossFileTaintAnalyzer {
                     "child_process",
                     "system(",
                     "popen(",
+                    "Runtime.getRuntime().exec",
+                    "Runtime.exec",
+                    "ProcessBuilder",
+                    "ProcessBuilder.command",
                 ],
                 VulnerabilityType::CommandInjection,
             ),
             TaintSink::new(
                 "sql_injection",
                 "SQL Injection",
-                vec![".query(", ".execute(", "executeQuery"],
+                vec![
+                    ".query(",
+                    ".execute(",
+                    "executeQuery",
+                    "Statement.execute",
+                    "PreparedStatement.execute",
+                    "jdbcTemplate.query",
+                    "jdbcTemplate.execute",
+                    "createStatement().execute",
+                ],
                 VulnerabilityType::SqlInjection,
             ),
             TaintSink::new(
@@ -2916,6 +2952,19 @@ impl CrossFileTaintAnalyzer {
                 "Open Redirect",
                 vec!["redirect(", "res.redirect"],
                 VulnerabilityType::OpenRedirect,
+            ),
+            TaintSink::new(
+                "java_deserialization",
+                "Java Deserialization",
+                vec![
+                    "ObjectInputStream",
+                    "ObjectInputStream.readObject",
+                    "readObject(",
+                    "defaultReadObject",
+                    "ObjectMapper.readValue",
+                    "objectMapper.readValue",
+                ],
+                VulnerabilityType::InsecureDeserialization,
             ),
         ]
     }

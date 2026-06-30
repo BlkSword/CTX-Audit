@@ -12,7 +12,7 @@ use serde::Serialize;
 use deepaudit_core::scanning::Finding;
 use deepaudit_core::{
     scanning::EvidenceRefs, CallGraphQueryEngine, CallPath, CalleeEvidence, CallerEvidence,
-    MiddlewareEvidence,
+    MiddlewareEvidence, PathStep,
 };
 
 /// 单个 finding 的调查证据
@@ -121,6 +121,16 @@ pub fn collect_evidence(
         }
     }
 
+    // 4. 针对规则/正则发现的兜底：在问题所在方法体内做轻量 source-sink 匹配，
+    //    为 Java 反序列化、命令注入等构造一个本地调用路径，减少因跨文件图缺失
+    //    导致的 needs_review。
+    if evidence.call_path.is_none() {
+        if let Some((path, callers)) = synthesize_local_call_path(project_path, finding) {
+            evidence.call_path = Some(path);
+            evidence.callers = callers;
+        }
+    }
+
     Ok(evidence)
 }
 
@@ -182,4 +192,155 @@ fn extract_code_context_simple(
         out.push_str(&format!("{} {:>4} | {}\n", marker, i, lines[i - 1]));
     }
     out
+}
+
+/// 对缺失跨文件调用路径的 finding，尝试在方法体内合成一条本地 source→sink 路径。
+///
+/// 当前主要覆盖 Java：
+/// - CWE-502：方法体内同时出现 HTTP 输入源（@RequestParam / request.getParameter 等）
+///   和 ObjectInputStream/readObject；或 readObject 方法内出现 Runtime.exec/ProcessBuilder。
+/// - CWE-78：方法体内同时出现 HTTP 输入源和 Runtime.exec/ProcessBuilder。
+fn synthesize_local_call_path(
+    project_path: &Path,
+    finding: &Finding,
+) -> Option<(CallPath, Vec<CallerEvidence>)> {
+    let ext = Path::new(&finding.file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    let full_path = project_path.join(&finding.file_path);
+    let content = std::fs::read_to_string(&full_path).ok()?;
+    let lines: Vec<&str> = content.lines().collect();
+    if finding.line_start == 0 || finding.line_start > lines.len() {
+        return None;
+    }
+
+    // 取问题行周围 ±35 行作为方法体近似（足够覆盖常见 Java 方法）
+    let start = finding.line_start.saturating_sub(35).max(1);
+    let end = (finding.line_end + 35).min(lines.len());
+    let method_body = lines[start - 1..end].join("\n");
+    let body_lower = method_body.to_lowercase();
+
+    let java_sources = [
+        "@requestparam",
+        "@pathvariable",
+        "@requestbody",
+        "@requestheader",
+        "@cookievalue",
+        "@modelattribute",
+        "httpservletrequest",
+        "servletrequest",
+        "getparameter(",
+        "getparametervalues(",
+        "getheader(",
+        "getheaders(",
+        "getquerystring(",
+        "getinputstream(",
+        "getreader(",
+        "getcookies(",
+    ];
+    let has_source = java_sources.iter().any(|p| body_lower.contains(p));
+
+    let is_deserialization = finding.vuln_type.contains("502")
+        || finding
+            .description
+            .to_lowercase()
+            .contains("deserialization");
+    let is_command =
+        finding.vuln_type.contains("78") || finding.description.to_lowercase().contains("command");
+    let is_xss = finding.vuln_type.contains("79")
+        || finding.description.to_lowercase().contains("xss")
+        || finding.description.to_lowercase().contains("cross-site");
+    let is_info_leak = finding.vuln_type.contains("200")
+        || finding.description.to_lowercase().contains("sensitive")
+        || finding.description.to_lowercase().contains("hardcoded");
+
+    let has_deser_sink = body_lower.contains("objectinputstream")
+        || body_lower.contains("readobject(")
+        || body_lower.contains("defaultreadobject")
+        || body_lower.contains("xstream")
+        || body_lower.contains("fromxml(");
+    let has_cmd_sink = body_lower.contains("runtime.getruntime().exec")
+        || body_lower.contains("runtime.exec")
+        || body_lower.contains("processbuilder");
+
+    let matched = if is_deserialization {
+        // 1) HTTP 输入 + 反序列化 sink
+        (has_source && has_deser_sink)
+        // 2) readObject 内部的危险 gadget（如 Runtime.exec）
+            || (body_lower.contains("void readobject") && has_cmd_sink)
+    } else if is_command {
+        has_source && has_cmd_sink
+    } else if is_xss && matches!(ext, "js" | "jsx" | "ts" | "tsx") {
+        // 客户端 XSS：同一方法内存在 DOM 输入源 + HTML 输出 sink
+        let js_sources = [
+            ".val()",
+            ".value",
+            "location.",
+            "window.location",
+            "document.url",
+            "document.referrer",
+            "getelementbyid",
+        ];
+        let js_sinks = [
+            "innerhtml",
+            "outerhtml",
+            "document.write",
+            "insertadjacenthtml",
+        ];
+        js_sources.iter().any(|s| body_lower.contains(s))
+            && js_sinks.iter().any(|s| body_lower.contains(s))
+    } else if is_info_leak && ext == "java" {
+        // 硬编码敏感信息：方法体内存在敏感命名变量赋值字符串字面量
+        let secret_names = ["password", "token", "secret", "api_key", "credential"];
+        secret_names.iter().any(|name| {
+            body_lower.contains(name)
+                && method_body.lines().any(|line| {
+                    let l = line.to_lowercase();
+                    l.contains(name) && l.contains('=') && l.contains('"')
+                })
+        })
+    } else {
+        false
+    };
+
+    if !matched {
+        return None;
+    }
+
+    // 构造一条单跳本地路径
+    let sink_line = finding.line_start;
+    let source_line = start;
+    let step = deepaudit_core::analysis::query::PathStep {
+        function_name: finding.detector.clone(),
+        file_path: finding.file_path.clone(),
+        line: source_line,
+        step_type: "synthetic_local_source".to_string(),
+        code_snippet: Some(lines[source_line - 1].trim().to_string()),
+    };
+    let sink_step = deepaudit_core::analysis::query::PathStep {
+        function_name: finding.detector.clone(),
+        file_path: finding.file_path.clone(),
+        line: sink_line,
+        step_type: "synthetic_local_sink".to_string(),
+        code_snippet: Some(lines[sink_line - 1].trim().to_string()),
+    };
+    let path = CallPath {
+        steps: vec![step, sink_step],
+        total_hops: 1,
+        crosses_files: false,
+        files_in_path: vec![finding.file_path.clone()],
+    };
+    let caller = CallerEvidence {
+        caller_function: finding.detector.clone(),
+        caller_file: finding.file_path.clone(),
+        caller_line: source_line,
+        callee_function: finding.detector.clone(),
+        callee_file: finding.file_path.clone(),
+        callee_line: sink_line,
+        receiver: None,
+        is_callback: false,
+    };
+    Some((path, vec![caller]))
 }

@@ -38,13 +38,13 @@ impl LlmBasedPlanner {
     }
 
     fn build_prompt(&self, env: &EnvironmentModel, goal: &AuditGoal) -> String {
-        const JSON_EXAMPLE: &str = r#"{"actions": [{"action": "InvestigateFinding", "params": {"finding_id": "f1", "file_path": "a.js", "line": 10, "vuln_type": "SQL Injection", "hypothesis": "h"}}]}"#;
+        const JSON_EXAMPLE: &str = r#"{"actions": [{"action": "InvestigateFinding", "params": {"finding_id": "f1", "file_path": "a.js", "line": 10, "vuln_type": "SQL Injection", "hypothesis": ""}}]}"#;
         const EMPTY_ACTIONS: &str = r#"{"actions": []}"#;
 
         let findings_summary: Vec<String> = env
             .findings_for_goal(goal)
             .into_iter()
-            .take(20)
+            .take(10)
             .map(|f| {
                 format!(
                     "- {} {} at {}:{} ({})",
@@ -56,7 +56,7 @@ impl LlmBasedPlanner {
         let entries_summary: Vec<String> = env
             .high_risk_unauthenticated_entries()
             .into_iter()
-            .take(10)
+            .take(5)
             .map(|e| {
                 format!(
                     "- {}:{} route={} score={:.2}",
@@ -69,17 +69,22 @@ impl LlmBasedPlanner {
             .collect();
 
         format!(
-            "你是一个代码审计规划助手。请根据以下审计目标和项目环境，生成一个 JSON 行动计划。\
-只返回 JSON，不要包含解释。JSON 格式为 {json_example}。\
-允许的 action 类型：InvestigateFinding、ExploreEntryPoint、VerifyHypothesis。\
-如果无法生成可靠计划，返回空数组 {empty_actions}。\n\n\
+            "你是一个代码审计规划助手。请严格根据以下信息生成行动计划，输出必须是合法 JSON。\n\
+要求：\n\
+1. 只输出 JSON 对象，禁止任何解释、推理、markdown 代码块或自然语言。\n\
+2. JSON 必须直接以 `{{` 开始，以 `}}` 结束。\n\
+3. action 类型只能是 InvestigateFinding / ExploreEntryPoint / VerifyHypothesis，使用 `action` + `params` 结构。\n\
+4. 优先选择高严重度、有明确入口点或调用链的 finding。\n\
+5. 最多返回 {max_actions} 个 action；如果无可靠计划，返回 {empty_actions}。\n\n\
+JSON 示例：{json_example}\n\n\
 审计目标：{objective}\n\
 关注漏洞类型：{vuln_types:?}\n\
 关注严重度：{severities:?}\n\
-相关 findings（最多 20 条）：\n{findings}\n\
-高风险未认证入口点（最多 10 个）：\n{entries}\n",
+相关 findings（最多 10 条）：\n{findings}\n\
+高风险未认证入口点（最多 5 个）：\n{entries}\n",
             json_example = JSON_EXAMPLE,
             empty_actions = EMPTY_ACTIONS,
+            max_actions = self.max_actions,
             objective = goal.objective,
             vuln_types = goal.target_vuln_types,
             severities = goal.target_severities,
