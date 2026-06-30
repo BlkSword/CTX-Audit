@@ -95,6 +95,12 @@ pub trait LlmClient: Send + Sync {
     /// 对单个 finding 做 LLM triage
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult>;
 
+    /// 通用对话接口，用于非 triage/调查场景（如启动引导中的目录分类）。
+    /// 默认返回空字符串，表示不调用真实 LLM。
+    async fn chat(&self, _prompt: &str) -> Result<String> {
+        Ok(String::new())
+    }
+
     /// 调查阶段：LLM 决定下一步工具或结束调查
     ///
     /// 默认实现退化为基于证据的确定性决策，不调用真实 LLM。
@@ -211,6 +217,10 @@ impl ControlledLlmClient {
 
 #[async_trait]
 impl LlmClient for ControlledLlmClient {
+    async fn chat(&self, prompt: &str) -> Result<String> {
+        self.inner.chat(prompt).await
+    }
+
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult> {
         // noop 模式直接退化为规则判定
         if self.mode == "noop" {
@@ -324,6 +334,13 @@ pub struct HttpLlmClient {
 
 #[async_trait]
 impl LlmClient for HttpLlmClient {
+    async fn chat(&self, prompt: &str) -> Result<String> {
+        match self.provider.as_str() {
+            "anthropic" => self.call_anthropic(prompt).await,
+            _ => self.call_openai_compatible(prompt).await,
+        }
+    }
+
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult> {
         let prompt = build_triage_prompt(finding, evidence);
         let text = match self.provider.as_str() {

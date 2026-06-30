@@ -26,6 +26,7 @@ pub mod heuristics;
 pub mod investigator;
 pub mod llm;
 pub mod llm_client;
+pub mod onboarding;
 pub mod planner;
 pub mod prompts;
 pub mod report;
@@ -140,6 +141,28 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     let max_exploration_actions = config
         .max_exploration_actions
         .unwrap_or(agent_config.planner.max_exploration_actions);
+
+    // ── 启动引导：让用户确认非生产目录并持久化 ─────────────────
+    let mut renderer = crate::terminal::TerminalRenderer::new();
+    let onboarding_llm: Option<Arc<dyn crate::agent::llm_client::LlmClient>> =
+        if agent_config.llm_mode == "http" {
+            Some(Arc::new(crate::agent::llm_client::HttpLlmClient {
+                provider: agent_config.llm.provider.clone(),
+                model: agent_config.llm.model.clone(),
+                api_key: agent_config.llm.api_key.clone(),
+                endpoint: agent_config.llm.endpoint.clone(),
+                timeout_sec: agent_config.llm.timeout_sec,
+                max_tokens: agent_config.llm.max_tokens,
+            }))
+        } else {
+            None
+        };
+    let _ = onboarding::maybe_prompt_non_production_paths(
+        &config.project_path,
+        &mut renderer,
+        onboarding_llm,
+    )
+    .await;
 
     // ── SURVEY：做一次深度扫描拿到 findings ──────────────────────
     let scan_result = run_security_scan(&config).await?;
@@ -306,7 +329,7 @@ async fn run_security_scan(config: &AuditConfig) -> Result<ScanResult> {
         .context("项目路径包含非法字符")?;
 
     // 加载扫描配置，保持与 scan 子命令一致的默认值
-    let (public_route_patterns, non_production_path_patterns) =
+    let (public_route_patterns, mut non_production_path_patterns) =
         crate::config::ConfigManager::new(None)
             .ok()
             .map(|m| {
@@ -328,6 +351,14 @@ async fn run_security_scan(config: &AuditConfig) -> Result<ScanResult> {
     opts.enable_taint = true;
     opts.enable_cross_file = true;
     opts.public_route_patterns = public_route_patterns;
+    // 合并项目级配置中的非生产路径模式
+    let project_patterns = onboarding::load_project_non_production_patterns(&config.project_path);
+    for p in project_patterns {
+        if !non_production_path_patterns.contains(&p) {
+            non_production_path_patterns.push(p);
+        }
+    }
+
     opts.non_production_path_patterns = non_production_path_patterns;
 
     scan_directory_deep_with_rules_progress(path, None, None, None, Some(opts), None)
