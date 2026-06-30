@@ -1,0 +1,28 @@
+name: xss
+cwe_ids:
+  - CWE-79
+vuln_type_keywords:
+  - xss
+  - cross_site_scripting
+  - cross site scripting
+  - reflected_xss
+  - stored_xss
+  - dom_xss
+sink_patterns:
+  - '(?i)(\.innerHTML\s*=|\.outerHTML\s*=|\.html\s*\()'
+  - '(?i)(document\.write\s*\(|document\.writeln\s*\()'
+  - '(?i)(eval\s*\(|setTimeout\s*\(|setInterval\s*\()'
+  - '(?i)(dangerouslySetInnerHTML|v-html|\{@html)'
+  - '(?i)(res\.send\s*\(|res\.write\s*\(|response\.write\s*\()'
+safe_patterns:
+  - '(?i)(textContent|innerText|createTextNode|\.text\s*\()'
+  - '(?i)(DOMPurify|sanitize|encodeURIComponent|escapeHtml|htmlEscape)'
+  - '(?i)(setAttribute\s*\(\s*[''\"](href|src)[''\"]\s*,)'
+barrier_keywords:
+  - DOMPurify
+  - sanitize
+  - encodeURIComponent
+  - escapeHtml
+  - textContent
+  - innerText
+  - createTextNode

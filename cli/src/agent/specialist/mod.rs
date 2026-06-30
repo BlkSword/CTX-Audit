@@ -20,9 +20,13 @@ use crate::agent::evidence::Evidence;
 use crate::agent::heuristics::Verdict;
 use crate::agent::tools::AgentToolContext;
 
+pub mod rules;
 pub mod sqli;
 pub mod xss;
 
+pub use rules::{
+    default_sqli_rules, default_xss_rules, load_specialist_rules_from_dir, SpecialistRuleSet,
+};
 pub use sqli::SQLiSpecialist;
 pub use xss::XssSpecialist;
 
@@ -108,11 +112,30 @@ impl SpecialistRegistry {
         }
     }
 
-    /// 注册内置 Specialist（SQLi、XSS）
+    /// 注册内置 Specialist（SQLi、XSS），尝试从 `rules/specialists` 热加载规则，
+    /// 失败时回退到内置默认规则。
     pub fn with_defaults() -> Self {
+        Self::with_rules_dir(std::path::Path::new("rules/specialists"))
+    }
+
+    /// 从指定目录加载 specialist 规则并构造注册表
+    pub fn with_rules_dir(dir: &std::path::Path) -> Self {
         let mut registry = Self::new();
-        registry.register(Arc::new(SQLiSpecialist));
-        registry.register(Arc::new(XssSpecialist));
+        let rules = load_specialist_rules_from_dir(dir).unwrap_or_default();
+
+        let sqli = rules
+            .get("sqli")
+            .cloned()
+            .unwrap_or_else(default_sqli_rules);
+        registry.register(Arc::new(
+            SQLiSpecialist::new(sqli).unwrap_or_else(|_| SQLiSpecialist::default()),
+        ));
+
+        let xss = rules.get("xss").cloned().unwrap_or_else(default_xss_rules);
+        registry.register(Arc::new(
+            XssSpecialist::new(xss).unwrap_or_else(|_| XssSpecialist::default()),
+        ));
+
         registry
     }
 
@@ -303,7 +326,7 @@ mod tests {
             tool_context,
         };
 
-        let res = SQLiSpecialist.investigate(ctx).await.unwrap();
+        let res = SQLiSpecialist::default().investigate(ctx).await.unwrap();
         assert_eq!(res.verdict, Verdict::TruePositive);
         assert!(
             res.reasoning.contains("工具查询") || res.reasoning.contains("调用路径"),

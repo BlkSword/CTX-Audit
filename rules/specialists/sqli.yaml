@@ -1,0 +1,23 @@
+name: sqli
+cwe_ids:
+  - CWE-89
+vuln_type_keywords:
+  - sqli
+  - sql_injection
+  - sql injection
+sink_patterns:
+  - '(?i)(\.query\s*\(|\.execute\s*\(|\.exec\s*\(|\.raw\s*\(|\.run\s*\()'
+  - '(?i)(createStatement|prepareStatement|Statement\s+\w+)'
+  - '(?i)(sqlite3|mysql|pg_|sequelize|knex|typeorm)'
+safe_patterns:
+  - '(?i)(\?\s*[),''"]|\$\d+|:\w+|\{\w+\})'
+  - '(?i)(setString|setObject|setInt|bindValue|bindParam|bindParameters)'
+  - '(?i)(parameterized|prepared|escape|stringify)'
+barrier_keywords:
+  - parameterized
+  - prepared statement
+  - bind
+  - escape
+  - mysql_real_escape_string
+  - pg_escape_string
+  - SqlParameter

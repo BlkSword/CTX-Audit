@@ -10,52 +10,39 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
 
 use deepaudit_core::scanning::Finding;
 
 use crate::agent::heuristics::Verdict;
-use crate::agent::specialist::{Specialist, SpecialistContext, SpecialistResult};
+use crate::agent::specialist::{
+    default_xss_rules, Specialist, SpecialistContext, SpecialistResult, SpecialistRuleSet,
+};
 
-/// XSS sink 模式
-static XSS_SINKS: Lazy<Vec<Regex>> = Lazy::new(|| {
-    vec![
-        Regex::new(r#"(?i)(\.innerHTML\s*=|\.outerHTML\s*=|\.html\s*\()"#).unwrap(),
-        Regex::new(r#"(?i)(document\.write\s*\(|document\.writeln\s*\()"#).unwrap(),
-        Regex::new(r#"(?i)(eval\s*\(|setTimeout\s*\(|setInterval\s*\()"#).unwrap(),
-        Regex::new(r#"(?i)(dangerouslySetInnerHTML|v-html|\{@html)"#).unwrap(),
-        Regex::new(r#"(?i)(res\.send\s*\(|res\.write\s*\(|response\.write\s*\()"#).unwrap(),
-    ]
-});
+pub struct XssSpecialist {
+    rules: SpecialistRuleSet,
+    sinks: Vec<Regex>,
+    safe_patterns: Vec<Regex>,
+    barrier_keywords: HashSet<String>,
+}
 
-/// XSS 防护/编码模式
-static XSS_SAFE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
-    vec![
-        Regex::new(r#"(?i)(textContent|innerText|createTextNode|\.text\s*\()"#).unwrap(),
-        Regex::new(r#"(?i)(DOMPurify|sanitize|encodeURIComponent|escapeHtml|htmlEscape)"#).unwrap(),
-        Regex::new(r#"(?i)(setAttribute\s*\(\s*['\"](href|src)['\"]\s*,)"#).unwrap(),
-    ]
-});
+impl XssSpecialist {
+    /// 使用指定规则集构造
+    pub fn new(rules: SpecialistRuleSet) -> Result<Self> {
+        Ok(Self {
+            sinks: rules.compiled_sinks()?,
+            safe_patterns: rules.compiled_safe()?,
+            barrier_keywords: rules.barrier_set(),
+            rules,
+        })
+    }
 
-/// XSS barrier 关键词
-static XSS_BARRIER_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    [
-        "DOMPurify",
-        "sanitize",
-        "encodeURIComponent",
-        "escapeHtml",
-        "textContent",
-        "innerText",
-        "createTextNode",
-    ]
-    .iter()
-    .copied()
-    .collect()
-});
-
-pub struct XssSpecialist;
+    /// 使用内置默认规则
+    pub fn default() -> Self {
+        Self::new(default_xss_rules()).expect("默认 XSS 规则应能编译")
+    }
+}
 
 #[async_trait]
 impl Specialist for XssSpecialist {
@@ -64,21 +51,14 @@ impl Specialist for XssSpecialist {
     }
 
     fn can_handle(&self, finding: &Finding) -> bool {
-        let vt = finding.vuln_type.to_lowercase();
-        vt.contains("cwe-79")
-            || vt.contains("xss")
-            || vt.contains("cross_site_scripting")
-            || vt.contains("cross site scripting")
-            || vt.contains("reflected_xss")
-            || vt.contains("stored_xss")
-            || vt.contains("dom_xss")
+        self.rules.matches_vuln_type(&finding.vuln_type)
     }
 
     async fn investigate(&self, ctx: SpecialistContext) -> Result<SpecialistResult> {
         let code = ctx.code_context().unwrap_or("").to_lowercase();
         let mut observations = json!({
-            "sink_patterns": detect_patterns(&code, &XSS_SINKS),
-            "safe_patterns": detect_patterns(&code, &XSS_SAFE_PATTERNS),
+            "sink_patterns": detect_patterns(&code, &self.sinks),
+            "safe_patterns": detect_patterns(&code, &self.safe_patterns),
             "barriers_from_evidence": ctx.evidence.barriers.clone(),
             "has_effective_sanitizer": ctx.evidence.has_effective_sanitizer,
             "call_path_present": ctx.evidence.call_path.is_some(),
@@ -96,7 +76,7 @@ impl Specialist for XssSpecialist {
         }
 
         let barrier_detected = ctx.evidence.barriers.iter().any(|b| {
-            XSS_BARRIER_KEYWORDS
+            self.barrier_keywords
                 .iter()
                 .any(|kw| b.to_lowercase().contains(&kw.to_lowercase()))
         });
@@ -257,7 +237,7 @@ mod tests {
             document.getElementById('out').textContent = userInput;
         "#,
         );
-        let res = XssSpecialist.investigate(ctx).await.unwrap();
+        let res = XssSpecialist::default().investigate(ctx).await.unwrap();
         assert_eq!(res.verdict, Verdict::FalsePositive);
     }
 
@@ -277,7 +257,7 @@ mod tests {
             files_in_path: vec![],
         });
 
-        let res = XssSpecialist.investigate(ctx).await.unwrap();
+        let res = XssSpecialist::default().investigate(ctx).await.unwrap();
         assert_eq!(res.verdict, Verdict::TruePositive);
     }
 
@@ -289,7 +269,7 @@ mod tests {
             element.innerHTML = DOMPurify.sanitize(userInput);
         "#,
         );
-        let res = XssSpecialist.investigate(ctx).await.unwrap();
+        let res = XssSpecialist::default().investigate(ctx).await.unwrap();
         assert_eq!(res.verdict, Verdict::FalsePositive);
     }
 }

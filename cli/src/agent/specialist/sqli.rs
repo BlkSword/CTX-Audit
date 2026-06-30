@@ -9,52 +9,39 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
 
 use deepaudit_core::scanning::Finding;
 
 use crate::agent::heuristics::Verdict;
-use crate::agent::specialist::{Specialist, SpecialistContext, SpecialistResult};
+use crate::agent::specialist::{
+    default_sqli_rules, Specialist, SpecialistContext, SpecialistResult, SpecialistRuleSet,
+};
 
-/// SQLi 危险 sink 模式
-static SQL_SINKS: Lazy<Vec<Regex>> = Lazy::new(|| {
-    vec![
-        Regex::new(r#"(?i)(\.query\s*\(|\.execute\s*\(|\.exec\s*\(|\.raw\s*\(|\.run\s*\()"#)
-            .unwrap(),
-        Regex::new(r#"(?i)(createStatement|prepareStatement|Statement\s+\w+)"#).unwrap(),
-        Regex::new(r#"(?i)(sqlite3|mysql|pg_|sequelize|knex|typeorm)"#).unwrap(),
-    ]
-});
+pub struct SQLiSpecialist {
+    rules: SpecialistRuleSet,
+    sinks: Vec<Regex>,
+    safe_patterns: Vec<Regex>,
+    barrier_keywords: HashSet<String>,
+}
 
-/// 安全的参数化/占位符模式
-static SQL_SAFE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
-    vec![
-        Regex::new(r#"(?i)(\?\s*[),'\"]|\$\d+|:\w+|\{\w+\})"#).unwrap(),
-        Regex::new(r#"(?i)(setString|setObject|setInt|bindValue|bindParam|bindParameters)"#)
-            .unwrap(),
-        Regex::new(r#"(?i)(parameterized|prepared|escape|stringify)"#).unwrap(),
-    ]
-});
+impl SQLiSpecialist {
+    /// 使用指定规则集构造
+    pub fn new(rules: SpecialistRuleSet) -> Result<Self> {
+        Ok(Self {
+            sinks: rules.compiled_sinks()?,
+            safe_patterns: rules.compiled_safe()?,
+            barrier_keywords: rules.barrier_set(),
+            rules,
+        })
+    }
 
-/// 显式 sanitizer / barrier 关键词
-static SQL_BARRIER_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    [
-        "parameterized",
-        "prepared statement",
-        "bind",
-        "escape",
-        "mysql_real_escape_string",
-        "pg_escape_string",
-        "SqlParameter",
-    ]
-    .iter()
-    .copied()
-    .collect()
-});
-
-pub struct SQLiSpecialist;
+    /// 使用内置默认规则
+    pub fn default() -> Self {
+        Self::new(default_sqli_rules()).expect("默认 SQLi 规则应能编译")
+    }
+}
 
 #[async_trait]
 impl Specialist for SQLiSpecialist {
@@ -63,18 +50,14 @@ impl Specialist for SQLiSpecialist {
     }
 
     fn can_handle(&self, finding: &Finding) -> bool {
-        let vt = finding.vuln_type.to_lowercase();
-        vt.contains("cwe-89")
-            || vt.contains("sqli")
-            || vt.contains("sql_injection")
-            || vt.contains("sql injection")
+        self.rules.matches_vuln_type(&finding.vuln_type)
     }
 
     async fn investigate(&self, ctx: SpecialistContext) -> Result<SpecialistResult> {
         let code = ctx.code_context().unwrap_or("").to_lowercase();
         let mut observations = json!({
-            "sink_patterns": detect_patterns(&code, &SQL_SINKS),
-            "safe_patterns": detect_patterns(&code, &SQL_SAFE_PATTERNS),
+            "sink_patterns": detect_patterns(&code, &self.sinks),
+            "safe_patterns": detect_patterns(&code, &self.safe_patterns),
             "barriers_from_evidence": ctx.evidence.barriers.clone(),
             "has_effective_sanitizer": ctx.evidence.has_effective_sanitizer,
             "call_path_present": ctx.evidence.call_path.is_some(),
@@ -94,7 +77,7 @@ impl Specialist for SQLiSpecialist {
 
         // 若 finding 显式声明了安全屏障关键词
         let barrier_detected = ctx.evidence.barriers.iter().any(|b| {
-            SQL_BARRIER_KEYWORDS
+            self.barrier_keywords
                 .iter()
                 .any(|kw| b.to_lowercase().contains(kw))
         });
@@ -258,7 +241,7 @@ mod tests {
             db.query('SELECT * FROM users WHERE id = ?', [userId]);
         "#,
         );
-        let res = SQLiSpecialist.investigate(ctx).await.unwrap();
+        let res = SQLiSpecialist::default().investigate(ctx).await.unwrap();
         assert_eq!(res.verdict, Verdict::FalsePositive);
         assert!(res.confidence > 0.8);
     }
@@ -279,7 +262,7 @@ mod tests {
             files_in_path: vec![],
         });
 
-        let res = SQLiSpecialist.investigate(ctx).await.unwrap();
+        let res = SQLiSpecialist::default().investigate(ctx).await.unwrap();
         assert_eq!(res.verdict, Verdict::TruePositive);
     }
 
@@ -294,7 +277,7 @@ mod tests {
         let mut ctx = ctx;
         ctx.evidence.has_effective_sanitizer = true;
 
-        let res = SQLiSpecialist.investigate(ctx).await.unwrap();
+        let res = SQLiSpecialist::default().investigate(ctx).await.unwrap();
         assert_eq!(res.verdict, Verdict::FalsePositive);
     }
 }
