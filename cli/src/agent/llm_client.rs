@@ -6,8 +6,9 @@
 //! 定义 `LlmClient` trait，统一 noop / http / mcp_relay 三种调用模式。
 //! Phase 1 仅实现 NoopLlmClient；Phase 2 增加 HttpLlmClient 与受控触发逻辑。
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -151,16 +152,60 @@ pub struct ControlledLlmClient {
     mode: String,
     max_calls: usize,
     calls_made: AtomicUsize,
+    /// 按严重度分级的 LLM 调用预算
+    max_calls_by_severity: HashMap<String, usize>,
+    calls_made_by_severity: Mutex<HashMap<String, usize>>,
 }
 
 impl ControlledLlmClient {
-    pub fn new(inner: Arc<dyn LlmClient>, mode: String, max_calls: usize) -> Self {
+    pub fn new(
+        inner: Arc<dyn LlmClient>,
+        mode: String,
+        max_calls: usize,
+        max_calls_by_severity: HashMap<String, usize>,
+    ) -> Self {
         Self {
             inner,
             mode,
             max_calls,
             calls_made: AtomicUsize::new(0),
+            max_calls_by_severity,
+            calls_made_by_severity: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// 检查并扣减 LLM 预算。
+    /// 返回 true 表示预算充足，可以继续调用真实 LLM。
+    fn try_consume_budget(&self, severity: &str) -> bool {
+        let severity = severity.to_lowercase();
+
+        // 1. 总预算检查与扣减
+        if self.max_calls > 0 {
+            let made = self.calls_made.fetch_add(1, Ordering::SeqCst);
+            if made >= self.max_calls {
+                self.calls_made.fetch_sub(1, Ordering::SeqCst);
+                return false;
+            }
+        }
+
+        // 2. 按严重度分级预算检查
+        if let Some(&limit) = self.max_calls_by_severity.get(&severity) {
+            if limit == 0 {
+                // 0 表示该严重度不限制，只受总预算约束
+                return true;
+            }
+            let mut map = self.calls_made_by_severity.lock().unwrap();
+            let made = map.entry(severity).or_insert(0);
+            if *made >= limit {
+                // 该严重度预算耗尽，恢复总预算计数
+                drop(map);
+                self.calls_made.fetch_sub(1, Ordering::SeqCst);
+                return false;
+            }
+            *made += 1;
+        }
+
+        true
     }
 }
 
@@ -193,13 +238,9 @@ impl LlmClient for ControlledLlmClient {
             return NoopLlmClient.triage(finding, evidence).await;
         }
 
-        // max_llm_calls 限制（0 表示不限制）
-        if self.max_calls > 0 {
-            let made = self.calls_made.fetch_add(1, Ordering::SeqCst);
-            if made >= self.max_calls {
-                self.calls_made.fetch_sub(1, Ordering::SeqCst);
-                return NoopLlmClient.triage(finding, evidence).await;
-            }
+        // LLM 预算检查（总预算 + 按严重度分级预算）
+        if !self.try_consume_budget(&finding.severity) {
+            return NoopLlmClient.triage(finding, evidence).await;
         }
 
         self.inner.triage(finding, evidence).await
@@ -238,13 +279,9 @@ impl LlmClient for ControlledLlmClient {
             return Ok(default_investigation_decision(finding, evidence));
         }
 
-        // max_llm_calls 限制（0 表示不限制）
-        if self.max_calls > 0 {
-            let made = self.calls_made.fetch_add(1, Ordering::SeqCst);
-            if made >= self.max_calls {
-                self.calls_made.fetch_sub(1, Ordering::SeqCst);
-                return Ok(default_investigation_decision(finding, evidence));
-            }
+        // LLM 预算检查（总预算 + 按严重度分级预算）
+        if !self.try_consume_budget(&finding.severity) {
+            return Ok(default_investigation_decision(finding, evidence));
         }
 
         self.inner
@@ -432,6 +469,7 @@ pub fn create_llm_client(agent_config: &crate::config::AgentConfig) -> Arc<dyn L
         inner,
         agent_config.llm_mode.clone(),
         agent_config.max_llm_calls,
+        agent_config.max_llm_calls_by_severity.clone(),
     ))
 }
 
@@ -490,7 +528,7 @@ mod tests {
         let inner = Arc::new(MockLlmClient {
             verdict: Verdict::TruePositive,
         });
-        let controlled = ControlledLlmClient::new(inner, "http".to_string(), 1);
+        let controlled = ControlledLlmClient::new(inner, "http".to_string(), 1, HashMap::new());
 
         // 构造一个会触发 LLM 的 finding：高严重度 + 证据冲突
         let mut evidence = Evidence::default();
@@ -519,7 +557,7 @@ mod tests {
         let inner = Arc::new(MockLlmClient {
             verdict: Verdict::TruePositive,
         });
-        let controlled = ControlledLlmClient::new(inner, "noop".to_string(), 10);
+        let controlled = ControlledLlmClient::new(inner, "noop".to_string(), 10, HashMap::new());
 
         let mut evidence = Evidence::default();
         evidence.call_path = Some(deepaudit_core::CallPath {
@@ -533,6 +571,34 @@ mod tests {
         let finding = dummy_finding("critical");
         let r = controlled.triage(&finding, &evidence).await.unwrap();
         assert!(r.reasoning.starts_with("Noop LLM"));
+    }
+
+    #[tokio::test]
+    async fn test_controlled_client_respects_severity_budget() {
+        let inner = Arc::new(MockLlmClient {
+            verdict: Verdict::TruePositive,
+        });
+        let mut budget = HashMap::new();
+        budget.insert("high".to_string(), 1usize);
+        // critical 不限制，只受总预算约束
+        let controlled = ControlledLlmClient::new(inner, "http".to_string(), 2, budget);
+
+        let mut evidence = Evidence::default();
+        evidence.call_path = Some(deepaudit_core::CallPath {
+            steps: vec![],
+            total_hops: 1,
+            crosses_files: false,
+            files_in_path: vec![],
+        });
+        evidence.barriers = vec!["unknown".to_string()];
+
+        let finding_high = dummy_finding("high");
+        let r1 = controlled.triage(&finding_high, &evidence).await.unwrap();
+        assert_eq!(r1.reasoning, "mock llm");
+
+        // high 严重度预算已耗尽，第二次退化为 Noop
+        let r2 = controlled.triage(&finding_high, &evidence).await.unwrap();
+        assert!(r2.reasoning.starts_with("Noop LLM"));
     }
 
     #[test]

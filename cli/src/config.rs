@@ -570,8 +570,14 @@ pub struct AgentConfig {
     pub review_mode: String,
 
     /// 最大 LLM 调用次数，0 表示不限制（默认 100）
+    /// 作为全局总预算兜底
     #[serde(default = "default_max_llm_calls")]
     pub max_llm_calls: usize,
+
+    /// 按严重度分级的 LLM 调用预算（例如 critical=50, high=30）。
+    /// 键为 severity 小写字符串，0 表示该严重度不限制。
+    #[serde(default = "default_max_llm_calls_by_severity")]
+    pub max_llm_calls_by_severity: std::collections::HashMap<String, usize>,
 
     /// 是否启用 Specialist Agent（默认 false）
     #[serde(default)]
@@ -609,6 +615,9 @@ fn default_max_investigation_steps() -> usize {
 fn default_max_llm_calls() -> usize {
     100
 }
+fn default_max_llm_calls_by_severity() -> std::collections::HashMap<String, usize> {
+    std::collections::HashMap::new()
+}
 
 impl Default for AgentConfig {
     fn default() -> Self {
@@ -618,6 +627,7 @@ impl Default for AgentConfig {
             llm_mode: "noop".to_string(),
             review_mode: "off".to_string(),
             max_llm_calls: default_max_llm_calls(),
+            max_llm_calls_by_severity: default_max_llm_calls_by_severity(),
             specialist_enabled: false,
             investigator_enabled: false,
             max_investigation_steps: 5,
@@ -843,6 +853,10 @@ impl ConfigManager {
             "agent.llm_mode" => Some(self.config.agent.llm_mode.clone()),
             "agent.review_mode" => Some(self.config.agent.review_mode.clone()),
             "agent.max_llm_calls" => Some(self.config.agent.max_llm_calls.to_string()),
+            "agent.max_llm_calls_by_severity" => Some(
+                serde_json::to_string(&self.config.agent.max_llm_calls_by_severity)
+                    .unwrap_or_default(),
+            ),
             "agent.specialist_enabled" => Some(self.config.agent.specialist_enabled.to_string()),
             "agent.investigator_enabled" => {
                 Some(self.config.agent.investigator_enabled.to_string())
@@ -1040,6 +1054,10 @@ impl ConfigManager {
             }
             "agent.max_llm_calls" => {
                 self.config.agent.max_llm_calls = value.parse().context("无效的数字")?;
+            }
+            "agent.max_llm_calls_by_severity" => {
+                self.config.agent.max_llm_calls_by_severity = serde_json::from_str(&value)
+                    .context("无效的 JSON 对象，示例: {\"critical\":50,\"high\":30}")?;
             }
             "agent.specialist_enabled" => {
                 self.config.agent.specialist_enabled = value.parse().context("无效的布尔值")?;
