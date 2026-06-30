@@ -196,10 +196,8 @@ fn extract_code_context_simple(
 
 /// 对缺失跨文件调用路径的 finding，尝试在方法体内合成一条本地 source→sink 路径。
 ///
-/// 当前主要覆盖 Java：
-/// - CWE-502：方法体内同时出现 HTTP 输入源（@RequestParam / request.getParameter 等）
-///   和 ObjectInputStream/readObject；或 readObject 方法内出现 Runtime.exec/ProcessBuilder。
-/// - CWE-78：方法体内同时出现 HTTP 输入源和 Runtime.exec/ProcessBuilder。
+/// 覆盖语言：Java、JavaScript/TypeScript、Python、Go、Rust、PHP、C/C++。
+/// 兜底规则是“同一方法近似范围内同时出现语言相关的输入源与漏洞 sink”。
 fn synthesize_local_call_path(
     project_path: &Path,
     finding: &Finding,
@@ -216,94 +214,55 @@ fn synthesize_local_call_path(
         return None;
     }
 
-    // 取问题行周围 ±35 行作为方法体近似（足够覆盖常见 Java 方法）
+    // 取问题行周围 ±35 行作为方法体近似
     let start = finding.line_start.saturating_sub(35).max(1);
     let end = (finding.line_end + 35).min(lines.len());
     let method_body = lines[start - 1..end].join("\n");
     let body_lower = method_body.to_lowercase();
 
-    let java_sources = [
-        "@requestparam",
-        "@pathvariable",
-        "@requestbody",
-        "@requestheader",
-        "@cookievalue",
-        "@modelattribute",
-        "httpservletrequest",
-        "servletrequest",
-        "getparameter(",
-        "getparametervalues(",
-        "getheader(",
-        "getheaders(",
-        "getquerystring(",
-        "getinputstream(",
-        "getreader(",
-        "getcookies(",
-    ];
-    let has_source = java_sources.iter().any(|p| body_lower.contains(p));
-
-    let is_deserialization = finding.vuln_type.contains("502")
-        || finding
-            .description
-            .to_lowercase()
-            .contains("deserialization");
-    let is_command =
-        finding.vuln_type.contains("78") || finding.description.to_lowercase().contains("command");
-    let is_xss = finding.vuln_type.contains("79")
-        || finding.description.to_lowercase().contains("xss")
-        || finding.description.to_lowercase().contains("cross-site");
-    let is_info_leak = finding.vuln_type.contains("200")
-        || finding.description.to_lowercase().contains("sensitive")
-        || finding.description.to_lowercase().contains("hardcoded");
-
-    let has_deser_sink = body_lower.contains("objectinputstream")
-        || body_lower.contains("readobject(")
-        || body_lower.contains("defaultreadobject")
-        || body_lower.contains("xstream")
-        || body_lower.contains("fromxml(");
-    let has_cmd_sink = body_lower.contains("runtime.getruntime().exec")
-        || body_lower.contains("runtime.exec")
-        || body_lower.contains("processbuilder");
-
-    let matched = if is_deserialization {
-        // 1) HTTP 输入 + 反序列化 sink
-        (has_source && has_deser_sink)
-        // 2) readObject 内部的危险 gadget（如 Runtime.exec）
-            || (body_lower.contains("void readobject") && has_cmd_sink)
-    } else if is_command {
-        has_source && has_cmd_sink
-    } else if is_xss && matches!(ext, "js" | "jsx" | "ts" | "tsx") {
-        // 客户端 XSS：同一方法内存在 DOM 输入源 + HTML 输出 sink
-        let js_sources = [
-            ".val()",
-            ".value",
-            "location.",
-            "window.location",
-            "document.url",
-            "document.referrer",
-            "getelementbyid",
-        ];
-        let js_sinks = [
-            "innerhtml",
-            "outerhtml",
-            "document.write",
-            "insertadjacenthtml",
-        ];
-        js_sources.iter().any(|s| body_lower.contains(s))
-            && js_sinks.iter().any(|s| body_lower.contains(s))
-    } else if is_info_leak && ext == "java" {
-        // 硬编码敏感信息：方法体内存在敏感命名变量赋值字符串字面量
-        let secret_names = ["password", "token", "secret", "api_key", "credential"];
-        secret_names.iter().any(|name| {
-            body_lower.contains(name)
-                && method_body.lines().any(|line| {
-                    let l = line.to_lowercase();
-                    l.contains(name) && l.contains('=') && l.contains('"')
-                })
-        })
-    } else {
-        false
-    };
+    let matched =
+        match ext {
+            "java" => java_matched(
+                &finding.vuln_type,
+                &finding.description,
+                &body_lower,
+                &method_body,
+            ),
+            "js" | "jsx" | "ts" | "tsx" => {
+                js_matched(&finding.vuln_type, &finding.description, &body_lower)
+            }
+            "py" => generic_source_sink_matched(
+                &PYTHON_PATTERNS,
+                &finding.vuln_type,
+                &finding.description,
+                &body_lower,
+            ),
+            "go" => generic_source_sink_matched(
+                &GO_PATTERNS,
+                &finding.vuln_type,
+                &finding.description,
+                &body_lower,
+            ),
+            "rs" => generic_source_sink_matched(
+                &RUST_PATTERNS,
+                &finding.vuln_type,
+                &finding.description,
+                &body_lower,
+            ),
+            "php" => generic_source_sink_matched(
+                &PHP_PATTERNS,
+                &finding.vuln_type,
+                &finding.description,
+                &body_lower,
+            ),
+            "c" | "cpp" | "cc" | "h" | "hpp" | "cxx" => generic_source_sink_matched(
+                &C_PATTERNS,
+                &finding.vuln_type,
+                &finding.description,
+                &body_lower,
+            ),
+            _ => false,
+        } || hardcoded_secret_matched(&finding.vuln_type, &finding.description, &method_body);
 
     if !matched {
         return None;
@@ -343,4 +302,331 @@ fn synthesize_local_call_path(
         is_callback: false,
     };
     Some((path, vec![caller]))
+}
+
+/// 语言无关 source→sink 模式集
+struct PatternSet {
+    sources: &'static [&'static str],
+    cmd_sinks: &'static [&'static str],
+    sql_sinks: &'static [&'static str],
+    deser_sinks: &'static [&'static str],
+    code_sinks: &'static [&'static str],
+    path_sinks: &'static [&'static str],
+    ssrf_sinks: &'static [&'static str],
+    xss_sinks: &'static [&'static str],
+}
+
+const PYTHON_PATTERNS: PatternSet = PatternSet {
+    sources: &[
+        "request.args",
+        "request.form",
+        "request.json",
+        "request.data",
+        "request.headers",
+        "request.cookies",
+        "request.values",
+        "request.get_json",
+        "input(",
+        "sys.argv",
+        "os.environ",
+        "os.getenv",
+        "getenv(",
+    ],
+    cmd_sinks: &[
+        "os.system",
+        "os.popen",
+        "subprocess.call",
+        "subprocess.run",
+        "subprocess.popen",
+        "subprocess.check_output",
+        "commands.getoutput",
+    ],
+    sql_sinks: &[
+        ".execute(",
+        ".executemany(",
+        "cursor.execute",
+        "sqlite3",
+        "psycopg2",
+        "sqlalchemy",
+    ],
+    deser_sinks: &[
+        "pickle.loads",
+        "pickle.load",
+        "yaml.load",
+        "yaml.unsafe_load",
+        "json.loads",
+    ],
+    code_sinks: &["eval(", "exec(", "compile("],
+    path_sinks: &["open(", "os.path.join", "pathlib.path"],
+    ssrf_sinks: &[
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "urllib.request.urlopen",
+        "urllib.urlopen",
+        "http.client",
+    ],
+    xss_sinks: &[
+        "render_template_string",
+        "mark_safe",
+        "jinja2",
+        "flask.render_template",
+    ],
+};
+
+const GO_PATTERNS: PatternSet = PatternSet {
+    sources: &[
+        "r.url.query().get",
+        "r.formvalue",
+        "r.postformvalue",
+        "r.body",
+        "r.header.get",
+        "r.header",
+        "os.args",
+        "os.getenv",
+        "envconfig",
+    ],
+    cmd_sinks: &["exec.command", "os/exec", "syscall.exec"],
+    sql_sinks: &["db.query", "db.exec", "db.queryrow", "sql.db", "stmt.exec"],
+    deser_sinks: &["json.unmarshal", "gob.newdecoder", "yaml.unmarshal"],
+    code_sinks: &["plugin.open"],
+    path_sinks: &[
+        "os.open",
+        "os.readfile",
+        "os.writefile",
+        "ioutil.readfile",
+        "ioutil.writefile",
+    ],
+    ssrf_sinks: &[
+        "http.get",
+        "http.post",
+        "http.client.do",
+        "net.dial",
+        "grpc.dial",
+    ],
+    xss_sinks: &["template.html", "html.template"],
+};
+
+const RUST_PATTERNS: PatternSet = PatternSet {
+    sources: &[
+        "std::env::args",
+        "std::env::var",
+        "env::var",
+        "env::args",
+        "req.query",
+        "req.headers",
+        "req.body",
+        "request.query",
+        "params.",
+    ],
+    cmd_sinks: &["std::process::command::new", "command::new"],
+    sql_sinks: &[
+        "sqlx::query",
+        ".fetch_one",
+        ".execute(",
+        "client.query",
+        "statement.execute",
+    ],
+    deser_sinks: &[
+        "serde_json::from_str",
+        "serde_json::from_reader",
+        "toml::from_str",
+        "bincode::deserialize",
+    ],
+    code_sinks: &["std::process::command::new"],
+    path_sinks: &[
+        "std::fs::read_to_string",
+        "std::fs::write",
+        "file::open",
+        "std::fs::file",
+    ],
+    ssrf_sinks: &[
+        "reqwest::get",
+        "reqwest::client",
+        "surf::get",
+        "ureq::get",
+        "hyper::client",
+    ],
+    xss_sinks: &["handlebars::template", "tera::context", "maud::html"],
+};
+
+const PHP_PATTERNS: PatternSet = PatternSet {
+    sources: &[
+        "$_get",
+        "$_post",
+        "$_request",
+        "$_cookie",
+        "$_server",
+        "$_files",
+        "php://input",
+        "file_get_contents(\"php://input\")",
+    ],
+    cmd_sinks: &[
+        "exec(",
+        "shell_exec(",
+        "system(",
+        "passthru(",
+        "proc_open(",
+        "popen(",
+    ],
+    sql_sinks: &[
+        "mysql_query",
+        "mysqli_query",
+        "pg_query",
+        "sqlite_query",
+        "pdo::query",
+        "->query(",
+    ],
+    deser_sinks: &["unserialize(", "json_decode"],
+    code_sinks: &["eval(", "assert(", "create_function", "preg_replace"],
+    path_sinks: &[
+        "file_get_contents(",
+        "fopen(",
+        "readfile(",
+        "include(",
+        "require(",
+        "file(",
+        "move_uploaded_file",
+    ],
+    ssrf_sinks: &[
+        "file_get_contents(",
+        "curl_exec",
+        "curl_setopt",
+        "fsockopen",
+    ],
+    xss_sinks: &["echo", "print", "printf(", "die("],
+};
+
+const C_PATTERNS: PatternSet = PatternSet {
+    sources: &[
+        "argv[", "getenv(", "fgets(", "scanf(", "gets(", "read(", "recv(",
+    ],
+    cmd_sinks: &["system(", "popen(", "exec(", "_exec", "createprocess"],
+    sql_sinks: &["sqlite3_exec", "mysql_query", "pqexec", "sqlexecdirect"],
+    deser_sinks: &[],
+    code_sinks: &[],
+    path_sinks: &["fopen(", "open(", "freopen(", "stat("],
+    ssrf_sinks: &["curl_easy_perform", "socket(", "connect("],
+    xss_sinks: &["printf(", "sprintf(", "puts("],
+};
+
+fn generic_source_sink_matched(
+    patterns: &PatternSet,
+    vuln_type: &str,
+    description: &str,
+    body_lower: &str,
+) -> bool {
+    if patterns.sources.iter().all(|s| !body_lower.contains(s)) {
+        return false;
+    }
+
+    let desc = description.to_lowercase();
+    if vuln_type.contains("78") || desc.contains("command") {
+        return patterns.cmd_sinks.iter().any(|s| body_lower.contains(s));
+    }
+    if vuln_type.contains("89") || desc.contains("sql") {
+        return patterns.sql_sinks.iter().any(|s| body_lower.contains(s));
+    }
+    if vuln_type.contains("502") || desc.contains("deserialization") {
+        return patterns.deser_sinks.iter().any(|s| body_lower.contains(s));
+    }
+    if vuln_type.contains("94") || desc.contains("code injection") {
+        return patterns.code_sinks.iter().any(|s| body_lower.contains(s));
+    }
+    if vuln_type.contains("22") || desc.contains("path traversal") {
+        return patterns.path_sinks.iter().any(|s| body_lower.contains(s));
+    }
+    if vuln_type.contains("918") || desc.contains("ssrf") {
+        return patterns.ssrf_sinks.iter().any(|s| body_lower.contains(s));
+    }
+    if vuln_type.contains("79") || desc.contains("xss") || desc.contains("cross-site") {
+        return patterns.xss_sinks.iter().any(|s| body_lower.contains(s));
+    }
+    false
+}
+
+fn java_matched(vuln_type: &str, description: &str, body_lower: &str, method_body: &str) -> bool {
+    let java_sources = [
+        "@requestparam",
+        "@pathvariable",
+        "@requestbody",
+        "@requestheader",
+        "@cookievalue",
+        "@modelattribute",
+        "httpservletrequest",
+        "servletrequest",
+        "getparameter(",
+        "getparametervalues(",
+        "getheader(",
+        "getheaders(",
+        "getquerystring(",
+        "getinputstream(",
+        "getreader(",
+        "getcookies(",
+    ];
+    let has_source = java_sources.iter().any(|p| body_lower.contains(p));
+
+    let desc = description.to_lowercase();
+    let is_deser = vuln_type.contains("502") || desc.contains("deserialization");
+    let is_cmd = vuln_type.contains("78") || desc.contains("command");
+
+    let has_deser_sink = body_lower.contains("objectinputstream")
+        || body_lower.contains("readobject(")
+        || body_lower.contains("defaultreadobject")
+        || body_lower.contains("xstream")
+        || body_lower.contains("fromxml(");
+    let has_cmd_sink = body_lower.contains("runtime.getruntime().exec")
+        || body_lower.contains("runtime.exec")
+        || body_lower.contains("processbuilder");
+
+    if is_deser {
+        (has_source && has_deser_sink) || (body_lower.contains("void readobject") && has_cmd_sink)
+    } else if is_cmd {
+        has_source && has_cmd_sink
+    } else if vuln_type.contains("200") || desc.contains("sensitive") || desc.contains("hardcoded")
+    {
+        hardcoded_secret_matched(vuln_type, description, method_body)
+    } else {
+        false
+    }
+}
+
+fn js_matched(vuln_type: &str, description: &str, body_lower: &str) -> bool {
+    let desc = description.to_lowercase();
+    let is_xss = vuln_type.contains("79") || desc.contains("xss") || desc.contains("cross-site");
+    if !is_xss {
+        return false;
+    }
+    let js_sources = [
+        ".val()",
+        ".value",
+        "location.",
+        "window.location",
+        "document.url",
+        "document.referrer",
+        "getelementbyid",
+    ];
+    let js_sinks = [
+        "innerhtml",
+        "outerhtml",
+        "document.write",
+        "insertadjacenthtml",
+    ];
+    js_sources.iter().any(|s| body_lower.contains(s))
+        && js_sinks.iter().any(|s| body_lower.contains(s))
+}
+
+fn hardcoded_secret_matched(vuln_type: &str, description: &str, method_body: &str) -> bool {
+    let desc = description.to_lowercase();
+    if !(vuln_type.contains("200") || desc.contains("sensitive") || desc.contains("hardcoded")) {
+        return false;
+    }
+    let secret_names = ["password", "token", "secret", "api_key", "credential"];
+    secret_names.iter().any(|name| {
+        method_body.to_lowercase().contains(name)
+            && method_body.lines().any(|line| {
+                let l = line.to_lowercase();
+                l.contains(name) && l.contains('=') && l.contains('"')
+            })
+    })
 }
