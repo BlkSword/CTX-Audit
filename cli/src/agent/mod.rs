@@ -39,8 +39,9 @@ use environment::EnvironmentModel;
 use llm_client::create_llm_client;
 use planner::{
     executor::PlanExecutor,
+    llm_based::LlmBasedPlanner,
     rule_based::RuleBasedPlanner,
-    strategy::{PlannerConfig, StrategyPlanner},
+    strategy::{PlannerConfig, PlannerStrategy, StrategyPlanner},
     Planner,
 };
 use report::{AuditReport, InvestigationResult};
@@ -241,14 +242,26 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
             public_route_patterns: agent_config.planner.public_route_patterns.clone(),
             non_production_path_patterns: agent_config.planner.non_production_path_patterns.clone(),
         };
-        let strategy_planner = StrategyPlanner::new(llm_client, planner_config);
+        let strategy_planner = StrategyPlanner::new(llm_client.clone(), planner_config);
         let goals = strategy_planner.plan_goals(&env_arc).await;
 
         if !goals.is_empty() {
-            let planner = RuleBasedPlanner::new(
-                max_exploration_actions,
-                agent_config.planner.public_route_patterns.clone(),
-            );
+            let planner: Arc<dyn Planner> =
+                if strategy == "llm" || (strategy == "auto" && agent_config.llm_mode == "http") {
+                    Arc::new(LlmBasedPlanner::new(
+                        llm_client.clone(),
+                        RuleBasedPlanner::new(
+                            max_exploration_actions,
+                            agent_config.planner.public_route_patterns.clone(),
+                        ),
+                        max_exploration_actions,
+                    ))
+                } else {
+                    Arc::new(RuleBasedPlanner::new(
+                        max_exploration_actions,
+                        agent_config.planner.public_route_patterns.clone(),
+                    ))
+                };
             let executor = PlanExecutor::new(
                 Arc::new(supervisor.clone()),
                 tool_context.clone(),

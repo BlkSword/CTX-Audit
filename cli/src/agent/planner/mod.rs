@@ -13,6 +13,7 @@ use crate::agent::environment::EnvironmentModel;
 use crate::agent::heuristics::Verdict;
 
 pub mod executor;
+pub mod llm_based;
 pub mod rule_based;
 pub mod strategy;
 
