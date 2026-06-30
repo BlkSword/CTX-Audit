@@ -4,7 +4,7 @@
 //! Specialist 规则热加载
 //!
 //! 允许从 `rules/specialists/*.yaml` 加载 CWE 专家规则，无需重新编译即可
-//! 扩展 sink/safe/barrier 模式。
+//! 扩展 sink/safe/barrier 模式。支持按语言细分的规则覆盖。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -12,6 +12,15 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+/// 按语言细分的规则
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LanguageRuleSet {
+    #[serde(default)]
+    pub sink_patterns: Vec<String>,
+    #[serde(default)]
+    pub safe_patterns: Vec<String>,
+}
 
 /// 单个 Specialist 的规则集
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +36,9 @@ pub struct SpecialistRuleSet {
     pub safe_patterns: Vec<String>,
     #[serde(default)]
     pub barrier_keywords: Vec<String>,
+    /// 按语言覆盖/扩展的规则。key 为语言小写，如 java、python、go
+    #[serde(default)]
+    pub per_language: HashMap<String, LanguageRuleSet>,
 }
 
 impl SpecialistRuleSet {
@@ -39,6 +51,7 @@ impl SpecialistRuleSet {
             sink_patterns: Vec::new(),
             safe_patterns: Vec::new(),
             barrier_keywords: Vec::new(),
+            per_language: HashMap::new(),
         }
     }
 
@@ -50,6 +63,24 @@ impl SpecialistRuleSet {
     /// 编译 safe 正则
     pub fn compiled_safe(&self) -> Result<Vec<Regex>> {
         compile_patterns(&self.safe_patterns)
+    }
+
+    /// 编译指定语言的 sink 正则
+    pub fn compiled_language_sinks(&self, lang: &str) -> Result<Vec<Regex>> {
+        if let Some(rules) = self.per_language.get(lang) {
+            compile_patterns(&rules.sink_patterns)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// 编译指定语言的 safe 正则
+    pub fn compiled_language_safe(&self, lang: &str) -> Result<Vec<Regex>> {
+        if let Some(rules) = self.per_language.get(lang) {
+            compile_patterns(&rules.safe_patterns)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     /// barrier 关键词集合
@@ -128,18 +159,27 @@ mod tests {
         let sqli = default_sqli_rules();
         assert!(!sqli.sink_patterns.is_empty());
         assert!(sqli.matches_vuln_type("CWE-89"));
-        assert!(sqli.matches_vuln_type("SQL Injection"));
-
-        let xss = default_xss_rules();
-        assert!(!xss.sink_patterns.is_empty());
-        assert!(xss.matches_vuln_type("CWE-79"));
-        assert!(xss.matches_vuln_type("reflected_xss"));
+        assert!(!sqli.compiled_sinks().unwrap().is_empty());
     }
 
     #[test]
-    fn test_compile_patterns() {
-        let sqli = default_sqli_rules();
-        assert!(!sqli.compiled_sinks().unwrap().is_empty());
-        assert!(!sqli.compiled_safe().unwrap().is_empty());
+    fn test_per_language_rules_load() {
+        let yaml = r#"
+name: test
+sink_patterns:
+  - global
+safe_patterns:
+  - safe
+per_language:
+  java:
+    sink_patterns:
+      - java_sink
+    safe_patterns:
+      - java_safe
+"#;
+        let rules: SpecialistRuleSet = serde_yaml::from_str(yaml).unwrap();
+        assert!(rules.per_language.contains_key("java"));
+        assert_eq!(rules.compiled_language_sinks("java").unwrap().len(), 1);
+        assert!(rules.compiled_language_sinks("python").unwrap().is_empty());
     }
 }

@@ -17,7 +17,7 @@ sink_patterns:
 safe_patterns:
   - '(?i)(textContent|innerText|createTextNode|\.text\s*\()'
   - '(?i)(DOMPurify|sanitize|encodeURIComponent|escapeHtml|htmlEscape)'
-  - '(?i)(setAttribute\s*\(\s*[''\"](href|src)[''\"]\s*,)'
+  - '(?i)(setAttribute\s*\(\s*[''"](href|src)[''"]\s*,)'
 barrier_keywords:
   - DOMPurify
   - sanitize
@@ -26,3 +26,19 @@ barrier_keywords:
   - textContent
   - innerText
   - createTextNode
+per_language:
+  java:
+    sink_patterns:
+      - '(?i)(response\.getWriter\s*\(\s*\)\.\s*(print|println|write)|out\.print|out\.println)'
+      - '(?i)(\.getOutputStream\s*\(\s*\)\.\s*write)'
+      - '(?i)(model\.addAttribute\s*\(|ModelAndView)'
+    safe_patterns:
+      - '(?i)(escapeHtml|encodeForHTML|OWASP\.encoder|HtmlUtils)'
+      - '(?i)(setContentType\s*\(\s*["''"]text/plain["''"]\s*\))'
+  python:
+    sink_patterns:
+      - '(?i)(render_template\s*\(|render\s*\()'
+      - '(?i)(return\s+.*\.format\s*\(|f["''"].*\{)'
+      - '(?i)(HttpResponse\s*\(|JsonResponse\s*\()'
+    safe_patterns:
+      - '(?i)(|safe|escape|autoescape|mark_safe)'

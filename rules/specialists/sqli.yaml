@@ -21,3 +21,25 @@ barrier_keywords:
   - mysql_real_escape_string
   - pg_escape_string
   - SqlParameter
+per_language:
+  java:
+    sink_patterns:
+      - '(?i)(Statement\s*\.\s*execute|PreparedStatement\s*\.\s*execute|CallableStatement\s*\.\s*execute)'
+      - '(?i)(\.executeQuery\s*\(|\.executeUpdate\s*\(|\.executeBatch\s*\()'
+      - '(?i)(createStatement\s*\(|prepareStatement\s*\()'
+    safe_patterns:
+      - '(?i)(setString\s*\(|setObject\s*\(|setInt\s*\(|setNull\s*\()'
+      - '(?i)(PreparedStatement|CallableStatement)'
+  python:
+    sink_patterns:
+      - '(?i)(cursor\s*\.\s*execute|cursor\s*\.\s*executemany|\.raw\s*\()'
+      - '(?i)(sqlite3|MySQLdb|psycopg2|pyodbc|sqlalchemy\.text)'
+    safe_patterns:
+      - '(?i)(%s\s*[),]|paramstyle|placeholder)'
+      - '(?i)(execute\s*\(\s*["''"][^"'']*%s)'
+  go:
+    sink_patterns:
+      - '(?i)(db\s*\.\s*Query|db\s*\.\s*Exec|db\s*\.\s*QueryRow|db\s*\.\s*Prepare)'
+      - '(?i)(sql\s*\.\s*DB)'
+    safe_patterns:
+      - '(?i)(\?\s*[),''"])'

@@ -6,7 +6,7 @@
 //! 基于代码上下文识别 XSS sink（DOM/反射/存储）与常见编码/过滤措施，
 //! 结合调用图证据给出判定。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -24,15 +24,32 @@ pub struct XssSpecialist {
     rules: SpecialistRuleSet,
     sinks: Vec<Regex>,
     safe_patterns: Vec<Regex>,
+    language_sinks: HashMap<String, Vec<Regex>>,
+    language_safe: HashMap<String, Vec<Regex>>,
     barrier_keywords: HashSet<String>,
 }
 
 impl XssSpecialist {
     /// 使用指定规则集构造
     pub fn new(rules: SpecialistRuleSet) -> Result<Self> {
+        let sinks = rules.compiled_sinks()?;
+        let safe_patterns = rules.compiled_safe()?;
+        let mut language_sinks = HashMap::new();
+        let mut language_safe = HashMap::new();
+        for (lang, _) in &rules.per_language {
+            let mut combined_sinks = sinks.clone();
+            combined_sinks.extend(rules.compiled_language_sinks(lang)?);
+            language_sinks.insert(lang.clone(), combined_sinks);
+
+            let mut combined_safe = safe_patterns.clone();
+            combined_safe.extend(rules.compiled_language_safe(lang)?);
+            language_safe.insert(lang.clone(), combined_safe);
+        }
         Ok(Self {
-            sinks: rules.compiled_sinks()?,
-            safe_patterns: rules.compiled_safe()?,
+            sinks,
+            safe_patterns,
+            language_sinks,
+            language_safe,
             barrier_keywords: rules.barrier_set(),
             rules,
         })
@@ -41,6 +58,20 @@ impl XssSpecialist {
     /// 使用内置默认规则
     pub fn default() -> Self {
         Self::new(default_xss_rules()).expect("默认 XSS 规则应能编译")
+    }
+
+    fn sinks_for(&self, lang: &str) -> &[Regex] {
+        self.language_sinks
+            .get(lang)
+            .map(|v| v.as_slice())
+            .unwrap_or(&self.sinks)
+    }
+
+    fn safe_for(&self, lang: &str) -> &[Regex] {
+        self.language_safe
+            .get(lang)
+            .map(|v| v.as_slice())
+            .unwrap_or(&self.safe_patterns)
     }
 }
 
@@ -56,9 +87,11 @@ impl Specialist for XssSpecialist {
 
     async fn investigate(&self, ctx: SpecialistContext) -> Result<SpecialistResult> {
         let code = ctx.code_context().unwrap_or("").to_lowercase();
+        let lang = crate::agent::specialist::sqli::language_from_path(&ctx.finding.file_path);
         let mut observations = json!({
-            "sink_patterns": detect_patterns(&code, &self.sinks),
-            "safe_patterns": detect_patterns(&code, &self.safe_patterns),
+            "language": lang,
+            "sink_patterns": detect_patterns(&code, self.sinks_for(&lang)),
+            "safe_patterns": detect_patterns(&code, self.safe_for(&lang)),
             "barriers_from_evidence": ctx.evidence.barriers.clone(),
             "has_effective_sanitizer": ctx.evidence.has_effective_sanitizer,
             "call_path_present": ctx.evidence.call_path.is_some(),
