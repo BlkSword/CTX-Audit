@@ -45,9 +45,10 @@ impl BlackboardState {
         }
     }
 
-    /// 添加一个调查结果
+    /// 添加一个调查结果，并同步更新证据图谱
     pub fn add_investigation(&mut self, inv: &InvestigationResult) {
         self.investigations.push(BlackboardInvestigation::from(inv));
+        self.evidence_graph.add_investigation(inv);
     }
 
     /// 根据 finding 与证据更新 pheromone（三元组 + 聚合）。
@@ -165,11 +166,171 @@ impl From<&InvestigationResult> for BlackboardInvestigation {
     }
 }
 
-/// 证据图谱（为后续 cross-finding 分析预留）
+/// 证据图谱：连接 finding、source、sink，支持跨 finding 关联分析
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EvidenceGraph {
     pub nodes: Vec<EvidenceNode>,
     pub edges: Vec<EvidenceEdge>,
+}
+
+impl EvidenceGraph {
+    /// 把一次调查结果加入图谱
+    pub fn add_investigation(&mut self, inv: &InvestigationResult) {
+        let finding_id = format!("finding:{}", inv.finding_id);
+        self.add_node(
+            &finding_id,
+            "finding",
+            &inv.file_path,
+            inv.line,
+            &inv.vulnerability_type,
+        );
+
+        let mut source_id = None;
+        let mut sink_id = None;
+
+        if let Some(ref refs) = inv.evidence.evidence_refs {
+            if let Some(ref ss) = refs.source_sink_path {
+                let src = format!(
+                    "source:{}:{}:{}",
+                    ss.source_file, ss.source_line, ss.source_function
+                );
+                let snk = format!(
+                    "sink:{}:{}:{}",
+                    ss.sink_file, ss.sink_line, ss.sink_function
+                );
+                self.add_node(
+                    &src,
+                    "source",
+                    &ss.source_file,
+                    ss.source_line,
+                    &ss.source_function,
+                );
+                self.add_node(&snk, "sink", &ss.sink_file, ss.sink_line, &ss.sink_function);
+                self.add_edge(&finding_id, &src, "has_source");
+                self.add_edge(&finding_id, &snk, "has_sink");
+                source_id = Some(src);
+                sink_id = Some(snk);
+            }
+        }
+
+        if inv.evidence.call_path.is_some() {
+            if let (Some(ref src), Some(ref snk)) = (&source_id, &sink_id) {
+                self.add_edge(src, snk, "flows_to");
+            }
+        }
+
+        // 与已有 finding 建立关联
+        let existing_findings: Vec<(String, String)> = self
+            .nodes
+            .iter()
+            .filter(|n| n.kind == "finding" && n.id != finding_id)
+            .map(|n| (n.id.clone(), n.file_path.clone()))
+            .collect();
+        for (other_id, other_file) in existing_findings {
+            if other_file == inv.file_path {
+                self.add_edge(&finding_id, &other_id, "same_file");
+            }
+            if let Some(ref snk) = sink_id {
+                if self.has_edge_between(&other_id, snk, "has_sink") {
+                    self.add_edge(&finding_id, &other_id, "same_sink");
+                }
+            }
+            if let Some(ref src) = source_id {
+                if self.has_edge_between(&other_id, src, "has_source") {
+                    self.add_edge(&finding_id, &other_id, "same_source");
+                }
+            }
+        }
+    }
+
+    fn add_node(&mut self, id: &str, kind: &str, file_path: &str, line: usize, label: &str) {
+        if self.nodes.iter().any(|n| n.id == id) {
+            return;
+        }
+        self.nodes.push(EvidenceNode {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            file_path: file_path.to_string(),
+            line,
+            label: label.to_string(),
+        });
+    }
+
+    fn add_edge(&mut self, from: &str, to: &str, kind: &str) {
+        if self
+            .edges
+            .iter()
+            .any(|e| e.from == from && e.to == to && e.kind == kind)
+        {
+            return;
+        }
+        self.edges.push(EvidenceEdge {
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+        });
+    }
+
+    fn has_edge_between(&self, from: &str, to: &str, kind: &str) -> bool {
+        self.edges
+            .iter()
+            .any(|e| e.from == from && e.to == to && e.kind == kind)
+    }
+
+    /// 查找与指定 finding 相关的其他 finding ID 及关联原因
+    pub fn correlated_findings(&self, finding_id: &str) -> Vec<(String, String)> {
+        let start = format!("finding:{}", finding_id);
+        let mut results = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for edge in &self.edges {
+            if edge.from != start && edge.to != start {
+                continue;
+            }
+            let other = if edge.from == start {
+                &edge.to
+            } else {
+                &edge.from
+            };
+
+            match edge.kind.as_str() {
+                "same_file" | "same_sink" | "same_source" => {
+                    if other.starts_with("finding:") {
+                        let related_id = other.strip_prefix("finding:").unwrap().to_string();
+                        if seen.insert(related_id.clone()) {
+                            results.push((related_id, edge.kind.clone()));
+                        }
+                    }
+                }
+                "has_source" | "has_sink" => {
+                    // 通过同一个 source/sink 节点间接关联的其他 finding
+                    for e2 in &self.edges {
+                        if e2.from != *other && e2.to != *other {
+                            continue;
+                        }
+                        if e2.kind != edge.kind {
+                            continue;
+                        }
+                        let other_finding = if e2.from == *other { &e2.to } else { &e2.from };
+                        if other_finding == &start || !other_finding.starts_with("finding:") {
+                            continue;
+                        }
+                        let related_id =
+                            other_finding.strip_prefix("finding:").unwrap().to_string();
+                        if seen.insert(related_id.clone()) {
+                            results.push((
+                                related_id,
+                                format!("shared_{}", edge.kind.strip_prefix("has_").unwrap()),
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        results
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -450,5 +611,90 @@ mod tests {
         assert_eq!(key.source_type, "http_input");
         assert_eq!(key.sink_type, "html_sink");
         assert_eq!(key.path_shape, "tracked");
+    }
+
+    #[test]
+    fn test_evidence_graph_correlates_same_file() {
+        let mut graph = EvidenceGraph::default();
+        let mut inv1 = make_inv("f1", "app/routes/a.js", 10, "SQL Injection");
+        let mut inv2 = make_inv("f2", "app/routes/a.js", 20, "XSS");
+        graph.add_investigation(&inv1);
+        graph.add_investigation(&inv2);
+
+        let correlated = graph.correlated_findings("f1");
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].0, "f2");
+        assert_eq!(correlated[0].1, "same_file");
+    }
+
+    #[test]
+    fn test_evidence_graph_correlates_shared_sink() {
+        use deepaudit_core::scanning::{EvidenceRefs, SourceSinkEvidence};
+        let mut graph = EvidenceGraph::default();
+        let mut inv1 = make_inv("f1", "a.js", 1, "SQL Injection");
+        inv1.evidence.evidence_refs = Some(EvidenceRefs {
+            source_sink_path: Some(SourceSinkEvidence {
+                source_function: "req.query".to_string(),
+                source_file: "a.js".to_string(),
+                source_line: 1,
+                source_node_id: None,
+                sink_function: "db.query".to_string(),
+                sink_file: "b.js".to_string(),
+                sink_line: 10,
+                sink_node_id: None,
+                path_length: 1,
+                path_steps: vec![],
+            }),
+            sanitizer_chain: vec![],
+            middleware_coverage: vec![],
+            graph_snapshot: None,
+        });
+        let mut inv2 = make_inv("f2", "c.js", 5, "SQL Injection");
+        inv2.evidence.evidence_refs = Some(EvidenceRefs {
+            source_sink_path: Some(SourceSinkEvidence {
+                source_function: "req.body".to_string(),
+                source_file: "c.js".to_string(),
+                source_line: 5,
+                source_node_id: None,
+                sink_function: "db.query".to_string(),
+                sink_file: "b.js".to_string(),
+                sink_line: 10,
+                sink_node_id: None,
+                path_length: 1,
+                path_steps: vec![],
+            }),
+            sanitizer_chain: vec![],
+            middleware_coverage: vec![],
+            graph_snapshot: None,
+        });
+        graph.add_investigation(&inv1);
+        graph.add_investigation(&inv2);
+
+        let correlated = graph.correlated_findings("f1");
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].0, "f2");
+        assert!(correlated[0].1.contains("sink"));
+    }
+
+    fn make_inv(id: &str, file: &str, line: usize, vuln: &str) -> InvestigationResult {
+        InvestigationResult {
+            investigation_id: format!("inv-{}", id),
+            session_id: "s".to_string(),
+            finding_id: id.to_string(),
+            file_path: file.to_string(),
+            line,
+            vulnerability_type: vuln.to_string(),
+            severity: "high".to_string(),
+            hypothesis: "h".to_string(),
+            evidence: Evidence::default(),
+            verdict: Verdict::NeedsReview,
+            reasoning: "r".to_string(),
+            specialist_result: None,
+            reviews: vec![],
+            confidence: 0.5,
+            tool_context: None,
+            investigation_steps: vec![],
+            audited_at: "now".to_string(),
+        }
     }
 }
