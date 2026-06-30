@@ -2557,6 +2557,7 @@ impl CrossFileTaintAnalyzer {
                 line: source.start_line,
                 column: None,
                 symbol: source.name.clone(),
+                node_id: Some(source.id.clone()),
                 code_snippet: None,
             },
             sink: FlowLocation {
@@ -2564,6 +2565,7 @@ impl CrossFileTaintAnalyzer {
                 line: sink.start_line,
                 column: None,
                 symbol: sink.name.clone(),
+                node_id: Some(sink.id.clone()),
                 code_snippet: None,
             },
             interprocedural_path,
@@ -2707,6 +2709,7 @@ impl CrossFileTaintAnalyzer {
                                 line: source.start_line,
                                 column: None,
                                 symbol: source.name.clone(),
+                                node_id: None,
                                 code_snippet: None,
                             },
                             sink: FlowLocation {
@@ -2714,6 +2717,7 @@ impl CrossFileTaintAnalyzer {
                                 line: sink.start_line,
                                 column: None,
                                 symbol: sink.name.clone(),
+                                node_id: None,
                                 code_snippet: None,
                             },
                             interprocedural_path,

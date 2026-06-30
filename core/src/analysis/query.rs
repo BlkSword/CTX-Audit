@@ -1038,6 +1038,12 @@ impl CallGraphQueryEngine {
 
     /// 根据 file_path + function_name 查找匹配的节点 ID 列表
     fn find_func_ids(&self, normalized_file: &str, function_name: &str) -> Vec<String> {
+        // 如果 caller 已经传入了完整调用图节点 ID（如 cross-file taint 产生的精确 ID），
+        // 直接返回，避免被 file:method_name 的粗粒度重建覆盖。
+        if function_name.contains(':') && self.call_graph.nodes.contains_key(function_name) {
+            return vec![function_name.to_string()];
+        }
+
         // 优先精确匹配 (file_path:func_name)
         let exact_id = format!("{}:{}", normalized_file, function_name);
         if self.call_graph.nodes.contains_key(&exact_id) {

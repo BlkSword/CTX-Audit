@@ -1267,6 +1267,7 @@ impl AstTaintAnalyzer {
                 line: taint_state.source_line,
                 column: None,
                 symbol: taint_state.source_var.clone(),
+                node_id: None,
                 code_snippet: None,
             },
             sink: FlowLocation {
@@ -1274,6 +1275,7 @@ impl AstTaintAnalyzer {
                 line: sink_line,
                 column: None,
                 symbol: sink_name.to_string(),
+                node_id: None,
                 code_snippet: Some(sink_code.to_string()),
             },
             path,
@@ -1829,6 +1831,7 @@ impl AstTaintAnalyzer {
                 line: taint_info.source_line,
                 column: None,
                 symbol: taint_info.source_var.clone(),
+                node_id: None,
                 code_snippet: None,
             },
             sink: FlowLocation {
@@ -1836,6 +1839,7 @@ impl AstTaintAnalyzer {
                 line: sink_line,
                 column: None,
                 symbol: sink_name.to_string(),
+                node_id: None,
                 code_snippet: Some(sink_code.to_string()),
             },
             path,

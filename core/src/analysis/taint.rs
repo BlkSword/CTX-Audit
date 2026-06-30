@@ -324,6 +324,10 @@ pub struct FlowLocation {
     /// 符号名称
     pub symbol: String,
 
+    /// 调用图节点 ID（若有），用于后续精确反查调用路径
+    #[serde(default)]
+    pub node_id: Option<String>,
+
     /// 代码片段
     pub code_snippet: Option<String>,
 }
@@ -686,6 +690,7 @@ impl TaintAnalyzer {
                             line: line_idx + 1,
                             column: None,
                             symbol: source.name.clone(),
+                            node_id: None,
                             code_snippet: Some(line.trim().to_string()),
                         },
                         source,
@@ -715,6 +720,7 @@ impl TaintAnalyzer {
                             line: line_idx + 1,
                             column: None,
                             symbol: sink.name.clone(),
+                            node_id: None,
                             code_snippet: Some(line.trim().to_string()),
                         },
                         sink,

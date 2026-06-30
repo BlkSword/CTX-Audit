@@ -191,12 +191,18 @@ pub struct SourceSinkEvidence {
     pub source_file: String,
     /// 源函数行号
     pub source_line: usize,
+    /// 源调用图节点 ID（优先用于精确路径查询）
+    #[serde(default)]
+    pub source_node_id: Option<String>,
     /// 汇函数名
     pub sink_function: String,
     /// 汇函数所在文件
     pub sink_file: String,
     /// 汇函数行号
     pub sink_line: usize,
+    /// 汇调用图节点 ID（优先用于精确路径查询）
+    #[serde(default)]
+    pub sink_node_id: Option<String>,
     /// 路径跳数
     pub path_length: usize,
     /// 路径中的每一步
@@ -1648,9 +1654,11 @@ pub async fn scan_directory_deep_with_rules_progress(
                         source_function: flow.source.symbol.clone(),
                         source_file: flow.source.file_path.clone(),
                         source_line: flow.source.line,
+                        source_node_id: flow.source.node_id.clone(),
                         sink_function: flow.sink.symbol.clone(),
                         sink_file: flow.sink.file_path.clone(),
                         sink_line: flow.sink.line,
+                        sink_node_id: flow.sink.node_id.clone(),
                         path_length,
                         path_steps,
                     }),

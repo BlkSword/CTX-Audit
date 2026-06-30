@@ -341,6 +341,7 @@ impl EnhancedTaintAnalyzer {
                             line: line_idx + 1,
                             column: None,
                             symbol: sink.name.clone(),
+                            node_id: None,
                             code_snippet: Some(line.trim().to_string()),
                         },
                         sink,
@@ -382,6 +383,7 @@ impl EnhancedTaintAnalyzer {
                             line: taint.source_line,
                             column: None,
                             symbol: taint.name.clone(),
+                            node_id: None,
                             code_snippet: lines
                                 .get(taint.source_line - 1)
                                 .map(|s| s.trim().to_string()),

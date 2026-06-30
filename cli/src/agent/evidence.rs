@@ -125,16 +125,29 @@ pub fn collect_evidence(
 }
 
 /// 从 finding 的 evidence_refs 中提取 source/sink 函数标识
+///
+/// 若扫描阶段已记录精确的调用图节点 ID，则优先用节点 ID 作为函数标识，
+/// 避免用 bare method name 重建 `file:method` 时丢失 overload/inner class 信息。
 fn extract_source_sink(finding: &Finding) -> Option<(String, String, String, String)> {
     // 优先使用 evidence_refs 中的结构化信息
     if let Some(ref refs) = finding.evidence_refs {
         if let Some(ref ss) = refs.source_sink_path {
-            if !ss.source_function.is_empty() && !ss.sink_function.is_empty() {
+            let source_func = ss
+                .source_node_id
+                .clone()
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| ss.source_function.clone());
+            let sink_func = ss
+                .sink_node_id
+                .clone()
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| ss.sink_function.clone());
+            if !source_func.is_empty() && !sink_func.is_empty() {
                 return Some((
                     ss.source_file.clone(),
-                    ss.source_function.clone(),
+                    source_func,
                     ss.sink_file.clone(),
-                    ss.sink_function.clone(),
+                    sink_func,
                 ));
             }
         }
