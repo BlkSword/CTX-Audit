@@ -317,7 +317,7 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
 
     // Debate / Single Reviewer 复核
     if task.review_mode != "off" {
-        match task.reviewer.review(&result) {
+        match task.reviewer.review(&result).await {
             Ok(opinion) => {
                 let (reviewed_verdict, review_note) =
                     apply_review(result.verdict, result.confidence, &opinion);

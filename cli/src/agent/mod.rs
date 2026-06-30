@@ -223,7 +223,18 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         specialist_enabled,
     )
     .with_reviewer(
-        Arc::new(crate::agent::reviewer::RuleBasedReviewer),
+        if review_mode == "debate" && agent_config.llm_mode == "http" {
+            Arc::new(crate::agent::reviewer::DebateReviewer::new(
+                llm_client.clone(),
+            )) as Arc<dyn crate::agent::reviewer::Reviewer>
+        } else if review_mode == "single" && agent_config.llm_mode == "http" {
+            Arc::new(crate::agent::reviewer::LlmBasedReviewer::new(
+                llm_client.clone(),
+            )) as Arc<dyn crate::agent::reviewer::Reviewer>
+        } else {
+            Arc::new(crate::agent::reviewer::RuleBasedReviewer)
+                as Arc<dyn crate::agent::reviewer::Reviewer>
+        },
         review_mode,
     )
     .with_tool_context(tool_context.clone())

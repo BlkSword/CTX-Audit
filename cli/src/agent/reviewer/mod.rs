@@ -6,10 +6,14 @@
 //! 对单个 `InvestigationResult` 进行独立复核，输出 `ReviewOpinion`。
 //! 当前实现为确定性规则复核器，后续可接入 LLMReviewer。
 
-use anyhow::Result;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::heuristics::Verdict;
+use crate::agent::llm_client::LlmClient;
 use crate::agent::report::InvestigationResult;
 
 /// 复核意见
@@ -28,16 +32,18 @@ pub struct ReviewOpinion {
 }
 
 /// Reviewer trait
+#[async_trait]
 pub trait Reviewer: Send + Sync {
     /// 对调查结果进行复核
-    fn review(&self, result: &InvestigationResult) -> Result<ReviewOpinion>;
+    async fn review(&self, result: &InvestigationResult) -> Result<ReviewOpinion>;
 }
 
 /// 基于规则的复核器
 pub struct RuleBasedReviewer;
 
+#[async_trait]
 impl Reviewer for RuleBasedReviewer {
-    fn review(&self, result: &InvestigationResult) -> Result<ReviewOpinion> {
+    async fn review(&self, result: &InvestigationResult) -> Result<ReviewOpinion> {
         let primary = result.verdict;
         let evidence = &result.evidence;
 
@@ -142,6 +148,160 @@ fn parse_verdict(s: &str) -> Option<Verdict> {
     }
 }
 
+/// 基于 LLM 的复核器
+pub struct LlmBasedReviewer {
+    llm_client: Arc<dyn LlmClient>,
+    name: String,
+}
+
+impl LlmBasedReviewer {
+    pub fn new(llm_client: Arc<dyn LlmClient>) -> Self {
+        Self {
+            llm_client,
+            name: "llm".to_string(),
+        }
+    }
+
+    fn build_prompt(&self, result: &InvestigationResult) -> String {
+        const RESPONSE_SCHEMA: &str = r#"{"verdict": "true_positive"|"false_positive"|"needs_review", "confidence": 0.0-1.0, "reasoning": "..."}"#;
+        let evidence_json =
+            serde_json::to_string_pretty(&result.evidence.to_json()).unwrap_or_default();
+        format!(
+            "你是一个独立的安全审计复核专家。请对以下初级调查员的判定进行复核，只返回 JSON：{schema}。
+
+漏洞类型：{vuln_type}
+文件：{file}:{line}
+初审判定：{verdict}
+初审理由：{reasoning}
+证据摘要：{evidence}
+",
+            schema = RESPONSE_SCHEMA,
+            vuln_type = result.vulnerability_type,
+            file = result.file_path,
+            line = result.line,
+            verdict = result.verdict.as_str(),
+            reasoning = result.reasoning,
+            evidence = evidence_json
+        )
+    }
+}
+
+#[async_trait]
+impl Reviewer for LlmBasedReviewer {
+    async fn review(&self, result: &InvestigationResult) -> Result<ReviewOpinion> {
+        let prompt = self.build_prompt(result);
+        match self.llm_client.chat(&prompt).await {
+            Ok(text) => parse_llm_review_response(&text, &self.name),
+            Err(e) => {
+                tracing::warn!("LLM Reviewer 调用失败，回退到规则复核器: {}", e);
+                RuleBasedReviewer.review(result).await
+            }
+        }
+    }
+}
+
+/// LLM + 规则辩论复核器：当两者意见冲突时，让 LLM 重新审视规则意见并给出最终判定
+pub struct DebateReviewer {
+    llm: LlmBasedReviewer,
+    rule: RuleBasedReviewer,
+}
+
+impl DebateReviewer {
+    pub fn new(llm_client: Arc<dyn LlmClient>) -> Self {
+        Self {
+            llm: LlmBasedReviewer::new(llm_client),
+            rule: RuleBasedReviewer,
+        }
+    }
+}
+
+#[async_trait]
+impl Reviewer for DebateReviewer {
+    async fn review(&self, result: &InvestigationResult) -> Result<ReviewOpinion> {
+        let llm_op = self.llm.review(result).await?;
+        let rule_op = self.rule.review(result).await?;
+
+        if llm_op.verdict == rule_op.verdict {
+            return Ok(ReviewOpinion {
+                reviewer_name: "debate_consensus".to_string(),
+                agrees_with_primary: llm_op.agrees_with_primary && rule_op.agrees_with_primary,
+                verdict: llm_op.verdict,
+                confidence: (llm_op.confidence + rule_op.confidence) / 2.0,
+                reasoning: format!(
+                    "LLM 与规则复核器达成一致：{}。理由：{}",
+                    llm_op.reasoning, rule_op.reasoning
+                ),
+            });
+        }
+
+        // 辩论：让 LLM 针对规则复核器的反对意见进行再判断
+        const RESPONSE_SCHEMA: &str = r#"{"verdict": "true_positive"|"false_positive"|"needs_review", "confidence": 0.0-1.0, "reasoning": "..."}"#;
+        let prompt = format!(
+            "你之前对以下 finding 的复核意见是：{llm_reasoning}（置信度 {llm_conf:.2}）。另一位规则复核专家的意见是：{rule_reasoning}（置信度 {rule_conf:.2}）。请结合双方观点，只返回最终 JSON：{schema}。
+
+漏洞类型：{vuln_type}
+初审判定：{verdict}
+初审理由：{reasoning}
+",
+            schema = RESPONSE_SCHEMA,
+            llm_reasoning = llm_op.reasoning,
+            llm_conf = llm_op.confidence,
+            rule_reasoning = rule_op.reasoning,
+            rule_conf = rule_op.confidence,
+            vuln_type = result.vulnerability_type,
+            verdict = result.verdict.as_str(),
+            reasoning = result.reasoning
+        );
+
+        match self.llm.llm_client.chat(&prompt).await {
+            Ok(text) => parse_llm_review_response(&text, "debate_llm"),
+            Err(e) => {
+                tracing::warn!("辩论阶段 LLM 失败，采用 LLM 初审意见: {}", e);
+                Ok(llm_op)
+            }
+        }
+    }
+}
+
+fn parse_llm_review_response(text: &str, reviewer_name: &str) -> Result<ReviewOpinion> {
+    let json_text = if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            &text[start..=end]
+        } else {
+            text
+        }
+    } else {
+        text
+    };
+
+    let value: serde_json::Value = serde_json::from_str::<serde_json::Value>(json_text)
+        .context("LLM Reviewer 返回不是合法 JSON")?;
+
+    let verdict = value
+        .get("verdict")
+        .and_then(|v| v.as_str())
+        .and_then(parse_verdict)
+        .context("LLM Reviewer 返回缺少 verdict")?;
+    let confidence = value
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+    let reasoning = value
+        .get("reasoning")
+        .and_then(|v| v.as_str())
+        .unwrap_or("LLM 未提供理由")
+        .to_string();
+
+    Ok(ReviewOpinion {
+        reviewer_name: reviewer_name.to_string(),
+        agrees_with_primary: false, // 由 apply_review 结合初审置信度判定
+        verdict,
+        confidence,
+        reasoning,
+    })
+}
+
 /// 融合复核意见：若不同意且置信度不低于初审，则覆盖 verdict
 pub fn apply_review(
     primary_verdict: Verdict,
@@ -167,6 +327,13 @@ mod tests {
     use super::*;
     use crate::agent::evidence::Evidence;
     use deepaudit_core::scanning::Finding;
+
+    fn block_review(result: &InvestigationResult) -> ReviewOpinion {
+        // RuleBasedReviewer is deterministic; use a tiny helper to keep tests readable
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { RuleBasedReviewer.review(result).await.unwrap() })
+    }
 
     fn result_with_evidence(evidence: Evidence, verdict: Verdict) -> InvestigationResult {
         InvestigationResult {
@@ -200,7 +367,7 @@ mod tests {
             files_in_path: vec![],
         });
         let result = result_with_evidence(evidence, Verdict::TruePositive);
-        let op = RuleBasedReviewer.review(&result).unwrap();
+        let op = block_review(&result);
         assert!(op.agrees_with_primary);
         assert_eq!(op.verdict, Verdict::TruePositive);
     }
@@ -210,7 +377,7 @@ mod tests {
         let mut evidence = Evidence::default();
         evidence.has_effective_sanitizer = true;
         let result = result_with_evidence(evidence, Verdict::FalsePositive);
-        let op = RuleBasedReviewer.review(&result).unwrap();
+        let op = block_review(&result);
         assert!(op.agrees_with_primary);
         assert_eq!(op.verdict, Verdict::FalsePositive);
     }
@@ -227,7 +394,7 @@ mod tests {
             "reasoning": "safe output",
             "observations": {},
         }));
-        let op = RuleBasedReviewer.review(&result).unwrap();
+        let op = block_review(&result);
         assert!(!op.agrees_with_primary);
         assert_eq!(op.verdict, Verdict::FalsePositive);
     }
@@ -258,5 +425,20 @@ mod tests {
         let (v, note) = apply_review(Verdict::TruePositive, 0.7, &review);
         assert_eq!(v, Verdict::FalsePositive);
         assert!(note.contains("冲突"));
+    }
+
+    #[test]
+    fn test_parse_llm_review_response_valid() {
+        let text = r#"{"verdict": "false_positive", "confidence": 0.9, "reasoning": "safe"}"#;
+        let op = parse_llm_review_response(text, "llm_test").unwrap();
+        assert_eq!(op.verdict, Verdict::FalsePositive);
+        assert!((op.confidence - 0.9).abs() < 0.01);
+        assert_eq!(op.reasoning, "safe");
+    }
+
+    #[test]
+    fn test_parse_llm_review_response_invalid_fallback() {
+        let text = "not json";
+        assert!(parse_llm_review_response(text, "llm_test").is_err());
     }
 }
