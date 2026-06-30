@@ -344,8 +344,9 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
     }
 
     {
-        let mut bb = task.blackboard.write().await;
-        bb.update_pheromone(&task.finding.vuln_type, &result.verdict);
+        let mut bb: tokio::sync::RwLockWriteGuard<'_, BlackboardState> =
+            task.blackboard.write().await;
+        bb.update_pheromone(&task.finding, &result.evidence, &result.verdict);
         bb.add_investigation(&result);
     }
 

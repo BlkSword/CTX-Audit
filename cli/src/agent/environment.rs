@@ -165,7 +165,7 @@ impl EnvironmentModel {
 
     /// 判断某类漏洞是否已收敛（历史 Blackboard 信息素绝对值超过阈值）
     pub async fn has_converged(&self, vuln_type: &str, threshold: f64) -> bool {
-        let bb = self.blackboard.read().await;
+        let bb: tokio::sync::RwLockReadGuard<'_, BlackboardState> = self.blackboard.read().await;
         bb.has_converged(vuln_type, threshold)
     }
 

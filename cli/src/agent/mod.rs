@@ -304,7 +304,8 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     // ── 汇总并持久化 ─────────────────────────────────────────────
     write_audit_log(&config.project_path, &results)?;
     {
-        let bb = env_arc.blackboard.read().await;
+        let bb: tokio::sync::RwLockReadGuard<'_, crate::agent::blackboard::BlackboardState> =
+            env_arc.blackboard.read().await;
         bb.save(&config.project_path)?;
     }
 
