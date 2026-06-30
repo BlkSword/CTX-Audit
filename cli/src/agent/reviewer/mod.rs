@@ -190,8 +190,8 @@ impl LlmBasedReviewer {
 impl Reviewer for LlmBasedReviewer {
     async fn review(&self, result: &InvestigationResult) -> Result<ReviewOpinion> {
         let prompt = self.build_prompt(result);
-        match self.llm_client.chat(&prompt).await {
-            Ok(text) => parse_llm_review_response(&text, &self.name),
+        match self.llm_client.chat_json(&prompt).await {
+            Ok(value) => parse_llm_review_value(&value, &self.name),
             Err(e) => {
                 tracing::warn!("LLM Reviewer 调用失败，回退到规则复核器: {}", e);
                 RuleBasedReviewer.review(result).await
@@ -253,8 +253,8 @@ impl Reviewer for DebateReviewer {
             reasoning = result.reasoning
         );
 
-        match self.llm.llm_client.chat(&prompt).await {
-            Ok(text) => parse_llm_review_response(&text, "debate_llm"),
+        match self.llm.llm_client.chat_json(&prompt).await {
+            Ok(value) => parse_llm_review_value(&value, "debate_llm"),
             Err(e) => {
                 tracing::warn!("辩论阶段 LLM 失败，采用 LLM 初审意见: {}", e);
                 Ok(llm_op)
@@ -263,20 +263,7 @@ impl Reviewer for DebateReviewer {
     }
 }
 
-fn parse_llm_review_response(text: &str, reviewer_name: &str) -> Result<ReviewOpinion> {
-    let json_text = if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            &text[start..=end]
-        } else {
-            text
-        }
-    } else {
-        text
-    };
-
-    let value: serde_json::Value = serde_json::from_str::<serde_json::Value>(json_text)
-        .context("LLM Reviewer 返回不是合法 JSON")?;
-
+fn parse_llm_review_value(value: &serde_json::Value, reviewer_name: &str) -> Result<ReviewOpinion> {
     let verdict = value
         .get("verdict")
         .and_then(|v| v.as_str())
@@ -428,17 +415,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_llm_review_response_valid() {
-        let text = r#"{"verdict": "false_positive", "confidence": 0.9, "reasoning": "safe"}"#;
-        let op = parse_llm_review_response(text, "llm_test").unwrap();
+    fn test_parse_llm_review_value_valid() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"verdict": "false_positive", "confidence": 0.9, "reasoning": "safe"}"#,
+        )
+        .unwrap();
+        let op = parse_llm_review_value(&value, "llm_test").unwrap();
         assert_eq!(op.verdict, Verdict::FalsePositive);
         assert!((op.confidence - 0.9).abs() < 0.01);
         assert_eq!(op.reasoning, "safe");
-    }
-
-    #[test]
-    fn test_parse_llm_review_response_invalid_fallback() {
-        let text = "not json";
-        assert!(parse_llm_review_response(text, "llm_test").is_err());
     }
 }

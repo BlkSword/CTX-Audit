@@ -13,7 +13,7 @@ use deepaudit_core::scanning::Finding;
 
 use crate::agent::environment::EnvironmentModel;
 use crate::agent::heuristics::Verdict;
-use crate::agent::planner::{Action, Plan, PlanExecutionMetadata, ToolCall};
+use crate::agent::planner::{Action, Hypothesis, Plan, PlanExecutionMetadata, ToolCall};
 use crate::agent::report::InvestigationResult;
 use crate::agent::supervisor::Supervisor;
 use crate::agent::tools::AgentToolContext;
@@ -98,13 +98,23 @@ impl PlanExecutor {
                     function_name,
                     route,
                     reason,
+                    ..
                 } => {
+                    let reason = if reason.is_empty() {
+                        function_name
+                            .as_deref()
+                            .or(route.as_deref())
+                            .unwrap_or(file_path)
+                            .to_string()
+                    } else {
+                        reason.clone()
+                    };
                     match self
                         .execute_explore_entry_point(
                             file_path,
                             function_name.as_deref(),
                             route.as_deref(),
-                            reason,
+                            &reason,
                         )
                         .await
                     {
@@ -119,8 +129,15 @@ impl PlanExecutor {
                         }
                     }
                 }
-                Action::VerifyHypothesis { hypothesis, tools } => {
-                    match self.execute_verify_hypothesis(hypothesis, tools).await {
+                Action::VerifyHypothesis {
+                    hypothesis, tools, ..
+                } => {
+                    let hyp = Hypothesis {
+                        statement: hypothesis.clone(),
+                        evidence_so_far: vec![],
+                        confidence: 0.5,
+                    };
+                    match self.execute_verify_hypothesis(&hyp, tools).await {
                         Ok(mut invs) => {
                             meta.actions_completed += 1;
                             meta.new_findings += invs.len();

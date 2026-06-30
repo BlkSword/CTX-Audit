@@ -148,30 +148,22 @@ async fn classify_with_llm(candidates: &[String], llm: &dyn LlmClient) -> Result
         .enumerate()
         .map(|(i, c)| format!("{}. {}", i + 1, c))
         .collect::<Vec<_>>()
-        .join("\n");
+        .join(
+            "
+",
+        );
 
+    const SCHEMA: &str = r#"{"non_production_indices": [1, 3]}"#;
     let prompt = format!(
-        "你是一个代码审计助手。下面是一个项目中的部分目录列表。\
-请判断哪些目录属于非生产代码（例如测试、示例、演示、mock/fixture、第三方库、文档、storybook 等），\
-应当从安全审计范围中排除。\
-只返回 JSON，格式为 {{\"non_production_indices\": [1, 3]}}，数组元素为目录序号（从 1 开始）。\
-如果都不应排除，返回空数组。\n\n{}\n",
-        list
+        "你是一个代码审计助手。下面是一个项目中的部分目录列表。请判断哪些目录属于非生产代码（例如测试、示例、演示、mock/fixture、第三方库、文档、storybook 等），应当从安全审计范围中排除。只返回 JSON，格式为 {schema}，数组元素为目录序号（从 1 开始）。如果都不应排除，返回空数组。
+
+{list}
+",
+        schema = SCHEMA,
+        list = list
     );
 
-    let text = llm.chat(&prompt).await?;
-    let json_text = if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            &text[start..=end]
-        } else {
-            text.as_str()
-        }
-    } else {
-        text.as_str()
-    };
-
-    let value: serde_json::Value =
-        serde_json::from_str(json_text).context("LLM 返回不是合法 JSON")?;
+    let value = llm.chat_json(&prompt).await?;
     let indices = value
         .get("non_production_indices")
         .and_then(|v| v.as_array())
@@ -185,7 +177,6 @@ async fn classify_with_llm(candidates: &[String], llm: &dyn LlmClient) -> Result
 
     Ok(indices)
 }
-
 /// 交互式询问用户。
 /// `suggestions` 是 LLM 建议排除的目录索引（0-based）。
 fn prompt_user(

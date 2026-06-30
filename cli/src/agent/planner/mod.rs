@@ -68,18 +68,31 @@ pub enum Action {
         file_path: String,
         line: usize,
         vuln_type: String,
+        #[serde(default)]
         hypothesis: String,
     },
     /// 主动探索某个入口点
     ExploreEntryPoint {
         file_path: String,
+        #[serde(default)]
         function_name: Option<String>,
+        #[serde(default)]
         route: Option<String>,
+        #[serde(default)]
+        line: Option<usize>,
+        #[serde(default)]
+        score: Option<f64>,
+        #[serde(default)]
+        hypothesis: Option<String>,
+        #[serde(default)]
         reason: String,
     },
     /// 用一组工具验证假设
     VerifyHypothesis {
-        hypothesis: Hypothesis,
+        #[serde(default)]
+        finding_id: Option<String>,
+        hypothesis: String,
+        #[serde(default)]
         tools: Vec<ToolCall>,
     },
     /// 动态生成规则并重扫描（ proactive 能力）

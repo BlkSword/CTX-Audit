@@ -98,6 +98,9 @@ impl Planner for RuleBasedPlanner {
                 file_path: file,
                 function_name: function,
                 route,
+                line: None,
+                score: None,
+                hypothesis: None,
                 reason: format!(
                     "目标「{}」要求关注入口点，主动追踪其可达的敏感操作。",
                     goal.objective

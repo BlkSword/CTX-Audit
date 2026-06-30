@@ -89,6 +89,51 @@ impl LlmTriageResult {
     }
 }
 
+/// 从文本中按平衡大括号提取 JSON Value
+pub fn extract_json_value(text: &str) -> Result<serde_json::Value> {
+    let start = text.find('{').or_else(|| text.find('['));
+    let start = start.context("LLM 响应中未找到 JSON")?;
+
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut end = None;
+
+    for (i, c) in text[start..].char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if c == '\\' {
+                escape = true;
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match c {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i + c.len_utf8());
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let end = end.context("LLM 响应中 JSON 括号不平衡")?;
+    let json_text = &text[start..start + end];
+    serde_json::from_str(json_text).context("LLM 响应 JSON 解析失败")
+}
+
 /// LLM Client trait
 #[async_trait]
 pub trait LlmClient: Send + Sync {
@@ -99,6 +144,13 @@ pub trait LlmClient: Send + Sync {
     /// 默认返回空字符串，表示不调用真实 LLM。
     async fn chat(&self, _prompt: &str) -> Result<String> {
         Ok(String::new())
+    }
+
+    /// JSON 模式对话接口。默认实现调用 chat 后按平衡大括号提取 JSON。
+    /// 真实 LLM 实现应优先使用 provider 原生 JSON 模式（如 OpenAI response_format）。
+    async fn chat_json(&self, prompt: &str) -> Result<serde_json::Value> {
+        let text = self.chat(prompt).await?;
+        extract_json_value(&text)
     }
 
     /// 调查阶段：LLM 决定下一步工具或结束调查
@@ -221,6 +273,10 @@ impl LlmClient for ControlledLlmClient {
         self.inner.chat(prompt).await
     }
 
+    async fn chat_json(&self, prompt: &str) -> Result<serde_json::Value> {
+        self.inner.chat_json(prompt).await
+    }
+
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult> {
         // noop 模式直接退化为规则判定
         if self.mode == "noop" {
@@ -341,6 +397,16 @@ impl LlmClient for HttpLlmClient {
         }
     }
 
+    async fn chat_json(&self, prompt: &str) -> Result<serde_json::Value> {
+        match self.provider.as_str() {
+            "anthropic" => {
+                let text = self.call_anthropic(prompt).await?;
+                extract_json_value(&text)
+            }
+            _ => self.call_openai_compatible_json(prompt).await,
+        }
+    }
+
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult> {
         let prompt = build_triage_prompt(finding, evidence);
         let text = match self.provider.as_str() {
@@ -400,15 +466,92 @@ impl HttpLlmClient {
 
         let value: serde_json::Value =
             serde_json::from_str(&resp_text).context("解析 LLM 响应 JSON 失败")?;
-        value
+        let message = value
             .get("choices")
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
-            .and_then(|choice| choice.get("message"))
+            .and_then(|choice| choice.get("message"));
+
+        let content = message
             .and_then(|msg| msg.get("content"))
             .and_then(|content| content.as_str())
+            .unwrap_or("");
+
+        if !content.is_empty() {
+            return Ok(content.to_string());
+        }
+
+        // 兼容 DeepSeek 等 reasoning 模型：content 为空时读取 reasoning_content
+        message
+            .and_then(|msg| msg.get("reasoning_content"))
+            .and_then(|r| r.as_str())
             .map(|s| s.to_string())
-            .context("LLM 响应中未找到 content")
+            .context("LLM 响应中未找到 content 或 reasoning_content")
+    }
+
+    /// OpenAI 兼容 JSON 模式调用
+    async fn call_openai_compatible_json(&self, prompt: &str) -> Result<serde_json::Value> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(self.timeout_sec))
+            .build()?;
+
+        let url = self
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string());
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": "You are a helpful coding audit assistant. Always respond with valid JSON only." },
+                { "role": "user", "content": prompt }
+            ],
+            "max_tokens": self.max_tokens,
+            "temperature": 0.1,
+            "response_format": { "type": "json_object" },
+        });
+
+        let mut req = client.post(&url).json(&body);
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+
+        let resp = req.send().await.context("LLM HTTP 请求失败")?;
+        let status = resp.status();
+        let resp_text = resp.text().await.context("读取 LLM 响应失败")?;
+        if !status.is_success() {
+            anyhow::bail!("LLM API 错误 ({}): {}", status, resp_text);
+        }
+
+        let value: serde_json::Value =
+            serde_json::from_str(&resp_text).context("解析 LLM 响应 JSON 失败")?;
+        let message = value
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|choice| choice.get("message"));
+
+        let content = message
+            .and_then(|msg| msg.get("content"))
+            .and_then(|content| content.as_str())
+            .unwrap_or("");
+
+        if !content.is_empty() {
+            return serde_json::from_str(content)
+                .or_else(|_| extract_json_value(content))
+                .context("无法从 content 解析 JSON");
+        }
+
+        message
+            .and_then(|msg| msg.get("reasoning_content"))
+            .and_then(|r| r.as_str())
+            .map(|s| {
+                serde_json::from_str(s)
+                    .or_else(|_| extract_json_value(s))
+                    .context("无法从 reasoning_content 解析 JSON")
+            })
+            .transpose()
+            .and_then(|v| v.context("LLM 响应中未找到 content 或 reasoning_content"))
     }
 
     async fn call_anthropic(&self, prompt: &str) -> Result<String> {

@@ -90,25 +90,13 @@ impl LlmBasedPlanner {
 
     async fn plan_with_llm(&self, env: &EnvironmentModel, goal: &AuditGoal) -> Result<Vec<Action>> {
         let prompt = self.build_prompt(env, goal);
-        let text = self.llm_client.chat(&prompt).await?;
-        parse_llm_response(&text, self.max_actions)
+        let value = self.llm_client.chat_json(&prompt).await?;
+        parse_llm_value(&value, self.max_actions)
     }
 }
 
-/// 解析 LLM 返回的 JSON 计划文本
-fn parse_llm_response(text: &str, max_actions: usize) -> Result<Vec<Action>> {
-    let json_text = if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            &text[start..=end]
-        } else {
-            text
-        }
-    } else {
-        text
-    };
-
-    let value: serde_json::Value =
-        serde_json::from_str(json_text).context("LLM 返回不是合法 JSON")?;
+/// 解析 LLM 返回的 JSON Value
+fn parse_llm_value(value: &serde_json::Value, max_actions: usize) -> Result<Vec<Action>> {
     let actions = value
         .get("actions")
         .and_then(|v| v.as_array())
@@ -152,9 +140,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_llm_response_valid() {
-        let text = r#"{"actions": [{"action": "InvestigateFinding", "params": {"finding_id": "f1", "file_path": "a.js", "line": 10, "vuln_type": "SQL Injection", "hypothesis": "h"}}]}"#;
-        let actions = parse_llm_response(text, 5).unwrap();
+    fn test_parse_llm_value_valid() {
+        let value: serde_json::Value = serde_json::from_str(r#"{"actions": [{"action": "InvestigateFinding", "params": {"finding_id": "f1", "file_path": "a.js", "line": 10, "vuln_type": "SQL Injection", "hypothesis": "h"}}]}"#).unwrap();
+        let actions = parse_llm_value(&value, 5).unwrap();
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::InvestigateFinding {
@@ -170,22 +158,25 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_llm_response_empty() {
-        let text = r#"{"actions": []}"#;
-        let actions = parse_llm_response(text, 5).unwrap();
+    fn test_parse_llm_value_empty() {
+        let value: serde_json::Value = serde_json::from_str(r#"{"actions": []}"#).unwrap();
+        let actions = parse_llm_value(&value, 5).unwrap();
         assert!(actions.is_empty());
     }
 
     #[test]
-    fn test_parse_llm_response_with_markdown() {
-        let text = "```json\n{\"actions\": []}\n```";
-        let actions = parse_llm_response(text, 5).unwrap();
+    fn test_extract_json_from_markdown() {
+        let text = "```json
+{\"actions\": []}
+```";
+        let value = crate::agent::llm_client::extract_json_value(text).unwrap();
+        let actions = parse_llm_value(&value, 5).unwrap();
         assert!(actions.is_empty());
     }
 
     #[test]
-    fn test_parse_llm_response_invalid_json() {
-        let text = "not json";
-        assert!(parse_llm_response(text, 5).is_err());
+    fn test_parse_llm_value_missing_actions() {
+        let value: serde_json::Value = serde_json::from_str(r#"{"other": []}"#).unwrap();
+        assert!(parse_llm_value(&value, 5).is_err());
     }
 }
