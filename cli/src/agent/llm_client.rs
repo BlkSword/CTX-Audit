@@ -539,7 +539,12 @@ impl HttpLlmClient {
         if !content.is_empty() {
             return serde_json::from_str(content)
                 .or_else(|_| extract_json_value(content))
-                .context("无法从 content 解析 JSON");
+                .with_context(|| {
+                    format!(
+                        "无法从 content 解析 JSON: {}",
+                        content.chars().take(500).collect::<String>()
+                    )
+                });
         }
 
         message
@@ -548,7 +553,12 @@ impl HttpLlmClient {
             .map(|s| {
                 serde_json::from_str(s)
                     .or_else(|_| extract_json_value(s))
-                    .context("无法从 reasoning_content 解析 JSON")
+                    .with_context(|| {
+                        format!(
+                            "无法从 reasoning_content 解析 JSON: {}",
+                            s.chars().take(500).collect::<String>()
+                        )
+                    })
             })
             .transpose()
             .and_then(|v| v.context("LLM 响应中未找到 content 或 reasoning_content"))

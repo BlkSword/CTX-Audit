@@ -456,6 +456,10 @@ fn filter_and_prioritize_findings(
             let key = format!("{}:{}:{}", f.file_path, f.line_start, f.vuln_type);
             !baseline.contains(&key)
         })
+        .filter(|f| {
+            // 根据项目配置排除非生产代码目录中的 finding
+            f.file_role.as_deref() != Some("non-production")
+        })
         .map(|mut f| {
             // 确保 file_role 有默认值，便于排序
             if f.file_role.is_none() {

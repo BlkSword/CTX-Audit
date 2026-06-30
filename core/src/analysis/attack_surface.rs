@@ -73,6 +73,11 @@ pub fn default_non_production_path_patterns() -> Vec<String> {
         "/demos/".to_string(),
         "/examples/".to_string(),
         "/fixtures/".to_string(),
+        "/libs/".to_string(),
+        "/plugins/".to_string(),
+        "/jquery/".to_string(),
+        "/vendor/".to_string(),
+        "/vendors/".to_string(),
         "/.ctx-audit/".to_string(),
     ]
 }
