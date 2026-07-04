@@ -6,11 +6,12 @@
 //! 检测 Express `app.use()` / Django `MIDDLEWARE` 等中间件模式，
 //! 在调用图中注入虚拟边模拟隐式数据流。
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// 中间件注册信息
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiddlewareRegistration {
     /// 中间件函数名
     pub handler_name: String,
@@ -21,7 +22,7 @@ pub struct MiddlewareRegistration {
 }
 
 /// 框架中间件模型 — 聚合所有检测到的中间件和路由关系
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MiddlewareModel {
     /// Express `app.use()` 中间件注册
     pub express_middleware: Vec<MiddlewareRegistration>,

@@ -7,6 +7,9 @@
 //! 给定一个 finding 和假设，Agent 通过多轮工具调用主动收集证据，
 //! 每轮由 LLM 决定下一步使用哪个工具，最终输出带完整调查轨迹的结论。
 
+pub mod taint_walk;
+pub use taint_walk::TaintWalkInvestigator;
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};

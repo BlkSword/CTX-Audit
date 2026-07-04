@@ -7,8 +7,9 @@
 //! 每个工具返回基于 AST 解析的确定性调用图数据，为 LLM 安全审计提供可靠证据。
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::bridge::{
     ToolCategory, ToolDefinition, ToolError, ToolParameter, ToolParameterType, ToolResult,
@@ -17,11 +18,63 @@ use crate::registry::{Tool, ToolRegistry};
 
 use deepaudit_core::{CallGraphQueryEngine, CrossFileTaintAnalyzer};
 
-/// 延迟构建查询引擎（避免每次工具调用都重新分析项目）
-fn build_query_engine(project_path: &str) -> Result<CallGraphQueryEngine, ToolError> {
+/// 调用图查询引擎进程级缓存
+///
+/// 同一个项目在一次审计中会被多个工具反复查询，
+/// 缓存可避免每次工具调用都重新跑 CrossFileTaintAnalyzer。
+static QUERY_ENGINE_CACHE: OnceLock<Mutex<HashMap<String, (u64, Arc<CallGraphQueryEngine>)>>> =
+    OnceLock::new();
+
+const QUERY_ENGINE_CACHE_TTL_MS: u64 = 5 * 60 * 1000; // 5 分钟
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn get_cached_engine(project_path: &str) -> Option<Arc<CallGraphQueryEngine>> {
+    let map = QUERY_ENGINE_CACHE.get()?.lock().ok()?;
+    map.get(project_path).and_then(|(ts, engine)| {
+        if current_time_ms().saturating_sub(*ts) < QUERY_ENGINE_CACHE_TTL_MS {
+            Some(engine.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn set_cached_engine(project_path: &str, engine: Arc<CallGraphQueryEngine>) {
+    let map = QUERY_ENGINE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut m) = map.lock() {
+        m.insert(project_path.to_string(), (current_time_ms(), engine));
+    }
+}
+
+/// 延迟构建查询引擎（带进程级缓存）
+fn build_query_engine(project_path: &str) -> Result<Arc<CallGraphQueryEngine>, ToolError> {
+    if let Some(engine) = get_cached_engine(project_path) {
+        return Ok(engine);
+    }
+
     let mut analyzer = CrossFileTaintAnalyzer::new();
-    let result = analyzer.analyze_project(std::path::Path::new(project_path));
-    Ok(CallGraphQueryEngine::from_result(&result))
+    let result = analyzer.analyze_project(Path::new(project_path));
+    let engine = Arc::new(CallGraphQueryEngine::from_result(&result));
+    set_cached_engine(project_path, engine.clone());
+    Ok(engine)
+}
+
+/// 优先使用共享的查询引擎，没有时再使用缓存/现场构建
+fn get_query_engine(
+    shared: &Option<Arc<CallGraphQueryEngine>>,
+    project_path: &str,
+) -> Result<Arc<CallGraphQueryEngine>, ToolError> {
+    if let Some(engine) = shared {
+        Ok(engine.clone())
+    } else {
+        build_query_engine(project_path)
+    }
 }
 
 // ── 1. query_callers ──────────────────────────────────
@@ -32,11 +85,25 @@ fn build_query_engine(project_path: &str) -> Result<CallGraphQueryEngine, ToolEr
 /// 包含调用者文件、行号、receiver 信息和解析方法。
 pub struct QueryCallersTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl QueryCallersTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -112,7 +179,7 @@ impl Tool for QueryCallersTool {
         let recursive = input["recursive"].as_bool().unwrap_or(false);
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
 
         let callers = if recursive {
             engine.query_all_callers(file_path, function_name)
@@ -151,11 +218,25 @@ impl Tool for QueryCallersTool {
 /// 查询函数被调用者工具
 pub struct QueryCalleesTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl QueryCalleesTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -231,7 +312,7 @@ impl Tool for QueryCalleesTool {
         let recursive = input["recursive"].as_bool().unwrap_or(false);
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
 
         let callees = if recursive {
             engine.query_all_callees(file_path, function_name)
@@ -270,11 +351,25 @@ impl Tool for QueryCalleesTool {
 /// 查找调用路径工具
 pub struct FindCallPathTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl FindCallPathTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -366,7 +461,7 @@ impl Tool for FindCallPathTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 sink_function 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
 
         match engine.find_call_path(source_file, source_function, sink_file, sink_function) {
             Some(path) => {
@@ -412,11 +507,25 @@ impl Tool for FindCallPathTool {
 /// 解析方法调用工具
 pub struct ResolveMethodCallTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl ResolveMethodCallTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -509,7 +618,7 @@ impl Tool for ResolveMethodCallTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 method 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
 
         let targets = engine.resolve_method_call(file_path, line, receiver, method);
 
@@ -552,11 +661,25 @@ impl Tool for ResolveMethodCallTool {
 /// 获取类型层次工具
 pub struct GetTypeHierarchyTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl GetTypeHierarchyTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -606,7 +729,7 @@ impl Tool for GetTypeHierarchyTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 class_name 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
 
         match engine.query_type_chain(class_name) {
             Some(chain) => {
@@ -634,11 +757,25 @@ impl Tool for GetTypeHierarchyTool {
 /// 获取中间件链工具
 pub struct GetMiddlewareChainTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl GetMiddlewareChainTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -684,7 +821,7 @@ impl Tool for GetMiddlewareChainTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
 
         if let Some(file_path) = input["file_path"].as_str() {
             let middleware = engine.query_middleware_for_file(file_path);
@@ -725,11 +862,25 @@ impl Tool for GetMiddlewareChainTool {
 /// 变量流追踪工具
 pub struct TraceVariableFlowTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl TraceVariableFlowTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -793,7 +944,7 @@ impl Tool for TraceVariableFlowTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 function_name 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
 
         let flow = engine.trace_variable_flow(file_path, function_name);
 
@@ -832,11 +983,25 @@ impl Tool for TraceVariableFlowTool {
 /// 调用图统计工具
 pub struct GetGraphStatsTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl GetGraphStatsTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -860,7 +1025,7 @@ impl Tool for GetGraphStatsTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
         let stats = engine.query_graph_stats();
 
         let summary = format!(
@@ -885,11 +1050,25 @@ impl Tool for GetGraphStatsTool {
 /// 列出文件中的函数工具
 pub struct ListFunctionsTool {
     project_path: String,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
 }
 
 impl ListFunctionsTool {
     pub fn new(project_path: String) -> Self {
-        Self { project_path }
+        Self {
+            project_path,
+            query_engine: None,
+        }
+    }
+
+    pub fn with_query_engine(
+        project_path: String,
+        query_engine: Arc<CallGraphQueryEngine>,
+    ) -> Self {
+        Self {
+            project_path,
+            query_engine: Some(query_engine),
+        }
     }
 }
 
@@ -939,7 +1118,7 @@ impl Tool for ListFunctionsTool {
             .ok_or_else(|| ToolError::InvalidArgument("缺少 file_path 参数".to_string()))?;
 
         let project_path = input["project_path"].as_str().unwrap_or(&self.project_path);
-        let engine = build_query_engine(project_path)?;
+        let engine = get_query_engine(&self.query_engine, project_path)?;
         let functions = engine.query_functions_in_file(file_path);
 
         if functions.is_empty() {
@@ -979,7 +1158,10 @@ impl Tool for ListFunctionsTool {
 // ── 注册所有调用图查询工具 ──────────────────────────────
 
 /// 注册所有调用图查询工具到 ToolRegistry
-pub async fn register_call_graph_tools(registry: &Arc<ToolRegistry>) {
+pub async fn register_call_graph_tools(
+    registry: &Arc<ToolRegistry>,
+    query_engine: Option<Arc<CallGraphQueryEngine>>,
+) {
     // project_path 现在从 input JSON 中读取，构造时传空字符串
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(QueryCallersTool::new(String::new())),
@@ -992,6 +1174,23 @@ pub async fn register_call_graph_tools(registry: &Arc<ToolRegistry>) {
         Arc::new(GetGraphStatsTool::new(String::new())),
         Arc::new(ListFunctionsTool::new(String::new())),
     ];
+
+    // 如果提供了共享查询引擎，优先注入到每个工具
+    let tools: Vec<Arc<dyn Tool>> = if let Some(engine) = query_engine {
+        vec![
+            Arc::new(QueryCallersTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(QueryCalleesTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(FindCallPathTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(ResolveMethodCallTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(GetTypeHierarchyTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(GetMiddlewareChainTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(TraceVariableFlowTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(GetGraphStatsTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(ListFunctionsTool::with_query_engine(String::new(), engine.clone())),
+        ]
+    } else {
+        tools
+    };
 
     for tool in tools {
         if let Err(e) = registry.register(tool).await {

@@ -2975,7 +2975,7 @@ impl McpServerState {
     async fn new() -> Self {
         let registry = std::sync::Arc::new(ctx_audit_tools::ToolRegistry::new());
         // 注册所有内置工具（搜索、污点、模式、调用图）
-        ctx_audit_tools::register_all_tools(&registry, ".".to_string(), None).await;
+        ctx_audit_tools::register_all_tools(&registry, ".".to_string(), None, None).await;
         Self {
             tool_registry: registry,
             audit: McpAuditState::new(),

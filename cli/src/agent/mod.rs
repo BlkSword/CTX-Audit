@@ -70,6 +70,8 @@ pub struct AuditConfig {
     pub review_mode: String,
     /// 是否启用 ReAct 调查器（覆盖配置文件默认值）
     pub investigator_enabled: bool,
+    /// 是否启用污点步进调查器（覆盖配置文件默认值）
+    pub taint_walk_enabled: bool,
     /// 最大调查步数（None 表示使用配置文件默认值）
     pub max_investigation_steps: Option<usize>,
     /// 是否启用自动目标生成（覆盖配置文件默认值）
@@ -102,6 +104,7 @@ impl AuditConfig {
             specialist_enabled: false,
             review_mode: "off".to_string(),
             investigator_enabled: false,
+            taint_walk_enabled: false,
             max_investigation_steps: None,
             auto_goal: true,
             strategy: None,
@@ -125,6 +128,7 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         config.review_mode.clone()
     };
     let investigator_enabled = config.investigator_enabled || agent_config.investigator_enabled;
+    let taint_walk_enabled = config.taint_walk_enabled || agent_config.taint_walk_enabled;
     let max_investigation_steps = config
         .max_investigation_steps
         .unwrap_or(agent_config.max_investigation_steps);
@@ -238,7 +242,8 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
         review_mode,
     )
     .with_tool_context(tool_context.clone())
-    .with_investigator(investigator_enabled, max_investigation_steps);
+    .with_investigator(investigator_enabled, max_investigation_steps)
+    .with_taint_walk(taint_walk_enabled, max_investigation_steps);
 
     let mut results = Vec::new();
 
@@ -386,9 +391,39 @@ async fn run_security_scan(config: &AuditConfig) -> Result<ScanResult> {
 
     opts.non_production_path_patterns = non_production_path_patterns;
 
-    scan_directory_deep_with_rules_progress(path, None, None, None, Some(opts), None)
-        .await
-        .map_err(|e| anyhow::anyhow!("扫描失败: {}", e))
+    // 尝试从缓存加载扫描结果（项目/规则/选项未变时跳过扫描）
+    let cache_dir = config.project_path.join(".ctx-audit").join("cache");
+    let rules_dir = std::path::Path::new("rules");
+    let rules_hash = deepaudit_core::scan_cache::compute_rules_hash(rules_dir);
+    let options_hash = deepaudit_core::scan_cache::compute_options_hash(&opts);
+
+    if let Some(cached) = deepaudit_core::scan_cache::load_scan_result(
+        &cache_dir,
+        &config.project_path,
+        &rules_hash,
+        &options_hash,
+    ) {
+        return Ok(cached);
+    }
+
+    let scan_result = scan_directory_deep_with_rules_progress(
+        path, None, None, None, Some(opts), None,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("扫描失败: {}", e))?;
+
+    // 保存扫描结果供下次复用（失败不影响本次审计）
+    if let Err(e) = deepaudit_core::scan_cache::save_scan_result(
+        &cache_dir,
+        &config.project_path,
+        &scan_result,
+        &rules_hash,
+        &options_hash,
+    ) {
+        tracing::warn!("保存扫描缓存失败: {}", e);
+    }
+
+    Ok(scan_result)
 }
 
 /// 从扫描结果或独立分析构建调用图查询引擎

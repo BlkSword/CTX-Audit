@@ -49,7 +49,7 @@ pub struct ScanProgress {
 pub type ProgressCallback = Arc<dyn Fn(ScanProgress) + Send + Sync>;
 
 /// 扫描行为可配置参数
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanOptions {
     /// 并行线程数（默认 4，0 = rayon 自动检测）
     pub threads: usize,
@@ -1089,6 +1089,7 @@ async fn scan_directory_with_rules_inner(
 }
 
 /// 带攻击面信息的扫描结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
     pub findings: Vec<Finding>,
     pub attack_surface: crate::analysis::attack_surface::AttackSurface,

@@ -21,6 +21,7 @@ use crate::agent::evidence::{collect_evidence, Evidence};
 use crate::agent::heuristics::Verdict;
 use crate::agent::llm_client::LlmClient;
 use crate::agent::report::InvestigationResult;
+use crate::agent::investigator::{TaintWalkInvestigator, ToolUsingInvestigator};
 use crate::agent::reviewer::{apply_review, Reviewer};
 use crate::agent::specialist::{
     merge_specialist_verdict, SpecialistContext, SpecialistRegistry, SpecialistResult,
@@ -42,6 +43,8 @@ pub struct Supervisor {
     tool_context: Option<AgentToolContext>,
     investigator_enabled: bool,
     max_investigation_steps: usize,
+    taint_walk_enabled: bool,
+    max_taint_walk_steps: usize,
 }
 
 impl Supervisor {
@@ -65,6 +68,8 @@ impl Supervisor {
             tool_context: None,
             investigator_enabled: false,
             max_investigation_steps: 5,
+            taint_walk_enabled: false,
+            max_taint_walk_steps: 5,
         }
     }
 
@@ -95,6 +100,13 @@ impl Supervisor {
         self
     }
 
+    /// 启用污点步进调查器
+    pub fn with_taint_walk(mut self, enabled: bool, max_steps: usize) -> Self {
+        self.taint_walk_enabled = enabled;
+        self.max_taint_walk_steps = max_steps.max(1);
+        self
+    }
+
     /// 并发 triage 所有 finding
     pub async fn run(&self, findings: Vec<Finding>) -> Vec<InvestigationResult> {
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
@@ -122,6 +134,8 @@ impl Supervisor {
                 tool_context: self.tool_context.clone(),
                 investigator_enabled: self.investigator_enabled,
                 max_investigation_steps: self.max_investigation_steps,
+                taint_walk_enabled: self.taint_walk_enabled,
+                max_taint_walk_steps: self.max_taint_walk_steps,
             };
 
             join_set.spawn(async move {
@@ -165,6 +179,8 @@ struct TriageTask {
     tool_context: Option<AgentToolContext>,
     investigator_enabled: bool,
     max_investigation_steps: usize,
+    taint_walk_enabled: bool,
+    max_taint_walk_steps: usize,
 }
 
 /// 实际调查逻辑
@@ -262,6 +278,47 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
         }
     }
 
+    // 污点步进调查（Phase 7）：从 sink 反向逐步追踪到 source，补全证据链
+    let mut taint_walk_reasoning = String::new();
+    if task.taint_walk_enabled
+        && (verdict == Verdict::NeedsReview || evidence.call_path.is_none())
+    {
+        let taint_walk = TaintWalkInvestigator::new(
+            task.llm_client.clone(),
+            task.max_taint_walk_steps,
+        );
+        let ctx = SpecialistContext {
+            project_path: task.project_path.clone(),
+            finding: task.finding.clone(),
+            evidence: evidence.clone(),
+            query_engine: task.query_engine.clone(),
+            tool_context: task.tool_context.clone(),
+        };
+        match taint_walk.investigate(&ctx, &hypothesis).await {
+            Ok(outcome) => {
+                investigation_steps.extend(outcome.steps);
+                taint_walk_reasoning = outcome.reasoning.clone();
+                if outcome.confidence >= primary_confidence {
+                    verdict = outcome.verdict;
+                    primary_confidence = outcome.confidence;
+                    tracing::debug!(
+                        "TaintWalk overridden verdict for finding {}: {:?} (conf {})",
+                        task.finding.finding_id,
+                        outcome.verdict,
+                        outcome.confidence
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "TaintWalk failed for finding {}: {}",
+                    task.finding.finding_id,
+                    e
+                );
+            }
+        }
+    }
+
     let combined_reasoning = if let Some(ref sp) = specialist_result {
         if investigator_reasoning.is_empty() {
             format!(
@@ -281,6 +338,15 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
         )
     } else {
         triage_result.reasoning
+    };
+
+    let combined_reasoning = if !taint_walk_reasoning.is_empty() {
+        format!(
+            "{} [TaintWalk] 污点步进结论: {}",
+            combined_reasoning, taint_walk_reasoning
+        )
+    } else {
+        combined_reasoning
     };
 
     let reasoning = build_reasoning(&task.finding, &evidence, &verdict, &combined_reasoning);

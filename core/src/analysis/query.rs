@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::cross_file::{
     normalize_path, CallGraph, CallGraphNode, CallTarget, CrossFileTaintResult,
@@ -196,16 +196,45 @@ pub struct CallGraphQueryEngine {
     middleware_model: MiddlewareModel,
     /// Import alias 信息: file_path → (local_name → ImportResolution)
     file_import_aliases: HashMap<String, HashMap<String, super::cross_file::ImportResolution>>,
+    /// 直接调用者索引：callee_id → [CallerEvidence]
+    direct_caller_index: HashMap<String, Vec<CallerEvidence>>,
+    /// 直接被调用者索引：caller_id → [CalleeEvidence]
+    direct_callee_index: HashMap<String, Vec<CalleeEvidence>>,
+    /// 递归调用者缓存（按需计算）
+    all_callers_cache: Mutex<HashMap<String, Vec<String>>>,
+    /// 递归被调用者缓存（按需计算）
+    all_callees_cache: Mutex<HashMap<String, Vec<String>>>,
+    /// 图统计缓存
+    stats_cache: Mutex<Option<CachedGraphStats>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CachedGraphStats {
+    total_nodes: usize,
+    callback_nodes: usize,
+    taint_sources: usize,
+    taint_sinks: usize,
+    total_edges: usize,
+    cross_file_edges: usize,
+    total_files: usize,
+    type_count: usize,
+    middleware_count: usize,
 }
 
 impl CallGraphQueryEngine {
     /// 从跨文件分析结果构建查询引擎
     pub fn from_result(result: &CrossFileTaintResult) -> Self {
+        let (direct_caller_index, direct_callee_index) = Self::build_direct_indexes(&result.call_graph);
         Self {
             call_graph: result.call_graph.clone(),
             type_hierarchy: result.type_hierarchy.clone(),
             middleware_model: result.middleware_model.clone(),
             file_import_aliases: result.file_import_aliases.clone(),
+            direct_caller_index,
+            direct_callee_index,
+            all_callers_cache: Mutex::new(HashMap::new()),
+            all_callees_cache: Mutex::new(HashMap::new()),
+            stats_cache: Mutex::new(None),
         }
     }
 
@@ -216,12 +245,77 @@ impl CallGraphQueryEngine {
         middleware_model: MiddlewareModel,
         file_import_aliases: HashMap<String, HashMap<String, super::cross_file::ImportResolution>>,
     ) -> Self {
+        let (direct_caller_index, direct_callee_index) = Self::build_direct_indexes(&call_graph);
         Self {
             call_graph,
             type_hierarchy,
             middleware_model,
             file_import_aliases,
+            direct_caller_index,
+            direct_callee_index,
+            all_callers_cache: Mutex::new(HashMap::new()),
+            all_callees_cache: Mutex::new(HashMap::new()),
+            stats_cache: Mutex::new(None),
         }
+    }
+
+    fn build_direct_indexes(
+        call_graph: &CallGraph,
+    ) -> (
+        HashMap<String, Vec<CallerEvidence>>,
+        HashMap<String, Vec<CalleeEvidence>>,
+    ) {
+        let mut caller_index: HashMap<String, Vec<CallerEvidence>> = HashMap::new();
+        let mut callee_index: HashMap<String, Vec<CalleeEvidence>> = HashMap::new();
+
+        for (caller_id, caller_node) in &call_graph.nodes {
+            let mut callee_seen = HashSet::new();
+            for ct in &caller_node.calls {
+                let callee_node = call_graph.nodes.get(&ct.callee);
+                let is_resolved = callee_node.is_some();
+
+                let callee_ev = CalleeEvidence {
+                    callee_function: callee_node
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| ct.callee.clone()),
+                    callee_file: callee_node.map(|n| n.file_path.clone()),
+                    callee_line: callee_node.map(|n| n.start_line),
+                    receiver: ct.receiver.clone(),
+                    is_external: callee_node.map(|n| n.is_external).unwrap_or(true),
+                    is_callback: callee_node.map(|n| n.is_callback).unwrap_or(false),
+                    is_resolved,
+                };
+                let key = (
+                    ct.callee.clone(),
+                    ct.receiver.clone().unwrap_or_default(),
+                );
+                if callee_seen.insert(key) {
+                    callee_index
+                        .entry(caller_id.clone())
+                        .or_default()
+                        .push(callee_ev);
+                }
+
+                if let Some(target_node) = callee_node {
+                    let caller_ev = CallerEvidence {
+                        caller_function: caller_node.name.clone(),
+                        caller_file: caller_node.file_path.clone(),
+                        caller_line: caller_node.start_line,
+                        callee_function: target_node.name.clone(),
+                        callee_file: target_node.file_path.clone(),
+                        callee_line: target_node.start_line,
+                        receiver: ct.receiver.clone(),
+                        is_callback: caller_node.is_callback,
+                    };
+                    caller_index
+                        .entry(target_node.id.clone())
+                        .or_default()
+                        .push(caller_ev);
+                }
+            }
+        }
+
+        (caller_index, callee_index)
     }
 
     // ── 调用者查询 ──────────────────────────────────
@@ -235,27 +329,18 @@ impl CallGraphQueryEngine {
         let target_ids = self.find_func_ids(&normalized_file, function_name);
 
         let mut results = Vec::new();
+        let mut seen = HashSet::new();
         for target_id in &target_ids {
-            if let Some(target_node) = self.call_graph.nodes.get(target_id) {
-                for caller_id in &target_node.called_by {
-                    if let Some(caller_node) = self.call_graph.nodes.get(caller_id) {
-                        // 查找 caller → target 的 CallTarget（获取 receiver 信息）
-                        let receiver = caller_node
-                            .calls
-                            .iter()
-                            .find(|ct| ct.callee == *target_id || ct.callee == target_node.name)
-                            .and_then(|ct| ct.receiver.clone());
-
-                        results.push(CallerEvidence {
-                            caller_function: caller_node.name.clone(),
-                            caller_file: caller_node.file_path.clone(),
-                            caller_line: caller_node.start_line,
-                            callee_function: target_node.name.clone(),
-                            callee_file: target_node.file_path.clone(),
-                            callee_line: target_node.start_line,
-                            receiver,
-                            is_callback: caller_node.is_callback,
-                        });
+            if let Some(callers) = self.direct_caller_index.get(target_id) {
+                for ev in callers {
+                    let key = (
+                        ev.caller_function.clone(),
+                        ev.caller_file.clone(),
+                        ev.caller_line,
+                        ev.callee_function.clone(),
+                    );
+                    if seen.insert(key) {
+                        results.push(ev.clone());
                     }
                 }
             }
@@ -270,29 +355,50 @@ impl CallGraphQueryEngine {
         let target_ids = self.find_func_ids(&normalized_file, function_name);
 
         let mut all_callers_set: HashSet<String> = HashSet::new();
-        let mut results = Vec::new();
-
         for target_id in &target_ids {
-            let recursive_callers = self.call_graph.get_all_callers(target_id);
-            for caller_id in &recursive_callers {
-                if all_callers_set.insert(caller_id.clone()) {
-                    if let Some(caller_node) = self.call_graph.nodes.get(caller_id) {
-                        results.push(CallerEvidence {
-                            caller_function: caller_node.name.clone(),
-                            caller_file: caller_node.file_path.clone(),
-                            caller_line: caller_node.start_line,
-                            callee_function: String::new(),
-                            callee_file: String::new(),
-                            callee_line: 0,
-                            receiver: None,
-                            is_callback: caller_node.is_callback,
-                        });
-                    }
-                }
+            self.collect_all_callers(target_id, &mut all_callers_set);
+        }
+
+        let mut results = Vec::new();
+        for caller_id in &all_callers_set {
+            if let Some(caller_node) = self.call_graph.nodes.get(caller_id) {
+                results.push(CallerEvidence {
+                    caller_function: caller_node.name.clone(),
+                    caller_file: caller_node.file_path.clone(),
+                    caller_line: caller_node.start_line,
+                    callee_function: String::new(),
+                    callee_file: String::new(),
+                    callee_line: 0,
+                    receiver: None,
+                    is_callback: caller_node.is_callback,
+                });
             }
         }
 
         results
+    }
+
+    fn collect_all_callers(&self, func_id: &str, visited: &mut HashSet<String>) {
+        if let Ok(cache) = self.all_callers_cache.lock() {
+            if let Some(cached) = cache.get(func_id).cloned() {
+                visited.extend(cached);
+                return;
+            }
+        }
+
+        let mut local = HashSet::new();
+        if let Some(node) = self.call_graph.nodes.get(func_id) {
+            for caller_id in &node.called_by {
+                if local.insert(caller_id.clone()) {
+                    self.collect_all_callers(caller_id, &mut local);
+                }
+            }
+        }
+
+        if let Ok(mut cache) = self.all_callers_cache.lock() {
+            cache.insert(func_id.to_string(), local.iter().cloned().collect());
+        }
+        visited.extend(local);
     }
 
     // ── 被调用者查询 ──────────────────────────────────
@@ -306,34 +412,15 @@ impl CallGraphQueryEngine {
         let mut seen = HashSet::new();
 
         for func_id in &func_ids {
-            if let Some(node) = self.call_graph.nodes.get(func_id) {
-                for ct in &node.calls {
-                    let key = format!("{}:{}", ct.callee, ct.receiver.as_deref().unwrap_or(""));
-                    if !seen.insert(key) {
-                        continue;
-                    }
-
-                    if let Some(callee_node) = self.call_graph.nodes.get(&ct.callee) {
-                        results.push(CalleeEvidence {
-                            callee_function: callee_node.name.clone(),
-                            callee_file: Some(callee_node.file_path.clone()),
-                            callee_line: Some(callee_node.start_line),
-                            receiver: ct.receiver.clone(),
-                            is_external: callee_node.is_external,
-                            is_callback: callee_node.is_callback,
-                            is_resolved: true,
-                        });
-                    } else {
-                        // 未解析到具体节点（可能是外部库函数）
-                        results.push(CalleeEvidence {
-                            callee_function: ct.callee.clone(),
-                            callee_file: None,
-                            callee_line: None,
-                            receiver: ct.receiver.clone(),
-                            is_external: true,
-                            is_callback: false,
-                            is_resolved: false,
-                        });
+            if let Some(callees) = self.direct_callee_index.get(func_id) {
+                for ev in callees {
+                    let key = (
+                        ev.callee_function.clone(),
+                        ev.callee_file.clone(),
+                        ev.receiver.clone().unwrap_or_default(),
+                    );
+                    if seen.insert(key) {
+                        results.push(ev.clone());
                     }
                 }
             }
@@ -348,28 +435,49 @@ impl CallGraphQueryEngine {
         let func_ids = self.find_func_ids(&normalized_file, function_name);
 
         let mut all_callees_set: HashSet<String> = HashSet::new();
-        let mut results = Vec::new();
-
         for func_id in &func_ids {
-            let recursive_callees = self.call_graph.get_all_callees(func_id);
-            for callee_id in &recursive_callees {
-                if all_callees_set.insert(callee_id.clone()) {
-                    if let Some(callee_node) = self.call_graph.nodes.get(callee_id) {
-                        results.push(CalleeEvidence {
-                            callee_function: callee_node.name.clone(),
-                            callee_file: Some(callee_node.file_path.clone()),
-                            callee_line: Some(callee_node.start_line),
-                            receiver: None,
-                            is_external: callee_node.is_external,
-                            is_callback: callee_node.is_callback,
-                            is_resolved: true,
-                        });
-                    }
-                }
+            self.collect_all_callees(func_id, &mut all_callees_set);
+        }
+
+        let mut results = Vec::new();
+        for callee_id in &all_callees_set {
+            if let Some(callee_node) = self.call_graph.nodes.get(callee_id) {
+                results.push(CalleeEvidence {
+                    callee_function: callee_node.name.clone(),
+                    callee_file: Some(callee_node.file_path.clone()),
+                    callee_line: Some(callee_node.start_line),
+                    receiver: None,
+                    is_external: callee_node.is_external,
+                    is_callback: callee_node.is_callback,
+                    is_resolved: true,
+                });
             }
         }
 
         results
+    }
+
+    fn collect_all_callees(&self, func_id: &str, visited: &mut HashSet<String>) {
+        if let Ok(cache) = self.all_callees_cache.lock() {
+            if let Some(cached) = cache.get(func_id).cloned() {
+                visited.extend(cached);
+                return;
+            }
+        }
+
+        let mut local = HashSet::new();
+        if let Some(node) = self.call_graph.nodes.get(func_id) {
+            for ct in &node.calls {
+                if local.insert(ct.callee.clone()) {
+                    self.collect_all_callees(&ct.callee, &mut local);
+                }
+            }
+        }
+
+        if let Ok(mut cache) = self.all_callees_cache.lock() {
+            cache.insert(func_id.to_string(), local.iter().cloned().collect());
+        }
+        visited.extend(local);
     }
 
     // ── 路径查询 ────────────────────────────────────
@@ -919,6 +1027,22 @@ impl CallGraphQueryEngine {
 
     /// 获取调用图统计概览
     pub fn query_graph_stats(&self) -> GraphStats {
+        if let Ok(cache) = self.stats_cache.lock() {
+            if let Some(cached) = cache.clone() {
+                return GraphStats {
+                    total_nodes: cached.total_nodes,
+                    callback_nodes: cached.callback_nodes,
+                    taint_sources: cached.taint_sources,
+                    taint_sinks: cached.taint_sinks,
+                    total_edges: cached.total_edges,
+                    cross_file_edges: cached.cross_file_edges,
+                    total_files: cached.total_files,
+                    type_count: cached.type_count,
+                    middleware_count: cached.middleware_count,
+                };
+            }
+        }
+
         let total_nodes = self.call_graph.nodes.len();
         let callback_nodes = self
             .call_graph
@@ -949,6 +1073,21 @@ impl CallGraphQueryEngine {
         let type_count = self.type_hierarchy.len();
         let middleware_count = self.middleware_model.express_middleware.len()
             + self.middleware_model.django_middleware.len();
+
+        let cached = CachedGraphStats {
+            total_nodes,
+            callback_nodes,
+            taint_sources,
+            taint_sinks,
+            total_edges,
+            cross_file_edges,
+            total_files,
+            type_count,
+            middleware_count,
+        };
+        if let Ok(mut cache) = self.stats_cache.lock() {
+            *cache = Some(cached.clone());
+        }
 
         GraphStats {
             total_nodes,

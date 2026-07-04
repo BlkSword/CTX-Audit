@@ -252,41 +252,34 @@ impl CallGraph {
         paths
     }
 
-    /// 查找两个函数之间的调用路径
+    /// 查找两个函数之间的调用路径（BFS，返回最短路径）
     pub fn find_call_path(&self, from_id: &str, to_id: &str) -> Option<Vec<String>> {
-        let mut visited = HashSet::new();
-        let mut path = Vec::new();
-        self.dfs_call_path(from_id, to_id, &mut visited, &mut path)
-    }
-
-    fn dfs_call_path(
-        &self,
-        current: &str,
-        target: &str,
-        visited: &mut HashSet<String>,
-        path: &mut Vec<String>,
-    ) -> Option<Vec<String>> {
-        if current == target {
-            path.push(current.to_string());
-            return Some(path.clone());
+        if from_id == to_id {
+            return Some(vec![from_id.to_string()]);
         }
 
-        if visited.contains(current) {
-            return None;
-        }
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::new();
+        queue.push_back((from_id.to_string(), vec![from_id.to_string()]));
+        visited.insert(from_id.to_string());
 
-        visited.insert(current.to_string());
-        path.push(current.to_string());
-
-        if let Some(node) = self.nodes.get(current) {
-            for ct in &node.calls {
-                if let Some(result) = self.dfs_call_path(&ct.callee, target, visited, path) {
-                    return Some(result);
+        while let Some((current_id, path)) = queue.pop_front() {
+            if let Some(node) = self.nodes.get(&current_id) {
+                for ct in &node.calls {
+                    let callee_id = &ct.callee;
+                    if !visited.insert(callee_id.clone()) {
+                        continue;
+                    }
+                    let mut new_path = path.clone();
+                    new_path.push(callee_id.clone());
+                    if callee_id == to_id {
+                        return Some(new_path);
+                    }
+                    queue.push_back((callee_id.clone(), new_path));
                 }
             }
         }
 
-        path.pop();
         None
     }
 }
@@ -316,23 +309,18 @@ pub struct CrossFileTaintResult {
     /// 项目路径
     pub project_path: String,
     /// 调用图（Arc 零拷贝共享）
-    #[serde(skip)]
     pub call_graph: Arc<CallGraph>,
     /// 污点流
     pub taint_flows: Vec<InterproceduralTaintFlow>,
     /// 分析统计
     pub stats: CrossFileAnalysisStats,
     /// 类型层次结构（类/接口继承关系）
-    #[serde(skip)]
     pub type_hierarchy: super::type_hierarchy::TypeHierarchy,
     /// 框架中间件模型
-    #[serde(skip)]
     pub middleware_model: super::middleware::MiddlewareModel,
     /// 文件导入别名映射: normalized_file_path → (local_name → ImportResolution)
-    #[serde(skip)]
     pub file_import_aliases: HashMap<String, HashMap<String, ImportResolution>>,
     /// 局部变量→类型映射: normalized_file_path → (var_name → type_name)
-    #[serde(skip)]
     pub variable_type_map: HashMap<String, HashMap<String, String>>,
 }
 
@@ -512,6 +500,10 @@ pub struct CrossFileTaintAnalyzer {
     /// 调用点参数缓存：key = "caller_func_id:call_line"，value = 该调用的参数列表
     /// 用于跨文件摘要传播时判断 caller 的污点变量是否传入 callee 的敏感参数
     call_site_args: HashMap<String, Vec<crate::ast::ArgInfo>>,
+    /// 文件原始内容缓存（用于避免传播阶段反复读盘）
+    file_content_cache: HashMap<String, String>,
+    /// 文件按行切分后的缓存（与 file_content_cache 配套，避免重复 split）
+    file_lines_cache: HashMap<String, Vec<String>>,
 }
 
 impl CrossFileTaintAnalyzer {
@@ -529,6 +521,8 @@ impl CrossFileTaintAnalyzer {
             type_hierarchy: super::type_hierarchy::TypeHierarchy::new(),
             middleware_model: super::middleware::MiddlewareModel::new(),
             call_site_args: HashMap::new(),
+            file_content_cache: HashMap::new(),
+            file_lines_cache: HashMap::new(),
         }
     }
 
@@ -563,6 +557,9 @@ impl CrossFileTaintAnalyzer {
         // 1. 收集所有源文件
         let source_files = self.collect_source_files(project_path);
         stats.files_analyzed = source_files.len();
+
+        // 1.5 预加载文件内容，避免后续反复读盘
+        self.preload_file_contents(&source_files);
 
         // 2. 构建调用图（逐文件提取函数节点和内部调用）
         for file_path in &source_files {
@@ -612,6 +609,8 @@ impl CrossFileTaintAnalyzer {
         // 只处理传入的文件列表
         stats.files_analyzed = files.len();
 
+        self.preload_file_contents(files);
+
         for file_path in files {
             self.build_call_graph_for_file(file_path);
         }
@@ -653,14 +652,24 @@ impl CrossFileTaintAnalyzer {
         let mut stats = CrossFileAnalysisStats::default();
         stats.files_analyzed = files.len();
 
+        // 复用外部传入的内容缓存，并预加载其余文件
         for file_path in files {
             let file_str = file_path.to_string_lossy().to_string();
             if let Some(content) = content_cache.get(&file_str) {
+                self.file_content_cache
+                    .insert(file_str.clone(), content.clone());
+                self.file_lines_cache
+                    .insert(file_str, content.lines().map(|s| s.to_string()).collect());
+            }
+        }
+        self.preload_file_contents(files);
+
+        for file_path in files {
+            let file_str = file_path.to_string_lossy().to_string();
+            if let Some(content) = self.file_content_cache.get(&file_str).cloned() {
                 if self.is_ast_supported(file_path) {
-                    self.build_call_graph_for_file_with_content(file_path, content);
+                    self.build_call_graph_for_file_with_content(file_path, &content);
                 }
-            } else if let Ok(content) = std::fs::read_to_string(file_path) {
-                self.build_call_graph_for_file_with_content(file_path, &content);
             }
         }
 
@@ -709,7 +718,7 @@ impl CrossFileTaintAnalyzer {
                 Ok(s) => s,
                 Err(_) => {
                     let language = self.infer_language(file_path);
-                    let functions = self.extract_functions(content, &file_path_str, language);
+                    let functions = self.extract_functions(&content, &file_path_str, language);
                     for func in functions {
                         self.call_graph.add_node(func);
                     }
@@ -854,10 +863,10 @@ impl CrossFileTaintAnalyzer {
                     _ => {}
                 }
             }
-        } else if let Ok(content) = std::fs::read_to_string(file_path) {
+        } else {
             let file_path_str = file_path.to_string_lossy().to_string();
             let language = self.infer_language(file_path);
-            let functions = self.extract_functions(&content, &file_path_str, language);
+            let functions = self.extract_functions(content, &file_path_str, language);
             for func in functions {
                 self.call_graph.add_node(func);
             }
@@ -1231,6 +1240,29 @@ impl CrossFileTaintAnalyzer {
         files
     }
 
+    /// 预加载所有待分析文件的内容到内存，避免后续阶段反复读盘
+    fn preload_file_contents(&mut self, file_paths: &[PathBuf]) {
+        for path in file_paths {
+            let path_str = path.to_string_lossy().to_string();
+            if self.file_content_cache.contains_key(&path_str) {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(path) {
+                let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                self.file_content_cache.insert(path_str.clone(), content);
+                self.file_lines_cache.insert(path_str, lines);
+            }
+        }
+    }
+
+    fn get_file_content(&self, file_path: &str) -> Option<&str> {
+        self.file_content_cache.get(file_path).map(|s| s.as_str())
+    }
+
+    fn get_file_lines(&self, file_path: &str) -> Option<&[String]> {
+        self.file_lines_cache.get(file_path).map(|v| v.as_slice())
+    }
+
     fn collect_files_recursive(&self, dir: &Path, files: &mut Vec<PathBuf>) {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
@@ -1271,8 +1303,12 @@ impl CrossFileTaintAnalyzer {
     fn build_call_graph_for_file(&mut self, file_path: &Path) {
         if self.is_ast_supported(file_path) {
             self.build_call_graph_for_file_ast(file_path);
-        } else if let Ok(content) = std::fs::read_to_string(file_path) {
+        } else {
             let file_path_str = file_path.to_string_lossy().to_string();
+            let content = match self.file_content_cache.get(&file_path_str).cloned() {
+                Some(c) => c,
+                None => return,
+            };
             let language = self.infer_language(file_path);
             let functions = self.extract_functions(&content, &file_path_str, language);
             for func in functions {
@@ -1303,11 +1339,11 @@ impl CrossFileTaintAnalyzer {
 
     /// 使用 AST 解析构建调用图（更精确的函数提取和调用关系）
     fn build_call_graph_for_file_ast(&mut self, file_path: &Path) {
-        let content = match std::fs::read_to_string(file_path) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
         let file_path_str = file_path.to_string_lossy().to_string();
+        let content = match self.file_content_cache.get(&file_path_str).cloned() {
+            Some(c) => c,
+            None => return,
+        };
 
         // 解析文件导入（用于后续跨文件调用精确匹配）
         self.parse_file_imports(&file_path_str, &content);
@@ -2263,9 +2299,9 @@ impl CrossFileTaintAnalyzer {
         if vars.is_empty() {
             if let Some(node) = self.call_graph.nodes.get(func_id) {
                 if node.is_taint_source {
-                    if let Ok(content) = std::fs::read_to_string(&node.file_path) {
-                        let body = Self::extract_body(&content, node.start_line, node.end_line);
-                        for line in body.lines() {
+                    if let Some(lines) = self.get_file_lines(&node.file_path) {
+                        let body = Self::extract_body_from_lines(lines, node.start_line, node.end_line);
+                        for line in body.iter() {
                             for source in &self.source_patterns {
                                 if source.matches(line, "*") {
                                     if let Some(var) = Self::extract_var_from_source_line(line) {
@@ -2395,8 +2431,9 @@ impl CrossFileTaintAnalyzer {
                 };
 
                 // 预读当前函数源码，用于返回值污点 LHS 提取
-                let current_lines: Vec<String> = std::fs::read_to_string(&node.file_path)
-                    .map(|c| c.lines().map(|l| l.to_string()).collect())
+                let current_lines: Vec<String> = self
+                    .get_file_lines(&node.file_path)
+                    .map(|lines| lines.to_vec())
                     .unwrap_or_default();
 
                 for ct in &node.calls {
@@ -2587,6 +2624,19 @@ impl CrossFileTaintAnalyzer {
             .join("\n")
     }
 
+    fn extract_body_from_lines(
+        lines: &[String],
+        start_line: usize,
+        end_line: usize,
+    ) -> Vec<String> {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| (*i + 1) >= start_line && (*i + 1) <= end_line)
+            .map(|(_, l)| l.clone())
+            .collect()
+    }
+
     /// 从函数调用所在行提取赋值左值变量名。
     /// 用于返回值污点传播：若 `x = callee(...)` 且 callee 的返回值被污染，则 x 也被污染。
     fn extract_call_assignment_lhs(
@@ -2659,8 +2709,35 @@ impl CrossFileTaintAnalyzer {
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let mut flows = Vec::new();
 
+        // 预计算：从所有 sink 反向 BFS，得到“可能到达 sink”的节点集合。
+        // 正向搜索时只扩展这些节点，避免大量与 sink 无关的分支。
+        let sink_reachable: HashSet<String> = {
+            let mut reachable: HashSet<String> = HashSet::new();
+            let mut queue: VecDeque<String> = VecDeque::new();
+            for sink_id in &self.call_graph.taint_sinks {
+                if reachable.insert(sink_id.clone()) {
+                    queue.push_back(sink_id.clone());
+                }
+            }
+            while let Some(node_id) = queue.pop_front() {
+                if let Some(node) = self.call_graph.nodes.get(&node_id) {
+                    for caller_id in &node.called_by {
+                        if reachable.insert(caller_id.clone()) {
+                            queue.push_back(caller_id.clone());
+                        }
+                    }
+                }
+            }
+            reachable
+        };
+
         // 对每个 source 做 BFS，一次遍历找到所有可达的 sink
         for source_id in &self.call_graph.taint_sources {
+            // source 本身就到不了任何 sink，跳过
+            if !sink_reachable.contains(source_id) {
+                continue;
+            }
+
             // BFS: source_id → (path_from_source)
             let mut visited: HashSet<&String> = HashSet::new();
             // queue: (current_node, path_from_source)
@@ -2730,10 +2807,10 @@ impl CrossFileTaintAnalyzer {
                     // 继续探索（sink 可能转发到另一个 sink）
                 }
 
-                // 扩展邻居
+                // 扩展邻居（只扩展可能到达 sink 的节点）
                 if let Some(node) = self.call_graph.nodes.get(&current_id) {
                     for ct in &node.calls {
-                        if !visited.contains(&ct.callee) {
+                        if sink_reachable.contains(&ct.callee) && !visited.contains(&ct.callee) {
                             visited.insert(&ct.callee);
                             let mut new_path = path.clone();
                             new_path.push(ct.callee.clone());
@@ -3118,16 +3195,17 @@ impl CrossFileTaintAnalyzer {
                 .cloned()
                 .unwrap_or_default();
 
-            let body_text =
-                if let Ok(content) = std::fs::read_to_string(&func_cpg.signature.file_path) {
-                    Self::extract_body(
-                        &content,
-                        func_cpg.signature.start_line,
-                        func_cpg.signature.end_line,
-                    )
-                } else {
-                    String::new()
-                };
+            let body_text = if let Some(content) =
+                self.get_file_content(&func_cpg.signature.file_path)
+            {
+                Self::extract_body(
+                    content,
+                    func_cpg.signature.start_line,
+                    func_cpg.signature.end_line,
+                )
+            } else {
+                String::new()
+            };
 
             let summary = super::cpg::compute_summary_from_cpg(
                 func_cpg,

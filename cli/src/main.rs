@@ -150,6 +150,10 @@ enum Commands {
         #[arg(long)]
         investigate: bool,
 
+        /// 启用污点步进调查器：从 sink 反向逐步追踪到 source
+        #[arg(long)]
+        taint_walk: bool,
+
         /// 最大调查步数（默认 5）
         #[arg(long, value_name = "N")]
         max_investigation_steps: Option<usize>,
@@ -493,6 +497,7 @@ async fn main() -> Result<()> {
             specialist,
             review_mode,
             investigate,
+            taint_walk,
             max_investigation_steps,
             no_auto_goal,
             strategy,
@@ -509,6 +514,7 @@ async fn main() -> Result<()> {
                 specialist,
                 review_mode,
                 investigate,
+                taint_walk,
                 max_investigation_steps,
                 !no_auto_goal,
                 strategy,

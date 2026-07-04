@@ -914,6 +914,7 @@ pub async fn register_all_tools(
     registry: &Arc<ToolRegistry>,
     project_path: String,
     ast_engine: Option<std::sync::Arc<deepaudit_core::ASTEngine>>,
+    query_engine: Option<std::sync::Arc<deepaudit_core::CallGraphQueryEngine>>,
 ) {
     // 先注册基础工具
     register_built_in_tools(registry, project_path.clone()).await;
@@ -927,8 +928,8 @@ pub async fn register_all_tools(
     // 注册模式检测工具
     crate::pattern_tools::register_pattern_tools(registry, project_path.clone()).await;
 
-    // 注册调用图查询工具（不依赖 AST 引擎，使用 CrossFileTaintAnalyzer）
-    crate::call_graph_tools::register_call_graph_tools(registry).await;
+    // 注册调用图查询工具（优先复用 Agent 已构建的查询引擎）
+    crate::call_graph_tools::register_call_graph_tools(registry, query_engine).await;
 
     // 如果提供了 AST 引擎，注册 AST 工具并自动索引项目
     if let Some(engine) = ast_engine {

@@ -55,7 +55,13 @@ impl AgentToolContext {
     ) -> Self {
         let project_path = project_path.into();
         let registry = Arc::new(ToolRegistry::new());
-        register_all_tools(&registry, project_path.clone(), None).await;
+        register_all_tools(
+            &registry,
+            project_path.clone(),
+            None,
+            Some(query_engine.clone()),
+        )
+        .await;
         Self {
             registry,
             query_engine,

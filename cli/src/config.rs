@@ -591,6 +591,10 @@ pub struct AgentConfig {
     #[serde(default = "default_max_investigation_steps")]
     pub max_investigation_steps: usize,
 
+    /// 是否启用污点步进调查器（默认 false）
+    #[serde(default)]
+    pub taint_walk_enabled: bool,
+
     /// Planner 配置
     #[serde(default)]
     pub planner: PlannerConfig,
@@ -631,6 +635,7 @@ impl Default for AgentConfig {
             specialist_enabled: false,
             investigator_enabled: false,
             max_investigation_steps: 5,
+            taint_walk_enabled: false,
             planner: PlannerConfig::default(),
             llm: LlmConfig::default(),
         }
@@ -864,6 +869,9 @@ impl ConfigManager {
             "agent.max_investigation_steps" => {
                 Some(self.config.agent.max_investigation_steps.to_string())
             }
+            "agent.taint_walk_enabled" => {
+                Some(self.config.agent.taint_walk_enabled.to_string())
+            }
             "agent.planner.strategy" => {
                 Some(format!("{:?}", self.config.agent.planner.strategy).to_lowercase())
             }
@@ -1068,6 +1076,9 @@ impl ConfigManager {
             "agent.max_investigation_steps" => {
                 self.config.agent.max_investigation_steps = value.parse().context("无效的数字")?;
             }
+            "agent.taint_walk_enabled" => {
+                self.config.agent.taint_walk_enabled = value.parse().context("无效的布尔值")?;
+            }
             "agent.planner.strategy" => {
                 let valid = ["auto", "rule", "llm"];
                 if !valid.contains(&value.as_str()) {
@@ -1164,6 +1175,7 @@ impl ConfigManager {
             "agent.specialist_enabled" => self.config.agent.specialist_enabled = false,
             "agent.investigator_enabled" => self.config.agent.investigator_enabled = false,
             "agent.max_investigation_steps" => self.config.agent.max_investigation_steps = 5,
+            "agent.taint_walk_enabled" => self.config.agent.taint_walk_enabled = false,
             "agent.planner.strategy" => self.config.agent.planner.strategy = PlannerStrategy::Auto,
             "agent.planner.max_goals" => self.config.agent.planner.max_goals = 10,
             "agent.planner.max_exploration_actions" => {
