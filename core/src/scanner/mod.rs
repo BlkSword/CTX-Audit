@@ -1273,6 +1273,10 @@ pub async fn scan_directory_deep_with_rules_progress(
     let mut accumulated_cpg: HashMap<String, crate::analysis::cpg::FunctionCPG> = HashMap::new();
     let mut accumulated_flows: HashMap<String, Vec<crate::analysis::taint::TaintFlow>> =
         HashMap::new();
+    let mut accumulated_parsed_ast: HashMap<
+        String,
+        (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>),
+    > = HashMap::new();
 
     // 污点规则只加载一次，避免每个文件都重新读取 YAML
     let rules_dir = std::path::Path::new("rules/taint");
@@ -1337,12 +1341,12 @@ pub async fn scan_directory_deep_with_rules_progress(
             .collect();
 
         // 并行分析 — 通过 CPG 构建后再做污点分析
-        // 同时收集 CPG 缓存和 taint_flows 供 Stage C 使用
-        let batch_results: Vec<(Vec<Finding>, HashMap<String, crate::analysis::cpg::FunctionCPG>, HashMap<String, Vec<crate::analysis::taint::TaintFlow>>)> = batch_data
+        // 同时收集 CPG 缓存、taint_flows 和已解析 AST 产物供 Stage C 使用
+        type FileAst = (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>);
+        let batch_results: Vec<(String, Vec<Finding>, HashMap<String, crate::analysis::cpg::FunctionCPG>, HashMap<String, Vec<crate::analysis::taint::TaintFlow>>, FileAst)> = batch_data
             .par_iter()
             .map(|(file_path_str, content)| {
                 use crate::analysis::cpg::CPGBuilder;
-                use crate::ast::parser::ASTParser;
 
                 // 使用预先加载好的污点规则，避免每个文件都重新读取 YAML
                 let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::from_rules(
@@ -1355,14 +1359,19 @@ pub async fn scan_directory_deep_with_rules_progress(
                 // CPG 缓存（按函数 ID 存储）
                 let mut cpg_cache: HashMap<String, crate::analysis::cpg::FunctionCPG> = HashMap::new();
                 let mut cpg_flows: HashMap<String, Vec<crate::analysis::taint::TaintFlow>> = HashMap::new();
+                let mut parsed_symbols: Vec<crate::ast::Symbol> = Vec::new();
+                let mut parsed_calls: Vec<crate::ast::CallInfo> = Vec::new();
 
-                // 构建函数级 CPG，再运行污点分析
-                let mut ast_parser = ASTParser::new();
-                let flows = if let Some((tree, functions, file_assignments, file_calls)) =
-                    ast_parser.extract_all_for_taint_with_tree(
-                        &std::path::PathBuf::from(file_path_str), content,
-                    )
+                // 构建函数级 CPG，再运行污点分析（复用线程本地 parser）
+                let flows = if let Some((tree, symbols, functions, file_assignments, file_calls)) =
+                    crate::ast::parser::with_thread_local_parser(|ast_parser| {
+                        ast_parser.extract_all_for_taint_with_tree(
+                            &std::path::PathBuf::from(file_path_str), content,
+                        )
+                    })
                 {
+                    parsed_symbols = symbols;
+                    parsed_calls = file_calls.clone();
                     let root = tree.root_node();
                     let mut all_flows = Vec::new();
 
@@ -1465,15 +1474,16 @@ pub async fn scan_directory_deep_with_rules_progress(
                     }
                 }).collect();
 
-                (findings_list, cpg_cache, cpg_flows)
+                (file_path_str.clone(), findings_list, cpg_cache, cpg_flows, (parsed_symbols, parsed_calls))
             })
             .collect();
 
-        // 收集 findings + CPG 缓存
-        for (mut batch_findings, file_cpgs, file_flows) in batch_results {
+        // 收集 findings + CPG 缓存 + Stage B 已解析 AST 产物
+        for (fp, mut batch_findings, file_cpgs, file_flows, file_ast) in batch_results {
             taint_findings.append(&mut batch_findings);
             accumulated_cpg.extend(file_cpgs);
             accumulated_flows.extend(file_flows);
+            accumulated_parsed_ast.insert(fp, file_ast);
         }
 
         taint_scanned += batch.len();
@@ -1545,6 +1555,10 @@ pub async fn scan_directory_deep_with_rules_progress(
             // 注入 Stage B 的 CPG 缓存，使 compute_single_summary 使用精确摘要
             if !accumulated_cpg.is_empty() {
                 analyzer.set_cpg_cache(accumulated_cpg, accumulated_flows);
+            }
+            // 注入 Stage B 已解析 AST 产物，避免 Stage C 二次 parse
+            if !accumulated_parsed_ast.is_empty() {
+                analyzer.set_parsed_ast_cache(accumulated_parsed_ast);
             }
             analyzer.analyze_files_with_content(
                 std::path::Path::new(path),

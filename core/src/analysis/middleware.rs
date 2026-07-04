@@ -75,6 +75,15 @@ impl MiddlewareModel {
         }
     }
 
+    /// 合并另一个中间件模型
+    pub fn merge_from(&mut self, other: MiddlewareModel) {
+        self.express_middleware.extend(other.express_middleware);
+        for (k, v) in other.express_routes {
+            self.express_routes.entry(k).or_default().extend(v);
+        }
+        self.django_middleware.extend(other.django_middleware);
+    }
+
     /// 扫描 Django settings.py 中的 MIDDLEWARE 列表
     pub fn scan_django_settings(&mut self, content: &str) {
         let mut in_middleware = false;

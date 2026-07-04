@@ -195,7 +195,7 @@ impl AstTaintAnalyzer {
         let callback_hints = async_flow::detect_callback_hints(content);
 
         // 使用 AST-based 分析（保留 Tree 供 CFG 构建使用）
-        if let Some((tree, functions, file_assignments, file_calls)) = self
+        if let Some((tree, _symbols, functions, file_assignments, file_calls)) = self
             .ast_parser
             .extract_all_for_taint_with_tree(file_path, content)
         {
@@ -3087,7 +3087,7 @@ app.get('/download', (req, res) => {
         let analyzer = yaml_rules_analyzer();
         let path = std::path::PathBuf::from("app.js");
         let mut parser = ASTParser::new();
-        let (tree, functions, file_assignments, file_calls) =
+        let (tree, _symbols, functions, file_assignments, file_calls) =
             parser.extract_all_for_taint_with_tree(&path, code).unwrap();
         let callback_hints = crate::analysis::async_flow::detect_callback_hints(code);
         let root = tree.root_node();

@@ -5,6 +5,7 @@
 //!
 //! 提供函数调用图构建、跨文件污点传播和模块依赖分析
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::sync::Arc;
 
 use super::imports::ImportResolver;
 use super::taint::{FlowLocation, Severity, TaintSink, TaintSource, VulnerabilityType};
-use crate::ast::{CallInfo, CallbackArg};
+use crate::ast::{CallInfo, CallbackArg, Symbol};
 
 /// 调用目标 — 方法调用的 receiver 信息
 ///
@@ -195,6 +196,13 @@ impl CallGraph {
             if !callee.called_by.iter().any(|c| c == caller_id) {
                 callee.called_by.push(caller_id.to_string());
             }
+        }
+    }
+
+    /// 合并另一个调用图（假设节点 ID 跨图不冲突）
+    pub fn merge_from(&mut self, other: CallGraph) {
+        for (_, node) in other.nodes {
+            self.add_node(node);
         }
     }
 
@@ -487,6 +495,9 @@ pub struct CrossFileTaintAnalyzer {
     cpg_cache: HashMap<String, super::cpg::FunctionCPG>,
     /// CPG taint flow 缓存
     cpg_taint_flows: HashMap<String, Vec<super::taint::TaintFlow>>,
+    /// Stage B 已解析 AST 产物缓存：file_path -> (symbols, calls)
+    /// 供 Stage C 调用图构建直接复用，避免对同一文件二次 parse。
+    parsed_ast_cache: HashMap<String, (Vec<Symbol>, Vec<CallInfo>)>,
     /// 文件导入别名映射: file_path -> (local_name -> ImportResolution)
     file_import_aliases: HashMap<String, HashMap<String, ImportResolution>>,
     /// 局部变量→类型映射: file_path -> (var_name -> type_name)
@@ -516,6 +527,7 @@ impl CrossFileTaintAnalyzer {
             sink_patterns: Self::default_sink_patterns(),
             cpg_cache: HashMap::new(),
             cpg_taint_flows: HashMap::new(),
+            parsed_ast_cache: HashMap::new(),
             file_import_aliases: HashMap::new(),
             variable_type_map: HashMap::new(),
             type_hierarchy: super::type_hierarchy::TypeHierarchy::new(),
@@ -548,6 +560,29 @@ impl CrossFileTaintAnalyzer {
     ) {
         self.cpg_cache = cpg_cache;
         self.cpg_taint_flows = taint_flows;
+    }
+
+    /// 注入 Stage B 已解析的 AST 产物
+    pub fn set_parsed_ast_cache(
+        &mut self,
+        cache: HashMap<String, (Vec<Symbol>, Vec<CallInfo>)>,
+    ) {
+        self.parsed_ast_cache = cache;
+    }
+
+    /// 合并另一个分析器的文件级结果（用于并行 Stage C 结果归并）
+    pub fn merge_from(&mut self, mut other: CrossFileTaintAnalyzer) {
+        self.call_graph.merge_from(other.call_graph);
+        self.import_resolver.merge_from(other.import_resolver);
+        self.file_import_aliases.extend(other.file_import_aliases);
+        self.variable_type_map.extend(other.variable_type_map);
+        self.type_hierarchy.merge_from(other.type_hierarchy);
+        self.middleware_model.merge_from(other.middleware_model);
+        self.call_site_args.extend(other.call_site_args);
+        // cpg_cache / cpg_taint_flows / parsed_ast_cache 由主分析器持有，不覆盖
+        self.cpg_cache.extend(other.cpg_cache);
+        self.cpg_taint_flows.extend(other.cpg_taint_flows);
+        self.parsed_ast_cache.extend(other.parsed_ast_cache);
     }
 
     /// 分析项目
@@ -664,13 +699,32 @@ impl CrossFileTaintAnalyzer {
         }
         self.preload_file_contents(files);
 
-        for file_path in files {
-            let file_str = file_path.to_string_lossy().to_string();
-            if let Some(content) = self.file_content_cache.get(&file_str).cloned() {
-                if self.is_ast_supported(file_path) {
-                    self.build_call_graph_for_file_with_content(file_path, &content);
+        // 并行构建每个文件的调用图子图，再归并到主分析器
+        let partials: Vec<CrossFileTaintAnalyzer> = files
+            .par_iter()
+            .filter_map(|file_path| {
+                let file_str = file_path.to_string_lossy().to_string();
+                let content = self.file_content_cache.get(&file_str).cloned()?;
+                if !self.is_ast_supported(file_path) {
+                    return None;
                 }
-            }
+                let mut local = Self::with_rules(
+                    self.source_patterns.clone(),
+                    self.sink_patterns.clone(),
+                );
+                // 只传递当前文件的 Stage B AST 产物，避免克隆整个缓存
+                if let Some((symbols, calls)) = self.parsed_ast_cache.get(&file_str) {
+                    let mut subset = HashMap::new();
+                    subset.insert(file_str, (symbols.clone(), calls.clone()));
+                    local.set_parsed_ast_cache(subset);
+                }
+                local.build_call_graph_for_file_with_content(file_path, &content);
+                Some(local)
+            })
+            .collect();
+
+        for mut partial in partials {
+            self.merge_from(partial);
         }
 
         self.filter_constructor_fps();
@@ -711,20 +765,29 @@ impl CrossFileTaintAnalyzer {
         super::middleware::scan_middleware(file_path, content, &mut self.middleware_model);
 
         if self.is_ast_supported(file_path) {
-            let mut parser = crate::ast::ASTParser::new();
-
-            let (symbols_result, calls) = parser.parse_and_extract_calls(file_path, content);
-            let symbols = match symbols_result {
-                Ok(s) => s,
-                Err(_) => {
-                    let language = self.infer_language(file_path);
-                    let functions = self.extract_functions(&content, &file_path_str, language);
-                    for func in functions {
-                        self.call_graph.add_node(func);
+            // 优先复用 Stage B 已解析的 AST 产物
+            let (symbols, calls) = if let Some((cached_symbols, cached_calls)) =
+                self.parsed_ast_cache.get(&file_path_str)
+            {
+                (cached_symbols.clone(), cached_calls.clone())
+            } else {
+                crate::ast::parser::with_thread_local_parser(|parser| {
+                    let (symbols_result, calls) = parser.parse_and_extract_calls(file_path, content);
+                    match symbols_result {
+                        Ok(symbols) => (symbols, calls),
+                        Err(_) => (Vec::new(), calls),
                     }
-                    return;
-                }
+                })
             };
+
+            if symbols.is_empty() {
+                let language = self.infer_language(file_path);
+                let functions = self.extract_functions(&content, &file_path_str, language);
+                for func in functions {
+                    self.call_graph.add_node(func);
+                }
+                return;
+            }
 
             for symbol in &symbols {
                 if !matches!(
@@ -1350,20 +1413,29 @@ impl CrossFileTaintAnalyzer {
         // 扫描框架中间件和路由注册
         super::middleware::scan_middleware(file_path, &content, &mut self.middleware_model);
 
-        let mut parser = crate::ast::ASTParser::new();
-
-        let (symbols_result, calls) = parser.parse_and_extract_calls(file_path, &content);
-        let symbols = match symbols_result {
-            Ok(s) => s,
-            Err(_) => {
-                let language = self.infer_language(file_path);
-                let functions = self.extract_functions(&content, &file_path_str, language);
-                for func in functions {
-                    self.call_graph.add_node(func);
+        // 优先复用 Stage B 已解析的 AST 产物，避免二次 parse
+        let (symbols, calls) = if let Some((cached_symbols, cached_calls)) =
+            self.parsed_ast_cache.get(&file_path_str)
+        {
+            (cached_symbols.clone(), cached_calls.clone())
+        } else {
+            crate::ast::parser::with_thread_local_parser(|parser| {
+                let (symbols_result, calls) = parser.parse_and_extract_calls(file_path, &content);
+                match symbols_result {
+                    Ok(symbols) => (symbols, calls),
+                    Err(_) => (Vec::new(), calls),
                 }
-                return;
-            }
+            })
         };
+
+        if symbols.is_empty() {
+            let language = self.infer_language(file_path);
+            let functions = self.extract_functions(&content, &file_path_str, language);
+            for func in functions {
+                self.call_graph.add_node(func);
+            }
+            return;
+        }
 
         // 从 symbols 中提取函数/方法定义
         for symbol in &symbols {

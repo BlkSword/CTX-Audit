@@ -195,6 +195,15 @@ impl ImportResolver {
         }
     }
 
+    /// 合并另一个导入解析器（假设文件级键不冲突）
+    pub fn merge_from(&mut self, other: ImportResolver) {
+        self.modules.extend(other.modules);
+        self.file_to_module.extend(other.file_to_module);
+        for (name, infos) in other.symbol_table {
+            self.symbol_table.entry(name).or_default().extend(infos);
+        }
+    }
+
     /// 解析文件的导入和导出
     pub fn parse_file(&mut self, file_path: &Path, content: &str) -> ResolvedModule {
         let language = Self::detect_language(file_path);

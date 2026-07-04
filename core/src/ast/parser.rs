@@ -2,9 +2,26 @@ use crate::ast::symbol::{
     ArgInfo, Assignment, CallInfo, CallbackArg, Field, FunctionBody, NodeInfo, ReturnInfo, Symbol,
     SymbolKind,
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser, Query};
+
+/// 线程本地 ASTParser 池
+///
+/// tree-sitter Parser 初始化（set_language）成本较高，
+/// 每个线程保持一份复用，可显著降低多文件解析开销。
+thread_local! {
+    static THREAD_LOCAL_PARSER: RefCell<ASTParser> = RefCell::new(ASTParser::new());
+}
+
+/// 在线程本地 ASTParser 上执行操作
+pub fn with_thread_local_parser<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut ASTParser) -> R,
+{
+    THREAD_LOCAL_PARSER.with(|p| f(&mut *p.borrow_mut()))
+}
 
 /// Safely truncate a string to a maximum byte length, respecting UTF-8 character boundaries.
 /// This prevents panics when the truncation point falls inside a multi-byte character.
@@ -963,7 +980,7 @@ impl ASTParser {
         file_path: &Path,
         content: &str,
     ) -> (Vec<FunctionBody>, Vec<Assignment>, Vec<CallInfo>) {
-        if let Some((_, bodies, assignments, calls)) =
+        if let Some((_, _symbols, bodies, assignments, calls)) =
             self.extract_all_for_taint_with_tree(file_path, content)
         {
             (bodies, assignments, calls)
@@ -974,12 +991,14 @@ impl ASTParser {
 
     /// 单次解析提取所有数据，同时返回 Tree 供 AST-based CFG 使用。
     /// 调用者必须在 Tree 存活期间使用任何从中派生的节点。
+    /// 额外返回 symbols，供 Stage C 调用图构建复用，避免二次 parse。
     pub fn extract_all_for_taint_with_tree(
         &mut self,
         file_path: &Path,
         content: &str,
     ) -> Option<(
         tree_sitter::Tree,
+        Vec<Symbol>,
         Vec<FunctionBody>,
         Vec<Assignment>,
         Vec<CallInfo>,
@@ -1002,6 +1021,23 @@ impl ASTParser {
 
         let root = tree.root_node();
 
+        let symbols = match ext.as_str() {
+            ".java" => self.extract_java_symbols(file_path, content, root).unwrap_or_default(),
+            ".py" => self.extract_python_symbols(file_path, content, root).unwrap_or_default(),
+            ".rs" => self.extract_rust_symbols(file_path, content, root).unwrap_or_default(),
+            ".ts" | ".tsx" => {
+                self.extract_typescript_symbols(file_path, content, root)
+                    .unwrap_or_default()
+            }
+            ".js" | ".jsx" => {
+                self.extract_javascript_symbols(file_path, content, root)
+                    .unwrap_or_default()
+            }
+            _ => self
+                .extract_generic_symbols(file_path, content, &ext, root)
+                .unwrap_or_default(),
+        };
+
         let mut bodies = Vec::new();
         Self::collect_function_bodies_recursive(&root, content, &mut bodies);
 
@@ -1011,7 +1047,7 @@ impl ASTParser {
         let mut calls = Vec::new();
         Self::collect_calls_recursive(&root, content, &mut calls);
 
-        Some((tree, bodies, assignments, calls))
+        Some((tree, symbols, bodies, assignments, calls))
     }
 
     fn collect_assignments_generic(node: &Node, content: &str, results: &mut Vec<Assignment>) {

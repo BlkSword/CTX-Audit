@@ -102,6 +102,17 @@ impl TypeHierarchy {
         }
     }
 
+    /// 合并另一个类型层次结构
+    pub fn merge_from(&mut self, other: TypeHierarchy) {
+        self.types.extend(other.types);
+        for (k, v) in other.extends_map {
+            self.extends_map.entry(k).or_default().extend(v);
+        }
+        for (k, v) in other.implementations {
+            self.implementations.entry(k).or_default().extend(v);
+        }
+    }
+
     /// 解析虚方法调用：返回接收者类型及其所有父类型中定义的方法
     pub fn resolve_virtual_method(
         &self,
