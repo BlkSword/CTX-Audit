@@ -1427,6 +1427,13 @@ pub async fn scan_directory_deep_with_rules_progress(
                     } else {
                         // 按函数逐个构建 CPG 并分析
                         for func in &functions {
+                            // 函数级快速过滤：函数体不含 source/sink 关键词时跳过 CPG 构建
+                            if let Some(ref set) = taint_keyword_set {
+                                if !set.is_match(&func.body_text) {
+                                    continue;
+                                }
+                            }
+
                             let func_hints: Vec<_> = callback_hints.iter()
                                 .filter(|h| h.callback_start_line >= func.start_line
                                     && h.callback_start_line <= func.end_line)
