@@ -488,9 +488,9 @@ pub struct CrossFileTaintAnalyzer {
     /// 导入解析器
     import_resolver: ImportResolver,
     /// 污点源模式
-    source_patterns: Vec<TaintSource>,
+    source_patterns: Arc<Vec<TaintSource>>,
     /// 污点汇模式
-    sink_patterns: Vec<TaintSink>,
+    sink_patterns: Arc<Vec<TaintSink>>,
     /// CPG 缓存（从 scan pipeline Stage B 传入）
     cpg_cache: HashMap<String, super::cpg::FunctionCPG>,
     /// CPG taint flow 缓存
@@ -523,8 +523,8 @@ impl CrossFileTaintAnalyzer {
         Self {
             call_graph: CallGraph::new(),
             import_resolver: ImportResolver::new(),
-            source_patterns: Self::default_source_patterns(),
-            sink_patterns: Self::default_sink_patterns(),
+            source_patterns: Arc::new(Self::default_source_patterns()),
+            sink_patterns: Arc::new(Self::default_sink_patterns()),
             cpg_cache: HashMap::new(),
             cpg_taint_flows: HashMap::new(),
             parsed_ast_cache: HashMap::new(),
@@ -547,8 +547,8 @@ impl CrossFileTaintAnalyzer {
         sinks: Vec<super::taint::TaintSink>,
     ) -> Self {
         let mut analyzer = Self::new();
-        analyzer.source_patterns = sources;
-        analyzer.sink_patterns = sinks;
+        analyzer.source_patterns = Arc::new(sources);
+        analyzer.sink_patterns = Arc::new(sinks);
         analyzer
     }
 
@@ -708,10 +708,9 @@ impl CrossFileTaintAnalyzer {
                 if !self.is_ast_supported(file_path) {
                     return None;
                 }
-                let mut local = Self::with_rules(
-                    self.source_patterns.clone(),
-                    self.sink_patterns.clone(),
-                );
+                let mut local = Self::new();
+                local.source_patterns = self.source_patterns.clone();
+                local.sink_patterns = self.sink_patterns.clone();
                 // 只传递当前文件的 Stage B AST 产物，避免克隆整个缓存
                 if let Some((symbols, calls)) = self.parsed_ast_cache.get(&file_str) {
                     let mut subset = HashMap::new();
@@ -2272,7 +2271,7 @@ impl CrossFileTaintAnalyzer {
     /// 返回 (is_sink, matched_vulnerability_type)
     fn is_taint_sink(&self, func_name: &str, body: &str) -> (bool, Option<VulnerabilityType>) {
         // 优先按函数体内容匹配（可确定漏洞类型）
-        for s in &self.sink_patterns {
+        for s in self.sink_patterns.iter() {
             if s.matches(body, "*") && !Self::is_body_sanitized_for_sink(body, s) {
                 return (true, Some(s.vulnerability_type));
             }
@@ -2326,7 +2325,7 @@ impl CrossFileTaintAnalyzer {
 
     /// 判断单个函数调用是否命中某个 sink 规则（支持 Semantic 规则）
     fn is_sink_call(&self, call: &CallInfo) -> Option<VulnerabilityType> {
-        for s in &self.sink_patterns {
+        for s in self.sink_patterns.iter() {
             // 先按 callee + receiver 做语义匹配
             if s.matches_with_context(&call.callee, call.receiver.as_deref(), "*") {
                 return Some(s.vulnerability_type);
@@ -2374,7 +2373,7 @@ impl CrossFileTaintAnalyzer {
                     if let Some(lines) = self.get_file_lines(&node.file_path) {
                         let body = Self::extract_body_from_lines(lines, node.start_line, node.end_line);
                         for line in body.iter() {
-                            for source in &self.source_patterns {
+                            for source in self.source_patterns.iter() {
                                 if source.matches(line, "*") {
                                     if let Some(var) = Self::extract_var_from_source_line(line) {
                                         vars.insert(var);
