@@ -7,9 +7,10 @@
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::imports::ImportResolver;
 use super::taint::{FlowLocation, Severity, TaintSink, TaintSource, VulnerabilityType};
@@ -87,6 +88,41 @@ impl From<CallInfo> for CallTarget {
         };
         base.with_line(c.line)
     }
+}
+
+/// 判断一个调用目标是否为常见内置/标准库函数，
+/// 这类函数在全局名称回退阶段可直接跳过，减少无效匹配。
+fn is_builtin_call_target(ct: &CallTarget) -> bool {
+    static BUILTINS: OnceLock<HashSet<(&'static str, Option<&'static str>)>> = OnceLock::new();
+    let set = BUILTINS.get_or_init(|| {
+        let mut s = HashSet::new();
+        // console.*
+        for name in ["log", "error", "warn", "info", "debug", "trace"] {
+            s.insert((name, Some("console")));
+        }
+        // JSON.*
+        s.insert(("parse", Some("JSON")));
+        s.insert(("stringify", Some("JSON")));
+        // 全局工具函数
+        for name in [
+            "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+            "parseInt", "parseFloat", "isNaN", "isFinite",
+        ] {
+            s.insert((name, None));
+        }
+        s
+    });
+
+    if set.contains(&(ct.callee.as_str(), ct.receiver.as_deref())) {
+        return true;
+    }
+    // receiver == console / JSON 时，任意方法都视为内置
+    if let Some(recv) = ct.receiver.as_deref() {
+        if recv == "console" || recv == "JSON" {
+            return true;
+        }
+    }
+    false
 }
 
 /// 函数调用图节点
@@ -511,6 +547,9 @@ pub struct CrossFileTaintAnalyzer {
     /// 调用点参数缓存：key = "caller_func_id:call_line"，value = 该调用的参数列表
     /// 用于跨文件摘要传播时判断 caller 的污点变量是否传入 callee 的敏感参数
     call_site_args: HashMap<String, Vec<crate::ast::ArgInfo>>,
+    /// 模块路径解析缓存：(source_module, importing_file) -> 解析出的文件路径
+    /// 避免 resolve_cross_file_calls / inject_middleware_edges 中重复 IO/路径归一化
+    module_resolution_cache: std::sync::Mutex<HashMap<(String, String), Option<String>>>,
     /// 文件原始内容缓存（用于避免传播阶段反复读盘）
     file_content_cache: HashMap<String, String>,
     /// 文件按行切分后的缓存（与 file_content_cache 配套，避免重复 split）
@@ -533,6 +572,7 @@ impl CrossFileTaintAnalyzer {
             type_hierarchy: super::type_hierarchy::TypeHierarchy::new(),
             middleware_model: super::middleware::MiddlewareModel::new(),
             call_site_args: HashMap::new(),
+            module_resolution_cache: std::sync::Mutex::new(HashMap::new()),
             file_content_cache: HashMap::new(),
             file_lines_cache: HashMap::new(),
         }
@@ -1006,8 +1046,22 @@ impl CrossFileTaintAnalyzer {
     ///
     /// 支持相对路径（`./foo`, `../bar`），尝试常见扩展名和 index 文件。
     fn resolve_module_to_file(&self, source_module: &str, importing_file: &str) -> Option<String> {
+        let key = (source_module.to_string(), importing_file.to_string());
+        {
+            let cache = self.module_resolution_cache.lock().unwrap();
+            if let Some(cached) = cache.get(&key) {
+                return cached.clone();
+            }
+        }
+
         let importing_path = Path::new(importing_file);
-        let importing_dir = importing_path.parent()?;
+        let importing_dir = match importing_path.parent() {
+            Some(d) => d,
+            None => {
+                self.module_resolution_cache.lock().unwrap().insert(key, None);
+                return None;
+            }
+        };
 
         // 标准化模块路径：去除 ./ 前缀，保留 ../ 前缀（由 Path::join 处理）
         let resolved = if let Some(stripped) = source_module.strip_prefix("./") {
@@ -1021,34 +1075,40 @@ impl CrossFileTaintAnalyzer {
             "js", "jsx", "ts", "tsx", "py", "rs", "go", "java", "c", "cpp", "php", "rb",
         ];
 
-        // 1. 精确路径匹配
-        if resolved.exists() && resolved.is_file() {
-            return Some(resolved.to_string_lossy().to_string());
-        }
-
-        // 2. 尝试添加扩展名
-        for ext in &extensions {
-            let with_ext = resolved.with_extension(ext);
-            if with_ext.exists() {
-                return Some(with_ext.to_string_lossy().to_string());
+        let result = if resolved.exists() && resolved.is_file() {
+            Some(resolved.to_string_lossy().to_string())
+        } else {
+            // 2. 尝试添加扩展名
+            let mut found = None;
+            for ext in &extensions {
+                let with_ext = resolved.with_extension(ext);
+                if with_ext.exists() {
+                    found = Some(with_ext.to_string_lossy().to_string());
+                    break;
+                }
             }
-        }
-
-        // 3. 尝试 index 文件（JS/TS 生态）
-        for ext in &["js", "ts", "jsx", "tsx"] {
-            let index_file = resolved.join(format!("index.{}", ext));
-            if index_file.exists() {
-                return Some(index_file.to_string_lossy().to_string());
+            if found.is_none() {
+                // 3. 尝试 index 文件（JS/TS 生态）
+                for ext in &["js", "ts", "jsx", "tsx"] {
+                    let index_file = resolved.join(format!("index.{}", ext));
+                    if index_file.exists() {
+                        found = Some(index_file.to_string_lossy().to_string());
+                        break;
+                    }
+                }
             }
-        }
+            if found.is_none() {
+                // 4. 尝试 __init__.py（Python 包）
+                let init_py = resolved.join("__init__.py");
+                if init_py.exists() {
+                    found = Some(init_py.to_string_lossy().to_string());
+                }
+            }
+            found
+        };
 
-        // 4. 尝试 __init__.py（Python 包）
-        let init_py = resolved.join("__init__.py");
-        if init_py.exists() {
-            return Some(init_py.to_string_lossy().to_string());
-        }
-
-        None
+        self.module_resolution_cache.lock().unwrap().insert(key, result.clone());
+        result
     }
 
     /// 跨文件调用解析
@@ -1257,6 +1317,10 @@ impl CrossFileTaintAnalyzer {
                                     // 即使 receiver 不匹配该 callee，也继续尝试其他 callee
                                 } else {
                                     // 无 receiver 信息时的全局名称回退（低精度，仅兜底）
+                                    // 跳过常见内置函数，避免无意义的全局匹配
+                                    if is_builtin_call_target(ct) {
+                                        continue;
+                                    }
                                     cross_calls.push((caller_id.clone(), callee_id.clone()));
                                 }
                             }
@@ -2459,6 +2523,12 @@ impl CrossFileTaintAnalyzer {
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let mut flows = Vec::new();
 
+        // 跨文件流去重 + 单 source 上限，避免单一 source 爆炸
+        const MAX_FLOWS_PER_SOURCE: usize = 200;
+        let flow_dedup: RefCell<HashSet<(String, String, VulnerabilityType)>> =
+            RefCell::new(HashSet::new());
+        let flows_per_source: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+
         for source_id in &self.call_graph.taint_sources {
             let initial_vars = self.initial_tainted_variables(source_id);
             if initial_vars.is_empty() {
@@ -2482,18 +2552,27 @@ impl CrossFileTaintAnalyzer {
             while let Some((current_id, mut current_tainted, path)) = queue.pop_front() {
                 // 当前函数本身是 sink，且内部污点能命中 sink（已有 CPG 单文件结果兜底）
                 if sink_set.contains(&current_id) && current_id != *source_id {
-                    if let (Some(source_node), Some(sink_node)) = (
-                        self.call_graph.nodes.get(source_id),
-                        self.call_graph.nodes.get(&current_id),
-                    ) {
+                    if let Some(sink_node) = self.call_graph.nodes.get(&current_id) {
                         let vuln_type = sink_node.sink_type.unwrap_or(VulnerabilityType::Generic);
-                        flows.push(self.build_interprocedural_flow(
-                            source_node,
-                            sink_node,
-                            &path,
-                            vuln_type,
-                            "summary_direct_sink",
-                        ));
+                        let key = (source_id.clone(), sink_node.id.clone(), vuln_type);
+                        if flow_dedup.borrow_mut().insert(key) {
+                            {
+                                let mut per_source = flows_per_source.borrow_mut();
+                                let count = per_source.entry(source_id.clone()).or_default();
+                                if *count < MAX_FLOWS_PER_SOURCE {
+                                    *count += 1;
+                                    if let Some(source_node) = self.call_graph.nodes.get(source_id) {
+                                        flows.push(self.build_interprocedural_flow(
+                                            source_node,
+                                            sink_node,
+                                            &path,
+                                            vuln_type,
+                                            "summary_direct_sink",
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2572,16 +2651,24 @@ impl CrossFileTaintAnalyzer {
                                 && callee_tainted
                                     .contains(&callee_node.parameters[ds.from_param].name)
                             {
-                                if let Some(source_node) = self.call_graph.nodes.get(source_id) {
-                                    let mut sink_path = path.clone();
-                                    sink_path.push(callee_id.clone());
-                                    flows.push(self.build_interprocedural_flow(
-                                        source_node,
-                                        callee_node,
-                                        &sink_path,
-                                        ds.vuln_type.clone(),
-                                        "summary_param_to_sink",
-                                    ));
+                                let mut sink_path = path.clone();
+                                sink_path.push(callee_id.clone());
+                                let key = (source_id.clone(), callee_node.id.clone(), ds.vuln_type.clone());
+                                if flow_dedup.borrow_mut().insert(key) {
+                                    let mut per_source = flows_per_source.borrow_mut();
+                                    let count = per_source.entry(source_id.clone()).or_default();
+                                    if *count < MAX_FLOWS_PER_SOURCE {
+                                        *count += 1;
+                                        if let Some(source_node) = self.call_graph.nodes.get(source_id) {
+                                            flows.push(self.build_interprocedural_flow(
+                                                source_node,
+                                                callee_node,
+                                                &sink_path,
+                                                ds.vuln_type.clone(),
+                                                "summary_param_to_sink",
+                                            ));
+                                        }
+                                    }
                                 }
                             }
                         }
