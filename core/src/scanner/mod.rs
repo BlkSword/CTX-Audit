@@ -10,6 +10,7 @@ pub use sca_scanner::{ScaScanOptions, ScaSeverityMapping};
 
 use async_trait::async_trait;
 use rayon::prelude::*;
+use regex::RegexSet;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1308,6 +1309,30 @@ pub async fn scan_directory_deep_with_rules_progress(
             )
         };
 
+    // 预编译 source/sink 关键词集合，用于 Stage B 快速跳过无关文件
+    let taint_keyword_set = {
+        let mut patterns = Vec::new();
+        for src in &taint_sources {
+            for p in &src.patterns {
+                if !p.is_empty() {
+                    patterns.push(regex::escape(p));
+                }
+            }
+        }
+        for sink in &taint_sinks {
+            for p in &sink.patterns {
+                if !p.is_empty() {
+                    patterns.push(regex::escape(p));
+                }
+            }
+        }
+        if patterns.is_empty() {
+            None
+        } else {
+            RegexSet::new(patterns).ok()
+        }
+    };
+
     if let Some(ref cb) = progress {
         cb(ScanProgress {
             phase: ScanPhase::TaintAnalysis,
@@ -1348,6 +1373,23 @@ pub async fn scan_directory_deep_with_rules_progress(
             .map(|(file_path_str, content)| {
                 use crate::analysis::cpg::CPGBuilder;
 
+                let mut parsed_symbols: Vec<crate::ast::Symbol> = Vec::new();
+                let mut parsed_calls: Vec<crate::ast::CallInfo> = Vec::new();
+
+                // 快速过滤：文件内容不含任何 source/sink 关键词时，跳过 Stage B 的
+                // CPG/污点分析（调用图仍由 Stage C 按需构建）。
+                if let Some(ref set) = taint_keyword_set {
+                    if !set.is_match(content) {
+                        return (
+                            file_path_str.clone(),
+                            Vec::new(),
+                            HashMap::new(),
+                            HashMap::new(),
+                            (parsed_symbols, parsed_calls),
+                        );
+                    }
+                }
+
                 // 使用预先加载好的污点规则，避免每个文件都重新读取 YAML
                 let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::from_rules(
                     taint_sources.clone(),
@@ -1359,8 +1401,6 @@ pub async fn scan_directory_deep_with_rules_progress(
                 // CPG 缓存（按函数 ID 存储）
                 let mut cpg_cache: HashMap<String, crate::analysis::cpg::FunctionCPG> = HashMap::new();
                 let mut cpg_flows: HashMap<String, Vec<crate::analysis::taint::TaintFlow>> = HashMap::new();
-                let mut parsed_symbols: Vec<crate::ast::Symbol> = Vec::new();
-                let mut parsed_calls: Vec<crate::ast::CallInfo> = Vec::new();
 
                 // 构建函数级 CPG，再运行污点分析（复用线程本地 parser）
                 let flows = if let Some((tree, symbols, functions, file_assignments, file_calls)) =
