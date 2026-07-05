@@ -124,6 +124,27 @@ fn is_builtin_call_target(ct: &CallTarget) -> bool {
     false
 }
 
+/// 常见通用方法名集合：这类名字在全局名称回退阶段应被跳过，
+/// 否则在 Juliet / 大型 monorepo 中会把所有同名函数连成 O(n²) 边。
+fn is_common_generic_name(name: &str) -> bool {
+    static COMMON: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    let set = COMMON.get_or_init(|| {
+        [
+            // Juliet / 测试框架中重复出现的名字，极易造成 O(n²) 调用边
+            "main", "bad", "good", "good1", "good2", "good3", "goodG2B", "goodB2G",
+            // 单元测试生命周期方法
+            "test", "setup", "teardown",
+        ]
+        .into_iter()
+        .collect()
+    });
+    set.contains(name)
+}
+
+/// 全局名称回退时，单个 callee 允许匹配的最大函数节点数。
+/// 超过该阈值说明是高度通用的名字（如 bad/good/main），应跳过。
+const GLOBAL_FALLBACK_MAX_MATCHES: usize = 32;
+
 /// 函数调用图节点
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallGraphNode {
@@ -1325,6 +1346,12 @@ impl CrossFileTaintAnalyzer {
                             });
 
                         if let Some(callee_ids) = name_to_ids_ref.get(&ct.callee) {
+                            // 防止通用名（如 Juliet 的 bad/good/main）产生 O(n²) 调用边
+                            if callee_ids.len() > GLOBAL_FALLBACK_MAX_MATCHES
+                                || is_common_generic_name(&ct.callee)
+                            {
+                                continue;
+                            }
                             for callee_id in callee_ids {
                                 let callee_file = all_nodes
                                     .get(callee_id)
