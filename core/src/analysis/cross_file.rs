@@ -1041,14 +1041,16 @@ impl CrossFileTaintAnalyzer {
         }
     }
 
-    /// 将导入的模块路径解析为实际文件路径
-    ///
-    /// 支持相对路径（`./foo`, `../bar`），尝试常见扩展名和 index 文件。
-    fn resolve_module_to_file(&self, source_module: &str, importing_file: &str) -> Option<String> {
+    /// 带缓存的模块路径解析（独立函数，供并行调用图分辨率使用）
+    fn resolve_module_to_file_with_cache(
+        cache: &std::sync::Mutex<HashMap<(String, String), Option<String>>>,
+        source_module: &str,
+        importing_file: &str,
+    ) -> Option<String> {
         let key = (source_module.to_string(), importing_file.to_string());
         {
-            let cache = self.module_resolution_cache.lock().unwrap();
-            if let Some(cached) = cache.get(&key) {
+            let c = cache.lock().unwrap();
+            if let Some(cached) = c.get(&key) {
                 return cached.clone();
             }
         }
@@ -1057,7 +1059,7 @@ impl CrossFileTaintAnalyzer {
         let importing_dir = match importing_path.parent() {
             Some(d) => d,
             None => {
-                self.module_resolution_cache.lock().unwrap().insert(key, None);
+                cache.lock().unwrap().insert(key, None);
                 return None;
             }
         };
@@ -1106,8 +1108,19 @@ impl CrossFileTaintAnalyzer {
             found
         };
 
-        self.module_resolution_cache.lock().unwrap().insert(key, result.clone());
+        cache.lock().unwrap().insert(key, result.clone());
         result
+    }
+
+    /// 将导入的模块路径解析为实际文件路径
+    ///
+    /// 支持相对路径（`./foo`, `../bar`），尝试常见扩展名和 index 文件。
+    fn resolve_module_to_file(&self, source_module: &str, importing_file: &str) -> Option<String> {
+        Self::resolve_module_to_file_with_cache(
+            &self.module_resolution_cache,
+            source_module,
+            importing_file,
+        )
     }
 
     /// 跨文件调用解析
@@ -1215,54 +1228,67 @@ impl CrossFileTaintAnalyzer {
                 .push(id.clone());
         }
 
-        // 收集需要添加的跨文件调用关系
-        let mut cross_calls: Vec<(String, String)> = Vec::new();
+        // 只读引用，供并行闭包捕获
+        let all_nodes = &self.call_graph.nodes;
+        let file_import_aliases = &self.file_import_aliases;
+        let variable_type_map = &self.variable_type_map;
+        let type_hierarchy = &self.type_hierarchy;
+        let module_resolution_cache = &self.module_resolution_cache;
+        let name_to_ids_ref = &name_to_ids;
+        let file_name_to_ids_ref = &file_name_to_ids;
 
-        for (caller_id, node) in &self.call_graph.nodes {
-            let caller_file_normalized = normalize_path(&node.file_path);
-            let import_aliases = self.file_import_aliases.get(&caller_file_normalized);
+        // 并行处理每个 caller，收集跨文件调用边
+        let node_vec: Vec<(String, CallGraphNode)> = all_nodes
+            .iter()
+            .map(|(id, node)| (id.clone(), node.clone()))
+            .collect();
 
-            for ct in &node.calls {
-                if ct.callee.contains(':') {
-                    continue;
-                }
+        let cross_call_batches: Vec<Vec<(String, String)>> = node_vec
+            .into_par_iter()
+            .map(|(caller_id, node)| {
+                let caller_file_normalized = normalize_path(&node.file_path);
+                let import_aliases = file_import_aliases.get(&caller_file_normalized);
+                let mut local_edges = Vec::new();
 
-                let mut resolved = false;
+                for ct in &node.calls {
+                    if ct.callee.contains(':') {
+                        continue;
+                    }
 
-                // ── Phase 1: Import alias 精确匹配 ──
-                if let Some(aliases) = import_aliases {
-                    if let Some(resolution) = aliases.get(&ct.callee) {
-                        // 解析源模块路径到实际文件
-                        if let Some(target_file) =
-                            self.resolve_module_to_file(&resolution.source_module, &node.file_path)
-                        {
-                            let target_normalized = normalize_path(&target_file);
-                            if let Some(file_funcs) = file_name_to_ids.get(&target_normalized) {
-                                // 查找匹配的导出名称
-                                let lookup_name = if resolution.is_default {
-                                    &ct.callee
-                                } else {
-                                    &resolution.original_export_name
-                                };
+                    let mut resolved = false;
 
-                                if let Some(callee_ids) = file_funcs.get(lookup_name) {
-                                    for callee_id in callee_ids {
-                                        if callee_id != caller_id {
-                                            cross_calls
-                                                .push((caller_id.clone(), callee_id.clone()));
-                                            resolved = true;
+                    // ── Phase 1: Import alias 精确匹配 ──
+                    if let Some(aliases) = import_aliases {
+                        if let Some(resolution) = aliases.get(&ct.callee) {
+                            if let Some(target_file) = Self::resolve_module_to_file_with_cache(
+                                module_resolution_cache,
+                                &resolution.source_module,
+                                &node.file_path,
+                            ) {
+                                let target_normalized = normalize_path(&target_file);
+                                if let Some(file_funcs) = file_name_to_ids_ref.get(&target_normalized) {
+                                    let lookup_name = if resolution.is_default {
+                                        &ct.callee
+                                    } else {
+                                        &resolution.original_export_name
+                                    };
+
+                                    if let Some(callee_ids) = file_funcs.get(lookup_name) {
+                                        for callee_id in callee_ids {
+                                            if callee_id != &caller_id {
+                                                local_edges.push((caller_id.clone(), callee_id.clone()));
+                                                resolved = true;
+                                            }
                                         }
                                     }
-                                }
 
-                                // 默认导入回退：匹配目标文件中所有函数
-                                if !resolved && resolution.is_default {
-                                    for (_, callee_ids) in file_funcs {
-                                        for callee_id in callee_ids {
-                                            if callee_id != caller_id {
-                                                cross_calls
-                                                    .push((caller_id.clone(), callee_id.clone()));
-                                                resolved = true;
+                                    if !resolved && resolution.is_default {
+                                        for (_, callee_ids) in file_funcs {
+                                            for callee_id in callee_ids {
+                                                if callee_id != &caller_id {
+                                                    local_edges.push((caller_id.clone(), callee_id.clone()));
+                                                    resolved = true;
+                                                }
                                             }
                                         }
                                     }
@@ -1270,91 +1296,89 @@ impl CrossFileTaintAnalyzer {
                             }
                         }
                     }
-                }
 
-                // ── Phase 2: receiver 感知解析（import 别名 + 变量→类型追踪） ──
-                if !resolved {
-                    // 如果调用有 receiver，尝试通过以下路径解析到目标文件：
-                    //   a) receiver 是 import 别名（如 UserDAO from require）
-                    //   b) receiver 是局部变量，其类型是 import 别名
-                    //      （如 const userDAO = new UserDAO(db) → userDAO → UserDAO → target file）
-                    let receiver_target_file: Option<String> =
-                        ct.receiver.as_ref().and_then(|recv| {
-                            // a) 直接 import 别名
-                            if let Some(target) = import_aliases
-                                .and_then(|aliases| aliases.get(recv))
-                                .and_then(|res| {
-                                    self.resolve_module_to_file(&res.source_module, &node.file_path)
-                                })
+                    // ── Phase 2: receiver 感知解析 ──
+                    if !resolved {
+                        let receiver_target_file: Option<String> =
+                            ct.receiver.as_ref().and_then(|recv| {
+                                if let Some(target) = import_aliases
+                                    .and_then(|aliases| aliases.get(recv))
+                                    .and_then(|res| {
+                                        Self::resolve_module_to_file_with_cache(
+                                            module_resolution_cache,
+                                            &res.source_module,
+                                            &node.file_path,
+                                        )
+                                    })
+                                {
+                                    return Some(target);
+                                }
+                                let var_types = variable_type_map.get(&caller_file_normalized)?;
+                                let type_name = var_types.get(recv)?;
+                                let aliases = import_aliases?;
+                                let resolution = aliases.get(type_name)?;
+                                Self::resolve_module_to_file_with_cache(
+                                    module_resolution_cache,
+                                    &resolution.source_module,
+                                    &node.file_path,
+                                )
+                            });
+
+                        if let Some(callee_ids) = name_to_ids_ref.get(&ct.callee) {
+                            for callee_id in callee_ids {
+                                let callee_file = all_nodes
+                                    .get(callee_id)
+                                    .map(|n| normalize_path(&n.file_path))
+                                    .unwrap_or_default();
+                                if callee_file != caller_file_normalized {
+                                    if let Some(ref target_file) = receiver_target_file {
+                                        let target_normalized = normalize_path(target_file);
+                                        if callee_file == target_normalized {
+                                            local_edges.push((caller_id.clone(), callee_id.clone()));
+                                            resolved = true;
+                                        }
+                                    } else {
+                                        if is_builtin_call_target(ct) {
+                                            continue;
+                                        }
+                                        local_edges.push((caller_id.clone(), callee_id.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Phase 3: 类型层次虚方法分发 ──
+                    if !resolved && ct.receiver.is_some() && !type_hierarchy.is_empty() {
+                        let recv_name = ct.receiver.as_deref().unwrap_or("");
+                        let resolved_methods =
+                            type_hierarchy.resolve_virtual_method(recv_name, &ct.callee);
+
+                        for rm in &resolved_methods {
+                            if let Some(file_funcs) =
+                                file_name_to_ids_ref.get(&normalize_path(&rm.file_path))
                             {
-                                return Some(target);
-                            }
-                            // b) 局部变量 → 类型 → import 别名
-                            let var_types = self.variable_type_map.get(&caller_file_normalized)?;
-                            let type_name = var_types.get(recv)?;
-                            let aliases = import_aliases?;
-                            let resolution = aliases.get(type_name)?;
-                            self.resolve_module_to_file(&resolution.source_module, &node.file_path)
-                        });
-
-                    if let Some(callee_ids) = name_to_ids.get(&ct.callee) {
-                        for callee_id in callee_ids {
-                            let callee_file = self
-                                .call_graph
-                                .nodes
-                                .get(callee_id)
-                                .map(|n| normalize_path(&n.file_path))
-                                .unwrap_or_default();
-                            if callee_file != caller_file_normalized {
-                                // receiver 命中时，精确匹配 receiver 目标文件
-                                if let Some(ref target_file) = receiver_target_file {
-                                    let target_normalized = normalize_path(target_file);
-                                    if callee_file == target_normalized {
-                                        cross_calls.push((caller_id.clone(), callee_id.clone()));
-                                        resolved = true;
-                                    }
-                                    // 即使 receiver 不匹配该 callee，也继续尝试其他 callee
-                                } else {
-                                    // 无 receiver 信息时的全局名称回退（低精度，仅兜底）
-                                    // 跳过常见内置函数，避免无意义的全局匹配
-                                    if is_builtin_call_target(ct) {
-                                        continue;
-                                    }
-                                    cross_calls.push((caller_id.clone(), callee_id.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ── Phase 3: 类型层次虚方法分发 ──
-                if !resolved && ct.receiver.is_some() && !self.type_hierarchy.is_empty() {
-                    let recv_name = ct.receiver.as_deref().unwrap_or("");
-                    let resolved_methods = self
-                        .type_hierarchy
-                        .resolve_virtual_method(recv_name, &ct.callee);
-
-                    for rm in &resolved_methods {
-                        // 在 call_graph 中查找匹配的 (file_path, method_name)
-                        if let Some(file_funcs) =
-                            file_name_to_ids.get(&normalize_path(&rm.file_path))
-                        {
-                            if let Some(callee_ids) = file_funcs.get(&ct.callee) {
-                                for callee_id in callee_ids {
-                                    if callee_id != caller_id {
-                                        cross_calls.push((caller_id.clone(), callee_id.clone()));
-                                        resolved = true;
+                                if let Some(callee_ids) = file_funcs.get(&ct.callee) {
+                                    for callee_id in callee_ids {
+                                        if callee_id != &caller_id {
+                                            local_edges.push((caller_id.clone(), callee_id.clone()));
+                                            resolved = true;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+
+                local_edges
+            })
+            .collect();
+
+        for batch in cross_call_batches {
+            for (caller_id, callee_id) in batch {
+                self.call_graph.add_call(&caller_id, &callee_id);
             }
-        }
-
-        for (caller_id, callee_id) in cross_calls {
-            self.call_graph.add_call(&caller_id, &callee_id);
         }
     }
 
@@ -2520,9 +2544,15 @@ impl CrossFileTaintAnalyzer {
     fn propagate_taint_with_summaries(&self) -> Vec<InterproceduralTaintFlow> {
         let summaries = self.compute_function_summaries_from_current_graph();
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
+        let sink_reachable = self.compute_sink_reachable_set();
         let mut flows = Vec::new();
 
         for source_id in &self.call_graph.taint_sources {
+            // source 到不了任何 sink，跳过整个 source
+            if !sink_reachable.contains(source_id) {
+                continue;
+            }
+
             let initial_vars = self.initial_tainted_variables(source_id);
             if initial_vars.is_empty() {
                 continue;
@@ -2667,6 +2697,10 @@ impl CrossFileTaintAnalyzer {
                     }
 
                     // 继续进入 callee 内部传播（参数级 forward）
+                    // 只扩展能到达 sink 的 callee，避免死路传播
+                    if !sink_reachable.contains(callee_id) {
+                        continue;
+                    }
                     let prev = visited.entry(callee_id.clone()).or_default();
                     let new_vars: HashSet<String> =
                         callee_tainted.difference(prev).cloned().collect();
@@ -2838,32 +2872,34 @@ impl CrossFileTaintAnalyzer {
         self.find_interprocedural_taint_flows_fallback()
     }
 
+    /// 预计算：从所有 sink 反向 BFS，得到“可能到达 sink”的节点集合。
+    fn compute_sink_reachable_set(&self) -> HashSet<String> {
+        let mut reachable: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        for sink_id in &self.call_graph.taint_sinks {
+            if reachable.insert(sink_id.clone()) {
+                queue.push_back(sink_id.clone());
+            }
+        }
+        while let Some(node_id) = queue.pop_front() {
+            if let Some(node) = self.call_graph.nodes.get(&node_id) {
+                for caller_id in &node.called_by {
+                    if reachable.insert(caller_id.clone()) {
+                        queue.push_back(caller_id.clone());
+                    }
+                }
+            }
+        }
+        reachable
+    }
+
     /// 纯调用图 BFS 兜底：从 source 函数出发，沿调用图找到所有可达 sink 函数
     fn find_interprocedural_taint_flows_fallback(&self) -> Vec<InterproceduralTaintFlow> {
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let mut flows = Vec::new();
 
-        // 预计算：从所有 sink 反向 BFS，得到“可能到达 sink”的节点集合。
-        // 正向搜索时只扩展这些节点，避免大量与 sink 无关的分支。
-        let sink_reachable: HashSet<String> = {
-            let mut reachable: HashSet<String> = HashSet::new();
-            let mut queue: VecDeque<String> = VecDeque::new();
-            for sink_id in &self.call_graph.taint_sinks {
-                if reachable.insert(sink_id.clone()) {
-                    queue.push_back(sink_id.clone());
-                }
-            }
-            while let Some(node_id) = queue.pop_front() {
-                if let Some(node) = self.call_graph.nodes.get(&node_id) {
-                    for caller_id in &node.called_by {
-                        if reachable.insert(caller_id.clone()) {
-                            queue.push_back(caller_id.clone());
-                        }
-                    }
-                }
-            }
-            reachable
-        };
+        // 预计算 sink 可达集，正向搜索只扩展这些节点。
+        let sink_reachable = self.compute_sink_reachable_set();
 
         // 对每个 source 做 BFS，一次遍历找到所有可达的 sink
         for source_id in &self.call_graph.taint_sources {
