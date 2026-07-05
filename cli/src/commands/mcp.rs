@@ -919,11 +919,31 @@ async fn tool_scan_file(args: &Value) -> Value {
                     serde_json::json!(flows
                         .iter()
                         .map(|f| serde_json::json!({
-                            "source": f.source.symbol,
-                            "source_line": f.source.line,
-                            "sink": f.sink.symbol,
-                            "sink_line": f.sink.line,
+                            "id": f.id,
                             "type": format!("{:?}", f.vulnerability_type),
+                            "severity": format!("{:?}", f.severity).to_lowercase(),
+                            "confidence": f.confidence,
+                            "source": {
+                                "file": f.source.file_path,
+                                "line": f.source.line,
+                                "column": f.source.column,
+                                "symbol": f.source.symbol,
+                                "code": f.source.code_snippet,
+                            },
+                            "sink": {
+                                "file": f.sink.file_path,
+                                "line": f.sink.line,
+                                "column": f.sink.column,
+                                "symbol": f.sink.symbol,
+                                "code": f.sink.code_snippet,
+                            },
+                            "propagation_path": f.path.iter().map(|n| serde_json::json!({
+                                "step_type": format!("{:?}", n.node_type).to_lowercase(),
+                                "file": n.file_path,
+                                "line": n.line,
+                                "symbol": n.symbol,
+                                "code": n.code_snippet,
+                            })).collect::<Vec<_>>(),
                         }))
                         .collect::<Vec<_>>()),
                 );

@@ -1045,7 +1045,7 @@ impl CrossFileTaintAnalyzer {
         let normalized = normalize_path(file_path);
         let mut var_types: HashMap<String, String> = HashMap::new();
 
-        // 模式: const/let/var varName = new TypeName(...)
+        // 模式 1: const/let/var varName = new TypeName(...)
         // 也匹配: const/let/var varName = TypeName(...)  (无 new 的构造函数)
         let re =
             regex::Regex::new(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:new\s+)?(\w+)\s*\(").unwrap();
@@ -1061,6 +1061,22 @@ impl CrossFileTaintAnalyzer {
                 .unwrap_or(false)
             {
                 var_types.entry(var_name).or_insert(type_name);
+            }
+        }
+
+        // 模式 2: Java/C# 等语言的字段声明
+        // private final UserDao userDao = new UserDao();
+        // UserDao userDao;
+        let field_re = regex::Regex::new(
+            r"(?:\b(?:private|public|protected|static|final)\b\s+)*\b([A-Z]\w+)\s+(\w+)\s*(?:=|;)"
+        ).unwrap();
+
+        for cap in field_re.captures_iter(content) {
+            let type_name = cap[1].to_string();
+            let field_name = cap[2].to_string();
+            // 避免把类名本身匹配成字段（如 class UserDao 后的内容）
+            if field_name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+                var_types.entry(field_name).or_insert(type_name);
             }
         }
 
@@ -1427,8 +1443,14 @@ impl CrossFileTaintAnalyzer {
                     // ── Phase 3: 类型层次虚方法分发 ──
                     if !resolved && ct.receiver.is_some() && !type_hierarchy.is_empty() {
                         let recv_name = ct.receiver.as_deref().unwrap_or("");
+                        // 先把 receiver 变量名解析为类型名（局部变量 / 字段）
+                        let recv_type = variable_type_map
+                            .get(&caller_file_normalized)
+                            .and_then(|vt| vt.get(recv_name))
+                            .map(|s| s.as_str())
+                            .unwrap_or(recv_name);
                         let resolved_methods =
-                            type_hierarchy.resolve_virtual_method(recv_name, &ct.callee);
+                            type_hierarchy.resolve_virtual_method(recv_type, &ct.callee);
 
                         for rm in &resolved_methods {
                             if let Some(file_funcs) =

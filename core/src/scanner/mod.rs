@@ -1525,6 +1525,42 @@ pub async fn scan_directory_deep_with_rules_progress(
                     }).collect();
                     let vuln_name = format!("{}", flow.vulnerability_type);
 
+                    let path_steps: Vec<PathStepRef> = flow
+                        .path
+                        .iter()
+                        .map(|n| PathStepRef {
+                            function: n.symbol.clone(),
+                            file: n.file_path.clone(),
+                            line: n.line,
+                            step_type: match n.node_type {
+                                crate::analysis::taint::FlowNodeType::Source => "source".to_string(),
+                                crate::analysis::taint::FlowNodeType::Sink => "sink".to_string(),
+                                crate::analysis::taint::FlowNodeType::Sanitized => "sanitization".to_string(),
+                                crate::analysis::taint::FlowNodeType::Call => "call".to_string(),
+                                crate::analysis::taint::FlowNodeType::Return => "return".to_string(),
+                                _ => "propagation".to_string(),
+                            },
+                        })
+                        .collect();
+
+                    let evidence = EvidenceRefs {
+                        source_sink_path: Some(SourceSinkEvidence {
+                            source_function: flow.source.symbol.clone(),
+                            source_file: flow.source.file_path.clone(),
+                            source_line: flow.source.line,
+                            source_node_id: flow.source.node_id.clone(),
+                            sink_function: flow.sink.symbol.clone(),
+                            sink_file: flow.sink.file_path.clone(),
+                            sink_line: flow.sink.line,
+                            sink_node_id: flow.sink.node_id.clone(),
+                            path_length: path_steps.len(),
+                            path_steps,
+                        }),
+                        sanitizer_chain: Vec::new(),
+                        middleware_coverage: Vec::new(),
+                        graph_snapshot: None,
+                    };
+
                     Finding {
                         finding_id: flow.id.clone(),
                         file_path: file_str.clone(),
@@ -1549,9 +1585,24 @@ pub async fn scan_directory_deep_with_rules_progress(
                         source_snippet: flow.source.code_snippet.clone(),
                         sink_snippet: flow.sink.code_snippet.clone(),
                         file_role: Some(classify_file_role(&file_str).to_string()),
-                        barriers: None,
-                        reasoning_hint: Some(format!("Taint flow: {} → {} via {} steps", flow.source.symbol, flow.sink.symbol, flow.path.len())),
-                        evidence_refs: None,
+                        barriers: if flow.path.iter().any(|n| n.node_type == crate::analysis::taint::FlowNodeType::Sanitized) {
+                            Some(vec!["sanitization_detected".to_string()])
+                        } else {
+                            None
+                        },
+                        reasoning_hint: Some(format!(
+                            "Taint flow: {} → {} via {} steps. {}{}",
+                            flow.source.symbol,
+                            flow.sink.symbol,
+                            flow.path.len(),
+                            sink_context_hint(&vuln_name),
+                            if flow.path.iter().any(|n| n.node_type == crate::analysis::taint::FlowNodeType::Sanitized) {
+                                "；路径中检测到净化处理"
+                            } else {
+                                ""
+                            }
+                        )),
+                        evidence_refs: Some(evidence),
                     }
                 }).collect();
 
@@ -1682,7 +1733,12 @@ pub async fn scan_directory_deep_with_rules_progress(
                 let intermediate: Vec<String> = flow
                     .interprocedural_path
                     .iter()
-                    .map(|s| format!("{}:{}", s.file_path, s.line))
+                    .map(|s| {
+                        format!(
+                            "{}@{}:{}",
+                            s.function_name, s.file_path, s.line
+                        )
+                    })
                     .collect();
 
                 let vuln_name = format!("{}", flow.vulnerability_type);
@@ -1702,7 +1758,18 @@ pub async fn scan_directory_deep_with_rules_progress(
                             crate::analysis::cross_file::InterproceduralStepType::Sink => {
                                 "sink".to_string()
                             }
-                            _ => "direct_call".to_string(),
+                            crate::analysis::cross_file::InterproceduralStepType::ParameterIn => {
+                                "parameter_in".to_string()
+                            }
+                            crate::analysis::cross_file::InterproceduralStepType::ParameterOut => {
+                                "parameter_out".to_string()
+                            }
+                            crate::analysis::cross_file::InterproceduralStepType::ReturnValue => {
+                                "return_value".to_string()
+                            }
+                            crate::analysis::cross_file::InterproceduralStepType::Assignment => {
+                                "assignment".to_string()
+                            }
                         },
                     })
                     .collect();
@@ -1743,6 +1810,17 @@ pub async fn scan_directory_deep_with_rules_progress(
                     })
                     .collect();
 
+                // 为跨文件 finding 补充源码上下文：同文件取 source→sink，跨文件取 source 周围
+                let code_snippet = content_cache
+                    .get(&flow.source.file_path)
+                    .map(|content| {
+                        if flow.source.file_path == flow.sink.file_path {
+                            extract_code_context(content, flow.source.line, flow.sink.line, 3)
+                        } else {
+                            extract_code_context(content, flow.source.line, flow.source.line, 5)
+                        }
+                    });
+
                 let evidence = EvidenceRefs {
                     source_sink_path: Some(SourceSinkEvidence {
                         source_function: flow.source.symbol.clone(),
@@ -1782,16 +1860,17 @@ pub async fn scan_directory_deep_with_rules_progress(
                     llm_output: None,
                     confidence: Some(flow.confidence),
                     corroboration_count: None,
-                    code_snippet: None,
+                    code_snippet,
                     source_snippet: flow.source.code_snippet.clone(),
                     sink_snippet: flow.sink.code_snippet.clone(),
                     file_role: Some(classify_file_role(&flow.source.file_path).to_string()),
                     barriers: None,
                     reasoning_hint: Some(format!(
-                        "Cross-file taint: {} → {} via {} hops",
+                        "Cross-file taint: {} → {} via {} hops. {}",
                         flow.source.symbol,
                         flow.sink.symbol,
-                        flow.interprocedural_path.len()
+                        flow.interprocedural_path.len(),
+                        sink_context_hint(&vuln_name)
                     )),
                     evidence_refs: Some(evidence),
                 });
@@ -1969,7 +2048,38 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
     } else {
         Some(best_barriers)
     };
-    best.evidence_refs = None;
+
+    // 保留最佳 evidence_refs：若最佳自身没有，但同组其他 finding 有，则合并补充
+    if best.evidence_refs.is_none() {
+        if let Some(first_with_evidence) = indices
+            .iter()
+            .map(|&idx| &findings[idx].evidence_refs)
+            .find(|e| e.is_some())
+        {
+            best.evidence_refs = first_with_evidence.clone();
+        }
+    }
+    if let Some(ref mut evidence) = best.evidence_refs {
+        // 合并同组所有 sanitizer / middleware 证据（按文件+行去重）
+        let mut seen_sanitizers = std::collections::HashSet::new();
+        let mut seen_middleware = std::collections::HashSet::new();
+        for &idx in indices {
+            if let Some(ref other) = findings[idx].evidence_refs {
+                for s in &other.sanitizer_chain {
+                    let key = (&s.file, s.line, &s.function);
+                    if seen_sanitizers.insert(key) {
+                        evidence.sanitizer_chain.push(s.clone());
+                    }
+                }
+                for m in &other.middleware_coverage {
+                    let key = (&m.middleware_file, &m.middleware_name, &m.route_handler);
+                    if seen_middleware.insert(key) {
+                        evidence.middleware_coverage.push(m.clone());
+                    }
+                }
+            }
+        }
+    }
 
     best
 }
@@ -2061,5 +2171,23 @@ fn is_supported_file(path: &std::path::Path) -> bool {
         )
     } else {
         false
+    }
+}
+
+/// 根据漏洞类型返回 sink 执行上下文描述，帮助 agent 快速判断漏洞真实性。
+fn sink_context_hint(vuln_type: &str) -> &'static str {
+    match vuln_type {
+        "SqlInjection" => "Sink executes SQL against a database; verify whether user input is concatenated into the query",
+        "CommandInjection" => "Sink executes OS commands; verify whether user input reaches Runtime.exec/ProcessBuilder",
+        "ServerSideRequestForgery" => "Sink makes outbound network requests; verify whether the URL is user-controlled",
+        "PathTraversal" => "Sink performs file system operations; verify whether the path is user-controlled",
+        "Xss" | "CrossSiteScripting" => "Sink renders content in HTML/JS context; verify whether output is encoded",
+        "InsecureDeserialization" => "Sink deserializes untrusted data; verify whether input is validated",
+        "WeakCrypto" | "WeakHash" => "Sink uses a weak cryptographic algorithm; verify algorithm strength",
+        "HardcodedSecret" => "Sink exposes hardcoded credentials; verify whether the value is truly sensitive",
+        "CodeInjection" => "Sink evaluates/executes dynamic code; verify whether input reaches eval/Function",
+        "OpenRedirect" => "Sink performs HTTP redirect; verify whether the target URL is user-controlled",
+        "Xxe" => "Sink parses XML with external entities enabled",
+        _ => "Sink performs a security-sensitive operation; verify data flow and validation",
     }
 }
