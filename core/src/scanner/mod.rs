@@ -1194,7 +1194,6 @@ pub async fn scan_directory_deep_with_rules_progress(
 
     // Stage B: AST 污点分析（enable_taint = true）
     // C1: 候选文件选择 — 基于 AST 支持的文件类型，不依赖 rule findings
-    const TAINT_BATCH_SIZE: usize = 50;
 
     // 如果 content_cache 中 AST 文件不足，做第二轮收集
     // （内存预算可能提前终止了主扫描循环，导致 AST 文件未被缓存）
@@ -1270,7 +1269,6 @@ pub async fn scan_directory_deep_with_rules_progress(
     // C2: 分批 AST 污点分析 + 并行处理
     let mut taint_findings: Vec<Finding> = Vec::with_capacity(candidate_files.len() * 4);
     let taint_total = candidate_files.len();
-    let mut taint_scanned: usize = 0;
     let mut accumulated_cpg: HashMap<String, crate::analysis::cpg::FunctionCPG> = HashMap::new();
     let mut accumulated_flows: HashMap<String, Vec<crate::analysis::taint::TaintFlow>> =
         HashMap::new();
@@ -1309,17 +1307,22 @@ pub async fn scan_directory_deep_with_rules_progress(
             )
         };
 
+    // 用 Arc 在 Stage B 的并行任务间共享规则，避免每个文件都克隆
+    let taint_sources = std::sync::Arc::new(taint_sources);
+    let taint_sinks = std::sync::Arc::new(taint_sinks);
+    let taint_sanitizers = std::sync::Arc::new(taint_sanitizers);
+
     // 预编译 source/sink 关键词集合，用于 Stage B 快速跳过无关文件
     let taint_keyword_set = {
         let mut patterns = Vec::new();
-        for src in &taint_sources {
+        for src in taint_sources.iter() {
             for p in &src.patterns {
                 if !p.is_empty() {
                     patterns.push(regex::escape(p));
                 }
             }
         }
-        for sink in &taint_sinks {
+        for sink in taint_sinks.iter() {
             for p in &sink.patterns {
                 if !p.is_empty() {
                     patterns.push(regex::escape(p));
@@ -1342,35 +1345,34 @@ pub async fn scan_directory_deep_with_rules_progress(
         });
     }
 
-    for batch in candidate_files.chunks(TAINT_BATCH_SIZE) {
-        // 准备本批次的文件内容（在主线程中提取，避免跨线程借用 content_cache）
-        let batch_data: Vec<(String, String)> = batch
-            .iter()
-            .filter_map(|file_path_str| {
-                let file_path = std::path::Path::new(file_path_str);
-                if !is_ast_supported_file(file_path) {
-                    return None;
-                }
-                let content = if let Some(cached) = content_cache.get(file_path_str) {
-                    cached.clone()
-                } else if let Ok(c) = std::fs::read_to_string(file_path) {
-                    c
-                } else {
-                    return None;
-                };
-                if content.len() > max_taint_file_kb * 1024 {
-                    return None;
-                }
-                Some((file_path_str.clone(), content))
-            })
-            .collect();
+    // 一次性准备所有候选文件内容，然后整体并行分析，避免 batch 间串行等待
+    let all_file_data: Vec<(String, String)> = candidate_files
+        .iter()
+        .filter_map(|file_path_str| {
+            let file_path = std::path::Path::new(file_path_str);
+            if !is_ast_supported_file(file_path) {
+                return None;
+            }
+            let content = if let Some(cached) = content_cache.get(file_path_str) {
+                cached.clone()
+            } else if let Ok(c) = std::fs::read_to_string(file_path) {
+                c
+            } else {
+                return None;
+            };
+            if content.len() > max_taint_file_kb * 1024 {
+                return None;
+            }
+            Some((file_path_str.clone(), content))
+        })
+        .collect();
 
         // 并行分析 — 通过 CPG 构建后再做污点分析
         // 同时收集 CPG 缓存、taint_flows 和已解析 AST 产物供 Stage C 使用
-        type FileAst = (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>);
-        let batch_results: Vec<(String, Vec<Finding>, HashMap<String, crate::analysis::cpg::FunctionCPG>, HashMap<String, Vec<crate::analysis::taint::TaintFlow>>, FileAst)> = batch_data
-            .par_iter()
-            .map(|(file_path_str, content)| {
+    type FileAst = (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>);
+    let all_results: Vec<(String, Vec<Finding>, HashMap<String, crate::analysis::cpg::FunctionCPG>, HashMap<String, Vec<crate::analysis::taint::TaintFlow>>, FileAst)> = all_file_data
+        .into_par_iter()
+        .map(|(ref file_path_str, ref content)| {
                 use crate::analysis::cpg::CPGBuilder;
 
                 let mut parsed_symbols: Vec<crate::ast::Symbol> = Vec::new();
@@ -1390,20 +1392,24 @@ pub async fn scan_directory_deep_with_rules_progress(
                     }
                 }
 
-                // 使用预先加载好的污点规则，避免每个文件都重新读取 YAML
-                let mut analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::from_rules(
-                    taint_sources.clone(),
-                    taint_sinks.clone(),
-                    taint_sanitizers.clone(),
-                );
                 let file_path = std::path::Path::new(file_path_str);
 
                 // CPG 缓存（按函数 ID 存储）
                 let mut cpg_cache: HashMap<String, crate::analysis::cpg::FunctionCPG> = HashMap::new();
                 let mut cpg_flows: HashMap<String, Vec<crate::analysis::taint::TaintFlow>> = HashMap::new();
 
+                // 每个文件任务创建一个只读分析器，函数级并行任务通过 Arc 共享，
+                // 避免每个函数都新建 ASTParser。
+                let analyzer = std::sync::Arc::new(
+                    crate::analysis::ast_taint::AstTaintAnalyzer::from_rules_arc(
+                        taint_sources.clone(),
+                        taint_sinks.clone(),
+                        taint_sanitizers.clone(),
+                    ),
+                );
+
                 // 构建函数级 CPG，再运行污点分析（复用线程本地 parser）
-                let flows = if let Some((tree, symbols, functions, file_assignments, file_calls)) =
+                let flows = if let Some((_tree, symbols, functions, file_assignments, file_calls)) =
                     crate::ast::parser::with_thread_local_parser(|ast_parser| {
                         ast_parser.extract_all_for_taint_with_tree(
                             &std::path::PathBuf::from(file_path_str), content,
@@ -1412,8 +1418,6 @@ pub async fn scan_directory_deep_with_rules_progress(
                 {
                     parsed_symbols = symbols;
                     parsed_calls = file_calls.clone();
-                    let root = tree.root_node();
-                    let mut all_flows = Vec::new();
 
                     // 加载回调提示
                     let callback_hints = crate::analysis::async_flow::detect_callback_hints(content);
@@ -1423,62 +1427,92 @@ pub async fn scan_directory_deep_with_rules_progress(
                         let func_cpg = CPGBuilder::build_file_cpg(
                             content, file_path_str, &file_assignments, &file_calls,
                         );
-                        all_flows.extend(analyzer.analyze_function_cpg(&func_cpg, content, &callback_hints));
+                        let sig_id = func_cpg.signature.id();
+                        let func_flows = analyzer.analyze_function_cpg(&func_cpg, content, &callback_hints);
+                        cpg_flows.insert(sig_id.clone(), func_flows.clone());
+                        cpg_cache.insert(sig_id, func_cpg);
+                        func_flows
                     } else {
-                        // 按函数逐个构建 CPG 并分析
-                        for func in &functions {
-                            // 函数级快速过滤：函数体不含 source/sink 关键词时跳过 CPG 构建
-                            if let Some(ref set) = taint_keyword_set {
-                                if !set.is_match(&func.body_text) {
-                                    continue;
+                        // 收集函数任务（顺序过滤，避免跨线程传递 tree-sitter Node）
+                        let func_tasks: Vec<_> = functions
+                            .iter()
+                            .filter_map(|func| {
+                                // 函数级快速过滤：函数体不含 source/sink 关键词时跳过 CPG 构建
+                                if let Some(ref set) = taint_keyword_set {
+                                    if !set.is_match(&func.body_text) {
+                                        return None;
+                                    }
                                 }
-                            }
 
-                            let func_hints: Vec<_> = callback_hints.iter()
-                                .filter(|h| h.callback_start_line >= func.start_line
-                                    && h.callback_start_line <= func.end_line)
-                                .cloned()
-                                .collect();
+                                let func_hints: Vec<_> = callback_hints.iter()
+                                    .filter(|h| h.callback_start_line >= func.start_line
+                                        && h.callback_start_line <= func.end_line)
+                                    .cloned()
+                                    .collect();
 
-                            let func_assignments: Vec<_> = file_assignments.iter()
-                                .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
-                                .cloned()
-                                .collect();
-                            let func_calls: Vec<_> = file_calls.iter()
-                                .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
-                                .cloned()
-                                .collect();
+                                let func_assignments: Vec<_> = file_assignments.iter()
+                                    .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+                                    .cloned()
+                                    .collect();
 
-                            // 查找函数体 AST 节点
-                            let func_body_node = crate::analysis::ast_taint::AstTaintAnalyzer::find_function_body_node_static(
-                                &root, func.start_line, func.end_line,
-                            );
+                                let func_calls: Vec<_> = file_calls.iter()
+                                    .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+                                    .cloned()
+                                    .collect();
 
-                            let func_cpg = if let Some(body_node) = func_body_node {
-                                CPGBuilder::build_function_cpg(
-                                    &body_node, content, file_path_str,
-                                    func, &func_assignments, &func_calls,
-                                )
-                            } else {
-                                CPGBuilder::build_file_cpg(
-                                    &func.body_text, file_path_str,
-                                    &func_assignments, &func_calls,
-                                )
-                            };
+                                Some((func.clone(), func_assignments, func_calls, func_hints))
+                            })
+                            .collect();
 
-                            let sig_id = func_cpg.signature.id();
-                            let func_flows = analyzer.analyze_function_cpg(
-                                &func_cpg, &func.body_text, &func_hints,
-                            );
+                        // 函数级并行构建 CPG 并运行污点分析。
+                        // tree-sitter Node 不是 Send，因此每个任务在本地用函数体文本重新解析出 AST，
+                        // 优先使用 AST-based CPG；解析失败时回退到 text-based CPG。
+                        let ext = std::path::Path::new(file_path_str)
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("");
+                        let per_func_results: Vec<_> = func_tasks
+                            .into_par_iter()
+                            .map(|(func, func_assignments, func_calls, func_hints)| {
+                                let func_cpg = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+                                    if let Some(tree) = ast_parser.parse_fragment(&func.body_text, ext) {
+                                        let root = tree.root_node();
+                                        let mut cursor = root.walk();
+                                        let body_node = root.children(&mut cursor).find(|n| {
+                                            matches!(
+                                                n.kind(),
+                                                "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                                            )
+                                        });
+                                        if let Some(body_node) = body_node {
+                                            return CPGBuilder::build_function_cpg_from_fragment(
+                                                &body_node, &func.body_text, file_path_str,
+                                                &func, &func_assignments, &func_calls,
+                                            );
+                                        }
+                                    }
+                                    // 回退到 text-based CPG
+                                    CPGBuilder::build_function_cpg_from_text(
+                                        &func.body_text, file_path_str,
+                                        &func, &func_assignments, &func_calls,
+                                    )
+                                });
+                                let sig_id = func_cpg.signature.id();
+                                let func_flows = analyzer.analyze_function_cpg(
+                                    &func_cpg, &func.body_text, &func_hints,
+                                );
+                                (sig_id, func_cpg, func_flows)
+                            })
+                            .collect();
 
-                            // 缓存 CPG 和对应的 taint flows
+                        let mut all_flows = Vec::new();
+                        for (sig_id, func_cpg, func_flows) in per_func_results {
                             cpg_flows.insert(sig_id.clone(), func_flows.clone());
                             cpg_cache.insert(sig_id, func_cpg);
-
                             all_flows.extend(func_flows);
                         }
+                        all_flows
                     }
-                    all_flows
                 } else {
                     // AST 解析失败，回退到原有路径
                     analyzer.analyze_file(file_path, content)
@@ -1525,23 +1559,21 @@ pub async fn scan_directory_deep_with_rules_progress(
             })
             .collect();
 
-        // 收集 findings + CPG 缓存 + Stage B 已解析 AST 产物
-        for (fp, mut batch_findings, file_cpgs, file_flows, file_ast) in batch_results {
-            taint_findings.append(&mut batch_findings);
-            accumulated_cpg.extend(file_cpgs);
-            accumulated_flows.extend(file_flows);
-            accumulated_parsed_ast.insert(fp, file_ast);
-        }
+    // 收集 findings + CPG 缓存 + Stage B 已解析 AST 产物
+    for (fp, mut file_findings, file_cpgs, file_flows, file_ast) in all_results {
+        taint_findings.append(&mut file_findings);
+        accumulated_cpg.extend(file_cpgs);
+        accumulated_flows.extend(file_flows);
+        accumulated_parsed_ast.insert(fp, file_ast);
+    }
 
-        taint_scanned += batch.len();
-        if let Some(ref cb) = progress {
-            cb(ScanProgress {
-                phase: ScanPhase::TaintAnalysis,
-                current: taint_scanned,
-                total: taint_total,
-                message: format!("AST 污点分析: {}/{} 文件", taint_scanned, taint_total),
-            });
-        }
+    if let Some(ref cb) = progress {
+        cb(ScanProgress {
+            phase: ScanPhase::TaintAnalysis,
+            current: taint_total,
+            total: taint_total,
+            message: format!("AST 污点分析: {}/{} 文件", taint_total, taint_total),
+        });
     }
 
     // 为 regex/rule 发现设置置信度

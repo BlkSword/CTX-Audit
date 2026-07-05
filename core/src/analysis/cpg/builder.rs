@@ -122,6 +122,183 @@ impl CPGBuilder {
         }
     }
 
+    /// 从函数体 AST 片段构建单函数 CPG（用于跨线程并行）
+    ///
+    /// 与 `build_function_cpg` 的区别：
+    /// - `func_body_node` 是从函数体文本片段解析出来的局部 AST 节点，
+    ///   其行号是相对于片段的；
+    /// - `assignments`/`calls` 仍使用文件绝对行号，方法内部会转换为相对行号。
+    pub fn build_function_cpg_from_fragment(
+        func_body_node: &tree_sitter::Node,
+        content: &str,
+        file_path: &str,
+        func: &FunctionBody,
+        assignments: &[Assignment],
+        calls: &[CallInfo],
+    ) -> FunctionCPG {
+        let cfg = EnhancedFlowGraph::from_ast_node(func_body_node, content, file_path, &func.name);
+
+        // CFG 节点行号是相对于函数体文本的，需要把 assignments/calls 也转为相对行号
+        let line_offset = func.start_line.saturating_sub(1);
+        let relative_assignments: Vec<Assignment> = assignments
+            .iter()
+            .map(|a| {
+                let mut a = a.clone();
+                a.line = a.line.saturating_sub(line_offset);
+                a.target_node.line = a.target_node.line.saturating_sub(line_offset);
+                a
+            })
+            .collect();
+        let relative_calls: Vec<CallInfo> = calls
+            .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                c.line = c.line.saturating_sub(line_offset);
+                c
+            })
+            .collect();
+
+        let assign_by_line: HashMap<usize, &Assignment> =
+            relative_assignments.iter().map(|a| (a.line, a)).collect();
+        let call_by_line: HashMap<usize, &CallInfo> =
+            relative_calls.iter().map(|c| (c.line, c)).collect();
+
+        let mut node_meta = HashMap::new();
+        for node in &cfg.nodes {
+            let line = node.start_line;
+            let ast_kind = node
+                .code
+                .split('(')
+                .next()
+                .unwrap_or(&node.code)
+                .trim()
+                .to_string();
+
+            let assignment = assign_by_line.get(&line).map(|a| (*a).clone());
+            let call_info = call_by_line.get(&line).map(|c| (*c).clone());
+            let condition = if node.node_type == EnhancedNodeType::ConditionHeader {
+                Self::extract_condition_info(&node.code)
+            } else {
+                None
+            };
+
+            node_meta.insert(
+                node.id,
+                CPGNodeMeta {
+                    ast_kind,
+                    assignment,
+                    call_info,
+                    condition,
+                },
+            );
+        }
+
+        let alias_map = Self::build_alias_map(&relative_assignments);
+
+        let signature = FunctionSignature {
+            name: func.name.clone(),
+            file_path: file_path.to_string(),
+            start_line: func.start_line,
+            end_line: func.end_line,
+            params: func.typed_params.clone(),
+        };
+
+        FunctionCPG {
+            cfg,
+            node_meta,
+            alias_map,
+            signature,
+        }
+    }
+
+    /// 从函数体文本构建单函数 CPG（不依赖 tree-sitter Node，用于跨线程并行）
+    ///
+    /// 与 `build_function_cpg` 行为类似，但基于文本构建 CFG，signature 仍使用 func 元数据，
+    /// 确保同一文件内不同函数仍拥有唯一的 signature id。
+    pub fn build_function_cpg_from_text(
+        content: &str,
+        file_path: &str,
+        func: &FunctionBody,
+        assignments: &[Assignment],
+        calls: &[CallInfo],
+    ) -> FunctionCPG {
+        let cfg = EnhancedFlowGraph::from_code(content, file_path, &func.name);
+
+        // from_code 生成的 CFG 节点行号是相对于函数体文本的（从 1 开始），
+        // 而传入的 assignments/calls 仍使用文件绝对行号。需要统一为相对行号，
+        // 才能使 node_meta 正确附加 assignment/call_info。
+        let line_offset = func.start_line.saturating_sub(1);
+        let relative_assignments: Vec<Assignment> = assignments
+            .iter()
+            .map(|a| {
+                let mut a = a.clone();
+                a.line = a.line.saturating_sub(line_offset);
+                a.target_node.line = a.target_node.line.saturating_sub(line_offset);
+                a
+            })
+            .collect();
+        let relative_calls: Vec<CallInfo> = calls
+            .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                c.line = c.line.saturating_sub(line_offset);
+                c
+            })
+            .collect();
+
+        let assign_by_line: HashMap<usize, &Assignment> =
+            relative_assignments.iter().map(|a| (a.line, a)).collect();
+        let call_by_line: HashMap<usize, &CallInfo> =
+            relative_calls.iter().map(|c| (c.line, c)).collect();
+
+        let mut node_meta = HashMap::new();
+        for node in &cfg.nodes {
+            let line = node.start_line;
+            let ast_kind = node
+                .code
+                .split('(')
+                .next()
+                .unwrap_or(&node.code)
+                .trim()
+                .to_string();
+
+            let assignment = assign_by_line.get(&line).map(|a| (*a).clone());
+            let call_info = call_by_line.get(&line).map(|c| (*c).clone());
+            let condition = if node.node_type == EnhancedNodeType::ConditionHeader {
+                Self::extract_condition_info(&node.code)
+            } else {
+                None
+            };
+
+            node_meta.insert(
+                node.id,
+                CPGNodeMeta {
+                    ast_kind,
+                    assignment,
+                    call_info,
+                    condition,
+                },
+            );
+        }
+
+        let alias_map = Self::build_alias_map(&relative_assignments);
+
+        let signature = FunctionSignature {
+            name: func.name.clone(),
+            file_path: file_path.to_string(),
+            start_line: func.start_line,
+            end_line: func.end_line,
+            params: func.typed_params.clone(),
+        };
+
+        FunctionCPG {
+            cfg,
+            node_meta,
+            alias_map,
+            signature,
+        }
+    }
+
     /// 从整个文件的 AST 构建单函数 CPG（无函数体节点时使用 text-based CFG）
     pub fn build_file_cpg(
         content: &str,

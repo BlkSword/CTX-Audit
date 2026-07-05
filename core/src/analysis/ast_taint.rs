@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::analysis::alias::{detect_all_aliases, AccessPath, AliasMap};
 use crate::analysis::async_flow::{self, CallbackTaintHint};
@@ -35,15 +36,16 @@ struct TaintInfo {
 }
 
 /// AST 污点分析器
+///
+/// 不再持有 ASTParser：tree-sitter Parser 不是 Send/Sync，会限制并行。
+/// analyze_function_cpg 等核心路径只依赖规则定义；需要解析的地方使用线程本地 parser。
 pub struct AstTaintAnalyzer {
     /// 污点源定义
-    sources: Vec<TaintSource>,
+    sources: Arc<Vec<TaintSource>>,
     /// 污点汇定义
-    sinks: Vec<TaintSink>,
+    sinks: Arc<Vec<TaintSink>>,
     /// 净化函数模式
-    sanitizer_patterns: Vec<String>,
-    /// AST 解析器
-    ast_parser: ASTParser,
+    sanitizer_patterns: Arc<Vec<String>>,
 }
 
 impl AstTaintAnalyzer {
@@ -54,10 +56,9 @@ impl AstTaintAnalyzer {
             if let Ok(loaded) = crate::rules::taint_loader::load_taint_rules_from_dir(yaml_dir) {
                 if !loaded.sources.is_empty() || !loaded.sinks.is_empty() {
                     return Self {
-                        sources: loaded.sources,
-                        sinks: loaded.sinks,
-                        sanitizer_patterns: loaded.sanitizer_patterns,
-                        ast_parser: ASTParser::new(),
+                        sources: Arc::new(loaded.sources),
+                        sinks: Arc::new(loaded.sinks),
+                        sanitizer_patterns: Arc::new(loaded.sanitizer_patterns),
                     };
                 }
             }
@@ -65,10 +66,9 @@ impl AstTaintAnalyzer {
 
         // Fallback: 硬编码默认值
         Self {
-            sources: Self::default_sources(),
-            sinks: Self::default_sinks(),
-            sanitizer_patterns: Self::default_sanitizers(),
-            ast_parser: ASTParser::new(),
+            sources: Arc::new(Self::default_sources()),
+            sinks: Arc::new(Self::default_sinks()),
+            sanitizer_patterns: Arc::new(Self::default_sanitizers()),
         }
     }
 
@@ -106,29 +106,41 @@ impl AstTaintAnalyzer {
         sinks: Vec<TaintSink>,
         sanitizer_patterns: Vec<String>,
     ) -> Self {
+        Self::from_rules_arc(
+            Arc::new(sources),
+            Arc::new(sinks),
+            Arc::new(sanitizer_patterns),
+        )
+    }
+
+    /// 直接使用已加载的规则（Arc 共享版本），避免扫描时每个任务都克隆规则。
+    pub fn from_rules_arc(
+        sources: Arc<Vec<TaintSource>>,
+        sinks: Arc<Vec<TaintSink>>,
+        sanitizer_patterns: Arc<Vec<String>>,
+    ) -> Self {
         Self {
             sources,
             sinks,
             sanitizer_patterns,
-            ast_parser: ASTParser::new(),
         }
     }
 
     /// Builder: 替换所有污点源
     pub fn with_sources(mut self, sources: Vec<TaintSource>) -> Self {
-        self.sources = sources;
+        self.sources = Arc::new(sources);
         self
     }
 
     /// Builder: 替换所有污点汇
     pub fn with_sinks(mut self, sinks: Vec<TaintSink>) -> Self {
-        self.sinks = sinks;
+        self.sinks = Arc::new(sinks);
         self
     }
 
     /// Builder: 替换所有净化函数模式
     pub fn with_sanitizers(mut self, patterns: Vec<String>) -> Self {
-        self.sanitizer_patterns = patterns;
+        self.sanitizer_patterns = Arc::new(patterns);
         self
     }
 
@@ -149,17 +161,23 @@ impl AstTaintAnalyzer {
 
     /// 追加额外的污点源（不覆盖现有定义）
     pub fn add_sources(&mut self, sources: Vec<TaintSource>) {
-        self.sources.extend(sources);
+        let mut all = (*self.sources).clone();
+        all.extend(sources);
+        self.sources = Arc::new(all);
     }
 
     /// 追加额外的污点汇
     pub fn add_sinks(&mut self, sinks: Vec<TaintSink>) {
-        self.sinks.extend(sinks);
+        let mut all = (*self.sinks).clone();
+        all.extend(sinks);
+        self.sinks = Arc::new(all);
     }
 
     /// 追加额外的净化函数模式
     pub fn add_sanitizers(&mut self, patterns: Vec<String>) {
-        self.sanitizer_patterns.extend(patterns);
+        let mut all = (*self.sanitizer_patterns).clone();
+        all.extend(patterns);
+        self.sanitizer_patterns = Arc::new(all);
     }
 
     /// 根据文件扩展名推断语言标识
@@ -188,16 +206,17 @@ impl AstTaintAnalyzer {
     }
 
     /// 分析单个文件，返回所有检测到的污点流
-    pub fn analyze_file(&mut self, file_path: &Path, content: &str) -> Vec<TaintFlow> {
+    pub fn analyze_file(&self, file_path: &Path, content: &str) -> Vec<TaintFlow> {
         let mut all_flows = Vec::new();
         let file_path_str = file_path.to_string_lossy().to_string();
         let language = Self::detect_language(&file_path_str);
         let callback_hints = async_flow::detect_callback_hints(content);
 
         // 使用 AST-based 分析（保留 Tree 供 CFG 构建使用）
-        if let Some((tree, _symbols, functions, file_assignments, file_calls)) = self
-            .ast_parser
-            .extract_all_for_taint_with_tree(file_path, content)
+        if let Some((tree, _symbols, functions, file_assignments, file_calls)) =
+            crate::ast::parser::with_thread_local_parser(|ast_parser| {
+                ast_parser.extract_all_for_taint_with_tree(file_path, content)
+            })
         {
             let root = tree.root_node();
 
@@ -303,7 +322,7 @@ impl AstTaintAnalyzer {
     /// 测试用：使用 text-based CFG 保证对短代码片段的稳定性。
     /// 生产用 `analyze_file()` 走 AST-based CFG 路径。
     pub(crate) fn analyze_code(
-        &mut self,
+        &self,
         code: &str,
         file_path: &Path,
         function_name: &str,
@@ -313,7 +332,9 @@ impl AstTaintAnalyzer {
         let file_path_str = file_path.to_string_lossy().to_string();
         let language = Self::detect_language(&file_path_str);
         let tmp_path = std::path::PathBuf::from(&file_path_str);
-        let (_, assignments, calls) = self.ast_parser.extract_all_for_taint(&tmp_path, code);
+        let (_, assignments, calls) = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            ast_parser.extract_all_for_taint(&tmp_path, code)
+        });
         let cfg = EnhancedFlowGraph::from_code(code, &file_path_str, function_name);
         self.forward_taint_analysis(
             &cfg,
@@ -867,7 +888,7 @@ impl AstTaintAnalyzer {
         // 3. 基于行扫描的污点源匹配
         for (line_idx, line) in lines.iter().enumerate() {
             let line_num = line_idx + 1 + line_offset;
-            for source in &self.sources {
+            for source in self.sources.iter() {
                 if source.matches(line, language) {
                     if let Some(var_name) = self.extract_var_from_source(line) {
                         if state.get_var(&var_name).is_none() {
@@ -1465,7 +1486,7 @@ impl AstTaintAnalyzer {
         // 3. 基于行扫描的污点源匹配
         for (line_idx, line) in lines.iter().enumerate() {
             let line_num = line_idx + 1 + line_offset;
-            for source in &self.sources {
+            for source in self.sources.iter() {
                 if source.matches(line, language) {
                     let var_name = self.extract_var_from_source(line);
                     if let Some(var_name) = var_name {
@@ -1521,7 +1542,7 @@ impl AstTaintAnalyzer {
             }
             for alias_path in paths {
                 let path_str = alias_path.as_dotted();
-                for source in &self.sources {
+                for source in self.sources.iter() {
                     if source.matches(&path_str, language) {
                         let var_line = code
                             .lines()
@@ -2011,7 +2032,7 @@ impl AstTaintAnalyzer {
     /// 模式（可匹配 `exec(user_input)`）。
     fn find_matching_sink_in_expr(&self, expr: &str, language: &str) -> Option<TaintSink> {
         let (receiver, _callee) = Self::extract_call_parts_from_expr(expr);
-        for sink in &self.sinks {
+        for sink in self.sinks.iter() {
             // 同时传入完整表达式（兼容 substring 模式）和解析出的 receiver
             if sink.matches_with_context(expr, receiver, language) {
                 return Some(sink.clone());
@@ -2023,7 +2044,7 @@ impl AstTaintAnalyzer {
     /// 从表达式中提取 sink 函数名
     fn extract_sink_name(&self, expr: &str, language: &str) -> String {
         let (receiver, callee) = Self::extract_call_parts_from_expr(expr);
-        for sink in &self.sinks {
+        for sink in self.sinks.iter() {
             if sink.matches_with_context(expr, receiver, language) {
                 return if let Some(recv) = receiver {
                     format!("{}.{}", recv, callee)

@@ -113,6 +113,15 @@ impl ASTParser {
         }
     }
 
+    /// 解析一段代码片段（如函数体文本），返回 tree-sitter Tree。
+    ///
+    /// 用于函数级并行场景：由于 tree-sitter Node 不能跨线程，每个任务单独解析函数体，
+    /// 得到局部 Tree 后再构建 CFG，避免使用较慢的 text-based CFG。
+    pub fn parse_fragment(&mut self, code: &str, ext: &str) -> Option<tree_sitter::Tree> {
+        let key = format!(".{}", ext);
+        self.parsers.get_mut(&key)?.parse(code, None)
+    }
+
     fn extract_java_symbols(
         &self,
         file_path: &Path,
