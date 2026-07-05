@@ -1018,17 +1018,17 @@ impl<'a> AstCFGBuilder<'a> {
             kind,
             "call_expression" | "call" | "expression_statement" | "method_invocation"
         ) {
-            // expression_statement 内部可能有 call，递归看一层
+            // expression_statement 内部可能有 call/assignment，递归看一层
+            // 注意：tree-sitter 的 expression_statement 可能包含分号子节点，因此不能只判断 len==1
             if kind == "expression_statement" {
                 let mut cursor = node.walk();
-                let children: Vec<Node> = node.children(&mut cursor).collect();
-                if children.len() == 1 {
-                    let inner = &children[0];
+                for child in node.children(&mut cursor) {
+                    let child_kind = child.kind();
                     if matches!(
-                        inner.kind(),
-                        "call_expression" | "call" | "assignment_expression"
+                        child_kind,
+                        "call_expression" | "call" | "method_invocation" | "assignment_expression"
                     ) {
-                        return self.process_node(inner, content, prev_id, scope_depth);
+                        return self.process_node(&child, content, prev_id, scope_depth);
                     }
                 }
             }
@@ -1081,6 +1081,10 @@ impl<'a> AstCFGBuilder<'a> {
             let mut end = cond_id;
             let mut cursor = body.walk();
             for child in body.children(&mut cursor) {
+                let child_kind = child.kind();
+                if matches!(child_kind, "{" | "}" | ";" | "(") {
+                    continue;
+                }
                 end = self.process_node(&child, content, cond_id, scope_depth + 1);
             }
             // 修正：第一个子节点应该从 cond 接 TrueBranch 边
@@ -1174,6 +1178,9 @@ impl<'a> AstCFGBuilder<'a> {
             let mut current = loop_id;
             let mut cursor = body.walk();
             for child in body.children(&mut cursor) {
+                if matches!(child.kind(), "{" | "}" | ";" | "(") {
+                    continue;
+                }
                 current = self.process_node(&child, content, current, scope_depth + 1);
             }
             Some(current)

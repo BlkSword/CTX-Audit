@@ -14,6 +14,29 @@ use crate::ast::symbol::{Assignment, CallInfo, FunctionBody, TypedParam};
 
 use super::{CPGNodeMeta, ConditionInfo, FunctionCPG, FunctionSignature};
 
+/// 为单行上可能存在的嵌套方法调用选择最外层调用。
+///
+/// `collect_calls_recursive` 对 `response.getWriter().println(data)` 会产生多个 CallInfo：
+/// 外层 `println`（receiver 为 `response.getWriter()`）和内层 `getWriter`。
+/// 优先保留 receiver 更长的调用，确保 sink 匹配能看到实际的危险方法。
+fn select_outermost_call_per_line<'a>(calls: &[&'a CallInfo]) -> HashMap<usize, &'a CallInfo> {
+    let mut map: HashMap<usize, &'a CallInfo> = HashMap::new();
+    for c in calls {
+        let keep = match map.get(&c.line) {
+            Some(existing) => {
+                let existing_len = existing.receiver.as_ref().map(|r| r.len()).unwrap_or(0);
+                let new_len = c.receiver.as_ref().map(|r| r.len()).unwrap_or(0);
+                new_len > existing_len
+            }
+            None => true,
+        };
+        if keep {
+            map.insert(c.line, c);
+        }
+    }
+    map
+}
+
 /// CPG 构建器
 pub struct CPGBuilder;
 
@@ -63,11 +86,11 @@ impl CPGBuilder {
             .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
             .map(|a| (a.line, a))
             .collect();
-        let call_by_line: HashMap<usize, &CallInfo> = calls
+        let call_refs: Vec<&CallInfo> = calls
             .iter()
             .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
-            .map(|c| (c.line, c))
             .collect();
+        let call_by_line = select_outermost_call_per_line(&call_refs);
 
         // 3. 为每个 CFG 节点附加元数据
         let mut node_meta = HashMap::new();
@@ -139,7 +162,7 @@ impl CPGBuilder {
         let cfg = EnhancedFlowGraph::from_ast_node(func_body_node, content, file_path, &func.name);
 
         // CFG 节点行号是相对于函数体文本的，需要把 assignments/calls 也转为相对行号
-        let line_offset = func.start_line.saturating_sub(1);
+        let line_offset = func.body_start_line.saturating_sub(1);
         let relative_assignments: Vec<Assignment> = assignments
             .iter()
             .map(|a| {
@@ -160,8 +183,8 @@ impl CPGBuilder {
 
         let assign_by_line: HashMap<usize, &Assignment> =
             relative_assignments.iter().map(|a| (a.line, a)).collect();
-        let call_by_line: HashMap<usize, &CallInfo> =
-            relative_calls.iter().map(|c| (c.line, c)).collect();
+        let call_refs: Vec<&CallInfo> = relative_calls.iter().collect();
+        let call_by_line = select_outermost_call_per_line(&call_refs);
 
         let mut node_meta = HashMap::new();
         for node in &cfg.nodes {
@@ -248,8 +271,8 @@ impl CPGBuilder {
 
         let assign_by_line: HashMap<usize, &Assignment> =
             relative_assignments.iter().map(|a| (a.line, a)).collect();
-        let call_by_line: HashMap<usize, &CallInfo> =
-            relative_calls.iter().map(|c| (c.line, c)).collect();
+        let call_refs: Vec<&CallInfo> = relative_calls.iter().collect();
+        let call_by_line = select_outermost_call_per_line(&call_refs);
 
         let mut node_meta = HashMap::new();
         for node in &cfg.nodes {
@@ -310,7 +333,8 @@ impl CPGBuilder {
 
         let assign_by_line: HashMap<usize, &Assignment> =
             assignments.iter().map(|a| (a.line, a)).collect();
-        let call_by_line: HashMap<usize, &CallInfo> = calls.iter().map(|c| (c.line, c)).collect();
+        let call_refs: Vec<&CallInfo> = calls.iter().collect();
+        let call_by_line = select_outermost_call_per_line(&call_refs);
 
         let mut node_meta = HashMap::new();
         for node in &cfg.nodes {

@@ -410,7 +410,23 @@ impl AstTaintAnalyzer {
         // 按行号索引赋值和调用，加速查找
         let assign_by_line: HashMap<usize, &Assignment> =
             assignments.iter().map(|a| (a.line, a)).collect();
-        let call_by_line: HashMap<usize, &CallInfo> = calls.iter().map(|c| (c.line, c)).collect();
+        // 同一行可能存在嵌套方法调用（如 response.getWriter().println(data)），
+        // collect_calls_recursive 会产生多个 CallInfo。优先保留最外层调用：
+        // 若 receiver 更长，则覆盖同一行的旧记录，确保 sink 匹配能看到 println 而非 getWriter。
+        let mut call_by_line: HashMap<usize, &CallInfo> = HashMap::new();
+        for c in calls.iter() {
+            let keep = match call_by_line.get(&c.line) {
+                Some(existing) => {
+                    let existing_len = existing.receiver.as_ref().map(|r| r.len()).unwrap_or(0);
+                    let new_len = c.receiver.as_ref().map(|r| r.len()).unwrap_or(0);
+                    new_len > existing_len
+                }
+                None => true,
+            };
+            if keep {
+                call_by_line.insert(c.line, c);
+            }
+        }
 
         // 从赋值中构建别名映射
         let alias_map = self.build_alias_map(assignments);
@@ -422,6 +438,7 @@ impl AstTaintAnalyzer {
         in_worklist.insert(cfg.entry);
 
         while let Some(node_id) = worklist.pop_front() {
+            in_worklist.remove(&node_id);
             if node_id >= cfg.nodes.len() {
                 continue;
             }
@@ -540,7 +557,23 @@ impl AstTaintAnalyzer {
 
         let assign_by_line: HashMap<usize, &Assignment> =
             assignments.iter().map(|a| (a.line, a)).collect();
-        let call_by_line: HashMap<usize, &CallInfo> = calls.iter().map(|c| (c.line, c)).collect();
+        // 同一行可能存在嵌套方法调用（如 response.getWriter().println(data)），
+        // collect_calls_recursive 会产生多个 CallInfo。优先保留最外层调用：
+        // 若 receiver 更长，则覆盖同一行的旧记录，确保 sink 匹配能看到 println 而非 getWriter。
+        let mut call_by_line: HashMap<usize, &CallInfo> = HashMap::new();
+        for c in calls.iter() {
+            let keep = match call_by_line.get(&c.line) {
+                Some(existing) => {
+                    let existing_len = existing.receiver.as_ref().map(|r| r.len()).unwrap_or(0);
+                    let new_len = c.receiver.as_ref().map(|r| r.len()).unwrap_or(0);
+                    new_len > existing_len
+                }
+                None => true,
+            };
+            if keep {
+                call_by_line.insert(c.line, c);
+            }
+        }
 
         let alias_map = self.build_alias_map(assignments);
 
@@ -550,6 +583,7 @@ impl AstTaintAnalyzer {
         in_worklist.insert(cfg.entry);
 
         while let Some(node_id) = worklist.pop_front() {
+            in_worklist.remove(&node_id);
             if node_id >= cfg.nodes.len() {
                 continue;
             }
@@ -1123,14 +1157,39 @@ impl AstTaintAnalyzer {
                         .any(|v| self.is_var_tainted_cpg(v, state, alias_map))
                 });
 
+                // 1. 检查参数是否被污染
+                let mut tainted_var: Option<String> = None;
                 if let Some(arg) = tainted_arg {
-                    let tainted_var = arg
+                    tainted_var = arg
                         .referenced_vars
                         .iter()
                         .find(|v| self.is_var_tainted_cpg(v, state, alias_map))
                         .and_then(|v| self.resolve_tainted_var_cpg(v, state, alias_map))
-                        .unwrap_or_else(|| arg.referenced_vars[0].clone());
+                        .or_else(|| Some(arg.referenced_vars[0].clone()));
+                }
 
+                // 2. 检查 receiver 是否被污染（如 statement.executeQuery() 中 statement 由 prepareCall(sql) 生成）
+                if tainted_var.is_none() {
+                    if let Some(ref recv) = call.receiver {
+                        // 优先尝试完整 receiver（如 response.getWriter()）
+                        let candidates: Vec<&str> = vec![recv.as_str()]
+                            .into_iter()
+                            .chain(recv.split('.').collect::<Vec<_>>())
+                            .collect();
+                        for candidate in candidates {
+                            if self.is_var_tainted_cpg(candidate, state, alias_map) {
+                                if let Some(resolved) =
+                                    self.resolve_tainted_var_cpg(candidate, state, alias_map)
+                                {
+                                    tainted_var = Some(resolved);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(tainted_var) = tainted_var {
                     let src_path = AccessPath::from_dotted(&tainted_var);
                     let src_vt = state.find_taint_for_path(&src_path).unwrap().clone();
 
@@ -1725,19 +1784,37 @@ impl AstTaintAnalyzer {
         // 1. 检查是否匹配 sink（方法调用考虑 receiver，如 needle.get）
         if let Some(sink) = self.match_sink_for_call(call, language) {
             // 检查参数是否包含污点变量（直接 + 别名解析）
-            let tainted_arg = call.arguments.iter().find(|arg| {
+            let mut tainted_var: Option<String> = None;
+            if let Some(arg) = call.arguments.iter().find(|arg| {
                 arg.referenced_vars
                     .iter()
                     .any(|v| self.is_var_tainted(v, state, alias_map))
-            });
-
-            if let Some(arg) = tainted_arg {
-                let tainted_var = arg
+            }) {
+                tainted_var = arg
                     .referenced_vars
                     .iter()
                     .find_map(|v| self.resolve_tainted_var(v, state, alias_map))
-                    .unwrap_or_else(|| arg.referenced_vars[0].clone());
+                    .or_else(|| Some(arg.referenced_vars[0].clone()));
+            }
 
+            // 检查 receiver 是否被污染（如 statement.executeQuery()）
+            if tainted_var.is_none() {
+                if let Some(ref recv) = call.receiver {
+                    let candidates: Vec<&str> = std::iter::once(recv.as_str())
+                        .chain(recv.split('.'))
+                        .collect();
+                    for candidate in candidates {
+                        if self.is_var_tainted(candidate, state, alias_map) {
+                            tainted_var = self.resolve_tainted_var(candidate, state, alias_map);
+                            if tainted_var.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(tainted_var) = tainted_var {
                 let taint_info = state.get(&tainted_var)?;
 
                 // 数据类型推断：检查是否使用了参数化查询
@@ -2061,46 +2138,57 @@ impl AstTaintAnalyzer {
     }
 
     /// 数据类型推断：检测是否使用了参数化查询模式
+    ///
+    /// 保守策略：仅当代码行出现显式参数占位符（? / %s / :name）且没有字符串拼接时，
+    /// 或调用的是参数绑定 API（setString、bindParam 等）时才认为是安全的参数化查询。
+    /// 这样可避免把 `prepareCall(sql)` 这种拼接 SQL 的调用误判为安全。
     fn is_parameterized_query(&self, callee: &str, code_line: &str) -> bool {
         let callee_lower = callee.to_lowercase();
         let code_lower = code_line.to_lowercase();
 
-        // 参数化查询 API（使用 ? 或命名参数占位符）
-        let param_apis = [
-            "prepare",
+        // 显式参数绑定 API：无论 SQL 写法如何，都视为参数化
+        let binding_apis = [
             "bind_param",
             "bindparam",
             "bind_value",
-            "execute(",
             "addparam",
             "setstring",
             "setint",
-            "parameterized",
-            "parameterize",
+            "setlong",
+            "setobject",
         ];
-        for api in &param_apis {
+        for api in &binding_apis {
             if callee_lower.contains(api) {
                 return true;
             }
         }
 
-        // 检查代码行是否使用占位符（? 或 %s 但不是字符串拼接）
-        if code_lower.contains("?")
-            && !code_lower.contains(" + ")
-            && !code_lower.contains(".format(")
-        {
+        // 保守的占位符检测：要求存在 ? / %s / :name / @name 等占位符，且没有字符串拼接
+        let bytes = code_lower.as_bytes();
+        let has_named_placeholder = |prefix: u8| -> bool {
+            bytes.iter().enumerate().any(|(i, &b)| {
+                if b != prefix {
+                    return false;
+                }
+                let prev_ok = i == 0 || bytes[i - 1] != prefix;
+                let next_ok = i + 1 < bytes.len() && bytes[i + 1].is_ascii_alphabetic();
+                prev_ok && next_ok
+            })
+        };
+        let has_placeholder = code_lower.contains('?')
+            || code_lower.contains("%s")
+            || has_named_placeholder(b':')
+            || has_named_placeholder(b'@');
+        let has_concatenation = code_lower.contains(" + ")
+            || code_lower.contains(".format(")
+            || code_lower.starts_with("f\"")
+            || code_lower.starts_with("f'");
+
+        if has_placeholder && !has_concatenation {
             return true;
         }
 
-        // Python f-string SQL 检测（负面模式：如果用了 f-string 则不安全）
-        if code_lower.contains("f\"") || code_lower.contains("f'") {
-            // f-string 拼接 SQL — 不安全
-            if callee_lower.contains("execute") || callee_lower.contains("query") {
-                return false;
-            }
-        }
-
-        // ORM 安全方法
+        // ORM 安全方法（通常为结构化查询，不含字符串拼接 SQL）
         let safe_orm = [
             ".where(",
             ".filter(",
@@ -2372,7 +2460,6 @@ impl AstTaintAnalyzer {
                     "axios",
                     "requests.get",
                     "requests.post",
-                    "new URL(",
                     "needle.get",
                     "needle.post",
                     "needle.request",
@@ -2467,9 +2554,6 @@ impl AstTaintAnalyzer {
             "sanitize".into(),
             "htmlspecialchars".into(),
             "htmlentities".into(),
-            "parameterized".into(),
-            "prepare".into(),
-            "parameterize".into(),
             "encode".into(),
             "encodeURI".into(),
             "encodeURIComponent".into(),
@@ -3203,6 +3287,322 @@ app.get('/download', (req, res) => {
         assert!(
             !flows.is_empty(),
             "Expected command injection in text-based CFG"
+        );
+    }
+
+    #[test]
+    fn test_java_sql_header_source() {
+        let code = r#"
+import javax.servlet.http.*;
+
+public class Test extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String param = request.getHeader("x");
+        String sql = "{call " + param + "}";
+        java.sql.Connection connection = org.owasp.benchmark.helpers.DatabaseHelper.getSqlConnection();
+        java.sql.CallableStatement statement = connection.prepareCall(sql);
+        statement.executeQuery();
+    }
+}
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("Test.java");
+        // 使用与扫描 pipeline 一致的 FunctionCPG 路径
+        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
+            p.extract_all_for_taint(&path, code)
+        });
+        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_text(
+            &func.body_text,
+            path.to_str().unwrap(),
+            func,
+            &func_assignments,
+            &func_calls,
+        );
+        let flows = analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[]);
+        assert!(
+            flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQL injection from request.getHeader -> prepareCall/executeQuery"
+        );
+    }
+
+    #[test]
+    fn test_java_sql_headers_chain() {
+        let code = r#"
+import javax.servlet.http.*;
+import java.util.Enumeration;
+
+public class Test extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String param = "";
+        Enumeration<String> headers = request.getHeaders("x");
+        if (headers != null && headers.hasMoreElements()) {
+            param = headers.nextElement();
+        }
+        String sql = "INSERT INTO users (username, password) VALUES ('foo','" + param + "')";
+        java.sql.Statement statement = org.owasp.benchmark.helpers.DatabaseHelper.getSqlStatement();
+        statement.executeUpdate(sql);
+    }
+}
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("Test.java");
+
+        // CPG 路径
+        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
+            p.extract_all_for_taint(&path, code)
+        });
+        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_text(
+            &func.body_text,
+            path.to_str().unwrap(),
+            func,
+            &func_assignments,
+            &func_calls,
+        );
+        let flows = analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[]);
+        assert!(
+            flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQL injection from request.getHeaders chain (CPG)"
+        );
+
+        // 生产路径 analyze_file/text CFG 也要能检出（修复前 if 块内赋值会丢失）
+        let file_flows = analyzer.analyze_file(&path, code);
+        assert!(
+            file_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQL injection from request.getHeaders chain (analyze_file)"
+        );
+
+        // Stage B 并行扫描实际使用的 fragment CPG 路径也要能检出
+        let func = functions.iter().find(|f| f.name == "doPost").unwrap();
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            let tree = ast_parser.parse_fragment(&func.body_text, "java").expect("parse fragment");
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let body_node = root.children(&mut cursor).find(|n| {
+                matches!(
+                    n.kind(),
+                    "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                )
+            }).expect("function body");
+            let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
+                &body_node,
+                &func.body_text,
+                path.to_str().unwrap(),
+                func,
+                &func_assignments,
+                &func_calls,
+            );
+            analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
+        });
+        assert!(
+            fragment_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQL injection from request.getHeaders chain (fragment CPG)"
+        );
+    }
+
+    #[test]
+    fn test_java_sql_multiline_signature() {
+        let code = r#"
+import javax.servlet.http.*;
+
+public class Test extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response)
+            throws Exception {
+        String param = request.getParameter("id");
+        String sql = "INSERT ..." + param;
+        java.sql.Statement statement = org.owasp.benchmark.helpers.DatabaseHelper.getSqlStatement();
+        statement.executeUpdate(sql);
+    }
+}
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("Test.java");
+        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
+            p.extract_all_for_taint(&path, code)
+        });
+        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            let tree = ast_parser.parse_fragment(&func.body_text, "java").expect("parse fragment");
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let body_node = root.children(&mut cursor).find(|n| {
+                matches!(
+                    n.kind(),
+                    "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                )
+            }).expect("function body");
+            let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
+                &body_node,
+                &func.body_text,
+                path.to_str().unwrap(),
+                func,
+                &func_assignments,
+                &func_calls,
+            );
+            analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
+        });
+        assert!(
+            fragment_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQL injection with multiline signature (fragment CPG)"
+        );
+    }
+
+    #[test]
+    fn test_java_sql_getparameter_with_try_block() {
+        let code = r#"
+import javax.servlet.http.*;
+
+public class Test extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String param = request.getParameter("id");
+        if (param == null) param = "";
+        String sql = "INSERT INTO users (username, password) VALUES ('foo','" + param + "')";
+        try {
+            java.sql.Statement statement = org.owasp.benchmark.helpers.DatabaseHelper.getSqlStatement();
+            statement.executeUpdate(sql);
+        } catch (java.sql.SQLException e) {
+            response.getWriter().println("Error");
+        }
+    }
+}
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("Test.java");
+        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
+            p.extract_all_for_taint(&path, code)
+        });
+        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            let tree = ast_parser.parse_fragment(&func.body_text, "java").expect("parse fragment");
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let body_node = root.children(&mut cursor).find(|n| {
+                matches!(
+                    n.kind(),
+                    "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                )
+            }).expect("function body");
+            let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
+                &body_node,
+                &func.body_text,
+                path.to_str().unwrap(),
+                func,
+                &func_assignments,
+                &func_calls,
+            );
+            analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
+        });
+        assert!(
+            fragment_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQL injection with try block (fragment CPG)"
+        );
+    }
+
+    #[test]
+    fn test_java_sql_getparameter_with_null_check() {
+        let code = r#"
+import javax.servlet.http.*;
+
+public class Test extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String param = request.getParameter("id");
+        if (param == null) param = "";
+        String sql = "INSERT INTO users (username, password) VALUES ('foo','" + param + "')";
+        java.sql.Statement statement = org.owasp.benchmark.helpers.DatabaseHelper.getSqlStatement();
+        statement.executeUpdate(sql);
+    }
+}
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("Test.java");
+        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
+            p.extract_all_for_taint(&path, code)
+        });
+        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            let tree = ast_parser.parse_fragment(&func.body_text, "java").expect("parse fragment");
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let body_node = root.children(&mut cursor).find(|n| {
+                matches!(
+                    n.kind(),
+                    "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                )
+            }).expect("function body");
+            let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
+                &body_node,
+                &func.body_text,
+                path.to_str().unwrap(),
+                func,
+                &func_assignments,
+                &func_calls,
+            );
+            analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
+        });
+        assert!(
+            fragment_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "Expected SQL injection from request.getParameter with null check (fragment CPG)"
         );
     }
 }

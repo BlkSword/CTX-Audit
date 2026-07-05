@@ -1887,48 +1887,38 @@ fn fuse_confidences(confidences: &[f32]) -> f32 {
 }
 
 /// 合并同一精确位置的多个 findings
+///
+/// 选择一个“最佳” finding 作为代表（按严重等级、置信度排序），并沿用它的
+/// vuln_type / description / trail / snippet 等全部字段，避免之前按字符串长度
+/// 混拼不同 finding 的字段导致 vuln_type 与 description 不一致的问题。
 fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding {
-    let mut best_severity = "info".to_string();
-    let mut best_vuln_type = String::new();
     let mut detectors = Vec::new();
-    let mut best_description = String::new();
-    let mut best_trail: Option<Vec<String>> = None;
-    let mut best_id = String::new();
-    let mut best_end = 0usize;
-
     let mut confidences = Vec::new();
 
+    // 先收集所有引擎和置信度
     for &idx in indices {
         let f = &findings[idx];
         detectors.push(f.detector.clone());
         confidences.push(f.confidence.unwrap_or(0.5));
+    }
 
-        if severity_rank(&f.severity) > severity_rank(&best_severity) {
-            best_severity = f.severity.clone();
-        }
-
-        let current_len = best_vuln_type.len();
-        if f.vuln_type.starts_with("CWE-") && !best_vuln_type.starts_with("CWE-") {
-            best_vuln_type = f.vuln_type.clone();
-        } else if !f.vuln_type.starts_with("CWE-") && current_len == 0 {
-            best_vuln_type = f.vuln_type.clone();
-        } else if f.vuln_type.len() > current_len {
-            best_vuln_type = f.vuln_type.clone();
-        }
-
-        if f.description.len() > best_description.len() {
-            best_description = f.description.clone();
-        }
-
-        if f.analysis_trail.as_ref().map(|t| t.len()).unwrap_or(0)
-            > best_trail.as_ref().map(|t| t.len()).unwrap_or(0)
+    // 选择最佳代表：严重等级 > 置信度 > 漏洞类型更具体（非 CWE 通配）
+    let mut best_idx = indices[0];
+    for &idx in &indices[1..] {
+        let best = &findings[best_idx];
+        let current = &findings[idx];
+        let current_rank = severity_rank(&current.severity);
+        let best_rank = severity_rank(&best.severity);
+        if current_rank > best_rank
+            || (current_rank == best_rank
+                && current.confidence.unwrap_or(0.5) > best.confidence.unwrap_or(0.5))
+            || (current_rank == best_rank
+                && (current.confidence.unwrap_or(0.5) - best.confidence.unwrap_or(0.5)).abs()
+                    < f32::EPSILON
+                && !current.vuln_type.starts_with("CWE-")
+                && best.vuln_type.starts_with("CWE-"))
         {
-            best_trail = f.analysis_trail.clone();
-        }
-
-        if f.line_end > best_end {
-            best_end = f.line_end;
-            best_id = f.finding_id.clone();
+            best_idx = idx;
         }
     }
 
@@ -1937,7 +1927,9 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
     detectors.sort();
     detectors.dedup();
 
-    // 多引擎 corroboration 标注
+    let mut best = findings[best_idx].clone();
+
+    // 多引擎 corroboration 标注：保留原描述并追加引擎信息
     if indices.len() > 1 {
         let engine_list: Vec<&str> = indices
             .iter()
@@ -1949,9 +1941,9 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
             deduped.dedup();
             deduped
         };
-        best_description = format!(
+        best.description = format!(
             "{}\n[Corroborated by {} engine(s): {}]",
-            best_description,
+            best.description,
             unique_engines.len(),
             unique_engines
                 .iter()
@@ -1961,52 +1953,25 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
         );
     }
 
-    // Pick best code_snippet/source_snippet/sink_snippet (prefer taint findings)
-    let best_code_snippet = indices
-        .iter()
-        .find_map(|&idx| findings[idx].code_snippet.clone());
-    let best_source_snippet = indices
-        .iter()
-        .find_map(|&idx| findings[idx].source_snippet.clone());
-    let best_sink_snippet = indices
-        .iter()
-        .find_map(|&idx| findings[idx].sink_snippet.clone());
-    let best_file_role = indices
-        .iter()
-        .find_map(|&idx| findings[idx].file_role.clone());
+    // 合并 barriers（去重）
     let best_barriers: Vec<String> = indices
         .iter()
         .flat_map(|&idx| findings[idx].barriers.clone().unwrap_or_default())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
         .collect();
-    let best_reasoning = indices
-        .iter()
-        .find_map(|&idx| findings[idx].reasoning_hint.clone());
 
-    Finding {
-        finding_id: best_id,
-        file_path: findings[indices[0]].file_path.clone(),
-        line_start: findings[indices[0]].line_start,
-        line_end: best_end,
-        detector: detectors.join("+"),
-        vuln_type: best_vuln_type,
-        severity: best_severity,
-        description: best_description,
-        analysis_trail: best_trail,
-        llm_output: None,
-        confidence: Some(fused),
-        corroboration_count: Some(indices.len()),
-        code_snippet: best_code_snippet,
-        source_snippet: best_source_snippet,
-        sink_snippet: best_sink_snippet,
-        file_role: best_file_role,
-        barriers: if best_barriers.is_empty() {
-            None
-        } else {
-            Some(best_barriers)
-        },
-        reasoning_hint: best_reasoning,
-        evidence_refs: None,
-    }
+    best.detector = detectors.join("+");
+    best.confidence = Some(fused);
+    best.corroboration_count = Some(indices.len());
+    best.barriers = if best_barriers.is_empty() {
+        None
+    } else {
+        Some(best_barriers)
+    };
+    best.evidence_refs = None;
+
+    best
 }
 
 /// 容差去重：按 (file_path, vuln_type) 分组，±line_tolerance 行内合并

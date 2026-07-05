@@ -265,10 +265,12 @@ pub struct FunctionBody {
     pub name: String,
     /// 函数参数名列表
     pub params: Vec<String>,
-    /// 函数体起始行
+    /// 函数声明起始行（含签名）
     pub start_line: usize,
-    /// 函数体结束行
+    /// 函数声明结束行
     pub end_line: usize,
+    /// 函数体（block）起始行
+    pub body_start_line: usize,
     /// 函数体代码文本
     pub body_text: String,
     /// 带类型注解的参数列表

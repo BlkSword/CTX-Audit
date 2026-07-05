@@ -774,9 +774,17 @@ impl CrossFileTaintAnalyzer {
                 // 只传递当前文件的 Stage B AST 产物，避免克隆整个缓存
                 if let Some((symbols, calls)) = self.parsed_ast_cache.get(&file_str) {
                     let mut subset = HashMap::new();
-                    subset.insert(file_str, (symbols.clone(), calls.clone()));
+                    subset.insert(file_str.clone(), (symbols.clone(), calls.clone()));
                     local.set_parsed_ast_cache(subset);
                 }
+                // 只传递当前文件相关的 Stage B CPG 缓存，用于填充函数参数信息
+                let local_cpg_cache: HashMap<String, super::cpg::FunctionCPG> = self
+                    .cpg_cache
+                    .iter()
+                    .filter(|(k, _)| k.starts_with(file_str.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                local.set_cpg_cache(local_cpg_cache, HashMap::new());
                 local.build_call_graph_for_file_with_content(file_path, &content);
                 Some(local)
             })
@@ -878,7 +886,41 @@ impl CrossFileTaintAnalyzer {
                     symbol.end_line as usize,
                 );
                 let is_source = self.is_taint_source(&func_name, &body_text);
-                let (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
+
+                // 优先按函数体内的具体 sink 调用判断（可处理 response.getWriter().println、
+                // stmt.executeBatch 等 Semantic 规则），函数名兜底。
+                let (mut is_sink, mut sink_type) = (false, None);
+                for call in &calls_in_range {
+                    if let Some(vt) = self.is_sink_call(call) {
+                        is_sink = true;
+                        sink_type = Some(vt);
+                        break;
+                    }
+                }
+                if !is_sink {
+                    (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
+                }
+
+                // 优先复用 Stage B CPG 中的参数信息，使跨文件/跨函数传播能正确映射形参。
+                let cpg_key = format!(
+                    "{}:{}:{}",
+                    file_path_str, func_name, symbol.start_line
+                );
+                let parameters = self
+                    .cpg_cache
+                    .get(&cpg_key)
+                    .map(|cpg| {
+                        cpg.signature
+                            .params
+                            .iter()
+                            .map(|p| FunctionParameter {
+                                name: p.name.clone(),
+                                param_type: p.type_annotation.clone(),
+                                may_be_tainted: false,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
 
                 let node = CallGraphNode {
                     id: func_id.clone(),
@@ -886,7 +928,7 @@ impl CrossFileTaintAnalyzer {
                     file_path: file_path_str.clone(),
                     start_line: symbol.start_line as usize,
                     end_line: symbol.end_line as usize,
-                    parameters: Vec::new(),
+                    parameters,
                     return_type: None,
                     calls: calls_in_func,
                     called_by: Vec::new(),
@@ -1353,23 +1395,30 @@ impl CrossFileTaintAnalyzer {
                                 continue;
                             }
                             for callee_id in callee_ids {
+                                if callee_id == &caller_id {
+                                    continue;
+                                }
                                 let callee_file = all_nodes
                                     .get(callee_id)
                                     .map(|n| normalize_path(&n.file_path))
                                     .unwrap_or_default();
-                                if callee_file != caller_file_normalized {
-                                    if let Some(ref target_file) = receiver_target_file {
-                                        let target_normalized = normalize_path(target_file);
-                                        if callee_file == target_normalized {
-                                            local_edges.push((caller_id.clone(), callee_id.clone()));
-                                            resolved = true;
-                                        }
-                                    } else {
-                                        if is_builtin_call_target(ct) {
-                                            continue;
-                                        }
+                                if callee_file == caller_file_normalized {
+                                    // 同文件内调用：直接建立边（caller/callee 已在同一文件）
+                                    local_edges.push((caller_id.clone(), callee_id.clone()));
+                                    resolved = true;
+                                    continue;
+                                }
+                                if let Some(ref target_file) = receiver_target_file {
+                                    let target_normalized = normalize_path(target_file);
+                                    if callee_file == target_normalized {
                                         local_edges.push((caller_id.clone(), callee_id.clone()));
+                                        resolved = true;
                                     }
+                                } else {
+                                    if is_builtin_call_target(ct) {
+                                        continue;
+                                    }
+                                    local_edges.push((caller_id.clone(), callee_id.clone()));
                                 }
                             }
                         }
@@ -3456,6 +3505,32 @@ impl CrossFileTaintAnalyzer {
             }
         }
 
+        // 对明确标记为 sink 的函数，保守认为每个参数都可能到达其内部 sink 调用。
+        // 这是单文件 bad() -> badSink() 模式的关键兜底：badSink 不是污点源，但接受
+        // 来自 bad() 的污染参数后将其传入 println/exec 等 sink。
+        if node.is_taint_sink {
+            for ct in &node.calls {
+                if self.is_sink_by_name(&ct.callee) {
+                    for (param_idx, _param) in node.parameters.iter().enumerate() {
+                        // 避免重复记录同一 param + sink
+                        let already = direct_sinks.iter().any(|ds: &SinkReachability| {
+                            ds.from_param == param_idx && ds.sink_name == ct.callee
+                        });
+                        if !already {
+                            direct_sinks.push(SinkReachability {
+                                sink_name: ct.callee.clone(),
+                                from_param: param_idx,
+                                sanitized: false,
+                                sanitizer: None,
+                                sink_line: ct.line,
+                                vuln_type: self.infer_vuln_type(&ct.callee),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // 启发式 param_to_calls：参数名直接出现在调用实参中
         let mut param_to_calls = Vec::new();
         for (param_idx, param) in node.parameters.iter().enumerate() {
@@ -4727,6 +4802,58 @@ public class Dao {
         assert!(
             has_flow,
             "应发现 Controller -> Helper -> Dao 的多跳跨文件污点流，实际 {} 条",
+            result.stats.taint_flows
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_java_intra_file_bad_to_badsink() {
+        let tmp_dir = std::env::temp_dir().join("ctx_audit_java_badsink_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let code = r#"
+import javax.servlet.http.*;
+
+public class JulietStyle extends HttpServlet {
+    public void bad(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String data = request.getParameter("name");
+        badSink(data, response);
+    }
+
+    public void badSink(String data, HttpServletResponse response) throws Exception {
+        response.getWriter().println(data);
+    }
+}
+"#;
+        std::fs::write(tmp_dir.join("JulietStyle.java"), code).unwrap();
+
+        let sources = vec![crate::analysis::taint::TaintSource::new(
+            "java_http_request",
+            "Java HTTP Request",
+            vec!["request.getParameter"],
+        )];
+        let mut sinks = CrossFileTaintAnalyzer::default_sink_patterns();
+        sinks.push(crate::analysis::taint::TaintSink::new(
+            "xss",
+            "XSS",
+            vec!["println", "response.getWriter().println"],
+            crate::analysis::taint::VulnerabilityType::CrossSiteScripting,
+        ));
+        let mut analyzer = CrossFileTaintAnalyzer::with_rules(sources, sinks);
+        let result = analyzer.analyze_project(&tmp_dir);
+        eprintln!("stats: {:?}", result.stats);
+        for n in result.call_graph.nodes.values() {
+            eprintln!(
+                "node: {} params={:?} source={} sink={} calls={:?}",
+                n.id, n.parameters, n.is_taint_source, n.is_taint_sink, n.calls
+            );
+        }
+        assert!(
+            result.stats.taint_flows > 0,
+            "应发现单文件 bad -> badSink 的 XSS 污点流，实际 {} 条",
             result.stats.taint_flows
         );
 

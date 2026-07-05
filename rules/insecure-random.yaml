@@ -11,7 +11,7 @@ language: all
 name: Insecure Random Number Generation
 patterns:
   - language: java
-    pattern: (?i)(java\.util\.Random\s+|new\s+Random\s*\()
+    pattern: (?i)(java\.util\.Random(?:\s+|\s*\.(?:next|seed))|new\s+(?:java\.util\.)?Random\s*\()
   - language: javascript
     pattern: (?i)Math\.random\s*\(\)
   - language: python

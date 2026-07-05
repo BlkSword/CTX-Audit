@@ -15,7 +15,7 @@ patterns:
   - language: javascript
     pattern: '(?i)(fetch\s*\(\s*req\.|axios\.\w+\s*\(\s*req\.|http\.get\s*\(\s*req\.|request\s*\(\s*req\.)'
   - language: java
-    pattern: '(?i)(URL\s*\(\s*request|HttpURLConnection\s*\(\s*request|RestTemplate\.\w+\s*\(\s*request)'
+    pattern: '(?i)(URL\s*\([^)]*request[^)]*\)\s*\.\s*(openConnection|openStream|getContent)|HttpURLConnection\s*\(\s*request|RestTemplate\.\w+\s*\(\s*request)'
   - language: php
     pattern: '(?i)(file_get_contents\s*\(\s*\$_(GET|POST|REQUEST)|curl_exec\s*\(|fopen\s*\(\s*\$_)'
   - language: go

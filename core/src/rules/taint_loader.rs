@@ -319,7 +319,8 @@ version: "1.0"
             "java_sql_exec should cover prepareCall"
         );
 
-        // Java file path sink 应使用 Substring 模式以确保 new File* 能命中
+        // Java file path sink 使用 Semantic 模式，并通过 object_creation_expression 支持
+        // 直接识别 new File(...) / new FileInputStream(...) 等构造函数调用。
         let java_file_path = loaded
             .sinks
             .iter()
@@ -328,9 +329,13 @@ version: "1.0"
         assert!(
             matches!(
                 java_file_path.match_mode,
-                crate::analysis::taint::MatchMode::Substring
+                crate::analysis::taint::MatchMode::Semantic
             ),
-            "java_file_path should use Substring matching for constructor calls"
+            "java_file_path should use Semantic matching for constructor calls"
+        );
+        assert!(
+            java_file_path.patterns.iter().any(|p| p.contains("File")),
+            "java_file_path should cover File constructor"
         );
 
         // C/C++ sink 包含宽字符和新增 format/path 函数

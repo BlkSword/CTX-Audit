@@ -254,6 +254,23 @@ impl ASTParser {
                             );
                         }
 
+                        // 提取方法参数名，供 Stage C 调用图构建使用
+                        if let Some(params_node) = node.child_by_field_name("parameters") {
+                            let param_names: Vec<serde_json::Value> = ASTParser::extract_param_names(
+                                &params_node,
+                                content,
+                            )
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect();
+                            if !param_names.is_empty() {
+                                metadata.insert(
+                                    "params".to_string(),
+                                    serde_json::Value::Array(param_names),
+                                );
+                            }
+                        }
+
                         let symbol = Symbol::new(
                             name,
                             SymbolKind::Method,
@@ -1262,10 +1279,12 @@ impl ASTParser {
         if matches!(
             kind,
             "call_expression" | "call" | "method_invocation" | "function_call"
+                | "object_creation_expression"
         ) {
             let func_node = node
                 .child_by_field_name("function")
-                .or_else(|| node.child_by_field_name("name"));
+                .or_else(|| node.child_by_field_name("name"))
+                .or_else(|| node.child_by_field_name("type"));
 
             let args_node = node.child_by_field_name("arguments");
 
@@ -1274,6 +1293,7 @@ impl ASTParser {
 
                 // Java method_invocation 的字段在节点本身（object/name），
                 // 而不是 function/name 子节点，需要特殊处理以保留接收者信息。
+                // object_creation_expression 的构造函数名在 type 字段（如 File）。
                 let (is_method, receiver, callee_name) = if kind == "method_invocation" {
                     let recv = node
                         .child_by_field_name("object")
@@ -1283,6 +1303,8 @@ impl ASTParser {
                         .map(|n| content[n.byte_range()].to_string())
                         .unwrap_or_else(|| callee_text.clone());
                     (recv.is_some(), recv, name)
+                } else if kind == "object_creation_expression" {
+                    (false, None, callee_text)
                 } else {
                     Self::parse_callee(&func_node, &callee_text, content)
                 };
@@ -1562,10 +1584,16 @@ impl ASTParser {
                                 typed_params.iter().map(|tp| tp.name.clone()).collect();
 
                             let body_node = right.child_by_field_name("body");
-                            let body_text = if let Some(body) = body_node {
-                                content[body.byte_range()].to_string()
+                            let (body_text, body_start_line) = if let Some(body) = body_node {
+                                (
+                                    content[body.byte_range()].to_string(),
+                                    body.start_position().row + 1,
+                                )
                             } else {
-                                content[right.byte_range()].to_string()
+                                (
+                                    content[right.byte_range()].to_string(),
+                                    right.start_position().row + 1,
+                                )
                             };
 
                             results.push(FunctionBody {
@@ -1573,6 +1601,7 @@ impl ASTParser {
                                 params,
                                 start_line: right.start_position().row + 1,
                                 end_line: right.end_position().row + 1,
+                                body_start_line,
                                 body_text,
                                 typed_params,
                             });
@@ -1616,10 +1645,16 @@ impl ASTParser {
             let params: Vec<String> = typed_params.iter().map(|tp| tp.name.clone()).collect();
 
             let body_node = node.child_by_field_name("body");
-            let body_text = if let Some(body) = body_node {
-                content[body.byte_range()].to_string()
+            let (body_text, body_start_line) = if let Some(body) = body_node {
+                (
+                    content[body.byte_range()].to_string(),
+                    body.start_position().row + 1,
+                )
             } else {
-                content[node.byte_range()].to_string()
+                (
+                    content[node.byte_range()].to_string(),
+                    node.start_position().row + 1,
+                )
             };
 
             // 使用函数声明节点的起止行号，以便上层通过 AST 定位到完整函数节点
@@ -1629,6 +1664,7 @@ impl ASTParser {
                 params,
                 start_line: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
+                body_start_line,
                 body_text,
                 typed_params,
             });
@@ -1669,6 +1705,8 @@ impl ASTParser {
                     | "optional_parameter"
                     | "rest_parameter"
                     | "pattern"
+                    | "formal_parameter"
+                    | "spread_parameter"
             ) {
                 let name = child
                     .child_by_field_name("name")
@@ -1978,4 +2016,48 @@ mod tests {
         assert!(result.is_char_boundary(result.len()));
         assert!(result.ends_with("..."));
     }
+
+    #[test]
+    fn test_java_method_param_metadata() {
+        let code = r#"
+public class Test {
+    void bad(HttpServletRequest request, HttpServletResponse response) {}
+    void badSink(String data, HttpServletResponse response) {}
+}
+"#;
+        let mut parser = ASTParser::new();
+        let (symbols_result, _) = parser.parse_and_extract_calls(Path::new("Test.java"), code);
+        let symbols = symbols_result.unwrap();
+        for s in &symbols {
+            eprintln!("symbol {} kind={:?} metadata={:?}", s.name, s.kind, s.metadata);
+        }
+        let bad = symbols.iter().find(|s| s.name == "bad").unwrap();
+        let params = bad.metadata.get("params").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(params.len(), 2);
+        assert!(params.iter().any(|v| v.as_str() == Some("request")));
+        assert!(params.iter().any(|v| v.as_str() == Some("response")));
+    }
+
+    #[test]
+    fn test_java_local_variable_assignment() {
+        let code = r#"
+import javax.servlet.http.*;
+
+public class Test extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String param = request.getHeader("x");
+        String sql = "{call " + param + "}";
+    }
+}
+"#;
+        let mut parser = ASTParser::new();
+        let (_bodies, assignments, _calls) = parser.extract_all_for_taint(Path::new("Test.java"), code);
+        eprintln!("assignments:");
+        for a in &assignments {
+            eprintln!("  line={} target={} source_expr={} source_vars={:?}", a.line, a.target, a.source_expr, a.source_vars);
+        }
+        assert!(assignments.iter().any(|a| a.target == "param" && a.source_vars.iter().any(|v| v == "request")));
+        assert!(assignments.iter().any(|a| a.target == "sql" && a.source_vars.iter().any(|v| v == "param")));
+    }
+
 }

@@ -241,7 +241,6 @@ sinks:
       - "HttpClient"
       - "URL"
     receiver_patterns:
-      - "session"
       - "client"
     patterns:
       - ".get"
@@ -259,7 +258,6 @@ sinks:
       - "urllib.request.urlopen"
       - "http.request"
       - "https.request"
-      - "URL("
     languages: ["*"]
     vulnerability_type: "ServerSideRequestForgery"
     severity: "High"
@@ -332,12 +330,6 @@ sanitizers:
     description: "PHP HTML entity encoding"
   - pattern: "htmlentities"
     description: "PHP HTML entity encoding (extended)"
-  - pattern: "parameterized"
-    description: "Parameterized query"
-  - pattern: "prepare"
-    description: "Prepared statement"
-  - pattern: "parameterize"
-    description: "Parameterize function"
   - pattern: "encode"
     description: "Encoding function"
   - pattern: "encodeURI"
