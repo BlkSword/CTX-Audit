@@ -7,7 +7,6 @@
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -2523,12 +2522,6 @@ impl CrossFileTaintAnalyzer {
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let mut flows = Vec::new();
 
-        // 跨文件流去重 + 单 source 上限，避免单一 source 爆炸
-        const MAX_FLOWS_PER_SOURCE: usize = 200;
-        let flow_dedup: RefCell<HashSet<(String, String, VulnerabilityType)>> =
-            RefCell::new(HashSet::new());
-        let flows_per_source: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
-
         for source_id in &self.call_graph.taint_sources {
             let initial_vars = self.initial_tainted_variables(source_id);
             if initial_vars.is_empty() {
@@ -2552,27 +2545,18 @@ impl CrossFileTaintAnalyzer {
             while let Some((current_id, mut current_tainted, path)) = queue.pop_front() {
                 // 当前函数本身是 sink，且内部污点能命中 sink（已有 CPG 单文件结果兜底）
                 if sink_set.contains(&current_id) && current_id != *source_id {
-                    if let Some(sink_node) = self.call_graph.nodes.get(&current_id) {
+                    if let (Some(source_node), Some(sink_node)) = (
+                        self.call_graph.nodes.get(source_id),
+                        self.call_graph.nodes.get(&current_id),
+                    ) {
                         let vuln_type = sink_node.sink_type.unwrap_or(VulnerabilityType::Generic);
-                        let key = (source_id.clone(), sink_node.id.clone(), vuln_type);
-                        if flow_dedup.borrow_mut().insert(key) {
-                            {
-                                let mut per_source = flows_per_source.borrow_mut();
-                                let count = per_source.entry(source_id.clone()).or_default();
-                                if *count < MAX_FLOWS_PER_SOURCE {
-                                    *count += 1;
-                                    if let Some(source_node) = self.call_graph.nodes.get(source_id) {
-                                        flows.push(self.build_interprocedural_flow(
-                                            source_node,
-                                            sink_node,
-                                            &path,
-                                            vuln_type,
-                                            "summary_direct_sink",
-                                        ));
-                                    }
-                                }
-                            }
-                        }
+                        flows.push(self.build_interprocedural_flow(
+                            source_node,
+                            sink_node,
+                            &path,
+                            vuln_type,
+                            "summary_direct_sink",
+                        ));
                     }
                 }
 
@@ -2651,24 +2635,16 @@ impl CrossFileTaintAnalyzer {
                                 && callee_tainted
                                     .contains(&callee_node.parameters[ds.from_param].name)
                             {
-                                let mut sink_path = path.clone();
-                                sink_path.push(callee_id.clone());
-                                let key = (source_id.clone(), callee_node.id.clone(), ds.vuln_type.clone());
-                                if flow_dedup.borrow_mut().insert(key) {
-                                    let mut per_source = flows_per_source.borrow_mut();
-                                    let count = per_source.entry(source_id.clone()).or_default();
-                                    if *count < MAX_FLOWS_PER_SOURCE {
-                                        *count += 1;
-                                        if let Some(source_node) = self.call_graph.nodes.get(source_id) {
-                                            flows.push(self.build_interprocedural_flow(
-                                                source_node,
-                                                callee_node,
-                                                &sink_path,
-                                                ds.vuln_type.clone(),
-                                                "summary_param_to_sink",
-                                            ));
-                                        }
-                                    }
+                                if let Some(source_node) = self.call_graph.nodes.get(source_id) {
+                                    let mut sink_path = path.clone();
+                                    sink_path.push(callee_id.clone());
+                                    flows.push(self.build_interprocedural_flow(
+                                        source_node,
+                                        callee_node,
+                                        &sink_path,
+                                        ds.vuln_type.clone(),
+                                        "summary_param_to_sink",
+                                    ));
                                 }
                             }
                         }

@@ -496,7 +496,7 @@ pub enum TaintCategory {
 }
 
 /// 漏洞类型
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VulnerabilityType {
     /// SQL 注入
     SqlInjection,
