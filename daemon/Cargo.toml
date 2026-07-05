@@ -51,3 +51,7 @@ clap = { workspace = true, features = ["derive"] }
 # Config reading
 toml = "0.8"
 dirs = "5"
+
+# Unix API (daemon 进程管理)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

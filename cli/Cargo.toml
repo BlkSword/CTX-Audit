@@ -64,6 +64,10 @@ deepaudit-core = { workspace = true }
 ctx-audit-tools = { workspace = true }
 ctx-audit-daemon = { workspace = true }
 
+# Unix API (守护进程管理)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Windows API (用于控制台操作)
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["consoleapi", "wincon"] }

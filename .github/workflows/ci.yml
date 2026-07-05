@@ -42,9 +42,9 @@ jobs:
         run: |
           target/release/ctx-audit --version
           target/release/ctx-audit config set scan.taint_max_candidate_files 1000
-          target/release/ctx-audit config get scan.taint_max_candidate_files
+          target/release/ctx-audit config show scan.taint_max_candidate_files
           target/release/ctx-audit config set scan.taint_max_file_kb 256
-          target/release/ctx-audit config get scan.taint_max_file_kb
+          target/release/ctx-audit config show scan.taint_max_file_kb
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
