@@ -3297,8 +3297,11 @@ impl CrossFileTaintAnalyzer {
         &mut self,
         project_path: &Path,
     ) -> HashMap<String, FunctionSummary> {
-        // 1. 构建调用图
+        // 1. 收集并预加载源文件内容
         let source_files = self.collect_source_files(project_path);
+        self.preload_file_contents(&source_files);
+
+        // 2. 构建调用图
         for file_path in &source_files {
             self.build_call_graph_for_file(file_path);
         }
