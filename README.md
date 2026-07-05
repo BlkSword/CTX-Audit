@@ -44,7 +44,7 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
 
-**覆盖范围**：20+ 漏洞类型（注入、XSS、SSRF、反序列化、路径遍历...），AST 分析支持 11 种语言（JavaScript/TypeScript/Python/Java/Rust/Go/C/C++/HTML/CSS/JSON），文件扫描覆盖 18 种扩展名，内置 Next.js、React、Django、Spring、Express、Laravel、Rails 框架感知规则。
+**覆盖范围**：20+ 漏洞类型（注入、XSS、SSRF、反序列化、路径遍历...），AST 分析支持 12 种语言（JavaScript/JSX、TypeScript/TSX、Python、Java、Rust、Go、C、C++、HTML、CSS、JSON），文件扫描覆盖 18 种扩展名，内置 Next.js、React、Django、Spring、Express、Laravel、Rails 框架感知规则。
 
 ```
 ┌───────────────────┐     IPC (TCP)     ┌──────────────────────────────┐
@@ -1021,6 +1021,28 @@ ctx-audit scan ./myproject --deep    # 自动加载 .ctx-audit/rules/
 ```
 
 ## 性能
+
+### v2.1.0 扫描性能优化
+
+v2.1.0 对深度扫描的 **Stage B（AST 污点分析）** 进行了并行化重构：
+
+- 移除批次（batch）串行等待，所有 AST 候选文件一次性进入并行处理。
+- 文件内部按**函数粒度**并行构建 CPG 并执行污点分析。
+- 污点规则（sources / sinks / sanitizers）通过 `Arc` 在并行任务间共享，避免每文件/每函数重复克隆。
+- `AstTaintAnalyzer` 不再持有非线程安全的 `tree-sitter::Parser`，分析器本身可 `Arc` 共享；解析需求下沉到线程本地 parser。
+- 函数级任务通过 `parse_fragment` 对函数体文本重新解析局部 AST，保持 AST-based CFG 精度，避免回退到较慢的 text-based CFG。
+
+### 基准
+
+#### WebGoat-new（真实漏洞验证项目）
+
+基于 [WebGoat](https://github.com/WebGoat/WebGoat)（Java + 少量前端 JS，~400 个 AST 候选文件），release 构建，Windows 11，清空缓存：
+
+| 模式 | 耗时 | findings | 说明 |
+|------|------|----------|------|
+| `audit --agent --deep --no-auto-goal --max-findings 10 --min-severity high` | **~52s** | 249 total / 10 investigated | 含规则扫描 + AST 污点 + 跨文件追踪（83,058 条跨文件污点流） |
+
+#### Next.js（超大型项目）
 
 以下基准基于 [Next.js](https://github.com/vercel/next.js) 仓库（~22,000 源文件，243MB），排除 test/bench/docs 目录，release 构建，Windows 10。
 
