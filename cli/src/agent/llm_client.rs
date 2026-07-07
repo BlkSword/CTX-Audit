@@ -635,23 +635,54 @@ impl LlmClient for McpRelayLlmClient {
 }
 
 /// 根据配置构造受控 LlmClient
+///
+/// 当 `llm_mode=http` 但未配置 API key（且不是本地 Ollama endpoint）时，
+/// 自动回退到 NoopLlmClient，避免无 key 时直接报错。
 pub fn create_llm_client(agent_config: &crate::config::AgentConfig) -> Arc<dyn LlmClient> {
-    let inner: Arc<dyn LlmClient> = match agent_config.llm_mode.as_str() {
-        "http" => Arc::new(HttpLlmClient {
-            provider: agent_config.llm.provider.clone(),
-            model: agent_config.llm.model.clone(),
-            api_key: agent_config.llm.api_key.clone(),
-            endpoint: agent_config.llm.endpoint.clone(),
-            timeout_sec: agent_config.llm.timeout_sec,
-            max_tokens: agent_config.llm.max_tokens,
-        }),
-        "mcp_relay" => Arc::new(McpRelayLlmClient),
-        _ => Arc::new(NoopLlmClient),
+    let mode = agent_config.llm_mode.as_str();
+
+    let (inner, effective_mode): (Arc<dyn LlmClient>, String) = match mode {
+        "http" => {
+            let mut api_key = agent_config.llm.api_key.clone();
+            if api_key.is_empty() {
+                if let Ok(key) = std::env::var("CTX_AUDIT_LLM_API_KEY") {
+                    api_key = key;
+                }
+            }
+
+            let endpoint = agent_config.llm.endpoint.as_deref().unwrap_or("");
+            let is_local_endpoint = endpoint.contains("127.0.0.1")
+                || endpoint.contains("localhost")
+                || endpoint.contains(":11434");
+            let is_ollama = agent_config.llm.provider.eq_ignore_ascii_case("ollama");
+
+            if api_key.is_empty() && !(is_ollama || is_local_endpoint) {
+                tracing::warn!(
+                    "agent.llm_mode=http 但未配置 API key（也未设置 CTX_AUDIT_LLM_API_KEY），\
+                     回退到 noop LLM 客户端。请在配置文件中设置 agent.llm.api_key 或环境变量。"
+                );
+                (Arc::new(NoopLlmClient), "noop".to_string())
+            } else {
+                (
+                    Arc::new(HttpLlmClient {
+                        provider: agent_config.llm.provider.clone(),
+                        model: agent_config.llm.model.clone(),
+                        api_key,
+                        endpoint: agent_config.llm.endpoint.clone(),
+                        timeout_sec: agent_config.llm.timeout_sec,
+                        max_tokens: agent_config.llm.max_tokens,
+                    }),
+                    "http".to_string(),
+                )
+            }
+        }
+        "mcp_relay" => (Arc::new(McpRelayLlmClient), "mcp_relay".to_string()),
+        _ => (Arc::new(NoopLlmClient), "noop".to_string()),
     };
 
     Arc::new(ControlledLlmClient::new(
         inner,
-        agent_config.llm_mode.clone(),
+        effective_mode,
         agent_config.max_llm_calls,
         agent_config.max_llm_calls_by_severity.clone(),
     ))

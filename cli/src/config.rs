@@ -608,19 +608,23 @@ fn default_triage_concurrency() -> usize {
     4
 }
 fn default_llm_mode() -> String {
-    "noop".to_string()
+    "http".to_string()
 }
 fn default_review_mode() -> String {
-    "off".to_string()
+    "debate".to_string()
 }
 fn default_max_investigation_steps() -> usize {
-    5
+    10
 }
 fn default_max_llm_calls() -> usize {
-    100
+    500
 }
 fn default_max_llm_calls_by_severity() -> std::collections::HashMap<String, usize> {
-    std::collections::HashMap::new()
+    let mut m = std::collections::HashMap::new();
+    m.insert("critical".to_string(), 100);
+    m.insert("high".to_string(), 200);
+    m.insert("medium".to_string(), 200);
+    m
 }
 
 impl Default for AgentConfig {
@@ -628,13 +632,13 @@ impl Default for AgentConfig {
         Self {
             enabled: true,
             triage_concurrency: 4,
-            llm_mode: "noop".to_string(),
-            review_mode: "off".to_string(),
+            llm_mode: default_llm_mode(),
+            review_mode: default_review_mode(),
             max_llm_calls: default_max_llm_calls(),
             max_llm_calls_by_severity: default_max_llm_calls_by_severity(),
-            specialist_enabled: false,
-            investigator_enabled: false,
-            max_investigation_steps: 5,
+            specialist_enabled: true,
+            investigator_enabled: true,
+            max_investigation_steps: default_max_investigation_steps(),
             taint_walk_enabled: false,
             planner: PlannerConfig::default(),
             llm: LlmConfig::default(),
@@ -1169,12 +1173,19 @@ impl ConfigManager {
             // agent.*
             "agent.enabled" => self.config.agent.enabled = true,
             "agent.triage_concurrency" => self.config.agent.triage_concurrency = 4,
-            "agent.llm_mode" => self.config.agent.llm_mode = "noop".to_string(),
-            "agent.review_mode" => self.config.agent.review_mode = "off".to_string(),
-            "agent.max_llm_calls" => self.config.agent.max_llm_calls = 100,
-            "agent.specialist_enabled" => self.config.agent.specialist_enabled = false,
-            "agent.investigator_enabled" => self.config.agent.investigator_enabled = false,
-            "agent.max_investigation_steps" => self.config.agent.max_investigation_steps = 5,
+            "agent.llm_mode" => self.config.agent.llm_mode = "http".to_string(),
+            "agent.review_mode" => self.config.agent.review_mode = "debate".to_string(),
+            "agent.max_llm_calls" => self.config.agent.max_llm_calls = 500,
+            "agent.max_llm_calls_by_severity" => {
+                let mut m = std::collections::HashMap::new();
+                m.insert("critical".to_string(), 100);
+                m.insert("high".to_string(), 200);
+                m.insert("medium".to_string(), 200);
+                self.config.agent.max_llm_calls_by_severity = m;
+            }
+            "agent.specialist_enabled" => self.config.agent.specialist_enabled = true,
+            "agent.investigator_enabled" => self.config.agent.investigator_enabled = true,
+            "agent.max_investigation_steps" => self.config.agent.max_investigation_steps = 10,
             "agent.taint_walk_enabled" => self.config.agent.taint_walk_enabled = false,
             "agent.planner.strategy" => self.config.agent.planner.strategy = PlannerStrategy::Auto,
             "agent.planner.max_goals" => self.config.agent.planner.max_goals = 10,

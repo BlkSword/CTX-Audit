@@ -49,6 +49,18 @@ pub async fn show(key: Option<String>, _reveal: bool) -> Result<()> {
             cfg.sca.severity_threshold
         ));
         renderer.print(&format!("  守护进程地址:     {}", cfg.daemon.listen_addr));
+        renderer.print("Agent 配置:");
+        renderer.print(&format!("  LLM 模式:         {}", cfg.agent.llm_mode));
+        renderer.print(&format!("  复核模式:         {}", cfg.agent.review_mode));
+        renderer.print(&format!("  Specialist:       {}", cfg.agent.specialist_enabled));
+        renderer.print(&format!("  Investigator:     {}", cfg.agent.investigator_enabled));
+        renderer.print(&format!(
+            "  最大调查步数:     {}",
+            cfg.agent.max_investigation_steps
+        ));
+        renderer.print(&format!("  最大 LLM 调用:    {}", cfg.agent.max_llm_calls));
+        renderer.print(&format!("  LLM 提供商:       {}", cfg.agent.llm.provider));
+        renderer.print(&format!("  LLM 模型:         {}", cfg.agent.llm.model));
     }
 
     Ok(())
@@ -138,6 +150,26 @@ pub async fn list(_verbose: bool) -> Result<()> {
     println!("  daemon.heartbeat_interval_secs - 心跳间隔秒数 (默认 5)");
     println!("  daemon.reconnect_max_retries  - 最大重连重试次数 (默认 3)");
     println!("  daemon.reconnect_base_delay_ms - 重连基础延迟毫秒 (默认 200)");
+    println!();
+    println!("Agent 配置:");
+    println!("  agent.enabled                 - 是否启用 Agent (默认 true)");
+    println!("  agent.llm_mode                - LLM 模式: noop / http / mcp_relay (默认 http)");
+    println!("  agent.review_mode             - 复核模式: off / debate / single (默认 debate)");
+    println!("  agent.specialist_enabled      - 是否启用 Specialist Agent (默认 true)");
+    println!("  agent.investigator_enabled    - 是否启用 ReAct 调查器 (默认 true)");
+    println!("  agent.max_investigation_steps - 最大调查步数 (默认 10)");
+    println!("  agent.max_llm_calls           - 最大 LLM 调用次数，0 表示不限制 (默认 500)");
+    println!("  agent.max_llm_calls_by_severity - 按严重度分级的 LLM 预算 (JSON 对象)");
+    println!("  agent.taint_walk_enabled      - 是否启用污点步进调查器 (默认 false)");
+    println!("  agent.planner.strategy        - 策略模式: auto / rule / llm (默认 auto)");
+    println!("  agent.planner.max_goals       - 最大审计目标数 (默认 10)");
+    println!("  agent.planner.max_exploration_actions - 每个目标最大探索行动数 (默认 5)");
+    println!("  agent.llm.provider            - LLM 提供商: openai / anthropic / ollama (默认 openai)");
+    println!("  agent.llm.model               - LLM 模型名 (默认 gpt-4o-mini)");
+    println!("  agent.llm.api_key             - API 密钥 (也可用 CTX_AUDIT_LLM_API_KEY 环境变量)");
+    println!("  agent.llm.endpoint            - 自定义 endpoint (可选)");
+    println!("  agent.llm.timeout_sec         - LLM 请求超时秒数 (默认 60)");
+    println!("  agent.llm.max_tokens          - 最大 token 数 (默认 2048)");
 
     Ok(())
 }

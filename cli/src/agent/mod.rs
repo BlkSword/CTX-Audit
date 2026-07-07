@@ -102,7 +102,7 @@ impl AuditConfig {
             output_format,
             output_path,
             specialist_enabled: false,
-            review_mode: "off".to_string(),
+            review_mode: String::new(),
             investigator_enabled: false,
             taint_walk_enabled: false,
             max_investigation_steps: None,

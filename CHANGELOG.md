@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OWASP BenchmarkJava v1.2 可回归基线**：新增 `BASELINE.md` 记录 `--taint` / `--deep` 模式下的 precision / recall / F1（taint: P=0.344 R=0.514 F1=0.412；deep: P=0.336 R=0.514 F1=0.406）。
+- **Agent LLM 默认激活**：
+  - `agent.llm_mode` 默认从 `noop` 改为 `http`，`agent.review_mode` 默认从 `off` 改为 `debate`。
+  - `agent.specialist_enabled` 与 `agent.investigator_enabled` 默认开启。
+  - 支持通过 `CTX_AUDIT_LLM_API_KEY` 环境变量读取 API key。
+  - 未配置 API key（且非本地 Ollama endpoint）时自动回退到 `noop` LLM 客户端，避免无 key 时直接失败。
+- **`config show` / `config list` 补充 Agent 配置项展示**。
+
+### Changed
+
+- `agent.max_llm_calls` 默认值从 100 提升到 500，并新增按严重度默认预算（critical=100, high=200, medium=200）。
+- `agent.max_investigation_steps` 默认值从 5 提升到 10。
+
 ### Fixed
 
+- **跨文件污点流内存崩溃**：在 `ScanOptions` 新增 `cross_file_max_flows`（默认 50000），超过上限时截断并告警，防止 full BenchmarkJava `--deep` 扫描直接内存分配失败。
 - **MCP `security_scan` 排除目录与 CLI 不一致**：`tool_security_scan` 现在读取 CLI 配置中的 `scan.exclude_patterns`、线程数、内存预算等参数，避免 `target/` 等目录在 MCP 路径下被 core 默认值误排除。
 - **Finding `code_context` 为空**：`extract_code_context` 在 `source` 行号晚于 `sink` 行号时自动取最小/最大范围，确保上下文非空。
 - **`source_snippet` / `sink_snippet` 缺失**：AST 污点 findings 在 source/sink 节点缺少代码片段时，自动回退到对应行的原始代码。
