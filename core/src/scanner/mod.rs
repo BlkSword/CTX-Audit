@@ -279,18 +279,26 @@ pub fn extract_code_context(
         return String::new();
     }
 
-    let start = if line_start > context_lines + 1 {
-        line_start - context_lines - 1
+    // source 行号可能晚于 sink 行号（AST 污点分析中 source 参数在函数尾部），
+    // 因此统一取最小/最大范围，保证上下文非空。
+    let (lo, hi) = if line_start <= line_end {
+        (line_start, line_end)
+    } else {
+        (line_end, line_start)
+    };
+
+    let start = if lo > context_lines + 1 {
+        lo - context_lines - 1
     } else {
         0
     };
-    let end = (line_end + context_lines).min(lines.len());
+    let end = (hi + context_lines).min(lines.len());
 
     let width = format!("{}", end).len();
     let mut result = String::new();
     for i in start..end {
         let line_num = i + 1;
-        let marker = if line_num >= line_start && line_num <= line_end {
+        let marker = if line_num >= lo && line_num <= hi {
             ">>"
         } else {
             "  "
@@ -304,6 +312,17 @@ pub fn extract_code_context(
         ));
     }
     result.trim_end().to_string()
+}
+
+/// 获取指定行的原始代码片段（去除首尾空白）
+pub fn line_snippet(content: &str, line: usize) -> Option<String> {
+    if line == 0 {
+        return None;
+    }
+    content
+        .lines()
+        .nth(line.saturating_sub(1))
+        .map(|s| s.trim().to_string())
 }
 
 /// 文件角色分类
@@ -1543,6 +1562,19 @@ pub async fn scan_directory_deep_with_rules_progress(
                         })
                         .collect();
 
+                    let sanitizer_chain: Vec<SanitizerEvidence> = flow
+                        .path
+                        .iter()
+                        .filter(|n| n.node_type == crate::analysis::taint::FlowNodeType::Sanitized)
+                        .map(|n| SanitizerEvidence {
+                            function: n.symbol.clone(),
+                            file: n.file_path.clone(),
+                            line: n.line,
+                            effective: true,
+                            reason: "净化函数被识别并出现在污点路径中".to_string(),
+                        })
+                        .collect();
+
                     let evidence = EvidenceRefs {
                         source_sink_path: Some(SourceSinkEvidence {
                             source_function: flow.source.symbol.clone(),
@@ -1556,7 +1588,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                             path_length: path_steps.len(),
                             path_steps,
                         }),
-                        sanitizer_chain: Vec::new(),
+                        sanitizer_chain,
                         middleware_coverage: Vec::new(),
                         graph_snapshot: None,
                     };
@@ -1582,8 +1614,16 @@ pub async fn scan_directory_deep_with_rules_progress(
                         confidence: Some(0.85),
                         corroboration_count: None,
                         code_snippet: Some(extract_code_context(content, flow.source.line, flow.sink.line, 3)),
-                        source_snippet: flow.source.code_snippet.clone(),
-                        sink_snippet: flow.sink.code_snippet.clone(),
+                        source_snippet: flow
+                            .source
+                            .code_snippet
+                            .clone()
+                            .or_else(|| line_snippet(content, flow.source.line)),
+                        sink_snippet: flow
+                            .sink
+                            .code_snippet
+                            .clone()
+                            .or_else(|| line_snippet(content, flow.sink.line)),
                         file_role: Some(classify_file_role(&file_str).to_string()),
                         barriers: if flow.path.iter().any(|n| n.node_type == crate::analysis::taint::FlowNodeType::Sanitized) {
                             Some(vec!["sanitization_detected".to_string()])
@@ -1861,8 +1901,24 @@ pub async fn scan_directory_deep_with_rules_progress(
                     confidence: Some(flow.confidence),
                     corroboration_count: None,
                     code_snippet,
-                    source_snippet: flow.source.code_snippet.clone(),
-                    sink_snippet: flow.sink.code_snippet.clone(),
+                    source_snippet: flow
+                        .source
+                        .code_snippet
+                        .clone()
+                        .or_else(|| {
+                            content_cache
+                                .get(&flow.source.file_path)
+                                .and_then(|c| line_snippet(c, flow.source.line))
+                        }),
+                    sink_snippet: flow
+                        .sink
+                        .code_snippet
+                        .clone()
+                        .or_else(|| {
+                            content_cache
+                                .get(&flow.sink.file_path)
+                                .and_then(|c| line_snippet(c, flow.sink.line))
+                        }),
                     file_role: Some(classify_file_role(&flow.source.file_path).to_string()),
                     barriers: None,
                     reasoning_hint: Some(format!(

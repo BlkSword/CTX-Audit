@@ -234,7 +234,7 @@ impl CallGraph {
         }
 
         self.file_functions
-            .entry(file_path)
+            .entry(normalize_path(&file_path))
             .or_insert_with(Vec::new)
             .push(id.clone());
 
@@ -1622,6 +1622,7 @@ impl CrossFileTaintAnalyzer {
         }
 
         // 从 symbols 中提取函数/方法定义
+        let language = self.infer_language(file_path).to_string();
         for symbol in &symbols {
             if !matches!(
                 symbol.kind,
@@ -1631,7 +1632,20 @@ impl CrossFileTaintAnalyzer {
             }
 
             let func_name = symbol.name.clone();
-            let func_id = format!("{}:{}", file_path_str, func_name);
+            // 对 Java 方法/内部类/匿名类中的方法，使用 ownerClass 限定 ID，避免同名方法冲突。
+            let owner_class = symbol
+                .metadata
+                .get("ownerClass")
+                .and_then(|v| v.as_str());
+            let func_id = if language == "java" {
+                if let Some(owner) = owner_class {
+                    format!("{}:{}.{}", file_path_str, owner, func_name)
+                } else {
+                    format!("{}:{}", file_path_str, func_name)
+                }
+            } else {
+                format!("{}:{}", file_path_str, func_name)
+            };
             // 保存副本供回调注册使用（func_name 会被移动到 node 中）
             let func_name_clone = func_name.clone();
 

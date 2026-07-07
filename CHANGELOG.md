@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **MCP `security_scan` 排除目录与 CLI 不一致**：`tool_security_scan` 现在读取 CLI 配置中的 `scan.exclude_patterns`、线程数、内存预算等参数，避免 `target/` 等目录在 MCP 路径下被 core 默认值误排除。
+- **Finding `code_context` 为空**：`extract_code_context` 在 `source` 行号晚于 `sink` 行号时自动取最小/最大范围，确保上下文非空。
+- **`source_snippet` / `sink_snippet` 缺失**：AST 污点 findings 在 source/sink 节点缺少代码片段时，自动回退到对应行的原始代码。
+- **净化器证据精确化**：`evidence_refs.sanitizer_chain` 现在会收集污点路径中 `Sanitized` 节点，包含净化函数名、文件、行号及有效性判定。
+- **匿名类 / 内部类调用图支持**：Java AST 符号提取时把匿名类（`new X() { ... }`）压入类作用域；跨文件调用图为 Java 方法使用 `ownerClass.method` 限定 ID，避免同名方法冲突；`CallGraph::file_functions` 使用规范化路径作为 key。
+
 ## [2.1.0] - 2026-07-05
 
 ### Added

@@ -20,9 +20,12 @@ use deepaudit_core::rules::model::Rule;
 use deepaudit_core::rules::model::RuleSet;
 use deepaudit_core::rules::taint_model::TaintRuleSet;
 use deepaudit_core::scanning::{
-    scan_directory, scan_directory_deep_with_rules_progress, Finding, ScanOptions,
+    scan_directory, scan_directory_deep_with_rules_progress, scan_directory_with_opts, Finding,
+    ScanOptions,
 };
 use deepaudit_core::taint::{AstTaintAnalyzer, CrossFileTaintAnalyzer};
+
+use crate::config::ConfigManager;
 
 // ── MCP Protocol Types ──────────────────────────────────
 
@@ -708,15 +711,63 @@ async fn tool_security_scan(args: &Value) -> Value {
     let enable_taint = taint_arg || deep || cross_file_arg;
     let enable_cross_file = cross_file_arg || deep;
 
+    // 与 CLI scan 命令使用同一套配置（排除模式、线程、内存预算等），
+    // 避免 MCP 使用 core 的保守默认值把 target/ 等目录误排。
+    let config = ConfigManager::new(None).ok();
+    let mut scan_opts = config
+        .as_ref()
+        .map(|cm| {
+            let scan = &cm.config().scan;
+            ScanOptions {
+                threads: scan.threads,
+                max_file_size: scan.max_file_size_mb * 1024 * 1024,
+                memory_budget: scan.memory_budget_mb * 1024 * 1024,
+                batch_size: scan.batch_size,
+                line_tolerance: scan.line_tolerance,
+                include_tests: scan.include_tests,
+                enable_taint,
+                enable_cross_file,
+                taint_max_candidate_files: scan.taint_max_candidate_files,
+                taint_max_file_kb: scan.taint_max_file_kb,
+                public_route_patterns: scan.public_route_patterns.clone(),
+                non_production_path_patterns: scan.non_production_path_patterns.clone(),
+            }
+        })
+        .unwrap_or_else(|| {
+            let mut opts = ScanOptions::default();
+            opts.enable_taint = enable_taint;
+            opts.enable_cross_file = enable_cross_file;
+            opts
+        });
+    scan_opts.enable_taint = enable_taint;
+    scan_opts.enable_cross_file = enable_cross_file;
+
+    let exclude_dirs = config
+        .as_ref()
+        .map(|cm| cm.config().scan.exclude_patterns.clone())
+        .filter(|v| !v.is_empty());
+
     let result = if enable_taint || enable_cross_file {
-        let mut opts = ScanOptions::default();
-        opts.enable_taint = enable_taint;
-        opts.enable_cross_file = enable_cross_file;
-        scan_directory_deep_with_rules_progress(path, None, None, None, Some(opts), None)
-            .await
-            .map(|r| r.findings)
+        scan_directory_deep_with_rules_progress(
+            path,
+            None,
+            exclude_dirs,
+            None,
+            Some(scan_opts),
+            None,
+        )
+        .await
+        .map(|r| r.findings)
     } else {
-        scan_directory(path).await
+        scan_directory_with_opts(
+            path,
+            None,
+            exclude_dirs,
+            None,
+            scan_opts,
+            None,
+        )
+        .await
     };
 
     match result {

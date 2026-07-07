@@ -159,11 +159,15 @@ impl ASTParser {
             method_stack: &mut Vec<String>,
             package_name: &str,
         ) {
+            // 追踪本次访问是否向类栈中压入新作用域（含匿名类），用于在访问完子树后弹出。
+            let mut pushed_class = false;
+
             match node.kind() {
                 "class_declaration" | "interface_declaration" => {
                     if let Some(name_node) = node.child_by_field_name("name") {
                         let name = content[name_node.byte_range()].to_string();
                         class_stack.push(name.clone());
+                        pushed_class = true;
 
                         let start_line = node.start_position().row + 1;
                         let end_line = node.end_position().row + 1;
@@ -230,6 +234,17 @@ impl ASTParser {
                         .with_fields(fields);
 
                         symbols.push(symbol);
+                    }
+                }
+                "object_creation_expression" => {
+                    // Java 匿名类：new SomeType() { ... }，其 method_declaration 需要独立作用域
+                    let has_class_body = node
+                        .children(&mut node.walk())
+                        .any(|child| child.kind() == "class_body");
+                    if has_class_body {
+                        let anon_name = format!("<anonymous@{}>", node.start_position().row + 1);
+                        class_stack.push(anon_name);
+                        pushed_class = true;
                     }
                 }
                 "method_declaration" => {
@@ -340,7 +355,7 @@ impl ASTParser {
                 );
             }
 
-            if node.kind() == "class_declaration" || node.kind() == "interface_declaration" {
+            if pushed_class {
                 class_stack.pop();
             }
             if node.kind() == "method_declaration" {
