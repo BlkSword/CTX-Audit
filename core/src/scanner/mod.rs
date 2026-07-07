@@ -325,6 +325,22 @@ pub fn line_snippet(content: &str, line: usize) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// 从赋值/调用代码片段中提取净化函数名（取第一个 `name(...)` 形式）
+fn extract_sanitizer_function(code: &str) -> Option<String> {
+    // 去掉常见的赋值前缀，如 "String safe = " 或 "safe = "
+    let code = code
+        .split('=')
+        .nth(1)
+        .unwrap_or(code)
+        .trim()
+        .trim_start_matches("new ")
+        .trim();
+    // 匹配 identifier(...)
+    let re = regex::Regex::new(r"^([A-Za-z_][A-Za-z0-9_:\.]*)\s*\(").ok()?;
+    re.captures(code)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+}
+
 /// 文件角色分类
 pub fn classify_file_role(path: &str) -> &'static str {
     let normalized = path.replace('\\', "/").to_lowercase();
@@ -1566,12 +1582,19 @@ pub async fn scan_directory_deep_with_rules_progress(
                         .path
                         .iter()
                         .filter(|n| n.node_type == crate::analysis::taint::FlowNodeType::Sanitized)
-                        .map(|n| SanitizerEvidence {
-                            function: n.symbol.clone(),
-                            file: n.file_path.clone(),
-                            line: n.line,
-                            effective: true,
-                            reason: "净化函数被识别并出现在污点路径中".to_string(),
+                        .map(|n| {
+                            let function = n
+                                .code_snippet
+                                .as_deref()
+                                .and_then(extract_sanitizer_function)
+                                .unwrap_or_else(|| n.symbol.clone());
+                            SanitizerEvidence {
+                                function,
+                                file: n.file_path.clone(),
+                                line: n.line,
+                                effective: true,
+                                reason: "净化函数被识别并出现在污点路径中".to_string(),
+                            }
                         })
                         .collect();
 
