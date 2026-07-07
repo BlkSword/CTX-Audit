@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Agent 扫描排除目录与 CLI 不一致**：`run_security_scan` 现在读取配置文件中的 `scan.exclude_patterns` / `exclude_extra` 并传给 core 扫描器；修复了当项目位于 `target/` 等默认排除目录下时 Agent 扫描返回 0 finding 的问题。
 - **跨文件污点流内存崩溃**：在 `ScanOptions` 新增 `cross_file_max_flows`（默认 50000），超过上限时截断并告警，防止 full BenchmarkJava `--deep` 扫描直接内存分配失败。
 - **MCP `security_scan` 排除目录与 CLI 不一致**：`tool_security_scan` 现在读取 CLI 配置中的 `scan.exclude_patterns`、线程数、内存预算等参数，避免 `target/` 等目录在 MCP 路径下被 core 默认值误排除。
 - **Finding `code_context` 为空**：`extract_code_context` 在 `source` 行号晚于 `sink` 行号时自动取最小/最大范围，确保上下文非空。

@@ -53,4 +53,5 @@ docs/
 
 ROADMAP.md
 AGENTS.md
-/benchmarks
+/benchmarks/*
+!benchmarks/evaluate.py

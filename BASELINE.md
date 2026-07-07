@@ -64,7 +64,54 @@ python benchmarks/evaluate.py --dataset owasp-java \
 | CWE-614 | 0 | 23 | 36 | 0.000 | 0.000 | 0.000 |
 | CWE-643 | 0 | 41 | 15 | 0.000 | 0.000 | 0.000 |
 
-## 观察
+## Agent 审计基线
+
+Agent 默认启用 Specialist、Investigator、Debate Reviewer，并在配置 API key 后调用真实 LLM。以下基线使用 `--min-severity high --no-auto-goal`，仅审计高严重度 finding 子集，因此 recall 以全量 ground truth 计算会显著低于引擎全量扫描。
+
+```bash
+# Noop Agent（规则判定）200 findings
+./target/release/ctx-audit.exe config set agent.llm_mode noop
+./target/release/ctx-audit.exe audit target/benchmarks/BenchmarkJava --agent --deep \
+  --min-severity high --max-findings 200 --no-auto-goal \
+  --output target/benchmarks/benchmarkjava_agent_noop_200.json
+
+python benchmarks/evaluate.py --dataset owasp-java \
+  --ground-truth target/benchmarks/BenchmarkJava/expectedresults-1.2.csv \
+  --audit-log target/benchmarks/benchmarkjava_agent_noop_200_audit_log.json \
+  --verdict-mode true_positive --mode agent_noop_200 \
+  --output target/benchmarks/benchmarkjava_agent_noop_200_report.md
+
+# LLM Agent（DeepSeek）100 findings
+./target/release/ctx-audit.exe config set agent.llm_mode http
+./target/release/ctx-audit.exe audit target/benchmarks/BenchmarkJava --agent --deep \
+  --min-severity high --max-findings 100 --no-auto-goal \
+  --output target/benchmarks/benchmarkjava_agent_llm_100.json
+
+python benchmarks/evaluate.py --dataset owasp-java \
+  --ground-truth target/benchmarks/BenchmarkJava/expectedresults-1.2.csv \
+  --audit-log target/benchmarks/benchmarkjava_agent_llm_100_audit_log.json \
+  --verdict-mode true_positive --mode agent_llm_100 \
+  --output target/benchmarks/benchmarkjava_agent_llm_100_report.md
+```
+
+### 指标对比
+
+| 模式 | 调查数 | TP | FP | FN | Precision | Recall | F1 |
+|------|--------|----|----|----|-----------|--------|----|
+| `--taint`（全量引擎） | 2113 | 727 | 1386 | 688 | 0.344 | 0.514 | 0.412 |
+| `--deep`（全量引擎） | 2163 | 727 | 1436 | 688 | 0.336 | 0.514 | 0.406 |
+| Agent noop 200 | 200 | 131 | 67 | 1284 | **0.662** | 0.093 | 0.162 |
+| Agent noop 100 | 100 | 68 | 30 | 1347 | **0.694** | 0.048 | 0.090 |
+| Agent LLM 100 | 100 | 68 | 30 | 1347 | **0.694** | 0.048 | 0.090 |
+
+### 观察
+
+- Agent 在高严重度子集上的 precision（~0.66-0.69）显著高于原始引擎（~0.34），说明 Specialist/Reviewer/Investigator 的过滤与证据校验有效抑制了误报。
+- 由于只调查前 N 个高严重度 finding，recall 随 N 增加而上升（noop 200 的 recall 是 noop 100 的近 2 倍）。
+- 在 100 finding 子集上，LLM 判定结果与 noop 完全一致。原因是 `ControlledLlmClient` 对证据充分的高严重度 SQLi 直接走规则判定，未触发 LLM 调用；该子集以清晰 source→sink 路径为主，LLM 介入空间有限。
+- 要观察到 LLM 的显著差异，需要在更大或更模糊（needs_review 比例高）的子集上跑测，或调整 `should_call_llm` 触发策略。
+
+## 通用观察
 
 - SQLi（CWE-89）与弱加密（CWE-327）召回率最高，是引擎当前最稳定的类别。
 - 命令注入（CWE-78）、LDAP 注入（CWE-90）、哈希误用（CWE-328）、会话管理（CWE-614）、XPath 注入（CWE-643）等类别召回率为 0，主要因为当前 source/sink/sanitizer 字典未覆盖这些 Java 场景。

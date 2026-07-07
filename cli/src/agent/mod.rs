@@ -359,23 +359,20 @@ async fn run_security_scan(config: &AuditConfig) -> Result<ScanResult> {
         .context("项目路径包含非法字符")?;
 
     // 加载扫描配置，保持与 scan 子命令一致的默认值
-    let (public_route_patterns, mut non_production_path_patterns) =
-        crate::config::ConfigManager::new(None)
-            .ok()
-            .map(|m| {
-                let scan = &m.config().scan;
-                (
-                    scan.public_route_patterns.clone(),
-                    scan.non_production_path_patterns.clone(),
-                )
-            })
-            .unwrap_or_else(|| {
-                (
-                    deepaudit_core::analysis::attack_surface::default_public_route_patterns(),
-                    deepaudit_core::analysis::attack_surface::default_non_production_path_patterns(
-                    ),
-                )
-            });
+    let scan_cfg = crate::config::ConfigManager::new(None).ok().map(|m| m.config().scan.clone());
+    let (public_route_patterns, mut non_production_path_patterns, exclude_patterns) =
+        match scan_cfg {
+            Some(ref scan) => (
+                scan.public_route_patterns.clone(),
+                scan.non_production_path_patterns.clone(),
+                scan.exclude_patterns.clone(),
+            ),
+            None => (
+                deepaudit_core::analysis::attack_surface::default_public_route_patterns(),
+                deepaudit_core::analysis::attack_surface::default_non_production_path_patterns(),
+                Vec::new(),
+            ),
+        };
 
     let mut opts = ScanOptions::default();
     opts.enable_taint = true;
@@ -390,6 +387,16 @@ async fn run_security_scan(config: &AuditConfig) -> Result<ScanResult> {
     }
 
     opts.non_production_path_patterns = non_production_path_patterns;
+
+    // 合并排除列表：配置文件 exclude_patterns + exclude_extra
+    let exclude_extra = scan_cfg.as_ref().map(|s| s.exclude_extra.clone()).unwrap_or_default();
+    let mut all_excludes = exclude_patterns;
+    for p in exclude_extra {
+        let p = p.trim().to_string();
+        if !p.is_empty() && !all_excludes.contains(&p) {
+            all_excludes.push(p);
+        }
+    }
 
     // 尝试从缓存加载扫描结果（项目/规则/选项未变时跳过扫描）
     let cache_dir = config.project_path.join(".ctx-audit").join("cache");
@@ -406,8 +413,14 @@ async fn run_security_scan(config: &AuditConfig) -> Result<ScanResult> {
         return Ok(cached);
     }
 
+    let exclude_opt = if all_excludes.is_empty() {
+        None
+    } else {
+        Some(all_excludes)
+    };
+
     let scan_result = scan_directory_deep_with_rules_progress(
-        path, None, None, None, Some(opts), None,
+        path, None, exclude_opt, None, Some(opts), None,
     )
     .await
     .map_err(|e| anyhow::anyhow!("扫描失败: {}", e))?;

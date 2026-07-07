@@ -154,7 +154,7 @@ enum Commands {
         #[arg(long)]
         taint_walk: bool,
 
-        /// 最大调查步数（默认 5）
+        /// 最大调查步数（默认 10）
         #[arg(long, value_name = "N")]
         max_investigation_steps: Option<usize>,
 
