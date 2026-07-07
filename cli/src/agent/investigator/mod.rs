@@ -362,9 +362,28 @@ fn fallback_verdict(
 
 /// 从字符串解析 InvestigationDecision
 pub fn parse_investigation_decision(text: &str) -> Result<InvestigationDecision> {
-    let json_text = extract_json(text)?;
-    let value: serde_json::Value = serde_json::from_str(json_text)
-        .with_context(|| format!("LLM 返回不是合法 JSON: {}", json_text))?;
+    let json_text = match extract_json(text) {
+        Ok(t) => t,
+        Err(_) => {
+            tracing::warn!("Investigator LLM 响应未找到 JSON，回退到 needs_review: {}", text.chars().take(200).collect::<String>());
+            return Ok(InvestigationDecision::Finish {
+                verdict: Verdict::NeedsReview,
+                confidence: 0.5,
+                reasoning: "LLM 未返回可解析 JSON，回退到 needs_review".to_string(),
+            });
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(json_text) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("Investigator LLM 响应 JSON 解析失败 ({}): {}", e, text.chars().take(200).collect::<String>());
+            return Ok(InvestigationDecision::Finish {
+                verdict: Verdict::NeedsReview,
+                confidence: 0.5,
+                reasoning: "LLM 返回 JSON 解析失败，回退到 needs_review".to_string(),
+            });
+        }
+    };
 
     if value
         .get("finish")

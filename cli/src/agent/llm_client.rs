@@ -222,6 +222,8 @@ impl LlmClient for NoopLlmClient {
 pub struct ControlledLlmClient {
     inner: Arc<dyn LlmClient>,
     mode: String,
+    /// 激进模式：跳过证据清晰度短接，对高严重度 finding 强制调用 LLM
+    llm_aggressive: bool,
     max_calls: usize,
     calls_made: AtomicUsize,
     /// 按严重度分级的 LLM 调用预算
@@ -239,11 +241,18 @@ impl ControlledLlmClient {
         Self {
             inner,
             mode,
+            llm_aggressive: false,
             max_calls,
             calls_made: AtomicUsize::new(0),
             max_calls_by_severity,
             calls_made_by_severity: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// 设置激进模式
+    pub fn with_aggressive(mut self, aggressive: bool) -> Self {
+        self.llm_aggressive = aggressive;
+        self
     }
 
     /// 检查并扣减 LLM 预算。
@@ -297,25 +306,27 @@ impl LlmClient for ControlledLlmClient {
             return NoopLlmClient.triage(finding, evidence).await;
         }
 
-        // 明显可判定的情况直接用规则，不浪费 LLM
-        if evidence.has_effective_sanitizer {
-            return NoopLlmClient.triage(finding, evidence).await;
-        }
-        if evidence.call_path.is_some()
-            && evidence.barriers.is_empty()
-            && !evidence.has_effective_sanitizer
-        {
-            return NoopLlmClient.triage(finding, evidence).await;
-        }
-        if evidence.call_path.is_none()
-            && (!evidence.barriers.is_empty() || evidence.has_effective_sanitizer)
-        {
-            return NoopLlmClient.triage(finding, evidence).await;
-        }
+        // 非激进模式下，明显可判定的情况直接用规则，不浪费 LLM
+        if !self.llm_aggressive {
+            if evidence.has_effective_sanitizer {
+                return NoopLlmClient.triage(finding, evidence).await;
+            }
+            if evidence.call_path.is_some()
+                && evidence.barriers.is_empty()
+                && !evidence.has_effective_sanitizer
+            {
+                return NoopLlmClient.triage(finding, evidence).await;
+            }
+            if evidence.call_path.is_none()
+                && (!evidence.barriers.is_empty() || evidence.has_effective_sanitizer)
+            {
+                return NoopLlmClient.triage(finding, evidence).await;
+            }
 
-        // 只有证据冲突或不足时才调用 LLM
-        if !should_call_llm(finding, evidence) {
-            return NoopLlmClient.triage(finding, evidence).await;
+            // 只有证据冲突或不足时才调用 LLM
+            if !should_call_llm(finding, evidence) {
+                return NoopLlmClient.triage(finding, evidence).await;
+            }
         }
 
         // LLM 预算检查（总预算 + 按严重度分级预算）
@@ -338,25 +349,27 @@ impl LlmClient for ControlledLlmClient {
             return Ok(default_investigation_decision(finding, evidence));
         }
 
-        // 明显可判定的情况直接用规则，不浪费 LLM
-        if evidence.has_effective_sanitizer {
-            return Ok(default_investigation_decision(finding, evidence));
-        }
-        if evidence.call_path.is_some()
-            && evidence.barriers.is_empty()
-            && !evidence.has_effective_sanitizer
-        {
-            return Ok(default_investigation_decision(finding, evidence));
-        }
-        if evidence.call_path.is_none()
-            && (!evidence.barriers.is_empty() || evidence.has_effective_sanitizer)
-        {
-            return Ok(default_investigation_decision(finding, evidence));
-        }
+        // 非激进模式下，明显可判定的情况直接用规则，不浪费 LLM
+        if !self.llm_aggressive {
+            if evidence.has_effective_sanitizer {
+                return Ok(default_investigation_decision(finding, evidence));
+            }
+            if evidence.call_path.is_some()
+                && evidence.barriers.is_empty()
+                && !evidence.has_effective_sanitizer
+            {
+                return Ok(default_investigation_decision(finding, evidence));
+            }
+            if evidence.call_path.is_none()
+                && (!evidence.barriers.is_empty() || evidence.has_effective_sanitizer)
+            {
+                return Ok(default_investigation_decision(finding, evidence));
+            }
 
-        // 只有证据冲突或不足时才调用 LLM
-        if !should_call_llm(finding, evidence) {
-            return Ok(default_investigation_decision(finding, evidence));
+            // 只有证据冲突或不足时才调用 LLM
+            if !should_call_llm(finding, evidence) {
+                return Ok(default_investigation_decision(finding, evidence));
+            }
         }
 
         // LLM 预算检查（总预算 + 按严重度分级预算）
@@ -680,12 +693,15 @@ pub fn create_llm_client(agent_config: &crate::config::AgentConfig) -> Arc<dyn L
         _ => (Arc::new(NoopLlmClient), "noop".to_string()),
     };
 
-    Arc::new(ControlledLlmClient::new(
-        inner,
-        effective_mode,
-        agent_config.max_llm_calls,
-        agent_config.max_llm_calls_by_severity.clone(),
-    ))
+    Arc::new(
+        ControlledLlmClient::new(
+            inner,
+            effective_mode,
+            agent_config.max_llm_calls,
+            agent_config.max_llm_calls_by_severity.clone(),
+        )
+        .with_aggressive(agent_config.llm_aggressive),
+    )
 }
 
 #[cfg(test)]

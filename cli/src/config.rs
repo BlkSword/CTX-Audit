@@ -565,6 +565,10 @@ pub struct AgentConfig {
     #[serde(default = "default_llm_mode")]
     pub llm_mode: String,
 
+    /// 是否启用激进 LLM 模式：对高严重度 finding 强制调用 LLM triage，不受证据清晰度的短接限制
+    #[serde(default)]
+    pub llm_aggressive: bool,
+
     /// 复核模式：off / debate / single（默认 off）
     #[serde(default = "default_review_mode")]
     pub review_mode: String,
@@ -633,6 +637,7 @@ impl Default for AgentConfig {
             enabled: true,
             triage_concurrency: 4,
             llm_mode: default_llm_mode(),
+            llm_aggressive: false,
             review_mode: default_review_mode(),
             max_llm_calls: default_max_llm_calls(),
             max_llm_calls_by_severity: default_max_llm_calls_by_severity(),
@@ -860,6 +865,7 @@ impl ConfigManager {
             "agent.enabled" => Some(self.config.agent.enabled.to_string()),
             "agent.triage_concurrency" => Some(self.config.agent.triage_concurrency.to_string()),
             "agent.llm_mode" => Some(self.config.agent.llm_mode.clone()),
+            "agent.llm_aggressive" => Some(self.config.agent.llm_aggressive.to_string()),
             "agent.review_mode" => Some(self.config.agent.review_mode.clone()),
             "agent.max_llm_calls" => Some(self.config.agent.max_llm_calls.to_string()),
             "agent.max_llm_calls_by_severity" => Some(
@@ -1057,6 +1063,9 @@ impl ConfigManager {
                 }
                 self.config.agent.llm_mode = value;
             }
+            "agent.llm_aggressive" => {
+                self.config.agent.llm_aggressive = value.parse().context("无效的布尔值")?;
+            }
             "agent.review_mode" => {
                 let valid = ["off", "debate", "single"];
                 if !valid.contains(&value.as_str()) {
@@ -1174,6 +1183,7 @@ impl ConfigManager {
             "agent.enabled" => self.config.agent.enabled = true,
             "agent.triage_concurrency" => self.config.agent.triage_concurrency = 4,
             "agent.llm_mode" => self.config.agent.llm_mode = "http".to_string(),
+            "agent.llm_aggressive" => self.config.agent.llm_aggressive = false,
             "agent.review_mode" => self.config.agent.review_mode = "debate".to_string(),
             "agent.max_llm_calls" => self.config.agent.max_llm_calls = 500,
             "agent.max_llm_calls_by_severity" => {

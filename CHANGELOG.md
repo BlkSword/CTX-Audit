@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 支持通过 `CTX_AUDIT_LLM_API_KEY` 环境变量读取 API key。
   - 未配置 API key（且非本地 Ollama endpoint）时自动回退到 `noop` LLM 客户端，避免无 key 时直接失败。
 - **`config show` / `config list` 补充 Agent 配置项展示**。
+- **Agent `--llm-aggressive` 模式**：新增 CLI 参数 `--llm-aggressive` 与配置项 `agent.llm_aggressive`。启用后 `ControlledLlmClient` 跳过证据清晰度规则短接，对高严重度 finding 强制调用真实 LLM（仍受预算控制），用于评估 LLM 在清晰 source→sink 场景下的判定价值。
 
 ### Changed
 
@@ -31,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`source_snippet` / `sink_snippet` 缺失**：AST 污点 findings 在 source/sink 节点缺少代码片段时，自动回退到对应行的原始代码。
 - **净化器证据精确化**：`evidence_refs.sanitizer_chain` 现在会收集污点路径中 `Sanitized` 节点，包含净化函数名、文件、行号及有效性判定。
 - **匿名类 / 内部类调用图支持**：Java AST 符号提取时把匿名类（`new X() { ... }`）压入类作用域；跨文件调用图为 Java 方法使用 `ownerClass.method` 限定 ID，避免同名方法冲突；`CallGraph::file_functions` 使用规范化路径作为 key。
+- **Agent Investigator / Reviewer 中文日志截断 panic**：修复 `&text[..text.len().min(N)]` 在多字节 UTF-8 字符边界处 panic 的问题，改用 `text.chars().take(N)`，避免 LLM 返回中文时进程崩溃。
+- **Agent Investigator JSON 容错**：LLM 返回非 JSON 或解析失败时回退到 `needs_review`，不再导致单个 finding 调查失败。
 
 ## [2.1.0] - 2026-07-05
 

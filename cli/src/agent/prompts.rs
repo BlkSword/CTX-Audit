@@ -24,7 +24,8 @@ pub fn build_triage_prompt(finding: &Finding, evidence: &Evidence) -> String {
 注意：
 - 只依据提供的证据做判定，不要猜测未显示的代码行为。
 - 若证据中存在冲突（例如路径存在但同时有 sanitizer），请说明冲突并给出倾向性判定。
-- 输出必须是 JSON，不要包含其他解释性文字。
+- 输出必须是单个 JSON 对象，不要 Markdown 代码块、不要解释、不要 trailing 字符。
+- reasoning 字段使用中文，内容中不要出现未转义的双引号。
 
 输出格式：
 {
@@ -32,7 +33,10 @@ pub fn build_triage_prompt(finding: &Finding, evidence: &Evidence) -> String {
   "confidence": 0.0-1.0,
   "reasoning": "简短中文理由",
   "suggested_specialist": null | "sqli" | "xss" | "auth_bypass" | "ssrf" | "deserialization"
-}"#;
+}
+
+示例：
+{"verdict": "true_positive", "confidence": 0.85, "reasoning": "存在完整 source 到 sink 的污点链，无有效 sanitizer。", "suggested_specialist": null}"#;
 
     let evidence_json = json!({
         "vulnerability_type": finding.vuln_type,

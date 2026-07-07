@@ -167,7 +167,13 @@ impl LlmBasedReviewer {
         let evidence_json =
             serde_json::to_string_pretty(&result.evidence.to_json()).unwrap_or_default();
         format!(
-            "你是一个独立的安全审计复核专家。请对以下初级调查员的判定进行复核，只返回 JSON：{schema}。
+            "你是一个独立的安全审计复核专家。请对以下初级调查员的判定进行复核。
+
+要求：
+1. 只返回单个 JSON 对象，不要 Markdown 代码块、不要解释、不要 trailing 字符。
+2. JSON 必须严格符合此 schema：{schema}
+3. reasoning 字段使用中文，内容中不要出现未转义的双引号。
+4. 示例：{{\"verdict\": \"true_positive\", \"confidence\": 0.85, \"reasoning\": \"存在完整 source 到 sink 的污点链，无有效 sanitizer。\"}}
 
 漏洞类型：{vuln_type}
 文件：{file}:{line}
@@ -190,8 +196,15 @@ impl LlmBasedReviewer {
 impl Reviewer for LlmBasedReviewer {
     async fn review(&self, result: &InvestigationResult) -> Result<ReviewOpinion> {
         let prompt = self.build_prompt(result);
-        match self.llm_client.chat_json(&prompt).await {
-            Ok(value) => parse_llm_review_value(&value, &self.name),
+        // 优先走 chat 拿到原始文本，再本地做更宽容的 JSON 提取/修复
+        match self.llm_client.chat(&prompt).await {
+            Ok(text) => match parse_review_text(&text, &self.name) {
+                Ok(op) => Ok(op),
+                Err(e) => {
+                    tracing::warn!("LLM Reviewer 响应解析失败，回退到规则复核器: {} | 原始文本前500字: {}", e, text.chars().take(500).collect::<String>());
+                    RuleBasedReviewer.review(result).await
+                }
+            },
             Err(e) => {
                 tracing::warn!("LLM Reviewer 调用失败，回退到规则复核器: {}", e);
                 RuleBasedReviewer.review(result).await
@@ -237,7 +250,12 @@ impl Reviewer for DebateReviewer {
         // 辩论：让 LLM 针对规则复核器的反对意见进行再判断
         const RESPONSE_SCHEMA: &str = r#"{"verdict": "true_positive"|"false_positive"|"needs_review", "confidence": 0.0-1.0, "reasoning": "..."}"#;
         let prompt = format!(
-            "你之前对以下 finding 的复核意见是：{llm_reasoning}（置信度 {llm_conf:.2}）。另一位规则复核专家的意见是：{rule_reasoning}（置信度 {rule_conf:.2}）。请结合双方观点，只返回最终 JSON：{schema}。
+            "你之前对以下 finding 的复核意见是：{llm_reasoning}（置信度 {llm_conf:.2}）。另一位规则复核专家的意见是：{rule_reasoning}（置信度 {rule_conf:.2}）。请结合双方观点做出最终判定。
+
+要求：
+1. 只返回单个 JSON 对象，不要 Markdown 代码块、不要解释、不要 trailing 字符。
+2. JSON 必须严格符合此 schema：{schema}
+3. reasoning 字段使用中文，内容中不要出现未转义的双引号。
 
 漏洞类型：{vuln_type}
 初审判定：{verdict}
@@ -287,6 +305,49 @@ fn parse_llm_review_value(value: &serde_json::Value, reviewer_name: &str) -> Res
         confidence,
         reasoning,
     })
+}
+
+/// 从原始文本中宽容地解析 ReviewOpinion
+fn parse_review_text(text: &str, reviewer_name: &str) -> Result<ReviewOpinion> {
+    // 1. 先尝试标准 JSON 提取
+    if let Ok(v) = crate::agent::llm_client::extract_json_value(text) {
+        if let Ok(op) = parse_llm_review_value(&v, reviewer_name) {
+            return Ok(op);
+        }
+    }
+
+    // 2. 尝试修复常见 trailing 字符问题（多余引号/括号/分号）
+    let cleaned = text
+        .trim()
+        .trim_start_matches('"')
+        .trim_end_matches(';')
+        .trim_end_matches('"')
+        .trim_end_matches(')')
+        .trim_end_matches(']')
+        .trim_end_matches('}')
+        .to_string()
+        + "}";
+    if let Ok(v) = crate::agent::llm_client::extract_json_value(&cleaned) {
+        if let Ok(op) = parse_llm_review_value(&v, reviewer_name) {
+            return Ok(op);
+        }
+    }
+
+    // 3. 尝试只截取第一个 JSON 对象（从第一个 { 到最后一个 }）
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            let substr = &text[start..=end];
+            if let Ok(v) = serde_json::from_str(substr)
+                .or_else(|_| crate::agent::llm_client::extract_json_value(substr))
+            {
+                if let Ok(op) = parse_llm_review_value(&v, reviewer_name) {
+                    return Ok(op);
+                }
+            }
+        }
+    }
+
+    anyhow::bail!("无法从 LLM 响应中解析复核 JSON")
 }
 
 /// 融合复核意见：若不同意且置信度不低于初审，则覆盖 verdict

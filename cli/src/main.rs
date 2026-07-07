@@ -146,6 +146,10 @@ enum Commands {
         #[arg(long, value_name = "MODE")]
         review_mode: Option<String>,
 
+        /// 激进 LLM 模式：对高严重度 finding 强制调用 LLM，不跳过证据清晰的案件
+        #[arg(long)]
+        llm_aggressive: bool,
+
         /// 启用 ReAct 调查器：让 LLM 动态选择工具迭代收集证据
         #[arg(long)]
         investigate: bool,
@@ -496,6 +500,7 @@ async fn main() -> Result<()> {
             max_findings,
             specialist,
             review_mode,
+            llm_aggressive,
             investigate,
             taint_walk,
             max_investigation_steps,
@@ -513,6 +518,7 @@ async fn main() -> Result<()> {
                 max_findings,
                 specialist,
                 review_mode,
+                llm_aggressive,
                 investigate,
                 taint_walk,
                 max_investigation_steps,

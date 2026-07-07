@@ -68,6 +68,8 @@ pub struct AuditConfig {
     pub specialist_enabled: bool,
     /// Review 模式：off / debate / single（覆盖配置文件默认值）
     pub review_mode: String,
+    /// 是否启用激进 LLM 模式（覆盖配置文件默认值）
+    pub llm_aggressive: bool,
     /// 是否启用 ReAct 调查器（覆盖配置文件默认值）
     pub investigator_enabled: bool,
     /// 是否启用污点步进调查器（覆盖配置文件默认值）
@@ -103,6 +105,7 @@ impl AuditConfig {
             output_path,
             specialist_enabled: false,
             review_mode: String::new(),
+            llm_aggressive: false,
             investigator_enabled: false,
             taint_walk_enabled: false,
             max_investigation_steps: None,
@@ -120,7 +123,9 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
 
     // 加载应用配置中的 agent 段
     let config_manager = crate::config::ConfigManager::new(None)?;
-    let agent_config = config_manager.config().agent.clone();
+    let mut agent_config = config_manager.config().agent.clone();
+    // CLI 参数覆盖配置文件
+    agent_config.llm_aggressive = config.llm_aggressive || agent_config.llm_aggressive;
     let specialist_enabled = config.specialist_enabled || agent_config.specialist_enabled;
     let review_mode = if config.review_mode.is_empty() {
         agent_config.review_mode.clone()

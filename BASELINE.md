@@ -92,6 +92,18 @@ python benchmarks/evaluate.py --dataset owasp-java \
   --audit-log target/benchmarks/benchmarkjava_agent_llm_100_audit_log.json \
   --verdict-mode true_positive --mode agent_llm_100 \
   --output target/benchmarks/benchmarkjava_agent_llm_100_report.md
+
+# LLM aggressive 模式（强制 LLM 判定高严重度 finding）
+./target/release/ctx-audit.exe config set agent.llm_aggressive true
+./target/release/ctx-audit.exe audit target/benchmarks/BenchmarkJava --agent --deep \
+  --min-severity high --max-findings 100 --no-auto-goal --llm-aggressive \
+  --output target/benchmarks/benchmarkjava_agent_llm_aggressive_v2_100.json
+
+python benchmarks/evaluate.py --dataset owasp-java \
+  --ground-truth target/benchmarks/BenchmarkJava/expectedresults-1.2.csv \
+  --audit-log target/benchmarks/benchmarkjava_agent_llm_aggressive_v2_100_audit_log.json \
+  --verdict-mode true_positive --mode agent_llm_aggressive_v2_100 \
+  --output target/benchmarks/benchmarkjava_agent_llm_aggressive_v2_100_report.md
 ```
 
 ### 指标对比
@@ -103,13 +115,16 @@ python benchmarks/evaluate.py --dataset owasp-java \
 | Agent noop 200 | 200 | 131 | 67 | 1284 | **0.662** | 0.093 | 0.162 |
 | Agent noop 100 | 100 | 68 | 30 | 1347 | **0.694** | 0.048 | 0.090 |
 | Agent LLM 100 | 100 | 68 | 30 | 1347 | **0.694** | 0.048 | 0.090 |
+| Agent LLM aggressive 100 | 100 | 67 | 42 | 1348 | **0.615** | 0.047 | 0.088 |
 
 ### 观察
 
 - Agent 在高严重度子集上的 precision（~0.66-0.69）显著高于原始引擎（~0.34），说明 Specialist/Reviewer/Investigator 的过滤与证据校验有效抑制了误报。
 - 由于只调查前 N 个高严重度 finding，recall 随 N 增加而上升（noop 200 的 recall 是 noop 100 的近 2 倍）。
-- 在 100 finding 子集上，LLM 判定结果与 noop 完全一致。原因是 `ControlledLlmClient` 对证据充分的高严重度 SQLi 直接走规则判定，未触发 LLM 调用；该子集以清晰 source→sink 路径为主，LLM 介入空间有限。
-- 要观察到 LLM 的显著差异，需要在更大或更模糊（needs_review 比例高）的子集上跑测，或调整 `should_call_llm` 触发策略。
+- 在 100 finding 子集上，默认 LLM 判定结果与 noop 完全一致。原因是 `ControlledLlmClient` 对证据充分的高严重度 SQLi 直接走规则判定，未触发 LLM 调用；该子集以清晰 source→sink 路径为主，LLM 介入空间有限。
+- 启用 `--llm-aggressive` 并提升调用预算（`max_llm_calls=5000`、`high=2000`）、限制调查步数（`max_investigation_steps=5`）后，真实 LLM 被强制调用（audit_log 中 100/100 出现 LLM 推理，无 Noop 回退）。但结果反而下降：precision 从 0.694 降至 **0.615**，FP 从 30 升至 42，TP 从 68 降至 67。说明当前 LLM prompt/调查工具链在该数据集上不仅未提升判定质量，还引入了额外误报。
+- 主要失败点：Investigator 的 tool-use JSON 输出不稳定（大量 "LLM 响应未找到 JSON / JSON 解析失败" 回退到 `needs_review`），导致 LLM 无法有效利用工具收集证据；Reviewer debate 模式在证据不足时仍倾向于维持 `true_positive` 初审结论，未能有效抑制误报。
+- 下一步若要真正释放 LLM 价值，应优先修复 Investigator 的 tool-use 输出格式与 tool 结果解析，而非单纯扩大调用预算或强制触发。
 
 ## 通用观察
 
