@@ -72,6 +72,8 @@ pub struct ScanOptions {
     pub taint_max_candidate_files: usize,
     /// 深度扫描时单个 AST 候选文件大小上限（KB，默认 500）
     pub taint_max_file_kb: usize,
+    /// 跨文件污点流数量上限，防止大型项目内存爆炸（默认 50000）
+    pub cross_file_max_flows: usize,
     /// 公开路由白名单（用于抑制公开端点被误报为未认证）
     pub public_route_patterns: Vec<String>,
     /// 非生产代码路径模式（命中时标记 finding 为 non-production）
@@ -91,6 +93,7 @@ impl Default for ScanOptions {
             enable_cross_file: false,
             taint_max_candidate_files: 5000,
             taint_max_file_kb: 500,
+            cross_file_max_flows: 50000,
             public_route_patterns: crate::analysis::attack_surface::default_public_route_patterns(),
             non_production_path_patterns:
                 crate::analysis::attack_surface::default_non_production_path_patterns(),
@@ -1191,6 +1194,10 @@ pub async fn scan_directory_deep_with_rules_progress(
         .as_ref()
         .map(|o| o.enable_cross_file)
         .unwrap_or(false);
+    let cross_file_max_flows = scan_opts
+        .as_ref()
+        .map(|o| o.cross_file_max_flows)
+        .unwrap_or(50000);
 
     // 先执行基础扫描（收集文件内容缓存）
     let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);
@@ -1736,7 +1743,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                 .map(|loaded| (loaded.sources, loaded.sinks))
                 .unwrap_or_default();
 
-        let cross_file_result = if !taint_files.is_empty() {
+        let mut cross_file_result = if !taint_files.is_empty() {
             let mut analyzer = if !taint_sources.is_empty() || !taint_sinks.is_empty() {
                 crate::analysis::cross_file::CrossFileTaintAnalyzer::with_rules(
                     taint_sources,
@@ -1776,6 +1783,16 @@ pub async fn scan_directory_deep_with_rules_progress(
                 "[CrossFileTaint] 发现 {} 个跨文件污点流",
                 cross_file_result.taint_flows.len()
             );
+
+            // 对超大型项目做安全上限截断，防止后续 evidence 构造导致内存爆炸
+            if cross_file_result.taint_flows.len() > cross_file_max_flows {
+                tracing::warn!(
+                    "[CrossFileTaint] 跨文件污点流超过上限 {}，截断前 {} 个",
+                    cross_file_max_flows,
+                    cross_file_result.taint_flows.len()
+                );
+                cross_file_result.taint_flows.truncate(cross_file_max_flows);
+            }
 
             // 预计算图快照（所有 cross-file finding 共享）
             let total_edges: usize = cross_file_result

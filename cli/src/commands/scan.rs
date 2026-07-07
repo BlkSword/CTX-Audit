@@ -231,6 +231,7 @@ fn build_scan_options() -> ScanOptions {
             enable_cross_file: false,
             taint_max_candidate_files: max_cand,
             taint_max_file_kb: max_kb,
+            cross_file_max_flows: 50000,
             public_route_patterns,
             non_production_path_patterns,
         },

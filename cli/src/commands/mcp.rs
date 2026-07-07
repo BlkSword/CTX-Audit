@@ -729,6 +729,7 @@ async fn tool_security_scan(args: &Value) -> Value {
                 enable_cross_file,
                 taint_max_candidate_files: scan.taint_max_candidate_files,
                 taint_max_file_kb: scan.taint_max_file_kb,
+                cross_file_max_flows: 50000,
                 public_route_patterns: scan.public_route_patterns.clone(),
                 non_production_path_patterns: scan.non_production_path_patterns.clone(),
             }
