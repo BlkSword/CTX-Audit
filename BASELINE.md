@@ -104,6 +104,22 @@ python benchmarks/evaluate.py --dataset owasp-java \
   --audit-log target/benchmarks/benchmarkjava_agent_llm_aggressive_v2_100_audit_log.json \
   --verdict-mode true_positive --mode agent_llm_aggressive_v2_100 \
   --output target/benchmarks/benchmarkjava_agent_llm_aggressive_v2_100_report.md
+
+# Dual-Model Agent：fast 初筛 + pro 深度（30 findings 短验证）
+./target/release/ctx-audit.exe config set agent.llm.model deepseek-v4-flash
+./target/release/ctx-audit.exe config set agent.llm.model_pro deepseek-v4-pro
+./target/release/ctx-audit.exe config set agent.triage_concurrency 32
+rm -f target/benchmarks/BenchmarkJava/.ctx-audit/audit_log.json
+./target/release/ctx-audit.exe audit target/benchmarks/BenchmarkJava --agent --deep \
+  --min-severity high --max-findings 30 --no-auto-goal --llm-aggressive \
+  --output target/benchmarks/benchmarkjava_agent_llm_dual_30.json
+
+python benchmarks/evaluate.py --dataset owasp-java \
+  --ground-truth target/benchmarks/BenchmarkJava/expectedresults-1.2.csv \
+  --findings target/benchmarks/benchmarkjava_agent_llm_dual_30.json \
+  --audit-log target/benchmarks/BenchmarkJava/.ctx-audit/audit_log.json \
+  --verdict-mode true_positive --mode agent_llm_dual_30 \
+  --output target/benchmarks/benchmarkjava_agent_llm_dual_30_report.md
 ```
 
 ### 指标对比
@@ -116,6 +132,7 @@ python benchmarks/evaluate.py --dataset owasp-java \
 | Agent noop 100 | 100 | 68 | 30 | 1347 | **0.694** | 0.048 | 0.090 |
 | Agent LLM 100 | 100 | 68 | 30 | 1347 | **0.694** | 0.048 | 0.090 |
 | Agent LLM aggressive 100 | 100 | 67 | 42 | 1348 | **0.615** | 0.047 | 0.088 |
+| Agent Dual-Model 30 | 30 | 21 | 2 | 1394 | **0.913** | 0.015 | 0.029 |
 
 ### 观察
 
@@ -125,6 +142,7 @@ python benchmarks/evaluate.py --dataset owasp-java \
 - 启用 `--llm-aggressive` 并提升调用预算（`max_llm_calls=5000`、`high=2000`）、限制调查步数（`max_investigation_steps=5`）后，真实 LLM 被强制调用（audit_log 中 100/100 出现 LLM 推理，无 Noop 回退）。但结果反而下降：precision 从 0.694 降至 **0.615**，FP 从 30 升至 42，TP 从 68 降至 67。说明当前 LLM prompt/调查工具链在该数据集上不仅未提升判定质量，还引入了额外误报。
 - 主要失败点：Investigator 的 tool-use JSON 输出不稳定（大量 "LLM 响应未找到 JSON / JSON 解析失败" 回退到 `needs_review`），导致 LLM 无法有效利用工具收集证据；Reviewer debate 模式在证据不足时仍倾向于维持 `true_positive` 初审结论，未能有效抑制误报。
 - 下一步若要真正释放 LLM 价值，应优先修复 Investigator 的 tool-use 输出格式与 tool 结果解析，而非单纯扩大调用预算或强制触发。
+- **Dual-Model 短验证（30 findings）**：启用 `deepseek-v4-flash` 做 fast 初筛、`deepseek-v4-pro` 做深度判定，`triage_concurrency=32`。30 个高严重度 finding 中 audit_log 给出 24 TP / 1 FP / 5 needs_review，输出 JSON 经 ground truth 验证为 21 TP / 2 FP，precision 达到 **0.913**。由于样本量小且仅覆盖高严重度子集，recall 仍低；该结果主要说明主次模型路由可用，且在高严重度 SQLi 子集上保持较高 precision。要度量 cost/quality  trade-off，需后续补充 per-call 模型使用日志与更大规模（≥100 findings）的对比实验。
 
 ## 通用观察
 

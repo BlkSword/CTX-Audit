@@ -95,7 +95,11 @@ pub fn build_investigation_prompt(
 - false_positive：存在有效 sanitizer、安全屏障、中间件防护，或路径不可达。
 - needs_review：证据仍不足，无法确定。
 
-输出必须是 JSON，不要包含其他解释性文字。
+ STRICT 输出要求（必须遵守）：
+- 只返回单个 JSON 对象，不要 Markdown 代码块（```json）、不要解释性文字、不要 trailing 字符（; ")] 等）。
+- JSON key 和 string 必须使用双引号，且字符串内部不要出现未转义的双引号。
+- reasoning / thought 字段使用中文，但内容中禁止出现未转义的双引号。
+- 若继续调查，必须包含 "next_tool" 和 "tool_input"；若结束调查，必须包含 "finish": true 和 "verdict"。
 
 输出格式（继续调查）：
 {
@@ -109,8 +113,8 @@ pub fn build_investigation_prompt(
 {
   "thought": "证据已足够",
   "finish": true,
-  "verdict": "true_positive" | "false_positive" | "needs_review",
-  "confidence": 0.0-1.0,
+  "verdict": "true_positive",
+  "confidence": 0.85,
   "reasoning": "基于哪些证据做出的判定"
 }"#;
 

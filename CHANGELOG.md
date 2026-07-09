@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **OWASP BenchmarkJava v1.2 可回归基线**：新增 `BASELINE.md` 记录 `--taint` / `--deep` 模式下的 precision / recall / F1（taint: P=0.344 R=0.514 F1=0.412；deep: P=0.336 R=0.514 F1=0.406）。
+- **主次模型搭配（Dual-Model Routing）**：
+  - `LlmConfig` 新增 `model_pro` 字段，用于配置强模型（如 `deepseek-v4-pro`）。
+  - `ControlledLlmClient` 同时持有 fast 模型（`model`）与 pro 模型（`model_pro`）。
+  - `triage` 按案件复杂度路由：非激进模式下复杂案件走强模型；激进模式下低严重度/证据清晰案件走 fast 模型，高严重度/证据冲突/needs_review 走强模型。
+  - `investigate_decision` / `chat` / `chat_json`（Reviewer / Planner）始终走强模型；未配置 `model_pro` 时自动回退到单模型。
 - **Agent LLM 默认激活**：
   - `agent.llm_mode` 默认从 `noop` 改为 `http`，`agent.review_mode` 默认从 `off` 改为 `debate`。
   - `agent.specialist_enabled` 与 `agent.investigator_enabled` 默认开启。
@@ -20,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `agent.triage_concurrency` 默认值从 4 提升到 32，提高 Agent 在高并发 LLM endpoint 下的吞吐。
 - `agent.max_llm_calls` 默认值从 100 提升到 500，并新增按严重度默认预算（critical=100, high=200, medium=200）。
 - `agent.max_investigation_steps` 默认值从 5 提升到 10。
 

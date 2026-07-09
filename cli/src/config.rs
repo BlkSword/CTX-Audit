@@ -609,7 +609,7 @@ pub struct AgentConfig {
 }
 
 fn default_triage_concurrency() -> usize {
-    4
+    32
 }
 fn default_llm_mode() -> String {
     "http".to_string()
@@ -635,7 +635,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            triage_concurrency: 4,
+            triage_concurrency: 32,
             llm_mode: default_llm_mode(),
             llm_aggressive: false,
             review_mode: default_review_mode(),
@@ -658,9 +658,13 @@ pub struct LlmConfig {
     #[serde(default = "default_llm_provider")]
     pub provider: String,
 
-    /// 模型名（默认 gpt-4o-mini）
+    /// 主模型：用于快速初筛、明确证据的判定（默认 gpt-4o-mini）
     #[serde(default = "default_llm_model")]
     pub model: String,
+
+    /// 强模型：用于 Investigator / Reviewer / 模糊案件的深度判定（默认空，空则与主模型相同）
+    #[serde(default)]
+    pub model_pro: Option<String>,
 
     /// API 密钥
     #[serde(default)]
@@ -696,6 +700,7 @@ impl Default for LlmConfig {
         Self {
             provider: "openai".to_string(),
             model: "gpt-4o-mini".to_string(),
+            model_pro: None,
             api_key: String::new(),
             endpoint: None,
             timeout_sec: 60,
@@ -904,6 +909,7 @@ impl ConfigManager {
             }
             "agent.llm.provider" => Some(self.config.agent.llm.provider.clone()),
             "agent.llm.model" => Some(self.config.agent.llm.model.clone()),
+            "agent.llm.model_pro" => Some(self.config.agent.llm.model_pro.clone().unwrap_or_default()),
             "agent.llm.api_key" => Some(self.config.agent.llm.api_key.clone()),
             "agent.llm.endpoint" => self.config.agent.llm.endpoint.clone(),
             "agent.llm.timeout_sec" => Some(self.config.agent.llm.timeout_sec.to_string()),
@@ -1124,6 +1130,7 @@ impl ConfigManager {
             }
             "agent.llm.provider" => self.config.agent.llm.provider = value,
             "agent.llm.model" => self.config.agent.llm.model = value,
+            "agent.llm.model_pro" => self.config.agent.llm.model_pro = if value.is_empty() { None } else { Some(value) },
             "agent.llm.api_key" => self.config.agent.llm.api_key = value,
             "agent.llm.endpoint" => {
                 self.config.agent.llm.endpoint = if value.is_empty() { None } else { Some(value) };
@@ -1181,7 +1188,7 @@ impl ConfigManager {
             "daemon.reconnect_base_delay_ms" => self.config.daemon.reconnect_base_delay_ms = 200,
             // agent.*
             "agent.enabled" => self.config.agent.enabled = true,
-            "agent.triage_concurrency" => self.config.agent.triage_concurrency = 4,
+            "agent.triage_concurrency" => self.config.agent.triage_concurrency = 32,
             "agent.llm_mode" => self.config.agent.llm_mode = "http".to_string(),
             "agent.llm_aggressive" => self.config.agent.llm_aggressive = false,
             "agent.review_mode" => self.config.agent.review_mode = "debate".to_string(),
@@ -1211,6 +1218,7 @@ impl ConfigManager {
             }
             "agent.llm.provider" => self.config.agent.llm.provider = "openai".to_string(),
             "agent.llm.model" => self.config.agent.llm.model = "gpt-4o-mini".to_string(),
+            "agent.llm.model_pro" => self.config.agent.llm.model_pro = None,
             "agent.llm.api_key" => self.config.agent.llm.api_key.clear(),
             "agent.llm.endpoint" => self.config.agent.llm.endpoint = None,
             "agent.llm.timeout_sec" => self.config.agent.llm.timeout_sec = 60,

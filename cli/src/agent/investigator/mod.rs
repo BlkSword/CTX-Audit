@@ -360,7 +360,8 @@ fn fallback_verdict(
     }
 }
 
-/// 从字符串解析 InvestigationDecision
+/// 从字符串解析 InvestigationDecision（保留兼容性，主要供测试使用）
+#[allow(dead_code)]
 pub fn parse_investigation_decision(text: &str) -> Result<InvestigationDecision> {
     let json_text = match extract_json(text) {
         Ok(t) => t,
@@ -384,7 +385,11 @@ pub fn parse_investigation_decision(text: &str) -> Result<InvestigationDecision>
             });
         }
     };
+    parse_investigation_decision_from_value(value)
+}
 
+/// 从 JSON Value 解析 InvestigationDecision
+pub fn parse_investigation_decision_from_value(value: serde_json::Value) -> Result<InvestigationDecision> {
     if value
         .get("finish")
         .and_then(|v| v.as_bool())
@@ -443,6 +448,7 @@ fn parse_verdict(s: &str) -> Verdict {
     }
 }
 
+#[allow(dead_code)]
 fn extract_json(text: &str) -> Result<&str> {
     if let Some(start) = text.find('{') {
         if let Some(end) = text.rfind('}') {

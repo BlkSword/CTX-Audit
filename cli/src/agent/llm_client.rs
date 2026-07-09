@@ -18,7 +18,8 @@ use deepaudit_core::scanning::Finding;
 use crate::agent::evidence::Evidence;
 use crate::agent::heuristics::{judge_finding, Verdict};
 use crate::agent::investigator::{
-    parse_investigation_decision, InvestigationDecision, InvestigationMemory, ToolDescription,
+    parse_investigation_decision_from_value, InvestigationDecision, InvestigationMemory,
+    ToolDescription,
 };
 use crate::agent::prompts::{build_investigation_prompt, build_triage_prompt};
 
@@ -218,9 +219,12 @@ impl LlmClient for NoopLlmClient {
     }
 }
 
-/// 受控 LLM Client：仅在满足触发条件时调用真实 LLM，否则退化为 Noop
+/// 受控 LLM Client：仅在满足触发条件时调用真实 LLM，否则退化为 Noop。
+/// 支持主次模型搭配：inner 为 fast/轻量模型，inner_pro 为强模型；
+/// triage 按案件复杂度路由，调查/复核/通用对话始终走强模型。
 pub struct ControlledLlmClient {
     inner: Arc<dyn LlmClient>,
+    inner_pro: Option<Arc<dyn LlmClient>>,
     mode: String,
     /// 激进模式：跳过证据清晰度短接，对高严重度 finding 强制调用 LLM
     llm_aggressive: bool,
@@ -240,6 +244,7 @@ impl ControlledLlmClient {
     ) -> Self {
         Self {
             inner,
+            inner_pro: None,
             mode,
             llm_aggressive: false,
             max_calls,
@@ -253,6 +258,54 @@ impl ControlledLlmClient {
     pub fn with_aggressive(mut self, aggressive: bool) -> Self {
         self.llm_aggressive = aggressive;
         self
+    }
+
+    /// 配置强模型客户端（用于 Investigator / Reviewer / 模糊 triage）
+    pub fn with_pro(mut self, pro: Arc<dyn LlmClient>) -> Self {
+        self.inner_pro = Some(pro);
+        self
+    }
+
+    /// 当前可用的 fast 模型
+    fn fast(&self) -> &Arc<dyn LlmClient> {
+        &self.inner
+    }
+
+    /// 当前可用的强模型；未配置时回退到 fast 模型
+    fn pro(&self) -> &Arc<dyn LlmClient> {
+        self.inner_pro.as_ref().unwrap_or(&self.inner)
+    }
+
+    /// 是否配置了两个模型
+    fn has_pro(&self) -> bool {
+        self.inner_pro.is_some()
+    }
+
+    /// 为 triage 选择模型：
+    /// - 未配置 pro 时全部走 inner
+    /// - 激进模式：高严重度或证据冲突案件走 pro，其余走 fast
+    /// - 非激进模式：只有复杂/高严重度案件才会到达 LLM，直接走 pro
+    fn select_triage_client<'a>(&'a self, finding: &Finding, evidence: &Evidence) -> &'a Arc<dyn LlmClient> {
+        if !self.has_pro() {
+            return self.fast();
+        }
+
+        // 激进模式下，简单/低严重度案件用 fast 初筛，复杂或高严重度用 pro
+        if self.llm_aggressive {
+            let sev = finding.severity.to_lowercase();
+            let is_high = matches!(sev.as_str(), "critical" | "high");
+            let conflict = evidence.call_path.is_some()
+                && (evidence.has_effective_sanitizer || !evidence.barriers.is_empty());
+            let preliminary = judge_finding(finding, evidence);
+
+            if is_high || conflict || preliminary == Verdict::NeedsReview {
+                return self.pro();
+            }
+            return self.fast();
+        }
+
+        // 非激进模式：能走到 LLM 的案件本身已经过规则短接，多是复杂案件，用 pro
+        self.pro()
     }
 
     /// 检查并扣减 LLM 预算。
@@ -293,11 +346,12 @@ impl ControlledLlmClient {
 #[async_trait]
 impl LlmClient for ControlledLlmClient {
     async fn chat(&self, prompt: &str) -> Result<String> {
-        self.inner.chat(prompt).await
+        // 通用对话（如 reviewer、planner）始终使用强模型
+        self.pro().chat(prompt).await
     }
 
     async fn chat_json(&self, prompt: &str) -> Result<serde_json::Value> {
-        self.inner.chat_json(prompt).await
+        self.pro().chat_json(prompt).await
     }
 
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult> {
@@ -334,7 +388,8 @@ impl LlmClient for ControlledLlmClient {
             return NoopLlmClient.triage(finding, evidence).await;
         }
 
-        self.inner.triage(finding, evidence).await
+        let client = self.select_triage_client(finding, evidence);
+        client.triage(finding, evidence).await
     }
 
     async fn investigate_decision(
@@ -377,7 +432,8 @@ impl LlmClient for ControlledLlmClient {
             return Ok(default_investigation_decision(finding, evidence));
         }
 
-        self.inner
+        // 调查阶段使用强模型
+        self.pro()
             .investigate_decision(finding, evidence, memory, available_tools)
             .await
     }
@@ -451,11 +507,33 @@ impl LlmClient for HttpLlmClient {
         available_tools: &[ToolDescription],
     ) -> Result<InvestigationDecision> {
         let prompt = build_investigation_prompt(finding, evidence, memory, available_tools);
-        let text = match self.provider.as_str() {
-            "anthropic" => self.call_anthropic(&prompt).await?,
-            _ => self.call_openai_compatible(&prompt).await?,
+        // 优先使用原生 JSON 模式，降低模型输出格式错误概率
+        let value = match self.provider.as_str() {
+            "anthropic" => {
+                let text = self.call_anthropic(&prompt).await?;
+                extract_json_value(&text)?
+            }
+            _ => self.call_openai_compatible_json(&prompt).await?,
         };
-        parse_investigation_decision(&text)
+        match parse_investigation_decision_from_value(value.clone()) {
+            Ok(decision) => Ok(decision),
+            Err(e) => {
+                // 解析失败时重试一次，并在 prompt 末尾追加更严格的格式提醒
+                tracing::debug!("Investigator 决策解析失败，尝试重试: {}", e);
+                let retry_prompt = format!(
+                    "{}\n\n注意：上一次的输出格式不符合要求（{}）。请严格只返回单个 JSON 对象，不要任何解释文字、Markdown 代码块或 trailing 字符。",
+                    prompt, e
+                );
+                let retry_value = match self.provider.as_str() {
+                    "anthropic" => {
+                        let text = self.call_anthropic(&retry_prompt).await?;
+                        extract_json_value(&text)?
+                    }
+                    _ => self.call_openai_compatible_json(&retry_prompt).await?,
+                };
+                parse_investigation_decision_from_value(retry_value)
+            }
+        }
     }
 }
 
@@ -647,14 +725,32 @@ impl LlmClient for McpRelayLlmClient {
     }
 }
 
+/// 根据配置构造 HTTP LLM 客户端
+fn build_http_llm_client(
+    agent_config: &crate::config::AgentConfig,
+    api_key: String,
+    model: String,
+) -> HttpLlmClient {
+    HttpLlmClient {
+        provider: agent_config.llm.provider.clone(),
+        model,
+        api_key,
+        endpoint: agent_config.llm.endpoint.clone(),
+        timeout_sec: agent_config.llm.timeout_sec,
+        max_tokens: agent_config.llm.max_tokens,
+    }
+}
+
 /// 根据配置构造受控 LlmClient
 ///
 /// 当 `llm_mode=http` 但未配置 API key（且不是本地 Ollama endpoint）时，
 /// 自动回退到 NoopLlmClient，避免无 key 时直接报错。
+/// 若配置了 `agent.llm.model_pro`，会同时创建强模型客户端，
+/// 用于 Investigator / Reviewer / 复杂 triage。
 pub fn create_llm_client(agent_config: &crate::config::AgentConfig) -> Arc<dyn LlmClient> {
     let mode = agent_config.llm_mode.as_str();
 
-    let (inner, effective_mode): (Arc<dyn LlmClient>, String) = match mode {
+    let (inner, effective_mode, maybe_pro): (Arc<dyn LlmClient>, String, Option<Arc<dyn LlmClient>>) = match mode {
         "http" => {
             let mut api_key = agent_config.llm.api_key.clone();
             if api_key.is_empty() {
@@ -674,34 +770,44 @@ pub fn create_llm_client(agent_config: &crate::config::AgentConfig) -> Arc<dyn L
                     "agent.llm_mode=http 但未配置 API key（也未设置 CTX_AUDIT_LLM_API_KEY），\
                      回退到 noop LLM 客户端。请在配置文件中设置 agent.llm.api_key 或环境变量。"
                 );
-                (Arc::new(NoopLlmClient), "noop".to_string())
+                (Arc::new(NoopLlmClient), "noop".to_string(), None)
             } else {
-                (
-                    Arc::new(HttpLlmClient {
-                        provider: agent_config.llm.provider.clone(),
-                        model: agent_config.llm.model.clone(),
-                        api_key,
-                        endpoint: agent_config.llm.endpoint.clone(),
-                        timeout_sec: agent_config.llm.timeout_sec,
-                        max_tokens: agent_config.llm.max_tokens,
-                    }),
-                    "http".to_string(),
-                )
+                let fast = Arc::new(build_http_llm_client(
+                    agent_config,
+                    api_key.clone(),
+                    agent_config.llm.model.clone(),
+                ));
+                let pro = agent_config.llm.model_pro.as_ref().and_then(|pro_model| {
+                    if pro_model.is_empty() || *pro_model == agent_config.llm.model {
+                        None
+                    } else {
+                        Some(Arc::new(build_http_llm_client(
+                            agent_config,
+                            api_key.clone(),
+                            pro_model.clone(),
+                        )) as Arc<dyn LlmClient>)
+                    }
+                });
+                (fast, "http".to_string(), pro)
             }
         }
-        "mcp_relay" => (Arc::new(McpRelayLlmClient), "mcp_relay".to_string()),
-        _ => (Arc::new(NoopLlmClient), "noop".to_string()),
+        "mcp_relay" => (Arc::new(McpRelayLlmClient), "mcp_relay".to_string(), None),
+        _ => (Arc::new(NoopLlmClient), "noop".to_string(), None),
     };
 
-    Arc::new(
-        ControlledLlmClient::new(
-            inner,
-            effective_mode,
-            agent_config.max_llm_calls,
-            agent_config.max_llm_calls_by_severity.clone(),
-        )
-        .with_aggressive(agent_config.llm_aggressive),
+    let mut controlled = ControlledLlmClient::new(
+        inner,
+        effective_mode,
+        agent_config.max_llm_calls,
+        agent_config.max_llm_calls_by_severity.clone(),
     )
+    .with_aggressive(agent_config.llm_aggressive);
+
+    if let Some(pro) = maybe_pro {
+        controlled = controlled.with_pro(pro);
+    }
+
+    Arc::new(controlled)
 }
 
 #[cfg(test)]
