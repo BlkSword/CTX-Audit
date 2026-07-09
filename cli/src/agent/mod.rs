@@ -337,6 +337,7 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
 
     // ── 汇总并持久化 ─────────────────────────────────────────────
     write_audit_log(&config.project_path, &results)?;
+    write_llm_usage(&config.project_path, llm_client.as_ref())?;
     {
         let bb: tokio::sync::RwLockReadGuard<'_, crate::agent::blackboard::BlackboardState> =
             env_arc.blackboard.read().await;
@@ -558,6 +559,22 @@ fn compute_file_risk(project_path: &Path) -> HashMap<String, i32> {
     }
 
     risk
+}
+
+/// 将 LLM 调用统计写入 <project_path>/.ctx-audit/llm_usage.json
+fn write_llm_usage(project_path: &Path, llm_client: &dyn crate::agent::llm_client::LlmClient) -> Result<()> {
+    let audit_dir = project_path.join(".ctx-audit");
+    std::fs::create_dir_all(&audit_dir)?;
+
+    let usage = llm_client.usage_snapshot();
+    let usage_path = audit_dir.join("llm_usage.json");
+    std::fs::write(
+        &usage_path,
+        serde_json::to_string_pretty(&usage).unwrap_or_default(),
+    )
+    .with_context(|| format!("写入 LLM 调用统计失败: {}", usage_path.display()))?;
+
+    Ok(())
 }
 
 /// 将调查结果追加写入 <project_path>/.ctx-audit/audit_log.json

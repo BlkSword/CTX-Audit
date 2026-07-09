@@ -77,21 +77,22 @@ impl Reviewer for RuleBasedReviewer {
             });
         }
 
-        // 3. Specialist 结果与初审冲突 → 不同意
+        // 3. Specialist 结果与初审冲突 → 仅在 specialist 置信度足够高时才覆盖
         if let Some(ref sp) = result.specialist_result {
             let sp_verdict = sp
                 .get("verdict")
                 .and_then(|v| v.as_str())
                 .and_then(parse_verdict);
             if let Some(sp_verdict) = sp_verdict {
-                if sp_verdict != primary {
+                let sp_confidence = sp.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.7);
+                if sp_verdict != primary && sp_confidence >= result.confidence {
                     return Ok(ReviewOpinion {
                         reviewer_name: "rule_based".to_string(),
                         agrees_with_primary: false,
                         verdict: sp_verdict,
-                        confidence: sp.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.7),
+                        confidence: sp_confidence,
                         reasoning: format!(
-                            "Specialist ({}) 判定与初审冲突，按 specialist 意见复核。",
+                            "Specialist ({}) 判定与初审冲突且置信度不低于初审，按 specialist 意见复核。",
                             sp.get("specialist_name")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("unknown")
@@ -198,7 +199,7 @@ impl Reviewer for LlmBasedReviewer {
         let prompt = self.build_prompt(result);
         // 优先走 chat 拿到原始文本，再本地做更宽容的 JSON 提取/修复
         match self.llm_client.chat(&prompt).await {
-            Ok(text) => match parse_review_text(&text, &self.name) {
+            Ok(text) => match parse_review_text(&text, &self.name, result.verdict) {
                 Ok(op) => Ok(op),
                 Err(e) => {
                     tracing::warn!("LLM Reviewer 响应解析失败，回退到规则复核器: {} | 原始文本前500字: {}", e, text.chars().take(500).collect::<String>());
@@ -249,17 +250,22 @@ impl Reviewer for DebateReviewer {
 
         // 辩论：让 LLM 针对规则复核器的反对意见进行再判断
         const RESPONSE_SCHEMA: &str = r#"{"verdict": "true_positive"|"false_positive"|"needs_review", "confidence": 0.0-1.0, "reasoning": "..."}"#;
+        let evidence_json =
+            serde_json::to_string_pretty(&result.evidence.to_json()).unwrap_or_default();
         let prompt = format!(
-            "你之前对以下 finding 的复核意见是：{llm_reasoning}（置信度 {llm_conf:.2}）。另一位规则复核专家的意见是：{rule_reasoning}（置信度 {rule_conf:.2}）。请结合双方观点做出最终判定。
+            "你之前对以下 finding 的复核意见是：{llm_reasoning}（置信度 {llm_conf:.2}）。另一位规则复核专家的意见是：{rule_reasoning}（置信度 {rule_conf:.2}）。请结合双方观点、下方完整证据做出最终判定。
 
 要求：
 1. 只返回单个 JSON 对象，不要 Markdown 代码块、不要解释、不要 trailing 字符。
 2. JSON 必须严格符合此 schema：{schema}
 3. reasoning 字段使用中文，内容中不要出现未转义的双引号。
+4. 若证据不足以排除误报可能，请判 needs_review，不要勉强维持 true_positive。
 
 漏洞类型：{vuln_type}
+文件：{file}:{line}
 初审判定：{verdict}
 初审理由：{reasoning}
+证据摘要：{evidence}
 ",
             schema = RESPONSE_SCHEMA,
             llm_reasoning = llm_op.reasoning,
@@ -267,12 +273,15 @@ impl Reviewer for DebateReviewer {
             rule_reasoning = rule_op.reasoning,
             rule_conf = rule_op.confidence,
             vuln_type = result.vulnerability_type,
+            file = result.file_path,
+            line = result.line,
             verdict = result.verdict.as_str(),
-            reasoning = result.reasoning
+            reasoning = result.reasoning,
+            evidence = evidence_json
         );
 
         match self.llm.llm_client.chat_json(&prompt).await {
-            Ok(value) => parse_llm_review_value(&value, "debate_llm"),
+            Ok(value) => parse_llm_review_value(&value, "debate_llm", result.verdict),
             Err(e) => {
                 tracing::warn!("辩论阶段 LLM 失败，采用 LLM 初审意见: {}", e);
                 Ok(llm_op)
@@ -281,7 +290,11 @@ impl Reviewer for DebateReviewer {
     }
 }
 
-fn parse_llm_review_value(value: &serde_json::Value, reviewer_name: &str) -> Result<ReviewOpinion> {
+fn parse_llm_review_value(
+    value: &serde_json::Value,
+    reviewer_name: &str,
+    primary_verdict: Verdict,
+) -> Result<ReviewOpinion> {
     let verdict = value
         .get("verdict")
         .and_then(|v| v.as_str())
@@ -300,7 +313,7 @@ fn parse_llm_review_value(value: &serde_json::Value, reviewer_name: &str) -> Res
 
     Ok(ReviewOpinion {
         reviewer_name: reviewer_name.to_string(),
-        agrees_with_primary: false, // 由 apply_review 结合初审置信度判定
+        agrees_with_primary: verdict == primary_verdict,
         verdict,
         confidence,
         reasoning,
@@ -308,10 +321,14 @@ fn parse_llm_review_value(value: &serde_json::Value, reviewer_name: &str) -> Res
 }
 
 /// 从原始文本中宽容地解析 ReviewOpinion
-fn parse_review_text(text: &str, reviewer_name: &str) -> Result<ReviewOpinion> {
+fn parse_review_text(
+    text: &str,
+    reviewer_name: &str,
+    primary_verdict: Verdict,
+) -> Result<ReviewOpinion> {
     // 1. 先尝试标准 JSON 提取
     if let Ok(v) = crate::agent::llm_client::extract_json_value(text) {
-        if let Ok(op) = parse_llm_review_value(&v, reviewer_name) {
+        if let Ok(op) = parse_llm_review_value(&v, reviewer_name, primary_verdict) {
             return Ok(op);
         }
     }
@@ -328,7 +345,7 @@ fn parse_review_text(text: &str, reviewer_name: &str) -> Result<ReviewOpinion> {
         .to_string()
         + "}";
     if let Ok(v) = crate::agent::llm_client::extract_json_value(&cleaned) {
-        if let Ok(op) = parse_llm_review_value(&v, reviewer_name) {
+        if let Ok(op) = parse_llm_review_value(&v, reviewer_name, primary_verdict) {
             return Ok(op);
         }
     }
@@ -340,7 +357,7 @@ fn parse_review_text(text: &str, reviewer_name: &str) -> Result<ReviewOpinion> {
             if let Ok(v) = serde_json::from_str(substr)
                 .or_else(|_| crate::agent::llm_client::extract_json_value(substr))
             {
-                if let Ok(op) = parse_llm_review_value(&v, reviewer_name) {
+                if let Ok(op) = parse_llm_review_value(&v, reviewer_name, primary_verdict) {
                     return Ok(op);
                 }
             }
@@ -481,9 +498,21 @@ mod tests {
             r#"{"verdict": "false_positive", "confidence": 0.9, "reasoning": "safe"}"#,
         )
         .unwrap();
-        let op = parse_llm_review_value(&value, "llm_test").unwrap();
+        let op = parse_llm_review_value(&value, "llm_test", Verdict::TruePositive).unwrap();
         assert_eq!(op.verdict, Verdict::FalsePositive);
+        assert!(!op.agrees_with_primary);
         assert!((op.confidence - 0.9).abs() < 0.01);
         assert_eq!(op.reasoning, "safe");
+    }
+
+    #[test]
+    fn test_parse_llm_review_value_agrees() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"verdict": "true_positive", "confidence": 0.85, "reasoning": "ok"}"#,
+        )
+        .unwrap();
+        let op = parse_llm_review_value(&value, "llm_test", Verdict::TruePositive).unwrap();
+        assert!(op.agrees_with_primary);
+        assert_eq!(op.verdict, Verdict::TruePositive);
     }
 }

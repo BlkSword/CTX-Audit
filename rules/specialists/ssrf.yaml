@@ -1,0 +1,38 @@
+name: ssrf
+cwe_ids:
+  - "CWE-918"
+vuln_type_keywords:
+  - "ssrf"
+  - "ServerSideRequestForgery"
+  - "server-side request forgery"
+sink_patterns:
+  - "URL\\("
+  - "openConnection\\("
+  - "HttpClient"
+  - "\\.send\\("
+  - "RestTemplate"
+  - "getForObject"
+  - "postForObject"
+  - "OkHttpClient"
+  - "newCall"
+  - "fetch\\("
+  - "axios\\."
+safe_patterns:
+  - "URL\\s*\\(\\s*[^,)]+,\\s*"  # URL with base context
+  - "allowlist"
+  - "denylist"
+  - "isAllowedHost"
+  - "SSRFProtector"
+barrier_keywords:
+  - "allowlist"
+  - "denylist"
+  - "ssrf"
+per_language:
+  java:
+    sink_patterns:
+      - "new\\s+URL\\s*\\("
+      - "RestTemplate\\."
+      - "HttpClient\\."
+    safe_patterns:
+      - "AllowedHost"
+      - "UrlAllowList"

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 未配置 API key（且非本地 Ollama endpoint）时自动回退到 `noop` LLM 客户端，避免无 key 时直接失败。
 - **`config show` / `config list` 补充 Agent 配置项展示**。
 - **Agent `--llm-aggressive` 模式**：新增 CLI 参数 `--llm-aggressive` 与配置项 `agent.llm_aggressive`。启用后 `ControlledLlmClient` 跳过证据清晰度规则短接，对高严重度 finding 强制调用真实 LLM（仍受预算控制），用于评估 LLM 在清晰 source→sink 场景下的判定价值。
+- **LLM 调用计数器**：`ControlledLlmClient` 按模型与用途（triage / investigate / review）统计 LLM 调用次数，审计结束后写入 `<project>/.ctx-audit/llm_usage.json`。
+- **扩展 Specialist 覆盖**：新增命令注入（CWE-78）、不安全反序列化（CWE-502）、路径遍历（CWE-22）、SSRF（CWE-918）四个基于规则的 PatternBasedSpecialist，规则文件位于 `rules/specialists/`。
+- **可回归基线脚本**：新增 `benchmarks/run-baseline.sh`，一键跑 `--taint` / `--deep` / `agent_noop_100` / `agent_dual_100` 并生成评估报告。
 
 ### Changed
 
@@ -40,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **匿名类 / 内部类调用图支持**：Java AST 符号提取时把匿名类（`new X() { ... }`）压入类作用域；跨文件调用图为 Java 方法使用 `ownerClass.method` 限定 ID，避免同名方法冲突；`CallGraph::file_functions` 使用规范化路径作为 key。
 - **Agent Investigator / Reviewer 中文日志截断 panic**：修复 `&text[..text.len().min(N)]` 在多字节 UTF-8 字符边界处 panic 的问题，改用 `text.chars().take(N)`，避免 LLM 返回中文时进程崩溃。
 - **Agent Investigator JSON 容错**：LLM 返回非 JSON 或解析失败时回退到 `needs_review`，不再导致单个 finding 调查失败。
+- **HTTP LLM 调用重试**：`HttpLlmClient` 对 OpenAI/Anthropic 兼容接口增加 3 次指数退避重试，降低瞬态网络/API 错误导致的调查失败。
+- **Reviewer 误报抑制**：`RuleBasedReviewer` 仅在 specialist 置信度不低于初审时才覆盖原判定；`LlmBasedReviewer` 与 debate 阶段正确计算 `agrees_with_primary`，避免 LLM 默认被当作"不同意初审"。
+- **LLM-based Planner 激活**：移除 `CTX_AUDIT_LLM_AVAILABLE` 环境变量门控，`Auto` 模式根据实际 LLM 客户端类型（noop/http）决定是否启用 LLM 战略规划；实现 `plan_goals_with_llm`，支持从 `EnvironmentModel` 生成审计目标。
 
 ## [2.1.0] - 2026-07-05
 

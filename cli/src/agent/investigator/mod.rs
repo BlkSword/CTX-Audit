@@ -390,11 +390,12 @@ pub fn parse_investigation_decision(text: &str) -> Result<InvestigationDecision>
 
 /// 从 JSON Value 解析 InvestigationDecision
 pub fn parse_investigation_decision_from_value(value: serde_json::Value) -> Result<InvestigationDecision> {
-    if value
-        .get("finish")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
+    let has_finish = value.get("finish").and_then(|v| v.as_bool()).unwrap_or(false);
+    let has_verdict = value.get("verdict").is_some();
+    let has_next_tool = value.get("next_tool").is_some();
+
+    // 若显式 finish=true，或提供了 verdict 且没有 next_tool，则视为结束调查
+    if has_finish || (has_verdict && !has_next_tool) {
         let verdict = parse_verdict(
             value
                 .get("verdict")
@@ -423,10 +424,14 @@ pub fn parse_investigation_decision_from_value(value: serde_json::Value) -> Resu
         .and_then(|v| v.as_str())
         .context("LLM 决策缺少 next_tool")?
         .to_string();
-    let tool_input = value
-        .get("tool_input")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    // 兼容 LLM 把 tool_input 写成 JSON 字符串的情况
+    let tool_input = match value.get("tool_input") {
+        Some(serde_json::Value::String(s)) => {
+            serde_json::from_str(s).unwrap_or_else(|_| json!({"raw": s.clone()}))
+        }
+        Some(v) => v.clone(),
+        None => json!({}),
+    };
     let reasoning = value
         .get("reasoning")
         .and_then(|v| v.as_str())

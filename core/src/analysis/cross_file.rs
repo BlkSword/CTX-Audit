@@ -3678,6 +3678,22 @@ impl CrossFileTaintAnalyzer {
             return VulnerabilityType::LdapInjection;
         }
 
+        if lower.contains("xpath") || lower.contains("jxpath") {
+            return VulnerabilityType::XPathInjection;
+        }
+
+        if lower.contains("md5") || lower.contains("sha1") || lower.contains("messagedigest") {
+            return VulnerabilityType::WeakHashAlgorithm;
+        }
+
+        if lower.contains("addcookie") || lower.contains("responsecookie") {
+            return VulnerabilityType::InsecureCookie;
+        }
+
+        if lower.contains("setattribute") || lower.contains("putvalue") {
+            return VulnerabilityType::TrustBoundaryViolation;
+        }
+
         if lower.contains("request") {
             return VulnerabilityType::ServerSideRequestForgery;
         }

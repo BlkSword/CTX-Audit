@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::agent::environment::EnvironmentModel;
 use crate::agent::llm_client::LlmClient;
@@ -76,13 +76,15 @@ pub struct StrategyPlanner {
 impl StrategyPlanner {
     pub fn new(llm_client: Arc<dyn LlmClient>, config: PlannerConfig) -> Self {
         let strategy = config.strategy;
-        let has_llm = matches!(std::env::var("CTX_AUDIT_LLM_AVAILABLE").as_deref(), Ok("1"));
-        let llm_client =
-            if strategy == PlannerStrategy::Llm || (strategy == PlannerStrategy::Auto && has_llm) {
-                Some(llm_client)
-            } else {
-                None
-            };
+        // Auto 模式下根据实际客户端类型判断 LLM 是否可用，不再依赖环境变量
+        let has_real_llm = !llm_client.is_noop();
+        let llm_client = if strategy == PlannerStrategy::Llm
+            || (strategy == PlannerStrategy::Auto && has_real_llm)
+        {
+            Some(llm_client)
+        } else {
+            None
+        };
         Self { config, llm_client }
     }
 
@@ -221,14 +223,120 @@ impl StrategyPlanner {
         goals
     }
 
-    /// LLM 模式目标生成（占位，可先返回空以触发回退）
+    /// LLM 模式目标生成
+    ///
+    /// 把 EnvironmentModel 的关键信息压缩后交给 LLM，要求返回 JSON 格式的 AuditGoal 数组。
+    /// 失败或返回空时由调用方回退到规则模式。
     async fn plan_goals_with_llm(
         &self,
-        _env: &EnvironmentModel,
-        _llm: &Arc<dyn LlmClient>,
+        env: &EnvironmentModel,
+        llm: &Arc<dyn LlmClient>,
     ) -> Result<Vec<AuditGoal>> {
-        // Phase 7 初版先不实现 LLM 战略规划，避免引入额外不稳定因素
-        Ok(Vec::new())
+        let prompt = self.build_goal_prompt(env);
+        let text = llm.chat(&prompt).await?;
+        let value = crate::agent::llm_client::extract_json_value(&text)?;
+
+        // 兼容 LLM 直接返回数组或包装在 { "goals": [...] } 中
+        let goals_value = if value.is_array() {
+            value
+        } else {
+            value
+                .get("goals")
+                .cloned()
+                .context("LLM 目标生成返回既不是数组也没有 goals 字段")?
+        };
+
+        let goals: Vec<AuditGoal> = serde_json::from_value(goals_value)
+            .context("LLM 目标生成返回格式不符合 AuditGoal 数组")?;
+
+        // 过滤并截断，避免 LLM 返回过多目标
+        let mut goals: Vec<AuditGoal> = goals
+            .into_iter()
+            .filter(|g| !g.objective.is_empty())
+            .take(self.config.max_goals)
+            .collect();
+
+        // 归一化优先级到 [0,1]
+        for g in &mut goals {
+            g.priority = g.priority.clamp(0.0, 1.0);
+        }
+
+        Ok(goals)
+    }
+
+    /// 构造 LLM 目标生成 prompt
+    fn build_goal_prompt(&self, env: &EnvironmentModel) -> String {
+        let mut vuln_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for f in &env.findings {
+            *vuln_counts.entry(f.vuln_type.clone()).or_insert(0) += 1;
+        }
+        let mut top_vulns: Vec<(String, usize)> = vuln_counts.into_iter().collect();
+        top_vulns.sort_by(|a, b| b.1.cmp(&a.1));
+        let top_vulns: Vec<String> = top_vulns.into_iter().take(10).map(|(k, _)| k).collect();
+
+        let entries = env.high_risk_unauthenticated_entries();
+        let entry_summary: Vec<serde_json::Value> = entries
+            .iter()
+            .take(10)
+            .map(|e| {
+                serde_json::json!({
+                    "file": e.file_path,
+                    "route": e.route,
+                    "method": e.http_method,
+                    "auth_required": e.auth_required,
+                })
+            })
+            .collect();
+
+        let risk_summary: Vec<serde_json::Value> = env
+            .risk_matches
+            .iter()
+            .take(10)
+            .map(|r| {
+                serde_json::json!({
+                    "pattern": r.pattern_name,
+                    "cwe": r.cwe,
+                    "confidence": r.confidence,
+                    "affected_files": r.affected_entries.iter().take(3).map(|e| &e.file_path).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+
+        let context = serde_json::json!({
+            "total_findings": env.findings.len(),
+            "entry_points": env.attack_surface.entry_points.len(),
+            "unauthenticated_entries": entries.len(),
+            "top_vulnerability_types": top_vulns,
+            "entry_points_sample": entry_summary,
+            "architecture_risks": risk_summary,
+            "max_goals": self.config.max_goals,
+        });
+
+        format!(
+            r#"你是一名资深安全审计架构师。请基于下方项目上下文，生成本次审计的 3-{} 个高价值审计目标。
+
+要求：
+1. 只返回单个 JSON 对象，不要 Markdown 代码块、不要解释、不要 trailing 字符。
+2. JSON 必须包含一个 "goals" 数组，每个元素符合以下 schema：
+{{
+  "objective": "目标描述（中文）",
+  "priority": 0.0-1.0,
+  "target_vuln_types": ["CWE-89", "CWE-78", ...],
+  "target_severities": ["critical", "high"],
+  "focus_entry_points": ["src/main/java/..."],
+  "max_findings": 20
+}}
+3. 优先关注：未认证入口可触发的注入类漏洞、架构风险模式、置信度低但影响大的 findings。
+4. 若证据不足，可以返回空数组 []。
+5. reasoning 字段使用中文，内容中不要出现未转义的双引号。
+
+项目上下文：
+{context}
+
+请输出 JSON："#,
+            self.config.max_goals,
+            context = serde_json::to_string_pretty(&context).unwrap_or_default()
+        )
     }
 
     /// 根据目标对 findings 重新排序并截断

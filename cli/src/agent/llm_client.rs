@@ -152,6 +152,21 @@ fn extract_balanced_json(text: &str) -> Result<serde_json::Value> {
 /// LLM Client trait
 #[async_trait]
 pub trait LlmClient: Send + Sync {
+    /// 模型标识名（用于调用统计与日志）
+    fn name(&self) -> String {
+        "unknown".to_string()
+    }
+
+    /// 调用统计快照（默认空实现）
+    fn usage_snapshot(&self) -> LlmUsage {
+        LlmUsage::default()
+    }
+
+    /// 是否为 noop 客户端（用于 Planner 等判断 LLM 是否真实可用）
+    fn is_noop(&self) -> bool {
+        false
+    }
+
     /// 对单个 finding 做 LLM triage
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult>;
 
@@ -204,6 +219,14 @@ pub struct NoopLlmClient;
 
 #[async_trait]
 impl LlmClient for NoopLlmClient {
+    fn name(&self) -> String {
+        "noop".to_string()
+    }
+
+    fn is_noop(&self) -> bool {
+        true
+    }
+
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult> {
         let verdict = judge_finding(finding, evidence);
         let confidence = match verdict {
@@ -216,6 +239,55 @@ impl LlmClient for NoopLlmClient {
             reasoning: format!("Noop LLM 退化为规则判定: {}", verdict.as_str()),
             suggested_specialist: None,
         })
+    }
+}
+
+/// LLM 调用用途
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LlmCallPurpose {
+    Triage,
+    Investigate,
+    Review,
+    Chat,
+}
+
+impl LlmCallPurpose {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LlmCallPurpose::Triage => "triage",
+            LlmCallPurpose::Investigate => "investigate",
+            LlmCallPurpose::Review => "review",
+            LlmCallPurpose::Chat => "chat",
+        }
+    }
+}
+
+/// 单个模型的调用统计
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ModelUsage {
+    pub triage: usize,
+    pub investigate: usize,
+    pub review: usize,
+    pub chat: usize,
+}
+
+/// LLM 调用统计快照
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct LlmUsage {
+    pub total_calls: usize,
+    pub by_model: HashMap<String, ModelUsage>,
+}
+
+impl LlmUsage {
+    pub fn record(&mut self, model: &str, purpose: LlmCallPurpose) {
+        self.total_calls += 1;
+        let entry = self.by_model.entry(model.to_string()).or_default();
+        match purpose {
+            LlmCallPurpose::Triage => entry.triage += 1,
+            LlmCallPurpose::Investigate => entry.investigate += 1,
+            LlmCallPurpose::Review => entry.review += 1,
+            LlmCallPurpose::Chat => entry.chat += 1,
+        }
     }
 }
 
@@ -233,6 +305,8 @@ pub struct ControlledLlmClient {
     /// 按严重度分级的 LLM 调用预算
     max_calls_by_severity: HashMap<String, usize>,
     calls_made_by_severity: Mutex<HashMap<String, usize>>,
+    /// LLM 调用统计
+    usage: Arc<Mutex<LlmUsage>>,
 }
 
 impl ControlledLlmClient {
@@ -251,6 +325,7 @@ impl ControlledLlmClient {
             calls_made: AtomicUsize::new(0),
             max_calls_by_severity,
             calls_made_by_severity: Mutex::new(HashMap::new()),
+            usage: Arc::new(Mutex::new(LlmUsage::default())),
         }
     }
 
@@ -266,6 +341,13 @@ impl ControlledLlmClient {
         self
     }
 
+    /// 获取当前 LLM 调用统计快照
+    pub fn usage_snapshot(&self) -> LlmUsage {
+        self.usage.lock().unwrap().clone()
+    }
+}
+
+impl ControlledLlmClient {
     /// 当前可用的 fast 模型
     fn fast(&self) -> &Arc<dyn LlmClient> {
         &self.inner
@@ -341,17 +423,40 @@ impl ControlledLlmClient {
 
         true
     }
+
+    /// 记录一次 LLM 调用（按实际使用的模型和用途）
+    fn record_usage(&self, client: &Arc<dyn LlmClient>, purpose: LlmCallPurpose) {
+        let mut usage = self.usage.lock().unwrap();
+        usage.record(&client.name(), purpose);
+    }
 }
 
 #[async_trait]
 impl LlmClient for ControlledLlmClient {
+    fn name(&self) -> String {
+        "controlled".to_string()
+    }
+
+    fn usage_snapshot(&self) -> LlmUsage {
+        self.usage.lock().unwrap().clone()
+    }
+
+    fn is_noop(&self) -> bool {
+        self.mode == "noop"
+    }
+
     async fn chat(&self, prompt: &str) -> Result<String> {
-        // 通用对话（如 reviewer、planner）始终使用强模型
-        self.pro().chat(prompt).await
+        // 通用对话（主要为 reviewer、planner）始终使用强模型
+        let client = self.pro();
+        // 当前 chat 主要消耗在 Reviewer（含 debate），归入 review 用途便于成本归因
+        self.record_usage(client, LlmCallPurpose::Review);
+        client.chat(prompt).await
     }
 
     async fn chat_json(&self, prompt: &str) -> Result<serde_json::Value> {
-        self.pro().chat_json(prompt).await
+        let client = self.pro();
+        self.record_usage(client, LlmCallPurpose::Review);
+        client.chat_json(prompt).await
     }
 
     async fn triage(&self, finding: &Finding, evidence: &Evidence) -> Result<LlmTriageResult> {
@@ -389,6 +494,7 @@ impl LlmClient for ControlledLlmClient {
         }
 
         let client = self.select_triage_client(finding, evidence);
+        self.record_usage(client, LlmCallPurpose::Triage);
         client.triage(finding, evidence).await
     }
 
@@ -433,7 +539,9 @@ impl LlmClient for ControlledLlmClient {
         }
 
         // 调查阶段使用强模型
-        self.pro()
+        let client = self.pro();
+        self.record_usage(client, LlmCallPurpose::Investigate);
+        client
             .investigate_decision(finding, evidence, memory, available_tools)
             .await
     }
@@ -473,6 +581,10 @@ pub struct HttpLlmClient {
 
 #[async_trait]
 impl LlmClient for HttpLlmClient {
+    fn name(&self) -> String {
+        self.model.clone()
+    }
+
     async fn chat(&self, prompt: &str) -> Result<String> {
         match self.provider.as_str() {
             "anthropic" => self.call_anthropic(prompt).await,
@@ -538,7 +650,43 @@ impl LlmClient for HttpLlmClient {
 }
 
 impl HttpLlmClient {
+    /// 带指数退避的通用重试封装
+    async fn with_retry<T, F, Fut>(label: &str, operation: F) -> Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let mut last_err = None;
+        for attempt in 0..3 {
+            match operation().await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    let msg = format!("{} (attempt {}/3): {}", label, attempt + 1, e);
+                    if attempt < 2 {
+                        tracing::warn!("{}，稍后重试", msg);
+                        last_err = Some(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            500 * (attempt + 1) as u64,
+                        ))
+                        .await;
+                    } else {
+                        tracing::error!("{}", msg);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap())
+    }
+
     async fn call_openai_compatible(&self, prompt: &str) -> Result<String> {
+        Self::with_retry("OpenAI-compatible LLM 请求", || async {
+            self.call_openai_compatible_once(prompt).await
+        })
+        .await
+    }
+
+    async fn call_openai_compatible_once(&self, prompt: &str) -> Result<String> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(self.timeout_sec))
             .build()?;
@@ -596,6 +744,13 @@ impl HttpLlmClient {
 
     /// OpenAI 兼容 JSON 模式调用
     async fn call_openai_compatible_json(&self, prompt: &str) -> Result<serde_json::Value> {
+        Self::with_retry("OpenAI-compatible JSON 模式请求", || async {
+            self.call_openai_compatible_json_once(prompt).await
+        })
+        .await
+    }
+
+    async fn call_openai_compatible_json_once(&self, prompt: &str) -> Result<serde_json::Value> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(self.timeout_sec))
             .build()?;
@@ -670,6 +825,13 @@ impl HttpLlmClient {
     }
 
     async fn call_anthropic(&self, prompt: &str) -> Result<String> {
+        Self::with_retry("Anthropic LLM 请求", || async {
+            self.call_anthropic_once(prompt).await
+        })
+        .await
+    }
+
+    async fn call_anthropic_once(&self, prompt: &str) -> Result<String> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(self.timeout_sec))
             .build()?;

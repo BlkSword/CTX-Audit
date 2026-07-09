@@ -1,0 +1,31 @@
+name: command_injection
+cwe_ids:
+  - "CWE-78"
+vuln_type_keywords:
+  - "command injection"
+  - "CommandInjection"
+sink_patterns:
+  - "Runtime\\.exec"
+  - "ProcessBuilder"
+  - "getRuntime\\(\\)\\.exec"
+  - "\\.command\\("
+  - "\\.inheritIO\\("
+  - "ShellExec"
+  - "shell_exec"
+safe_patterns:
+  - "ProcessBuilder\\s*\\(\\s*new\\s+String\\s*\\[\\s*\\]"
+  - "ProcessBuilder\\(\\s*\\["  # array args instead of string shell
+  - "CommandEncoder"
+  - "escapeShellArg"
+  - "String\\[\\]\\s+"
+barrier_keywords:
+  - "array"
+  - "commandencoder"
+  - "escapeshell"
+per_language:
+  java:
+    sink_patterns:
+      - "Runtime\\.getRuntime\\(\\)\\.exec"
+      - "new\\s+ProcessBuilder"
+    safe_patterns:
+      - "new\\s+ProcessBuilder\\s*\\(\\s*\\["  # array constructor

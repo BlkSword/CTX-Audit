@@ -1,0 +1,35 @@
+name: deserialization
+cwe_ids:
+  - "CWE-502"
+vuln_type_keywords:
+  - "deserialization"
+  - "InsecureDeserialization"
+sink_patterns:
+  - "ObjectInputStream"
+  - "\\.readObject\\("
+  - "ObjectMapper"
+  - "\\.readValue\\("
+  - "XMLDecoder"
+  - "XStream"
+  - "\\.fromXML\\("
+  - "pickle\\.loads"
+  - "yaml\\.load"
+  - "unserialize\\("
+safe_patterns:
+  - "ObjectInputFilter"
+  - "SerialFilter"
+  - "accept\\("
+  - "JSON\\.parse"
+  - "yaml\\.safe_load"
+  - "ObjectMapper\\(\\)\\.configure\\(.*FAIL_ON_UNKNOWN_PROPERTIES"
+barrier_keywords:
+  - "objectinputfilter"
+  - "serialfilter"
+  - "whitelist"
+per_language:
+  java:
+    sink_patterns:
+      - "new\\s+ObjectInputStream"
+      - "ObjectMapper\\s*\\.readValue"
+    safe_patterns:
+      - "ObjectInputFilter\\.Config\\.setSerialFilter"

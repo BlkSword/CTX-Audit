@@ -1,0 +1,36 @@
+name: path_traversal
+cwe_ids:
+  - "CWE-22"
+vuln_type_keywords:
+  - "path traversal"
+  - "PathTraversal"
+  - "directory traversal"
+sink_patterns:
+  - "new\\s+File\\("
+  - "FileInputStream"
+  - "FileOutputStream"
+  - "FileReader"
+  - "FileWriter"
+  - "Files\\.readString"
+  - "Files\\.write"
+  - "Paths\\.get"
+  - "\\.getPath\\("
+  - "ZipEntry"
+  - "ZipInputStream"
+safe_patterns:
+  - "getCanonicalPath"
+  - "normalize\\("
+  - "toRealPath"
+  - "SecurityManager"
+  - "Path\\.resolve\\(.*getCanonical"
+barrier_keywords:
+  - "canonical"
+  - "normalize"
+  - "securitymanager"
+per_language:
+  java:
+    sink_patterns:
+      - "new\\s+File\\s*\\("
+      - "Paths\\.get\\s*\\("
+    safe_patterns:
+      - "\\.getCanonicalPath\\("

@@ -514,10 +514,18 @@ pub enum VulnerabilityType {
     CodeInjection,
     /// LDAP 注入
     LdapInjection,
+    /// XPath 注入
+    XPathInjection,
     /// XML 外部实体
     XmlExternalEntity,
     /// 不安全的反序列化
     InsecureDeserialization,
+    /// 弱哈希算法
+    WeakHashAlgorithm,
+    /// 信任边界违反
+    TrustBoundaryViolation,
+    /// 不安全 Cookie
+    InsecureCookie,
     /// 日志注入
     LogInjection,
     /// 开放重定向
@@ -545,8 +553,12 @@ impl std::fmt::Display for VulnerabilityType {
             VulnerabilityType::ServerSideRequestForgery => write!(f, "SSRF"),
             VulnerabilityType::CodeInjection => write!(f, "Code Injection"),
             VulnerabilityType::LdapInjection => write!(f, "LDAP Injection"),
+            VulnerabilityType::XPathInjection => write!(f, "XPath Injection"),
             VulnerabilityType::XmlExternalEntity => write!(f, "XXE"),
             VulnerabilityType::InsecureDeserialization => write!(f, "Insecure Deserialization"),
+            VulnerabilityType::WeakHashAlgorithm => write!(f, "Weak Hash Algorithm"),
+            VulnerabilityType::TrustBoundaryViolation => write!(f, "Trust Boundary Violation"),
+            VulnerabilityType::InsecureCookie => write!(f, "Insecure Cookie"),
             VulnerabilityType::LogInjection => write!(f, "Log Injection"),
             VulnerabilityType::OpenRedirect => write!(f, "Open Redirect"),
             VulnerabilityType::HeaderInjection => write!(f, "Header Injection"),

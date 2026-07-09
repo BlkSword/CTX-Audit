@@ -20,12 +20,16 @@ use crate::agent::evidence::Evidence;
 use crate::agent::heuristics::Verdict;
 use crate::agent::tools::AgentToolContext;
 
+pub mod pattern;
 pub mod rules;
 pub mod sqli;
 pub mod xss;
 
+pub use pattern::PatternBasedSpecialist;
 pub use rules::{
-    default_sqli_rules, default_xss_rules, load_specialist_rules_from_dir, SpecialistRuleSet,
+    default_command_injection_rules, default_deserialization_rules,
+    default_path_traversal_rules, default_sqli_rules, default_ssrf_rules, default_xss_rules,
+    load_specialist_rules_from_dir, SpecialistRuleSet,
 };
 pub use sqli::SQLiSpecialist;
 pub use xss::XssSpecialist;
@@ -112,8 +116,8 @@ impl SpecialistRegistry {
         }
     }
 
-    /// 注册内置 Specialist（SQLi、XSS），尝试从 `rules/specialists` 热加载规则，
-    /// 失败时回退到内置默认规则。
+    /// 注册内置 Specialist（SQLi、XSS、命令注入、反序列化、路径遍历、SSRF），
+    /// 尝试从 `rules/specialists` 热加载规则，失败时回退到内置默认规则。
     pub fn with_defaults() -> Self {
         Self::with_rules_dir(std::path::Path::new("rules/specialists"))
     }
@@ -134,6 +138,38 @@ impl SpecialistRegistry {
         let xss = rules.get("xss").cloned().unwrap_or_else(default_xss_rules);
         registry.register(Arc::new(
             XssSpecialist::new(xss).unwrap_or_else(|_| XssSpecialist::default()),
+        ));
+
+        let cmdi = rules
+            .get("command_injection")
+            .cloned()
+            .unwrap_or_else(default_command_injection_rules);
+        registry.register(Arc::new(
+            PatternBasedSpecialist::new(cmdi).unwrap_or_else(|_| PatternBasedSpecialist::default()),
+        ));
+
+        let deser = rules
+            .get("deserialization")
+            .cloned()
+            .unwrap_or_else(default_deserialization_rules);
+        registry.register(Arc::new(
+            PatternBasedSpecialist::new(deser).unwrap_or_else(|_| PatternBasedSpecialist::default()),
+        ));
+
+        let path = rules
+            .get("path_traversal")
+            .cloned()
+            .unwrap_or_else(default_path_traversal_rules);
+        registry.register(Arc::new(
+            PatternBasedSpecialist::new(path).unwrap_or_else(|_| PatternBasedSpecialist::default()),
+        ));
+
+        let ssrf = rules
+            .get("ssrf")
+            .cloned()
+            .unwrap_or_else(default_ssrf_rules);
+        registry.register(Arc::new(
+            PatternBasedSpecialist::new(ssrf).unwrap_or_else(|_| PatternBasedSpecialist::default()),
         ));
 
         registry

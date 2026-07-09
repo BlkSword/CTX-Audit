@@ -109,7 +109,7 @@ sinks:
 
   - id: "java_cmd_exec"
     name: "Java Command Execution"
-    description: "OS command execution via Runtime and ProcessBuilder"
+    description: "OS command execution via Runtime, ProcessBuilder, and shell helpers"
     match_mode: "Semantic"
     namespaces:
       - "java.lang.Runtime"
@@ -126,12 +126,16 @@ sinks:
       - ".command"
       - ".start"
       - ".inheritIO"
+      - "ProcessBuilder"
+      - "Runtime.getRuntime"
     exact_matches:
       - "Runtime.exec"
       - "Runtime.getRuntime().exec"
       - "getRuntime().exec"
       - "ProcessBuilder.command"
       - "ProcessBuilder.start"
+      - "ProcessBuilder.inheritIO"
+      - "ProcessBuilder.directory"
     languages: ["java"]
     vulnerability_type: "CommandInjection"
     severity: "Critical"
@@ -210,11 +214,13 @@ sinks:
 
   - id: "java_file_path"
     name: "Java File Path"
-    description: "File system operations with user-controlled paths"
+    description: "File system and ZIP operations with user-controlled paths"
     match_mode: "Semantic"
     namespaces:
       - "java.io"
       - "java.nio.file"
+      - "java.util.zip"
+      - "java.nio.file.spi"
     receiver_patterns:
       - "file"
       - "files"
@@ -224,6 +230,8 @@ sinks:
       - "outputstream"
       - "reader"
       - "writer"
+      - "zip"
+      - "zipEntry"
     patterns:
       - "File"
       - "FileInputStream"
@@ -239,6 +247,12 @@ sinks:
       - ".newOutputStream"
       - ".newBufferedReader"
       - ".newBufferedWriter"
+      - ".resolve"
+      - ".resolveSibling"
+      - ".normalize"
+      - ".toRealPath"
+      - "ZipInputStream"
+      - "ZipEntry"
     exact_matches:
       - "File"
       - "FileInputStream"
@@ -250,6 +264,9 @@ sinks:
       - "Files.copy"
       - "Files.move"
       - "Files.delete"
+      - "Paths.get"
+      - "Path.resolve"
+      - "FileSystems.newFileSystem"
     languages: ["java"]
     vulnerability_type: "PathTraversal"
     severity: "High"
@@ -284,19 +301,35 @@ sinks:
 
   - id: "java_ldap"
     name: "Java LDAP Injection"
-    description: "LDAP search and lookup with user-controlled filters"
+    description: "LDAP search, lookup, and modification with user-controlled filters"
     match_mode: "Semantic"
     namespaces:
       - "javax.naming.directory"
       - "javax.naming.ldap"
+      - "org.springframework.ldap"
+      - "org.springframework.ldap.core"
+    receiver_patterns:
+      - "ctx"
+      - "context"
+      - "ldapTemplate"
+      - "dirContext"
+      - "initialDirContext"
     patterns:
       - ".search"
       - ".lookup"
+      - ".bind"
+      - ".rebind"
+      - ".unbind"
+      - ".modifyAttributes"
     exact_matches:
       - "DirContext.search"
       - "InitialDirContext.search"
+      - "LdapTemplate.search"
+      - "LdapTemplate.find"
+      - "LdapTemplate.authenticate"
+      - "LdapTemplate.bind"
     languages: ["java"]
-    vulnerability_type: "CodeInjection"
+    vulnerability_type: "LdapInjection"
     severity: "High"
     cwe_id: "CWE-90"
     sensitive_params: [0]
@@ -304,7 +337,7 @@ sinks:
 
   - id: "java_xss_output"
     name: "Java XSS Output"
-    description: "Writing user-controlled data to HTTP response output"
+    description: "Writing user-controlled data to HTTP response, JSP, or template output"
     match_mode: "Semantic"
     receiver_patterns:
       - "response"
@@ -312,10 +345,17 @@ sinks:
       - "getwriter"
       - "out"
       - "outputstream"
+      - "jstl"
+      - "model"
+      - "attributes"
     patterns:
       - ".print"
       - ".println"
       - ".write"
+      - ".addAttribute"
+      - "out.print"
+      - "out.println"
+      - "out.write"
     exact_matches:
       - "PrintWriter.println"
       - "PrintWriter.print"
@@ -324,6 +364,8 @@ sinks:
       - "getWriter().print"
       - "getWriter().write"
       - "ServletOutputStream.write"
+      - "Model.addAttribute"
+      - "ModelMap.addAttribute"
     languages: ["java"]
     vulnerability_type: "CrossSiteScripting"
     severity: "High"
@@ -337,18 +379,115 @@ sinks:
     match_mode: "Semantic"
     namespaces:
       - "javax.xml.xpath"
+      - "org.apache.commons.jxpath"
     receiver_patterns:
       - "xpath"
+      - "xpathFactory"
+      - "jxpathContext"
     patterns:
       - ".evaluate"
       - ".compile"
+      - ".prepare"
+      - ".getValue"
+      - ".selectSingleNode"
     exact_matches:
       - "XPath.evaluate"
       - "XPath.compile"
+      - "JXPathContext.getValue"
+      - "JXPathContext.selectNodes"
     languages: ["java"]
-    vulnerability_type: "CodeInjection"
+    vulnerability_type: "XPathInjection"
     severity: "High"
     cwe_id: "CWE-643"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_weak_hash"
+    name: "Java Weak Hash"
+    description: "Use of broken hash algorithms for security-sensitive operations"
+    match_mode: "Semantic"
+    namespaces:
+      - "java.security"
+      - "javax.crypto"
+      - "org.apache.commons.codec.digest"
+    receiver_patterns:
+      - "messageDigest"
+      - "digestUtils"
+      - "md"
+      - "sha"
+    patterns:
+      - ".getInstance"
+      - ".md5"
+      - ".sha1"
+      - ".sha"
+      - ".md5Hex"
+      - ".sha1Hex"
+    exact_matches:
+      - "MessageDigest.getInstance"
+      - "DigestUtils.md5"
+      - "DigestUtils.md5Hex"
+      - "DigestUtils.sha1"
+      - "DigestUtils.sha1Hex"
+    languages: ["java"]
+    vulnerability_type: "WeakHashAlgorithm"
+    severity: "High"
+    cwe_id: "CWE-328"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_insecure_cookie"
+    name: "Java Insecure Cookie"
+    description: "Cookie created without Secure/HttpOnly/SameSite flags"
+    match_mode: "Semantic"
+    namespaces:
+      - "javax.servlet.http"
+      - "jakarta.servlet.http"
+      - "org.springframework.http"
+    receiver_patterns:
+      - "response"
+      - "cookie"
+      - "responseCookie"
+    patterns:
+      - ".addCookie"
+      - "ResponseCookie.from"
+      - "Cookie"
+      - ".setSecure"
+      - ".setHttpOnly"
+      - ".setSameSite"
+    exact_matches:
+      - "HttpServletResponse.addCookie"
+      - "ResponseCookie.from"
+      - "Cookie.setSecure"
+      - "Cookie.setHttpOnly"
+      - "Cookie.setSameSite"
+    languages: ["java"]
+    vulnerability_type: "InsecureCookie"
+    severity: "Medium"
+    cwe_id: "CWE-614"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_trust_boundary"
+    name: "Java Trust Boundary Violation"
+    description: "User input stored directly in session without validation"
+    match_mode: "Semantic"
+    namespaces:
+      - "javax.servlet.http"
+      - "jakarta.servlet.http"
+      - "org.springframework.web.context.request"
+    receiver_patterns:
+      - "session"
+      - "httpSession"
+    patterns:
+      - ".setAttribute"
+      - ".putValue"
+    exact_matches:
+      - "HttpSession.setAttribute"
+      - "HttpSession.putValue"
+    languages: ["java"]
+    vulnerability_type: "TrustBoundaryViolation"
+    severity: "Medium"
+    cwe_id: "CWE-501"
     sensitive_params: [0]
     ast_patterns: []
 
@@ -367,3 +506,19 @@ sanitizers:
     description: "URL encoding"
   - pattern: "Validator"
     description: "Bean validation"
+  - pattern: "CommandEncoder"
+    description: "Command argument encoding"
+  - pattern: "ProcessBuilder"
+    description: "ProcessBuilder with array args"
+  - pattern: "HtmlUtils.htmlEscape"
+    description: "Spring HTML escape"
+  - pattern: "PolicyFactory.sanitize"
+    description: "OWASP HTML sanitizer"
+  - pattern: "OwaspHtmlSanitizer"
+    description: "OWASP HTML sanitizer"
+  - pattern: "setSecure"
+    description: "Cookie Secure flag"
+  - pattern: "setHttpOnly"
+    description: "Cookie HttpOnly flag"
+  - pattern: "setSameSite"
+    description: "Cookie SameSite flag"
