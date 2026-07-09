@@ -595,8 +595,8 @@ pub struct AgentConfig {
     #[serde(default = "default_max_investigation_steps")]
     pub max_investigation_steps: usize,
 
-    /// 是否启用污点步进调查器（默认 false）
-    #[serde(default)]
+    /// 是否启用污点步进调查器（默认 true）
+    #[serde(default = "default_true")]
     pub taint_walk_enabled: bool,
 
     /// Planner 配置
@@ -619,6 +619,9 @@ fn default_review_mode() -> String {
 }
 fn default_max_investigation_steps() -> usize {
     10
+}
+fn default_true() -> bool {
+    true
 }
 fn default_max_llm_calls() -> usize {
     500
@@ -644,7 +647,7 @@ impl Default for AgentConfig {
             specialist_enabled: true,
             investigator_enabled: true,
             max_investigation_steps: default_max_investigation_steps(),
-            taint_walk_enabled: false,
+            taint_walk_enabled: true,
             planner: PlannerConfig::default(),
             llm: LlmConfig::default(),
         }
@@ -1203,7 +1206,7 @@ impl ConfigManager {
             "agent.specialist_enabled" => self.config.agent.specialist_enabled = true,
             "agent.investigator_enabled" => self.config.agent.investigator_enabled = true,
             "agent.max_investigation_steps" => self.config.agent.max_investigation_steps = 10,
-            "agent.taint_walk_enabled" => self.config.agent.taint_walk_enabled = false,
+            "agent.taint_walk_enabled" => self.config.agent.taint_walk_enabled = true,
             "agent.planner.strategy" => self.config.agent.planner.strategy = PlannerStrategy::Auto,
             "agent.planner.max_goals" => self.config.agent.planner.max_goals = 10,
             "agent.planner.max_exploration_actions" => {

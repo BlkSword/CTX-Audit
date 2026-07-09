@@ -247,7 +247,15 @@ mod tests {
         assert_eq!(xss.len(), 1);
         assert_eq!(xss[0].name(), "xss");
 
-        let generic = registry.find_handlers(&dummy_finding("CWE-22"));
+        let path_traversal = registry.find_handlers(&dummy_finding("CWE-22"));
+        assert_eq!(path_traversal.len(), 1);
+        assert_eq!(path_traversal[0].name(), "path_traversal");
+
+        let ssrf = registry.find_handlers(&dummy_finding("CWE-918"));
+        assert_eq!(ssrf.len(), 1);
+        assert_eq!(ssrf[0].name(), "ssrf");
+
+        let generic = registry.find_handlers(&dummy_finding("CWE-999"));
         assert!(generic.is_empty());
     }
 
@@ -256,7 +264,11 @@ mod tests {
         let registry = SpecialistRegistry::with_defaults();
         assert!(registry.get("sqli").is_some());
         assert!(registry.get("xss").is_some());
-        assert!(registry.get("ssrf").is_none());
+        assert!(registry.get("ssrf").is_some());
+        assert!(registry.get("command_injection").is_some());
+        assert!(registry.get("deserialization").is_some());
+        assert!(registry.get("path_traversal").is_some());
+        assert!(registry.get("unknown").is_none());
     }
 
     #[test]

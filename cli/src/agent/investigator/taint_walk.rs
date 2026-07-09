@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use deepaudit_core::scanning::Finding;
+use deepaudit_core::taint::{Sanitizer, TaintAnalyzer, VulnerabilityType};
 
 use crate::agent::evidence::Evidence;
 use crate::agent::heuristics::{judge_finding, Verdict};
@@ -358,36 +359,112 @@ fn parse_verdict(s: &str) -> Verdict {
 }
 
 /// 从 finding 提取一个默认 sink symbol（函数名或变量名占位）
+///
+/// 优先使用 sink_snippet，然后尝试从 code_snippet / evidence 中提取调用名，
+/// 最后回退到 detector 名称。
 fn sink_symbol_from_finding(finding: &Finding) -> String {
-    finding
-        .sink_snippet
-        .clone()
-        .unwrap_or_else(|| finding.detector.clone())
+    if let Some(ref sink) = finding.sink_snippet {
+        if !sink.is_empty() {
+            return sink.clone();
+        }
+    }
+
+    // 尝试从代码片段中提取最可能的调用函数名
+    let code = finding
+        .code_snippet
+        .as_deref()
+        .or_else(|| finding.source_snippet.as_deref())
+        .unwrap_or("");
+    if let Some(name) = extract_call_name(code) {
+        return name;
+    }
+
+    finding.detector.clone()
 }
 
-/// 简单 sanitizer 检查：命中 rules/taint 中的通用净化函数模式
+/// 从单行代码片段中提取调用函数名（如 `db.query(sql)` → `query`）
+fn extract_call_name(code: &str) -> Option<String> {
+    // 优先匹配 object.method(args) 或 function(args)
+    let re = regex::Regex::new(r#"(?:(\w+)\s*[.:\s]+)?(\w+)\s*\("#).ok()?;
+    let first_line = code.lines().next().unwrap_or(code);
+    re.captures(first_line).and_then(|caps| {
+        caps.get(2).map(|m| m.as_str().to_string())
+    })
+}
+
+/// 将 finding 中的 vuln_type 字符串映射为 core 的 VulnerabilityType
+fn vuln_type_to_core(vuln_type: &str) -> Option<VulnerabilityType> {
+    let lower = vuln_type.to_lowercase();
+    if lower.contains("89") || lower.contains("sql") {
+        Some(VulnerabilityType::SqlInjection)
+    } else if lower.contains("79") || lower.contains("xss") {
+        Some(VulnerabilityType::CrossSiteScripting)
+    } else if lower.contains("78") || lower.contains("command") {
+        Some(VulnerabilityType::CommandInjection)
+    } else if lower.contains("502") || lower.contains("deserialization") {
+        Some(VulnerabilityType::InsecureDeserialization)
+    } else if lower.contains("22") || lower.contains("path") {
+        Some(VulnerabilityType::PathTraversal)
+    } else if lower.contains("918") || lower.contains("ssrf") {
+        Some(VulnerabilityType::ServerSideRequestForgery)
+    } else if lower.contains("94") || lower.contains("code") {
+        Some(VulnerabilityType::CodeInjection)
+    } else if lower.contains("611") || lower.contains("xxe") {
+        Some(VulnerabilityType::XmlExternalEntity)
+    } else if lower.contains("90") || lower.contains("ldap") {
+        Some(VulnerabilityType::LdapInjection)
+    } else if lower.contains("643") || lower.contains("xpath") {
+        Some(VulnerabilityType::XPathInjection)
+    } else if lower.contains("328") || lower.contains("weak") || lower.contains("hash") {
+        Some(VulnerabilityType::WeakHashAlgorithm)
+    } else if lower.contains("501") || lower.contains("trust") {
+        Some(VulnerabilityType::TrustBoundaryViolation)
+    } else if lower.contains("614") || lower.contains("cookie") {
+        Some(VulnerabilityType::InsecureCookie)
+    } else if lower.contains("117") || lower.contains("log") {
+        Some(VulnerabilityType::LogInjection)
+    } else if lower.contains("601") || lower.contains("open") {
+        Some(VulnerabilityType::OpenRedirect)
+    } else if lower.contains("644") || lower.contains("header") {
+        Some(VulnerabilityType::HeaderInjection)
+    } else {
+        None
+    }
+}
+
+/// 复用 core 的 sanitizer 规则检查 symbol 是否命中净化函数
 fn check_sanitizer(symbol: &str, vuln_type: &str) -> String {
-    let patterns: Vec<&str> = match vuln_type.to_lowercase().as_str() {
-        s if s.contains("79") || s.contains("xss") => {
-            vec!["escape", "encode", "sanitize", "htmlescape", "dompurify"]
+    let target = match vuln_type_to_core(vuln_type) {
+        Some(t) => t,
+        None => {
+            return format!(
+                "'{}' 未命中 sanitizer（无法识别漏洞类型 '{}'）",
+                symbol, vuln_type
+            );
         }
-        s if s.contains("89") || s.contains("sql") => {
-            vec!["prepare", "parameterize", "bind", "escape_string"]
-        }
-        s if s.contains("78") || s.contains("command") => {
-            vec!["shell_escape", "validate", "whitelist"]
-        }
-        s if s.contains("502") || s.contains("deserialization") => {
-            vec!["whitelist", "validate", "lookup"]
-        }
-        _ => vec!["validate", "sanitize", "escape", "encode"],
     };
 
+    let sanitizers = TaintAnalyzer::default_sanitizers();
+
     let symbol_lower = symbol.to_lowercase();
-    if patterns.iter().any(|p| symbol_lower.contains(p)) {
-        format!("'{}' 命中 sanitizer 模式 {:?}", symbol, patterns)
-    } else {
-        format!("'{}' 未命中常见 sanitizer 模式", symbol)
+    let matched = sanitizers
+        .iter()
+        .find(|s| {
+            (s.targets.is_empty() || s.targets.contains(&target))
+                && symbol_lower.contains(&s.pattern.to_lowercase())
+        });
+
+    match matched {
+        Some(s) => format!(
+            "'{}' 命中 sanitizer '{}'（{}），针对 {:?}",
+            symbol, s.pattern, s.description, target
+        ),
+        None => format!(
+            "'{}' 未命中针对 {:?} 的 sanitizer 规则（共 {} 条）",
+            symbol,
+            target,
+            sanitizers.len()
+        ),
     }
 }
 

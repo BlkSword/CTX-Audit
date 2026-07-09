@@ -40,7 +40,7 @@ pub mod taint {
         InterproceduralStepType, InterproceduralTaintFlow, MethodEvidence, MiddlewareEvidence,
         PathStep, PropagationStep, PropagationStep as EnhancedPropagationStep, PropagationStepType,
         PropagationStepType as EnhancedPropagationStepType, ReachabilityResult, ReachableNode,
-        ReachableSink, ResolvedCallTarget, RouteEvidence, Severity, SinkReachability,
+        ReachableSink, ResolvedCallTarget, RouteEvidence, Sanitizer, Severity, SinkReachability,
         SummaryPropagationResult, TaintAnalyzer, TaintCategory, TaintFlow, TaintPathEvidence,
         TaintResult, TaintSink, TaintSource, TrustBoundaryInfo, TypeChainResult,
         VariableFlowResult, VariableTaint, VulnerabilityType,

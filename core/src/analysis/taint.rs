@@ -651,7 +651,7 @@ impl TaintAnalyzer {
             sources: Self::default_sources(),
             sinks: Self::default_sinks(),
             propagation_rules: Self::default_propagation_rules(),
-            sanitizers: Self::default_sanitizers(),
+            sanitizers: Self::default_sanitizers_inner(),
         }
     }
 
@@ -1205,7 +1205,7 @@ impl TaintAnalyzer {
     }
 
     /// 默认净化函数
-    fn default_sanitizers() -> Vec<Sanitizer> {
+    fn default_sanitizers_inner() -> Vec<Sanitizer> {
         vec![
             Sanitizer {
                 pattern: "escape".to_string(),
@@ -1261,6 +1261,16 @@ impl TaintAnalyzer {
     /// 添加自定义净化函数
     pub fn add_sanitizer(&mut self, sanitizer: Sanitizer) {
         self.sanitizers.push(sanitizer);
+    }
+
+    /// 返回内置默认净化函数列表
+    pub fn default_sanitizers() -> Vec<Sanitizer> {
+        Self::default_sanitizers_inner()
+    }
+
+    /// 返回当前分析器配置的所有净化函数
+    pub fn sanitizers(&self) -> &[Sanitizer] {
+        &self.sanitizers
     }
 
     /// 基于 AST 的污点追踪（增强版）

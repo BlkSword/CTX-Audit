@@ -67,7 +67,7 @@ pub use risk_patterns::{
 };
 pub use taint::{
     AstPattern, FlowLocation, FlowNode, FlowNodeType, PropagationStep, PropagationStepType,
-    Severity, TaintAnalyzer, TaintCategory, TaintFlow, TaintResult, TaintSink, TaintSource,
-    VulnerabilityType,
+    Sanitizer, Severity, TaintAnalyzer, TaintCategory, TaintFlow, TaintResult, TaintSink,
+    TaintSource, VulnerabilityType,
 };
 pub use type_hierarchy::{MethodSignature, ResolvedMethod, TypeHierarchy, TypeInfo, TypeKind};
