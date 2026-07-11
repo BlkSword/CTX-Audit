@@ -104,8 +104,14 @@ fn is_builtin_call_target(ct: &CallTarget) -> bool {
         s.insert(("stringify", Some("JSON")));
         // 全局工具函数
         for name in [
-            "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-            "parseInt", "parseFloat", "isNaN", "isFinite",
+            "setTimeout",
+            "setInterval",
+            "clearTimeout",
+            "clearInterval",
+            "parseInt",
+            "parseFloat",
+            "isNaN",
+            "isFinite",
         ] {
             s.insert((name, None));
         }
@@ -623,10 +629,7 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 注入 Stage B 已解析的 AST 产物
-    pub fn set_parsed_ast_cache(
-        &mut self,
-        cache: HashMap<String, (Vec<Symbol>, Vec<CallInfo>)>,
-    ) {
+    pub fn set_parsed_ast_cache(&mut self, cache: HashMap<String, (Vec<Symbol>, Vec<CallInfo>)>) {
         self.parsed_ast_cache = cache;
     }
 
@@ -839,7 +842,8 @@ impl CrossFileTaintAnalyzer {
                 (cached_symbols.clone(), cached_calls.clone())
             } else {
                 crate::ast::parser::with_thread_local_parser(|parser| {
-                    let (symbols_result, calls) = parser.parse_and_extract_calls(file_path, content);
+                    let (symbols_result, calls) =
+                        parser.parse_and_extract_calls(file_path, content);
                     match symbols_result {
                         Ok(symbols) => (symbols, calls),
                         Err(_) => (Vec::new(), calls),
@@ -902,10 +906,7 @@ impl CrossFileTaintAnalyzer {
                 }
 
                 // 优先复用 Stage B CPG 中的参数信息，使跨文件/跨函数传播能正确映射形参。
-                let cpg_key = format!(
-                    "{}:{}:{}",
-                    file_path_str, func_name, symbol.start_line
-                );
+                let cpg_key = format!("{}:{}:{}", file_path_str, func_name, symbol.start_line);
                 let parameters = self
                     .cpg_cache
                     .get(&cpg_key)
@@ -1068,14 +1069,20 @@ impl CrossFileTaintAnalyzer {
         // private final UserDao userDao = new UserDao();
         // UserDao userDao;
         let field_re = regex::Regex::new(
-            r"(?:\b(?:private|public|protected|static|final)\b\s+)*\b([A-Z]\w+)\s+(\w+)\s*(?:=|;)"
-        ).unwrap();
+            r"(?:\b(?:private|public|protected|static|final)\b\s+)*\b([A-Z]\w+)\s+(\w+)\s*(?:=|;)",
+        )
+        .unwrap();
 
         for cap in field_re.captures_iter(content) {
             let type_name = cap[1].to_string();
             let field_name = cap[2].to_string();
             // 避免把类名本身匹配成字段（如 class UserDao 后的内容）
-            if field_name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+            if field_name
+                .chars()
+                .next()
+                .map(|c| c.is_lowercase())
+                .unwrap_or(false)
+            {
                 var_types.entry(field_name).or_insert(type_name);
             }
         }
@@ -1345,7 +1352,9 @@ impl CrossFileTaintAnalyzer {
                                 &node.file_path,
                             ) {
                                 let target_normalized = normalize_path(&target_file);
-                                if let Some(file_funcs) = file_name_to_ids_ref.get(&target_normalized) {
+                                if let Some(file_funcs) =
+                                    file_name_to_ids_ref.get(&target_normalized)
+                                {
                                     let lookup_name = if resolution.is_default {
                                         &ct.callee
                                     } else {
@@ -1355,7 +1364,8 @@ impl CrossFileTaintAnalyzer {
                                     if let Some(callee_ids) = file_funcs.get(lookup_name) {
                                         for callee_id in callee_ids {
                                             if callee_id != &caller_id {
-                                                local_edges.push((caller_id.clone(), callee_id.clone()));
+                                                local_edges
+                                                    .push((caller_id.clone(), callee_id.clone()));
                                                 resolved = true;
                                             }
                                         }
@@ -1365,7 +1375,10 @@ impl CrossFileTaintAnalyzer {
                                         for (_, callee_ids) in file_funcs {
                                             for callee_id in callee_ids {
                                                 if callee_id != &caller_id {
-                                                    local_edges.push((caller_id.clone(), callee_id.clone()));
+                                                    local_edges.push((
+                                                        caller_id.clone(),
+                                                        callee_id.clone(),
+                                                    ));
                                                     resolved = true;
                                                 }
                                             }
@@ -1459,7 +1472,8 @@ impl CrossFileTaintAnalyzer {
                                 if let Some(callee_ids) = file_funcs.get(&ct.callee) {
                                     for callee_id in callee_ids {
                                         if callee_id != &caller_id {
-                                            local_edges.push((caller_id.clone(), callee_id.clone()));
+                                            local_edges
+                                                .push((caller_id.clone(), callee_id.clone()));
                                             resolved = true;
                                         }
                                     }
@@ -1633,10 +1647,7 @@ impl CrossFileTaintAnalyzer {
 
             let func_name = symbol.name.clone();
             // 对 Java 方法/内部类/匿名类中的方法，使用 ownerClass 限定 ID，避免同名方法冲突。
-            let owner_class = symbol
-                .metadata
-                .get("ownerClass")
-                .and_then(|v| v.as_str());
+            let owner_class = symbol.metadata.get("ownerClass").and_then(|v| v.as_str());
             let func_id = if language == "java" {
                 if let Some(owner) = owner_class {
                     format!("{}:{}.{}", file_path_str, owner, func_name)
@@ -2570,7 +2581,8 @@ impl CrossFileTaintAnalyzer {
             if let Some(node) = self.call_graph.nodes.get(func_id) {
                 if node.is_taint_source {
                     if let Some(lines) = self.get_file_lines(&node.file_path) {
-                        let body = Self::extract_body_from_lines(lines, node.start_line, node.end_line);
+                        let body =
+                            Self::extract_body_from_lines(lines, node.start_line, node.end_line);
                         for line in body.iter() {
                             for source in self.source_patterns.iter() {
                                 if source.matches(line, "*") {
@@ -3480,17 +3492,16 @@ impl CrossFileTaintAnalyzer {
                 .cloned()
                 .unwrap_or_default();
 
-            let body_text = if let Some(content) =
-                self.get_file_content(&func_cpg.signature.file_path)
-            {
-                Self::extract_body(
-                    content,
-                    func_cpg.signature.start_line,
-                    func_cpg.signature.end_line,
-                )
-            } else {
-                String::new()
-            };
+            let body_text =
+                if let Some(content) = self.get_file_content(&func_cpg.signature.file_path) {
+                    Self::extract_body(
+                        content,
+                        func_cpg.signature.start_line,
+                        func_cpg.signature.end_line,
+                    )
+                } else {
+                    String::new()
+                };
 
             let summary = super::cpg::compute_summary_from_cpg(
                 func_cpg,

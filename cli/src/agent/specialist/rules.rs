@@ -152,17 +152,26 @@ pub fn default_xss_rules() -> SpecialistRuleSet {
 
 /// 默认命令注入规则（热加载失败时回退）
 pub fn default_command_injection_rules() -> SpecialistRuleSet {
-    serde_yaml::from_str(include_str!("../../../../rules/specialists/command-injection.yaml")).unwrap()
+    serde_yaml::from_str(include_str!(
+        "../../../../rules/specialists/command-injection.yaml"
+    ))
+    .unwrap()
 }
 
 /// 默认反序列化规则（热加载失败时回退）
 pub fn default_deserialization_rules() -> SpecialistRuleSet {
-    serde_yaml::from_str(include_str!("../../../../rules/specialists/deserialization.yaml")).unwrap()
+    serde_yaml::from_str(include_str!(
+        "../../../../rules/specialists/deserialization.yaml"
+    ))
+    .unwrap()
 }
 
 /// 默认路径遍历规则（热加载失败时回退）
 pub fn default_path_traversal_rules() -> SpecialistRuleSet {
-    serde_yaml::from_str(include_str!("../../../../rules/specialists/path-traversal.yaml")).unwrap()
+    serde_yaml::from_str(include_str!(
+        "../../../../rules/specialists/path-traversal.yaml"
+    ))
+    .unwrap()
 }
 
 /// 默认 SSRF 规则（热加载失败时回退）

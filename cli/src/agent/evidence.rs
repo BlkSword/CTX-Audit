@@ -216,7 +216,9 @@ fn synthesize_local_call_path(
 
     // 取问题行周围 ±35 行作为方法体近似
     let start = finding.line_start.saturating_sub(35).max(1);
-    let end = (finding.line_end + 35).min(lines.len());
+    // line_end 可能为 0 或小于 line_start，先规范化
+    let effective_end = finding.line_end.max(finding.line_start);
+    let end = (effective_end + 35).min(lines.len());
     let method_body = lines[start - 1..end].join("\n");
     let body_lower = method_body.to_lowercase();
 

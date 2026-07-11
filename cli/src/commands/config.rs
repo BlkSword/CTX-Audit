@@ -52,8 +52,14 @@ pub async fn show(key: Option<String>, _reveal: bool) -> Result<()> {
         renderer.print("Agent 配置:");
         renderer.print(&format!("  LLM 模式:         {}", cfg.agent.llm_mode));
         renderer.print(&format!("  复核模式:         {}", cfg.agent.review_mode));
-        renderer.print(&format!("  Specialist:       {}", cfg.agent.specialist_enabled));
-        renderer.print(&format!("  Investigator:     {}", cfg.agent.investigator_enabled));
+        renderer.print(&format!(
+            "  Specialist:       {}",
+            cfg.agent.specialist_enabled
+        ));
+        renderer.print(&format!(
+            "  Investigator:     {}",
+            cfg.agent.investigator_enabled
+        ));
         renderer.print(&format!(
             "  最大调查步数:     {}",
             cfg.agent.max_investigation_steps
@@ -164,7 +170,9 @@ pub async fn list(_verbose: bool) -> Result<()> {
     println!("  agent.planner.strategy        - 策略模式: auto / rule / llm (默认 auto)");
     println!("  agent.planner.max_goals       - 最大审计目标数 (默认 10)");
     println!("  agent.planner.max_exploration_actions - 每个目标最大探索行动数 (默认 5)");
-    println!("  agent.llm.provider            - LLM 提供商: openai / anthropic / ollama (默认 openai)");
+    println!(
+        "  agent.llm.provider            - LLM 提供商: openai / anthropic / ollama (默认 openai)"
+    );
     println!("  agent.llm.model               - LLM 模型名 (默认 gpt-4o-mini)");
     println!("  agent.llm.api_key             - API 密钥 (也可用 CTX_AUDIT_LLM_API_KEY 环境变量)");
     println!("  agent.llm.endpoint            - 自定义 endpoint (可选)");

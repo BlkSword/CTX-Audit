@@ -27,9 +27,9 @@ pub mod xss;
 
 pub use pattern::PatternBasedSpecialist;
 pub use rules::{
-    default_command_injection_rules, default_deserialization_rules,
-    default_path_traversal_rules, default_sqli_rules, default_ssrf_rules, default_xss_rules,
-    load_specialist_rules_from_dir, SpecialistRuleSet,
+    default_command_injection_rules, default_deserialization_rules, default_path_traversal_rules,
+    default_sqli_rules, default_ssrf_rules, default_xss_rules, load_specialist_rules_from_dir,
+    SpecialistRuleSet,
 };
 pub use sqli::SQLiSpecialist;
 pub use xss::XssSpecialist;
@@ -153,7 +153,8 @@ impl SpecialistRegistry {
             .cloned()
             .unwrap_or_else(default_deserialization_rules);
         registry.register(Arc::new(
-            PatternBasedSpecialist::new(deser).unwrap_or_else(|_| PatternBasedSpecialist::default()),
+            PatternBasedSpecialist::new(deser)
+                .unwrap_or_else(|_| PatternBasedSpecialist::default()),
         ));
 
         let path = rules

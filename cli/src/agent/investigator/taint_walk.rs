@@ -67,20 +67,14 @@ impl TaintWalkInvestigator {
         let mut steps: Vec<InvestigationStep> = Vec::new();
 
         for step_number in 1..=self.max_steps {
-            let prompt = build_taint_walk_prompt(
-                finding,
-                evidence,
-                &focus,
-                &chain,
-                &available_actions(),
-            );
+            let prompt =
+                build_taint_walk_prompt(finding, evidence, &focus, &chain, &available_actions());
 
-            let value = self.llm_client.chat_json(&prompt).await.with_context(|| {
-                format!(
-                    "LLM 污点步进决策解析失败 (step {})",
-                    step_number
-                )
-            })?;
+            let value = self
+                .llm_client
+                .chat_json(&prompt)
+                .await
+                .with_context(|| format!("LLM 污点步进决策解析失败 (step {})", step_number))?;
 
             let decision = parse_taint_walk_decision(&value)?;
 
@@ -157,7 +151,10 @@ impl TaintWalkInvestigator {
                     .as_str()
                     .unwrap_or(&focus.file_path)
                     .to_string();
-                let line = params["line"].as_u64().map(|v| v as usize).unwrap_or(focus.line);
+                let line = params["line"]
+                    .as_u64()
+                    .map(|v| v as usize)
+                    .unwrap_or(focus.line);
                 let radius = params["radius"].as_u64().map(|v| v as usize).unwrap_or(30);
 
                 let start = line.saturating_sub(radius).max(1);
@@ -306,7 +303,12 @@ fn parse_taint_walk_decision(value: &serde_json::Value) -> Result<TaintWalkDecis
         .unwrap_or("finish")
         .to_string();
 
-    if action == "finish" || value.get("finish").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if action == "finish"
+        || value
+            .get("finish")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    {
         let verdict = parse_verdict(
             value
                 .get("verdict")
@@ -387,9 +389,8 @@ fn extract_call_name(code: &str) -> Option<String> {
     // 优先匹配 object.method(args) 或 function(args)
     let re = regex::Regex::new(r#"(?:(\w+)\s*[.:\s]+)?(\w+)\s*\("#).ok()?;
     let first_line = code.lines().next().unwrap_or(code);
-    re.captures(first_line).and_then(|caps| {
-        caps.get(2).map(|m| m.as_str().to_string())
-    })
+    re.captures(first_line)
+        .and_then(|caps| caps.get(2).map(|m| m.as_str().to_string()))
 }
 
 /// 将 finding 中的 vuln_type 字符串映射为 core 的 VulnerabilityType
@@ -447,12 +448,10 @@ fn check_sanitizer(symbol: &str, vuln_type: &str) -> String {
     let sanitizers = TaintAnalyzer::default_sanitizers();
 
     let symbol_lower = symbol.to_lowercase();
-    let matched = sanitizers
-        .iter()
-        .find(|s| {
-            (s.targets.is_empty() || s.targets.contains(&target))
-                && symbol_lower.contains(&s.pattern.to_lowercase())
-        });
+    let matched = sanitizers.iter().find(|s| {
+        (s.targets.is_empty() || s.targets.contains(&target))
+            && symbol_lower.contains(&s.pattern.to_lowercase())
+    });
 
     match matched {
         Some(s) => format!(
@@ -632,18 +631,14 @@ mod tests {
 
         async fn chat_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
             let idx = self.call_index.fetch_add(1, Ordering::SeqCst);
-            Ok(self
-                .steps
-                .get(idx)
-                .cloned()
-                .unwrap_or_else(|| {
-                    serde_json::json!({
-                        "action": "finish",
-                        "verdict": "needs_review",
-                        "confidence": 0.5,
-                        "reasoning": "mock fallback"
-                    })
-                }))
+            Ok(self.steps.get(idx).cloned().unwrap_or_else(|| {
+                serde_json::json!({
+                    "action": "finish",
+                    "verdict": "needs_review",
+                    "confidence": 0.5,
+                    "reasoning": "mock fallback"
+                })
+            }))
         }
     }
 
@@ -709,16 +704,17 @@ mod tests {
         assert_eq!(outcome.steps.len(), 1);
         assert_eq!(outcome.steps[0].tool_name, "read_context");
         // 没有 tool_context，读取会失败，但不应 panic
-        assert!(outcome.steps[0].observation.contains("未注入") || outcome.steps[0].observation.contains("错误"));
+        assert!(
+            outcome.steps[0].observation.contains("未注入")
+                || outcome.steps[0].observation.contains("错误")
+        );
     }
 
     #[tokio::test]
     async fn test_taint_walk_traces_through_callers_and_callees() {
         // 创建临时项目，包含 source -> handler -> sink 调用链
-        let tmp = std::env::temp_dir().join(format!(
-            "ctx-taint-walk-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("ctx-taint-walk-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let app_js = tmp.join("app.js");
         std::fs::write(
@@ -778,7 +774,10 @@ function sink(v) { eval(v); }
 
         assert_eq!(outcome.verdict, Verdict::TruePositive);
         assert!(outcome.steps.len() >= 2);
-        assert!(outcome.steps[0].observation.contains("找到") || outcome.steps[0].observation.contains("调用"));
+        assert!(
+            outcome.steps[0].observation.contains("找到")
+                || outcome.steps[0].observation.contains("调用")
+        );
         assert!(outcome.reasoning.contains("source 可达 sink"));
 
         // 清理临时目录

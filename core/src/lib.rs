@@ -7,8 +7,8 @@ mod diff;
 pub mod indexing;
 pub mod rules;
 pub mod sarif;
-mod scanner;
 pub mod scan_cache;
+mod scanner;
 pub mod watcher;
 
 // ── 分层导出：按消费者角色分组 ──────────────────────────

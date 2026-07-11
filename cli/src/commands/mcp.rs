@@ -760,15 +760,7 @@ async fn tool_security_scan(args: &Value) -> Value {
         .await
         .map(|r| r.findings)
     } else {
-        scan_directory_with_opts(
-            path,
-            None,
-            exclude_dirs,
-            None,
-            scan_opts,
-            None,
-        )
-        .await
+        scan_directory_with_opts(path, None, exclude_dirs, None, scan_opts, None).await
     };
 
     match result {

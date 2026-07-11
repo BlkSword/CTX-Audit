@@ -266,7 +266,8 @@ impl StrategyPlanner {
 
     /// 构造 LLM 目标生成 prompt
     fn build_goal_prompt(&self, env: &EnvironmentModel) -> String {
-        let mut vuln_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut vuln_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for f in &env.findings {
             *vuln_counts.entry(f.vuln_type.clone()).or_insert(0) += 1;
         }

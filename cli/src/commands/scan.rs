@@ -285,6 +285,19 @@ fn build_exclude_dirs(cli_excludes: Vec<String>) -> Vec<String> {
                 ".env.*",
                 "*.test.*",
                 "*.spec.*",
+                // Java Web 项目常见前端 vendor / 静态资源目录
+                "static/plugins",
+                "static/js/libs",
+                "static/webjars",
+                "webjars",
+                "src/main/resources/static",
+                "resources/static",
+                "static/**/libs",
+                "static/**/plugins",
+                "**/static/plugins/**",
+                "**/static/js/libs/**",
+                "**/webjars/**",
+                "*.vendor.js",
             ];
             (defaults.iter().map(|s| s.to_string()).collect(), vec![])
         }

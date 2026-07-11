@@ -136,13 +136,12 @@ pub fn save_scan_result(
 
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("序列化缓存清单失败: {}", e))?;
-    fs::write(&manifest_path, manifest_json)
-        .map_err(|e| format!("写入缓存清单失败: {}", e))?;
+    fs::write(&manifest_path, manifest_json).map_err(|e| format!("写入缓存清单失败: {}", e))?;
 
-    let json = serde_json::to_string(scan_result)
-        .map_err(|e| format!("序列化扫描结果失败: {}", e))?;
-    let compressed = zstd::encode_all(json.as_bytes(), 0)
-        .map_err(|e| format!("压缩缓存失败: {}", e))?;
+    let json =
+        serde_json::to_string(scan_result).map_err(|e| format!("序列化扫描结果失败: {}", e))?;
+    let compressed =
+        zstd::encode_all(json.as_bytes(), 0).map_err(|e| format!("压缩缓存失败: {}", e))?;
     fs::write(&cache_path, compressed).map_err(|e| format!("写入缓存文件失败: {}", e))?;
 
     log::info!(
@@ -209,16 +208,10 @@ pub fn compute_options_hash<T: Serialize>(opts: &T) -> String {
 /// 构建项目文件清单
 fn build_project_manifest(project_path: &Path) -> Result<Vec<FileManifest>, String> {
     let mut files = Vec::new();
-    let exclude_dirs: HashSet<&str> = [
-        ".git",
-        "node_modules",
-        "target",
-        "vendor",
-        ".ctx-audit",
-    ]
-    .iter()
-    .cloned()
-    .collect();
+    let exclude_dirs: HashSet<&str> = [".git", "node_modules", "target", "vendor", ".ctx-audit"]
+        .iter()
+        .cloned()
+        .collect();
 
     for entry in ignore::WalkBuilder::new(project_path).hidden(false).build() {
         let entry = match entry {
@@ -281,10 +274,7 @@ fn is_manifest_valid(project_path: &Path, manifest_files: &[FileManifest]) -> bo
     }
 
     for (a, b) in current.iter().zip(manifest_files.iter()) {
-        if a.relative_path != b.relative_path
-            || a.mtime_secs != b.mtime_secs
-            || a.size != b.size
-        {
+        if a.relative_path != b.relative_path || a.mtime_secs != b.mtime_secs || a.size != b.size {
             return false;
         }
     }

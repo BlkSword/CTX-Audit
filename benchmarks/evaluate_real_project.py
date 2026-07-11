@@ -109,33 +109,58 @@ def has_code_context(finding: Dict[str, Any]) -> bool:
 def analyze_findings(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = len(findings)
     by_cwe = defaultdict(int)
+    by_cwe_with_source_sink = defaultdict(int)
+    by_cwe_with_taint_steps = defaultdict(int)
     by_severity = defaultdict(int)
     with_code_context = 0
     with_source_sink = 0
     with_call_path = 0
     with_taint_steps = 0
+    path_lengths = []
+    files_by_count = defaultdict(int)
 
     for f in findings:
         cwe = normalize_cwe(f.get("vuln_type"))
-        by_cwe[cwe or "unknown"] += 1
+        cwe_key = cwe or "unknown"
+        by_cwe[cwe_key] += 1
         by_severity[f.get("severity", "unknown").lower()] += 1
-        if has_code_context(f):
-            with_code_context += 1
-        if has_source_sink_path(f):
+        files_by_count[f.get("file_path", "unknown")] += 1
+
+        has_ss = has_source_sink_path(f)
+        has_ts = has_taint_steps(f)
+        if has_ss:
             with_source_sink += 1
+            by_cwe_with_source_sink[cwe_key] += 1
+            refs = f.get("evidence_refs") or {}
+            ss = refs.get("source_sink_path")
+            if isinstance(ss, dict):
+                path_steps = ss.get("path_steps") or []
+                if path_steps:
+                    path_lengths.append(len(path_steps))
         if has_call_path(f):
             with_call_path += 1
-        if has_taint_steps(f):
+        if has_ts:
             with_taint_steps += 1
+            by_cwe_with_taint_steps[cwe_key] += 1
+        if has_code_context(f):
+            with_code_context += 1
+
+    avg_path_length = sum(path_lengths) / len(path_lengths) if path_lengths else 0.0
+    max_path_length = max(path_lengths) if path_lengths else 0
 
     return {
         "total": total,
         "by_cwe": dict(sorted(by_cwe.items(), key=lambda x: -x[1])),
+        "by_cwe_with_source_sink": dict(sorted(by_cwe_with_source_sink.items(), key=lambda x: -x[1])),
+        "by_cwe_with_taint_steps": dict(sorted(by_cwe_with_taint_steps.items(), key=lambda x: -x[1])),
         "by_severity": dict(sorted(by_severity.items(), key=lambda x: -x[1])),
         "with_code_context": with_code_context,
         "with_source_sink_path": with_source_sink,
         "with_call_path": with_call_path,
         "with_taint_steps": with_taint_steps,
+        "avg_path_length": avg_path_length,
+        "max_path_length": max_path_length,
+        "top_files": dict(sorted(files_by_count.items(), key=lambda x: -x[1])[:10]),
     }
 
 
@@ -198,14 +223,28 @@ def render_markdown(findings_stats: Dict[str, Any], audit_stats: Dict[str, Any])
         f"- 带 source→sink 路径: {findings_stats['with_source_sink_path']} ({pct(findings_stats['with_source_sink_path'], findings_stats['total'])})",
         f"- 带调用图路径: {findings_stats['with_call_path']} ({pct(findings_stats['with_call_path'], findings_stats['total'])})",
         f"- 带污点步骤: {findings_stats['with_taint_steps']} ({pct(findings_stats['with_taint_steps'], findings_stats['total'])})",
+        f"- 平均污点路径长度: {findings_stats['avg_path_length']:.2f}",
+        f"- 最大污点路径长度: {findings_stats['max_path_length']}",
         "",
         "### 按 CWE 分布",
         "",
-        "| CWE | Count |",
-        "|-----|-------|",
+        "| CWE | Count | 带 source→sink | 带污点步骤 |",
+        "|-----|-------|----------------|------------|",
     ]
     for cwe, count in findings_stats["by_cwe"].items():
-        lines.append(f"| {cwe} | {count} |")
+        ss = findings_stats["by_cwe_with_source_sink"].get(cwe, 0)
+        ts = findings_stats["by_cwe_with_taint_steps"].get(cwe, 0)
+        lines.append(f"| {cwe} | {count} | {ss} | {ts} |")
+
+    lines.extend([
+        "",
+        "### Top 10 文件（按 finding 数）",
+        "",
+        "| 文件 | Count |",
+        "|------|-------|",
+    ])
+    for file_path, count in findings_stats["top_files"].items():
+        lines.append(f"| {file_path} | {count} |")
 
     lines.extend([
         "",

@@ -202,7 +202,11 @@ impl Reviewer for LlmBasedReviewer {
             Ok(text) => match parse_review_text(&text, &self.name, result.verdict) {
                 Ok(op) => Ok(op),
                 Err(e) => {
-                    tracing::warn!("LLM Reviewer 响应解析失败，回退到规则复核器: {} | 原始文本前500字: {}", e, text.chars().take(500).collect::<String>());
+                    tracing::warn!(
+                        "LLM Reviewer 响应解析失败，回退到规则复核器: {} | 原始文本前500字: {}",
+                        e,
+                        text.chars().take(500).collect::<String>()
+                    );
                     RuleBasedReviewer.review(result).await
                 }
             },

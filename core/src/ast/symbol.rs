@@ -285,4 +285,7 @@ pub struct TypedParam {
     /// 类型注解（如 "HttpRequest", "string"）
     #[serde(default)]
     pub type_annotation: Option<String>,
+    /// 参数上的注解（如 Java 的 @RequestParam、@PathVariable）
+    #[serde(default)]
+    pub annotations: Vec<String>,
 }

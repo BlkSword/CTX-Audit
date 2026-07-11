@@ -367,7 +367,11 @@ impl ControlledLlmClient {
     /// - 未配置 pro 时全部走 inner
     /// - 激进模式：高严重度或证据冲突案件走 pro，其余走 fast
     /// - 非激进模式：只有复杂/高严重度案件才会到达 LLM，直接走 pro
-    fn select_triage_client<'a>(&'a self, finding: &Finding, evidence: &Evidence) -> &'a Arc<dyn LlmClient> {
+    fn select_triage_client<'a>(
+        &'a self,
+        finding: &Finding,
+        evidence: &Evidence,
+    ) -> &'a Arc<dyn LlmClient> {
         if !self.has_pro() {
             return self.fast();
         }
@@ -912,7 +916,11 @@ fn build_http_llm_client(
 pub fn create_llm_client(agent_config: &crate::config::AgentConfig) -> Arc<dyn LlmClient> {
     let mode = agent_config.llm_mode.as_str();
 
-    let (inner, effective_mode, maybe_pro): (Arc<dyn LlmClient>, String, Option<Arc<dyn LlmClient>>) = match mode {
+    let (inner, effective_mode, maybe_pro): (
+        Arc<dyn LlmClient>,
+        String,
+        Option<Arc<dyn LlmClient>>,
+    ) = match mode {
         "http" => {
             let mut api_key = agent_config.llm.api_key.clone();
             if api_key.is_empty() {

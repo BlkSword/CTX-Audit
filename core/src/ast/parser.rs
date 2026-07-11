@@ -271,13 +271,11 @@ impl ASTParser {
 
                         // 提取方法参数名，供 Stage C 调用图构建使用
                         if let Some(params_node) = node.child_by_field_name("parameters") {
-                            let param_names: Vec<serde_json::Value> = ASTParser::extract_param_names(
-                                &params_node,
-                                content,
-                            )
-                            .into_iter()
-                            .map(serde_json::Value::String)
-                            .collect();
+                            let param_names: Vec<serde_json::Value> =
+                                ASTParser::extract_param_names(&params_node, content)
+                                    .into_iter()
+                                    .map(serde_json::Value::String)
+                                    .collect();
                             if !param_names.is_empty() {
                                 metadata.insert(
                                     "params".to_string(),
@@ -1063,17 +1061,21 @@ impl ASTParser {
         let root = tree.root_node();
 
         let symbols = match ext.as_str() {
-            ".java" => self.extract_java_symbols(file_path, content, root).unwrap_or_default(),
-            ".py" => self.extract_python_symbols(file_path, content, root).unwrap_or_default(),
-            ".rs" => self.extract_rust_symbols(file_path, content, root).unwrap_or_default(),
-            ".ts" | ".tsx" => {
-                self.extract_typescript_symbols(file_path, content, root)
-                    .unwrap_or_default()
-            }
-            ".js" | ".jsx" => {
-                self.extract_javascript_symbols(file_path, content, root)
-                    .unwrap_or_default()
-            }
+            ".java" => self
+                .extract_java_symbols(file_path, content, root)
+                .unwrap_or_default(),
+            ".py" => self
+                .extract_python_symbols(file_path, content, root)
+                .unwrap_or_default(),
+            ".rs" => self
+                .extract_rust_symbols(file_path, content, root)
+                .unwrap_or_default(),
+            ".ts" | ".tsx" => self
+                .extract_typescript_symbols(file_path, content, root)
+                .unwrap_or_default(),
+            ".js" | ".jsx" => self
+                .extract_javascript_symbols(file_path, content, root)
+                .unwrap_or_default(),
             _ => self
                 .extract_generic_symbols(file_path, content, &ext, root)
                 .unwrap_or_default(),
@@ -1293,7 +1295,10 @@ impl ASTParser {
         let kind = node.kind();
         if matches!(
             kind,
-            "call_expression" | "call" | "method_invocation" | "function_call"
+            "call_expression"
+                | "call"
+                | "method_invocation"
+                | "function_call"
                 | "object_creation_expression"
         ) {
             let func_node = node
@@ -1734,10 +1739,14 @@ impl ASTParser {
                 // 提取类型注解
                 let type_annotation = Self::extract_type_annotation(&child, content);
 
+                // 提取参数注解（如 Java 的 @RequestParam）
+                let annotations = Self::extract_parameter_annotations(&child, content);
+
                 if !name.is_empty() && name != "self" && name != "this" {
                     params.push(TypedParam {
                         name,
                         type_annotation,
+                        annotations,
                     });
                 }
             }
@@ -1749,9 +1758,29 @@ impl ASTParser {
     fn extract_type_annotation(param_node: &Node, content: &str) -> Option<String> {
         // TypeScript: required_parameter → identifier : type_annotation → type_identifier
         // Python: typed_identifier → name : type
+        // Java: formal_parameter → modifiers type identifier
         let text = content[param_node.byte_range()].to_string();
 
-        // 查找 type_annotation 子节点
+        // Java / Go / Rust 等：类型是直接子节点
+        let mut cursor = param_node.walk();
+        for child in param_node.children(&mut cursor) {
+            let kind = child.kind();
+            if matches!(
+                kind,
+                "type_identifier"
+                    | "integral_type"
+                    | "floating_point_type"
+                    | "boolean_type"
+                    | "predefined_type"
+                    | "generic_type"
+                    | "array_type"
+                    | "type"
+            ) {
+                return Some(content[child.byte_range()].to_string());
+            }
+        }
+
+        // 查找 type_annotation 子节点（TypeScript 等）
         let mut cursor = param_node.walk();
         for child in param_node.children(&mut cursor) {
             if child.kind() == "type_annotation" {
@@ -1798,6 +1827,47 @@ impl ASTParser {
         }
 
         None
+    }
+
+    /// 从参数节点中提取注解列表
+    ///
+    /// 主要服务于 Java 的 `formal_parameter`：
+    /// `@RequestParam String query` 中 `marker_annotation` 是 `formal_parameter` 的直接子节点，
+    /// 提取后供污点分析把带 Spring 注解的参数识别为 source。
+    fn extract_parameter_annotations(param_node: &Node, content: &str) -> Vec<String> {
+        let mut annotations = Vec::new();
+
+        // Java formal_parameter 的注解封装在 kind="modifiers" 的子节点里
+        // （注意：这不是 named field，而是 anonymous child node）。
+        // 也兼容注解作为直接子节点的形式。
+        let collect_from_node = |node: &Node, annotations: &mut Vec<String>| {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let kind = child.kind();
+                if kind == "marker_annotation" || kind == "annotation" {
+                    let ann_text = content[child.byte_range()].to_string();
+                    let ann_text = ann_text.trim();
+                    if !ann_text.is_empty() {
+                        annotations.push(ann_text.to_string());
+                    }
+                }
+            }
+        };
+
+        // 先查找 kind="modifiers" 的子节点
+        let mut cursor = param_node.walk();
+        for child in param_node.children(&mut cursor) {
+            if child.kind() == "modifiers" {
+                collect_from_node(&child, &mut annotations);
+            }
+        }
+
+        // 兜底：直接子节点
+        if annotations.is_empty() {
+            collect_from_node(param_node, &mut annotations);
+        }
+
+        annotations
     }
 
     /// 从 AST 节点中收集所有标识符（变量引用）
@@ -2044,10 +2114,17 @@ public class Test {
         let (symbols_result, _) = parser.parse_and_extract_calls(Path::new("Test.java"), code);
         let symbols = symbols_result.unwrap();
         for s in &symbols {
-            eprintln!("symbol {} kind={:?} metadata={:?}", s.name, s.kind, s.metadata);
+            eprintln!(
+                "symbol {} kind={:?} metadata={:?}",
+                s.name, s.kind, s.metadata
+            );
         }
         let bad = symbols.iter().find(|s| s.name == "bad").unwrap();
-        let params = bad.metadata.get("params").and_then(|v| v.as_array()).unwrap();
+        let params = bad
+            .metadata
+            .get("params")
+            .and_then(|v| v.as_array())
+            .unwrap();
         assert_eq!(params.len(), 2);
         assert!(params.iter().any(|v| v.as_str() == Some("request")));
         assert!(params.iter().any(|v| v.as_str() == Some("response")));
@@ -2066,13 +2143,52 @@ public class Test extends HttpServlet {
 }
 "#;
         let mut parser = ASTParser::new();
-        let (_bodies, assignments, _calls) = parser.extract_all_for_taint(Path::new("Test.java"), code);
+        let (_bodies, assignments, _calls) =
+            parser.extract_all_for_taint(Path::new("Test.java"), code);
         eprintln!("assignments:");
         for a in &assignments {
-            eprintln!("  line={} target={} source_expr={} source_vars={:?}", a.line, a.target, a.source_expr, a.source_vars);
+            eprintln!(
+                "  line={} target={} source_expr={} source_vars={:?}",
+                a.line, a.target, a.source_expr, a.source_vars
+            );
         }
-        assert!(assignments.iter().any(|a| a.target == "param" && a.source_vars.iter().any(|v| v == "request")));
-        assert!(assignments.iter().any(|a| a.target == "sql" && a.source_vars.iter().any(|v| v == "param")));
+        assert!(assignments
+            .iter()
+            .any(|a| a.target == "param" && a.source_vars.iter().any(|v| v == "request")));
+        assert!(assignments
+            .iter()
+            .any(|a| a.target == "sql" && a.source_vars.iter().any(|v| v == "param")));
     }
 
+    #[test]
+    fn test_java_request_param_annotation_extraction() {
+        let code = r#"
+import org.springframework.web.bind.annotation.*;
+
+public class Test {
+    @PostMapping("/test")
+    public String query(@RequestParam String q, @PathVariable int id, String normal) {
+        return q + id;
+    }
+}
+"#;
+        let mut parser = ASTParser::new();
+        let (bodies, _assignments, _calls) =
+            parser.extract_all_for_taint(Path::new("Test.java"), code);
+        let func = bodies.iter().find(|b| b.name == "query").unwrap();
+        assert_eq!(func.typed_params.len(), 3);
+
+        let q_param = func.typed_params.iter().find(|p| p.name == "q").unwrap();
+        assert_eq!(q_param.annotations, vec!["@RequestParam"]);
+
+        let id_param = func.typed_params.iter().find(|p| p.name == "id").unwrap();
+        assert_eq!(id_param.annotations, vec!["@PathVariable"]);
+
+        let normal_param = func
+            .typed_params
+            .iter()
+            .find(|p| p.name == "normal")
+            .unwrap();
+        assert!(normal_param.annotations.is_empty());
+    }
 }

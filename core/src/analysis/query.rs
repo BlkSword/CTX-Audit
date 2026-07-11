@@ -224,7 +224,8 @@ struct CachedGraphStats {
 impl CallGraphQueryEngine {
     /// 从跨文件分析结果构建查询引擎
     pub fn from_result(result: &CrossFileTaintResult) -> Self {
-        let (direct_caller_index, direct_callee_index) = Self::build_direct_indexes(&result.call_graph);
+        let (direct_caller_index, direct_callee_index) =
+            Self::build_direct_indexes(&result.call_graph);
         Self {
             call_graph: result.call_graph.clone(),
             type_hierarchy: result.type_hierarchy.clone(),
@@ -285,10 +286,7 @@ impl CallGraphQueryEngine {
                     is_callback: callee_node.map(|n| n.is_callback).unwrap_or(false),
                     is_resolved,
                 };
-                let key = (
-                    ct.callee.clone(),
-                    ct.receiver.clone().unwrap_or_default(),
-                );
+                let key = (ct.callee.clone(), ct.receiver.clone().unwrap_or_default());
                 if callee_seen.insert(key) {
                     callee_index
                         .entry(caller_id.clone())

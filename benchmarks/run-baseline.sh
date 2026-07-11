@@ -46,6 +46,9 @@ fi
 "$BIN" config set agent.planner.strategy rule
 "$BIN" config set scan.min_severity low
 
+# 强制使用统一的排除列表，避免本地旧配置文件导致基线不可复现
+"$BIN" config set scan.exclude_patterns '["node_modules",".git","target","build","dist","vendor","__pycache__",".gradle",".idea",".vscode",".cache","bower_components",".next",".nuxt","coverage","test","tests","__tests__","spec","fixtures","e2e","examples","example","scripts","*.min.js","*.min.css","*.bundle.js","*.chunk.js","*.map",".env.*","*.test.*","*.spec.*","static/plugins","static/js/libs","static/webjars","webjars","src/main/resources/static","resources/static","static/**/libs","static/**/plugins","**/static/plugins/**","**/static/js/libs/**","**/webjars/**","*.vendor.js"]'
+
 run_project() {
     local project_path="$1"
     local name

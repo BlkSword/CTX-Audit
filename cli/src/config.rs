@@ -163,6 +163,19 @@ fn default_exclude_patterns() -> Vec<String> {
         ".env.*",
         "*.test.*",
         "*.spec.*",
+        // Java Web 项目常见前端 vendor / 静态资源目录
+        "static/plugins",
+        "static/js/libs",
+        "static/webjars",
+        "webjars",
+        "src/main/resources/static",
+        "resources/static",
+        "static/**/libs",
+        "static/**/plugins",
+        "**/static/plugins/**",
+        "**/static/js/libs/**",
+        "**/webjars/**",
+        "*.vendor.js",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -887,9 +900,7 @@ impl ConfigManager {
             "agent.max_investigation_steps" => {
                 Some(self.config.agent.max_investigation_steps.to_string())
             }
-            "agent.taint_walk_enabled" => {
-                Some(self.config.agent.taint_walk_enabled.to_string())
-            }
+            "agent.taint_walk_enabled" => Some(self.config.agent.taint_walk_enabled.to_string()),
             "agent.planner.strategy" => {
                 Some(format!("{:?}", self.config.agent.planner.strategy).to_lowercase())
             }
@@ -912,7 +923,9 @@ impl ConfigManager {
             }
             "agent.llm.provider" => Some(self.config.agent.llm.provider.clone()),
             "agent.llm.model" => Some(self.config.agent.llm.model.clone()),
-            "agent.llm.model_pro" => Some(self.config.agent.llm.model_pro.clone().unwrap_or_default()),
+            "agent.llm.model_pro" => {
+                Some(self.config.agent.llm.model_pro.clone().unwrap_or_default())
+            }
             "agent.llm.api_key" => Some(self.config.agent.llm.api_key.clone()),
             "agent.llm.endpoint" => self.config.agent.llm.endpoint.clone(),
             "agent.llm.timeout_sec" => Some(self.config.agent.llm.timeout_sec.to_string()),
@@ -1133,7 +1146,9 @@ impl ConfigManager {
             }
             "agent.llm.provider" => self.config.agent.llm.provider = value,
             "agent.llm.model" => self.config.agent.llm.model = value,
-            "agent.llm.model_pro" => self.config.agent.llm.model_pro = if value.is_empty() { None } else { Some(value) },
+            "agent.llm.model_pro" => {
+                self.config.agent.llm.model_pro = if value.is_empty() { None } else { Some(value) }
+            }
             "agent.llm.api_key" => self.config.agent.llm.api_key = value,
             "agent.llm.endpoint" => {
                 self.config.agent.llm.endpoint = if value.is_empty() { None } else { Some(value) };

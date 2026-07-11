@@ -1178,15 +1178,42 @@ pub async fn register_call_graph_tools(
     // 如果提供了共享查询引擎，优先注入到每个工具
     let tools: Vec<Arc<dyn Tool>> = if let Some(engine) = query_engine {
         vec![
-            Arc::new(QueryCallersTool::with_query_engine(String::new(), engine.clone())),
-            Arc::new(QueryCalleesTool::with_query_engine(String::new(), engine.clone())),
-            Arc::new(FindCallPathTool::with_query_engine(String::new(), engine.clone())),
-            Arc::new(ResolveMethodCallTool::with_query_engine(String::new(), engine.clone())),
-            Arc::new(GetTypeHierarchyTool::with_query_engine(String::new(), engine.clone())),
-            Arc::new(GetMiddlewareChainTool::with_query_engine(String::new(), engine.clone())),
-            Arc::new(TraceVariableFlowTool::with_query_engine(String::new(), engine.clone())),
-            Arc::new(GetGraphStatsTool::with_query_engine(String::new(), engine.clone())),
-            Arc::new(ListFunctionsTool::with_query_engine(String::new(), engine.clone())),
+            Arc::new(QueryCallersTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
+            Arc::new(QueryCalleesTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
+            Arc::new(FindCallPathTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
+            Arc::new(ResolveMethodCallTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
+            Arc::new(GetTypeHierarchyTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
+            Arc::new(GetMiddlewareChainTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
+            Arc::new(TraceVariableFlowTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
+            Arc::new(GetGraphStatsTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
+            Arc::new(ListFunctionsTool::with_query_engine(
+                String::new(),
+                engine.clone(),
+            )),
         ]
     } else {
         tools

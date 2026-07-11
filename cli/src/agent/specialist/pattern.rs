@@ -65,8 +65,10 @@ impl PatternBasedSpecialist {
 
     /// 使用内置默认规则（通过 include_str 编译时嵌入）
     pub fn default() -> Self {
-        Self::new(crate::agent::specialist::rules::SpecialistRuleSet::empty("generic"))
-            .expect("空规则集应能编译")
+        Self::new(crate::agent::specialist::rules::SpecialistRuleSet::empty(
+            "generic",
+        ))
+        .expect("空规则集应能编译")
     }
 
     fn sinks_for(&self, lang: &str) -> &[Regex] {
@@ -145,10 +147,7 @@ impl Specialist for PatternBasedSpecialist {
                 specialist_name: self.display_name.clone(),
                 verdict: Verdict::FalsePositive,
                 confidence: 0.88,
-                reasoning: format!(
-                    "发现 {} 安全屏障关键词，判定为误报。",
-                    self.display_name
-                ),
+                reasoning: format!("发现 {} 安全屏障关键词，判定为误报。", self.display_name),
                 observations,
             });
         }

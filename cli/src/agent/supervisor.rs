@@ -19,9 +19,9 @@ use deepaudit_core::CallGraphQueryEngine;
 use crate::agent::blackboard::BlackboardState;
 use crate::agent::evidence::{collect_evidence, Evidence};
 use crate::agent::heuristics::Verdict;
+use crate::agent::investigator::{TaintWalkInvestigator, ToolUsingInvestigator};
 use crate::agent::llm_client::LlmClient;
 use crate::agent::report::InvestigationResult;
-use crate::agent::investigator::{TaintWalkInvestigator, ToolUsingInvestigator};
 use crate::agent::reviewer::{apply_review, Reviewer};
 use crate::agent::specialist::{
     merge_specialist_verdict, SpecialistContext, SpecialistRegistry, SpecialistResult,
@@ -280,13 +280,10 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
 
     // 污点步进调查（Phase 7）：从 sink 反向逐步追踪到 source，补全证据链
     let mut taint_walk_reasoning = String::new();
-    if task.taint_walk_enabled
-        && (verdict == Verdict::NeedsReview || evidence.call_path.is_none())
+    if task.taint_walk_enabled && (verdict == Verdict::NeedsReview || evidence.call_path.is_none())
     {
-        let taint_walk = TaintWalkInvestigator::new(
-            task.llm_client.clone(),
-            task.max_taint_walk_steps,
-        );
+        let taint_walk =
+            TaintWalkInvestigator::new(task.llm_client.clone(), task.max_taint_walk_steps);
         let ctx = SpecialistContext {
             project_path: task.project_path.clone(),
             finding: task.finding.clone(),

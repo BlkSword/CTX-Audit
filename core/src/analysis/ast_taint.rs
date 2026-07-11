@@ -853,40 +853,79 @@ impl AstTaintAnalyzer {
 
         let lines: Vec<&str> = code.lines().collect();
 
-        // 1. 基于类型注解的参数污点源
+        // 1. 基于类型注解或 Spring 注解的参数污点源
         for tp in typed_params {
             let var_name = tp.name.clone();
             if state.get_var(&var_name).is_some() {
                 continue;
             }
-            if let Some(ref type_ann) = tp.type_annotation {
-                let type_lower = type_ann.to_lowercase();
-                let is_request_type = Self::REQUEST_TYPE_PATTERNS
+
+            let is_request_type = tp
+                .type_annotation
+                .as_ref()
+                .map(|type_ann| {
+                    let type_lower = type_ann.to_lowercase();
+                    Self::REQUEST_TYPE_PATTERNS
+                        .iter()
+                        .any(|pattern| type_lower.contains(&pattern.to_lowercase()))
+                })
+                .unwrap_or(false);
+
+            let is_http_param_annotation = tp.annotations.iter().any(|ann| {
+                Self::HTTP_PARAM_ANNOTATIONS
                     .iter()
-                    .any(|pattern| type_lower.contains(&pattern.to_lowercase()));
-                if is_request_type {
-                    let line_num = code
-                        .lines()
-                        .enumerate()
-                        .find(|(_, l)| l.contains(&tp.name))
-                        .map(|(i, _)| i + 1 + line_offset)
-                        .unwrap_or(1);
-                    state.insert_var(
-                        var_name,
-                        VarTaintState::from_taint(
-                            line_num,
-                            format!("{}: {}", tp.name, type_ann),
-                            vec![PropagationStep {
-                                step_type: PropagationStepType::DirectAssignment,
-                                from_var: None,
-                                to_var: Some(tp.name.clone()),
-                                line: line_num,
-                                code_snippet: Some(format!("param: {}", type_ann)),
-                                function_name: None,
-                            }],
-                        ),
-                    );
-                }
+                    .any(|pat| ann.contains(pat))
+            });
+
+            if is_request_type || is_http_param_annotation {
+                let source_desc = if is_http_param_annotation {
+                    format!(
+                        "{} ({})",
+                        tp.name,
+                        tp.annotations
+                            .iter()
+                            .filter(|ann| {
+                                Self::HTTP_PARAM_ANNOTATIONS
+                                    .iter()
+                                    .any(|pat| ann.contains(pat))
+                            })
+                            .next()
+                            .cloned()
+                            .unwrap_or_else(|| "HTTP param".to_string())
+                    )
+                } else {
+                    format!(
+                        "{}: {}",
+                        tp.name,
+                        tp.type_annotation.clone().unwrap_or_default()
+                    )
+                };
+
+                let line_num = code
+                    .lines()
+                    .enumerate()
+                    .find(|(_, l)| l.contains(&tp.name))
+                    .map(|(i, _)| i + 1 + line_offset)
+                    .unwrap_or(1);
+                state.insert_var(
+                    var_name,
+                    VarTaintState::from_taint(
+                        line_num,
+                        source_desc,
+                        vec![PropagationStep {
+                            step_type: PropagationStepType::DirectAssignment,
+                            from_var: None,
+                            to_var: Some(tp.name.clone()),
+                            line: line_num,
+                            code_snippet: Some(format!(
+                                "param: {} {}",
+                                tp.annotations.join(" "),
+                                tp.type_annotation.clone().unwrap_or_default()
+                            )),
+                            function_name: None,
+                        }],
+                    ),
+                );
             }
         }
 
@@ -1460,6 +1499,19 @@ impl AstTaintAnalyzer {
         "ServerRequest",
     ];
 
+    /// Spring / Jakarta 用户输入参数注解
+    ///
+    /// 这些注解修饰的方法参数应被视为污点源，无论其类型是否为 String / int。
+    const HTTP_PARAM_ANNOTATIONS: &'static [&'static str] = &[
+        "@RequestParam",
+        "@PathVariable",
+        "@RequestBody",
+        "@ModelAttribute",
+        "@RequestHeader",
+        "@CookieValue",
+        "@RequestAttribute",
+    ];
+
     /// 检查入口节点是否有污点源
     fn check_entry_sources(
         &self,
@@ -1474,41 +1526,80 @@ impl AstTaintAnalyzer {
     ) {
         let lines: Vec<&str> = code.lines().collect();
 
-        // 1. 基于类型注解的参数污点源
+        // 1. 基于类型注解或 Spring 注解的参数污点源
         for tp in typed_params {
             if state.contains_key(&tp.name) {
                 continue;
             }
-            if let Some(ref type_ann) = tp.type_annotation {
-                let type_lower = type_ann.to_lowercase();
-                let is_request_type = Self::REQUEST_TYPE_PATTERNS
+
+            let is_request_type = tp
+                .type_annotation
+                .as_ref()
+                .map(|type_ann| {
+                    let type_lower = type_ann.to_lowercase();
+                    Self::REQUEST_TYPE_PATTERNS
+                        .iter()
+                        .any(|pattern| type_lower.contains(&pattern.to_lowercase()))
+                })
+                .unwrap_or(false);
+
+            let is_http_param_annotation = tp.annotations.iter().any(|ann| {
+                Self::HTTP_PARAM_ANNOTATIONS
                     .iter()
-                    .any(|pattern| type_lower.contains(&pattern.to_lowercase()));
-                if is_request_type {
-                    let line_num = code
-                        .lines()
-                        .enumerate()
-                        .find(|(_, l)| l.contains(&tp.name))
-                        .map(|(i, _)| i + 1 + line_offset)
-                        .unwrap_or(1);
-                    state.insert(
-                        tp.name.clone(),
-                        TaintInfo {
-                            source_line: line_num,
-                            source_var: format!("{}: {}", tp.name, type_ann),
-                            sanitized: false,
-                            sanitizer: None,
-                            propagation_steps: vec![PropagationStep {
-                                step_type: PropagationStepType::DirectAssignment,
-                                from_var: None,
-                                to_var: Some(tp.name.clone()),
-                                line: line_num,
-                                code_snippet: Some(format!("param: {}", type_ann)),
-                                function_name: None,
-                            }],
-                        },
-                    );
-                }
+                    .any(|pat| ann.contains(pat))
+            });
+
+            if is_request_type || is_http_param_annotation {
+                let source_desc = if is_http_param_annotation {
+                    format!(
+                        "{} ({})",
+                        tp.name,
+                        tp.annotations
+                            .iter()
+                            .filter(|ann| {
+                                Self::HTTP_PARAM_ANNOTATIONS
+                                    .iter()
+                                    .any(|pat| ann.contains(pat))
+                            })
+                            .next()
+                            .cloned()
+                            .unwrap_or_else(|| "HTTP param".to_string())
+                    )
+                } else {
+                    format!(
+                        "{}: {}",
+                        tp.name,
+                        tp.type_annotation.clone().unwrap_or_default()
+                    )
+                };
+
+                let line_num = code
+                    .lines()
+                    .enumerate()
+                    .find(|(_, l)| l.contains(&tp.name))
+                    .map(|(i, _)| i + 1 + line_offset)
+                    .unwrap_or(1);
+                state.insert(
+                    tp.name.clone(),
+                    TaintInfo {
+                        source_line: line_num,
+                        source_var: source_desc,
+                        sanitized: false,
+                        sanitizer: None,
+                        propagation_steps: vec![PropagationStep {
+                            step_type: PropagationStepType::DirectAssignment,
+                            from_var: None,
+                            to_var: Some(tp.name.clone()),
+                            line: line_num,
+                            code_snippet: Some(format!(
+                                "param: {} {}",
+                                tp.annotations.join(" "),
+                                tp.type_annotation.clone().unwrap_or_default()
+                            )),
+                            function_name: None,
+                        }],
+                    },
+                );
             }
         }
 
@@ -3308,10 +3399,12 @@ public class Test extends HttpServlet {
         let analyzer = yaml_rules_analyzer();
         let path = std::path::PathBuf::from("Test.java");
         // 使用与扫描 pipeline 一致的 FunctionCPG 路径
-        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
-            p.extract_all_for_taint(&path, code)
-        });
-        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let (functions, assignments, calls) =
+            crate::ast::parser::with_thread_local_parser(|p| p.extract_all_for_taint(&path, code));
+        let func = functions
+            .iter()
+            .find(|f| f.name == "doPost")
+            .expect("doPost function");
         let func_assignments: Vec<_> = assignments
             .iter()
             .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
@@ -3331,7 +3424,9 @@ public class Test extends HttpServlet {
         );
         let flows = analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[]);
         assert!(
-            flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
             "Expected SQL injection from request.getHeader -> prepareCall/executeQuery"
         );
     }
@@ -3359,10 +3454,12 @@ public class Test extends HttpServlet {
         let path = std::path::PathBuf::from("Test.java");
 
         // CPG 路径
-        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
-            p.extract_all_for_taint(&path, code)
-        });
-        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let (functions, assignments, calls) =
+            crate::ast::parser::with_thread_local_parser(|p| p.extract_all_for_taint(&path, code));
+        let func = functions
+            .iter()
+            .find(|f| f.name == "doPost")
+            .expect("doPost function");
         let func_assignments: Vec<_> = assignments
             .iter()
             .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
@@ -3382,14 +3479,18 @@ public class Test extends HttpServlet {
         );
         let flows = analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[]);
         assert!(
-            flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
             "Expected SQL injection from request.getHeaders chain (CPG)"
         );
 
         // 生产路径 analyze_file/text CFG 也要能检出（修复前 if 块内赋值会丢失）
         let file_flows = analyzer.analyze_file(&path, code);
         assert!(
-            file_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            file_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
             "Expected SQL injection from request.getHeaders chain (analyze_file)"
         );
 
@@ -3406,15 +3507,20 @@ public class Test extends HttpServlet {
             .cloned()
             .collect();
         let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
-            let tree = ast_parser.parse_fragment(&func.body_text, "java").expect("parse fragment");
+            let tree = ast_parser
+                .parse_fragment(&func.body_text, "java")
+                .expect("parse fragment");
             let root = tree.root_node();
             let mut cursor = root.walk();
-            let body_node = root.children(&mut cursor).find(|n| {
-                matches!(
-                    n.kind(),
-                    "block" | "statement_block" | "body" | "suite" | "block_stmt"
-                )
-            }).expect("function body");
+            let body_node = root
+                .children(&mut cursor)
+                .find(|n| {
+                    matches!(
+                        n.kind(),
+                        "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                    )
+                })
+                .expect("function body");
             let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
                 &body_node,
                 &func.body_text,
@@ -3426,7 +3532,9 @@ public class Test extends HttpServlet {
             analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
         });
         assert!(
-            fragment_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            fragment_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
             "Expected SQL injection from request.getHeaders chain (fragment CPG)"
         );
     }
@@ -3448,10 +3556,12 @@ public class Test extends HttpServlet {
 "#;
         let analyzer = yaml_rules_analyzer();
         let path = std::path::PathBuf::from("Test.java");
-        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
-            p.extract_all_for_taint(&path, code)
-        });
-        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let (functions, assignments, calls) =
+            crate::ast::parser::with_thread_local_parser(|p| p.extract_all_for_taint(&path, code));
+        let func = functions
+            .iter()
+            .find(|f| f.name == "doPost")
+            .expect("doPost function");
         let func_assignments: Vec<_> = assignments
             .iter()
             .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
@@ -3463,15 +3573,20 @@ public class Test extends HttpServlet {
             .cloned()
             .collect();
         let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
-            let tree = ast_parser.parse_fragment(&func.body_text, "java").expect("parse fragment");
+            let tree = ast_parser
+                .parse_fragment(&func.body_text, "java")
+                .expect("parse fragment");
             let root = tree.root_node();
             let mut cursor = root.walk();
-            let body_node = root.children(&mut cursor).find(|n| {
-                matches!(
-                    n.kind(),
-                    "block" | "statement_block" | "body" | "suite" | "block_stmt"
-                )
-            }).expect("function body");
+            let body_node = root
+                .children(&mut cursor)
+                .find(|n| {
+                    matches!(
+                        n.kind(),
+                        "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                    )
+                })
+                .expect("function body");
             let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
                 &body_node,
                 &func.body_text,
@@ -3483,7 +3598,9 @@ public class Test extends HttpServlet {
             analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
         });
         assert!(
-            fragment_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            fragment_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
             "Expected SQL injection with multiline signature (fragment CPG)"
         );
     }
@@ -3509,10 +3626,12 @@ public class Test extends HttpServlet {
 "#;
         let analyzer = yaml_rules_analyzer();
         let path = std::path::PathBuf::from("Test.java");
-        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
-            p.extract_all_for_taint(&path, code)
-        });
-        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let (functions, assignments, calls) =
+            crate::ast::parser::with_thread_local_parser(|p| p.extract_all_for_taint(&path, code));
+        let func = functions
+            .iter()
+            .find(|f| f.name == "doPost")
+            .expect("doPost function");
         let func_assignments: Vec<_> = assignments
             .iter()
             .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
@@ -3524,15 +3643,20 @@ public class Test extends HttpServlet {
             .cloned()
             .collect();
         let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
-            let tree = ast_parser.parse_fragment(&func.body_text, "java").expect("parse fragment");
+            let tree = ast_parser
+                .parse_fragment(&func.body_text, "java")
+                .expect("parse fragment");
             let root = tree.root_node();
             let mut cursor = root.walk();
-            let body_node = root.children(&mut cursor).find(|n| {
-                matches!(
-                    n.kind(),
-                    "block" | "statement_block" | "body" | "suite" | "block_stmt"
-                )
-            }).expect("function body");
+            let body_node = root
+                .children(&mut cursor)
+                .find(|n| {
+                    matches!(
+                        n.kind(),
+                        "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                    )
+                })
+                .expect("function body");
             let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
                 &body_node,
                 &func.body_text,
@@ -3544,7 +3668,9 @@ public class Test extends HttpServlet {
             analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
         });
         assert!(
-            fragment_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            fragment_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
             "Expected SQL injection with try block (fragment CPG)"
         );
     }
@@ -3566,10 +3692,12 @@ public class Test extends HttpServlet {
 "#;
         let analyzer = yaml_rules_analyzer();
         let path = std::path::PathBuf::from("Test.java");
-        let (functions, assignments, calls) = crate::ast::parser::with_thread_local_parser(|p| {
-            p.extract_all_for_taint(&path, code)
-        });
-        let func = functions.iter().find(|f| f.name == "doPost").expect("doPost function");
+        let (functions, assignments, calls) =
+            crate::ast::parser::with_thread_local_parser(|p| p.extract_all_for_taint(&path, code));
+        let func = functions
+            .iter()
+            .find(|f| f.name == "doPost")
+            .expect("doPost function");
         let func_assignments: Vec<_> = assignments
             .iter()
             .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
@@ -3581,15 +3709,20 @@ public class Test extends HttpServlet {
             .cloned()
             .collect();
         let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
-            let tree = ast_parser.parse_fragment(&func.body_text, "java").expect("parse fragment");
+            let tree = ast_parser
+                .parse_fragment(&func.body_text, "java")
+                .expect("parse fragment");
             let root = tree.root_node();
             let mut cursor = root.walk();
-            let body_node = root.children(&mut cursor).find(|n| {
-                matches!(
-                    n.kind(),
-                    "block" | "statement_block" | "body" | "suite" | "block_stmt"
-                )
-            }).expect("function body");
+            let body_node = root
+                .children(&mut cursor)
+                .find(|n| {
+                    matches!(
+                        n.kind(),
+                        "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                    )
+                })
+                .expect("function body");
             let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
                 &body_node,
                 &func.body_text,
@@ -3601,7 +3734,9 @@ public class Test extends HttpServlet {
             analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
         });
         assert!(
-            fragment_flows.iter().any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            fragment_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
             "Expected SQL injection from request.getParameter with null check (fragment CPG)"
         );
     }

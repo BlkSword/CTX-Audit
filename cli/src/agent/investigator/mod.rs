@@ -366,7 +366,10 @@ pub fn parse_investigation_decision(text: &str) -> Result<InvestigationDecision>
     let json_text = match extract_json(text) {
         Ok(t) => t,
         Err(_) => {
-            tracing::warn!("Investigator LLM 响应未找到 JSON，回退到 needs_review: {}", text.chars().take(200).collect::<String>());
+            tracing::warn!(
+                "Investigator LLM 响应未找到 JSON，回退到 needs_review: {}",
+                text.chars().take(200).collect::<String>()
+            );
             return Ok(InvestigationDecision::Finish {
                 verdict: Verdict::NeedsReview,
                 confidence: 0.5,
@@ -377,7 +380,11 @@ pub fn parse_investigation_decision(text: &str) -> Result<InvestigationDecision>
     let value: serde_json::Value = match serde_json::from_str(json_text) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("Investigator LLM 响应 JSON 解析失败 ({}): {}", e, text.chars().take(200).collect::<String>());
+            tracing::warn!(
+                "Investigator LLM 响应 JSON 解析失败 ({}): {}",
+                e,
+                text.chars().take(200).collect::<String>()
+            );
             return Ok(InvestigationDecision::Finish {
                 verdict: Verdict::NeedsReview,
                 confidence: 0.5,
@@ -389,8 +396,13 @@ pub fn parse_investigation_decision(text: &str) -> Result<InvestigationDecision>
 }
 
 /// 从 JSON Value 解析 InvestigationDecision
-pub fn parse_investigation_decision_from_value(value: serde_json::Value) -> Result<InvestigationDecision> {
-    let has_finish = value.get("finish").and_then(|v| v.as_bool()).unwrap_or(false);
+pub fn parse_investigation_decision_from_value(
+    value: serde_json::Value,
+) -> Result<InvestigationDecision> {
+    let has_finish = value
+        .get("finish")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let has_verdict = value.get("verdict").is_some();
     let has_next_tool = value.get("next_tool").is_some();
 
