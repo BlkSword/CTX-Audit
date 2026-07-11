@@ -70,6 +70,8 @@ pub struct AuditConfig {
     pub review_mode: String,
     /// 是否启用激进 LLM 模式（覆盖配置文件默认值）
     pub llm_aggressive: bool,
+    /// LLM 模式：noop / http / mcp_relay（覆盖配置文件默认值）
+    pub llm_mode: Option<String>,
     /// 是否启用 ReAct 调查器（覆盖配置文件默认值）
     pub investigator_enabled: bool,
     /// 是否启用污点步进调查器（覆盖配置文件默认值）
@@ -103,11 +105,14 @@ impl AuditConfig {
             max_findings,
             output_format,
             output_path,
-            specialist_enabled: false,
+            // 默认值与配置文件保持一致：启用 Specialist / Investigator / TaintWalk，
+            // review 模式由配置文件接管，CLI 显式传参时才覆盖。
+            specialist_enabled: true,
             review_mode: String::new(),
             llm_aggressive: false,
-            investigator_enabled: false,
-            taint_walk_enabled: false,
+            llm_mode: None,
+            investigator_enabled: true,
+            taint_walk_enabled: true,
             max_investigation_steps: None,
             auto_goal: true,
             strategy: None,
@@ -126,6 +131,9 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
     let mut agent_config = config_manager.config().agent.clone();
     // CLI 参数覆盖配置文件
     agent_config.llm_aggressive = config.llm_aggressive || agent_config.llm_aggressive;
+    if let Some(ref mode) = config.llm_mode {
+        agent_config.llm_mode = mode.clone();
+    }
     let specialist_enabled = config.specialist_enabled || agent_config.specialist_enabled;
     let review_mode = if config.review_mode.is_empty() {
         agent_config.review_mode.clone()

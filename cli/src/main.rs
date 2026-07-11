@@ -150,6 +150,10 @@ enum Commands {
         #[arg(long)]
         llm_aggressive: bool,
 
+        /// LLM 模式：noop / http / mcp_relay（覆盖配置文件，默认使用配置文件值）
+        #[arg(long, value_name = "MODE")]
+        llm_mode: Option<String>,
+
         /// 启用 ReAct 调查器：让 LLM 动态选择工具迭代收集证据
         #[arg(long)]
         investigate: bool,
@@ -501,6 +505,7 @@ async fn main() -> Result<()> {
             specialist,
             review_mode,
             llm_aggressive,
+            llm_mode,
             investigate,
             taint_walk,
             max_investigation_steps,
@@ -519,6 +524,7 @@ async fn main() -> Result<()> {
                 specialist,
                 review_mode,
                 llm_aggressive,
+                llm_mode,
                 investigate,
                 taint_walk,
                 max_investigation_steps,

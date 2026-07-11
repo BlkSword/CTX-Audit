@@ -1,10 +1,15 @@
 #!/bin/bash
 # CTX-Audit 真实项目基线脚本
 #
-# 目的：在真实项目上观察污点链、调用图、source→sink 路径是否被引擎发现和标注，
-#       不调用 LLM（agent.llm_mode=noop），避免成本和不稳定性。
+# 目的：在真实项目上观察污点链、调用图、source→sink 路径是否被引擎发现和标注。
+#       默认不调用 LLM（agent.llm_mode=noop），避免成本和不稳定性；
+#       传 --llm 或设置 LLM_MODE=http 可启用真实 LLM 审计。
 #
-# 用法：bash benchmarks/run-baseline.sh [project_dir...]
+# 用法：
+#   bash benchmarks/run-baseline.sh [project_dir...]
+#   bash benchmarks/run-baseline.sh --llm [project_dir...]
+#   LLM_MODE=http bash benchmarks/run-baseline.sh [project_dir...]
+#
 #   不指定项目时，默认跑 target/benchmarks/webgoat
 #
 # 每个项目会输出：
@@ -31,19 +36,43 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
+: ${LLM_MODE:=noop}
+
+# 解析 --llm 参数： LLM_MODE=http 启用真实 LLM 审计
+RAW_ARGS=("$@")
+FILTERED_ARGS=()
+for arg in "${RAW_ARGS[@]}"; do
+    if [[ "$arg" == "--llm" ]]; then
+        LLM_MODE="http"
+    else
+        FILTERED_ARGS+=("$arg")
+    fi
+done
+
 # 默认项目列表
-PROJECTS=("$@")
+PROJECTS=("${FILTERED_ARGS[@]}")
 if [[ ${#PROJECTS[@]} -eq 0 ]]; then
     PROJECTS=("${PROJECT_DIR}/target/benchmarks/webgoat")
 fi
 
-# 强制使用 noop 模式，避免 LLM 调用成本和不确定性
-"$BIN" config set agent.llm_mode noop
-"$BIN" config set agent.taint_walk_enabled false
-"$BIN" config set agent.investigator_enabled true
-"$BIN" config set agent.review_mode off
-"$BIN" config set agent.specialist_enabled true
-"$BIN" config set agent.planner.strategy rule
+if [[ "$LLM_MODE" == "http" ]]; then
+    echo "[INFO] 启用 LLM 模式审计（agent.llm_mode=http）"
+    "$BIN" config set agent.llm_mode http
+    "$BIN" config set agent.taint_walk_enabled true
+    "$BIN" config set agent.investigator_enabled true
+    "$BIN" config set agent.review_mode debate
+    "$BIN" config set agent.specialist_enabled true
+    "$BIN" config set agent.planner.strategy auto
+else
+    echo "[INFO] 使用 noop 模式审计（无 LLM 调用）"
+    # 强制使用 noop 模式，避免 LLM 调用成本和不确定性
+    "$BIN" config set agent.llm_mode noop
+    "$BIN" config set agent.taint_walk_enabled false
+    "$BIN" config set agent.investigator_enabled true
+    "$BIN" config set agent.review_mode off
+    "$BIN" config set agent.specialist_enabled true
+    "$BIN" config set agent.planner.strategy rule
+fi
 "$BIN" config set scan.min_severity low
 
 # 强制使用统一的排除列表，避免本地旧配置文件导致基线不可复现
@@ -74,10 +103,11 @@ run_project() {
     "$BIN" scan "$project_path" --deep --min-severity low \
         --output "$findings_json"
 
-    # 2. Agent noop 审计：主要观察证据链和标注
+    # 2. Agent 审计：主要观察证据链和标注
     echo ""
-    echo "--- audit --agent (noop, no-auto-goal) ---"
+    echo "--- audit --agent (${LLM_MODE}, no-auto-goal) ---"
     "$BIN" audit "$project_path" --agent --deep --no-auto-goal \
+        --llm-mode "$LLM_MODE" \
         --min-severity low \
         --output "${OUT_DIR}/${name}_audit.json" || true
 

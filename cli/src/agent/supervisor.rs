@@ -61,15 +61,17 @@ impl Supervisor {
             llm_client,
             blackboard,
             concurrency: concurrency.max(1),
-            specialist_enabled: false,
+            // 默认值与 AgentConfig / 配置文件对齐：默认启用 LLM 协作组件。
+            // run_audit 中会根据配置文件显式覆盖这些值。
+            specialist_enabled: true,
             specialist_registry: Arc::new(SpecialistRegistry::with_defaults()),
-            review_mode: "off".to_string(),
+            review_mode: "debate".to_string(),
             reviewer: Arc::new(crate::agent::reviewer::RuleBasedReviewer),
             tool_context: None,
-            investigator_enabled: false,
-            max_investigation_steps: 5,
-            taint_walk_enabled: false,
-            max_taint_walk_steps: 5,
+            investigator_enabled: true,
+            max_investigation_steps: 10,
+            taint_walk_enabled: true,
+            max_taint_walk_steps: 10,
         }
     }
 

@@ -22,6 +22,7 @@ pub async fn execute(
     specialist: bool,
     review_mode: Option<String>,
     llm_aggressive: bool,
+    llm_mode: Option<String>,
     investigate: bool,
     taint_walk: bool,
     max_investigation_steps: Option<usize>,
@@ -58,6 +59,7 @@ pub async fn execute(
     config.investigator_enabled = investigate;
     config.taint_walk_enabled = taint_walk;
     config.llm_aggressive = llm_aggressive;
+    config.llm_mode = llm_mode;
     if let Some(mode) = review_mode {
         config.review_mode = mode;
     }
