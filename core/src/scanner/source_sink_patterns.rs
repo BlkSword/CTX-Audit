@@ -58,6 +58,12 @@ pub fn find_local_source_sink(
     };
 
     if matched_sources.is_empty() {
+        // 泛化 fallback：从方法签名参数中提取 source。
+        // 库项目（如 Fastjson、Jackson、Shiro）的数据入口是方法参数而非 HTTP 注解，
+        // 例如 JSON.parse(String text) 或 deserialize(byte[] serialized)。
+        if let Some(method_source) = extract_method_param_source(&lines, sink_line, ext) {
+            return Some(method_source);
+        }
         return None;
     }
 
@@ -85,6 +91,92 @@ pub fn find_local_source_sink(
         source_pattern: source_pattern.to_string(),
         source_line,
     })
+}
+
+/// 从方法签名参数中提取 source——库 API 入口。
+///
+/// 向后查找方法声明行（如 `public T deserialize(byte[] serialized)`），
+/// 从中提取第一个数据承载参数名作为 source。
+/// 泛化适用于所有语言：不硬编码库名或方法名，只看类型+参数名模式。
+fn extract_method_param_source(
+    lines: &[&str],
+    sink_line: usize,
+    ext: &str,
+) -> Option<LocalSourceSinkMatch> {
+    // 向后搜索方法签名（最多 20 行）
+    let search_start = sink_line.saturating_sub(20).max(1);
+    let search_end = sink_line.min(lines.len());
+
+    // 数据类型关键词（跨语言通用）
+    let data_types: &[&str] = &[
+        "string", "byte[]", "byte", "inputstream", "reader", "object",
+        "char[]", "charsequence", "json", "xml", "text", "data",
+    ];
+
+    for i in (search_start..=search_end).rev() {
+        let line = lines[i - 1].trim();
+        if line.is_empty() || line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') {
+            continue;
+        }
+        // 匹配方法签名：包含 `(` 且以 `)` 或 `) throws` 结尾
+        let has_open_paren = line.contains('(');
+        let looks_like_signature = has_open_paren
+            && (line.contains(')') || line.contains(") throws"))
+            && !line.contains('=')
+            && !line.contains("new ")
+            && !line.trim().starts_with("if ")
+            && !line.trim().starts_with("for ")
+            && !line.trim().starts_with("while ")
+            && !line.trim().starts_with("try ");
+        if !looks_like_signature {
+            continue;
+        }
+
+        // 提取参数列表：从第一个 `(` 到最后一个 `)`
+        let params_start = line.find('(')? + 1;
+        let params_end = line.rfind(')')?;
+        if params_start >= params_end {
+            continue;
+        }
+        let params = &line[params_start..params_end];
+
+        // 在参数列表中找第一个数据承载参数
+        for part in params.split(',') {
+            let part = part.trim();
+            if part.is_empty() || part == ")" {
+                continue;
+            }
+            let lower = part.to_lowercase();
+            // 检查是否是数据承载类型
+            let is_data_type = data_types.iter().any(|dt| lower.contains(dt));
+            if !is_data_type {
+                continue;
+            }
+            // 提取参数名（最后一个空格后的标识符）
+            let words: Vec<&str> = part.split_whitespace().collect();
+            if words.len() < 2 {
+                continue;
+            }
+            let param_name = words.last().unwrap().trim();
+            // 过滤明显不是参数名的（关键字、类型名）
+            if param_name.is_empty()
+                || param_name == "final"
+                || param_name == "throws"
+                || param_name.contains('.')
+                || param_name.contains('[')
+            {
+                continue;
+            }
+            // 找到！返回这个参数作为 source
+            return Some(LocalSourceSinkMatch {
+                source_pattern: param_name.to_string(),
+                source_line: i,
+            });
+        }
+        // 找到方法签名但无数据参数，停止搜索
+        break;
+    }
+    None
 }
 
 /// 语言无关 source→sink 模式集

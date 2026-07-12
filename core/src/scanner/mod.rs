@@ -1077,6 +1077,10 @@ async fn scan_directory_with_rules_inner(
         }
     }
 
+    // MyBatis XML mapper 动态 SQL 检测 — 泛化扫描所有 mapper XML
+    let xml_findings = scan_mybatis_mapper_xml(std::path::Path::new(path), &non_production_path_patterns);
+    findings.extend(xml_findings);
+
     // 上下文感知过滤
     for finding in &mut findings {
         let fp = finding.file_path.to_lowercase().replace('\\', "/");
@@ -2061,6 +2065,135 @@ fn build_evidence_refs_from_flow(
         middleware_coverage,
         graph_snapshot: Some(graph_snapshot.clone()),
     }
+}
+
+/// MyBatis XML mapper 动态 SQL 注入检测。
+///
+/// 扫描 `resources/mapper/**/*.xml` 文件，查找 `${...}` 动态 SQL 模式。
+/// 泛化设计：不限项目、不限 MyBatis 版本、不限 SQL 方言。
+fn scan_mybatis_mapper_xml(
+    project_path: &std::path::Path,
+    non_production_patterns: &[String],
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    // 递归遍历项目目录，找 mapper/**/*.xml 文件。
+    // 泛化：不限目录深度，不限模块结构。
+    let mut dirs_to_scan: Vec<std::path::PathBuf> = vec![project_path.to_path_buf()];
+    while let Some(dir) = dirs_to_scan.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            if path.is_dir() {
+                // 跳过非代码目录
+                if name == "target" || name == "node_modules" || name == ".git" || name == ".ctx-audit" {
+                    continue;
+                }
+                dirs_to_scan.push(path);
+            } else if path.extension().map(|e| e == "xml").unwrap_or(false) {
+                // 只处理 mapper 目录下的 XML 文件
+                let parent = path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+                if !parent.contains("mapper") {
+                    // Also check grandparent: .../resources/mapper/system/xxx.xml
+                    let grandparent = path.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+                    if !grandparent.contains("mapper") {
+                        continue;
+                    }
+                }
+                process_mapper_xml(&path, project_path, non_production_patterns, &mut findings);
+            }
+        }
+    }
+    findings
+}
+
+fn process_mapper_xml(
+    path: &std::path::Path,
+    project_path: &std::path::Path,
+    non_production_patterns: &[String],
+    findings: &mut Vec<Finding>,
+) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let lower = content.to_lowercase();
+    if !lower.contains("namespace") && !lower.contains("<select") && !lower.contains("<insert") {
+        return;
+    }
+    let rel = path.strip_prefix(project_path).unwrap_or(path);
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    let is_non_prod = non_production_patterns.iter().any(|p| rel_str.contains(p));
+    let file_role = if is_non_prod {
+        Some("non-production".to_string())
+    } else {
+        Some("production".to_string())
+    };
+    for (line_no, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<!--") || trimmed.contains("<![CDATA[") {
+            continue;
+        }
+        if let Some(pos) = trimmed.find("${") {
+            let end = trimmed[pos..].find('}').map(|e| pos + e).unwrap_or(trimmed.len());
+            let snippet = &trimmed[pos..=end.min(pos + 60)];
+            let stmt_id = extract_mybatis_statement_id(&content, line_no);
+            findings.push(Finding {
+                finding_id: uuid::Uuid::new_v4().to_string(),
+                file_path: rel_str.clone(),
+                line_start: line_no + 1,
+                line_end: line_no + 1,
+                detector: "MyBatisDynamicSQL".to_string(),
+                vuln_type: "CWE-89".to_string(),
+                severity: "critical".to_string(),
+                description: format!(
+                    "MyBatis ${} parameter in {}: {}",
+                    snippet,
+                    stmt_id.as_deref().unwrap_or("unknown statement"),
+                    trimmed.trim()
+                ),
+                analysis_trail: None,
+                llm_output: None,
+                confidence: Some(0.9),
+                corroboration_count: None,
+                code_snippet: Some(trimmed.to_string()),
+                source_snippet: None,
+                sink_snippet: Some(snippet.to_string()),
+                file_role: file_role.clone(),
+                barriers: None,
+                reasoning_hint: Some(format!(
+                    "MyBatis ${} replaces text without parameterization in {}",
+                    snippet,
+                    stmt_id.as_deref().unwrap_or("?")
+                )),
+                evidence_refs: None,
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// 从 MyBatis XML mapper 中提取当前行所属的 SQL 语句 ID。
+fn extract_mybatis_statement_id(content: &str, target_line: usize) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    // 向上搜索最近的 <select>, <insert>, <update>, <delete> 标签
+    for i in (0..target_line.min(lines.len())).rev() {
+        let line = lines[i].trim();
+        for tag in &["select", "insert", "update", "delete"] {
+            if line.contains(&format!("<{}", tag)) && line.contains("id=\"") {
+                if let Some(start) = line.find("id=\"") {
+                    let rest = &line[start + 4..];
+                    if let Some(end) = rest.find('"') {
+                        return Some(format!("{}.{}", tag, &rest[..end]));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 将漏洞类型字符串归一化为 CWE 编号（如 "CWE-22"）。
