@@ -8,49 +8,91 @@
 
 ```
 不要: scan → 看描述 → 猜 TP/FP
-要做: scan → 读 evidence_refs → 查调用图 → 看代码 → 基于证据判定
+要做: scan → 项目理解 → 聚焦同类 finding → 查调用链 → 代码确认 → 基于证据判定
 ```
 
 每条判定必须引用具体工具输出（调用路径、代码行、sanitizer 结果），而非"看起来危险"。
 
+**三个关键经验**（来自真实 CVE 审计）：
+
+1. **多个同类 finding 往往是同一条攻击链的不同环节**，交叉验证比逐个调查更高效
+2. **从 sink 往上追调用者（`query_callers`）比从 source 往下追更直接**——找到调用者就知道数据从哪来的
+3. **`enclosing_function` 省了一步**——收到 finding 就能直接 `query_callers(file, func)` 开始调查
+
 ---
 
-## 快速开始：3 步审计
+## 完整审计工作流（4 阶段）
 
-### Step 1: 扫描项目
+### Phase 0: 项目理解（2 步）
 
-```
-security_scan(path="/project", deep=true, min_severity="high")
-```
-
-返回的每个 finding 都带 `enclosing_function`（命中行所在函数名，覆盖率 97%）和 `evidence_refs`。**优先调查有 `source_sink_path` 的 finding**——这些有确定性证据。**大部分 finding 可直接用 `query_callers(file, enclosing_function)` 开始调查**，无需先调 `enclosing_function_at_line`。
-
-### Step 2: 调查一个 Finding
+在扫描之前先了解项目——知道用了什么框架可以大幅减少误判。
 
 ```
-1. find_call_path(source_file, source_function, sink_file, sink_function)
-   → 确认 source 是否可达 sink
+0.1 get_project_info(project_path)
+    → 语言、框架、文件数、构建工具
 
-2. get_code_context(file_path, line, context_lines=15)
-   → 看实际代码：有无输入验证、净化、框架保护
-
-3. query_callers(sink_file, sink_function)
-   → 反向追踪：还有哪些入口到达这个 sink
-
-4. query_middleware_chain(file_path)
-   → 这个路由被 auth 中间件覆盖了吗？
-
-5. check_sanitizer(function_name)
-   → 路径上有已知净化函数吗？
+0.2 detect_project_profile(project_path)
+    → 检测 pom.xml/build.gradle 中的安全框架
+    → Shiro? Spring Security? JWT? OAuth2?
+    → 影响后续的端点认证判断
 ```
 
-### Step 3: 判定
+**为什么重要**: RuoYi 使用 Apache Shiro 做认证，但工具报告了 312 个"端点未认证"。知道项目用了 Shiro 后，这些 finding 应该标注为"需人工确认 Shiro filter chain 配置"，而非直接判 TP。
 
-| 判定 | 条件 |
-|------|------|
-| **True Positive** | find_call_path 有结果 + 无有效 sanitizer + 无安全屏障 |
-| **False Positive** | 路径不可达 / sanitizer 有效 / test 代码 / 漏洞类型不匹配 |
-| **Needs Review** | 证据矛盾 / 关键代码不可见 |
+### Phase 1: 扫描 + 分组
+
+```
+1.1 security_scan(path, deep=true, min_severity="high")
+    → 每个 finding 带 enclosing_function（97%）+ evidence_refs
+
+1.2 按 vuln_type 分组
+    → 同类 finding 往往是同一攻击链的不同组件
+    → 例如：8 个 CWE-502 → 可能是同一个反序列化链
+    → 例如：3 个 NoSQL Injection → 可能是同一个 API 的不同参数
+```
+
+### Phase 2: 调查链（从 sink 往上追）
+
+**核心模式：sink → query_callers → 读调用者代码 → 确认数据来源**。
+
+这是实践证明最高效的调查路径：
+
+```
+2.1 对分组后的第一个 finding：
+    get_code_context(file, line, context_lines=20)
+    → 理解 sink 的代码上下文
+
+2.2 反向追踪调用者：
+    query_callers(file, finding.enclosing_function)
+    → 谁调用了我？数据从哪来？
+
+2.3 读调用者代码：
+    get_code_context(caller_file, caller_line, context_lines=20)
+    → 确认调用者如何获取/传递数据
+    → 关键问题：这数据能从外部控制吗？
+
+2.4 如果找到外部输入入口 → 跳 Phase 3 判定
+    如果调用者是中间层 → 继续 query_callers 往上追
+    如果调用者是 JVM 内部（如 defaultReadObject）→ 这是 gadget，继续查其他 finding
+```
+
+### Phase 3: 交叉验证 + 判定
+
+```
+3.1 检查同一组的其他 finding：
+    → 它们是否指向同一个攻击入口？
+    → DefaultSerializer.deserialize + SimpleSession.readObject
+      → 前者是入口，后者是 gadget chain 组件
+
+3.2 补充证据：
+    search_code(pattern, file_glob) 
+    → 搜索项目中的相关模式（如 base64 解码、AES key）
+    
+3.3 判定：
+    → 列出完整攻击链：外部输入 → 中间层 → sink
+    → 标注每个组件的角色：入口 | 传播 | gadget | sink
+    → 给出置信度 + 修复建议
+```
 
 ---
 
@@ -106,7 +148,60 @@ security_scan(path="/project", deep=true, min_severity="high")
 
 ## 调查流程详解
 
-### 对于有 evidence_refs 的 finding（高优先级）
+### 核心模式：调用者链追踪
+
+这是从 Shiro CVE-2016-4437 验证的最优调查路径——从 sink 往上追，而非从 source 往下猜。
+
+```
+sink finding                          找到调用者
+  │                                   ┌──────────────────┐
+  ▼                                   ▼                  │
+DefaultSerializer.deserialize()  ←  AbstractRememberMe   │
+  ois.readObject()                    Manager             │
+  (第 77 行)                          .deserialize()     │
+                                      (第 395 行)        │
+                                            │            │
+                                    读调用者代码          │
+                                            ▼            │
+                                    byte[] serialized    │
+                                    = getRemembered...   │
+                                    (从 cookie 来的!)    │
+                                                         │
+                                    确认：外部可达 ✅     │
+                                                         │
+                                    继续往上追（可选）    │
+                                            │            │
+                                            ▼            │
+                                    CookieRememberMe     │
+                                    Manager              │
+                                    .getRemembered...()  │
+                                    (HTTP cookie!) ──────┘
+```
+
+**为什么这个顺序最有效**：
+1. `get_code_context(sink)` → 看到 `readObject()` 和 `ClassResolvingObjectInputStream`
+2. `query_callers("deserialize")` → 1 个调用者，不是 10 个，精确定位
+3. `get_code_context(caller)` → 看到 `getRememberedSerializedIdentity()`，数据来源清晰
+4. 两轮调用即确认可达性，无需猜测 source 是什么
+
+### 识别 gadget chain vs 独立漏洞
+
+当多个同类型 finding 出现时，用 `query_callers` 区分它们的角色：
+
+```
+DefaultSerializer.deserialize()
+  ← query_callers → AbstractRememberMeManager  → "入口：cookie 数据进入"
+  
+SimpleSession.readObject()
+  ← query_callers → ObjectInputStream.defaultReadObject  → "gadget：JVM 反序列化回调"
+
+SimplePrincipalCollection.readObject()  
+  ← query_callers → ObjectInputStream.defaultReadObject  → "gadget：同上"
+
+结论: 1 个入口 + 2 个 gadget = 1 个 CVE，不是 3 个独立漏洞
+```
+
+### 对于有 evidence_refs 的 finding
 
 `evidence_refs.source_sink_path` 已经给了 source/sink 函数和路径步骤。直接用这些参数调用工具：
 
@@ -182,12 +277,63 @@ query_callees(file_path, finding.enclosing_function)
 | Path Traversal | `get_code_context`, `query_callers` | 路径是否被 normalize/resolve？ |
 | SSRF | `find_call_path`, `query_callees` | URL 是否被验证？有白名单？ |
 | Auth Bypass | `query_middleware_chain` | auth 中间件是否覆盖此路由？ |
-| Deserialization | `query_callees`, `get_code_context` | 输入在反序列化前是否被验证？ |
+| Deserialization | `query_callers`, `get_code_context` | **从 sink 往上追调用者**：谁传了 bytes 进来？是否来自 cookie/body？ |
 | Hardcoded Secret | `get_code_context` | 是否为真实凭证还是测试/示例？ |
 
 ---
 
-## 示例：调查一个 SQL 注入 Finding
+## 示例 1：反序列化链（调用者追踪模式）
+
+适用于：CWE-502、Deserialization、ObjectInputStream、XStream 等。
+
+```
+SCAN RESULT:
+  [CRITICAL] CWE-502 — DefaultSerializer.java:77
+  enclosing_function: deserialize
+  evidence_refs: { source: "serialized", sink: "readObject()", path_length: 1 }
+
+PHASE 2: 调用者链追踪
+
+STEP 1 — get_code_context(file=DefaultSerializer.java, line=77):
+  → 方法签名: public T deserialize(byte[] serialized)
+  → 创建 ClassResolvingObjectInputStream（无类白名单）
+  → 直接调用 ois.readObject()
+  → 无签名验证、无类过滤、无加密
+  → 观察: "ClassResolvingObjectInputStream" 这个名字说明它能解析任意类
+
+STEP 2 — query_callers(file, "deserialize"):
+  → 1 个调用者: AbstractRememberMeManager (line 395)
+  → 关键: 只有 1 个调用者 → 精确定位数据来源
+
+STEP 3 — get_code_context(file=AbstractRememberMeManager.java, line=395):
+  → byte[] serialized = getRememberedSerializedIdentity(subjectContext);
+  → 从 rememberMe cookie 获取 base64 编码的序列化数据
+  → 直接传给 DefaultSerializer.deserialize()
+
+PHASE 3: 交叉验证
+
+STEP 4 — query_callers(file, "readObject"):
+  → SimpleSession: 调用者 = ObjectInputStream.defaultReadObject [gadget]
+  → SimplePrincipalCollection: 调用者 = ObjectInputStream.defaultReadObject [gadget]
+  
+  结论: 1 个攻击入口 + 2 个 gadget = 1 个 CVE
+
+VERDICT: TRUE POSITIVE (confidence: 0.98)
+  攻击链:
+    rememberMe cookie (外部输入)
+      → AbstractRememberMeManager.getRememberedPrincipals()
+      → base64 decode + AES decrypt (key: kPH+bIxk5D2deZiIxcaaaA== — 硬编码!)
+      → DefaultSerializer.deserialize(byte[])
+      → ClassResolvingObjectInputStream — 无类白名单
+      → ois.readObject() → RCE
+  
+  受影响的组件: DefaultSerializer.java:77 (入口), SimpleSession.java:479 (gadget)
+  修复: 升级 Shiro >= 1.2.5 或配置自定义 CipherService + 强密钥
+```
+
+---
+
+## 示例 2：调查一个 SQL 注入 Finding
 
 ```
 SCAN RESULT:
