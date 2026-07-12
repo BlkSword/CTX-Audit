@@ -38,8 +38,8 @@ CTX-Audit 是一个面向 LLM 协作审计的代码安全分析引擎。它不�
 
 - **多引擎分层扫描**：规则扫描（40 条 YAML 规则，6 语言）→ AST 污点分析（`--taint`，单文件 source→sink）→ 跨文件追踪（`--cross-file`，调用图 + 函数摘要），每个引擎可独立启用
 - **数据流追踪**：基于 CPG（代码属性图）引擎，融合 CFG + AST 元数据 + 别名映射，支持路径敏感分析（条件净化检测）、属性路径前缀匹配（`req.body` → `req.body.name`）、AccessPath、AliasMap、解构赋值、Promise 链等动态语言特性，追踪 `req.body.name → eval(data)` 这样的完整污点链
-- **LLM 自主审计闭环**：通过 MCP 协议暴露 31 个工具（含调用图查询 + 审计会话），LLM 可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → 调查式验证 → TP/FP 判定 → 规则生成 → 重新验证"的完整审计流程
-- **本地 Agent 模式**：`ctx-audit audit --agent` 无需外部 MCP 宿主即可自动执行扫描 → 假设 → 验证 → 判定闭环；内置 Supervisor 并发调度、CWE Specialist（SQLi/XSS）深度判定、Reviewer 复核/辩论、基于 `ToolRegistry` 的调用图/污点工具证据，以及 **Phase 7 完整体 Agent 能力**：`EnvironmentModel` 全局环境感知、`StrategyPlanner` 自动目标生成、`PlanExecutor` 行动选择（入口点探索、假设验证、定向重扫描）、`ReAct 调查器（`--investigate`）`让 LLM 动态选工具迭代取证，输出带证据链的审计日志
+- **LLM 协作审计（MCP 协议）**：通过 MCP 协议暴露 31+ 工具（含调用图查询 + 审计会话），外部 LLM（Claude Code / Cursor / 任何 MCP Agent）可自主完成"项目理解 → 攻击面映射 → 扫描 → 污点追踪 → 代码审查 → 调查式验证 → TP/FP 判定"的完整审计流程。详见 [`LLM-AUDIT-SKILL.md`](LLM-AUDIT-SKILL.md)
+- **本地 Agent 模式（已搁置）**：`ctx-audit audit --agent` 为内部 LLM Agent 自动审计闭环。经 WebGoat 基准测试验证，其 Specialist/Investigator/TaintWalk 组件实际效果未达预期（TaintWalk 0% source 发现率，Specialist 28/28 返回"无法判定"），投入产出比低于 MCP 协作模式。当前保留代码但默认关闭，建议使用 MCP 模式让外部 LLM 驱动调查
 - **误报控制**：文件角色标签（production/test/build/vendor）、安全屏障检测（shell:false、数组参数、require.resolve 等）、规则级 sanitizer 机制（命中前存在 `setSecure`/`escape`/`encodeForHtml` 等净化代码即跳过）、置信度评分、多引擎交叉确认、基线抑制
 - **增量扫描**：守护进程常驻内存，content-hash 变更检测，无变更时 ~1ms 返回
 - **结构化输出**：默认输出 LLM 面向的 JSON（含代码上下文、污点链、屏障信息、文件角色），也支持 SARIF、Markdown 等
@@ -74,11 +74,10 @@ ctx-audit scan ./myproject --deep             # 同上（向后兼容简写）
 ctx-audit scan ./myproject --taint --rules ./my-rules/  # 自定义规则 + 污点分析
 ctx-audit analyze ./src/main.rs --symbols     # 单文件分析
 ctx-audit watch ./myproject                   # 持续监控
-ctx-audit audit --agent ./myproject           # 本地 Agent 自动审计闭环
-ctx-audit audit --agent ./myproject --specialist --review-mode debate   # 启用 Specialist + Reviewer 辩论模式
-ctx-audit audit --agent ./myproject                                      # 默认启用自动目标生成（Phase 7）
-ctx-audit audit --agent ./myproject --investigate --max-investigation-steps 5  # 启用 ReAct 调查器，LLM 动态选工具验证
-ctx-audit audit --agent ./myproject --no-auto-goal                         # 关闭自动目标生成，回退到传统行为
+
+# Audit 命令（`--agent` 内部 LLM Agent 已搁置，推荐 MCP 协作模式）
+ctx-audit audit ./myproject                   # 扫描 + 规则审计（无 LLM 调用）
+ctx-audit audit ./myproject --agent           # [已搁置] 内部 Agent 模式（见下方说明）
 
 # 使用守护进程（增量缓存，性能提升 40x+）
 ctx-audit daemon start                        # 启动守护进程
@@ -672,9 +671,11 @@ CTX-Audit 支持用户编写自定义 YAML 规则，放置在 `.ctx-audit/rules/
 
 详细编写指南见 [`docs/custom-rules.md`](docs/custom-rules.md) | [`docs/custom-rules-en.md`](docs/custom-rules-en.md)。
 
-## LLM 协作审计
+## LLM 协作审计（推荐方式）
 
-CTX-Audit 通过 MCP 协议暴露 **31 个工具**（含 9 个调用图查询 + 5 个审计会话工具），让 LLM（Claude Code / Cursor / 任何支持 MCP 的 Agent）完全自主驱动安全审计流程——从项目理解、扫描、证据收集、调查式验证到审计结论，全程无需人工干预。
+> **2026-07 方向调整**：内部 `audit --agent` 模式已搁置。推荐使用 MCP 协议让外部 LLM 驱动调查——外部 LLM 的推理能力远强于内部固定 pipeline，且成本可控、可调试。详见 [`LLM-AUDIT-SKILL.md`](LLM-AUDIT-SKILL.md)。
+
+CTX-Audit 通过 MCP 协议暴露 **31+ 工具**（含调用图查询、污点追踪、审计会话管理），让 LLM（Claude Code / Cursor / 任何支持 MCP 的 Agent）完全自主驱动安全审计流程——从项目理解、扫描、证据收集、调查式验证到审计结论，全程无需人工干预。
 
 ### 接入方式
 

@@ -7,6 +7,7 @@
 //! 每轮 LLM 决定下一步动作（读代码、查调用、解析方法、检查 sanitizer），
 //! 调查器执行对应工具并把观察结果写回链，最终给出带完整路径的判定。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -70,13 +71,19 @@ impl TaintWalkInvestigator {
             let prompt =
                 build_taint_walk_prompt(finding, evidence, &focus, &chain, &available_actions());
 
-            let value = self
+            // 使用普通文本对话（非 JSON 模式），由关键词解析器处理响应
+            let text = self
                 .llm_client
-                .chat_json(&prompt)
+                .chat(&prompt)
                 .await
-                .with_context(|| format!("LLM 污点步进决策解析失败 (step {})", step_number))?;
+                .with_context(|| format!("LLM 污点步进调用失败 (step {})", step_number))?;
 
-            let decision = parse_taint_walk_decision(&value)?;
+            if text.is_empty() {
+                anyhow::bail!("LLM 返回空响应 (step {})", step_number);
+            }
+
+            let decision = parse_taint_walk_decision_from_text(&text)
+                .with_context(|| format!("LLM 污点步进解析失败 (step {}): {}", step_number, &text[..text.len().min(300)]))?;
 
             match decision {
                 TaintWalkDecision::Finish {
@@ -145,23 +152,38 @@ impl TaintWalkInvestigator {
             }
         }
 
+        // 规范化所有传入路径，避免 file_path 与 project_path 重复
+        let mut input = input;
+        if let Some(obj) = input.as_object_mut() {
+            if let Some(fp) = obj.get("file_path").and_then(|v| v.as_str()) {
+                let corrected = correct_path_for_tool(fp, &ctx.project_path);
+                if corrected != fp {
+                    obj.insert("file_path".to_string(), json!(corrected));
+                }
+            }
+        }
+
         let observation = match action {
             "read_context" => {
-                let file_path = params["file_path"]
+                // 从已规范化的 input 读取路径（而非原始 params）
+                let file_path = input["file_path"]
                     .as_str()
                     .unwrap_or(&focus.file_path)
                     .to_string();
-                let line = params["line"]
+                let line = input["line"]
                     .as_u64()
                     .map(|v| v as usize)
                     .unwrap_or(focus.line);
-                let radius = params["radius"].as_u64().map(|v| v as usize).unwrap_or(30);
+                let radius = input["radius"].as_u64().map(|v| v as usize).unwrap_or(30);
 
                 let start = line.saturating_sub(radius).max(1);
                 let end = line + radius;
 
+                // 规范化路径：如果 file_path 已经包含了 project_path 的相对部分，去掉重复前缀
+                let normalized_path = normalize_file_path(file_path, &ctx.project_path);
+
                 let mut read_input = json!({
-                    "file_path": file_path,
+                    "file_path": &normalized_path,
                     "start_line": start,
                     "end_line": end,
                 });
@@ -174,7 +196,7 @@ impl TaintWalkInvestigator {
 
                 match tool_ctx.execute_tool("read_file", read_input).await {
                     Ok(result) => {
-                        focus.file_path = file_path;
+                        focus.file_path = normalized_path;
                         focus.line = line;
                         if result.is_error {
                             format!("读取失败: {}", result.text)
@@ -296,7 +318,150 @@ enum TaintWalkDecision {
     },
 }
 
+/// 从 LLM 文本响应解析 TaintWalk 决策。
+///
+/// 优先尝试关键词格式（`KEY: value`），失败时回退到 JSON 格式。
+fn parse_taint_walk_decision_from_text(text: &str) -> Result<TaintWalkDecision> {
+    // 先尝试关键词格式
+    if let Ok(decision) = parse_keyword_decision(text) {
+        return Ok(decision);
+    }
+    // 回退 JSON 格式（兼容旧模型）
+    if let Ok(value) = extract_json_from_text(text) {
+        if let Ok(decision) = parse_taint_walk_decision_json(&value) {
+            return Ok(decision);
+        }
+    }
+    anyhow::bail!("无法解析 LLM 响应: {}", &text[..text.len().min(200)])
+}
+
+/// 从文本中提取关键词格式的键值对。
+///
+/// 格式：每行 `KEY: value`，空行分隔多个块。
+/// 键名大小写不敏感，统一转为小写。
+fn parse_keyword_decision(text: &str) -> Result<TaintWalkDecision> {
+    let kv = parse_key_value_pairs(text);
+
+    let action = kv.get("action").map(|s| s.as_str()).unwrap_or("finish");
+
+    if action == "finish" {
+        let verdict_str = kv.get("verdict").map(|s| s.as_str()).unwrap_or("needs_review");
+        let verdict = parse_verdict(verdict_str);
+        let confidence: f64 = kv
+            .get("confidence")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0);
+        let reasoning = kv
+            .get("reason")
+            .or_else(|| kv.get("reasoning"))
+            .cloned()
+            .unwrap_or_else(|| "LLM 未提供理由".to_string());
+        let chain_summary = kv
+            .get("summary")
+            .or_else(|| kv.get("chain_summary"))
+            .cloned()
+            .unwrap_or_default();
+        return Ok(TaintWalkDecision::Finish {
+            verdict,
+            confidence,
+            reasoning,
+            chain_summary,
+        });
+    }
+
+    // 继续调查：构建 params
+    let mut params = serde_json::Map::new();
+    for (key, val) in &kv {
+        if key == "action" || key == "reason" || key == "reasoning" {
+            continue;
+        }
+        params.insert(key.clone(), serde_json::Value::String(val.clone()));
+    }
+    // 确保有基本字段
+    if !params.contains_key("file_path") {
+        if let Some(f) = kv.get("file") {
+            params.insert("file_path".to_string(), serde_json::Value::String(f.clone()));
+        }
+    }
+    if !params.contains_key("function_name") {
+        if let Some(f) = kv.get("function") {
+            params.insert("function_name".to_string(), serde_json::Value::String(f.clone()));
+        }
+    }
+    if !params.contains_key("line") {
+        if let Some(l) = kv.get("line") {
+            params.insert("line".to_string(), serde_json::Value::String(l.clone()));
+        }
+    }
+
+    let reasoning = kv
+        .get("reason")
+        .or_else(|| kv.get("reasoning"))
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(TaintWalkDecision::NextAction {
+        action: action.to_string(),
+        params: serde_json::Value::Object(params),
+        reasoning,
+    })
+}
+
+/// 从文本中解析 KEY: value 格式的键值对。
+///
+/// 只在第一段（首个空行前）中提取，避免把代码片段当键值对。
+fn parse_key_value_pairs(text: &str) -> HashMap<String, String> {
+    let mut kv = HashMap::new();
+    // 只取第一段（到第一个空行为止）
+    let first_block = text.split("\n\n").next().unwrap_or(text);
+    for line in first_block.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("===") || line.starts_with('#') {
+            continue;
+        }
+        // 找第一个 ": " 或 ":" 作为分隔
+        if let Some(pos) = line.find(": ") {
+            let key = line[..pos].trim().to_lowercase();
+            let val = line[pos + 2..].trim().to_string();
+            if !key.is_empty() && !val.is_empty() {
+                kv.insert(key, val);
+            }
+        } else if let Some(pos) = line.find(':') {
+            let key = line[..pos].trim().to_lowercase();
+            let val = line[pos + 1..].trim().to_string();
+            if !key.is_empty() && !val.is_empty() {
+                kv.insert(key, val);
+            }
+        }
+    }
+    kv
+}
+
+/// 从文本中提取 JSON 对象（回退兼容）
+fn extract_json_from_text(text: &str) -> Result<serde_json::Value> {
+    // 尝试直接解析整个文本
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+        return Ok(v);
+    }
+    // 尝试查找 {...} 块
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            let slice = &text[start..=end];
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(slice) {
+                return Ok(v);
+            }
+        }
+    }
+    anyhow::bail!("No JSON found in text")
+}
+
+/// 从 JSON Value 解析决策（保留兼容 + 旧测试）
 fn parse_taint_walk_decision(value: &serde_json::Value) -> Result<TaintWalkDecision> {
+    parse_taint_walk_decision_json(value)
+}
+
+fn parse_taint_walk_decision_json(value: &serde_json::Value) -> Result<TaintWalkDecision> {
     let action = value
         .get("action")
         .and_then(|v| v.as_str())
@@ -352,15 +517,41 @@ fn parse_taint_walk_decision(value: &serde_json::Value) -> Result<TaintWalkDecis
     })
 }
 
+/// 从字符串解析判定结果
 fn parse_verdict(s: &str) -> Verdict {
-    match s {
-        "true_positive" => Verdict::TruePositive,
-        "false_positive" => Verdict::FalsePositive,
+    match s.to_lowercase().as_str() {
+        "true_positive" | "truepositive" | "tp" | "true" | "yes" => Verdict::TruePositive,
+        "false_positive" | "falsepositive" | "fp" | "false" | "no" => Verdict::FalsePositive,
         _ => Verdict::NeedsReview,
     }
 }
 
-/// 从 finding 提取一个默认 sink symbol（函数名或变量名占位）
+/// 规范化文件路径：去掉 file_path 中与 project_path 重叠的前缀。
+///
+/// 只做安全的字符串前缀匹配，避免把 Java 包路径中的目录名（如 org/owasp/webgoat/）
+/// 误判为项目目录。
+fn normalize_file_path(file_path: String, project_path: &std::path::Path) -> String {
+    let input = std::path::Path::new(&file_path);
+    if input.is_absolute() {
+        return file_path;
+    }
+    // 尝试去掉 project_path 前缀（字符串层面，最安全）
+    let proj_str = project_path.to_string_lossy().replace('\\', "/");
+    let normalized_file = file_path.replace('\\', "/");
+    if let Some(stripped) = normalized_file.strip_prefix(&format!("{}/", &proj_str)) {
+        return stripped.to_string();
+    }
+    if normalized_file == proj_str {
+        return String::new();
+    }
+    // 保留原样
+    file_path
+}
+
+/// 规范化路径前缀（同上，用于 query_callers/query_callees 等工具）
+fn correct_path_for_tool(file_path: &str, project_path: &std::path::Path) -> String {
+    normalize_file_path(file_path.to_string(), project_path)
+}
 ///
 /// 优先使用 sink_snippet，然后尝试从 code_snippet / evidence 中提取调用名，
 /// 最后回退到 detector 名称。

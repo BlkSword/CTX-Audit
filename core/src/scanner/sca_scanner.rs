@@ -621,6 +621,7 @@ impl ScaScanner {
             barriers: None,
             reasoning_hint: None,
             evidence_refs: None,
+            ..Default::default()
         }
     }
 }

@@ -582,6 +582,11 @@ pub struct AgentConfig {
     #[serde(default)]
     pub llm_aggressive: bool,
 
+    /// 是否只对高价值 finding 启用真实 LLM：severity >= high 且非 UnauthenticatedEndpoint。
+    /// 开启后可显著降低 LLM API 成本，其余 finding 退化为规则判定。
+    #[serde(default)]
+    pub llm_high_value_only: bool,
+
     /// 复核模式：off / debate / single（默认 off）
     #[serde(default = "default_review_mode")]
     pub review_mode: String,
@@ -625,7 +630,7 @@ fn default_triage_concurrency() -> usize {
     32
 }
 fn default_llm_mode() -> String {
-    "http".to_string()
+    "noop".to_string()
 }
 fn default_review_mode() -> String {
     "debate".to_string()
@@ -654,6 +659,7 @@ impl Default for AgentConfig {
             triage_concurrency: 32,
             llm_mode: default_llm_mode(),
             llm_aggressive: false,
+            llm_high_value_only: false,
             review_mode: default_review_mode(),
             max_llm_calls: default_max_llm_calls(),
             max_llm_calls_by_severity: default_max_llm_calls_by_severity(),
@@ -887,6 +893,7 @@ impl ConfigManager {
             "agent.triage_concurrency" => Some(self.config.agent.triage_concurrency.to_string()),
             "agent.llm_mode" => Some(self.config.agent.llm_mode.clone()),
             "agent.llm_aggressive" => Some(self.config.agent.llm_aggressive.to_string()),
+            "agent.llm_high_value_only" => Some(self.config.agent.llm_high_value_only.to_string()),
             "agent.review_mode" => Some(self.config.agent.review_mode.clone()),
             "agent.max_llm_calls" => Some(self.config.agent.max_llm_calls.to_string()),
             "agent.max_llm_calls_by_severity" => Some(
@@ -1088,6 +1095,9 @@ impl ConfigManager {
             "agent.llm_aggressive" => {
                 self.config.agent.llm_aggressive = value.parse().context("无效的布尔值")?;
             }
+            "agent.llm_high_value_only" => {
+                self.config.agent.llm_high_value_only = value.parse().context("无效的布尔值")?;
+            }
             "agent.review_mode" => {
                 let valid = ["off", "debate", "single"];
                 if !valid.contains(&value.as_str()) {
@@ -1209,6 +1219,7 @@ impl ConfigManager {
             "agent.triage_concurrency" => self.config.agent.triage_concurrency = 32,
             "agent.llm_mode" => self.config.agent.llm_mode = "http".to_string(),
             "agent.llm_aggressive" => self.config.agent.llm_aggressive = false,
+            "agent.llm_high_value_only" => self.config.agent.llm_high_value_only = false,
             "agent.review_mode" => self.config.agent.review_mode = "debate".to_string(),
             "agent.max_llm_calls" => self.config.agent.max_llm_calls = 500,
             "agent.max_llm_calls_by_severity" => {

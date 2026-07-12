@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Agent 架构搁置，推荐 MCP 协作模式**：经 WebGoat 基准测试验证，内部 Agent（Supervisor/Specialist/Investigator/TaintWalk/Reviewer）实际效果未达预期（TaintWalk 0% source 发现率，Specialist 28/28 返回"无法判定"）。`audit --agent` 默认改为 noop 模式，推荐使用 MCP 协议让外部 LLM 驱动调查。详见 `LLM-AUDIT-SKILL.md`。
+- **Finding 自动填充 enclosing_function**：扫描阶段为每个 finding 查询包围函数名，覆盖率 97%。MCP LLM 可直接用函数名调 `query_callers`/`query_callees`，无需额外步骤。
+- **MCP 新增 `search_code` 工具**：跨项目正则搜索代码内容，支持文件类型过滤，补全了"查调用图但看不到赋值/导入"的信息缺口。
+- **TaintWalk 关键词协议**：TaintWalk 通信从脆弱的 JSON 文本解析改为 `KEY: value` 关键词协议，兼容任意 LLM，消除了解析失败导致的全部 TaintWalk 中断。
+- **路径处理修复**：`tools/src/bridge.rs` 的 `extract_relative_path` 新增 case 2b——剥离完整 project_path 前缀，修复 finding file_path 与 project_path 重复导致的 `Invalid path` 错误。
+- **栈溢出缓解**：TaintWalk 改为 `tokio::spawn` 隔离执行，打断 triage→specialist→investigator→taint_walk 10+ 层嵌套调用链。
+- **Java YAML 规则扩展**：新增 `java_template_injection`（SSTI）、`java_log_injection`、`java_xxe_parser`、`java_open_redirect` 4 个 sink 规则，sanitizer 从 85 扩至 101 个。Spring source 补 `@RequestPart`/`@MatrixVariable`/`MultipartFile`。
+
+### Removed
+
+- **内部 Agent 默认关闭**：`agent.llm_mode` 默认值从 `http` 改为 `noop`。
+
 ### Added
 
 - **OWASP BenchmarkJava v1.2 可回归基线**：新增 `BASELINE.md` 记录 `--taint` / `--deep` 模式下的 precision / recall / F1（taint: P=0.344 R=0.514 F1=0.412；deep: P=0.336 R=0.514 F1=0.406）。

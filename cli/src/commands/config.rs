@@ -160,6 +160,7 @@ pub async fn list(_verbose: bool) -> Result<()> {
     println!("Agent 配置:");
     println!("  agent.enabled                 - 是否启用 Agent (默认 true)");
     println!("  agent.llm_mode                - LLM 模式: noop / http / mcp_relay (默认 http)");
+    println!("  agent.llm_high_value_only     - 是否只对高价值 finding 启用真实 LLM (默认 false)");
     println!("  agent.review_mode             - 复核模式: off / debate / single (默认 debate)");
     println!("  agent.specialist_enabled      - 是否启用 Specialist Agent (默认 true)");
     println!("  agent.investigator_enabled    - 是否启用 ReAct 调查器 (默认 true)");

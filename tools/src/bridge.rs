@@ -416,6 +416,14 @@ impl ReadFileTool {
             return normalized[project_prefix.len()..].to_string();
         }
 
+        // 情况2b: 路径以完整 project_path 开头 (如 "target/benchmarks/webgoat/src/...")
+        // project_path 可能是相对多层路径，不仅限于单层目录名
+        let project_path_normalized = self.project_path.replace('\\', "/");
+        let full_project_prefix = format!("{}/", project_path_normalized);
+        if normalized.starts_with(&full_project_prefix) {
+            return normalized[full_project_prefix.len()..].to_string();
+        }
+
         // 情况3: 已经是相对路径，直接返回
         file_path.to_string()
     }

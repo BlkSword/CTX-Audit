@@ -11,7 +11,8 @@ use serde::Serialize;
 
 use deepaudit_core::scanning::Finding;
 use deepaudit_core::{
-    scanning::EvidenceRefs, CallGraphQueryEngine, CallPath, CalleeEvidence, CallerEvidence,
+    scanning::{EvidenceRefs, PathStepRef, SourceSinkEvidence},
+    CallGraphQueryEngine, CallPath, CalleeEvidence, CallerEvidence, FunctionInfo,
     MiddlewareEvidence, PathStep,
 };
 
@@ -125,9 +126,40 @@ pub fn collect_evidence(
     //    为 Java 反序列化、命令注入等构造一个本地调用路径，减少因跨文件图缺失
     //    导致的 needs_review。
     if evidence.call_path.is_none() {
-        if let Some((path, callers)) = synthesize_local_call_path(project_path, finding) {
-            evidence.call_path = Some(path);
+        if let Some((path, callers)) = synthesize_local_call_path(project_path, finding, query_engine) {
+            evidence.call_path = Some(path.clone());
             evidence.callers = callers;
+            // 同步生成结构化证据引用，让 noop heuristic 的 source_sink_path 判定生效
+            if evidence.evidence_refs.is_none() && path.steps.len() >= 2 {
+                evidence.evidence_refs = Some(EvidenceRefs {
+                    source_sink_path: Some(SourceSinkEvidence {
+                        source_function: path.steps[0].function_name.clone(),
+                        source_file: path.steps[0].file_path.clone(),
+                        source_line: path.steps[0].line,
+                        source_node_id: None,
+                        sink_function: path.steps[path.steps.len() - 1]
+                            .function_name
+                            .clone(),
+                        sink_file: path.steps[path.steps.len() - 1].file_path.clone(),
+                        sink_line: path.steps[path.steps.len() - 1].line,
+                        sink_node_id: None,
+                        path_length: path.total_hops,
+                        path_steps: path
+                            .steps
+                            .iter()
+                            .map(|s| PathStepRef {
+                                function: s.function_name.clone(),
+                                file: s.file_path.clone(),
+                                line: s.line,
+                                step_type: s.step_type.clone(),
+                            })
+                            .collect(),
+                    }),
+                    sanitizer_chain: Vec::new(),
+                    middleware_coverage: Vec::new(),
+                    graph_snapshot: None,
+                });
+            }
         }
     }
 
@@ -201,6 +233,7 @@ fn extract_code_context_simple(
 fn synthesize_local_call_path(
     project_path: &Path,
     finding: &Finding,
+    query_engine: Option<&CallGraphQueryEngine>,
 ) -> Option<(CallPath, Vec<CallerEvidence>)> {
     let ext = Path::new(&finding.file_path)
         .extension()
@@ -270,18 +303,25 @@ fn synthesize_local_call_path(
         return None;
     }
 
+    // 使用调用图中真实包围函数名，避免用 detector 名导致下游查询工具失效
+    let enclosing = find_enclosing_function(query_engine, &finding.file_path, finding.line_start);
+    let func_name = enclosing
+        .as_ref()
+        .map(|f| f.name.clone())
+        .unwrap_or_else(|| finding.detector.clone());
+
     // 构造一条单跳本地路径
     let sink_line = finding.line_start;
     let source_line = start;
     let step = deepaudit_core::analysis::query::PathStep {
-        function_name: finding.detector.clone(),
+        function_name: func_name.clone(),
         file_path: finding.file_path.clone(),
         line: source_line,
         step_type: "synthetic_local_source".to_string(),
         code_snippet: Some(lines[source_line - 1].trim().to_string()),
     };
     let sink_step = deepaudit_core::analysis::query::PathStep {
-        function_name: finding.detector.clone(),
+        function_name: func_name.clone(),
         file_path: finding.file_path.clone(),
         line: sink_line,
         step_type: "synthetic_local_sink".to_string(),
@@ -294,16 +334,43 @@ fn synthesize_local_call_path(
         files_in_path: vec![finding.file_path.clone()],
     };
     let caller = CallerEvidence {
-        caller_function: finding.detector.clone(),
+        caller_function: func_name.clone(),
         caller_file: finding.file_path.clone(),
         caller_line: source_line,
-        callee_function: finding.detector.clone(),
+        callee_function: func_name,
         callee_file: finding.file_path.clone(),
         callee_line: sink_line,
         receiver: None,
         is_callback: false,
     };
     Some((path, vec![caller]))
+}
+
+/// 根据调用图查询包含指定行的函数信息。
+///
+/// 优先使用 `query_engine` 中的函数范围数据；若查询引擎不可用或找不到匹配函数，
+/// 返回 `None`，调用方应回退到 detector 名等兜底策略。
+fn find_enclosing_function(
+    query_engine: Option<&CallGraphQueryEngine>,
+    file_path: &str,
+    line: usize,
+) -> Option<FunctionInfo> {
+    let engine = query_engine?;
+    let funcs = engine.query_functions_in_file(file_path);
+    if funcs.is_empty() {
+        return None;
+    }
+    let candidates: Vec<FunctionInfo> = funcs
+        .into_iter()
+        .filter(|f| line >= f.line && line <= f.end_line)
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    // 多个函数嵌套时取范围最小的（最内层函数）
+    candidates
+        .into_iter()
+        .min_by_key(|f| f.end_line.saturating_sub(f.line))
 }
 
 /// 语言无关 source→sink 模式集
@@ -571,6 +638,11 @@ fn java_matched(vuln_type: &str, description: &str, body_lower: &str, method_bod
     let desc = description.to_lowercase();
     let is_deser = vuln_type.contains("502") || desc.contains("deserialization");
     let is_cmd = vuln_type.contains("78") || desc.contains("command");
+    let is_sql = vuln_type.contains("89") || desc.contains("sql");
+    let is_path = vuln_type.contains("22") || desc.contains("path traversal");
+    let is_ssrf = vuln_type.contains("918") || desc.contains("ssrf");
+    let is_xss = vuln_type.contains("79") || desc.contains("xss") || desc.contains("cross-site");
+    let is_code = vuln_type.contains("94") || desc.contains("code injection");
 
     let has_deser_sink = body_lower.contains("objectinputstream")
         || body_lower.contains("readobject(")
@@ -580,11 +652,52 @@ fn java_matched(vuln_type: &str, description: &str, body_lower: &str, method_bod
     let has_cmd_sink = body_lower.contains("runtime.getruntime().exec")
         || body_lower.contains("runtime.exec")
         || body_lower.contains("processbuilder");
+    let has_sql_sink = body_lower.contains("executequery(")
+        || body_lower.contains("executeupdate(")
+        || body_lower.contains("createstatement(")
+        || body_lower.contains("preparestatement(")
+        || body_lower.contains("statement.")
+        || body_lower.contains(".execute(");
+    let has_path_sink = body_lower.contains("new file(")
+        || body_lower.contains("getoriginalfilename")
+        || body_lower.contains("paths.get")
+        || body_lower.contains("fileinputstream")
+        || body_lower.contains("fileoutputstream")
+        || body_lower.contains("files.copy")
+        || body_lower.contains("files.delete")
+        || body_lower.contains("files.write");
+    let has_ssrf_sink = body_lower.contains("new url(")
+        || body_lower.contains("openconnection")
+        || body_lower.contains("httpurlconnection")
+        || body_lower.contains("resttemplate")
+        || body_lower.contains("webclient")
+        || body_lower.contains("httpclient")
+        || body_lower.contains("okhttp");
+    let has_xss_sink = body_lower.contains("getwriter()")
+        || body_lower.contains(".print(")
+        || body_lower.contains(".println(")
+        || body_lower.contains(".write(")
+        || body_lower.contains("getoutputstream()")
+        || body_lower.contains("@responsebody");
+    let has_code_sink = body_lower.contains("scriptengine")
+        || body_lower.contains("groovyshell")
+        || body_lower.contains(".eval(")
+        || body_lower.contains("scriptenginemanager");
 
     if is_deser {
         (has_source && has_deser_sink) || (body_lower.contains("void readobject") && has_cmd_sink)
     } else if is_cmd {
         has_source && has_cmd_sink
+    } else if is_sql {
+        has_source && has_sql_sink
+    } else if is_path {
+        has_source && has_path_sink
+    } else if is_ssrf {
+        has_source && has_ssrf_sink
+    } else if is_xss {
+        has_source && has_xss_sink
+    } else if is_code {
+        has_source && has_code_sink
     } else if vuln_type.contains("200") || desc.contains("sensitive") || desc.contains("hardcoded")
     {
         hardcoded_secret_matched(vuln_type, description, method_body)
@@ -631,4 +744,58 @@ fn hardcoded_secret_matched(vuln_type: &str, description: &str, method_body: &st
                 l.contains(name) && l.contains('=') && l.contains('"')
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deepaudit_core::scanning::Finding;
+
+    #[test]
+    fn test_find_enclosing_function_without_engine_returns_none() {
+        assert!(find_enclosing_function(None, "src/main/java/App.java", 10).is_none());
+    }
+
+    #[test]
+    fn test_synthesize_local_call_path_falls_back_to_detector_name() {
+        let dir = std::env::temp_dir().join("ctx-audit-evidence-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("App.java");
+        std::fs::write(
+            &file,
+            "import java.io.*;\npublic class App {\n  void run(HttpServletRequest request) throws Exception {\n    String user = request.getParameter(\"x\");\n    Runtime.getRuntime().exec(user);\n  }\n}\n",
+        )
+        .unwrap();
+
+        let finding = Finding {
+            finding_id: "test-1".to_string(),
+            file_path: file.to_string_lossy().to_string(),
+            line_start: 5,
+            line_end: 5,
+            detector: "RegexRule: command-injection".to_string(),
+            vuln_type: "CWE-78".to_string(),
+            severity: "high".to_string(),
+            description: "Command injection".to_string(),
+            analysis_trail: None,
+            llm_output: None,
+            confidence: None,
+            corroboration_count: None,
+            code_snippet: None,
+            source_snippet: None,
+            sink_snippet: None,
+            file_role: None,
+            barriers: None,
+            reasoning_hint: None,
+            evidence_refs: None,
+        };
+
+        // 没有调用图引擎时，function_name 应回退为 detector 名
+        let (path, _) = synthesize_local_call_path(&dir, &finding, None)
+            .expect("should synthesize a local path");
+        assert_eq!(path.steps.len(), 2);
+        assert!(path.steps.iter().all(|s| s.function_name == finding.detector));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

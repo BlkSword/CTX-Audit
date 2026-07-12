@@ -279,6 +279,7 @@ fn create_finding(
         barriers,
         reasoning_hint,
         evidence_refs: None,
+        ..Default::default()
     }
 }
 

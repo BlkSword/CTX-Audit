@@ -491,6 +491,148 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  - id: "java_template_injection"
+    name: "Java Template Engine SSTI"
+    description: "Template engines processing user-controlled input — FreeMarker, Thymeleaf, Velocity, Pebble"
+    match_mode: "Semantic"
+    namespaces:
+      - "freemarker.template"
+      - "org.thymeleaf"
+      - "org.apache.velocity"
+      - "org.thymeleaf.context"
+      - "io.pebbletemplates"
+    receiver_patterns:
+      - "template"
+      - "engine"
+      - "context"
+      - "freemarkerConfig"
+    patterns:
+      - ".process"
+      - ".getTemplate"
+      - ".merge"
+      - ".evaluate"
+      - "Template.process"
+      - "SpringResourceTemplateResolver"
+      - "ClassLoaderTemplateResolver"
+    exact_matches:
+      - "Template.process"
+      - "FreeMarkerTemplateUtils.processTemplateIntoString"
+      - "Velocity.evaluate"
+      - "VelocityContext"
+      - "TemplateEngine.process"
+      - "Thymeleaf.TemplateEngine.process"
+      - "PebbleEngine.getTemplate"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "High"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_log_injection"
+    name: "Java Log Injection"
+    description: "User-controlled data logged without sanitization — Log4j, SLF4J, Logback, JUL"
+    match_mode: "Semantic"
+    namespaces:
+      - "org.slf4j"
+      - "org.apache.logging.log4j"
+      - "ch.qos.logback"
+      - "java.util.logging"
+    receiver_patterns:
+      - "log"
+      - "logger"
+      - "LOG"
+      - "LOGGER"
+    patterns:
+      - ".info"
+      - ".warn"
+      - ".error"
+      - ".debug"
+      - ".trace"
+      - ".fatal"
+    exact_matches:
+      - "log.info"
+      - "logger.info"
+      - "logger.warn"
+      - "logger.error"
+      - "logger.debug"
+      - "LOG.info"
+      - "LOGGER.warn"
+    languages: ["java"]
+    vulnerability_type: "LogInjection"
+    severity: "Medium"
+    cwe_id: "CWE-117"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_xxe_parser"
+    name: "Java XML External Entity"
+    description: "XML parsers with default XXE-vulnerable configurations"
+    match_mode: "Semantic"
+    namespaces:
+      - "javax.xml.parsers"
+      - "org.xml.sax"
+      - "javax.xml.stream"
+      - "org.jdom2"
+      - "org.dom4j"
+      - "javax.xml.transform"
+    receiver_patterns:
+      - "factory"
+      - "builder"
+      - "parser"
+      - "reader"
+      - "saxParser"
+      - "documentBuilder"
+    patterns:
+      - ".newInstance"
+      - ".parse"
+      - ".newDocumentBuilder"
+      - ".newSAXParser"
+      - ".newXMLStreamReader"
+      - ".build"
+    exact_matches:
+      - "DocumentBuilderFactory.newInstance"
+      - "SAXParserFactory.newInstance"
+      - "XMLInputFactory.newFactory"
+      - "SAXReader.read"
+      - "DocumentBuilder.parse"
+      - "SAXParser.parse"
+    languages: ["java"]
+    vulnerability_type: "XmlExternalEntity"
+    severity: "High"
+    cwe_id: "CWE-611"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_open_redirect"
+    name: "Java Open Redirect"
+    description: "HTTP redirect with user-controlled URL — sendRedirect, Spring redirect:"
+    match_mode: "Semantic"
+    namespaces:
+      - "javax.servlet.http"
+      - "jakarta.servlet.http"
+      - "org.springframework.web.servlet.view"
+      - "org.springframework.web.servlet"
+    receiver_patterns:
+      - "response"
+      - "redirectView"
+      - "modelAndView"
+    patterns:
+      - ".sendRedirect"
+      - "redirect:"
+      - "RedirectView"
+    exact_matches:
+      - "HttpServletResponse.sendRedirect"
+      - "Response.sendRedirect"
+      - "ModelAndView(\"redirect:"
+      - "RedirectView"
+    languages: ["java"]
+    vulnerability_type: "OpenRedirect"
+    severity: "Medium"
+    cwe_id: "CWE-601"
+    sensitive_params: [0]
+    ast_patterns: []
+
 sanitizers:
   - pattern: "PreparedStatement"
     description: "JDBC parameterized query"
@@ -522,3 +664,35 @@ sanitizers:
     description: "Cookie HttpOnly flag"
   - pattern: "setSameSite"
     description: "Cookie SameSite flag"
+  - pattern: "Encode.forHtml"
+    description: "OWASP Encoder HTML encoding"
+  - pattern: "Sanitizers.HTML"
+    description: "Sanitizers HTML cleanup"
+  - pattern: "JdbcTemplate"
+    description: "Spring JDBC parameterized template"
+  - pattern: "queryForObject"
+    description: "Spring parameterized query"
+  - pattern: "SecurityFilterChain"
+    description: "Spring Security filter chain"
+  - pattern: "@PreAuthorize"
+    description: "Spring Security method authorization"
+  - pattern: "@Secured"
+    description: "Spring Security annotation"
+  - pattern: "CsrfToken"
+    description: "Spring CSRF protection"
+  - pattern: "StringUtils.hasText"
+    description: "Spring input validation"
+  - pattern: "Objects.requireNonNull"
+    description: "Java null validation"
+  - pattern: "Whitelist"
+    description: "Generic whitelist validation"
+  - pattern: "Paths.normalize"
+    description: "Java path normalization"
+  - pattern: "FilenameUtils.normalize"
+    description: "Apache Commons filename normalization"
+  - pattern: "strictHttpFirewall"
+    description: "Spring Security HTTP firewall"
+  - pattern: "SAXParserFactory.setFeature"
+    description: "SAX secure feature flag"
+  - pattern: "DocumentBuilderFactory.setFeature"
+    description: "DOM secure feature flag"

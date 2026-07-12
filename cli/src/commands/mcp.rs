@@ -629,6 +629,33 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["project_path", "file_path"]
             }),
         },
+        ToolDefinition {
+            name: "enclosing_function_at_line",
+            description: "Find the innermost function that encloses a given line in a file. Returns function name, line range, node id, and whether it's a taint source/sink/callback. Use this when a finding only has a file and line but no function name — it lets the agent query the call graph with the correct function identifier.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "file_path": {"type": "string", "description": "File path containing the line"},
+                    "line": {"type": "integer", "description": "Line number to look up (1-based)"}
+                },
+                "required": ["project_path", "file_path", "line"]
+            }),
+        },
+        ToolDefinition {
+            name: "search_code",
+            description: "Search code content across the project using regex patterns. Returns matching files, line numbers, and code snippets. Use this to find where a variable is assigned, who imports a module, or where a function is defined. Prefer this over list_files+read_file when you have a specific pattern to search for.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "pattern": {"type": "string", "description": "Regex pattern to search for (e.g. 'password\\\\s*=' or 'import.*axios')"},
+                    "file_glob": {"type": "string", "description": "Optional file pattern filter (e.g. '*.java' or '*.{js,ts}')"},
+                    "max_results": {"type": "integer", "description": "Maximum results to return (default 50)"}
+                },
+                "required": ["project_path", "pattern"]
+            }),
+        },
     ]
 }
 
@@ -667,6 +694,8 @@ async fn handle_tool_call(name: &str, arguments: &Value) -> Value {
         "trace_variable_flow" => tool_trace_variable_flow(arguments).await,
         "get_graph_stats" => tool_get_graph_stats_handler(arguments).await,
         "list_file_functions" => tool_list_file_functions(arguments).await,
+        "enclosing_function_at_line" => tool_enclosing_function_at_line(arguments).await,
+        "search_code" => tool_search_code(arguments).await,
         _ => serde_json::json!({
             "content": [{"type": "text", "text": format!("Unknown tool: {}", name)}],
             "isError": true
@@ -2538,6 +2567,203 @@ async fn tool_list_file_functions(args: &Value) -> Value {
             })).unwrap_or_default()}
         ]
     })
+}
+
+async fn tool_search_code(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
+    };
+    let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return error_response("Missing pattern"),
+    };
+    let file_glob = args.get("file_glob").and_then(|v| v.as_str());
+    let max_results = args
+        .get("max_results")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50) as usize;
+
+    let re = match regex::Regex::new(pattern) {
+        Ok(r) => r,
+        Err(e) => return error_response(&format!("Invalid regex: {}", e)),
+    };
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let project = std::path::Path::new(project_path);
+
+    // Walk project directory, respecting common exclusions
+    let exclude_dirs: &[&str] = &[
+        ".git", "target", "node_modules", "build", "dist", ".ctx-audit",
+        "__pycache__", ".gradle", ".idea", ".vscode", "vendor",
+    ];
+
+    fn walk(
+        dir: &std::path::Path,
+        project: &std::path::Path,
+        re: &regex::Regex,
+        file_glob: Option<&str>,
+        exclude_dirs: &[&str],
+        results: &mut Vec<serde_json::Value>,
+        max_results: usize,
+    ) {
+        if results.len() >= max_results {
+            return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            if results.len() >= max_results {
+                return;
+            }
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if name.starts_with('.') || exclude_dirs.contains(&name) {
+                    continue;
+                }
+                walk(&path, project, re, file_glob, exclude_dirs, results, max_results);
+            } else if path.is_file() {
+                if let Some(glob) = file_glob {
+                    if !glob_match_simple(glob, name) {
+                        continue;
+                    }
+                }
+                // Skip binary/large files
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let skip_exts = &[
+                    "png", "jpg", "jpeg", "gif", "ico", "svg", "woff", "woff2",
+                    "ttf", "eot", "pdf", "zip", "tar", "gz", "jar", "class",
+                    "exe", "dll", "so", "dylib", "bin", "mp4", "mp3", "wav",
+                ];
+                if skip_exts.contains(&ext) {
+                    continue;
+                }
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                for (line_no, line) in content.lines().enumerate() {
+                    if results.len() >= max_results {
+                        return;
+                    }
+                    if re.is_match(line) {
+                        let rel = path
+                            .strip_prefix(project)
+                            .unwrap_or(&path)
+                            .to_string_lossy()
+                            .to_string();
+                        results.push(serde_json::json!({
+                            "file": rel,
+                            "line": line_no + 1,
+                            "content": line.trim(),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    walk(
+        project,
+        project,
+        &re,
+        file_glob,
+        exclude_dirs,
+        &mut results,
+        max_results,
+    );
+
+    if results.is_empty() {
+        text_response(&format!(
+            "No matches found for pattern '{}' in {}",
+            pattern, project_path
+        ))
+    } else {
+        let count = results.len();
+        let output = results
+            .iter()
+            .map(|r| {
+                format!(
+                    "{}:{}: {}",
+                    r["file"].as_str().unwrap_or(""),
+                    r["line"].as_u64().unwrap_or(0),
+                    r["content"].as_str().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::json!({
+            "content": [
+                {"type": "text", "text": format!("{} matches (showing up to {}):\n{}", count, max_results, output)},
+                {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                    "total_matches": count,
+                    "results": results,
+                })).unwrap_or_default()}
+            ]
+        })
+    }
+}
+
+/// Simple glob match for file names (supports *.ext and *.{ext1,ext2} patterns)
+fn glob_match_simple(pattern: &str, name: &str) -> bool {
+    let pattern = pattern.to_lowercase();
+    let name = name.to_lowercase();
+    // Handle *.{ext1,ext2} pattern
+    if let Some(braces) = pattern.strip_prefix("*.{") {
+        if let Some(inner) = braces.strip_suffix('}') {
+            let exts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+            return exts.iter().any(|e| name.ends_with(&format!(".{}", e)));
+        }
+    }
+    // Handle *.ext pattern
+    if let Some(ext) = pattern.strip_prefix("*.") {
+        return name.ends_with(&format!(".{}", ext));
+    }
+    // Fallback: substring match
+    name.contains(&pattern)
+}
+
+async fn tool_enclosing_function_at_line(args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return error_response("Missing project_path"),
+    };
+    let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return error_response("Missing file_path"),
+    };
+    let line = match args.get("line").and_then(|v| v.as_u64()) {
+        Some(n) if n >= 1 => n as usize,
+        _ => return error_response("Missing or invalid line (must be >= 1)"),
+    };
+
+    let engine = match build_query_engine_for_mcp(project_path) {
+        Ok(e) => e,
+        Err(e) => return error_response(&e),
+    };
+
+    match engine.query_enclosing_function(file_path, line) {
+        Some(func) => serde_json::json!({
+            "content": [
+                {"type": "text", "text": format!(
+                    "Function enclosing {}:{} is '{}' (lines {}-{})",
+                    file_path, line, func.name, func.line, func.end_line
+                )},
+                {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                    "file_path": file_path,
+                    "line": line,
+                    "function": func,
+                })).unwrap_or_default()}
+            ]
+        }),
+        None => text_response(&format!(
+            "No indexed function encloses {}:{}. The file may not be parsed or the line is outside any function.",
+            file_path, line
+        )),
+    }
 }
 
 // ── 审计会话工具实现 ──────────────────────────────────────

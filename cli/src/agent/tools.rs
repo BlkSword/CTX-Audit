@@ -142,6 +142,11 @@ impl AgentToolContext {
         self.query_engine.query_functions_in_file(file_path)
     }
 
+    /// 查询指定行所在的函数（最内层包围函数）
+    pub fn query_enclosing_function(&self, file_path: &str, line: usize) -> Option<FunctionInfo> {
+        self.query_engine.query_enclosing_function(file_path, line)
+    }
+
     /// 查询文件关联的中间件
     pub fn query_middleware_for_file(&self, file_path: &str) -> Vec<MiddlewareEvidence> {
         self.query_engine.query_middleware_for_file(file_path)

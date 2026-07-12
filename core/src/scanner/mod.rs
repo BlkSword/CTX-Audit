@@ -5,6 +5,8 @@ pub mod manager;
 pub mod regex_scanner;
 pub mod sca_scanner;
 
+mod source_sink_patterns;
+
 // Re-export SCA types
 pub use sca_scanner::{ScaScanOptions, ScaSeverityMapping};
 
@@ -122,7 +124,7 @@ struct Baseline {
 }
 
 /// 漏洞发现结果
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Finding {
     pub finding_id: String,
     pub file_path: String,
@@ -164,6 +166,12 @@ pub struct Finding {
     /// 仅在跨文件分析（enable_cross_file=true）时填充
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence_refs: Option<EvidenceRefs>,
+    /// 命中行所在的包围函数名（LLM 可直接用此名调 query_callers/query_callees）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosing_function: Option<String>,
+    /// 包围函数的起始行号
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosing_function_line: Option<usize>,
 }
 
 // ── 证据引用类型 ──────────────────────────────────────────
@@ -1019,6 +1027,7 @@ async fn scan_directory_with_rules_inner(
                                     barriers: None,
                                     reasoning_hint: None,
                                     evidence_refs: None,
+                                    ..Default::default()
                                 });
                             }
                         }
@@ -1106,6 +1115,10 @@ async fn scan_directory_with_rules_inner(
             });
         }
     }
+
+    // RegexRule/ASTRule 单跳证据富化：在 sink 附近 ±35 行内找到 source 模式时，
+    // 构造轻量 source→sink 结构化证据并写入 finding.evidence_refs。
+    enrich_rule_findings_with_local_source_sink(&mut findings, &content_cache);
 
     // 基线抑制
     let baseline_path = std::path::Path::new(".ctx-audit/baseline.json");
@@ -1732,6 +1745,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                             }
                         )),
                         evidence_refs: Some(evidence),
+                        ..Default::default()
                     }
                 })
                 .collect();
@@ -1884,72 +1898,7 @@ pub async fn scan_directory_deep_with_rules_progress(
 
                 let vuln_name = format!("{}", flow.vulnerability_type);
 
-                // 构建证据引用 — 从跨文件分析结果提取确定性证据
-                let path_steps: Vec<PathStepRef> = flow
-                    .interprocedural_path
-                    .iter()
-                    .map(|step| PathStepRef {
-                        function: step.function_name.clone(),
-                        file: step.file_path.clone(),
-                        line: step.line,
-                        step_type: match step.step_type {
-                            crate::analysis::cross_file::InterproceduralStepType::Source => {
-                                "source".to_string()
-                            }
-                            crate::analysis::cross_file::InterproceduralStepType::Sink => {
-                                "sink".to_string()
-                            }
-                            crate::analysis::cross_file::InterproceduralStepType::ParameterIn => {
-                                "parameter_in".to_string()
-                            }
-                            crate::analysis::cross_file::InterproceduralStepType::ParameterOut => {
-                                "parameter_out".to_string()
-                            }
-                            crate::analysis::cross_file::InterproceduralStepType::ReturnValue => {
-                                "return_value".to_string()
-                            }
-                            crate::analysis::cross_file::InterproceduralStepType::Assignment => {
-                                "assignment".to_string()
-                            }
-                        },
-                    })
-                    .collect();
-
-                let path_length = path_steps.len();
-
-                // 中间件覆盖证据 — 检查中间件是否在源文件注册
-                let middleware_coverage: Vec<MiddlewareEvidence> = cross_file_result
-                    .middleware_model
-                    .express_middleware
-                    .iter()
-                    .map(|mw| {
-                        let applies = mw.handler_file == flow.source.file_path
-                            || cross_file_result
-                                .middleware_model
-                                .express_routes
-                                .get(&mw.handler_file)
-                                .map(|routes| {
-                                    routes.iter().any(|l| {
-                                        *l >= flow.source.line.saturating_sub(5)
-                                            && *l <= flow.sink.line.saturating_add(5)
-                                    })
-                                })
-                                .unwrap_or(false);
-                        // 获取该中间件文件的第一个路由行号作为参考
-                        let route_ref = cross_file_result
-                            .middleware_model
-                            .get_express_route_lines(&mw.handler_file)
-                            .first()
-                            .map(|l| format!("{}:{}", mw.handler_file, l))
-                            .unwrap_or_default();
-                        MiddlewareEvidence {
-                            middleware_name: mw.handler_name.clone(),
-                            middleware_file: mw.handler_file.clone(),
-                            applies_to_route: applies,
-                            route_handler: route_ref,
-                        }
-                    })
-                    .collect();
+                let evidence = build_evidence_refs_from_flow(flow, &graph_snapshot, &cross_file_result.middleware_model);
 
                 // 为跨文件 finding 补充源码上下文：同文件取 source→sink，跨文件取 source 周围
                 let code_snippet = content_cache.get(&flow.source.file_path).map(|content| {
@@ -1959,24 +1908,6 @@ pub async fn scan_directory_deep_with_rules_progress(
                         extract_code_context(content, flow.source.line, flow.source.line, 5)
                     }
                 });
-
-                let evidence = EvidenceRefs {
-                    source_sink_path: Some(SourceSinkEvidence {
-                        source_function: flow.source.symbol.clone(),
-                        source_file: flow.source.file_path.clone(),
-                        source_line: flow.source.line,
-                        source_node_id: flow.source.node_id.clone(),
-                        sink_function: flow.sink.symbol.clone(),
-                        sink_file: flow.sink.file_path.clone(),
-                        sink_line: flow.sink.line,
-                        sink_node_id: flow.sink.node_id.clone(),
-                        path_length,
-                        path_steps,
-                    }),
-                    sanitizer_chain: Vec::new(),
-                    middleware_coverage,
-                    graph_snapshot: Some(graph_snapshot.clone()),
-                };
 
                 findings.push(Finding {
                     finding_id: flow.id.clone(),
@@ -2020,8 +1951,22 @@ pub async fn scan_directory_deep_with_rules_progress(
                         sink_context_hint(&vuln_name)
                     )),
                     evidence_refs: Some(evidence),
+                    ..Default::default()
                 });
             }
+
+            // 把跨文件污点证据回填到 Stage A 的 Rule/AttackSurface finding，
+            // 让大量原本只有代码片段的 finding 获得 source→sink 路径。
+            enrich_findings_with_cross_file_evidence(
+                &mut findings,
+                &cross_file_result,
+                &graph_snapshot,
+            );
+
+            // 为每个 finding 填充 enclosing_function，让 LLM 可以直接用函数名查调用图
+            let query_engine =
+                crate::analysis::query::CallGraphQueryEngine::from_result(&cross_file_result);
+            enrich_findings_with_enclosing_function(&mut findings, &query_engine);
         }
         cross_file_result_opt = Some(cross_file_result);
     } // end enable_cross_file
@@ -2034,6 +1979,446 @@ pub async fn scan_directory_deep_with_rules_progress(
         attack_surface: crate::analysis::attack_surface::AttackSurface::default(),
         cross_file_result: cross_file_result_opt,
     })
+}
+
+/// 将跨文件污点流转换为结构化证据引用
+fn build_evidence_refs_from_flow(
+    flow: &crate::analysis::cross_file::InterproceduralTaintFlow,
+    graph_snapshot: &GraphSnapshot,
+    middleware_model: &crate::analysis::middleware::MiddlewareModel,
+) -> EvidenceRefs {
+    let path_steps: Vec<PathStepRef> = flow
+        .interprocedural_path
+        .iter()
+        .map(|step| PathStepRef {
+            function: step.function_name.clone(),
+            file: step.file_path.clone(),
+            line: step.line,
+            step_type: match step.step_type {
+                crate::analysis::cross_file::InterproceduralStepType::Source => "source".to_string(),
+                crate::analysis::cross_file::InterproceduralStepType::Sink => "sink".to_string(),
+                crate::analysis::cross_file::InterproceduralStepType::ParameterIn => {
+                    "parameter_in".to_string()
+                }
+                crate::analysis::cross_file::InterproceduralStepType::ParameterOut => {
+                    "parameter_out".to_string()
+                }
+                crate::analysis::cross_file::InterproceduralStepType::ReturnValue => {
+                    "return_value".to_string()
+                }
+                crate::analysis::cross_file::InterproceduralStepType::Assignment => {
+                    "assignment".to_string()
+                }
+            },
+        })
+        .collect();
+
+    let path_length = path_steps.len();
+
+    let middleware_coverage: Vec<MiddlewareEvidence> = middleware_model
+        .express_middleware
+        .iter()
+        .map(|mw| {
+            let applies = mw.handler_file == flow.source.file_path
+                || middleware_model
+                    .express_routes
+                    .get(&mw.handler_file)
+                    .map(|routes| {
+                        routes.iter().any(|l| {
+                            *l >= flow.source.line.saturating_sub(5)
+                                && *l <= flow.sink.line.saturating_add(5)
+                        })
+                    })
+                    .unwrap_or(false);
+            let route_ref = middleware_model
+                .get_express_route_lines(&mw.handler_file)
+                .first()
+                .map(|l| format!("{}:{}", mw.handler_file, l))
+                .unwrap_or_default();
+            MiddlewareEvidence {
+                middleware_name: mw.handler_name.clone(),
+                middleware_file: mw.handler_file.clone(),
+                applies_to_route: applies,
+                route_handler: route_ref,
+            }
+        })
+        .collect();
+
+    EvidenceRefs {
+        source_sink_path: Some(SourceSinkEvidence {
+            source_function: flow.source.symbol.clone(),
+            source_file: flow.source.file_path.clone(),
+            source_line: flow.source.line,
+            source_node_id: flow.source.node_id.clone(),
+            sink_function: flow.sink.symbol.clone(),
+            sink_file: flow.sink.file_path.clone(),
+            sink_line: flow.sink.line,
+            sink_node_id: flow.sink.node_id.clone(),
+            path_length,
+            path_steps,
+        }),
+        sanitizer_chain: Vec::new(),
+        middleware_coverage,
+        graph_snapshot: Some(graph_snapshot.clone()),
+    }
+}
+
+/// 将漏洞类型字符串归一化为 CWE 编号（如 "CWE-22"）。
+///
+/// 支持直接 CWE 编号（"CWE-22"）、常见漏洞名称（"PathTraversal"）以及
+/// 规则输出的描述性字符串（"RegexRule: path-traversal"）。
+fn normalize_vuln_type_to_cwe(vuln: &str) -> Option<String> {
+    let lower = vuln.to_lowercase();
+
+    // 1. 直接包含 CWE 编号
+    if let Some(cwe) = lower.split(|c: char| !c.is_ascii_digit()).find(|s| s.len() >= 2) {
+        return Some(format!("CWE-{}", cwe));
+    }
+
+    // 2. 按常见别名映射到 CWE
+    let aliases: &[(&str, &str)] = &[
+        ("sqli", "CWE-89"),
+        ("sql injection", "CWE-89"),
+        ("sql-injection", "CWE-89"),
+        ("sql", "CWE-89"),
+        ("command injection", "CWE-78"),
+        ("command-injection", "CWE-78"),
+        ("os command", "CWE-78"),
+        ("pathtraversal", "CWE-22"),
+        ("path-traversal", "CWE-22"),
+        ("path traversal", "CWE-22"),
+        ("directory traversal", "CWE-22"),
+        ("directory-traversal", "CWE-22"),
+        ("crosssitescripting", "CWE-79"),
+        ("cross-site scripting", "CWE-79"),
+        ("xss", "CWE-79"),
+        ("serversiderequestforgery", "CWE-918"),
+        ("server-side request forgery", "CWE-918"),
+        ("ssrf", "CWE-918"),
+        ("insecuredeserialization", "CWE-502"),
+        ("unsafe deserialization", "CWE-502"),
+        ("deserialization", "CWE-502"),
+        ("code injection", "CWE-94"),
+        ("open redirect", "CWE-601"),
+        ("ldap injection", "CWE-90"),
+        ("xxe", "CWE-611"),
+        ("xml external entity", "CWE-611"),
+        ("xpath injection", "CWE-643"),
+        ("cache poisoning", "CWE-444"),
+        ("buffer overflow", "CWE-121"),
+        ("format string", "CWE-134"),
+        ("insecure random", "CWE-330"),
+        ("weak random", "CWE-330"),
+        ("insecure cookie", "CWE-614"),
+        ("secure cookie", "CWE-614"),
+        ("hardcoded password", "CWE-259"),
+        ("hardcoded credential", "CWE-259"),
+        ("sensitive info", "CWE-200"),
+        ("sensitive data", "CWE-200"),
+        ("debug info", "CWE-200"),
+        ("log injection", "CWE-117"),
+        ("log spoof", "CWE-117"),
+    ];
+
+    for (pattern, cwe) in aliases {
+        if lower.contains(pattern) {
+            return Some((*cwe).to_string());
+        }
+    }
+
+    None
+}
+
+/// RegexRule / ASTRule 单跳证据富化。
+///
+/// 对 Stage A 中 detector 为 "RegexRule:*" 或 "ASTRule:*" 且尚无 evidence_refs 的 finding，
+/// 在 sink 所在位置 ±35 行窗口内匹配语言相关的输入源模式。命中则在 finding 上写入
+/// 一条轻量 source→sink 结构化证据，并把置信度提升到 0.85。
+fn enrich_rule_findings_with_local_source_sink(
+    findings: &mut [Finding],
+    content_cache: &HashMap<String, String>,
+) {
+    for finding in findings {
+        if finding.evidence_refs.is_some() {
+            continue;
+        }
+        // 访问控制/攻击面类 finding 不依赖 source→sink 数据流，跳过
+        if finding.vuln_type == "UnauthenticatedEndpoint" {
+            continue;
+        }
+        let is_rule = finding.detector.starts_with("RegexRule:")
+            || finding.detector.starts_with("ASTRule:");
+        if !is_rule {
+            continue;
+        }
+        let Some(content) = content_cache.get(&finding.file_path) else {
+            continue;
+        };
+
+        let Some(matched) = source_sink_patterns::find_local_source_sink(
+            &finding.file_path,
+            &finding.vuln_type,
+            &finding.description,
+            content,
+            finding.line_start,
+        ) else {
+            continue;
+        };
+
+        let path_steps = vec![
+            PathStepRef {
+                function: matched.source_pattern.clone(),
+                file: finding.file_path.clone(),
+                line: matched.source_line,
+                step_type: "synthetic_source".to_string(),
+            },
+            PathStepRef {
+                function: finding.detector.clone(),
+                file: finding.file_path.clone(),
+                line: finding.line_start,
+                step_type: "synthetic_sink".to_string(),
+            },
+        ];
+
+        finding.evidence_refs = Some(EvidenceRefs {
+            source_sink_path: Some(SourceSinkEvidence {
+                source_function: matched.source_pattern,
+                source_file: finding.file_path.clone(),
+                source_line: matched.source_line,
+                source_node_id: None,
+                sink_function: finding.detector.clone(),
+                sink_file: finding.file_path.clone(),
+                sink_line: finding.line_start,
+                sink_node_id: None,
+                path_length: 1,
+                path_steps,
+            }),
+            sanitizer_chain: Vec::new(),
+            middleware_coverage: Vec::new(),
+            graph_snapshot: None,
+        });
+
+        finding.confidence = Some(finding.confidence.unwrap_or(0.5).max(0.85));
+    }
+}
+
+/// 按漏洞类型名称判断跨文件流是否与已有 finding 兼容。
+///
+/// 用于回填 evidence 时避免把 SQLi 的污点路径贴到 PathTraversal finding 上。
+fn is_compatible_vuln_type(finding_vuln: &str, flow_vuln: &crate::analysis::VulnerabilityType) -> bool {
+    is_compatible_vuln_type_str(finding_vuln, &format!("{:?}", flow_vuln))
+}
+
+/// 扫描后证据富化：把跨文件污点流或同函数内其他 finding 的 evidence_refs
+/// 回填到没有证据的 Stage A finding。
+///
+/// 回填条件：
+/// 1. finding 当前没有 evidence_refs；
+/// 2. finding 不是 UnauthenticatedEndpoint（访问控制类不依赖 source→sink）；
+/// 3. finding 与证据 source/sink 位于同一文件同一函数内（按调用图函数范围匹配）；
+/// 4. 漏洞类型兼容。
+fn enrich_findings_with_cross_file_evidence(
+    findings: &mut [Finding],
+    cross_file_result: &crate::analysis::cross_file::CrossFileTaintResult,
+    graph_snapshot: &GraphSnapshot,
+) {
+    let flows = &cross_file_result.taint_flows;
+    if flows.is_empty() {
+        return;
+    }
+
+    // 用跨文件结果构建调用图查询引擎，以确定 finding 与 flow source/sink 是否在同一函数
+    let engine = crate::analysis::query::CallGraphQueryEngine::from_result(cross_file_result);
+
+    // 建立无 evidence_refs 的 finding 索引（按首行精确匹配，用于快速精确回退）
+    let mut index: HashMap<(String, usize), Vec<usize>> = HashMap::new();
+    for (i, f) in findings.iter().enumerate() {
+        if f.evidence_refs.is_some() {
+            continue;
+        }
+        if f.vuln_type == "UnauthenticatedEndpoint" {
+            continue;
+        }
+        let key = (
+            crate::analysis::cross_file::normalize_path(&f.file_path),
+            f.line_start,
+        );
+        index.entry(key).or_default().push(i);
+    }
+
+    // 收集要回填的 (target_idx, evidence) 列表，避免在遍历中可变借用 findings
+    let mut backfills: Vec<(usize, EvidenceRefs)> = Vec::new();
+
+    // ── Pass 1: 跨文件流 → 同函数 Rule finding ──
+    for flow in flows {
+        let evidence = build_evidence_refs_from_flow(
+            flow,
+            graph_snapshot,
+            &cross_file_result.middleware_model,
+        );
+        let flow_sink_file = crate::analysis::cross_file::normalize_path(&flow.sink.file_path);
+        let flow_source_file = crate::analysis::cross_file::normalize_path(&flow.source.file_path);
+
+        let source_func = engine.query_enclosing_function(&flow.source.file_path, flow.source.line);
+        let sink_func = engine.query_enclosing_function(&flow.sink.file_path, flow.sink.line);
+
+        let mut matched_indices: Vec<usize> = Vec::new();
+
+        // 1. sink/source 行精确匹配
+        if let Some(idxs) = index.get(&(flow_sink_file.clone(), flow.sink.line)) {
+            matched_indices.extend(idxs);
+        }
+        if let Some(idxs) = index.get(&(flow_source_file.clone(), flow.source.line)) {
+            matched_indices.extend(idxs);
+        }
+
+        // 2. 按函数范围匹配
+        for (i, f) in findings.iter().enumerate() {
+            if f.evidence_refs.is_some() {
+                continue;
+            }
+            if f.vuln_type == "UnauthenticatedEndpoint" {
+                continue;
+            }
+            if !is_compatible_vuln_type(&f.vuln_type, &flow.vulnerability_type) {
+                continue;
+            }
+
+            let f_file = crate::analysis::cross_file::normalize_path(&f.file_path);
+            let f_func = engine.query_enclosing_function(&f.file_path, f.line_start);
+
+            let same_func = |a: &crate::analysis::query::FunctionInfo,
+                             b: &crate::analysis::query::FunctionInfo| {
+                a.id == b.id
+                    || (a.name == b.name && a.line == b.line && a.end_line == b.end_line)
+            };
+
+            let matches_source = f_file == flow_source_file
+                && source_func
+                    .as_ref()
+                    .zip(f_func.as_ref())
+                    .is_some_and(|(s, ff)| same_func(s, ff));
+            let matches_sink = f_file == flow_sink_file
+                && sink_func
+                    .as_ref()
+                    .zip(f_func.as_ref())
+                    .is_some_and(|(sk, ff)| same_func(sk, ff));
+
+            if matches_source || matches_sink {
+                matched_indices.push(i);
+            }
+        }
+
+        matched_indices.sort_unstable();
+        matched_indices.dedup();
+
+        for &idx in &matched_indices {
+            backfills.push((idx, evidence.clone()));
+        }
+    }
+
+    // ── Pass 2: 同函数内已有 evidence_refs 的 finding → 无证据 Rule finding ──
+    // AstTaintScanner 等 Stage B finding 已携带精确证据，把它们共享给同一函数内
+    // 漏洞类型兼容的规则 finding，可显著提升 evidence_refs 覆盖率。
+    let mut evidence_by_func: HashMap<(String, String), Vec<(usize, String)>> = HashMap::new();
+    for (i, f) in findings.iter().enumerate() {
+        if f.evidence_refs.is_none() {
+            continue;
+        }
+        if f.vuln_type == "UnauthenticatedEndpoint" {
+            continue;
+        }
+        let f_file = crate::analysis::cross_file::normalize_path(&f.file_path);
+        if let Some(func) = engine.query_enclosing_function(&f.file_path, f.line_start) {
+            evidence_by_func
+                .entry((f_file, func.id))
+                .or_default()
+                .push((i, f.vuln_type.clone()));
+        }
+    }
+
+    for (i, f) in findings.iter().enumerate() {
+        if f.evidence_refs.is_some() {
+            continue;
+        }
+        if f.vuln_type == "UnauthenticatedEndpoint" {
+            continue;
+        }
+        let f_file = crate::analysis::cross_file::normalize_path(&f.file_path);
+        let f_func = engine.query_enclosing_function(&f.file_path, f.line_start);
+        if let Some(func) = f_func {
+            if let Some(sources) = evidence_by_func.get(&(f_file, func.id)) {
+                for &(src_idx, ref src_vuln) in sources {
+                    if is_compatible_vuln_type_str(&f.vuln_type, src_vuln) {
+                        if let Some(ref src_evidence) = findings[src_idx].evidence_refs {
+                            backfills.push((i, src_evidence.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 应用回填，同一 target 保留 path_steps 最长的证据
+    backfills.sort_by_key(|(idx, _)| *idx);
+    let mut best_for_idx: HashMap<usize, EvidenceRefs> = HashMap::new();
+    for (idx, evidence) in backfills {
+        let new_len = evidence
+            .source_sink_path
+            .as_ref()
+            .map(|s| s.path_steps.len())
+            .unwrap_or(0);
+        let should = match best_for_idx.get(&idx) {
+            None => true,
+            Some(existing) => {
+                let existing_len = existing
+                    .source_sink_path
+                    .as_ref()
+                    .map(|s| s.path_steps.len())
+                    .unwrap_or(0);
+                new_len > existing_len
+            }
+        };
+        if should {
+            best_for_idx.insert(idx, evidence);
+        }
+    }
+
+    for (idx, evidence) in best_for_idx {
+        let f = &mut findings[idx];
+        f.evidence_refs = Some(evidence);
+        f.confidence = Some(f.confidence.unwrap_or(0.5).max(0.85));
+    }
+}
+
+/// 为每个 finding 填充 enclosing_function 和 enclosing_function_line。
+///
+/// 利用调用图引擎查询包含 finding 命中行的最内层函数。
+/// LLM 收到 finding 后可直接用函数名调 `query_callers`/`query_callees` 开始调查，
+/// 无需先调 `enclosing_function_at_line` 查函数名。
+fn enrich_findings_with_enclosing_function(
+    findings: &mut [Finding],
+    engine: &crate::analysis::query::CallGraphQueryEngine,
+) {
+    for f in findings.iter_mut() {
+        if f.enclosing_function.is_some() {
+            continue;
+        }
+        if let Some(func) = engine.query_enclosing_function(&f.file_path, f.line_start) {
+            f.enclosing_function = Some(func.name);
+            f.enclosing_function_line = Some(func.line);
+        }
+    }
+}
+
+/// 判断两个漏洞类型字符串是否兼容（都归一化为 CWE 后比较）。
+fn is_compatible_vuln_type_str(a: &str, b: &str) -> bool {
+    if let (Some(ca), Some(cb)) = (normalize_vuln_type_to_cwe(a), normalize_vuln_type_to_cwe(b)) {
+        return ca == cb;
+    }
+    let a = a.to_lowercase();
+    let b = b.to_lowercase();
+    a.contains(&b) || b.contains(&a)
 }
 
 /// 判断文件是否支持 AST 分析
@@ -2336,5 +2721,68 @@ fn sink_context_hint(vuln_type: &str) -> &'static str {
         "OpenRedirect" => "Sink performs HTTP redirect; verify whether the target URL is user-controlled",
         "Xxe" => "Sink parses XML with external entities enabled",
         _ => "Sink performs a security-sensitive operation; verify data flow and validation",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_vuln_type_to_cwe_direct() {
+        assert_eq!(
+            normalize_vuln_type_to_cwe("CWE-22"),
+            Some("CWE-22".to_string())
+        );
+        assert_eq!(
+            normalize_vuln_type_to_cwe("cwe-89"),
+            Some("CWE-89".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_vuln_type_to_cwe_by_name() {
+        assert_eq!(
+            normalize_vuln_type_to_cwe("PathTraversal"),
+            Some("CWE-22".to_string())
+        );
+        assert_eq!(
+            normalize_vuln_type_to_cwe("SqlInjection"),
+            Some("CWE-89".to_string())
+        );
+        assert_eq!(
+            normalize_vuln_type_to_cwe("CrossSiteScripting"),
+            Some("CWE-79".to_string())
+        );
+        assert_eq!(
+            normalize_vuln_type_to_cwe("InsecureDeserialization"),
+            Some("CWE-502".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_vuln_type_to_cwe_from_detector() {
+        assert_eq!(
+            normalize_vuln_type_to_cwe("RegexRule: path-traversal"),
+            Some("CWE-22".to_string())
+        );
+        assert_eq!(
+            normalize_vuln_type_to_cwe("RegexRule: sql-injection"),
+            Some("CWE-89".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_compatible_vuln_type_str_cwe_and_name() {
+        assert!(is_compatible_vuln_type_str("CWE-22", "PathTraversal"));
+        assert!(is_compatible_vuln_type_str("CWE-89", "SqlInjection"));
+        assert!(!is_compatible_vuln_type_str("CWE-22", "SqlInjection"));
+    }
+
+    #[test]
+    fn test_is_compatible_vuln_type_str_unknown() {
+        // 无法归一化时退化为子串包含
+        assert!(is_compatible_vuln_type_str("SomeVuln", "SomeVuln"));
+        assert!(!is_compatible_vuln_type_str("Alpha", "Beta"));
     }
 }

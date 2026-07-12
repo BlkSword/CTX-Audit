@@ -170,68 +170,113 @@ pub fn build_taint_walk_prompt(
     chain: &[TaintChainStep],
     available_actions: &[serde_json::Value],
 ) -> String {
-    let system = r#"你是一名代码安全审计员，正在进行“污点步进调查”。
+    let system = r##"你是一名代码安全审计员，正在进行污点步进调查。
 
 任务：从当前发现的 sink（危险操作）出发，沿着数据流反向追踪到用户输入 source，确认是否存在可利用的漏洞路径。
 
 工作方式：
-1. 每次只关注一个“当前焦点”：一个文件、一行代码、一个变量或函数。
+1. 每次只关注一个当前焦点：一个文件、一行代码、一个变量或函数。
 2. 根据当前代码上下文，决定下一步行动：读取更多代码、查询调用者/被调用者、解析方法调用、检查 sanitizer，或直接结束。
 3. 必须引用你实际看到的代码行和变量名，不要猜测未显示的代码。
-4. 如果找到 source→sink 的完整路径且无有效 sanitizer，判 true_positive；如果路径被阻断或 source 不可控，判 false_positive；如果关键代码缺失无法判断，判 needs_review。
+4. 如果找到 source -> sink 的完整路径且无有效 sanitizer，判 true_positive；如果路径被阻断或 source 不可控，判 false_positive；如果关键代码缺失无法判断，判 needs_review。
 
 判定标准：
 - true_positive：source 处的用户输入能沿数据流到达 sink，中间没有有效 sanitizer/barrier 阻断。
 - false_positive：存在有效 sanitizer、类型转换、权限检查、中间件防护，或 source 不可控/路径不存在。
 - needs_review：关键代码不可见，无法完成追踪。
 
-输出必须是 JSON，不要包含任何解释性文字。
+输出格式：使用简单的 KEY: value 格式，每行一个字段。不要输出 JSON、Markdown 代码块或多余解释。
 
-输出格式（继续调查）：
-{
-  "thought": "当前已确认...，还缺...",
-  "action": "read_context" | "query_callers" | "query_callees" | "resolve_call" | "check_sanitizer" | "finish",
-  "params": { 根据 action 填写参数 },
-  "reasoning": "为什么选择这一步"
-}
+=== 继续调查的格式 ===
+ACTION: read_context
+FILE: 文件路径
+LINE: 行号
+RADIUS: 30
+REASON: 为什么需要读取此处代码
 
-输出格式（结束调查）：
-{
-  "thought": "已完成追踪",
-  "action": "finish",
-  "verdict": "true_positive" | "false_positive" | "needs_review",
-  "confidence": 0.0-1.0,
-  "reasoning": "基于哪些代码/调用关系做出的判定",
-  "chain_summary": "source ... -> ... -> sink 的简要路径"
-}
+=== 或 ===
+ACTION: query_callers
+FILE: 文件路径
+FUNCTION: 函数名
+REASON: 追踪谁调用了此函数
 
-可执行动作说明：
-- read_context：读取当前焦点附近代码。params: { "file_path": "...", "line": N, "radius": 30 }
-- query_callers：反向查谁调用了某个函数。params: { "file_path": "...", "function_name": "...", "recursive": false }
-- query_callees：正向查某个函数调用了谁。params: { "file_path": "...", "function_name": "...", "recursive": false }
-- resolve_call：解析 obj.method() 的实际实现。params: { "file_path": "...", "line": N, "receiver": "obj", "method": "method" }
-- check_sanitizer：检查某函数/变量是否被认定为 sanitizer。params: { "symbol": "...", "vuln_type": "..." }
-- finish：结束调查并给出判定。"#;
+=== 或 ===
+ACTION: query_callees
+FILE: 文件路径
+FUNCTION: 函数名
+REASON: 追踪此函数调用了谁
 
-    let evidence_json = json!({
-        "vulnerability_type": finding.vuln_type,
-        "severity": finding.severity,
-        "file": finding.file_path,
-        "line": finding.line_start,
-        "description": finding.description,
-        "code_context": evidence.code_context,
-        "barriers": evidence.barriers,
-        "has_effective_sanitizer": evidence.has_effective_sanitizer,
-    });
+=== 或 ===
+ACTION: resolve_call
+FILE: 文件路径
+LINE: 行号
+RECEIVER: 对象名
+METHOD: 方法名
+REASON: 需要确定实际实现类
+
+=== 或 ===
+ACTION: check_sanitizer
+SYMBOL: 函数或变量名
+VULN_TYPE: CWE-78
+REASON: 确认是否为净化函数
+
+=== 结束调查的格式 ===
+ACTION: finish
+VERDICT: true_positive
+CONFIDENCE: 0.9
+REASON: 基于代码/调用关系的判定理由
+SUMMARY: source_func -> handler -> sink_func 简要路径
+
+可执行动作：read_context, query_callers, query_callees, resolve_call, check_sanitizer, finish"##;
+
+    // 用关键词格式描述 finding/evidence，而非 JSON
+    let evidence_text = format!(
+        "VULN_TYPE: {}\nSEVERITY: {}\nFILE: {}\nLINE: {}\nDESCRIPTION: {}\nCODE_CONTEXT:\n{}\nBARRIERS: {:?}\nHAS_EFFECTIVE_SANITIZER: {}",
+        finding.vuln_type,
+        finding.severity,
+        finding.file_path,
+        finding.line_start,
+        finding.description,
+        evidence.code_context.as_deref().unwrap_or("(无)"),
+        evidence.barriers,
+        evidence.has_effective_sanitizer,
+    );
+
+    let focus_text = format!(
+        "FILE: {}\nLINE: {}\nSYMBOL: {}\nROLE: {}",
+        focus.file_path, focus.line, focus.symbol, focus.role
+    );
+
+    let chain_text = if chain.is_empty() {
+        "(空)".to_string()
+    } else {
+        chain
+            .iter()
+            .map(|s| {
+                format!(
+                    "STEP {} [{}] {}:{} {} - {}",
+                    s.step_number, s.step_type, s.file_path, s.line, s.symbol, s.reasoning
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let actions_text = available_actions
+        .iter()
+        .map(|a| {
+            format!(
+                "- {}: {}",
+                a.get("action").and_then(|v| v.as_str()).unwrap_or("?"),
+                a.get("description").and_then(|v| v.as_str()).unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     format!(
-        "{}\n\n【Finding】\n{}\n\n【Evidence】\n{}\n\n【当前焦点】\n{}\n\n【已走链】\n{}\n\n【候选动作】\n{}\n\n请输出 JSON 决策：",
-        system,
-        serde_json::to_string_pretty(&finding_to_json(finding)).unwrap_or_default(),
-        serde_json::to_string_pretty(&evidence_json).unwrap_or_default(),
-        serde_json::to_string_pretty(&json!(focus)).unwrap_or_default(),
-        serde_json::to_string_pretty(&json!(chain)).unwrap_or_default(),
-        serde_json::to_string_pretty(&json!(available_actions)).unwrap_or_default(),
+        "{}\n\n=== VULNERABILITY ===\n{}\n\n=== CURRENT FOCUS ===\n{}\n\n=== CHAIN SO FAR ===\n{}\n\n=== AVAILABLE ACTIONS ===\n{}\n\n请决定下一步（用 KEY: value 格式输出）：",
+        system, evidence_text, focus_text, chain_text, actions_text
     )
 }
 

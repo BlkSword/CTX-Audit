@@ -175,7 +175,7 @@ impl ToolUsingInvestigator {
             return "错误：AgentToolContext 未注入".to_string();
         };
 
-        // 自动注入 project_path（所有候选工具都需要）
+        // 自动注入 project_path 并规范化路径（所有候选工具都需要）
         let mut input = tool_input.clone();
         if let Some(obj) = input.as_object_mut() {
             if !obj.contains_key("project_path") {
@@ -183,6 +183,13 @@ impl ToolUsingInvestigator {
                     "project_path".to_string(),
                     json!(ctx.project_path.to_string_lossy().to_string()),
                 );
+            }
+            // 规范化 file_path：去掉与 project_path 重叠的前缀，避免路径双写
+            if let Some(fp) = obj.get("file_path").and_then(|v| v.as_str()) {
+                let corrected = normalize_tool_path(fp, &ctx.project_path);
+                if corrected != fp {
+                    obj.insert("file_path".to_string(), json!(corrected));
+                }
             }
         }
 
@@ -358,6 +365,24 @@ fn fallback_verdict(
         reasoning: "证据仍不足，使用启发式规则兜底。".to_string(),
         steps: memory.steps.clone(),
     }
+}
+
+/// 规范化工具调用中的文件路径：去掉与 project_path 重叠的前缀。
+/// 只用安全的前缀匹配，避免误截 Java 包路径中同名目录。
+fn normalize_tool_path(file_path: &str, project_path: &std::path::Path) -> String {
+    let fp = std::path::Path::new(file_path);
+    if fp.is_absolute() {
+        return file_path.to_string();
+    }
+    let normalized_fp = file_path.replace('\\', "/");
+    let normalized_proj = project_path.to_string_lossy().replace('\\', "/");
+    if let Some(stripped) = normalized_fp.strip_prefix(&format!("{}/", &normalized_proj)) {
+        return stripped.to_string();
+    }
+    if normalized_fp == normalized_proj {
+        return String::new();
+    }
+    file_path.to_string()
 }
 
 /// 从字符串解析 InvestigationDecision（保留兼容性，主要供测试使用）

@@ -11,6 +11,9 @@ sources:
       - "@PathVariable"
       - "@RequestHeader"
       - "@CookieValue"
+      - "@RequestPart"
+      - "@MatrixVariable"
+      - "@RequestAttribute"
       - "getParameter"
       - "getParameterValues"
       - "getQueryString"
@@ -26,6 +29,9 @@ sources:
       - "@RequestBody"
       - "getInputStream"
       - "getReader"
+      - "MultipartFile"
+      - "getParts"
+      - "getOriginalFilename"
     languages: ["java"]
     severity: "High"
     category: "UserInput"
@@ -38,6 +44,7 @@ sources:
       - "getSession"
       - "@SessionAttribute"
       - "getAttribute"
+      - "getCookies"
     languages: ["java"]
     severity: "Medium"
     category: "UserInput"

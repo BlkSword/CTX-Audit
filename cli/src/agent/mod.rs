@@ -36,7 +36,7 @@ pub mod supervisor;
 pub mod tools;
 
 use environment::EnvironmentModel;
-use llm_client::create_llm_client;
+use llm_client::{create_llm_client, NoopLlmClient};
 use planner::{
     executor::PlanExecutor,
     llm_based::LlmBasedPlanner,
@@ -227,10 +227,12 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
 
     // ── HYPOTHESIZE → VERIFY → JUDGE：并发 Actor 调度 ─────────────
     let llm_client = create_llm_client(&agent_config);
+    let llm_high_value_only =
+        agent_config.llm_mode == "http" && agent_config.llm_high_value_only;
 
     let supervisor = Supervisor::new(
         config.project_path.clone(),
-        query_engine_arc,
+        query_engine_arc.clone(),
         llm_client.clone(),
         env_arc.blackboard.clone(),
         agent_config.triage_concurrency,
@@ -329,14 +331,41 @@ pub async fn run_audit(config: AuditConfig) -> Result<AuditReport> {
                 .into_iter()
                 .take(config.max_findings.unwrap_or(usize::MAX))
                 .collect();
-            results = supervisor.run(to_investigate).await;
+            results = if llm_high_value_only {
+                let (llm_part, rule_part) = partition_findings_for_llm(to_investigate);
+                let mut merged = supervisor.run(llm_part).await;
+                merged.extend(
+                    supervisor
+                        .run_with_llm(rule_part, Arc::new(NoopLlmClient))
+                        .await,
+                );
+                merged
+            } else {
+                supervisor.run(to_investigate).await
+            };
         }
     } else {
         let to_investigate: Vec<Finding> = findings
             .into_iter()
             .take(config.max_findings.unwrap_or(usize::MAX))
             .collect();
-        results = supervisor.run(to_investigate).await;
+        results = if llm_high_value_only {
+            let (llm_part, rule_part) = partition_findings_for_llm(to_investigate);
+            tracing::info!(
+                "启用 llm_high_value_only：{} 个 finding 走真实 LLM，{} 个走规则判定",
+                llm_part.len(),
+                rule_part.len()
+            );
+            let mut merged = supervisor.run(llm_part).await;
+            merged.extend(
+                supervisor
+                    .run_with_llm(rule_part, Arc::new(NoopLlmClient))
+                    .await,
+            );
+            merged
+        } else {
+            supervisor.run(to_investigate).await
+        };
     }
 
     for inv in &mut results {
@@ -555,6 +584,29 @@ fn filter_and_prioritize_findings(
     });
 
     filtered
+}
+
+/// 判断 finding 是否属于“高价值”，值得消耗真实 LLM API。
+///
+/// 当前规则：severity 为 critical 或 high，且不是访问控制类的
+/// UnauthenticatedEndpoint（这类 finding 信息量低、数量大，规则判定已足够）。
+fn is_high_value_for_llm(finding: &Finding) -> bool {
+    let severity = finding.severity.to_lowercase();
+    (severity == "critical" || severity == "high") && finding.vuln_type != "UnauthenticatedEndpoint"
+}
+
+/// 将 findings 分成需要真实 LLM 的高价值组与使用规则判定的低价值组。
+fn partition_findings_for_llm(findings: Vec<Finding>) -> (Vec<Finding>, Vec<Finding>) {
+    let mut llm_findings = Vec::new();
+    let mut rule_findings = Vec::new();
+    for f in findings {
+        if is_high_value_for_llm(&f) {
+            llm_findings.push(f);
+        } else {
+            rule_findings.push(f);
+        }
+    }
+    (llm_findings, rule_findings)
 }
 
 /// 计算每个文件的风险分数

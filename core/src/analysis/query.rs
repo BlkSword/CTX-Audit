@@ -1131,6 +1131,26 @@ impl CallGraphQueryEngine {
             .unwrap_or_default()
     }
 
+    /// 查询指定行所在的函数（最内层包围函数）。
+    ///
+    /// 用于 Agent 在缺少 evidence_refs 时也能获得真实函数名，进而查询调用图。
+    pub fn query_enclosing_function(&self, file_path: &str, line: usize) -> Option<FunctionInfo> {
+        let funcs = self.query_functions_in_file(file_path);
+        if funcs.is_empty() {
+            return None;
+        }
+        let candidates: Vec<FunctionInfo> = funcs
+            .into_iter()
+            .filter(|f| line >= f.line && line <= f.end_line)
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        candidates
+            .into_iter()
+            .min_by_key(|f| f.end_line.saturating_sub(f.line))
+    }
+
     /// 获取所有 taint sources
     pub fn query_all_sources(&self) -> Vec<FunctionInfo> {
         self.call_graph

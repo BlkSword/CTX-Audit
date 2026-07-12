@@ -109,8 +109,20 @@ impl Supervisor {
         self
     }
 
-    /// 并发 triage 所有 finding
+    /// 并发 triage 所有 finding（使用 supervisor 自身的 LLM 客户端）
     pub async fn run(&self, findings: Vec<Finding>) -> Vec<InvestigationResult> {
+        self.run_with_llm(findings, self.llm_client.clone()).await
+    }
+
+    /// 并发 triage 所有 finding，允许为本次调用指定不同的 LLM 客户端。
+    ///
+    /// 用于 `llm_high_value_only` 模式：高价值 finding 用真实 LLM，其余用 NoopLlmClient
+    /// 走规则判定，从而在不丢弃 finding 的前提下控制 API 成本。
+    pub async fn run_with_llm(
+        &self,
+        findings: Vec<Finding>,
+        llm_client: Arc<dyn LlmClient>,
+    ) -> Vec<InvestigationResult> {
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
         let mut join_set = JoinSet::new();
 
@@ -127,7 +139,7 @@ impl Supervisor {
                 finding,
                 project_path: self.project_path.clone(),
                 query_engine: self.query_engine.clone(),
-                llm_client: self.llm_client.clone(),
+                llm_client: llm_client.clone(),
                 blackboard: self.blackboard.clone(),
                 specialist_enabled: self.specialist_enabled,
                 specialist_registry: self.specialist_registry.clone(),
@@ -286,15 +298,20 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
     {
         let taint_walk =
             TaintWalkInvestigator::new(task.llm_client.clone(), task.max_taint_walk_steps);
-        let ctx = SpecialistContext {
+        let tw_ctx = SpecialistContext {
             project_path: task.project_path.clone(),
             finding: task.finding.clone(),
             evidence: evidence.clone(),
             query_engine: task.query_engine.clone(),
             tool_context: task.tool_context.clone(),
         };
-        match taint_walk.investigate(&ctx, &hypothesis).await {
-            Ok(outcome) => {
+        let tw_hypothesis = hypothesis.clone();
+        // spawn 到独立 task 打断深层 async 调用链，避免 triage+specialist+
+        // investigator+taint_walk 共 10+ 层嵌套导致默认 1 MB 栈溢出。
+        match tokio::spawn(async move { taint_walk.investigate(&tw_ctx, &tw_hypothesis).await })
+            .await
+        {
+            Ok(Ok(outcome)) => {
                 investigation_steps.extend(outcome.steps);
                 taint_walk_reasoning = outcome.reasoning.clone();
                 if outcome.confidence >= primary_confidence {
@@ -308,11 +325,18 @@ async fn investigate(task: TriageTask) -> Result<InvestigationResult> {
                     );
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(
                     "TaintWalk failed for finding {}: {}",
                     task.finding.finding_id,
                     e
+                );
+            }
+            Err(join_err) => {
+                tracing::warn!(
+                    "TaintWalk task panicked for finding {}: {}",
+                    task.finding.finding_id,
+                    join_err
                 );
             }
         }
