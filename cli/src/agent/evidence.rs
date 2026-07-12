@@ -645,10 +645,12 @@ fn java_matched(vuln_type: &str, description: &str, body_lower: &str, method_bod
     let is_code = vuln_type.contains("94") || desc.contains("code injection");
 
     let has_deser_sink = body_lower.contains("objectinputstream")
+        || body_lower.contains("classresolvingobjectinputstream")
         || body_lower.contains("readobject(")
         || body_lower.contains("defaultreadobject")
         || body_lower.contains("xstream")
-        || body_lower.contains("fromxml(");
+        || body_lower.contains("fromxml(")
+        || body_lower.contains("xmldecoder");
     let has_cmd_sink = body_lower.contains("runtime.getruntime().exec")
         || body_lower.contains("runtime.exec")
         || body_lower.contains("processbuilder");
@@ -685,7 +687,16 @@ fn java_matched(vuln_type: &str, description: &str, body_lower: &str, method_bod
         || body_lower.contains("scriptenginemanager");
 
     if is_deser {
-        (has_source && has_deser_sink) || (body_lower.contains("void readobject") && has_cmd_sink)
+        // 标准源 + sink 组合，或间接输入模式（byte[] / Base64 / Cookie + 反序列化）
+        let has_indirect_source = body_lower.contains("byte[]")
+            || body_lower.contains("base64")
+            || body_lower.contains("bytearrayinputstream")
+            || body_lower.contains("getcookies(")
+            || body_lower.contains("getcookie(")
+            || body_lower.contains("getremembered");
+        (has_source && has_deser_sink)
+            || (has_indirect_source && has_deser_sink)
+            || (body_lower.contains("void readobject") && has_cmd_sink)
     } else if is_cmd {
         has_source && has_cmd_sink
     } else if is_sql {

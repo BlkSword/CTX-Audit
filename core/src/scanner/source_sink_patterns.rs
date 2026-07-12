@@ -376,6 +376,8 @@ fn java_match_sources(
             || body_lower.contains("defaultreadobject")
             || body_lower.contains("xstream")
             || body_lower.contains("fromxml(")
+            || body_lower.contains("xmldecoder")
+            || body_lower.contains("classresolvingobjectinputstream")
             || (body_lower.contains("void readobject")
                 && (body_lower.contains("runtime.getruntime().exec")
                     || body_lower.contains("runtime.exec")
@@ -428,7 +430,27 @@ fn java_match_sources(
         return Vec::new();
     }
 
-    source_patterns_in_window(body_lower, JAVA_SOURCES)
+    let sources = source_patterns_in_window(body_lower, JAVA_SOURCES);
+
+    // 反序列化: 如果标准 HTTP source 未命中，尝试间接输入模式 —
+    // byte[] 参数、Base64 解码、ByteArrayInputStream、Cookie 读取等。
+    if is_deser && sources.is_empty() {
+        const DESER_INDIRECT: &[&str] = &[
+            "base64.getdecoder().decode",
+            "base64.decode",
+            "bytearrayinputstream",
+            "getcookies(",
+            "getcookie(",
+            "getremembered",
+            "getinputstream(",
+            "getreader(",
+            "serialized",
+            "deserialize(",
+        ];
+        return source_patterns_in_window(body_lower, DESER_INDIRECT);
+    }
+
+    sources
 }
 
 fn js_match_sources(
