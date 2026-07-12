@@ -12,6 +12,7 @@ pub mod attack_surface;
 pub mod cache;
 pub mod cpg;
 pub mod cross_file;
+pub mod framework_detector;
 pub mod dataflow;
 pub mod enhanced_dataflow;
 pub mod enhanced_taint;
@@ -71,3 +72,4 @@ pub use taint::{
     TaintSource, VulnerabilityType,
 };
 pub use type_hierarchy::{MethodSignature, ResolvedMethod, TypeHierarchy, TypeInfo, TypeKind};
+pub use framework_detector::{detect_project_profile, ProjectProfile, SecurityFramework};

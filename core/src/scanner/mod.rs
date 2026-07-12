@@ -1158,6 +1158,8 @@ pub struct ScanResult {
     /// 跨文件分析结果（仅当 enable_cross_file=true 时存在）
     /// 包含调用图、类型层次、中间件模型等确定性证据数据
     pub cross_file_result: Option<crate::analysis::cross_file::CrossFileTaintResult>,
+    /// 项目安全框架配置（从 pom.xml / build.gradle 中检测）
+    pub project_profile: crate::analysis::ProjectProfile,
 }
 
 /// 扫描目录并返回完整结果（含攻击面） — 使用无进度回调的默认扫描
@@ -1172,6 +1174,9 @@ pub async fn scan_directory_with_attack_surface(path: &str) -> Result<ScanResult
         findings,
         attack_surface,
         cross_file_result: None,
+        project_profile: crate::analysis::framework_detector::detect_project_profile(
+            std::path::Path::new(path),
+        ),
     })
 }
 
@@ -1254,6 +1259,7 @@ pub async fn scan_directory_deep_with_rules_progress(
             findings,
             attack_surface: crate::analysis::attack_surface::AttackSurface::default(),
             cross_file_result: None,
+            project_profile: Default::default(),
         });
     }
 
@@ -1982,6 +1988,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         findings,
         attack_surface: crate::analysis::attack_surface::AttackSurface::default(),
         cross_file_result: cross_file_result_opt,
+        project_profile: Default::default(),
     })
 }
 

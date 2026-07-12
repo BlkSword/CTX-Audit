@@ -367,6 +367,7 @@ impl AnalysisEngine {
                     .map_err(|e| anyhow::anyhow!("{}", e))?,
                 attack_surface: Default::default(),
                 cross_file_result: None,
+                project_profile: Default::default(),
             }
         };
         let findings = scan_result.findings;
