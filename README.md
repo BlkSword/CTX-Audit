@@ -288,8 +288,6 @@ CTX-Audit
 | Go | govwa | 20 | 5 | 1 | 60% | 教学项目 |
 | JS | NodeGoat | 50 | 57 | 4 | 19% | 教学项目 |
 
-> 详细分析见 [docs/research/capability-assessment.md](docs/research/capability-assessment.md)
-
 ## 项目状态
 
 | 维度 | 状态 |
@@ -308,7 +306,7 @@ CTX-Audit
 
 工具**能发现 0-day 的组件和模式**（如反序列化 sink、MyBatis 动态 SQL、库 API 危险入口），但**不能自动确认为 0-day**。需要安全研究员或 MCP LLM 逐 finding 追踪调用者链、确认外部可达性、判定可利用性。在合适的场景（未审计的 Java 库/框架），效率提升约 8-10x（vs 全文阅读）。
 
-详见 [docs/research/capability-assessment.md](docs/research/capability-assessment.md)。
+0-day 发现依赖安全研究员或 MCP LLM 逐 finding 追踪调用者链、确认外部可达性。
 
 ## 许可证
 
