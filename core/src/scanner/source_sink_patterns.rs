@@ -409,7 +409,7 @@ fn generic_match_sources(
         patterns.sql_sinks
     } else if vuln_type.contains("502") || desc.contains("deserialization") {
         patterns.deser_sinks
-    } else if vuln_type.contains("94") || desc.contains("code injection") {
+    } else if vuln_type.contains("94") || vuln_type.to_lowercase().contains("code") || desc.contains("code injection") {
         patterns.code_sinks
     } else if vuln_type.contains("22") || desc.contains("path traversal") {
         patterns.path_sinks
@@ -460,7 +460,7 @@ fn java_match_sources(
     let is_path = vuln_type.contains("22") || desc.contains("path traversal");
     let is_ssrf = vuln_type.contains("918") || desc.contains("ssrf");
     let is_xss = vuln_type.contains("79") || desc.contains("xss") || desc.contains("cross-site");
-    let is_code = vuln_type.contains("94") || desc.contains("code injection");
+    let is_code = vuln_type.contains("94") || vuln_type.to_lowercase().contains("code") || desc.contains("code injection");
 
     let sink_matches = if is_deser {
         body_lower.contains("objectinputstream")

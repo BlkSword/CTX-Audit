@@ -642,7 +642,7 @@ fn java_matched(vuln_type: &str, description: &str, body_lower: &str, method_bod
     let is_path = vuln_type.contains("22") || desc.contains("path traversal");
     let is_ssrf = vuln_type.contains("918") || desc.contains("ssrf");
     let is_xss = vuln_type.contains("79") || desc.contains("xss") || desc.contains("cross-site");
-    let is_code = vuln_type.contains("94") || desc.contains("code injection");
+    let is_code = vuln_type.contains("94") || vuln_type.to_lowercase().contains("code") || desc.contains("code injection");
 
     let has_deser_sink = body_lower.contains("objectinputstream")
         || body_lower.contains("classresolvingobjectinputstream")

@@ -15,7 +15,7 @@ patterns:
   - language: python
     pattern: (?i)(eval\s*\(|exec\s*\(|__import__\s*\(|compile\s*\()
   - language: java
-    pattern: (?i)(ScriptEngineManager|GroovyShell|ScriptEngine\.eval)
+    pattern: (?i)(ScriptEngineManager|GroovyShell|ScriptEngine\.eval|SpelExpressionParser|parseExpression|Ognl\.(get|set)Value|MVEL\.eval|MVEL\.executeExpression)
   - language: php
     pattern: (?i)(eval\s*\(|assert\s*\(|create_function\s*\(|preg_replace\s*\(.*/[a-z]*e[a-z]*['"])
 severity: critical

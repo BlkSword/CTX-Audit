@@ -491,6 +491,68 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  - id: "java_spel_injection"
+    name: "Java SpEL / Expression Language Injection"
+    description: "Spring Expression Language (SpEL) and script engine evaluation — Substring mode catches all without namespace restriction"
+    match_mode: "Substring"
+    patterns:
+      - "SpelExpressionParser"
+      - "parseExpression"
+      - "ExpressionParser"
+      - ".getValue"
+      - "StandardEvaluationContext"
+      - "SimpleEvaluationContext"
+      - "TemplateParserContext"
+    exact_matches:
+      - "SpelExpressionParser.parseExpression"
+      - "parseExpression"
+      - "ScriptEngine.eval"
+      - "ScriptEngine.evaluate"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_ognl_injection"
+    name: "Java OGNL Expression Injection"
+    description: "OGNL expression evaluation — Struts, Tapestry, and general OGNL usage"
+    match_mode: "Substring"
+    patterns:
+      - "Ognl.getValue"
+      - "Ognl.setValue"
+      - "Ognl.parseExpression"
+      - "OgnlContext"
+    exact_matches:
+      - "Ognl.getValue"
+      - "Ognl.setValue"
+      - "Ognl.parseExpression"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "java_mvel_injection"
+    name: "Java MVEL Expression Injection"
+    description: "MVEL expression evaluation — Drools, jBPM, and general MVEL usage"
+    match_mode: "Substring"
+    patterns:
+      - "MVEL.eval"
+      - "MVEL.executeExpression"
+      - "MVEL.compileExpression"
+    exact_matches:
+      - "MVEL.eval"
+      - "MVEL.executeExpression"
+    languages: ["java"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
   - id: "java_template_injection"
     name: "Java Template Engine SSTI"
     description: "Template engines processing user-controlled input — FreeMarker, Thymeleaf, Velocity, Pebble"
@@ -696,3 +758,17 @@ sanitizers:
     description: "SAX secure feature flag"
   - pattern: "DocumentBuilderFactory.setFeature"
     description: "DOM secure feature flag"
+  - pattern: "getSession()"
+    description: "Internal HTTP session access, not outbound SSRF"
+  - pattern: "getRequest()"
+    description: "Internal servlet request access, not outbound SSRF"
+  - pattern: "getRequestUri"
+    description: "Internal request URI parsing, not outbound SSRF"
+  - pattern: "ServerWebExchange"
+    description: "Spring WebFlux internal exchange, not outbound SSRF"
+  - pattern: "ProxyExchange"
+    description: "Spring Cloud Gateway internal proxy, forwarding is by design"
+  - pattern: "SimpleEvaluationContext"
+    description: "SpEL evaluation context with restricted access"
+  - pattern: "PropertyAccessor"
+    description: "SpEL safe property access configuration"
