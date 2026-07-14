@@ -1,0 +1,271 @@
+kind: taint-rules
+name: "PHP Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "php_http_request"
+    name: "PHP HTTP Request"
+    description: "HTTP request superglobals and input functions"
+    patterns:
+      - "$_GET"
+      - "$_POST"
+      - "$_REQUEST"
+      - "$_COOKIE"
+      - "$_SERVER"
+      - "$_FILES"
+      - "$_ENV"
+      - "php://input"
+      - "file_get_contents(\"php://input\")"
+      - "getallheaders()"
+    languages: ["php"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+sinks:
+  - id: "php_sql_exec"
+    name: "PHP SQL Execution"
+    description: "SQL query execution via mysqli, PDO, pg"
+    match_mode: "Substring"
+    patterns:
+      - "mysqli_query"
+      - "mysql_query"
+      - "mysqli->query"
+      - "mysqli_multi_query"
+      - "pg_query"
+      - "pg_execute"
+      - "sqlite_query"
+      - "PDO::query"
+      - "->query("
+      - "->exec("
+      - "->execute("
+      - "->prepare("
+      - "DB::select"
+      - "DB::raw"
+      - "->raw("
+    languages: ["php"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_cmd_exec"
+    name: "PHP Command Execution"
+    description: "System command and process execution"
+    match_mode: "Substring"
+    patterns:
+      - "exec("
+      - "shell_exec("
+      - "system("
+      - "passthru("
+      - "proc_open("
+      - "popen("
+      - "pcntl_exec("
+      - "expect_popen("
+      - "`"
+    languages: ["php"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_code_exec"
+    name: "PHP Code Execution"
+    description: "Dynamic code evaluation — eval, assert, create_function, preg_replace /e"
+    match_mode: "Substring"
+    patterns:
+      - "eval("
+      - "assert("
+      - "create_function("
+      - "call_user_func("
+      - "call_user_func_array("
+      - "preg_replace("
+      - "ReflectionFunction"
+      - "ReflectionMethod"
+      - "->invoke("
+    languages: ["php"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_file_path"
+    name: "PHP File Operations"
+    description: "File operations with user-controlled paths"
+    match_mode: "Substring"
+    patterns:
+      - "fopen("
+      - "file_get_contents("
+      - "file_put_contents("
+      - "readfile("
+      - "include("
+      - "require("
+      - "include_once("
+      - "require_once("
+      - "unlink("
+      - "rename("
+      - "copy("
+      - "move_uploaded_file("
+      - "file("
+      - "mkdir("
+      - "rmdir("
+      - "scandir("
+    languages: ["php"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_ssrf"
+    name: "PHP SSRF"
+    description: "Outbound HTTP/file requests"
+    match_mode: "Substring"
+    patterns:
+      - "curl_exec("
+      - "curl_setopt("
+      - "file_get_contents("
+      - "fopen("
+      - "fsockopen("
+      - "stream_context_create("
+      - "GuzzleHttp\\Client"
+      - "->get("
+      - "->post("
+    languages: ["php"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_xss_output"
+    name: "PHP XSS Output"
+    description: "Writing to HTTP response without escaping"
+    match_mode: "Substring"
+    patterns:
+      - "echo "
+      - "print("
+      - "printf("
+      - "->write("
+      - "die("
+    languages: ["php"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "High"
+    cwe_id: "CWE-79"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_deserialization"
+    name: "PHP Insecure Deserialization"
+    description: "PHP deserialization of untrusted data"
+    match_mode: "Substring"
+    patterns:
+      - "unserialize("
+      - "deserialize("
+      - "__wakeup"
+      - "__destruct"
+      - "__toString"
+    languages: ["php"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_ldap"
+    name: "PHP LDAP Injection"
+    description: "LDAP queries with user input"
+    match_mode: "Substring"
+    patterns:
+      - "ldap_search("
+      - "ldap_list("
+      - "ldap_read("
+      - "ldap_bind("
+      - "ldap_modify("
+    languages: ["php"]
+    vulnerability_type: "LdapInjection"
+    severity: "High"
+    cwe_id: "CWE-90"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_log_injection"
+    name: "PHP Log Injection"
+    description: "User-controlled data in log messages"
+    match_mode: "Substring"
+    patterns:
+      - "error_log("
+      - "syslog("
+      - "->info("
+      - "->warning("
+      - "->error("
+      - "->debug("
+      - "->log("
+    languages: ["php"]
+    vulnerability_type: "LogInjection"
+    severity: "Medium"
+    cwe_id: "CWE-117"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "php_xxe"
+    name: "PHP XXE"
+    description: "XML parsing with external entity processing"
+    match_mode: "Substring"
+    patterns:
+      - "simplexml_load_string("
+      - "simplexml_load_file("
+      - "DOMDocument::loadXML("
+      - "DOMDocument::load("
+      - "XMLReader::open("
+      - "new DOMDocument("
+      - "loadXML("
+    languages: ["php"]
+    vulnerability_type: "XmlExternalEntity"
+    severity: "High"
+    cwe_id: "CWE-611"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "htmlspecialchars"
+    description: "PHP HTML encoding"
+  - pattern: "htmlentities"
+    description: "PHP HTML entity encoding"
+  - pattern: "strip_tags"
+    description: "PHP HTML tag stripping"
+  - pattern: "filter_var"
+    description: "PHP input filtering"
+  - pattern: "filter_input"
+    description: "PHP input filtering"
+  - pattern: "PDO::prepare"
+    description: "PDO prepared statement"
+  - pattern: "mysqli_prepare"
+    description: "MySQLi prepared statement"
+  - pattern: "escapeshellarg"
+    description: "PHP shell argument escaping"
+  - pattern: "escapeshellcmd"
+    description: "PHP shell command escaping"
+  - pattern: "addslashes"
+    description: "PHP string escaping"
+  - pattern: "json_encode"
+    description: "JSON encoding (XSS safe for JS context)"
+  - pattern: "urlencode"
+    description: "URL encoding"
+  - pattern: "base64_encode"
+    description: "Base64 encoding"
+  - pattern: "hash_hmac"
+    description: "HMAC integrity check"
+  - pattern: "password_hash"
+    description: "PHP password hashing"
+  - pattern: "parse_url"
+    description: "URL parsing and validation"
+  - pattern: "realpath"
+    description: "PHP path canonicalization"
+  - pattern: "basename"
+    description: "PHP filename extraction"
+  - pattern: "is_dir"
+    description: "Path existence check before file operations"
