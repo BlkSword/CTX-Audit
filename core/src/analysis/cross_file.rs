@@ -674,7 +674,7 @@ impl CrossFileTaintAnalyzer {
         stats.taint_sinks = self.call_graph.taint_sinks.len();
 
         // 4. 查找跨文件污点流
-        let taint_flows = self.find_interprocedural_taint_flows();
+        let taint_flows = self.find_interprocedural_taint_flows(5000);
         stats.taint_flows = taint_flows.len();
         stats.cross_file_flows = taint_flows
             .iter()
@@ -721,7 +721,7 @@ impl CrossFileTaintAnalyzer {
         stats.taint_sources = self.call_graph.taint_sources.len();
         stats.taint_sinks = self.call_graph.taint_sinks.len();
 
-        let taint_flows = self.find_interprocedural_taint_flows();
+        let taint_flows = self.find_interprocedural_taint_flows(5000);
         stats.taint_flows = taint_flows.len();
         stats.cross_file_flows = taint_flows
             .iter()
@@ -805,7 +805,7 @@ impl CrossFileTaintAnalyzer {
         stats.taint_sources = self.call_graph.taint_sources.len();
         stats.taint_sinks = self.call_graph.taint_sinks.len();
 
-        let taint_flows = self.find_interprocedural_taint_flows();
+        let taint_flows = self.find_interprocedural_taint_flows(5000);
         stats.taint_flows = taint_flows.len();
         stats.cross_file_flows = taint_flows
             .iter()
@@ -2665,7 +2665,7 @@ impl CrossFileTaintAnalyzer {
     /// - 跟踪每个函数内哪些变量被污染
     /// - 在调用点根据实参→形参映射传播污染
     /// - 仅当 callee 摘要显示污染参数能到达 sink 时才生成 flow
-    fn propagate_taint_with_summaries(&self) -> Vec<InterproceduralTaintFlow> {
+    fn propagate_taint_with_summaries(&self, max_flows: usize) -> Vec<InterproceduralTaintFlow> {
         let summaries = self.compute_function_summaries_from_current_graph();
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let sink_reachable = self.compute_sink_reachable_set();
@@ -2711,6 +2711,9 @@ impl CrossFileTaintAnalyzer {
                             vuln_type,
                             "summary_direct_sink",
                         ));
+                    if flows.len() >= max_flows {
+                        return flows;
+                    }
                     }
                 }
 
@@ -2988,12 +2991,12 @@ impl CrossFileTaintAnalyzer {
     ///
     /// 优先使用基于函数摘要的参数级传播；若摘要传播未产生结果，
     /// 回退到纯调用图 BFS。
-    fn find_interprocedural_taint_flows(&self) -> Vec<InterproceduralTaintFlow> {
-        let summary_flows = self.propagate_taint_with_summaries();
+    fn find_interprocedural_taint_flows(&self, max_flows: usize) -> Vec<InterproceduralTaintFlow> {
+        let mut summary_flows = self.propagate_taint_with_summaries(max_flows);
         if !summary_flows.is_empty() {
             return summary_flows;
         }
-        self.find_interprocedural_taint_flows_fallback()
+        self.find_interprocedural_taint_flows_fallback(max_flows)
     }
 
     /// 预计算：从所有 sink 反向 BFS，得到“可能到达 sink”的节点集合。
@@ -3018,7 +3021,7 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 纯调用图 BFS 兜底：从 source 函数出发，沿调用图找到所有可达 sink 函数
-    fn find_interprocedural_taint_flows_fallback(&self) -> Vec<InterproceduralTaintFlow> {
+    fn find_interprocedural_taint_flows_fallback(&self, _max_flows: usize) -> Vec<InterproceduralTaintFlow> {
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let mut flows = Vec::new();
 

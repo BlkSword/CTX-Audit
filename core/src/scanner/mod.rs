@@ -1874,15 +1874,25 @@ pub async fn scan_directory_deep_with_rules_progress(
                 cross_file_result.taint_flows.len()
             );
 
-            // 对超大型项目做安全上限截断，防止后续 evidence 构造导致内存爆炸
-            if cross_file_result.taint_flows.len() > cross_file_max_flows {
+            // 对超大型项目，通过 drain + 精确容量分配截断流列表，
+            // 立即释放旧 Vec 的内存。truncate() 不回收容量，在
+            // 37K+ 流的大项目上会导致内存碎片。
+            let flow_count = cross_file_result.taint_flows.len();
+            let keep = flow_count.min(cross_file_max_flows);
+            if flow_count > cross_file_max_flows {
                 tracing::warn!(
-                    "[CrossFileTaint] 跨文件污点流超过上限 {}，截断前 {} 个",
-                    cross_file_max_flows,
-                    cross_file_result.taint_flows.len()
+                    "[CrossFileTaint] 跨文件污点流超过上限 {}，截断前 {} 个，保留 {} 个",
+                    cross_file_max_flows, flow_count, keep
                 );
-                cross_file_result.taint_flows.truncate(cross_file_max_flows);
             }
+            let flows: Vec<_> = cross_file_result
+                .taint_flows
+                .drain(..)
+                .take(keep)
+                .collect();
+            cross_file_result.taint_flows = flows;
+            // 预分配 findings 容量，避免 Vec 增长时的多轮重新分配
+            findings.reserve(keep);
 
             // 预计算图快照（所有 cross-file finding 共享）
             let total_edges: usize = cross_file_result
@@ -1899,6 +1909,34 @@ pub async fn scan_directory_deep_with_rules_progress(
                 taint_sinks_count: cross_file_result.stats.taint_sinks,
             };
 
+            // 中间件覆盖证据在每个流中相同——只计算一次
+            let shared_middleware_coverage: Vec<MiddlewareEvidence> =
+                cross_file_result
+                    .middleware_model
+                    .express_middleware
+                    .iter()
+                    .map(|mw| {
+                        let applies = mw.handler_file
+                            == cross_file_result
+                                .taint_flows
+                                .first()
+                                .map(|f| f.source.file_path.as_str())
+                                .unwrap_or("");
+                        let route_ref = cross_file_result
+                            .middleware_model
+                            .get_express_route_lines(&mw.handler_file)
+                            .first()
+                            .map(|l| format!("{}:{}", mw.handler_file, l))
+                            .unwrap_or_default();
+                        MiddlewareEvidence {
+                            middleware_name: mw.handler_name.clone(),
+                            middleware_file: mw.handler_file.clone(),
+                            applies_to_route: applies,
+                            route_handler: route_ref,
+                        }
+                    })
+                    .collect();
+
             for flow in &cross_file_result.taint_flows {
                 let intermediate: Vec<String> = flow
                     .interprocedural_path
@@ -1908,7 +1946,11 @@ pub async fn scan_directory_deep_with_rules_progress(
 
                 let vuln_name = format!("{}", flow.vulnerability_type);
 
-                let evidence = build_evidence_refs_from_flow(flow, &graph_snapshot, &cross_file_result.middleware_model);
+                let evidence = build_evidence_refs_from_flow(
+                    flow,
+                    &graph_snapshot,
+                    &shared_middleware_coverage,
+                );
 
                 // 为跨文件 finding 补充源码上下文：同文件取 source→sink，跨文件取 source 周围
                 let code_snippet = content_cache.get(&flow.source.file_path).map(|content| {
@@ -1996,7 +2038,7 @@ pub async fn scan_directory_deep_with_rules_progress(
 fn build_evidence_refs_from_flow(
     flow: &crate::analysis::cross_file::InterproceduralTaintFlow,
     graph_snapshot: &GraphSnapshot,
-    middleware_model: &crate::analysis::middleware::MiddlewareModel,
+    shared_middleware_coverage: &[MiddlewareEvidence],
 ) -> EvidenceRefs {
     let path_steps: Vec<PathStepRef> = flow
         .interprocedural_path
@@ -2026,35 +2068,6 @@ fn build_evidence_refs_from_flow(
 
     let path_length = path_steps.len();
 
-    let middleware_coverage: Vec<MiddlewareEvidence> = middleware_model
-        .express_middleware
-        .iter()
-        .map(|mw| {
-            let applies = mw.handler_file == flow.source.file_path
-                || middleware_model
-                    .express_routes
-                    .get(&mw.handler_file)
-                    .map(|routes| {
-                        routes.iter().any(|l| {
-                            *l >= flow.source.line.saturating_sub(5)
-                                && *l <= flow.sink.line.saturating_add(5)
-                        })
-                    })
-                    .unwrap_or(false);
-            let route_ref = middleware_model
-                .get_express_route_lines(&mw.handler_file)
-                .first()
-                .map(|l| format!("{}:{}", mw.handler_file, l))
-                .unwrap_or_default();
-            MiddlewareEvidence {
-                middleware_name: mw.handler_name.clone(),
-                middleware_file: mw.handler_file.clone(),
-                applies_to_route: applies,
-                route_handler: route_ref,
-            }
-        })
-        .collect();
-
     EvidenceRefs {
         source_sink_path: Some(SourceSinkEvidence {
             source_function: flow.source.symbol.clone(),
@@ -2069,7 +2082,7 @@ fn build_evidence_refs_from_flow(
             path_steps,
         }),
         sanitizer_chain: Vec::new(),
-        middleware_coverage,
+        middleware_coverage: shared_middleware_coverage.to_vec(),
         graph_snapshot: Some(graph_snapshot.clone()),
     }
 }
@@ -2389,13 +2402,23 @@ fn enrich_findings_with_cross_file_evidence(
     // 收集要回填的 (target_idx, evidence) 列表，避免在遍历中可变借用 findings
     let mut backfills: Vec<(usize, EvidenceRefs)> = Vec::new();
 
+    // 构建共享中间件证据（所有流复用，避免 N 次重复计算）
+    let shared_mw_coverage: Vec<MiddlewareEvidence> = cross_file_result
+        .middleware_model
+        .express_middleware
+        .iter()
+        .map(|mw| MiddlewareEvidence {
+            middleware_name: mw.handler_name.clone(),
+            middleware_file: mw.handler_file.clone(),
+            applies_to_route: false,
+            route_handler: String::new(),
+        })
+        .collect();
+
     // ── Pass 1: 跨文件流 → 同函数 Rule finding ──
     for flow in flows {
-        let evidence = build_evidence_refs_from_flow(
-            flow,
-            graph_snapshot,
-            &cross_file_result.middleware_model,
-        );
+        let evidence =
+            build_evidence_refs_from_flow(flow, graph_snapshot, &shared_mw_coverage);
         let flow_sink_file = crate::analysis::cross_file::normalize_path(&flow.sink.file_path);
         let flow_source_file = crate::analysis::cross_file::normalize_path(&flow.source.file_path);
 
