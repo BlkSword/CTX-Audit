@@ -95,7 +95,7 @@ impl Default for ScanOptions {
             enable_cross_file: false,
             taint_max_candidate_files: 5000,
             taint_max_file_kb: 500,
-            cross_file_max_flows: 50000,
+            cross_file_max_flows: 5000,
             public_route_patterns: crate::analysis::attack_surface::default_public_route_patterns(),
             non_production_path_patterns:
                 crate::analysis::attack_surface::default_non_production_path_patterns(),

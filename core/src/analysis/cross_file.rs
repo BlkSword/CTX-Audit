@@ -268,38 +268,38 @@ impl CallGraph {
         }
     }
 
-    /// 获取所有调用者（递归）
+    /// 获取所有调用者（迭代，避免 Go 等深层调用图栈溢出）
     pub fn get_all_callers(&self, func_id: &str) -> HashSet<String> {
         let mut callers = HashSet::new();
-        self.collect_callers_recursive(func_id, &mut callers);
+        let mut queue: std::collections::VecDeque<String> =
+            std::collections::VecDeque::from([func_id.to_string()]);
+        while let Some(id) = queue.pop_front() {
+            if let Some(node) = self.nodes.get(&id) {
+                for caller_id in &node.called_by {
+                    if callers.insert(caller_id.clone()) {
+                        queue.push_back(caller_id.clone());
+                    }
+                }
+            }
+        }
         callers
     }
 
-    fn collect_callers_recursive(&self, func_id: &str, callers: &mut HashSet<String>) {
-        if let Some(node) = self.nodes.get(func_id) {
-            for caller_id in &node.called_by {
-                if callers.insert(caller_id.clone()) {
-                    self.collect_callers_recursive(caller_id, callers);
-                }
-            }
-        }
-    }
-
-    /// 获取所有被调用的函数（递归）
+    /// 获取所有被调用的函数（迭代，避免 Go 等深层调用图栈溢出）
     pub fn get_all_callees(&self, func_id: &str) -> HashSet<String> {
         let mut callees = HashSet::new();
-        self.collect_callees_recursive(func_id, &mut callees);
-        callees
-    }
-
-    fn collect_callees_recursive(&self, func_id: &str, callees: &mut HashSet<String>) {
-        if let Some(node) = self.nodes.get(func_id) {
-            for target in &node.calls {
-                if callees.insert(target.callee.clone()) {
-                    self.collect_callees_recursive(&target.callee, callees);
+        let mut queue: std::collections::VecDeque<String> =
+            std::collections::VecDeque::from([func_id.to_string()]);
+        while let Some(id) = queue.pop_front() {
+            if let Some(node) = self.nodes.get(&id) {
+                for target in &node.calls {
+                    if callees.insert(target.callee.clone()) {
+                        queue.push_back(target.callee.clone());
+                    }
                 }
             }
         }
+        callees
     }
 
     /// 查找从污点源到污点汇的路径
