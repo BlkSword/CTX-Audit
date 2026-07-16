@@ -1225,7 +1225,7 @@ pub async fn scan_directory_deep_with_rules_progress(
     let cross_file_max_flows = scan_opts
         .as_ref()
         .map(|o| o.cross_file_max_flows)
-        .unwrap_or(50000);
+        .unwrap_or(5000);
 
     // 先执行基础扫描（收集文件内容缓存）
     let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);

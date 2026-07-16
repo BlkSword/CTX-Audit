@@ -114,6 +114,10 @@ pub struct ScanConfig {
     #[serde(default = "default_taint_max_file_kb")]
     pub taint_max_file_kb: usize,
 
+    /// 跨文件污点流最大数量上限（Go 等大调用图项目防止 OOM）
+    #[serde(default = "default_cross_file_max_flows")]
+    pub cross_file_max_flows: usize,
+
     /// 公开路由白名单（用于抑制公开端点被误报为未认证）
     #[serde(default = "default_public_route_patterns")]
     pub public_route_patterns: Vec<String>,
@@ -205,6 +209,9 @@ fn default_taint_max_candidate_files() -> usize {
 fn default_taint_max_file_kb() -> usize {
     500
 }
+fn default_cross_file_max_flows() -> usize {
+    5000
+}
 fn default_public_route_patterns() -> Vec<String> {
     deepaudit_core::analysis::attack_surface::default_public_route_patterns()
 }
@@ -230,6 +237,7 @@ impl Default for ScanConfig {
             deep: false,
             taint_max_candidate_files: 5000,
             taint_max_file_kb: 500,
+            cross_file_max_flows: 5000,
             public_route_patterns: default_public_route_patterns(),
             non_production_path_patterns: default_non_production_path_patterns(),
         }
@@ -843,6 +851,7 @@ impl ConfigManager {
                 Some(self.config.scan.taint_max_candidate_files.to_string())
             }
             "scan.taint_max_file_kb" => Some(self.config.scan.taint_max_file_kb.to_string()),
+            "scan.cross_file_max_flows" => Some(self.config.scan.cross_file_max_flows.to_string()),
             // output.*
             "output.format" => Some(self.config.output.format.clone()),
             "output.color" => Some(self.config.output.color.to_string()),
@@ -983,6 +992,9 @@ impl ConfigManager {
             }
             "scan.taint_max_file_kb" => {
                 self.config.scan.taint_max_file_kb = value.parse().context("无效的文件大小上限")?;
+            }
+            "scan.cross_file_max_flows" => {
+                self.config.scan.cross_file_max_flows = value.parse().context("无效的流上限")?;
             }
             "scan.min_severity" => {
                 let valid = ["critical", "high", "medium", "low"];
