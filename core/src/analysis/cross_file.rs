@@ -2669,7 +2669,9 @@ impl CrossFileTaintAnalyzer {
         let summaries = self.compute_function_summaries_from_current_graph();
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let sink_reachable = self.compute_sink_reachable_set();
-        let mut flows = Vec::new();
+        // 预分配精确容量：避免 Vec 增长时反复重新分配和复制。
+        // 37K+ 流的大项目上一次重新分配即可 OOM——这里保证分配只发生一次。
+        let mut flows = Vec::with_capacity(max_flows);
 
         for source_id in &self.call_graph.taint_sources {
             // source 到不了任何 sink，跳过整个 source
@@ -3021,9 +3023,9 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 纯调用图 BFS 兜底：从 source 函数出发，沿调用图找到所有可达 sink 函数
-    fn find_interprocedural_taint_flows_fallback(&self, _max_flows: usize) -> Vec<InterproceduralTaintFlow> {
+    fn find_interprocedural_taint_flows_fallback(&self, max_flows: usize) -> Vec<InterproceduralTaintFlow> {
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
-        let mut flows = Vec::new();
+        let mut flows = Vec::with_capacity(max_flows);
 
         // 预计算 sink 可达集，正向搜索只扩展这些节点。
         let sink_reachable = self.compute_sink_reachable_set();
@@ -3100,6 +3102,9 @@ impl CrossFileTaintAnalyzer {
                             confidence,
                             confidence_factors,
                         });
+                    if flows.len() >= max_flows {
+                        return flows;
+                    }
                     }
                     // 继续探索（sink 可能转发到另一个 sink）
                 }
