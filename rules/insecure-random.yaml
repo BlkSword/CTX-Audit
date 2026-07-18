@@ -10,8 +10,10 @@ id: insecure-random
 language: all
 name: Insecure Random Number Generation
 patterns:
+  # 仅匹配实例化弱随机（new Random(...)）与 Math.random()；
+  # 不匹配类型引用（java.util.Random 变量/参数声明），避免把 SecureRandom 用法误报为弱随机
   - language: java
-    pattern: (?i)(java\.util\.Random(?:\s+|\s*\.(?:next|seed))|new\s+(?:java\.util\.)?Random\s*\()
+    pattern: (?i)(new\s+(?:java\.util\.)?Random\s*\(|(?:java\.lang\.)?Math\.random\s*\()
   - language: javascript
     pattern: (?i)Math\.random\s*\(\)
   - language: python

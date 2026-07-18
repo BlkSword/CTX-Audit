@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use miette::{IntoDiagnostic, Result};
 
+#[cfg(feature = "agent")]
 use crate::agent::{run_audit, AuditConfig};
 use crate::output::OutputFormat;
 
@@ -47,36 +48,65 @@ pub async fn execute(
         ));
     }
 
-    let mut config = AuditConfig::new(
-        project_path,
-        deep,
-        min_severity,
-        max_findings,
-        format,
-        output_path,
-    );
-    config.specialist_enabled = specialist;
-    config.investigator_enabled = investigate;
-    config.taint_walk_enabled = taint_walk;
-    config.llm_aggressive = llm_aggressive;
-    config.llm_mode = llm_mode;
-    if let Some(mode) = review_mode {
-        config.review_mode = mode;
-    }
-    config.max_investigation_steps = max_investigation_steps;
-    config.auto_goal = auto_goal;
-    config.strategy = strategy;
-    config.max_goals = max_goals;
-    config.max_exploration_actions = max_exploration_actions;
-
-    match run_audit(config).await {
-        Ok(report) => {
-            eprintln!(
-                "Agent 审计完成: {} 个 finding，已调查 {}",
-                report.total_findings, report.investigated_count
-            );
-            Ok(())
+    #[cfg(feature = "agent")]
+    {
+        let mut config = AuditConfig::new(
+            project_path,
+            deep,
+            min_severity,
+            max_findings,
+            format,
+            output_path,
+        );
+        config.specialist_enabled = specialist;
+        config.investigator_enabled = investigate;
+        config.taint_walk_enabled = taint_walk;
+        config.llm_aggressive = llm_aggressive;
+        config.llm_mode = llm_mode;
+        if let Some(mode) = review_mode {
+            config.review_mode = mode;
         }
-        Err(e) => Err(miette::miette!("Agent 审计失败: {}", e)),
+        config.max_investigation_steps = max_investigation_steps;
+        config.auto_goal = auto_goal;
+        config.strategy = strategy;
+        config.max_goals = max_goals;
+        config.max_exploration_actions = max_exploration_actions;
+
+        match run_audit(config).await {
+            Ok(report) => {
+                eprintln!(
+                    "Agent 审计完成: {} 个 finding，已调查 {}",
+                    report.total_findings, report.investigated_count
+                );
+                Ok(())
+            }
+            Err(e) => Err(miette::miette!("Agent 审计失败: {}", e)),
+        }
+    }
+
+    #[cfg(not(feature = "agent"))]
+    {
+        // agent 模块默认不编译，引用参数以消除 unused 警告
+        let _ = (
+            deep,
+            min_severity,
+            max_findings,
+            specialist,
+            review_mode,
+            llm_aggressive,
+            llm_mode,
+            investigate,
+            taint_walk,
+            max_investigation_steps,
+            auto_goal,
+            strategy,
+            max_goals,
+            max_exploration_actions,
+            output_path,
+            format,
+        );
+        Err(miette::miette!(
+            "此构建未启用 agent 功能。请使用 `cargo build --release --features agent` 重新构建后使用 `ctx-audit audit --agent`"
+        ))
     }
 }

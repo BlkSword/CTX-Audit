@@ -53,6 +53,8 @@ app.listen(3000);
         .args([
             "audit",
             "--agent",
+            "--llm-mode",
+            "noop",
             project.to_str().unwrap(),
             "--max-findings",
             "5",
@@ -143,6 +145,8 @@ app.listen(3000);
         .args([
             "audit",
             "--agent",
+            "--llm-mode",
+            "noop",
             "--specialist",
             project.to_str().unwrap(),
             "--max-findings",
@@ -221,6 +225,8 @@ app.listen(3000);
         .args([
             "audit",
             "--agent",
+            "--llm-mode",
+            "noop",
             "--review-mode",
             "debate",
             project.to_str().unwrap(),
@@ -308,6 +314,8 @@ app.listen(3000);
         .args([
             "audit",
             "--agent",
+            "--llm-mode",
+            "noop",
             "--investigate",
             "--max-investigation-steps",
             "3",
@@ -367,6 +375,8 @@ app.listen(3000);
         .args([
             "audit",
             "--agent",
+            "--llm-mode",
+            "noop",
             project.to_str().unwrap(),
             "--max-findings",
             "5",
@@ -420,6 +430,8 @@ app.listen(3000);
         .args([
             "audit",
             "--agent",
+            "--llm-mode",
+            "noop",
             "--no-auto-goal",
             project.to_str().unwrap(),
             "--max-findings",

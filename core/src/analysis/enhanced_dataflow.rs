@@ -1085,12 +1085,11 @@ impl<'a> AstCFGBuilder<'a> {
                 if matches!(child_kind, "{" | "}" | ";" | "(") {
                     continue;
                 }
-                end = self.process_node(&child, content, cond_id, scope_depth + 1);
-            }
-            // 修正：第一个子节点应该从 cond 接 TrueBranch 边
-            // 简化处理：直接改第一条边的类型
-            if let Some(first_child) = body.children(&mut cursor).next() {
-                // 已经在循环中处理了，边类型需要调整
+                // 链式连接：以上一个子节点的出口作为前驱。
+                // 注释等不产生 CFG 节点的子节点会原样返回 prev_id，
+                // 若始终传 cond_id 会把 end 重置回条件节点，
+                // 导致 if 体内最后一个真实语句到 merge 的边丢失（污点断流）。
+                end = self.process_node(&child, content, end, scope_depth + 1);
             }
             Some(end)
         } else {
@@ -1107,7 +1106,8 @@ impl<'a> AstCFGBuilder<'a> {
                 let mut end = cond_id;
                 for child in &children {
                     if child.kind() != "else" {
-                        end = self.process_node(child, content, cond_id, scope_depth + 1);
+                        // 与 consequence 同理链式连接，避免注释节点重置 end
+                        end = self.process_node(child, content, end, scope_depth + 1);
                     }
                 }
                 Some(end)
@@ -1115,7 +1115,7 @@ impl<'a> AstCFGBuilder<'a> {
                 let mut end = cond_id;
                 let mut cursor = alt.walk();
                 for child in alt.children(&mut cursor) {
-                    end = self.process_node(&child, content, cond_id, scope_depth + 1);
+                    end = self.process_node(&child, content, end, scope_depth + 1);
                 }
                 Some(end)
             }

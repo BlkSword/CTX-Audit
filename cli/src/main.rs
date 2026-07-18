@@ -1,6 +1,8 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
+// agent 模块已搁置（llm_mode=noop），默认构建不编译；--features agent 启用
+#[cfg(feature = "agent")]
 mod agent;
 mod commands;
 mod config;

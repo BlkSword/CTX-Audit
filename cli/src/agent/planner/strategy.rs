@@ -461,6 +461,8 @@ mod tests {
             barriers: None,
             reasoning_hint: None,
             evidence_refs: None,
+            enclosing_function: None,
+            enclosing_function_line: None,
         });
 
         let mut surface = deepaudit_core::attack_surface::AttackSurface::default();

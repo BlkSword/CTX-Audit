@@ -385,8 +385,9 @@ impl ReadFileTool {
         // 标准化路径分隔符
         let normalized = file_path.replace('\\', "/");
 
-        // 获取项目目录名
-        let project_name = Path::new(&self.project_path)
+        // 获取项目目录名（先统一分隔符，避免 Windows 风格路径在 Linux 下无法解析）
+        let project_path_normalized = self.project_path.replace('\\', "/");
+        let project_name = Path::new(&project_path_normalized)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
@@ -418,7 +419,6 @@ impl ReadFileTool {
 
         // 情况2b: 路径以完整 project_path 开头 (如 "target/benchmarks/webgoat/src/...")
         // project_path 可能是相对多层路径，不仅限于单层目录名
-        let project_path_normalized = self.project_path.replace('\\', "/");
         let full_project_prefix = format!("{}/", project_path_normalized);
         if normalized.starts_with(&full_project_prefix) {
             return normalized[full_project_prefix.len()..].to_string();

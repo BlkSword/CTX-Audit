@@ -50,21 +50,25 @@ pub struct AstTaintAnalyzer {
 
 impl AstTaintAnalyzer {
     pub fn new() -> Self {
-        // 尝试从 rules/taint/ 加载 YAML 规则，失败则使用硬编码默认值
+        // 尝试从 rules/taint/ 加载 YAML 规则；目录不可用时回退到内置嵌入规则，
+        // 嵌入规则也为空才使用硬编码默认值
         let yaml_dir = std::path::Path::new("rules/taint");
-        if yaml_dir.exists() {
-            if let Ok(loaded) = crate::rules::taint_loader::load_taint_rules_from_dir(yaml_dir) {
-                if !loaded.sources.is_empty() || !loaded.sinks.is_empty() {
-                    return Self {
-                        sources: Arc::new(loaded.sources),
-                        sinks: Arc::new(loaded.sinks),
-                        sanitizer_patterns: Arc::new(loaded.sanitizer_patterns),
-                    };
-                }
-            }
+        let loaded = crate::rules::taint_loader::load_taint_rules_with_embedded_fallback(yaml_dir);
+        if !loaded.sources.is_empty() || !loaded.sinks.is_empty() {
+            return Self {
+                sources: Arc::new(loaded.sources),
+                sinks: Arc::new(loaded.sinks),
+                sanitizer_patterns: Arc::new(loaded.sanitizer_patterns),
+            };
         }
 
         // Fallback: 硬编码默认值
+        Self::with_default_rules()
+    }
+
+    /// 仅使用硬编码默认规则构造（不加载 YAML）。
+    /// 用于 YAML 全部不可用时的最终兜底，以及需要对宽松默认规则做断言的测试。
+    pub(crate) fn with_default_rules() -> Self {
         Self {
             sources: Arc::new(Self::default_sources()),
             sinks: Arc::new(Self::default_sinks()),
@@ -1065,7 +1069,7 @@ impl AstTaintAnalyzer {
                 || self
                     .sanitizer_patterns
                     .iter()
-                    .any(|p| assign.source_expr.contains(p.as_str()));
+                    .any(|p| Self::expr_mentions_sanitizer(&assign.source_expr, p));
 
             // 在 PathSensitiveState 中查找污点变量
             let tainted_source_var =
@@ -1100,6 +1104,18 @@ impl AstTaintAnalyzer {
                 }
 
                 for tp in target_paths {
+                    // 若目标变量本身是入口行扫描直接标记的污点源
+                    // （如 LDAP getAttributes 的结果变量 attrs），保留其原始
+                    // source 标注。否则被上游传播链覆盖后，多条 finding 会共享
+                    // 同一 source 行，在扫描收尾按 (file, line_start) 去重时被
+                    // 错误合并吞掉（如 00012 的 XSS 被合并进 LDAP finding）。
+                    if !is_sanitized {
+                        if let Some(existing) = state.get_exact(&tp) {
+                            if existing.source_var == tp.as_dotted() {
+                                continue;
+                            }
+                        }
+                    }
                     let mut vt = VarTaintState::from_taint(
                         src_vt.source_line,
                         src_vt.source_var.clone(),
@@ -1746,7 +1762,7 @@ impl AstTaintAnalyzer {
                 || self
                     .sanitizer_patterns
                     .iter()
-                    .any(|p| assign.source_expr.contains(p.as_str()));
+                    .any(|p| Self::expr_mentions_sanitizer(&assign.source_expr, p));
 
             // 检查右值是否引用了污点变量（直接匹配 + 别名解析）
             let tainted_source_var = self.find_tainted_var(&assign.source_vars, state, alias_map);
@@ -2228,6 +2244,30 @@ impl AstTaintAnalyzer {
         self.sanitizer_patterns.iter().any(|p| callee.contains(p))
     }
 
+    /// 判断表达式文本中是否出现净化器调用（标识符边界感知）。
+    ///
+    /// 普通子串匹配会把 `Base64.encodeBase64(x)` 中的 "encode" 误判为净化器，
+    /// 导致 `new String(Base64.decodeBase64(Base64.encodeBase64(tainted)))` 这类
+    /// 编码往返表达式被整体标记为已净化，切断污点传播。
+    /// 这里要求匹配位置之后不能紧跟标识符字符（字母/数字/下划线），
+    /// 保证 `encode(`、`URLEncoder.encode` 等仍可命中，而 `encodeBase64` 不命中。
+    fn expr_mentions_sanitizer(expr: &str, pattern: &str) -> bool {
+        let mut start = 0;
+        while let Some(pos) = expr[start..].find(pattern) {
+            let abs = start + pos;
+            let followed_by_ident = expr
+                .as_bytes()
+                .get(abs + pattern.len())
+                .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                .unwrap_or(false);
+            if !followed_by_ident {
+                return true;
+            }
+            start = abs + 1;
+        }
+        false
+    }
+
     /// 数据类型推断：检测是否使用了参数化查询模式
     ///
     /// 保守策略：仅当代码行出现显式参数占位符（? / %s / :name）且没有字符串拼接时，
@@ -2704,7 +2744,9 @@ cursor.execute(query)
     fn test_command_injection_js() {
         let code = r#"userInput = req.query.cmd
 result = exec(userInput)"#;
-        let mut analyzer = AstTaintAnalyzer::new();
+        // 使用硬编码默认规则（宽松子串匹配）；YAML 语义规则要求命名空间/精确匹配，
+        // 不会命中裸 exec() 调用
+        let mut analyzer = AstTaintAnalyzer::with_default_rules();
         let path = std::path::PathBuf::from("test.py"); // Use Python syntax for simpler parsing
         let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
 
@@ -2816,7 +2858,8 @@ cursor.execute(query)"#;
         let code = r#"userInput = process.argv[2]
 result = exec(userInput)
 print(result)"#;
-        let mut analyzer = AstTaintAnalyzer::new();
+        // 使用硬编码默认规则（宽松子串匹配）；YAML 语义规则不会命中裸 exec() 调用
+        let mut analyzer = AstTaintAnalyzer::with_default_rules();
         let path = std::path::PathBuf::from("test.js");
         let flows = analyzer.analyze_code(code, &path, "run", &[], &[]);
 
@@ -3738,6 +3781,155 @@ public class Test extends HttpServlet {
                 .iter()
                 .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
             "Expected SQL injection from request.getParameter with null check (fragment CPG)"
+        );
+    }
+
+    #[test]
+    fn test_java_ldap_headers_next_element_with_comment() {
+        // 复刻 BenchmarkTest00012：if 体内带行注释的 receiver 传播链。
+        // headers 被污染后，param = headers.nextElement()（无参方法，receiver 污染）
+        // 应使 param 被污染；if 体中的行注释不得打断该语句到 merge 的 CFG 边。
+        let code = r#"
+import javax.servlet.http.*;
+
+public class Test extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String param = "";
+        java.util.Enumeration<String> headers = request.getHeaders("BenchmarkTest00012");
+        if (headers != null && headers.hasMoreElements()) {
+            param = headers.nextElement(); // just grab first element
+        }
+        param = java.net.URLDecoder.decode(param, "UTF-8");
+        String filter = "(&(objectclass=person))(|(uid=" + param + ")(street={0}))";
+        javax.naming.directory.InitialDirContext idc = null;
+        Object results = idc.search("ou=users", filter, new Object[]{}, null);
+    }
+}
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("Test.java");
+        let (functions, assignments, calls) =
+            crate::ast::parser::with_thread_local_parser(|p| p.extract_all_for_taint(&path, code));
+        let func = functions
+            .iter()
+            .find(|f| f.name == "doPost")
+            .expect("doPost function");
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            let tree = ast_parser
+                .parse_fragment(&func.body_text, "java")
+                .expect("parse fragment");
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let body_node = root
+                .children(&mut cursor)
+                .find(|n| {
+                    matches!(
+                        n.kind(),
+                        "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                    )
+                })
+                .expect("function body");
+            let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
+                &body_node,
+                &func.body_text,
+                path.to_str().unwrap(),
+                func,
+                &func_assignments,
+                &func_calls,
+            );
+            analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
+        });
+        assert!(
+            fragment_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::LdapInjection)),
+            "Expected LDAP injection via headers.nextElement() receiver (fragment CPG)"
+        );
+    }
+
+    #[test]
+    fn test_java_xpath_base64_nested_constructor() {
+        // 复刻 BenchmarkTest00207：嵌套调用/构造器传播链。
+        // bar = new String(Base64.decodeBase64(Base64.encodeBase64(param.getBytes())))
+        // 中递归参数 param 被污染时 bar 应被污染；encodeBase64 不是净化器，
+        // 不得因子串包含 "encode" 而把 bar 标记为已净化。
+        let code = r#"
+import javax.servlet.http.*;
+
+public class Test extends HttpServlet {
+    public void doPost(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        String param = request.getHeader("BenchmarkTest00207");
+        param = java.net.URLDecoder.decode(param, "UTF-8");
+        String bar = "";
+        if (param != null) {
+            bar = new String(
+                    org.apache.commons.codec.binary.Base64.decodeBase64(
+                            org.apache.commons.codec.binary.Base64.encodeBase64(
+                                    param.getBytes())));
+        }
+        String expression = "/Employees/Employee[@emplid='" + bar + "']";
+        String result = xp.evaluate(expression, xmlDocument);
+    }
+}
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("Test.java");
+        let (functions, assignments, calls) =
+            crate::ast::parser::with_thread_local_parser(|p| p.extract_all_for_taint(&path, code));
+        let func = functions
+            .iter()
+            .find(|f| f.name == "doPost")
+            .expect("doPost function");
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let fragment_flows = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            let tree = ast_parser
+                .parse_fragment(&func.body_text, "java")
+                .expect("parse fragment");
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let body_node = root
+                .children(&mut cursor)
+                .find(|n| {
+                    matches!(
+                        n.kind(),
+                        "block" | "statement_block" | "body" | "suite" | "block_stmt"
+                    )
+                })
+                .expect("function body");
+            let func_cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment(
+                &body_node,
+                &func.body_text,
+                path.to_str().unwrap(),
+                func,
+                &func_assignments,
+                &func_calls,
+            );
+            analyzer.analyze_function_cpg(&func_cpg, &func.body_text, &[])
+        });
+        assert!(
+            fragment_flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::XPathInjection)),
+            "Expected XPath injection via nested Base64 calls and String constructor (fragment CPG)"
         );
     }
 }

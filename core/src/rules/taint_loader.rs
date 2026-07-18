@@ -92,6 +92,31 @@ pub fn load_taint_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<LoadedTaintR
     })
 }
 
+/// 从目录加载污点规则，目录缺失或内容为空时回退到内置嵌入规则
+///
+/// 解决在仓库根目录之外运行（如 `cargo install` 后）时，
+/// 相对路径 `rules/taint` 查找失败导致污点规则静默丢失的问题。
+pub fn load_taint_rules_with_embedded_fallback<P: AsRef<Path>>(path: P) -> LoadedTaintRules {
+    let from_dir = load_taint_rules_from_dir(&path).unwrap_or(LoadedTaintRules {
+        sources: Vec::new(),
+        sinks: Vec::new(),
+        sanitizer_patterns: Vec::new(),
+    });
+    if !from_dir.sources.is_empty() || !from_dir.sinks.is_empty() {
+        return from_dir;
+    }
+    let embedded = crate::rules::embedded::load_embedded_taint_rules();
+    if !embedded.sources.is_empty() || !embedded.sinks.is_empty() {
+        tracing::info!(
+            "污点规则目录 {:?} 不可用，使用内置嵌入规则 ({} sources, {} sinks)",
+            path.as_ref(),
+            embedded.sources.len(),
+            embedded.sinks.len(),
+        );
+    }
+    embedded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

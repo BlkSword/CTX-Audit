@@ -151,6 +151,35 @@ fn is_common_generic_name(name: &str) -> bool {
 /// 超过该阈值说明是高度通用的名字（如 bad/good/main），应跳过。
 const GLOBAL_FALLBACK_MAX_MATCHES: usize = 32;
 
+/// 语言域：跨文件裸名回退连边时用于隔离不同语言。
+/// 避免 Python 的 `get` 被连到 jQuery 的 `get` 这类跨语言假边。
+fn language_domain(path: &str) -> &str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext {
+        "py" => "python",
+        // JS/TS 同域，允许互调
+        "js" | "jsx" | "ts" | "tsx" => "javascript",
+        "java" => "java",
+        "rs" => "rust",
+        "go" => "go",
+        // C/C++ 同域
+        "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hxx" => "cpp",
+        "php" => "php",
+        "rb" => "ruby",
+        _ => "unknown",
+    }
+}
+
+/// 裸名全局回退是否允许连边：双方均为已知语言时必须同域，
+/// 任一方为未知语言则放行（避免误杀真实调用）。
+fn same_language_domain(a: &str, b: &str) -> bool {
+    let (da, db) = (language_domain(a), language_domain(b));
+    da == "unknown" || db == "unknown" || da == db
+}
+
 /// 函数调用图节点
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallGraphNode {
@@ -1447,6 +1476,11 @@ impl CrossFileTaintAnalyzer {
                                     if is_builtin_call_target(ct) {
                                         continue;
                                     }
+                                    // 语言域隔离：裸名全局回退不允许跨语言连边
+                                    // （如 Python 的 get 不应连到 JS 库的 get）
+                                    if !same_language_domain(&node.file_path, &callee_file) {
+                                        continue;
+                                    }
                                     local_edges.push((caller_id.clone(), callee_id.clone()));
                                 }
                             }
@@ -1562,6 +1596,16 @@ impl CrossFileTaintAnalyzer {
 
     /// 为单个文件构建调用图
     fn build_call_graph_for_file(&mut self, file_path: &Path) {
+        // vendor / minified 第三方库不建图：这些文件只产生噪声节点与跨语言假边
+        let fp_str = file_path.to_string_lossy().to_string();
+        if crate::scanner::classify_file_role(&fp_str) == "vendor" {
+            return;
+        }
+        if let Some(content) = self.file_content_cache.get(&fp_str) {
+            if crate::scanner::classify_file_role_with_content(&fp_str, content) == "vendor" {
+                return;
+            }
+        }
         if self.is_ast_supported(file_path) {
             self.build_call_graph_for_file_ast(file_path);
         } else {
@@ -3972,6 +4016,21 @@ mod tests {
     fn test_call_graph_creation() {
         let graph = CallGraph::new();
         assert!(graph.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_same_language_domain() {
+        // 同语言放行
+        assert!(same_language_domain("a.py", "b.py"));
+        assert!(same_language_domain("src/a.js", "lib/b.ts"));
+        assert!(same_language_domain("a.c", "b.cpp"));
+        // 跨语言隔离（本次修复的核心场景）
+        assert!(!same_language_domain("clients/status-client.py", "web/js/jquery.min.js"));
+        assert!(!same_language_domain("a.py", "b.js"));
+        assert!(!same_language_domain("a.java", "b.go"));
+        // 未知语言放行，避免误杀
+        assert!(same_language_domain("a.py", "README"));
+        assert!(same_language_domain("noext", "b.js"));
     }
 
     #[test]

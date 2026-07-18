@@ -552,6 +552,8 @@ mod tests {
             barriers: None,
             reasoning_hint: None,
             evidence_refs: None,
+            enclosing_function: None,
+            enclosing_function_line: None,
         };
         let evidence = Evidence::default();
 
@@ -591,6 +593,8 @@ mod tests {
             barriers: None,
             reasoning_hint: None,
             evidence_refs: None,
+            enclosing_function: None,
+            enclosing_function_line: None,
         };
         let evidence = Evidence {
             call_path: Some(deepaudit_core::CallPath {

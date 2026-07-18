@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **内置规则嵌入二进制**：`core/src/rules/embedded.rs` 通过 `include_dir` 将仓库根 `rules/`（模式规则 + `taint/` 污点规则）打包进二进制。此前规则目录解析依赖相对 CWD 的 `rules/` 路径，在仓库外运行（如 `cargo install` 后、MCP 以项目目录为 CWD）时所有 YAML 规则静默失效（日志仅一行"未找到规则目录"）。现在文件系统三级查找失败时自动回退到嵌入规则；`AstTaintAnalyzer::new`、Stage B/C 污点规则加载、MCP 规则列表与 sanitizer 描述均走 `load_taint_rules_with_embedded_fallback`。
+- **Vendor / minified 第三方库识别**：`classify_file_role` 扩展 vendor 判定（`/node_modules/`、`/plugins/`、`/libs/` 目录，`*.min.js`/`*.bundle.js` 等文件名，jquery/bootstrap 等知名库前缀）；新增 `is_minified_content` 内容级识别（超长单行/平均行长启发式）与 `classify_file_role_with_content`。vendor 文件不再进入 Stage B 污点候选、Stage C 跨文件分析与跨文件调用图建图（ServerStatus 实测可消除 96% 的图噪声节点）；规则扫描的 vendor finding 仍保留但按既有 `adjust_severity` 降权。
+- **likely_fp 参数评估**：`RuleScanner` 对 regex 命中的 sink 调用做参数分析（字符串感知的括号配平提取实参）：参数全部为字面量（如 `os.popen("netstat ...")`）、printf 族格式串为字面量且不含 `%s/%[`（输出有界）、凭证类规则命中占位符值（`USER_PASSWORD`/`changeme` 等）时，finding 标记 `likely_fp` 原因并降为 info（不丢弃，交由 LLM/上层最终判定）。
+
+### Fixed
+
+- **跨文件调用图跨语言假边**：`cross_file.rs` Phase 2 裸名全局回退连边不做语言校验，导致 Python 方法被连到 jQuery 同名函数（ServerStatus 实测一个 `get` 产生 366 个"调用者"，`find_call_path` 会"确认"Python→JS 的不可能路径）。新增 `language_domain` / `same_language_domain`：双方均为已知语言时必须同域（JS/TS 同域、C/C++ 同域），未知语言放行避免误杀。import 精确匹配与 receiver 解析路径不受影响。
+- **`extract_relative_path` 跨平台解析失败**：`tools/src/bridge.rs` 提取项目目录名时直接用 `Path::file_name()` 解析 `project_path`，Windows 风格路径（`D:\project\myproject`）在 Linux 下反斜杠不被识别为分隔符，导致项目名解析失败、相对路径剥离失效（Linux 下 `cargo test --workspace` 中 `test_extract_relative_path_with_project_prefix` 失败）。修复为先将 `project_path` 的 `\` 统一替换为 `/` 再提取目录名。
+- **规则命中注释中的代码**：正则规则对注释行与代码行无差别命中（注释掉的 `innerHTML`、`DOCTODO`/`HACK` 注释关键词等）。`RuleScanner` 新增注释感知过滤：首个命中时用 tree-sitter AST 惰性收集全文件注释字节范围，命中点落在注释节点内直接丢弃（注释中的代码不会执行，必为误报）。ServerStatus 复测消除约 25% 的规则层误报。
+- **格式串规则误伤有界变体**：`cpp-format-string` 的 pattern 以 `printf\s*\(` 子串匹配，误命中 `snprintf`/`vsnprintf` 等长度受控调用。pattern 增加 `\b` 词边界，有界变体不再命中。
+- **code-injection 误命中正则编译**：Python pattern 中 `compile\s*\(` 误命中 `re.compile`/`Pattern.compile`。改为 `(?:^|[^\w.])compile\s*\(`，排除成员调用形态。
+
+### Added
+
 - **OWASP BenchmarkJava v1.2 可回归基线**：新增 `BASELINE.md` 记录 `--taint` / `--deep` 模式下的 precision / recall / F1（taint: P=0.344 R=0.514 F1=0.412；deep: P=0.336 R=0.514 F1=0.406）。
 - **主次模型搭配（Dual-Model Routing）**：
   - `LlmConfig` 新增 `model_pro` 字段，用于配置强模型（如 `deepseek-v4-pro`）。
@@ -45,6 +59,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent.triage_concurrency` 默认值从 4 提升到 32，提高 Agent 在高并发 LLM endpoint 下的吞吐。
 - `agent.max_llm_calls` 默认值从 100 提升到 500，并新增按严重度默认预算（critical=100, high=200, medium=200）。
 - `agent.max_investigation_steps` 默认值从 5 提升到 10。
+
+### Fixed
+
+- **Agent 测试编译失败**：`Finding` 新增 `enclosing_function` / `enclosing_function_line` 字段后，`cli/src/agent` 各测试模块的构造函数未同步，导致 `cargo test --workspace` 编译失败（10 处 E0063）。已全部补齐，`cargo test --workspace` 恢复可用。
+- **Stage B 污点分析在 `target/` 等目录下被整体跳过**：`core/src/scanner/mod.rs` 二次收集循环用带扫描根前缀的路径调用 `is_excluded`，扫描根本身位于 `target/` 时所有 AST 文件被排除（Stage A 已用根相对路径，此处不一致）。修复为根相对判断；修复后 `run-baseline.sh` 的 `--deep` 扫描才真正包含污点分析。
+- **Java 污点传播断流（if 体注释）**：`AstCFGBuilder::process_if` 处理 consequence/alternative 子节点时始终从 `cond_id` 重新出发，注释等不产生 CFG 节点的子节点会把 `end` 重置回条件节点，导致 if 体内最后一条真实语句到 merge 的边丢失。改为链式连接（`end` 作为前驱），修复 `headers.nextElement()` 等 receiver 传播链断流（BenchmarkTest00012 LDAP 注入检出）。
+- **净化器误判切断传播**：sanitizer 匹配从普通子串改为标识符边界感知（`expr_mentions_sanitizer`），`Base64.encodeBase64` 不再被误判为 `encode` 净化器，Base64 编码往返表达式不再切断污点传播（BenchmarkTest00207 XPath 注入检出）。
+- **去重吞 finding**：传播覆盖入口行扫描直接标记的 source 标注时，多条 finding 会共享同一 source 行并在 `(file, line_start)` 去重时被错误合并。现在保留原始 source 标注（如 00012 的 XSS 不再被吞进 LDAP finding）。
+- **Java 污点字典缺口**：`java_ldap` 的 `sensitive_params` 从 `[0]` 改为 `[0,1]`（原配置只检查 `search(base, ...)` 的 arg0，漏掉真正可被注入的 arg1 filter），receiver_patterns 补充 `idc`/`ldap`/`naming`；`java_xpath` receiver_patterns 补充 `xp`（`xp.evaluate(...)` 形态）。BenchmarkJava CWE-90 召回从 0 提升到 0.889。
+- **TaintWalk 测试与解析修复**：测试 mock 未实现关键词协议切换后使用的 `chat` 接口（`LlmClient::chat` 默认返回空串），导致 3 个 taint_walk 测试失败；同时 `parse_taint_walk_decision_from_text` 在文本明显是 JSON（`{` 开头）时优先走 JSON 解析，避免关键词解析器把单行 JSON 误当键值对并用默认值静默吞掉。
+- **Agent 集成测试环境隔离**：`cli/tests/audit_agent_test.rs` 6 个端到端测试继承全局配置，当用户配置 `agent.llm_mode=http` 但 API key 失效时 triage 全部失败、audit_log 为空。测试统一显式传 `--llm-mode noop`，不再受全局配置影响。
+- **evaluate.py 归一化映射补全**：补充 `xpath injection`→643、`insecure cookie`→614、`trust boundary violation`→501、`weak hash (algorithm)`→328，修复此前对应 CWE 的真阳性被统计为误报的问题（CWE-643 召回从账面 0 修正为实际 1.0）。
+
+### Changed
+
+- **`rules/insecure-random.yaml` Java 模式收窄**：仅匹配 `new Random(` 实例化与 `Math.random()`，不再匹配 `java.util.Random` 类型引用（实际声明为 SecureRandom 的安全用法）。BenchmarkJava CWE-330 真阳性 193 → 218（召回 1.0），该规则在 false 文件上的误报 104 → 0。
+- **`rules/command-injection.yaml` Java 模式收窄**：要求 `new ProcessBuilder(` 构造形式，避免命中异常消息字符串字面量中的 `ProcessBuilder(...)`。CWE-78 真阳性持平（33），规则误报 60 → 30。
+
+### Added
+
+- **`enclosing_function` 全模式覆盖**：Stage B 结束后用已解析的 per-file 符号构建函数区间表（`build_file_function_ranges` + `enrich_findings_with_enclosing_function_from_symbols`），`--taint` / `--deep` 模式下所有 finding（含 RuleScanner / AttackSurfaceMapper 产出）自动填充包围函数名与起始行，WebGoat 覆盖率从 0% 提升到 90%；跨文件 query_engine 路径行为不变，纯规则扫描保持零开销。
 
 ### Fixed
 

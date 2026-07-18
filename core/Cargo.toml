@@ -59,6 +59,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rayon = "1.10"
 once_cell = "1.19"
 
+# 内置规则嵌入
+include_dir = "0.7"
+
 # HTTP 客户端（SCA 依赖扫描用）
 reqwest = { workspace = true }
 toml = "0.8"

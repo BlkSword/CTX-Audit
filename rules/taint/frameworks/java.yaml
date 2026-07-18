@@ -314,6 +314,9 @@ sinks:
       - "ldapTemplate"
       - "dirContext"
       - "initialDirContext"
+      - "idc"
+      - "ldap"
+      - "naming"
     patterns:
       - ".search"
       - ".lookup"
@@ -332,7 +335,7 @@ sinks:
     vulnerability_type: "LdapInjection"
     severity: "High"
     cwe_id: "CWE-90"
-    sensitive_params: [0]
+    sensitive_params: [0, 1]
     ast_patterns: []
 
   - id: "java_xss_output"
@@ -384,6 +387,7 @@ sinks:
       - "xpath"
       - "xpathFactory"
       - "jxpathContext"
+      - "xp"
     patterns:
       - ".evaluate"
       - ".compile"

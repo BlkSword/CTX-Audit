@@ -1995,6 +1995,24 @@ async fn tool_list_rules(args: &Value) -> Value {
             }
         }
         visit_taint_yaml(taint_dir, &mut all_rules, category_filter, language_filter);
+    } else {
+        // 文件系统目录缺失（如在仓库外运行），回退到内置嵌入规则
+        for content in deepaudit_core::rules::embedded::embedded_taint_yaml_contents() {
+            if let Ok(ts) = serde_yaml::from_str::<TaintRuleSet>(&content) {
+                all_rules.push(serde_json::json!({
+                    "id": format!("taint:{}", ts.name.to_lowercase().replace(' ', "-")),
+                    "name": ts.name,
+                    "severity": "variable",
+                    "language": "multi",
+                    "category": "taint-rules",
+                    "type": "taint",
+                    "sources_count": ts.sources.len(),
+                    "sinks_count": ts.sinks.len(),
+                    "sanitizers_count": ts.sanitizers.len(),
+                    "source": "embedded",
+                }));
+            }
+        }
     }
 
     let summary = format!(
@@ -2095,7 +2113,16 @@ async fn try_daemon_call_graph(project_path: &str, entry: &str, depth: usize) ->
 fn get_sanitizer_descriptions() -> Vec<(String, String)> {
     let yaml_dir = std::path::Path::new("rules/taint");
     if !yaml_dir.exists() {
-        return Vec::new();
+        // 文件系统目录缺失（如在仓库外运行），回退到内置嵌入规则
+        let mut descriptions = Vec::new();
+        for content in deepaudit_core::rules::embedded::embedded_taint_yaml_contents() {
+            if let Ok(rule_set) = serde_yaml::from_str::<TaintRuleSet>(&content) {
+                for san in &rule_set.sanitizers {
+                    descriptions.push((san.pattern.clone(), san.description.clone()));
+                }
+            }
+        }
+        return descriptions;
     }
 
     let mut descriptions = Vec::new();

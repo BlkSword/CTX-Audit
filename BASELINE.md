@@ -43,12 +43,68 @@ python benchmarks/evaluate.py --dataset owasp-java \
 
 ## 指标汇总
 
+### 2026-07-18 误报治理回归（当前版本）
+
+跨文件语言域隔离、vendor 过滤、嵌入规则、likely_fp 参数评估、注释感知过滤后的回归结果（门禁：TP 不允许下降）：
+
+| 模式 | Findings | TP | FP | FN | Precision | Recall | F1 |
+|------|----------|----|----|----|-----------|--------|----|
+| `--taint` | 2686 | 858 | 1828 | 557 | 0.319 | 0.606 | 0.418 |
+| `--deep` | 3061 | 871 | 2190 | 544 | 0.285 | 0.616 | 0.389 |
+
+与 2026-07-18 前基线对比：
+
+- **TP 无回归**：taint 858 → 858（持平），deep 864 → 871（+7，recall +0.5pt），门禁通过。
+- **BenchmarkJava 上 FP 基本持平**（taint −6，deep +82）：该数据集的 FP 主要是与 TP 代码形状一致的 Java 常量条件死代码，不是本轮治理的目标形态（注释命中、有界 printf、常量参数调用）。
+- **真实项目收益**：ServerStatus（C++/Python/JS 混合）全严重度 finding 79 → 30（−62%），CRITICAL 28 → 1，且唯一真阳性（存储型 XSS）保留。
+
+### 2026-07-17 重测（存档）
+
+修复 Stage B 排除 bug、Java 字典、传播链断流、规则误报并补全 evaluate.py 映射后的结果：
+
+| 模式 | Findings | TP | FP | FN | Precision | Recall | F1 |
+|------|----------|----|----|----|-----------|--------|----|
+| `--taint` | 2663 | 858 | 1834 | 557 | 0.319 | 0.606 | 0.418 |
+| `--deep` | 2943 | 864 | 2108 | 551 | 0.291 | 0.611 | 0.394 |
+
+按 CWE 拆分（Taint 模式）：
+
+| CWE | TP | FP | FN | Precision | Recall | F1 |
+|-----|----|----|----|-----------|--------|----|
+| CWE-22 | 105 | 216 | 28 | 0.327 | 0.789 | 0.463 |
+| CWE-78 | 33 | 192 | 93 | 0.147 | 0.262 | 0.188 |
+| CWE-79 | 124 | 134 | 122 | 0.481 | 0.504 | 0.492 |
+| CWE-89 | 194 | 167 | 78 | 0.537 | 0.713 | 0.613 |
+| CWE-90 | 25 | 59 | 2 | 0.298 | 0.926 | 0.450 |
+| CWE-327 | 130 | 102 | 0 | 0.560 | 1.000 | 0.718 |
+| CWE-328 | 0 | 257 | 129 | 0.000 | 0.000 | 0.000 |
+| CWE-330 | 218 | 566 | 0 | 0.278 | 1.000 | 0.435 |
+| CWE-501 | 11 | 48 | 72 | 0.186 | 0.133 | 0.155 |
+| CWE-614 | 3 | 31 | 33 | 0.088 | 0.083 | 0.086 |
+| CWE-643 | 15 | 62 | 0 | 0.195 | 1.000 | 0.326 |
+
+与旧基线相比的变化及原因：
+
+- **CWE-90 召回 0 → 0.926**：`java_ldap` sink 字典修复（receiver 补 `idc` 等、`sensitive_params` 改 `[0,1]`）+ Stage B 排除修复 + if 分支 CFG 链式连接修复（`headers.nextElement()` receiver 传播）。
+- **CWE-643 召回 0 → 1.000**：`java_xpath` 补 receiver `xp` + 净化器标识符边界匹配（`encodeBase64` 不再误判为 `encode` 净化器）+ evaluate.py 补 `xpath injection` 映射（此前 TP 被统计为 FP）。
+- **CWE-330 召回 0.885 → 1.000 且规则 FP 104 → 0**：`insecure-random` Java 模式收窄为 `new Random(`/`Math.random(`。桶内剩余 566 FP 主要是 false 文件上的 debug-info-leak（275）与 TrustBoundary（274）输出，非 random 规则。
+- **CWE-78 规则 FP 60 → 30**：`command-injection` 要求 `new ProcessBuilder(` 构造形式。剩余 FP 与 TP 代码形状一致（基准靠常量条件死代码区分），需污点引擎层治理。
+- **CWE-501 / CWE-614 从 0 变为非零**：主要是 evaluate.py 补映射（`trust boundary violation` / `insecure cookie`）后显形，召回仍低（0.133 / 0.083），是后续字典方向。
+- **CWE-328 仍为 0**：BenchmarkJava 的 hash 用例从 `benchmark.properties` 读算法名（`MessageDigest.getInstance(algorithm)`），属配置驱动弱点，静态污点本质上难覆盖，暂不投入。
+- **Precision 略降（0.344 → 0.319）**：Stage B 排除修复后更多文件真正进入污点分析，总 findings 2113 → 2663，FP 绝对值随之上升；召回 +9.2pt 是主要收益。
+- **`--deep` vs `--taint`**：TP +6（858 → 864）、FP +274，recall +0.5pt、precision −2.8pt。单文件主导数据集上跨文件增量价值仍有限，不建议作为默认模式。
+
+### 2026-07-07 旧基线（v2.1.0，存档）
+
+> 注意：旧基线测量时 Stage B 二次收集存在绝对路径排除 bug（target/ 下文件被跳过 AST 污点分析），且 evaluate.py 缺少 xpath/cookie/trustbound 映射，以下数字低估实际检出。
+
 | 模式 | Findings | TP | FP | FN | Precision | Recall | F1 |
 |------|----------|----|----|----|-----------|--------|----|
 | `--taint` | 2113 | 727 | 1386 | 688 | 0.344 | 0.514 | 0.412 |
 | `--deep` | 2163 | 727 | 1436 | 688 | 0.336 | 0.514 | 0.406 |
 
-## 按 CWE 拆分（Deep 模式）
+<details>
+<summary>旧基线按 CWE 拆分（Deep 模式）</summary>
 
 | CWE | TP | FP | FN | Precision | Recall | F1 |
 |-----|----|----|----|-----------|--------|----|
@@ -63,6 +119,8 @@ python benchmarks/evaluate.py --dataset owasp-java \
 | CWE-501 | 0 | 30 | 83 | 0.000 | 0.000 | 0.000 |
 | CWE-614 | 0 | 23 | 36 | 0.000 | 0.000 | 0.000 |
 | CWE-643 | 0 | 41 | 15 | 0.000 | 0.000 | 0.000 |
+
+</details>
 
 ## Agent 审计基线
 

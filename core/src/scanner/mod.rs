@@ -438,18 +438,82 @@ pub fn classify_file_role(path: &str) -> &'static str {
     // 第三方/供应商标识
     let vendor_markers = [
         "/vendor/",
+        "/vendors/",
         "/third-party/",
         "/third_party/",
         "/external/",
         "/polyfill",
+        "/node_modules/",
+        "/plugins/",
+        "/libs/",
+        "/webjars/",
     ];
     for marker in &vendor_markers {
         if normalized.contains(marker) {
             return "vendor";
         }
     }
+    // 压缩/打包产物文件名（minified 第三方库是调用图与污点分析的主要噪声源）
+    let vendor_file_patterns = [".min.js", ".min.css", ".bundle.js", ".chunk.js", ".vendor.js"];
+    for pat in &vendor_file_patterns {
+        if file_name.ends_with(pat) {
+            return "vendor";
+        }
+    }
+    // 知名第三方库文件名前缀（jquery-1.10.2.min.js、bootstrap.js 等）
+    let vendor_file_prefixes = [
+        "jquery",
+        "bootstrap",
+        "lodash",
+        "underscore",
+        "zepto",
+        "modernizr",
+    ];
+    for prefix in &vendor_file_prefixes {
+        if file_name.starts_with(prefix) {
+            return "vendor";
+        }
+    }
 
     "production"
+}
+
+/// 基于内容识别 minified 文件（未按 `.min.js` 命名的压缩第三方库，如 google-map.js）
+///
+/// 启发式：文件足够大，且存在超长单行（>1000 字符），
+/// 或平均行长超过 400 字符（正常源码极少超过 120）。
+pub fn is_minified_content(content: &str) -> bool {
+    if content.len() < 1024 {
+        return false;
+    }
+    let mut line_count = 0usize;
+    let mut total_len = 0usize;
+    for line in content.lines().take(50) {
+        if line.len() > 1000 {
+            return true;
+        }
+        line_count += 1;
+        total_len += line.len();
+    }
+    line_count > 0 && total_len / line_count > 400
+}
+
+/// 结合路径与内容的文件角色分类。
+/// 路径判定为 production 但内容是 minified 的 JS/CSS，归入 vendor。
+pub fn classify_file_role_with_content(path: &str, content: &str) -> &'static str {
+    let role = classify_file_role(path);
+    if role != "production" {
+        return role;
+    }
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if matches!(ext.as_str(), "js" | "jsx" | "ts" | "tsx" | "css") && is_minified_content(content) {
+        return "vendor";
+    }
+    role
 }
 
 /// 检测代码上下文中的安全屏障
@@ -838,8 +902,10 @@ async fn scan_directory_with_rules_inner(
             }
         }
         None => {
-            tracing::info!("未找到规则目录");
-            vec![]
+            // 文件系统查找失败（如仓库外运行），回退到二进制内置嵌入规则
+            let r = crate::rules::embedded::load_embedded_pattern_rules();
+            tracing::info!("未找到规则目录，使用内置嵌入规则 ({} 条)", r.len());
+            r
         }
     };
 
@@ -1295,7 +1361,10 @@ pub async fn scan_directory_deep_with_rules_progress(
                 if content_cache.contains_key(&p_str) {
                     continue;
                 }
-                if is_excluded(p, &excludes) {
+                // 与 Stage A 一致：排除判断基于相对扫描根的路径，
+                // 避免扫描根本身位于 target/ 等目录时 AST 文件被整体跳过
+                let rel = p.strip_prefix(path).unwrap_or(p);
+                if is_excluded(rel, &excludes) {
                     continue;
                 }
                 if let Ok(meta) = std::fs::metadata(p) {
@@ -1318,6 +1387,8 @@ pub async fn scan_directory_deep_with_rules_progress(
         .iter()
         .filter(|(fp, _)| is_ast_supported_file(std::path::Path::new(fp)))
         .filter(|(_, content)| content.len() <= max_taint_file_kb * 1024)
+        // vendor / minified 第三方库不进入污点分析（只产生噪声）
+        .filter(|(fp, content)| classify_file_role_with_content(fp, content) != "vendor")
         .map(|(fp, _)| fp.clone())
         .take(max_candidate_files)
         .collect();
@@ -1350,25 +1421,21 @@ pub async fn scan_directory_deep_with_rules_progress(
 
     // 污点规则只加载一次，避免每个文件都重新读取 YAML
     let rules_dir = std::path::Path::new("rules/taint");
+    let loaded_taint =
+        crate::rules::taint_loader::load_taint_rules_with_embedded_fallback(rules_dir);
     let (taint_sources, taint_sinks, taint_sanitizers) =
-        if let Ok(loaded) = crate::rules::taint_loader::load_taint_rules_from_dir(rules_dir) {
-            if !loaded.sources.is_empty() || !loaded.sinks.is_empty() {
-                tracing::info!(
-                    "Loaded {} sources, {} sinks, {} sanitizers from {:?}",
-                    loaded.sources.len(),
-                    loaded.sinks.len(),
-                    loaded.sanitizer_patterns.len(),
-                    rules_dir,
-                );
-                (loaded.sources, loaded.sinks, loaded.sanitizer_patterns)
-            } else {
-                let analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
-                (
-                    analyzer.sources().to_vec(),
-                    analyzer.sinks().to_vec(),
-                    analyzer.sanitizer_patterns().to_vec(),
-                )
-            }
+        if !loaded_taint.sources.is_empty() || !loaded_taint.sinks.is_empty() {
+            tracing::info!(
+                "Loaded {} sources, {} sinks, {} sanitizers",
+                loaded_taint.sources.len(),
+                loaded_taint.sinks.len(),
+                loaded_taint.sanitizer_patterns.len(),
+            );
+            (
+                loaded_taint.sources,
+                loaded_taint.sinks,
+                loaded_taint.sanitizer_patterns,
+            )
         } else {
             let analyzer = crate::analysis::ast_taint::AstTaintAnalyzer::new();
             (
@@ -1778,6 +1845,11 @@ pub async fn scan_directory_deep_with_rules_progress(
         accumulated_parsed_ast.insert(fp, file_ast);
     }
 
+    // 从 Stage B 已解析符号提取每文件函数区间表（仅函数名+行号范围的轻量拷贝）。
+    // accumulated_parsed_ast 随后会被 move 进跨文件分析器，因此必须先提取；
+    // 该表用于扫描收尾时为 finding 填充 enclosing_function，避免为此二次解析文件。
+    let file_function_ranges = build_file_function_ranges(&accumulated_parsed_ast);
+
     if let Some(ref cb) = progress {
         cb(ScanProgress {
             phase: ScanPhase::TaintAnalysis,
@@ -1821,17 +1893,18 @@ pub async fn scan_directory_deep_with_rules_progress(
         // 之前只分析 AstTaintScanner 报过的文件——循环依赖：L3 靠 L2 选文件，
         // 而 L3 的价值恰恰是发现 L2 漏的。改为分析所有 AST 支持的源文件。
         let taint_files: Vec<std::path::PathBuf> = content_cache
-            .keys()
-            .filter(|fp| is_ast_supported_file(std::path::Path::new(fp)))
-            .map(|fp| std::path::PathBuf::from(fp))
+            .iter()
+            .filter(|(fp, _)| is_ast_supported_file(std::path::Path::new(fp)))
+            // vendor / minified 第三方库不进入跨文件分析（只产生噪声边）
+            .filter(|(fp, content)| classify_file_role_with_content(fp, content) != "vendor")
+            .map(|(fp, _)| std::path::PathBuf::from(fp))
             .collect();
 
         // 加载与 Stage B 一致的 YAML 污点规则，注入跨文件分析器
         let rules_dir = std::path::PathBuf::from("rules/taint");
-        let (taint_sources, taint_sinks) =
-            crate::rules::taint_loader::load_taint_rules_from_dir(&rules_dir)
-                .map(|loaded| (loaded.sources, loaded.sinks))
-                .unwrap_or_default();
+        let loaded_taint =
+            crate::rules::taint_loader::load_taint_rules_with_embedded_fallback(&rules_dir);
+        let (taint_sources, taint_sinks) = (loaded_taint.sources, loaded_taint.sinks);
 
         let mut cross_file_result = if !taint_files.is_empty() {
             let mut analyzer = if !taint_sources.is_empty() || !taint_sinks.is_empty() {
@@ -2025,6 +2098,11 @@ pub async fn scan_directory_deep_with_rules_progress(
 
     // 去重
     findings = deduplicate_findings(findings, line_tol);
+
+    // 去重后为仍未填充的 finding 用 Stage B 函数区间表补齐 enclosing_function。
+    // 跨文件模式已由调用图引擎填充的 finding 在此处被跳过，行为保持不变；
+    // 纯规则扫描（无 Stage B 数据）时该表为空，调用为 no-op。
+    enrich_findings_with_enclosing_function_from_symbols(&mut findings, &file_function_ranges);
 
     Ok(ScanResult {
         findings,
@@ -2574,6 +2652,81 @@ fn enrich_findings_with_enclosing_function(
     }
 }
 
+/// 函数行号区间（仅保留填充 enclosing_function 所需的最小字段）
+struct FunctionRange {
+    name: String,
+    start_line: usize,
+    end_line: usize,
+}
+
+/// 从 Stage B 已解析的 AST 符号构建每文件函数区间表（按 start_line 升序）。
+///
+/// 只保留函数/方法符号的行号范围与名字，丢弃重量级的 Symbol 本体，
+/// 供扫描收尾时按 (file_path, line) 做 O(log n) 的包围函数查询。
+fn build_file_function_ranges(
+    parsed_ast: &HashMap<String, (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>)>,
+) -> HashMap<String, Vec<FunctionRange>> {
+    parsed_ast
+        .iter()
+        .filter_map(|(fp, (symbols, _))| {
+            let mut ranges: Vec<FunctionRange> = symbols
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s.kind,
+                        crate::ast::SymbolKind::Function | crate::ast::SymbolKind::Method
+                    )
+                })
+                .map(|s| FunctionRange {
+                    name: s.name.clone(),
+                    start_line: s.start_line as usize,
+                    end_line: s.end_line as usize,
+                })
+                .collect();
+            if ranges.is_empty() {
+                return None;
+            }
+            ranges.sort_by_key(|r| r.start_line);
+            Some((fp.clone(), ranges))
+        })
+        .collect()
+}
+
+/// 用 Stage B 函数区间表为 finding 填充 enclosing_function。
+///
+/// 与 `enrich_findings_with_enclosing_function`（调用图引擎路径）互补：
+/// 已由调用图填充的 finding 直接跳过；调用图未覆盖的（如纯 --taint 模式下
+/// 的 RuleScanner/AttackSurfaceMapper finding）按文件+行号匹配最内层包围函数。
+/// 无 Stage B 符号数据的文件保持 None，不为此新建解析管线。
+fn enrich_findings_with_enclosing_function_from_symbols(
+    findings: &mut [Finding],
+    file_function_ranges: &HashMap<String, Vec<FunctionRange>>,
+) {
+    if file_function_ranges.is_empty() {
+        return;
+    }
+    for f in findings.iter_mut() {
+        if f.enclosing_function.is_some() {
+            continue;
+        }
+        let Some(ranges) = file_function_ranges.get(&f.file_path) else {
+            continue;
+        };
+        // 二分定位 start_line <= line 的候选前缀，再从中取行号范围最小者，
+        // 即最内层包围函数（与 CallGraphQueryEngine::query_enclosing_function 语义一致）。
+        // 候选前缀内的线性扫描以嵌套深度为上界，整体为 O(log n + 嵌套深度)。
+        let idx = ranges.partition_point(|r| r.start_line <= f.line_start);
+        if let Some(best) = ranges[..idx]
+            .iter()
+            .filter(|r| r.end_line >= f.line_start)
+            .min_by_key(|r| r.end_line - r.start_line)
+        {
+            f.enclosing_function = Some(best.name.clone());
+            f.enclosing_function_line = Some(best.start_line);
+        }
+    }
+}
+
 /// 判断两个漏洞类型字符串是否兼容（都归一化为 CWE 后比较）。
 fn is_compatible_vuln_type_str(a: &str, b: &str) -> bool {
     if let (Some(ca), Some(cb)) = (normalize_vuln_type_to_cwe(a), normalize_vuln_type_to_cwe(b)) {
@@ -2892,6 +3045,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_classify_file_role_vendor() {
+        // 目录标识
+        assert_eq!(classify_file_role("app/node_modules/jquery/index.js"), "vendor");
+        assert_eq!(classify_file_role("web/static/plugins/a.js"), "vendor");
+        assert_eq!(classify_file_role("src/vendor/lib.py"), "vendor");
+        // 压缩/打包产物文件名
+        assert_eq!(classify_file_role("web/js/jquery-1.10.2.min.js"), "vendor");
+        assert_eq!(classify_file_role("web/js/bootstrap.min.js"), "vendor");
+        assert_eq!(classify_file_role("dist/app.bundle.js"), "vendor");
+        // 知名第三方库文件名前缀
+        assert_eq!(classify_file_role("web/js/jquery.js"), "vendor");
+        assert_eq!(classify_file_role("web/js/bootstrap.js"), "vendor");
+        // 业务文件不受影响
+        assert_eq!(classify_file_role("src/main.py"), "production");
+        assert_eq!(classify_file_role("web/js/serverstatus.js"), "production");
+    }
+
+    #[test]
+    fn test_is_minified_content() {
+        // 超长单行 → minified
+        let minified = format!("var a=1;\n{}", "x".repeat(2000));
+        assert!(is_minified_content(&minified));
+        // 正常源码
+        let normal = "function hello() {\n  return 42;\n}\n".repeat(100);
+        assert!(!is_minified_content(&normal));
+        // 小文件不判定
+        assert!(!is_minified_content("var a=1;"));
+    }
+
+    #[test]
+    fn test_classify_file_role_with_content_minified() {
+        // 未按 .min.js 命名但内容是压缩代码 → vendor（google-map.js 场景）
+        let minified = format!("(function(){{'use strict';{}}})();", "var a=1;".repeat(200));
+        assert_eq!(
+            classify_file_role_with_content("web/js/google-map.js", &minified),
+            "vendor"
+        );
+        // 正常业务 JS → production
+        let normal = "function update() {\n  fetch('/json/stats.json');\n}\n".repeat(50);
+        assert_eq!(
+            classify_file_role_with_content("web/js/serverstatus.js", &normal),
+            "production"
+        );
+        // 路径已是 test 的保持 test，不被内容覆盖
+        assert_eq!(
+            classify_file_role_with_content("tests/min.test.js", &minified),
+            "test"
+        );
+    }
+
+    #[test]
     fn test_normalize_vuln_type_to_cwe_direct() {
         assert_eq!(
             normalize_vuln_type_to_cwe("CWE-22"),
@@ -2947,5 +3151,101 @@ mod tests {
         // 无法归一化时退化为子串包含
         assert!(is_compatible_vuln_type_str("SomeVuln", "SomeVuln"));
         assert!(!is_compatible_vuln_type_str("Alpha", "Beta"));
+    }
+
+    // ── enclosing_function 符号填充 ─────────────────────────
+
+    /// 构造带函数区间的测试符号表：
+    /// - outer 函数 [10, 100]，内层嵌套 inner 函数 [40, 60]
+    /// - 同级兄弟函数 sibling [70, 80]
+    fn make_test_parsed_ast(
+    ) -> HashMap<String, (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>)> {
+        let fp = "src/Login.java".to_string();
+        let mk = |name: &str, kind: crate::ast::SymbolKind, start: u32, end: u32| {
+            crate::ast::Symbol::new(name.to_string(), kind, fp.clone(), start, String::new())
+                .with_end_line(end)
+        };
+        let symbols = vec![
+            mk("LoginController", crate::ast::SymbolKind::Class, 1, 120),
+            mk("outer", crate::ast::SymbolKind::Method, 10, 100),
+            mk("inner", crate::ast::SymbolKind::Function, 40, 60),
+            mk("sibling", crate::ast::SymbolKind::Method, 70, 80),
+        ];
+        let mut map = HashMap::new();
+        map.insert(fp, (symbols, Vec::new()));
+        map
+    }
+
+    fn make_finding(file_path: &str, line: usize) -> Finding {
+        Finding {
+            file_path: file_path.to_string(),
+            line_start: line,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_enrich_from_symbols_fills_enclosing_function() {
+        let parsed = make_test_parsed_ast();
+        let ranges = build_file_function_ranges(&parsed);
+
+        let mut findings = vec![
+            make_finding("src/Login.java", 20), // 仅在 outer 内
+            make_finding("src/Login.java", 45), // 在 inner 内（最内层优先）
+            make_finding("src/Login.java", 75), // 在 sibling 内
+        ];
+        enrich_findings_with_enclosing_function_from_symbols(&mut findings, &ranges);
+
+        assert_eq!(findings[0].enclosing_function.as_deref(), Some("outer"));
+        assert_eq!(findings[0].enclosing_function_line, Some(10));
+        // 嵌套场景应取最内层（范围最小）的函数，而不是外层 outer
+        assert_eq!(findings[1].enclosing_function.as_deref(), Some("inner"));
+        assert_eq!(findings[1].enclosing_function_line, Some(40));
+        assert_eq!(findings[2].enclosing_function.as_deref(), Some("sibling"));
+        assert_eq!(findings[2].enclosing_function_line, Some(70));
+    }
+
+    #[test]
+    fn test_enrich_from_symbols_keeps_none_outside_functions() {
+        let parsed = make_test_parsed_ast();
+        let ranges = build_file_function_ranges(&parsed);
+
+        let mut findings = vec![
+            make_finding("src/Login.java", 5),   // 类体内、所有函数外
+            make_finding("src/Login.java", 110), // 最后一个函数之后
+            make_finding("src/Other.java", 20),  // 无符号数据的文件
+        ];
+        enrich_findings_with_enclosing_function_from_symbols(&mut findings, &ranges);
+
+        assert!(findings[0].enclosing_function.is_none());
+        assert!(findings[1].enclosing_function.is_none());
+        assert!(findings[2].enclosing_function.is_none());
+    }
+
+    #[test]
+    fn test_enrich_from_symbols_skips_already_filled() {
+        let parsed = make_test_parsed_ast();
+        let ranges = build_file_function_ranges(&parsed);
+
+        // 模拟跨文件调用图引擎已填充的 finding，符号填充不得覆盖
+        let mut filled = make_finding("src/Login.java", 45);
+        filled.enclosing_function = Some("graph_func".to_string());
+        filled.enclosing_function_line = Some(1);
+        let mut findings = vec![filled];
+        enrich_findings_with_enclosing_function_from_symbols(&mut findings, &ranges);
+
+        assert_eq!(
+            findings[0].enclosing_function.as_deref(),
+            Some("graph_func")
+        );
+        assert_eq!(findings[0].enclosing_function_line, Some(1));
+    }
+
+    #[test]
+    fn test_enrich_from_symbols_empty_table_is_noop() {
+        let ranges: HashMap<String, Vec<FunctionRange>> = HashMap::new();
+        let mut findings = vec![make_finding("src/Login.java", 20)];
+        enrich_findings_with_enclosing_function_from_symbols(&mut findings, &ranges);
+        assert!(findings[0].enclosing_function.is_none());
     }
 }

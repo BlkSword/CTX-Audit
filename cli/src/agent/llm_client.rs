@@ -1027,6 +1027,8 @@ mod tests {
             barriers: None,
             reasoning_hint: None,
             evidence_refs: None,
+            enclosing_function: None,
+            enclosing_function_line: None,
         }
     }
 

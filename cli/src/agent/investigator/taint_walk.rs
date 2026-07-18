@@ -322,6 +322,15 @@ enum TaintWalkDecision {
 ///
 /// 优先尝试关键词格式（`KEY: value`），失败时回退到 JSON 格式。
 fn parse_taint_walk_decision_from_text(text: &str) -> Result<TaintWalkDecision> {
+    // 文本明显是 JSON 时优先走 JSON 解析：单行 `{"action": ...}` 会被
+    // 关键词解析器误当键值对，并用默认值（finish/needs_review）静默吞掉
+    if text.trim_start().starts_with('{') {
+        if let Ok(value) = extract_json_from_text(text) {
+            if let Ok(decision) = parse_taint_walk_decision_json(&value) {
+                return Ok(decision);
+            }
+        }
+    }
     // 先尝试关键词格式
     if let Ok(decision) = parse_keyword_decision(text) {
         return Ok(decision);
@@ -797,6 +806,8 @@ mod tests {
             barriers: None,
             reasoning_hint: None,
             evidence_refs: None,
+            enclosing_function: None,
+            enclosing_function_line: None,
         }
     }
 
@@ -818,6 +829,21 @@ mod tests {
                 reasoning: "mock".to_string(),
                 suggested_specialist: None,
             })
+        }
+
+        async fn chat(&self, _prompt: &str) -> anyhow::Result<String> {
+            // TaintWalk 已切换到关键词协议（chat 文本通道），
+            // 返回 JSON 文本由解析器的 JSON 回退路径处理
+            let idx = self.call_index.fetch_add(1, Ordering::SeqCst);
+            let value = self.steps.get(idx).cloned().unwrap_or_else(|| {
+                serde_json::json!({
+                    "action": "finish",
+                    "verdict": "needs_review",
+                    "confidence": 0.5,
+                    "reasoning": "mock fallback"
+                })
+            });
+            Ok(value.to_string())
         }
 
         async fn chat_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
