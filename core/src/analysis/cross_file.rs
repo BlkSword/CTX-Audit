@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use super::imports::ImportResolver;
-use super::taint::{FlowLocation, Severity, TaintSink, TaintSource, VulnerabilityType};
+use super::taint::{FlowLocation, MatchMode, Severity, TaintSink, TaintSource, VulnerabilityType};
 use crate::ast::{CallInfo, CallbackArg, Symbol};
 
 /// 调用目标 — 方法调用的 receiver 信息
@@ -2526,7 +2526,7 @@ impl CrossFileTaintAnalyzer {
     fn is_taint_sink(&self, func_name: &str, body: &str) -> (bool, Option<VulnerabilityType>) {
         // 优先按函数体内容匹配（可确定漏洞类型）
         for s in self.sink_patterns.iter() {
-            if s.matches(body, "*") && !Self::is_body_sanitized_for_sink(body, s) {
+            if Self::body_matches_sink(body, s) && !Self::is_body_sanitized_for_sink(body, s) {
                 return (true, Some(s.vulnerability_type));
             }
         }
@@ -2535,6 +2535,44 @@ impl CrossFileTaintAnalyzer {
             return (true, None);
         }
         (false, None)
+    }
+
+    /// 函数体匹配 sink。
+    /// Semantic 模式的 sink 要求函数体内存在语义锚点
+    /// （namespace / receiver_pattern / exact_match 之一），
+    /// 否则 `.exec` / `.run` 这类短 pattern 会把任何包含该子串的函数
+    /// （如 DB 连接的 `connection.exec`）误判为对应类型 sink。
+    /// Substring 模式保持原有子串匹配行为。
+    fn body_matches_sink(body: &str, sink: &TaintSink) -> bool {
+        let has_semantic = !sink.namespaces.is_empty()
+            || !sink.receiver_patterns.is_empty()
+            || !sink.exact_matches.is_empty();
+        if sink.match_mode != MatchMode::Semantic || !has_semantic {
+            return sink.matches(body, "*");
+        }
+        let lower = body.to_lowercase();
+        // exact_matches 锚点（函数体为文本，按子串近似）
+        for exact in &sink.exact_matches {
+            if lower.contains(&exact.to_lowercase()) {
+                return true;
+            }
+        }
+        // pattern 子串 + 语义锚点（namespace 或 receiver_pattern 出现在函数体中）
+        let has_pattern = sink.patterns.iter().any(|p| {
+            let pl = p.to_lowercase();
+            let pl = pl.trim_start_matches('.');
+            !pl.is_empty() && lower.contains(pl)
+        });
+        if !has_pattern {
+            return false;
+        }
+        sink.namespaces
+            .iter()
+            .any(|ns| lower.contains(&ns.to_lowercase()))
+            || sink
+                .receiver_patterns
+                .iter()
+                .any(|rp| lower.contains(&rp.to_lowercase()))
     }
 
     /// 通用 sink 净化检测：若规则声明了 sanitizers，且函数体中在 sink 出现之前

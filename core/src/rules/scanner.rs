@@ -436,6 +436,7 @@ const PLACEHOLDER_SECRETS: &[&str] = &[
     "your_secret",
     "your-secret",
     "example_password",
+    "******",
 ];
 
 /// 凭证类规则命中明显的占位符值时判 likely_fp

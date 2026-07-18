@@ -417,6 +417,7 @@ pub fn classify_file_role(path: &str) -> &'static str {
         "/scripts/",
         "/build/",
         "/tooling/",
+        "/extra/",
         "webpack.config",
         "rollup.config",
         "vite.config",
@@ -1758,6 +1759,17 @@ pub async fn scan_directory_deep_with_rules_progress(
                         graph_snapshot: None,
                     };
 
+                    let role = classify_file_role(&file_str);
+                    let flow_barriers: Vec<String> = if flow
+                        .path
+                        .iter()
+                        .any(|n| n.node_type == crate::analysis::taint::FlowNodeType::Sanitized)
+                    {
+                        vec!["sanitization_detected".to_string()]
+                    } else {
+                        Vec::new()
+                    };
+
                     Finding {
                         finding_id: flow.id.clone(),
                         file_path: file_str.clone(),
@@ -1765,7 +1777,12 @@ pub async fn scan_directory_deep_with_rules_progress(
                         line_end: flow.sink.line,
                         detector: "AstTaintScanner".to_string(),
                         vuln_type: vuln_name.clone(),
-                        severity: format!("{:?}", flow.severity).to_lowercase(),
+                        // 与规则扫描一致：按文件角色与屏障调整严重度
+                        severity: adjust_severity(
+                            &format!("{:?}", flow.severity).to_lowercase(),
+                            role,
+                            &flow_barriers,
+                        ),
                         description: format!(
                             "{}: {} → {} ({}→{})",
                             vuln_name,
@@ -1794,15 +1811,11 @@ pub async fn scan_directory_deep_with_rules_progress(
                             .code_snippet
                             .clone()
                             .or_else(|| line_snippet(content, flow.sink.line)),
-                        file_role: Some(classify_file_role(&file_str).to_string()),
-                        barriers: if flow
-                            .path
-                            .iter()
-                            .any(|n| n.node_type == crate::analysis::taint::FlowNodeType::Sanitized)
-                        {
-                            Some(vec!["sanitization_detected".to_string()])
-                        } else {
+                        file_role: Some(role.to_string()),
+                        barriers: if flow_barriers.is_empty() {
                             None
+                        } else {
+                            Some(flow_barriers)
                         },
                         reasoning_hint: Some(format!(
                             "Taint flow: {} → {} via {} steps. {}{}",

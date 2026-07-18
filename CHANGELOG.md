@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **规则命中注释中的代码**：正则规则对注释行与代码行无差别命中（注释掉的 `innerHTML`、`DOCTODO`/`HACK` 注释关键词等）。`RuleScanner` 新增注释感知过滤：首个命中时用 tree-sitter AST 惰性收集全文件注释字节范围，命中点落在注释节点内直接丢弃（注释中的代码不会执行，必为误报）。ServerStatus 复测消除约 25% 的规则层误报。
 - **格式串规则误伤有界变体**：`cpp-format-string` 的 pattern 以 `printf\s*\(` 子串匹配，误命中 `snprintf`/`vsnprintf` 等长度受控调用。pattern 增加 `\b` 词边界，有界变体不再命中。
 - **code-injection 误命中正则编译**：Python pattern 中 `compile\s*\(` 误命中 `re.compile`/`Pattern.compile`。改为 `(?:^|[^\w.])compile\s*\(`，排除成员调用形态。
+- **JS 污点字典误报治理**（Uptime Kuma 真实项目驱动，55 → 39 findings，CRITICAL 8 → 1）：
+  - `JSON.parse` 移出反序列化 sink（JS 语境下 `JSON.parse` 不是 Java `readObject`，此前产生 4 个 CRITICAL 误报）。
+  - `process.argv`/`sys.argv` 等 CLI 参数从 `http_request` source 拆出为独立的低严重度 `cli_args` source（`TaintCategory` 新增 `CliInput` 变体），CLI 入参不再被当作远程攻击面。
+  - 跨文件 `is_taint_sink` 函数体匹配对 Semantic 模式 sink 增加语义锚点要求（namespace / receiver_pattern / exact_match 必须出现在函数体中），消除 `.exec`/`.run` 短 pattern 把 `connection.exec`、`log()` 等任意函数误判为命令注入 sink 的问题。
+  - 推测性参数 source（callback param / tainted param）产生的 finding 降一级严重度并降低置信度（SSRF 通知配置等"设计内"流量自动降权）。
+  - 污点 finding 与规则扫描一致应用 `adjust_severity`（build 角色的 dev 脚本如 `extra/` 自动降级）；`/extra/` 目录归入 build 角色；占位符清单补 `"******"`（密码脱敏代码不再被误报为硬编码密码）。
 
 ### Added
 

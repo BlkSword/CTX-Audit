@@ -493,6 +493,8 @@ pub enum TaintCategory {
     NetworkInput,
     /// 数据库输入
     DatabaseInput,
+    /// 命令行参数（非远程攻击面）
+    CliInput,
 }
 
 /// 漏洞类型

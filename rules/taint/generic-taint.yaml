@@ -18,10 +18,6 @@ sources:
       - "$_POST"
       - "$_REQUEST"
       - "getParameter"
-      - "process.argv"
-      - "sys.argv"
-      - "os.Args"
-      - "env::args"
       - "formData.get"
       - "formData.getAll"
       - "formData.entries"
@@ -34,6 +30,19 @@ sources:
     languages: ["*"]
     severity: "High"
     category: "UserInput"
+    ast_patterns: []
+
+  - id: "cli_args"
+    name: "Command Line Arguments"
+    description: "CLI 参数：非远程攻击面，仅本地/运维可控，单独标记为低严重度 source"
+    patterns:
+      - "process.argv"
+      - "sys.argv"
+      - "os.Args"
+      - "env::args"
+    languages: ["*"]
+    severity: "Low"
+    category: "CliInput"
     ast_patterns: []
 
   - id: "file_input"
@@ -291,7 +300,6 @@ sinks:
     description: "Insecure deserialization including React RSC Flight protocol"
     match_mode: "Semantic"
     namespaces:
-      - "JSON"
       - "ObjectMapper"
       - "pickle"
       - "yaml"
@@ -307,7 +315,6 @@ sinks:
       - ".unserialize"
       - ".deserialize"
     exact_matches:
-      - "JSON.parse"
       - "objectMapper.readValue"
       - "pickle.loads"
       - "pickle.load"

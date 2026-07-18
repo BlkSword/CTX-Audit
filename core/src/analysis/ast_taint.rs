@@ -37,6 +37,18 @@ struct TaintInfo {
 
 /// AST 污点分析器
 ///
+/// 严重度降一级（用于推测性 source 的 finding 降级）
+fn downgrade_severity(severity: super::taint::Severity) -> super::taint::Severity {
+    use super::taint::Severity;
+    match severity {
+        Severity::Critical => Severity::High,
+        Severity::High => Severity::Medium,
+        Severity::Medium => Severity::Low,
+        Severity::Low => Severity::Info,
+        Severity::Info => Severity::Info,
+    }
+}
+
 /// 不再持有 ASTParser：tree-sitter Parser 不是 Send/Sync，会限制并行。
 /// analyze_function_cpg 等核心路径只依赖规则定义；需要解析的地方使用线程本地 parser。
 pub struct AstTaintAnalyzer {
@@ -1395,6 +1407,16 @@ impl AstTaintAnalyzer {
         // 路径敏感置信度
         let confidence = taint_state.confidence() as f32;
 
+        // 推测性参数 source（callback/tainted param）不是已确认的外部输入，
+        // 降一级严重度并降低置信度，交由上层/LLM 判定（如 SSRF 通知配置场景）
+        let is_speculative_source = taint_state.source_var.contains("(callback param)")
+            || taint_state.source_var.contains("(tainted param)");
+        let (severity, confidence) = if is_speculative_source {
+            (downgrade_severity(sink.severity), confidence * 0.7)
+        } else {
+            (sink.severity, confidence)
+        };
+
         TaintFlow {
             id: uuid::Uuid::new_v4().to_string(),
             source: FlowLocation {
@@ -1415,7 +1437,7 @@ impl AstTaintAnalyzer {
             },
             path,
             vulnerability_type: sink.vulnerability_type.clone(),
-            severity: sink.severity,
+            severity,
             confidence,
         }
     }
@@ -2029,6 +2051,15 @@ impl AstTaintAnalyzer {
 
         let confidence = if taint_info.sanitized { 0.3 } else { 0.85 };
 
+        // 推测性参数 source 降级（同 flow 构造主路径）
+        let is_speculative_source = taint_info.source_var.contains("(callback param)")
+            || taint_info.source_var.contains("(tainted param)");
+        let (severity, confidence) = if is_speculative_source {
+            (downgrade_severity(sink.severity), confidence * 0.7)
+        } else {
+            (sink.severity, confidence)
+        };
+
         TaintFlow {
             id: uuid::Uuid::new_v4().to_string(),
             source: FlowLocation {
@@ -2049,7 +2080,7 @@ impl AstTaintAnalyzer {
             },
             path,
             vulnerability_type: sink.vulnerability_type.clone(),
-            severity: sink.severity,
+            severity,
             confidence,
         }
     }
