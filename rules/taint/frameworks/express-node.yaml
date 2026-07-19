@@ -45,6 +45,23 @@ sources:
     category: "FileInput"
     ast_patterns: []
 
+  - id: "socketio_event_input"
+    name: "Socket.io / WebSocket Event Input"
+    description: "User data from WebSocket/socket.io event handlers — callback parameters are attacker-controlled"
+    patterns:
+      - "socket.on("
+      - "socket.once("
+      - "io.on("
+      - "io.sockets.on("
+      - "ws.on("
+      - "ws.once("
+      - ".on('message'"
+      - ".on(\"message\""
+    languages: ["javascript", "typescript"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
 sinks:
   - id: "node_eval"
     name: "Node.js eval"
