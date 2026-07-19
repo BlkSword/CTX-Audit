@@ -373,6 +373,20 @@ impl AttackSurfaceMapper {
                                 detected_frameworks.insert("Django".to_string());
                             }
                         }
+                        "go" => {
+                            let (eps, tbs) = Self::analyze_go_file(&file_str, &content);
+                            entry_points.extend(eps);
+                            trust_boundaries.extend(tbs);
+                            if content.contains("gin") || content.contains("gin-gonic") {
+                                detected_frameworks.insert("Gin".to_string());
+                            }
+                            if content.contains("echo") || content.contains("labstack/echo") {
+                                detected_frameworks.insert("Echo".to_string());
+                            }
+                            if content.contains("net/http") {
+                                detected_frameworks.insert("net/http".to_string());
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -382,6 +396,16 @@ impl AttackSurfaceMapper {
         // 计算风险评分
         for ep in &mut entry_points {
             ep.risk_score = Self::compute_risk_score(ep);
+        }
+
+        // 如果项目有全局认证中间件，将未认证端点标记为已认证
+        if Self::has_global_auth_middleware(project_path) {
+            for ep in &mut entry_points {
+                if !ep.auth_required {
+                    ep.auth_required = true;
+                    ep.auth_mechanism = Some("Global middleware".to_string());
+                }
+            }
         }
 
         // 识别高风险文件
@@ -430,6 +454,10 @@ impl AttackSurfaceMapper {
             }
             "py" => {
                 let (eps, _) = Self::analyze_python_file(file_path, content);
+                entry_points.extend(eps);
+            }
+            "go" => {
+                let (eps, _) = Self::analyze_go_file(file_path, content);
                 entry_points.extend(eps);
             }
             _ => {}
@@ -677,7 +705,213 @@ impl AttackSurfaceMapper {
         (entry_points, trust_boundaries)
     }
 
-    /// 计算入口点风险评分（增强版，使用 EntryContext）
+    /// 分析 Go 文件中的入口点（HTTP 端点）
+    fn analyze_go_file(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
+        let mut entry_points = Vec::new();
+        let mut trust_boundaries = Vec::new();
+
+        let content_lower = content.to_lowercase();
+
+        // 检测框架导入
+        let is_gin = content_lower.contains("github.com/gin-gonic/gin");
+        let is_echo = content_lower.contains("github.com/labstack/echo");
+        let is_net_http = content_lower.contains("\"net/http\"");
+
+        let framework_detected = is_gin || is_echo || is_net_http;
+
+        // 标准库路由: http.HandleFunc("/path", handler)
+        if is_net_http {
+            for (line_num, line) in content.lines().enumerate() {
+                if line.contains("HandleFunc(") || line.contains("Handle(") {
+                    let route = Self::extract_go_route(line);
+                    entry_points.push(EntryPoint {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        entry_type: EntryType::HttpEndpoint,
+                        route,
+                        http_method: None,
+                        auth_required: false,
+                        auth_mechanism: None,
+                        risk_score: 0.0,
+                        function_name: None,
+                        context: EntryContext::default(),
+                    });
+                }
+            }
+        }
+
+        // Gin 框架路由: r.GET("/path", handler), router.POST("/path", handler)
+        if is_gin {
+            let gin_methods: &[(&str, Option<&str>)] = &[
+                ("GET", Some("GET")),
+                ("POST", Some("POST")),
+                ("PUT", Some("PUT")),
+                ("DELETE", Some("DELETE")),
+                ("PATCH", Some("PATCH")),
+                ("HEAD", Some("HEAD")),
+                ("OPTIONS", Some("OPTIONS")),
+                ("Any", None),
+                ("Handle", None),
+                ("Static", None),
+                ("StaticFile", None),
+                ("StaticFS", None),
+                ("StaticFileFS", None),
+            ];
+
+            for (line_num, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                for (method_func, method_verb) in gin_methods {
+                    // 匹配 r.GET( 或 router.GET( 或 group.GET(
+                    let func_call = format!(".{}(", method_func);
+                    if !trimmed.contains(&func_call) {
+                        continue;
+                    }
+                    let route = Self::extract_go_route(line);
+                    // 检测认证中间件
+                    let ctx = Self::get_context_block(content, line_num, 10);
+                    let auth_required = ctx.contains("auth")
+                        || ctx.contains("jwt")
+                        || ctx.contains("token")
+                        || ctx.contains("middleware")
+                        || ctx.contains("login");
+
+                    entry_points.push(EntryPoint {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        entry_type: EntryType::HttpEndpoint,
+                        route,
+                        http_method: method_verb.map(|m| m.to_string()),
+                        auth_required,
+                        auth_mechanism: if auth_required {
+                            Some("Gin middleware".to_string())
+                        } else {
+                            None
+                        },
+                        risk_score: 0.0,
+                        function_name: None,
+                        context: EntryContext::default(),
+                    });
+                }
+            }
+        }
+
+        // Echo 框架路由: e.GET("/path", handler)
+        if is_echo {
+            let echo_methods: &[(&str, Option<&str>)] = &[
+                ("GET", Some("GET")),
+                ("POST", Some("POST")),
+                ("PUT", Some("PUT")),
+                ("DELETE", Some("DELETE")),
+                ("PATCH", Some("PATCH")),
+                ("HEAD", Some("HEAD")),
+                ("OPTIONS", Some("OPTIONS")),
+                ("Any", None),
+                ("Match", None),
+                ("Static", None),
+                ("File", None),
+            ];
+
+            for (line_num, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                for (method_func, method_verb) in echo_methods {
+                    let func_call = format!(".{}(", method_func);
+                    if !trimmed.contains(&func_call) {
+                        continue;
+                    }
+                    let route = Self::extract_go_route(line);
+                    let ctx = Self::get_context_block(content, line_num, 10);
+                    let auth_required = ctx.contains("auth")
+                        || ctx.contains("jwt")
+                        || ctx.contains("token")
+                        || ctx.contains("middleware")
+                        || ctx.contains("login");
+
+                    entry_points.push(EntryPoint {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        entry_type: EntryType::HttpEndpoint,
+                        route,
+                        http_method: method_verb.map(|m| m.to_string()),
+                        auth_required,
+                        auth_mechanism: if auth_required {
+                            Some("Echo middleware".to_string())
+                        } else {
+                            None
+                        },
+                        risk_score: 0.0,
+                        function_name: None,
+                        context: EntryContext::default(),
+                    });
+                }
+            }
+        }
+
+        // 信任边界: Go HTTP source 模式
+        let input_patterns = [
+            ("r.URL.Query()", "HTTP query parameters"),
+            ("r.FormValue", "HTTP form value"),
+            ("r.PostFormValue", "HTTP post form value"),
+            ("r.Header.Get", "HTTP header"),
+            ("r.Body", "HTTP request body"),
+            ("r.Cookie", "HTTP cookie"),
+            ("c.Query", "Gin query parameter"),
+            ("c.Param", "Gin URL parameter"),
+            ("c.PostForm", "Gin form value"),
+            ("c.GetHeader", "Gin request header"),
+        ];
+        for (pattern, desc) in &input_patterns {
+            for (line_num, line) in content.lines().enumerate() {
+                if line.contains(pattern) {
+                    trust_boundaries.push(TrustBoundary {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        description: desc.to_string(),
+                        source: pattern.to_string(),
+                    });
+                }
+            }
+        }
+
+        // 如果未检测到任何框架但有路由注册，仍报告入口点
+        if !framework_detected && entry_points.is_empty() {
+            // 通用检测: func 名称包含 handler/route/serve 且在 net/http 包下
+            // 通过检测 http.Handler 接口实现来发现端点
+            for (line_num, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("func")
+                    && (trimmed.contains("http.ResponseWriter") || trimmed.contains("ResponseWriter"))
+                    && (trimmed.contains("http.Request") || trimmed.contains("*Request"))
+                {
+                    let func_name = trimmed
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("")
+                        .to_string();
+
+                    entry_points.push(EntryPoint {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        entry_type: EntryType::HttpEndpoint,
+                        route: None,
+                        http_method: None,
+                        auth_required: false,
+                        auth_mechanism: None,
+                        risk_score: 0.0,
+                        function_name: if func_name.is_empty() {
+                            None
+                        } else {
+                            Some(func_name)
+                        },
+                        context: EntryContext::default(),
+                    });
+                }
+            }
+        }
+
+        (entry_points, trust_boundaries)
+    }
+
+    /// 从 Go 路由注册行中提取路由路径
     fn compute_risk_score(ep: &mut EntryPoint) -> f32 {
         let mut score: f32 = 0.2;
 
@@ -737,6 +971,55 @@ impl AttackSurfaceMapper {
         }
 
         score.clamp(0.0, 1.0)
+    }
+
+    /// 检测项目是否有全局认证中间件（Flask before_request / Express app.use(auth) / Django MIDDLEWARE）
+    fn has_global_auth_middleware(project_path: &Path) -> bool {
+        if let Ok(entries) = walk_project(project_path) {
+            for file_path in entries {
+                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                // 只检查 Python 和 JS 文件
+                if !matches!(ext, "py" | "js" | "ts" | "jsx" | "tsx") {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&file_path) {
+                    let lower = content.to_lowercase();
+                    // Flask: before_request + login_required / authenticate
+                    if ext == "py" && lower.contains("before_request") {
+                        if lower.contains("login_required")
+                            || lower.contains("authenticate")
+                            || lower.contains("is_authenticated")
+                            || lower.contains("current_user")
+                        {
+                            return true;
+                        }
+                    }
+                    // Express: app.use(auth) / app.use(jwt) / app.use(token)
+                    if matches!(ext, "js" | "ts" | "jsx" | "tsx") {
+                        if (lower.contains("app.use(") || lower.contains("router.use("))
+                            && (lower.contains("auth")
+                                || lower.contains("jwt")
+                                || lower.contains("token")
+                                || lower.contains("passport")
+                                || lower.contains("session")
+                                || lower.contains("isauthenticated")
+                                || lower.contains("requireauth"))
+                        {
+                            return true;
+                        }
+                    }
+                    // Django: MIDDLEWARE 配置
+                    if ext == "py" && lower.contains("middleware") {
+                        if lower.contains("authenticationmiddleware")
+                            || lower.contains("loginrequiredmiddleware")
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// 识别高风险文件
@@ -1118,6 +1401,29 @@ impl AttackSurfaceMapper {
         if let Some(start) = line.find('"') {
             if let Some(end) = line[start + 1..].find('"') {
                 return Some(line[start + 1..start + 1 + end].to_string());
+            }
+        }
+        None
+    }
+
+    fn extract_go_route(line: &str) -> Option<String> {
+        // r.GET("/api/users/:id", handler)
+        let trimmed = line.trim();
+        // 查找 .GET( 或 .POST( 等之后的第一个字符串字面量
+        if let Some(paren) = trimmed.find('(') {
+            let after_paren = &trimmed[paren + 1..];
+            // 跳过空白
+            let start_idx = after_paren
+                .find(|c: char| !c.is_whitespace())
+                .unwrap_or(0);
+            let after_ws = &after_paren[start_idx..];
+            // 检查首字符是否为引号
+            if let Some(quote_char) = after_ws.chars().next() {
+                if quote_char == '"' || quote_char == '\'' {
+                    if let Some(end) = after_ws[1..].find(quote_char) {
+                        return Some(after_ws[1..1 + end].to_string());
+                    }
+                }
             }
         }
         None

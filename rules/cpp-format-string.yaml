@@ -6,11 +6,12 @@ language: cpp
 name: C/C++ Format String Vulnerability
 owasp: "A03:2021-Injection"
 patterns:
-  # \b 边界：排除 snprintf/vsnprintf 等有界变体（它们不是格式串漏洞的充分条件）
+  # 匹配 printf/fprintf/sprintf/syslog 作为格式串的第一个参数（非字符串字面量时告警）
+  # \b 边界排除 snprintf/vsnprintf 等有界变体
   - language: c
-    pattern: '(?i)\b(printf\s*\(\s*[^"]*\)|fprintf\s*\([^,]+,\s*[^"]*\)|sprintf\s*\([^,]+,\s*[^"]*\)|syslog\s*\([^,]+,\s*[^"]*\))'
+    pattern: '(?i)\b(printf\s*\(\s*[^"\x29]|fprintf\s*\([^,]+,\s*[^"\x29]|sprintf\s*\([^,]+,\s*[^"\x29]|syslog\s*\([^,]+,\s*[^"\x29])'
   - language: cpp
-    pattern: '(?i)\b(printf\s*\(\s*[^"]*\)|fprintf\s*\([^,]+,\s*[^"]*\)|sprintf\s*\([^,]+,\s*[^"]*\)|syslog\s*\([^,]+,\s*[^"]*\))'
+    pattern: '(?i)\b(printf\s*\(\s*[^"\x29]|fprintf\s*\([^,]+,\s*[^"\x29]|sprintf\s*\([^,]+,\s*[^"\x29]|syslog\s*\([^,]+,\s*[^"\x29])'
 severity: critical
 remediation: "使用 %s 格式说明符包裹用户输入；使用 fputs/fwrite 替代 printf 输出已知字符串；编译时启用 -Wformat -Werror=format-security。"
 references:

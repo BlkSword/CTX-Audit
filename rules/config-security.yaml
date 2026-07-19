@@ -1,0 +1,83 @@
+# Config Security Rules
+# 配置文件安全检测规则：检测 DEBUG 模式、弱密钥、CORS 配置等
+
+rules:
+  - id: config-debug-enabled
+    name: "DEBUG Mode Enabled"
+    description: "检测应用运行在 DEBUG 模式。DEBUG 模式会泄露堆栈跟踪、环境变量、配置信息，攻击者可利用这些信息进一步入侵。"
+    severity: high
+    cwe: CWE-489
+    language: all
+    patterns:
+      - language: python
+        pattern: 'DEBUG\s*=\s*True'
+      - language: javascript
+        pattern: 'DEBUG\s*=\s*true'
+      - language: go
+        pattern: 'debug\s*:?\s*true|Debug\s*:?\s*true'
+    remediation: "生产环境必须设置 DEBUG=False。使用环境变量控制 DEBUG 模式：DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'"
+
+  - id: config-weak-secret-key
+    name: "Weak or Default Secret Key"
+    description: "检测硬编码的弱密钥或默认密钥。已知密钥可使攻击者伪造 Session Cookie、JWT Token，导致身份伪造和权限提升。"
+    severity: critical
+    cwe: CWE-798
+    language: all
+    patterns:
+      - language: python
+        pattern: '(?i)SECRET_KEY\s*=\s*['"'"'"](?:\w{1,10}|(?:dev|secret|key|test|password|changeme|\w{3,}secret|django-insecure|development key|thisismy))['"'"'"]'
+      - language: javascript
+        pattern: '(?i)(?:secret|secretKey|JWT_SECRET)\s*[:=]\s*['"'"'"](?:\w{1,10}|dev|secret|test|password)['"'"'"]'
+      - language: go
+        pattern: '(?i)(?:SecretKey|JWTSecret|SessionSecret)\s*=\s*"(?:\w{1,10}|dev|secret|test|password)"'
+    remediation: "密钥应从环境变量读取：SECRET_KEY = os.environ.get('SECRET_KEY')。使用 python -c 'import secrets; print(secrets.token_hex(32))' 生成强随机密钥。"
+
+  - id: config-cors-wildcard
+    name: "CORS Allow All Origins"
+    description: "检测 CORS 配置允许所有来源访问。允许任意域访问可能导致 CSRF 攻击、敏感数据被跨域读取。"
+    severity: medium
+    cwe: CWE-942
+    language: all
+    patterns:
+      - language: python
+        pattern: 'CORS_ORIGIN_ALLOW_ALL\s*=\s*True|allow_origins\s*=\s*\[['"'"'"]\*['"'"'"]\]|origins\s*=\s*\[['"'"'"]\*['"'"'"]\]'
+      - language: javascript
+        pattern: "origin\s*:\s*['\"']\\*['\"']|credentials\s*:\s*true.*origin\s*:\s*['\"']\\*['\"']"
+    remediation: "将 CORS 限制为仅需要的域名：CORS_ORIGINS = ['https://yourdomain.com']。切勿同时使用 credentials=True 和 origin='*'。"
+
+  - id: config-plaintext-password
+    name: "Plaintext Password in Config"
+    description: "检测配置文件中硬编码数据库密码或 API 密钥。代码仓库中的凭据可被任何有代码访问权限的人获取。"
+    severity: high
+    cwe: CWE-259
+    language: all
+    patterns:
+      - language: python
+        pattern: '(?i)(?:DATABASE_URL|SQLALCHEMY_DATABASE_URI|MONGO_URI|REDIS_URL)\s*=\s*['"'"'"](?:mysql|postgres|mongodb|redis)://[^@]+:[^@]+@'
+      - language: javascript
+        pattern: '(?i)(?:DATABASE_URL|MONGO_URI|REDIS_URL)\s*[:=]\s*['"'"'"](?:mysql|postgres|mongodb|redis)://[^@]+:[^@]+@'
+    remediation: "使用环境变量存储数据库凭据：DATABASE_URL = os.environ.get('DATABASE_URL')。使用 Secrets Manager 管理生产凭据。"
+
+  - id: config-insecure-cookie
+    name: "Insecure Session Cookie"
+    description: "检测 Session Cookie 缺少安全标志（Secure/HttpOnly/SameSite），可能导致 Cookie 被中间人窃取或 CSRF 利用。"
+    severity: medium
+    cwe: CWE-614
+    language: all
+    patterns:
+      - language: python
+        pattern: 'SESSION_COOKIE_SECURE\s*=\s*False|SESSION_COOKIE_HTTPONLY\s*=\s*False|SESSION_COOKIE_SAMESITE\s*=\s*None'
+      - language: javascript
+        pattern: "secure\s*:\s*false|cookie\s*:\s*\{.*secure\s*:\s*false|httpOnly\s*:\s*false"
+    remediation: "设置 SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax'。"
+
+  - id: config-allowed-hosts-wildcard
+    name: "ALLOWED_HOSTS Wildcard"
+    description: "检测 Django/Flask 允许任意 Host 头访问。攻击者可利用 Host 头注入进行密码重置劫持、缓存投毒等攻击。"
+    severity: medium
+    cwe: CWE-20
+    language: all
+    patterns:
+      - language: python
+        pattern: 'ALLOWED_HOSTS\s*=\s*\[['"'"'"]\*['"'"'"]\]|allowed_hosts\s*=\s*\[['"'"'"]\*['"'"'"]\]'
+    remediation: "将 ALLOWED_HOSTS 限制为实际域名：ALLOWED_HOSTS = ['yourdomain.com', 'www.yourdomain.com']。"

@@ -239,6 +239,55 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  - id: "go_xss_output"
+    name: "Go XSS Output"
+    description: "Gin/Echo/nethttp response methods that write user-controlled content"
+    match_mode: "Semantic"
+    namespaces:
+      - "github.com/gin-gonic/gin"
+      - "github.com/labstack/echo"
+      - "net/http"
+    receiver_patterns:
+      - "c"
+      - "ctx"
+      - "w"
+      - "rw"
+      - "response"
+    patterns:
+      - "c.HTML"
+      - "c.String"
+      - "c.XML"
+      - "c.JSON"
+      - "c.IndentedJSON"
+      - "c.SecureJSON"
+      - "c.JSONP"
+      - "c.YAML"
+      - "c.AsciiJSON"
+      - "c.ProtoBuf"
+      - "c.Data"
+      - "c.Redirect"
+      - "c.Header"
+      - "ctx.HTML"
+      - "ctx.String"
+      - "ctx.XML"
+      - "ctx.JSON"
+      - "w.Write"
+      - ".Write"
+      - "fmt.Fprint"
+      - "fmt.Fprintf"
+    exact_matches:
+      - "c.HTML"
+      - "c.String"
+      - "c.XML"
+      - "ctx.HTML"
+      - "w.Write"
+    languages: ["go"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "High"
+    cwe_id: "CWE-79"
+    sensitive_params: [0, 1]
+    ast_patterns: []
+
 sanitizers:
   - pattern: "html/template"
     description: "HTML auto-escaping template"

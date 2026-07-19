@@ -138,6 +138,8 @@ impl RuleScanner {
                             {
                                 if is_placeholder_secret(&compiled.rule, matched_text) {
                                     Some("值为占位符/示例，非真实凭证")
+                                } else if is_config_key_value(matched_text) {
+                                    Some("引号内值为配置 key 名称，非真实凭证")
                                 } else {
                                     None
                                 }
@@ -410,6 +412,15 @@ fn evaluate_likely_fp_args(content: &str, match_start: usize, match_end: usize) 
     if args.trim().is_empty() {
         return None;
     }
+
+    // shell=true 是高风险信号 — 不降权，保持高置信度
+    let context_start = match_start.saturating_sub(200);
+    let context_end = (match_end + 200).min(content.len());
+    let context = &content[context_start..context_end].to_lowercase();
+    if context.contains("shell=true") || context.contains("shell = true") {
+        return None;
+    }
+
     if args_all_literals(&args) {
         return Some("参数全部为字面量，攻击者不可控");
     }
@@ -468,6 +479,65 @@ fn is_placeholder_secret(rule: &Rule, matched_text: &str) -> bool {
     }
     let lower = matched_text.to_lowercase();
     PLACEHOLDER_SECRETS.iter().any(|p| lower.contains(p))
+}
+
+/// 判断引号内的值是否为配置 key 名称（仅含标识符字符），而非真实凭证
+/// 例如 Go const: const SSOClientSecret = "sso_client_secret" 中的值是 key 名称
+fn is_config_key_value(matched_text: &str) -> bool {
+    // 提取引号内的值
+    let extract_quoted = |quote: char| -> Option<&str> {
+        let start = matched_text.rfind(quote)?;
+        if start > 0 && matched_text.as_bytes().get(start - 1) == Some(&(b'\\')) {
+            return None;
+        }
+        let before = &matched_text[..start];
+        let eq_pos = before.rfind('=')?;
+        // 确保等号后在引号前没有其他内容（除了空白）
+        let between = before[eq_pos + 1..].trim();
+        if !between.is_empty() && between != ":" {
+            return None;
+        }
+        // 找到结束引号
+        let after = &matched_text[start + 1..];
+        let end = after.find(quote)?;
+        Some(&after[..end])
+    };
+
+    let value = match extract_quoted('"') {
+        Some(v) => v,
+        None => match extract_quoted('\'') {
+            Some(v) => v,
+            None => return false,
+        },
+    };
+    if value.len() < 4 {
+        return false;
+    }
+
+    // 配置 key 名称特征：只含标识符字符（字母、数字、下划线、点、连字符）
+    let is_identifier = value
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-');
+    if !is_identifier {
+        return false;
+    }
+
+    // 排除明显是真实密钥的情况：包含 Base64 特征或高熵片段
+    let has_base64_pattern = value.len() >= 12
+        && (value.contains("+/") || value.contains("==") || value.contains("AAAA"));
+    if has_base64_pattern {
+        return false;
+    }
+
+    // 排除明显的 hash 值（连续长十六进制串）
+    let has_hash_pattern = value.len() >= 16
+        && value.chars().all(|c| c.is_ascii_hexdigit())
+        && !value.contains('_');
+    if has_hash_pattern {
+        return false;
+    }
+
+    true
 }
 
 fn create_finding(

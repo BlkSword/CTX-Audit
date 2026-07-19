@@ -210,12 +210,26 @@ pub struct CallGraphNode {
     /// 污点汇对应的漏洞类型（从匹配的 sink pattern 提取）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sink_type: Option<VulnerabilityType>,
+    /// sink 匹配来源：YAML Rule / Body-based Keyword / Name-based Heuristic
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sink_match_source: Option<SinkMatchSource>,
     /// 是否为合成回调节点（匿名箭头函数/函数表达式）
     #[serde(default)]
     pub is_callback: bool,
     /// 父调用点的行号（回调注册所在位置）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_call_site: Option<usize>,
+}
+
+/// Sink 匹配来源类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SinkMatchSource {
+    /// YAML 规则显式定义（命名空间 + receiver + exact_match 语义匹配）
+    YamlRule,
+    /// 函数体内容 keyword 匹配（body_matches_sink 子串命中）
+    BodyKeyword,
+    /// 函数名启发式（is_sink_by_name + infer_vuln_type）
+    NameHeuristic,
 }
 
 /// 函数参数
@@ -922,16 +936,26 @@ impl CrossFileTaintAnalyzer {
 
                 // 优先按函数体内的具体 sink 调用判断（可处理 response.getWriter().println、
                 // stmt.executeBatch 等 Semantic 规则），函数名兜底。
-                let (mut is_sink, mut sink_type) = (false, None);
+                let (mut is_sink, mut sink_type, mut sink_match_source) = (false, None, None);
                 for call in &calls_in_range {
                     if let Some(vt) = self.is_sink_call(call) {
                         is_sink = true;
                         sink_type = Some(vt);
+                        sink_match_source = Some(SinkMatchSource::YamlRule);
                         break;
                     }
                 }
                 if !is_sink {
-                    (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
+                    let (body_match, body_type) = self.is_taint_sink(&func_name, &body_text);
+                    is_sink = body_match;
+                    sink_type = body_type;
+                    sink_match_source = if body_type.is_some() {
+                        Some(SinkMatchSource::BodyKeyword)
+                    } else if body_match {
+                        Some(SinkMatchSource::NameHeuristic)
+                    } else {
+                        None
+                    };
                 }
 
                 // 优先复用 Stage B CPG 中的参数信息，使跨文件/跨函数传播能正确映射形参。
@@ -966,6 +990,7 @@ impl CrossFileTaintAnalyzer {
                     is_taint_source: is_source,
                     is_taint_sink: is_sink,
                     sink_type,
+                    sink_match_source,
                     is_callback: false,
                     parent_call_site: None,
                 };
@@ -991,6 +1016,13 @@ impl CrossFileTaintAnalyzer {
                             .collect();
 
                         let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text);
+                        let cb_match_source = if cb_sink_type.is_some() {
+                            Some(SinkMatchSource::BodyKeyword)
+                        } else if cb_is_sink {
+                            Some(SinkMatchSource::NameHeuristic)
+                        } else {
+                            None
+                        };
                         let cb_node = CallGraphNode {
                             id: cb_id.clone(),
                             name: format!("<callback@{}>", call.line),
@@ -1005,6 +1037,7 @@ impl CrossFileTaintAnalyzer {
                             is_taint_source: false,
                             is_taint_sink: cb_is_sink,
                             sink_type: cb_sink_type,
+                            sink_match_source: cb_match_source,
                             is_callback: true,
                             parent_call_site: Some(call.line),
                         };
@@ -1299,6 +1332,7 @@ impl CrossFileTaintAnalyzer {
             if let Some(node) = self.call_graph.nodes.get_mut(id) {
                 node.is_taint_sink = false;
                 node.sink_type = None;
+                node.sink_match_source = None;
             }
         }
         self.call_graph
@@ -1734,16 +1768,26 @@ impl CrossFileTaintAnalyzer {
             let is_source = self.is_taint_source(&func_name, &body_text);
 
             // 优先按函数体内的具体调用判断 sink（能处理 Semantic 规则如 stmt.executeQuery）
-            let (mut is_sink, mut sink_type) = (false, None);
+            let (mut is_sink, mut sink_type, mut sink_match_source) = (false, None, None);
             for call in &calls_in_range {
                 if let Some(vt) = self.is_sink_call(call) {
                     is_sink = true;
                     sink_type = Some(vt);
+                    sink_match_source = Some(SinkMatchSource::YamlRule);
                     break;
                 }
             }
             if !is_sink {
-                (is_sink, sink_type) = self.is_taint_sink(&func_name, &body_text);
+                let (body_match, body_type) = self.is_taint_sink(&func_name, &body_text);
+                is_sink = body_match;
+                sink_type = body_type;
+                sink_match_source = if body_type.is_some() {
+                    Some(SinkMatchSource::BodyKeyword)
+                } else if body_match {
+                    Some(SinkMatchSource::NameHeuristic)
+                } else {
+                    None
+                };
             }
 
             let node = CallGraphNode {
@@ -1760,6 +1804,7 @@ impl CrossFileTaintAnalyzer {
                 is_taint_source: is_source,
                 is_taint_sink: is_sink,
                 sink_type,
+                sink_match_source,
                 is_callback: false,
                 parent_call_site: None,
             };
@@ -1786,6 +1831,13 @@ impl CrossFileTaintAnalyzer {
                         .collect();
 
                     let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text);
+                    let cb_match_source = if cb_sink_type.is_some() {
+                        Some(SinkMatchSource::BodyKeyword)
+                    } else if cb_is_sink {
+                        Some(SinkMatchSource::NameHeuristic)
+                    } else {
+                        None
+                    };
                     let cb_node = CallGraphNode {
                         id: cb_id.clone(),
                         name: format!("<callback@{}>", call.line),
@@ -1800,6 +1852,7 @@ impl CrossFileTaintAnalyzer {
                         is_taint_source: false,
                         is_taint_sink: cb_is_sink,
                         sink_type: cb_sink_type,
+                        sink_match_source: cb_match_source,
                         is_callback: true,
                         parent_call_site: Some(call.line),
                     };
@@ -1950,6 +2003,7 @@ impl CrossFileTaintAnalyzer {
                 is_taint_source: true,
                 is_taint_sink: false,
                 sink_type: None,
+                sink_match_source: None,
                 is_callback: false,
                 parent_call_site: None,
             });
@@ -1982,6 +2036,13 @@ impl CrossFileTaintAnalyzer {
                 // 检查是否是污点源或汇（fallback 路径：仅函数名兜底，函数体提取成本高且此路径少走）
                 let is_source = self.is_taint_source(&func_name, "");
                 let (is_sink, sink_type) = self.is_taint_sink(&func_name, "");
+                let sm_source = if sink_type.is_some() {
+                    Some(SinkMatchSource::BodyKeyword)
+                } else if is_sink {
+                    Some(SinkMatchSource::NameHeuristic)
+                } else {
+                    None
+                };
 
                 // 提取参数
                 let parameters = self.extract_parameters(line, language);
@@ -2003,6 +2064,7 @@ impl CrossFileTaintAnalyzer {
                     is_taint_source: is_source,
                     is_taint_sink: is_sink,
                     sink_type,
+                    sink_match_source: sm_source,
                     is_callback: false,
                     parent_call_site: None,
                 };
@@ -2794,6 +2856,7 @@ impl CrossFileTaintAnalyzer {
                             &path,
                             vuln_type,
                             "summary_direct_sink",
+                            sink_node.sink_match_source != Some(SinkMatchSource::YamlRule),
                         ));
                     if flows.len() >= max_flows {
                         return flows;
@@ -2885,6 +2948,7 @@ impl CrossFileTaintAnalyzer {
                                         &sink_path,
                                         ds.vuln_type.clone(),
                                         "summary_param_to_sink",
+                                        true, // vuln_type from infer_vuln_type → name-based
                                     ));
                                 }
                             }
@@ -2942,6 +3006,7 @@ impl CrossFileTaintAnalyzer {
         path: &[String],
         vuln_type: VulnerabilityType,
         factor: &str,
+        non_yaml_sink: bool,
     ) -> InterproceduralTaintFlow {
         let mut interprocedural_path = Vec::new();
         for func_id in path {
@@ -2963,7 +3028,11 @@ impl CrossFileTaintAnalyzer {
             }
         }
 
-        let (confidence, mut confidence_factors) = self.calculate_flow_confidence(path);
+        let (mut confidence, mut confidence_factors) = self.calculate_flow_confidence(path);
+        if non_yaml_sink {
+            confidence *= 0.5;
+            confidence_factors.push("sink:non_yaml".to_string());
+        }
         confidence_factors.push(format!("summary:{}", factor));
 
         InterproceduralTaintFlow {
@@ -3153,12 +3222,21 @@ impl CrossFileTaintAnalyzer {
                             }
                         }
 
-                        let (confidence, confidence_factors) =
+                        let (mut confidence, mut confidence_factors) =
                             self.calculate_flow_confidence(&path);
 
                         // 使用 sink 节点匹配到的漏洞类型（从 taint rule pattern 提取）
-                        // 如果 sink 没有匹配到具体类型（name-based fallback），回退为 Generic
+                        // 如果 sink 没有匹配到具体类型（name-based fallback），回退为 Generic 并降权
                         let vuln_type = sink.sink_type.unwrap_or(VulnerabilityType::Generic);
+                        if sink.sink_match_source != Some(SinkMatchSource::YamlRule) {
+                            confidence *= 0.5;
+                            let factor_name = match sink.sink_match_source {
+                                Some(SinkMatchSource::BodyKeyword) => "sink:body_keyword",
+                                Some(SinkMatchSource::NameHeuristic) => "sink:name_heuristic",
+                                _ => "sink:non_yaml",
+                            };
+                            confidence_factors.push(factor_name.to_string());
+                        }
 
                         flows.push(InterproceduralTaintFlow {
                             id: uuid::Uuid::new_v4().to_string(),
@@ -3720,6 +3798,22 @@ impl CrossFileTaintAnalyzer {
             "get_cache",
             "get_logger",
             "get_request",
+            "get_function_params",
+            "get_input_schema",
+            "get_cell_data",
+            "get_block_name",
+            "get_inputs_outputs",
+            "get_metadata",
+            "get_hash_seed",
+            "get_vibe_code",
+            "get_vibe_starter_queries",
+            "get_item_or_file",
+            "get_dataset_schema",
+            "get_video_duration",
+            "get_video_duration_ffprobe",
+            "get_space",
+            "get_svg",
+            "get_oauth_available",
         ];
         for prefix in &getter_prefixes {
             if lower.starts_with(prefix) || lower == *prefix {
@@ -3730,11 +3824,41 @@ impl CrossFileTaintAnalyzer {
         let safe_prefixes = [
             "build_", "list_", "load_config", "load_env", "load_settings",
             "init_", "setup_", "create_dir", "create_folder",
+            "parse_", "format_", "validate_", "check_", "verify_",
+            "serialize_", "encode_", "decode_", "marshal", "unmarshal",
+            "read_", "write_", "scan_", "walk_",
+            // Python/Gradio 常见工具函数
+            "postprocess_", "preprocess_", "deserialize_", "close_",
+            "add_configuration_", "check_gcloud_", "start_node_",
+            "verify_server_", "handle_", "resolve_", "extract_",
+            "encode_", "convert_", "simplify_", "populate_",
+            "compute_", "generate_", "register_", "install_",
+            "deploy_", "upload_", "download_", "stream_",
+            "preview_", "render_", "display_", "transform_",
+            "combine_", "process_", "collect_", "normalize_",
+            "clean_", "filter_", "sort_", "find_", "search_",
+            "load_from_cache",
         ];
         for prefix in &safe_prefixes {
             if lower.starts_with(prefix) {
                 return VulnerabilityType::Generic;
             }
+        }
+
+        // ── 通用 Python / 跨语言 safe 函数 ──────────────────────
+        // 这些函数名常见但非安全 sink
+        let generic_safe = [
+            "example_payload", "example_value", "api_info", "api_info_as_input",
+            "to_dict", "to_arg", "toorjson",
+            "postprocess_data", "postprocess_output_data",
+            "preprocess_data", "validate_inputs", "validate_outputs",
+            "queue_data", "queue_data_helper", "heartbeat",
+            "pwa_icon", "mount_gradio_app",
+            "on_part_data", "_pop_last_user_message",
+            "launch", "queue", "copy", "load", "from_spaces", "from_spaces_blocks",
+        ];
+        if generic_safe.contains(&lower.as_str()) {
+            return VulnerabilityType::Generic;
         }
 
         if lower.contains("exec")
@@ -3793,6 +3917,8 @@ impl CrossFileTaintAnalyzer {
             || lower.contains("document.write")
             || lower.contains("getwriter")
             || lower.contains("dangerouslysetinnerhtml")
+            || lower.contains("writestring")
+            || lower.contains("writeresponse")
         {
             return VulnerabilityType::CrossSiteScripting;
         }
@@ -4124,6 +4250,7 @@ mod tests {
             is_taint_source: false,
             is_taint_sink: false,
             sink_type: None,
+            sink_match_source: None,
             is_callback: false,
             parent_call_site: None,
         };
@@ -4150,6 +4277,7 @@ mod tests {
             is_taint_source: false,
             is_taint_sink: false,
             sink_type: None,
+            sink_match_source: None,
             is_callback: false,
             parent_call_site: None,
         };
@@ -4168,6 +4296,7 @@ mod tests {
             is_taint_source: false,
             is_taint_sink: false,
             sink_type: None,
+            sink_match_source: None,
             is_callback: false,
             parent_call_site: None,
         };

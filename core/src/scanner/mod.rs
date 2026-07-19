@@ -557,6 +557,15 @@ pub fn detect_barriers(
         {
             barriers.push("shell:false".to_string());
         }
+
+        // shell: true 检测 — 标记为高风险（shell 解释器会执行注入的命令）
+        if context_block.contains("shell: true")
+            || context_block.contains("shell:true")
+            || context_block.contains("shell=True")
+            || context_block.contains("shell = True")
+        {
+            barriers.push("shell:true".to_string());
+        }
         // spawn() 默认 shell:false — 如果没有 shell:true/shell: true，且使用数组参数
         let has_shell_true =
             context_block.contains("shell: true") || context_block.contains("shell:true");

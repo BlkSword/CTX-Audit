@@ -15,7 +15,7 @@ patterns:
   - language: javascript
     pattern: (?i)(readFile|writeFile|readFileSync|writeFileSync|fs\.open\s*\().*(?:req\.|request|param|input|user)
   - language: python
-    pattern: (?i)(open\s*\(|read_file\s*\(|file_get_contents\s*\().*(?:request|param|input|user)
+    pattern: (?i)(open\s*\(|read_file\s*\(|file_get_contents\s*\(|os\.path\.(join|normpath)\s*\()
   - language: php
     pattern: (?i)(fopen\s*\(|readfile\s*\(|file_get_contents\s*\(|include\s*\(|require\s*\().*(?:\$_GET|\$_POST|\$_REQUEST|request|input)
 severity: high

@@ -1,0 +1,16 @@
+category: security-misconfiguration
+cwe: CWE-489
+description: "检测应用运行在 DEBUG 模式。生产环境开启 DEBUG 会泄露堆栈跟踪、环境变量和配置信息。"
+id: config-debug-enabled
+language: all
+name: "DEBUG Mode Enabled in Production"
+owasp: "A05:2021-Security Misconfiguration"
+patterns:
+  - language: python
+    pattern: 'DEBUG\s*=\s*True'
+  - language: javascript
+    pattern: 'DEBUG\s*=\s*true'
+severity: high
+remediation: "生产环境设置 DEBUG=False。使用环境变量控制：DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'。"
+references:
+  - "https://cwe.mitre.org/data/definitions/489.html"

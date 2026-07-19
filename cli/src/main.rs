@@ -71,6 +71,10 @@ enum Commands {
         #[arg(long)]
         min_severity: Option<String>,
 
+        /// 最低置信度阈值（0.0-1.0，过滤低置信度发现。CrossFileTaintAnalyzer 的 name/body based 发现默认被降权）
+        #[arg(long)]
+        min_confidence: Option<f32>,
+
         /// 文件模式过滤（如 *.rs）
         #[arg(short, long)]
         pattern: Option<String>,
@@ -476,6 +480,7 @@ async fn main() -> Result<()> {
             sca,
             graph_output,
             query_mode,
+            min_confidence,
         } => {
             commands::scan::execute(
                 path,
@@ -494,6 +499,7 @@ async fn main() -> Result<()> {
                 sca,
                 graph_output,
                 query_mode,
+                min_confidence,
             )
             .await
         }

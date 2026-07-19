@@ -73,6 +73,7 @@ pub async fn execute(
     sca_enabled: bool,
     graph_output: Option<String>,
     query_mode: bool,
+    min_confidence: Option<f32>,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -117,6 +118,7 @@ pub async fn execute(
                 enable_taint,
                 enable_cross_file,
                 exclude_dirs,
+                min_confidence,
                 &mut renderer,
                 sca_options,
                 graph_output,
@@ -149,6 +151,7 @@ pub async fn execute(
         enable_taint,
         enable_cross_file,
         exclude_dirs,
+        min_confidence,
         &mut renderer,
         sca_options,
         graph_output,
@@ -331,6 +334,7 @@ async fn scan_local(
     enable_taint: bool,
     enable_cross_file: bool,
     exclude_dirs: Vec<String>,
+    min_confidence: Option<f32>,
     renderer: &mut TerminalRenderer,
     sca_options: ScaScanOptions,
     graph_output: Option<String>,
@@ -459,6 +463,26 @@ async fn scan_local(
             .into_iter()
             .filter(|f| f.file_path.contains(pat.as_str()))
             .collect()
+    } else {
+        filtered_findings
+    };
+
+    // 过滤置信度
+    let filtered_findings = if let Some(min_conf) = min_confidence {
+        let before = filtered_findings.len();
+        let filtered: Vec<Finding> = filtered_findings
+            .into_iter()
+            .filter(|f| f.confidence.unwrap_or(0.5) >= min_conf)
+            .collect();
+        if filtered.len() < before {
+            renderer.info(&format!(
+                "置信度过滤: {} → {} (min_confidence={})",
+                before,
+                filtered.len(),
+                min_conf
+            ));
+        }
+        filtered
     } else {
         filtered_findings
     };
@@ -866,6 +890,7 @@ async fn scan_via_daemon(
                 enable_taint,
                 enable_cross_file,
                 vec![],
+                None,
                 renderer,
                 ScaScanOptions::default(),
                 None,
@@ -907,6 +932,7 @@ async fn scan_via_daemon(
                 enable_taint,
                 enable_cross_file,
                 vec![],
+                None,
                 renderer,
                 ScaScanOptions::default(),
                 None,

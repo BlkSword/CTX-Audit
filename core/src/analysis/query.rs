@@ -1368,6 +1368,7 @@ mod tests {
             is_taint_source: true,
             is_taint_sink: false,
             sink_type: None,
+            sink_match_source: None,
             is_callback: false,
             parent_call_site: None,
         });
@@ -1386,6 +1387,7 @@ mod tests {
             is_taint_source: false,
             is_taint_sink: false,
             sink_type: None,
+            sink_match_source: None,
             is_callback: false,
             parent_call_site: None,
         });
@@ -1404,6 +1406,7 @@ mod tests {
             is_taint_source: false,
             is_taint_sink: true,
             sink_type: None,
+            sink_match_source: None,
             is_callback: false,
             parent_call_site: None,
         });
@@ -1517,6 +1520,7 @@ mod tests {
             is_taint_source: false,
             is_taint_sink: false,
             sink_type: None,
+            sink_match_source: None,
             is_callback: false,
             parent_call_site: None,
         });
@@ -1539,6 +1543,7 @@ mod tests {
             is_taint_source: false,
             is_taint_sink: false,
             sink_type: None,
+            sink_match_source: None,
             is_callback: true,
             parent_call_site: Some(5),
         });

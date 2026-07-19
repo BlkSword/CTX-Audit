@@ -1,0 +1,15 @@
+category: file-operation
+cwe: CWE-22
+description: 检测路径拼接操作缺少安全检查：os.path.join / Path(...) 之后没有 realpath 或前缀校验。典型案例：Gradio FileExplorer preprocess 中 os.path.join(root_dir, *user_segments) 未使用 _safe_join 导致任意文件读取（GHSA-qqr5-x4m8-g4gq）。
+id: path-join-without-validation
+language: python
+name: Path Join Without Validation
+owasp: "A01:2021-Broken Access Control"
+remediation: "在 os.path.join 后调用 os.path.realpath() 并检查结果是否在允许的根目录下（startswith(root_dir)）；使用专门的 safe_join 函数替代直接拼接。"
+references:
+  - "https://cwe.mitre.org/data/definitions/22.html"
+  - "https://github.com/gradio-app/gradio/security/advisories/GHSA-qqr5-x4m8-g4gq"
+patterns:
+  - language: python
+    pattern: 'os\.path\.(join|normpath)\s*\('
+severity: high

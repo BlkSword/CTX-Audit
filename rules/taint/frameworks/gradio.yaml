@@ -1,0 +1,97 @@
+kind: taint-rules
+name: "Gradio Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "gradio_component_input"
+    name: "Gradio Component User Input"
+    description: "Data from frontend component interactions (FileExplorer root, Image source, Audio path, etc.)"
+    patterns:
+      # FileExplorer / File component paths
+      - "payload.root"
+      - "payload.path"
+      - "payload.url"
+      - "value.path"
+      - "value.url"
+      - "value.name"
+      # Image/Audio/Video media sources
+      - "image_file"
+      - "audio_path"
+      - "video_path"
+      - "media_url"
+      # Component preprocess methods (data from frontend)
+      - "preprocess(self"
+      - "postprocess(self"
+      - "process_example(self"
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "gradio_file_input"
+    name: "Gradio File Upload Input"
+    description: "Uploaded file paths and data from Gradio file components"
+    patterns:
+      - "file_data.path"
+      - "file_data.name"
+      - "tempfile.gettempdir"
+      - "NamedTemporaryFile"
+      - "upload_file"
+    languages: ["python"]
+    severity: "High"
+    category: "FileInput"
+    ast_patterns: []
+
+sinks:
+  - id: "gradio_path_join"
+    name: "Gradio Path Join with User Input"
+    description: "os.path.join with user-controlled path segments"
+    match_mode: "Semantic"
+    patterns:
+      - "os.path.join"
+      - "os.path.normpath"
+      - "pathlib.Path("
+      - "Path("
+    languages: ["python"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0, 1]
+    ast_patterns: []
+
+  - id: "gradio_ssrf_http"
+    name: "Gradio SSRF in Media Processing"
+    description: "httpx/requests HTTP GET/POST with user-controlled URLs in media/image processing"
+    match_mode: "Semantic"
+    namespaces:
+      - "httpx"
+      - "requests"
+    patterns:
+      - "httpx.get"
+      - "httpx.post"
+      - "httpx.stream"
+      - "requests.get"
+      - "requests.post"
+      - ".get("
+      - ".post("
+    exact_matches:
+      - "httpx.get"
+      - "requests.get"
+    languages: ["python"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "async_ssrf_protected_get"
+    description: "Gradio SSRF-safe HTTP GET wrapper"
+  - pattern: "async_ssrf_protected_download"
+    description: "Gradio SSRF-safe HTTP download wrapper"
+  - pattern: "is_http_url_like"
+    description: "URL validation helper"
+  - pattern: "PUBLIC_HOSTNAME_WHITELIST"
+    description: "SSRF protection whitelist"
+  - pattern: "_safe_join"
+    description: "Gradio safe path join that validates root prefix"

@@ -217,6 +217,25 @@ fn detect_sink_sanitization(
 fn infer_vuln_type(func_name: &str) -> VulnerabilityType {
     let lower = func_name.to_lowercase();
 
+    // 排除辅助函数（与 cross_file.rs 保持一致）
+    let helper_prefixes: &[&str] = &[
+        "get_", "build_", "list_", "load_", "init_", "setup_",
+        "parse_", "format_", "validate_", "check_", "verify_",
+        "serialize_", "encode_", "decode_", "read_", "write_",
+        "scan_", "walk_", "postprocess_", "preprocess_", "deserialize_",
+        "close_", "handle_", "resolve_", "extract_", "convert_",
+        "simplify_", "populate_", "compute_", "generate_", "register_",
+        "install_", "deploy_", "upload_", "download_", "stream_",
+        "preview_", "render_", "display_", "transform_", "combine_",
+        "process_", "collect_", "normalize_", "clean_", "filter_",
+        "sort_", "find_", "search_",
+    ];
+    for prefix in helper_prefixes {
+        if lower.starts_with(prefix) {
+            return VulnerabilityType::Generic;
+        }
+    }
+
     // SQL 先检查（cursor.execute 包含 exec，需在命令注入前匹配）
     if lower.contains("query")
         || lower.contains("sql")
@@ -243,18 +262,22 @@ fn infer_vuln_type(func_name: &str) -> VulnerabilityType {
 
     if lower.contains("fetch")
         || lower.contains("axios")
-        || lower.contains("request")
         || lower.contains("http")
         || lower.contains("urllib")
     {
         return VulnerabilityType::ServerSideRequestForgery;
     }
 
-    if lower.contains("write")
-        || lower.contains("read")
-        || lower.contains("open")
-        || lower.contains("file")
+    // PathTraversal: 更精确的匹配，避免误报 built-in open()
+    if lower.contains("fileinputstream")
+        || lower.contains("fileoutputstream")
+        || lower.contains("readfile")
+        || lower.contains("writefile")
+        || (lower.contains("open") && !lower.contains("openapi") && !lower.contains("open_api"))
+        || (lower.contains("file") && !lower.contains("profile"))
         || lower.contains("fs.")
+        || (lower.contains("read") && lower.contains("file"))
+        || (lower.contains("write") && lower.contains("file"))
     {
         return VulnerabilityType::PathTraversal;
     }
