@@ -13,7 +13,7 @@ patterns:
   - language: java
     pattern: (?i)(ObjectInputStream\s*\(|readObject\s*\(|readUnshared\s*\(|XMLDecoder\s*\(|XStream\s*\()
   - language: python
-    pattern: (?i)(pickle\.loads?\s*\(|marshal\.loads?\s*\(|yaml\.load\s*\(|yaml\.unsafe_load\s*\()
+    pattern: (?i)(pickle\.loads?\s*\(|marshal\.loads?\s*\(|yaml\.load\s*\((?!.*yaml\.SafeLoader)|yaml\.unsafe_load\s*\(|dill\.loads?\s*\()
   - language: php
     pattern: (?i)(unserialize\s*\()
 severity: critical

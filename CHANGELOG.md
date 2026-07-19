@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Flask 污点规则**：新增 `rules/taint/frameworks/flask.yaml`，定义 Flask 专属 sources（`request.args`、`request.form`、`request.json`、`request.headers`、`request.cookies`、`request.view_args` 等 8 个 source）和 sinks（SSTI `render_template_string`、命令注入 `subprocess.Popen`/`os.system`、SQL 注入 `cursor.execute`、代码注入 `eval`/`exec`、路径穿越 `flask.send_file`、SSRF `requests.get`、反序列化 `pickle.loads`/`yaml.load`、XSS `Markup` 等 10 个 sink），以及 11 个 sanitizer（`html.escape`、`shlex.quote`、`secure_filename`、`yaml.SafeLoader`、`is_safe_redirect_url` 等）。此前 Python 项目扫描完全依赖通用规则和 Django YAML，Flask 专属模式完全缺失。
+
+### Fixed
+
+- **CWE-502 误报 `yaml.SafeLoader`**：`unsafe-deserialization.yaml` 的 Python pattern 对 `yaml.load(...)` 无 SafeLoader 排除意识，在显式使用 `Loader=yaml.SafeLoader` 时仍报 CRITICAL。pattern 新增 negative lookahead `(?!.*yaml\.SafeLoader)`；`specialists/deserialization.yaml` safe_patterns 补 `yaml\.SafeLoader`。archivy 复测：CWE-502 1→0。
+- **CrossFileTaintAnalyzer `infer_vuln_type` getter 函数误分类**：`get_db`、`get_items`、`get_config` 等常见 getter/helper 函数被 name fallback 误归为安全 sink（database→SQLi、file read→PathTraversal）。新增 getter prefix 白名单（`get_db`、`get_database`、`get_items`、`get_config` 等 14 个）和 safe prefix（`build_`、`list_`、`load_config`、`init_` 等），命中直接返回 `Generic`。`open_file`/`openfile` 本地工具函数排除 PathTraversal。
+
 ### Changed
 
 - **Agent 架构搁置，推荐 MCP 协作模式**：经 WebGoat 基准测试验证，内部 Agent（Supervisor/Specialist/Investigator/TaintWalk/Reviewer）实际效果未达预期（TaintWalk 0% source 发现率，Specialist 28/28 返回"无法判定"）。`audit --agent` 默认改为 noop 模式，推荐使用 MCP 协议让外部 LLM 驱动调查。详见 `LLM-AUDIT-SKILL.md`。

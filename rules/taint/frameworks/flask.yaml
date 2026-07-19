@@ -1,0 +1,388 @@
+kind: taint-rules
+name: "Flask Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "flask_request_args"
+    name: "Flask Request Query Args"
+    description: "URL query parameters from Flask request.args"
+    patterns:
+      - "request.args"
+      - "request.args.get"
+      - "request.args.getlist"
+      - "request.args["
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "flask_request_form"
+    name: "Flask Request Form Data"
+    description: "HTTP POST form data from Flask request.form"
+    patterns:
+      - "request.form"
+      - "request.form.get"
+      - "request.form.getlist"
+      - "request.form["
+      - "request.values"
+      - "request.values.get"
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "flask_request_json"
+    name: "Flask Request JSON Body"
+    description: "JSON request body from Flask request.json / request.get_json()"
+    patterns:
+      - "request.json"
+      - "request.json.get"
+      - "request.json["
+      - "request.get_json("
+      - "request.get_json("
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "flask_request_headers"
+    name: "Flask Request Headers"
+    description: "HTTP headers from Flask request.headers"
+    patterns:
+      - "request.headers"
+      - "request.headers.get"
+      - "request.headers["
+    languages: ["python"]
+    severity: "Medium"
+    category: "NetworkInput"
+    ast_patterns: []
+
+  - id: "flask_request_cookies"
+    name: "Flask Request Cookies"
+    description: "Cookie values from Flask request.cookies"
+    patterns:
+      - "request.cookies"
+      - "request.cookies.get"
+      - "request.cookies["
+    languages: ["python"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "flask_request_files"
+    name: "Flask Request Files"
+    description: "Uploaded files from Flask request.files"
+    patterns:
+      - "request.files"
+      - "request.files.get"
+      - "request.files["
+    languages: ["python"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "flask_request_data"
+    name: "Flask Request Raw Data"
+    description: "Raw request body data"
+    patterns:
+      - "request.data"
+      - "request.get_data("
+    languages: ["python"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
+  - id: "flask_url_params"
+    name: "Flask URL Path Parameters"
+    description: "URL path parameters from Flask route converters"
+    patterns:
+      - "request.view_args"
+      - "request.view_args.get"
+      - "request.view_args["
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+sinks:
+  - id: "flask_ssti"
+    name: "Flask Server-Side Template Injection"
+    description: "Rendering templates with user-controlled strings enables SSTI"
+    match_mode: "Semantic"
+    namespaces:
+      - "flask"
+      - "jinja2"
+    receiver_patterns:
+      - "flask"
+      - "render_template"
+      - "jinja2"
+    patterns:
+      - ".render_template_string"
+      - ".from_string"
+      - "render_template_string("
+      - "Template("
+    exact_matches:
+      - "flask.render_template_string"
+      - "render_template_string"
+      - "jinja2.Template"
+      - "jinja2.Environment.from_string"
+    languages: ["python"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_command_injection"
+    name: "Flask Command Injection"
+    description: "OS command execution with user-controlled input in Flask views"
+    match_mode: "Semantic"
+    namespaces:
+      - "os"
+      - "subprocess"
+      - "shlex"
+      - "commands"
+    patterns:
+      - ".system"
+      - ".popen"
+      - ".call"
+      - ".Popen"
+      - ".run"
+      - ".check_output"
+      - ".check_call"
+      - ".getoutput"
+    exact_matches:
+      - "os.system"
+      - "os.popen"
+      - "subprocess.call"
+      - "subprocess.Popen"
+      - "subprocess.run"
+      - "subprocess.check_output"
+      - "subprocess.check_call"
+      - "commands.getoutput"
+    languages: ["python"]
+    vulnerability_type: "CommandInjection"
+    severity: "Critical"
+    cwe_id: "CWE-78"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_sql_injection"
+    name: "Flask SQL Injection"
+    description: "SQL query execution with user-controlled input"
+    match_mode: "Semantic"
+    namespaces:
+      - "sqlite3"
+      - "psycopg2"
+      - "MySQLdb"
+      - "pyodbc"
+      - "sqlalchemy"
+      - "pymongo"
+      - "cx_Oracle"
+    receiver_patterns:
+      - "cursor"
+      - "connection"
+      - "db"
+      - "conn"
+    patterns:
+      - ".execute"
+      - ".executemany"
+      - ".raw"
+      - "text("
+      - ".execute("
+    exact_matches:
+      - "cursor.execute"
+      - "cursor.executemany"
+      - "sqlalchemy.text"
+      - "connection.execute"
+    languages: ["python"]
+    vulnerability_type: "SqlInjection"
+    severity: "Critical"
+    cwe_id: "CWE-89"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_code_injection"
+    name: "Flask Code Injection"
+    description: "Dynamic code execution in Flask application context"
+    match_mode: "Semantic"
+    namespaces:
+      - "builtins"
+    patterns:
+      - "eval("
+      - "exec("
+      - "compile("
+      - "__import__("
+    exact_matches: []
+    languages: ["python"]
+    vulnerability_type: "CodeInjection"
+    severity: "Critical"
+    cwe_id: "CWE-94"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_path_traversal"
+    name: "Flask Path Traversal"
+    description: "File operations with user-controlled paths in Flask views"
+    match_mode: "Semantic"
+    namespaces:
+      - "os"
+      - "os.path"
+      - "pathlib"
+      - "shutil"
+    receiver_patterns:
+      - "os"
+      - "os.path"
+      - "Path"
+      - "pathlib"
+    patterns:
+      - ".join"
+      - ".open"
+      - "open("
+      - "Path("
+      - "send_file"
+      - "send_from_directory"
+    exact_matches:
+      - "os.path.join"
+      - "Path("
+      - "flask.send_file"
+      - "flask.send_from_directory"
+    languages: ["python"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_ssrf"
+    name: "Flask SSRF"
+    description: "Server-side HTTP requests with user-controlled URLs"
+    match_mode: "Semantic"
+    namespaces:
+      - "requests"
+      - "urllib"
+      - "urllib.request"
+      - "urllib3"
+      - "httpx"
+      - "aiohttp"
+    patterns:
+      - ".get"
+      - ".post"
+      - ".put"
+      - ".delete"
+      - ".request"
+      - ".urlopen"
+      - ".ClientSession"
+    exact_matches:
+      - "requests.get"
+      - "requests.post"
+      - "requests.put"
+      - "requests.delete"
+      - "urllib.request.urlopen"
+      - "urllib.urlopen"
+      - "httpx.get"
+      - "httpx.post"
+      - "aiohttp.ClientSession"
+    languages: ["python"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_deserialization"
+    name: "Flask Deserialization"
+    description: "Deserialization of untrusted data in Flask application"
+    match_mode: "Semantic"
+    namespaces:
+      - "pickle"
+      - "cPickle"
+      - "yaml"
+      - "marshal"
+      - "dill"
+    patterns:
+      - ".loads"
+      - ".load"
+      - ".unsafe_load"
+      - "yaml.load"
+    exact_matches:
+      - "pickle.loads"
+      - "pickle.load"
+      - "cPickle.loads"
+      - "yaml.load"
+      - "yaml.unsafe_load"
+      - "marshal.loads"
+      - "dill.loads"
+    languages: ["python"]
+    vulnerability_type: "InsecureDeserialization"
+    severity: "Critical"
+    cwe_id: "CWE-502"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_xss_output"
+    name: "Flask Unsafe HTML Output"
+    description: "Direct HTML output without escaping in Flask"
+    match_mode: "Semantic"
+    namespaces:
+      - "flask"
+      - "markupsafe"
+    patterns:
+      - "Markup("
+      - ".render_template_string"
+      - "render_template_string("
+      - "|safe"
+    exact_matches:
+      - "flask.Markup"
+      - "markupsafe.Markup"
+      - "render_template_string"
+    languages: ["python"]
+    vulnerability_type: "CrossSiteScripting"
+    severity: "High"
+    cwe_id: "CWE-79"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_hardcoded_secret"
+    name: "Flask Hardcoded Secret Key"
+    description: "Hardcoded Flask SECRET_KEY or JWT secret"
+    match_mode: "Substring"
+    patterns:
+      - "SECRET_KEY"
+      - "JWT_SECRET_KEY"
+      - "app.config['SECRET_KEY']"
+      - "app.secret_key"
+    languages: ["python"]
+    vulnerability_type: "HardcodedCredentials"
+    severity: "High"
+    cwe_id: "CWE-798"
+    sensitive_params: []
+    ast_patterns: []
+
+sanitizers:
+  - pattern: "html.escape"
+    description: "Python HTML escape"
+  - pattern: "Markup.escape"
+    description: "MarkupSafe escape"
+  - pattern: "bleach.clean"
+    description: "Bleach HTML sanitizer"
+  - pattern: "bleach.linkify"
+    description: "Bleach HTML linkifier"
+  - pattern: "shlex.quote"
+    description: "Shell argument quoting"
+  - pattern: "escape"
+    description: "Generic HTML escape"
+  - pattern: "is_safe_redirect_url"
+    description: "Custom redirect URL validator"
+  - pattern: "secure_filename"
+    description: "Werkzeug secure filename sanitizer"
+  - pattern: "yaml.SafeLoader"
+    description: "YAML safe loader"
+  - pattern: "yaml.safe_load"
+    description: "YAML safe load function"
+  - pattern: "json.loads"
+    description: "JSON deserialization (safe)"
+  - pattern: "validators.url"
+    description: "URL format validator"
+  - pattern: "urlparse"
+    description: "URL parser for validation"

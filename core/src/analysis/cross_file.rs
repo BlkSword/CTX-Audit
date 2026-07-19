@@ -3703,6 +3703,40 @@ impl CrossFileTaintAnalyzer {
     fn infer_vuln_type(&self, func_name: &str) -> VulnerabilityType {
         let lower = func_name.to_lowercase();
 
+        // ── 排除常见的 getter/helper 函数 ──────────────────────────
+        // 这些函数通常只是获取连接/配置/数据，不应被分类为安全 sink
+        let getter_prefixes = [
+            "get_db",
+            "get_database",
+            "get_connection",
+            "get_conn",
+            "get_config",
+            "get_items",
+            "get_files",
+            "get_data",
+            "get_user",
+            "get_client",
+            "get_session",
+            "get_cache",
+            "get_logger",
+            "get_request",
+        ];
+        for prefix in &getter_prefixes {
+            if lower.starts_with(prefix) || lower == *prefix {
+                return VulnerabilityType::Generic;
+            }
+        }
+        // 排除 build_* / list_* / load_* 辅助函数（非安全敏感操作）
+        let safe_prefixes = [
+            "build_", "list_", "load_config", "load_env", "load_settings",
+            "init_", "setup_", "create_dir", "create_folder",
+        ];
+        for prefix in &safe_prefixes {
+            if lower.starts_with(prefix) {
+                return VulnerabilityType::Generic;
+            }
+        }
+
         if lower.contains("exec")
             || lower.contains("system")
             || lower.contains("spawn")
@@ -3734,7 +3768,9 @@ impl CrossFileTaintAnalyzer {
             return VulnerabilityType::CodeInjection;
         }
 
-        if (lower.contains("open") && !lower.contains("response"))
+        // Path Traversal: 排除 "open_file" 等本地工具函数
+        if (lower.contains("open") && !lower.contains("response")
+            && !lower.contains("open_file") && !lower.contains("openfile"))
             || lower.contains("readfile")
             || lower.contains("writefile")
             || lower.contains("fileinputstream")

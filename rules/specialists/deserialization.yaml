@@ -21,6 +21,7 @@ safe_patterns:
   - "accept\\("
   - "JSON\\.parse"
   - "yaml\\.safe_load"
+  - "yaml\\.SafeLoader"
   - "ObjectMapper\\(\\)\\.configure\\(.*FAIL_ON_UNKNOWN_PROPERTIES"
 barrier_keywords:
   - "objectinputfilter"
