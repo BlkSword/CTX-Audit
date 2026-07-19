@@ -1,0 +1,19 @@
+category: injection
+cwe: CWE-611
+description: "检测 XXE (XML External Entity) 注入风险：XML 解析器未禁用外部实体和 DTD，攻击者可通过构造恶意 XML 读取服务器文件、发起 SSRF 或 DoS 攻击。"
+id: xxe-injection
+language: all
+name: "XXE (XML External Entity) Injection"
+owasp: "A03:2021-Injection"
+patterns:
+  - language: python
+    pattern: '(?i)(etree\.(parse|fromstring|iterparse)\s*\(|lxml\.etree\.(parse|XML|fromstring)\s*\(|xml\.sax\.parse\s*\(|minidom\.parse\s*\(|xmltodict\.parse\s*\()'
+  - language: java
+    pattern: '(?i)(DocumentBuilder\.parse\s*\(|SAXParser\.parse\s*\(|XMLReader\.parse\s*\(|TransformerFactory\.newInstance\s*\()'
+  - language: javascript
+    pattern: '(?i)(xml2js\.parseString\s*\(|libxmljs\.parseXml\s*\(|fast-xml-parser\.parse\s*\()'
+severity: critical
+remediation: "Python: 使用 defusedxml 替代标准 XML 库。Java: 设置 FEATURE_SECURE_PROCESSING=true, 禁用外部实体 (setFeature('http://apache.org/xml/features/disallow-doctype-decl', true))。"
+references:
+  - "https://owasp.org/www-community/vulnerabilities/XML_External_Entity_(XXE)_Processing"
+  - "https://cwe.mitre.org/data/definitions/611.html"

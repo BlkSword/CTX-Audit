@@ -1,0 +1,19 @@
+category: injection
+cwe: CWE-915
+description: "检测 Django/ORM 字段名注入：用户输入作为字段名/排序字段直接传入 ORM 查询。ORM 参数化防止了值注入，但字段名（如 order_by、filter(**kwargs) 的键名）来自用户时仍可被操纵，导致越权查询或信息泄露。"
+id: orm-field-injection
+language: all
+name: "ORM Field Name Injection (Improperly Controlled Parameter)"
+owasp: "A03:2021-Injection"
+patterns:
+  - language: python
+    pattern: '(?i)(\.order_by\s*\(\s*request\.|\.filter\s*\(\s*\*\*request\.|\.values\s*\(\s*request\.|QuerySet\(.*request\.)'
+  - language: python
+    pattern: '(?i)\.(aggregate|annotate)\(\s*\{[^}]*request\.'
+  - language: java
+    pattern: '(?i)(CriteriaBuilder.*\.(asc|desc)\(\s*request\.|Specification.*request\.|\.orderBy\(.*request\.)'
+severity: high
+remediation: "字段名应使用白名单：ALLOWED_ORDER_FIELDS = ['id', 'name', 'created_at']；使用 Django Filter 或 DRF OrderingFilter 限制可排序字段。"
+references:
+  - "https://cwe.mitre.org/data/definitions/915.html"
+  - "https://docs.djangoproject.com/en/stable/topics/security/#user-uploaded-content"
