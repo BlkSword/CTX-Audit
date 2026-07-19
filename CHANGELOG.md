@@ -43,7 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`hardcoded-crypto-key` 规则**（`rules/hardcoded-crypto-key.yaml`）：检测密钥类变量（cipherKey/secretKey/aesKey 等）被赋予长常量字面量（CWE-798）。由 Apache Shiro CVE-2016-4437 双向验证驱动：1.2.4（漏洞版）在 `AbstractRememberMeManager.java:80` 命中硬编码 AES 密钥，1.2.5（修复版，`generateNewKey()`）零命中。配套调整：likely_fp 参数字面量降权不再应用于凭证/密钥类规则（硬编码常量正是此类规则要发现的问题）。
 - **OWASP BenchmarkJava v1.2 可回归基线**：新增 `BASELINE.md` 记录 `--taint` / `--deep` 模式下的 precision / recall / F1（taint: P=0.344 R=0.514 F1=0.412；deep: P=0.336 R=0.514 F1=0.406）。
+
+### Added
 - **主次模型搭配（Dual-Model Routing）**：
   - `LlmConfig` 新增 `model_pro` 字段，用于配置强模型（如 `deepseek-v4-pro`）。
   - `ControlledLlmClient` 同时持有 fast 模型（`model`）与 pro 模型（`model_pro`）。

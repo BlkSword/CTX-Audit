@@ -131,18 +131,27 @@ impl RuleScanner {
                             let line_end = content[..end_pos].matches('\n').count() + 1;
 
                             // 常量参数 / 安全格式串检测：sink 的参数攻击者不可控时
-                            // 标记 likely_fp 并降为 info（不丢弃，交由上层/LLM 最终判定）
-                            let likely_fp = evaluate_likely_fp_args(content, start_pos, end_pos)
-                                .or_else(|| {
-                                    if is_placeholder_secret(
-                                        &compiled.rule,
-                                        &content[start_pos..end_pos],
-                                    ) {
-                                        Some("值为占位符/示例，非真实凭证")
-                                    } else {
-                                        None
-                                    }
-                                });
+                            // 标记 likely_fp 并降为 info（不丢弃，交由上层/LLM 最终判定）。
+                            // 凭证/密钥类规则除外——硬编码常量正是此类规则要发现的问题。
+                            let matched_text = &content[start_pos..end_pos];
+                            let likely_fp = if is_credential_related(&compiled.rule, matched_text)
+                            {
+                                if is_placeholder_secret(&compiled.rule, matched_text) {
+                                    Some("值为占位符/示例，非真实凭证")
+                                } else {
+                                    None
+                                }
+                            } else {
+                                evaluate_likely_fp_args(content, start_pos, end_pos).or_else(
+                                    || {
+                                        if is_placeholder_secret(&compiled.rule, matched_text) {
+                                            Some("值为占位符/示例，非真实凭证")
+                                        } else {
+                                            None
+                                        }
+                                    },
+                                )
+                            };
 
                             findings.push(create_finding(
                                 &compiled.rule,
@@ -439,18 +448,22 @@ const PLACEHOLDER_SECRETS: &[&str] = &[
     "******",
 ];
 
-/// 凭证类规则命中明显的占位符值时判 likely_fp
-fn is_placeholder_secret(rule: &Rule, matched_text: &str) -> bool {
-    let is_credential_rule = rule
-        .cwe
+/// 判断是否为凭证/密钥类规则（此类规则的"常量"正是问题本身，不做参数字面量降权）
+fn is_credential_related(rule: &Rule, matched_text: &str) -> bool {
+    rule.cwe
         .as_deref()
         .map(|c| c == "CWE-259" || c == "CWE-798")
         .unwrap_or(false)
         || rule.id.contains("password")
         || rule.id.contains("secret")
         || rule.id.contains("credential")
-        || matched_text.to_lowercase().contains("password");
-    if !is_credential_rule {
+        || rule.id.contains("crypto-key")
+        || matched_text.to_lowercase().contains("password")
+}
+
+/// 凭证类规则命中明显的占位符值时判 likely_fp
+fn is_placeholder_secret(rule: &Rule, matched_text: &str) -> bool {
+    if !is_credential_related(rule, matched_text) {
         return false;
     }
     let lower = matched_text.to_lowercase();
