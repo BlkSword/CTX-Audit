@@ -12,4 +12,4 @@ references:
 patterns:
   - language: python
     pattern: 'os\.path\.(join|normpath)\s*\('
-severity: high
+severity: medium
