@@ -1,0 +1,23 @@
+category: injection
+cwe: CWE-89
+description: "检测 SQL ORDER BY / GROUP BY 列名注入：排序字段来自用户输入时，即使使用参数化查询也无法防护——SQL 标识符（列名、表名）无法参数化。攻击者可注入子查询或利用列名差异探测数据库结构。"
+id: sql-orderby-injection
+language: all
+name: "SQL ORDER BY / GROUP BY Identifier Injection"
+owasp: "A03:2021-Injection"
+patterns:
+  - language: python
+    pattern: '(?i)(\.order_by\s*\(\s*request\.|ORDER\s+BY.*%s|ORDER BY.*format\(|order_by.*\+|order_by.*f["\x27])'
+  - language: java
+    pattern: '(?i)(\.orderBy\s*\(\s*request\.|ORDER\s+BY.*\+|CriteriaBuilder.*request\.)'
+  - language: javascript
+    pattern: '(?i)(\.orderBy\s*\(\s*req\.|ORDER BY.*\$\{|\.sort\s*\(\s*\{[^}]*req\.)'
+  - language: php
+    pattern: '(?i)(ORDER\s+BY.*\$_GET|ORDER BY.*\$_POST|orderBy.*\$_(GET|POST))'
+  - language: go
+    pattern: '(?i)(Order\s*\(\s*.*request\.|\.Order\(|ORDER BY.*\+)'
+severity: high
+remediation: "列名使用白名单映射：ALLOWED_SORT_COLUMNS = {'name': 'name', 'date': 'created_at'}；对用户提供的列名做严格白名单校验，拒绝不在白名单中的值。"
+references:
+  - "https://cwe.mitre.org/data/definitions/89.html"
+  - "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"

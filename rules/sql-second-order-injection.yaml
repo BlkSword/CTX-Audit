@@ -1,0 +1,21 @@
+category: injection
+cwe: CWE-89
+description: "检测二阶 SQL 注入风险：从数据库/缓存读取的数据被直接拼接到新的 SQL 查询中。即使第一次写入时做了转义，如果读取后未参数化就拼入新查询，仍可被利用（存储型注入）。典型场景：用户名注册时包含 SQL payload，后台报表查询将用户名拼入 SQL。"
+id: sql-second-order-injection
+language: all
+name: "Second-Order SQL Injection Detection"
+owasp: "A03:2021-Injection"
+patterns:
+  - language: python
+    pattern: '(?i)(\.execute\s*\(\s*[^)]*\+[^)]*row\[|execute\(.*format\(.*row|execute\(.*%.*row\b|\.execute\s*\(\s*f["\x27][^"\x27]*\{[^}]*row\b)'
+  - language: java
+    pattern: '(?i)(Statement.*execute.*\+\s*rs\.getString|statement\.executeQuery.*\+.*resultSet)'
+  - language: javascript
+    pattern: '(?i)(\.query\s*\(\s*[^)]*\+[^)]*row\[|\.query\s*\(\s*`[^`]*\$\{.*row\b)'
+  - language: php
+    pattern: '(?i)(mysql_query.*\$row\[|mysqli_query.*\$row\[|PDO.*query.*\$row\[)'
+severity: critical
+remediation: "即使数据来源是数据库，也必须在新的 SQL 查询中使用参数化查询。不要信任任何来自数据库的数据——它可能包含之前写入的恶意 payload。"
+references:
+  - "https://cwe.mitre.org/data/definitions/89.html"
+  - "https://owasp.org/www-community/attacks/Second_Order_SQL_Injection"
