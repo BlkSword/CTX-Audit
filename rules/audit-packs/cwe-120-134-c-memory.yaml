@@ -1,0 +1,38 @@
+# 审计证据包：C/C++ 内存安全（缓冲区溢出 CWE-120/787、格式串 CWE-134）
+kind: audit-pack
+id: "cwe-120-134-c-memory"
+name: "C/C++ 内存安全取证包（缓冲区溢出/格式串）"
+vuln_types:
+  - "CWE-120"
+  - "CWE-134"
+  - "CWE-787"
+  - "buffer-overflow"
+  - "format-string"
+  - "cpp-buffer-overflow"
+  - "cpp-format-string"
+cwe:
+  - "CWE-120"
+  - "CWE-134"
+  - "CWE-787"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认命中函数形态：危险无界函数（strcpy/strcat/gets/sprintf/vsprintf）还是有界变体（snprintf/vsnprintf/strlcpy）。有界变体默认走 FP 判据，除非长度参数本身可疑（变量、运算式、sizeof 错对象）。"
+  - tool: get_code_context
+    purpose: "对 sprintf/snprintf 族，确认格式串是否为字面量且不含 %s/%[：字面量有界格式（%d/%c/定宽）输出长度可预计，写入固定缓冲区不可溢出，判 FP；格式串含 %s 或为变量 → 需继续追踪。"
+  - tool: get_code_context
+    purpose: "对 strcpy/strcat 族，确认源参数：字符串字面量源 → 拷贝长度有界判 FP；变量源 → 追踪其长度是否可控以及目标缓冲区大小。"
+  - tool: query_callers
+    purpose: "变量源/变量格式串场景：反查调用者确认数据是否外部可控（网络协议字段、文件内容、命令行参数）；确认目标缓冲区声明大小（如 char buf[256]）与最大写入量的关系。"
+  - tool: search_code
+    purpose: "搜索目标缓冲区的声明位置与大小（如 aError[256]），与格式串/源的最大展开长度对比，验证溢出是否实际可达。"
+tp_criteria:
+  - "无界函数（strcpy/strcat/gets/sprintf 含 %s 格式）的源数据外部可控，且目标缓冲区大小有限"
+  - "格式串本身外部可控（printf(user) 形态），可读写任意内存"
+  - "memcpy/memmove 的长度参数来自外部输入且未做上限校验"
+fp_criteria:
+  - "有界变体（snprintf/vsnprintf/strncpy/strlcpy）且长度参数为 sizeof/常量"
+  - "sprintf/snprintf 格式串为字面量且不含 %s/%[（输出有界）"
+  - "strcpy/strcat 的源为字符串字面量（拷贝长度有界）"
+  - "命中点在注释中（应已被注释过滤消除，残留时人工确认）"
+  - "消息框/GUI 类死代码（无头服务中无调用者）"
+confidence_guide: "缓冲区声明大小与最大写入量均确认 → 0.9+；源可控但缓冲区大小未确认 → 0.7-0.9；仅能确认命中危险函数但可达性未验证 → <0.7 判 needs_review。"
