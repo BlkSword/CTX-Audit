@@ -1,0 +1,33 @@
+# 审计证据包：不安全反序列化（CWE-502）
+kind: audit-pack
+id: "cwe-502-deser"
+name: "不安全反序列化取证包"
+vuln_types:
+  - "deser"
+  - "InsecureDeserialization"
+  - "unsafe-deserialization"
+  - "php-unserialize"
+  - "php-unsafe-deserialization"
+cwe:
+  - "CWE-502"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认 sink 形态：readObject/pickle.loads/yaml.load(无 SafeLoader)/unserialize 才危险；pickle.dumps/json.loads/yaml.load(..., SafeLoader) 是误报高发点。注意 JSON.parse 在 JS 语境不是反序列化漏洞。"
+  - tool: query_callers
+    purpose: "从 sink 反查调用者，确认被反序列化的 bytes/字符串来源：cookie、请求 body、消息队列、缓存（外部可控）还是服务端自建数据（内部信任域）。"
+  - tool: search_code
+    purpose: "搜类白名单/类型过滤机制：ObjectInputFilter、resolveClass 重写、pickle.Unpickler.find_class 白名单、yaml.SafeLoader。无类白名单是 TP 的关键证据。"
+  - tool: search_code
+    purpose: "搜数据在反序列化前的完整性保护：HMAC 签名/MAC 校验（如 Django signing、Shiro rememberMe 加密+MAC）。有签名且密钥安全 → FP 倾向；有加密但密钥硬编码（如 Shiro 默认密钥）→ 仍是 TP。"
+  - tool: get_graph_stats
+    purpose: "多个同类反序列化 finding 常是同一攻击链的不同 sink/gadget 入口，先聚合再判定，避免重复报告；确认哪些位于外部可达入口。"
+tp_criteria:
+  - "外部可控字节流（cookie/body/队列消息/缓存）进入危险反序列化 sink"
+  - "无类白名单（ObjectInputFilter/find_class/SafeLoader）且无有效签名/MAC 保护"
+  - "或：有加密/MAC 但密钥硬编码或可被推导（如框架默认密钥）"
+fp_criteria:
+  - "反序列化数据由服务端自身生成并签名/MAC 保护，密钥管理安全"
+  - "存在完备的类白名单或安全 Loader（yaml.SafeLoader、SafeUnpickler）"
+  - "命中的是序列化方向（dumps/writeObject）或 JSON.parse 等无代码执行面的解析"
+  - "数据来自内部信任域（本地缓存、进程内传递）且外部无法注入"
+confidence_guide: "外部来源 + 无白名单/签名两方确认 → 0.9+；确认危险 sink 但 bytes 来源未追完 → 0.7-0.9；白名单/签名证据与来源证据矛盾 → <0.7，判 needs_review。同攻击链多个 finding 合并判定时取最高置信度。"

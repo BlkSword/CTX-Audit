@@ -1,0 +1,22 @@
+category: file-operation
+cwe: CWE-22
+description: "检测 Zip Slip / Tar Slip：从压缩包提取文件时未校验内部路径，可能导致路径穿越写入任意文件"
+id: zip-slip
+language: python
+name: Zip Slip / Tar Slip Path Traversal
+owasp: "A01:2021-Broken Access Control"
+remediation: "对压缩包内每个条目的文件名调用 os.path.realpath() 或 Path.resolve() 并检查是否在目标目录下（startswith）；使用 shutil.unpack_archive 前确认参数来源可控；过滤 ../ 前缀。"
+references:
+  - "https://cwe.mitre.org/data/definitions/22.html"
+  - "https://github.com/snyk/zip-slip-vulnerability"
+  - "https://owasp.org/www-community/attacks/Path_Traversal"
+severity: high
+patterns:
+  - language: python
+    pattern: '(?i)(zipfile\.ZipFile\s*\(|tarfile\.open\s*\(|tarfile\.TarFile\s*\(|shutil\.unpack_archive\s*\()'
+  - language: python
+    pattern: '(?i).extractall\s*\('
+  - language: python
+    pattern: '(?i).extract\s*\('
+  - language: python
+    pattern: '(?i)tarfile\.extractall\s*\(|tarfile\.extract\s*\('

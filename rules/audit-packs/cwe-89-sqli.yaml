@@ -1,0 +1,36 @@
+# 审计证据包：SQL 注入（CWE-89）
+kind: audit-pack
+id: "cwe-89-sqli"
+name: "SQL 注入取证包"
+vuln_types:
+  - "sqli"
+  - "SqlInjection"
+  - "sql-injection"
+  - "rails-sql-injection"
+  - "php-sql-injection"
+  - "sql-orderby-injection"
+  - "sql-second-order-injection"
+  - "orm-field-injection"
+cwe:
+  - "CWE-89"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认 SQL 语句构造方式：字符串拼接/模板插值（高危）还是参数化查询（?/%s/$1 占位符、prepared statement）。参数化且参数不经过拼接直接走 FP 判据。"
+  - tool: get_code_context
+    purpose: "识别特例：拼接部分是否为 ORDER BY 列名、表名、LIMIT 等不可参数化的标识符位置。标识符拼接不能用参数化消除，必须查白名单校验，这是独立判据分支。"
+  - tool: check_sanitizer
+    purpose: "查证拼接变量是否经过白名单枚举（如 sort 字段映射表）、intval/parseInt 强制数值化、或框架自带的标识符转义。白名单完备 → FP；仅做引号转义/黑名单过滤 → 不算有效净化。"
+  - tool: query_callers
+    purpose: "反向追调用链，确认拼接变量来源是请求参数（query/body/path）还是服务端内部常量、枚举值。ORM raw query（sequelize.query、objects.raw、jdbcTemplate）同样按拼接/参数化二分判定。"
+  - tool: search_code
+    purpose: "以拼接变量名搜索其赋值与传递路径，确认二阶场景：变量是否先入库再取出拼接（second-order），取出点之后是否仍无净化。"
+tp_criteria:
+  - "外部输入以字符串拼接/模板插值方式进入 SQL 语句的值位置，且无参数化"
+  - "标识符位置（ORDER BY/表名）拼接外部输入，且无白名单枚举校验"
+  - "二阶注入：外部输入落库后在另一处被取出拼接进 SQL，路径上无净化"
+fp_criteria:
+  - "使用参数化查询/预编译语句，外部输入只作为绑定参数"
+  - "拼接变量为服务端常量、枚举值或经白名单映射后的安全值"
+  - "拼接变量被强制数值化（intval/parseInt/类型系统保证整型）"
+  - "拼接 SQL 仅存在于测试、迁移脚本或不暴露的内部工具"
+confidence_guide: "拼接点 + 外部来源 + 无净化三方证据齐全 → 0.9+；确认拼接但来源可控性未追完 → 0.7-0.9；sanitizer 证据与来源证据矛盾（如部分调用点有白名单）→ <0.7，判 needs_review。"

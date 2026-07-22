@@ -57,3 +57,4 @@ AGENTS.md
 !benchmarks/evaluate.py
 !benchmarks/evaluate_real_project.py
 !benchmarks/run-baseline.sh
+/docs

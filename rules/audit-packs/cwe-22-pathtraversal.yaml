@@ -1,0 +1,35 @@
+# 审计证据包：路径穿越（CWE-22）
+kind: audit-pack
+id: "cwe-22-pathtraversal"
+name: "路径穿越取证包"
+vuln_types:
+  - "pathtraversal"
+  - "PathTraversal"
+  - "path-traversal"
+  - "rails-path-traversal"
+  - "path-join-without-validation"
+  - "zip-slip"
+  - "arbitrary-file-write"
+cwe:
+  - "CWE-22"
+  - "CWE-23"
+  - "CWE-73"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认路径构造方式：用户输入直接拼入文件路径（open/readFile/send_file/new File），还是经过 realpath/resolve/normalize 规范化。拼接触达文件读写/下载/删除都是有效 sink。"
+  - tool: get_code_context
+    purpose: "查规范化之后是否有 prefix 校验：realpath/resolve 的结果必须以允许的根目录为前缀（注意带尾随分隔符比较，防止 /var/www 匹配 /var/wwwroot）。规范化 + 正确 prefix 校验 = 有效净化 → FP。"
+  - tool: query_callers
+    purpose: "追路径参数来源：请求参数/上传文件名/压缩包条目名（zip-slip）是外部可控；配置项/内部常量不是。注意文件名是否经 path.basename 去目录化。"
+  - tool: search_code
+    purpose: "搜净化惯用法：path.basename、secure_filename、startsWith(baseDir)、Strings 的 ../ 黑名单（黑名单不完整，不能算有效净化，注意 ..\\、URL 编码、双重编码绕过）。"
+  - tool: get_graph_stats
+    purpose: "区分读与写：任意文件读（配置/密钥泄露）与任意文件写（RCE 潜力）严重度不同；确认 finding 是读 sink 还是写 sink 以校准等级。"
+tp_criteria:
+  - "外部可控输入拼入文件路径，无 realpath/resolve + prefix 校验，也无 basename/secure_filename 去目录化"
+  - "或仅有黑名单式 ../ 过滤（可被编码/Windows 分隔符绕过）"
+fp_criteria:
+  - "路径经 realpath/resolve/normalize 规范化后做了正确的根目录 prefix 校验"
+  - "文件名经 path.basename/secure_filename 处理，目录部分被剥离"
+  - "路径来源是配置项或服务端常量，外部不可控"
+confidence_guide: "外部来源 + 无有效净化 + sink 可达三方确认 → 0.9+；确认拼接但 prefix 校验逻辑未完全验证 → 0.7-0.9；净化存在但校验正确性存疑（如前缀比较不带分隔符）→ <0.7，判 needs_review 并说明疑点。"

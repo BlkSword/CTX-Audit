@@ -1,3 +1,4 @@
+pub mod audit_pack;
 pub mod embedded;
 pub mod loader;
 pub mod model;

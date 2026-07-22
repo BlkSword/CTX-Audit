@@ -22,4 +22,6 @@ patterns:
     pattern: (?i)NextResponse\.(?:redirect|rewrite)\s*\([^)]*\b(?:req\.|request\.|headers|url)
   - language: typescript
     pattern: (?i)setHeader\s*\(\s*['"](?:Location|Refresh)['"]
+  - language: python
+    pattern: '(?i)(redirect\s*\(|url_for\s*\(|HttpResponseRedirect\s*\(|django\.shortcuts\.redirect\s*\(|flask\.redirect\s*\().*(?:request\.(?:args|GET|POST|form|json|values)|params|query)'
 severity: high

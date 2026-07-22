@@ -1,0 +1,34 @@
+# 审计证据包：命令注入（CWE-78）
+kind: audit-pack
+id: "cwe-78-cmdi"
+name: "命令注入取证包"
+vuln_types:
+  - "cmdi"
+  - "CommandInjection"
+  - "command-injection"
+  - "php-command-injection"
+  - "os-command-injection"
+cwe:
+  - "CWE-78"
+  - "CWE-77"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认调用形态：exec/os.system/popen 的字符串拼接形式（高危）vs execFile([...])/subprocess.run([...])/ProcessBuilder 的数组参数形式。数组形式不经 shell 解析，参数注入面极小，直接倾向 FP。"
+  - tool: get_code_context
+    purpose: "检查是否存在 shell:false / shell=True 显式配置、以及命令串是否为常量（如 subprocess.run(['git','status'])）。常量命令串即使带数组外变量，也要看变量落在哪个参数位。"
+  - tool: query_callers
+    purpose: "追拼接进命令串的变量来源：请求参数/文件名/用户输入（外部可控）还是配置项/枚举值。确认变量在拼接前是否经过 shlex.quote/escapeshellarg 或严格字符白名单。"
+  - tool: search_code
+    purpose: "以拼接变量名为 pattern 搜其赋值点与校验逻辑，重点找正则白名单（如 ^[a-z0-9-]+$）、path.basename 去目录、shlex.quote 等净化；找不到任何校验是 TP 的关键证据。"
+  - tool: get_graph_stats
+    purpose: "确认 finding 文件角色：构建脚本/开发工具（file_role=build）中的命令执行通常不暴露给攻击者，严重度应降级或判 FP。"
+tp_criteria:
+  - "外部可控输入经字符串拼接进入 shell 命令串（exec/os.system/shell=True 形式）"
+  - "拼接前无 shlex.quote/escapeshellarg 转义，也无严格字符白名单校验"
+  - "代码位于攻击者可达的运行路径（Web 服务、RPC 处理、队列消费者）"
+fp_criteria:
+  - "数组参数形式（execFile([...])/subprocess.run([...])）且无 shell:true，变量只占独立参数位"
+  - "命令串为常量，或变量来自服务端枚举/配置且经过白名单校验"
+  - "变量经过 shlex.quote/escapeshellarg 或等价转义"
+  - "finding 位于构建脚本、CI 工具、本地 CLI，攻击者无法控制输入"
+confidence_guide: "拼接形态 + 外部来源 + 无净化三方确认 → 0.9+；确认拼接但来源可控性或运行时形态（是否走 shell）未验证 → 0.7-0.9；数组/字符串形态在不同调用点表现矛盾 → <0.7，判 needs_review。"

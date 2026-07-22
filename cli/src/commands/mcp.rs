@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use deepaudit_core::ast_api::ASTParser;
 use deepaudit_core::attack_surface::{AttackSurfaceMapper, RiskPatternScanner};
+use deepaudit_core::rules::audit_pack::{find_pack, generic_pack, load_audit_packs};
 use deepaudit_core::rules::model::Rule;
 use deepaudit_core::rules::model::RuleSet;
 use deepaudit_core::rules::taint_model::TaintRuleSet;
@@ -456,7 +457,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "start_investigation",
-            description: "Start a deep investigation of a specific finding. Returns deterministic evidence from the call graph (callers, callees, middleware coverage) and suggests next query tools to use. Use this to drill down into a finding before making a verdict.",
+            description: "Start a deep investigation of a specific finding. Matches the finding's vuln_type to a CWE-specific evidence pack (rules/audit-packs/) and returns structured evidence steps (suggested_tools with pre-filled params), TP/FP criteria, and a confidence calibration guide. Use the steps to gather evidence, then conclude_investigation with your verdict.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -464,6 +465,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                     "finding_id": {"type": "string", "description": "The finding ID to investigate"},
                     "finding_file": {"type": "string", "description": "File path of the finding"},
                     "finding_line": {"type": "integer", "description": "Line number of the finding"},
+                    "vuln_type": {"type": "string", "description": "Vulnerability type or CWE (e.g. 'xss', 'SqlInjection', 'CWE-79'). Optional — used to match the evidence pack when the finding is not in a session group"},
                     "hypothesis": {"type": "string", "description": "Your initial hypothesis about this finding (e.g., 'likely TP because no sanitizer', 'suspicious FP because of array args')"}
                 },
                 "required": ["session_uuid", "finding_id"]
@@ -506,6 +508,30 @@ fn tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "session_uuid": {"type": "string", "description": "Session UUID from start_audit_session"},
                     "summary": {"type": "string", "description": "Optional free-text summary of the audit"}
+                },
+                "required": ["session_uuid"]
+            }),
+        },
+        ToolDefinition {
+            name: "audit_plan",
+            description: "Create a full audit plan for a project: runs a deep scan (taint + cross-file), groups findings by (vuln_type, file), matches each group to a CWE-specific evidence pack, and persists an audit session to <project>/.ctx-audit/audit_sessions/. Returns the session_uuid and the group list with each group's full evidence pack. Workflow: for each group, call start_investigation on the representative finding and follow the pack's evidence_steps to gather evidence; call conclude_investigation with your verdict (TP/FP/needs_review per the pack's criteria); when all groups are done, call audit_finalize_report to generate the Markdown report.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Project root directory path"},
+                    "min_severity": {"type": "string", "description": "Minimum severity threshold for findings to include (default: high)", "enum": ["critical", "high", "medium", "low", "info"], "default": "high"}
+                },
+                "required": ["project_path"]
+            }),
+        },
+        ToolDefinition {
+            name: "audit_finalize_report",
+            description: "Generate the final Markdown audit report for a session. Reads the persisted session and its verdicts from .ctx-audit/audit_log.json, then writes a report with project fingerprint, verdict statistics (TP/FP/needs_review), TP details (attack chain, evidence references, confidence), and FP summaries grouped by vuln_type with exclusion reasons. Call this after concluding all investigations in the session.",
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_uuid": {"type": "string", "description": "Session UUID from audit_plan or start_audit_session"},
+                    "output_path": {"type": "string", "description": "Report output path (default: <project>/.ctx-audit/audit_report_<uuid>.md)"}
                 },
                 "required": ["session_uuid"]
             }),
@@ -705,43 +731,27 @@ async fn handle_tool_call(name: &str, arguments: &Value) -> Value {
 
 // ── 粗粒度工具实现 ──────────────────────────────────────
 
-async fn tool_security_scan(args: &Value) -> Value {
-    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-    let deep = args.get("deep").and_then(|v| v.as_bool()).unwrap_or(false);
-    let taint_arg = args
-        .get("enable_taint")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let cross_file_arg = args
-        .get("enable_cross_file")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let severity = args
-        .get("severity")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let pattern = args
-        .get("pattern")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let file_role_filter = args
-        .get("file_role_filter")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let min_severity = args
-        .get("min_severity")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let include_details = args
-        .get("include_details")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+/// 严重度排序（数值越小越严重），供 min_severity 过滤复用
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        "low" => 3,
+        "info" => 4,
+        _ => 5,
+    }
+}
 
-    let enable_taint = taint_arg || deep || cross_file_arg;
-    let enable_cross_file = cross_file_arg || deep;
-
-    // 与 CLI scan 命令使用同一套配置（排除模式、线程、内存预算等），
-    // 避免 MCP 使用 core 的保守默认值把 target/ 等目录误排。
+/// 按 CLI scan 同款配置执行扫描（供 security_scan / audit_plan 复用）
+///
+/// 与 CLI scan 命令使用同一套配置（排除模式、线程、内存预算等），
+/// 避免 MCP 使用 core 的保守默认值把 target/ 等目录误排。
+async fn run_configured_scan(
+    path: &str,
+    enable_taint: bool,
+    enable_cross_file: bool,
+) -> Result<Vec<Finding>, String> {
     let config = ConfigManager::new(None).ok();
     let mut scan_opts = config
         .as_ref()
@@ -777,20 +787,51 @@ async fn tool_security_scan(args: &Value) -> Value {
         .map(|cm| cm.config().scan.exclude_patterns.clone())
         .filter(|v| !v.is_empty());
 
-    let result = if enable_taint || enable_cross_file {
-        scan_directory_deep_with_rules_progress(
-            path,
-            None,
-            exclude_dirs,
-            None,
-            Some(scan_opts),
-            None,
-        )
-        .await
-        .map(|r| r.findings)
+    if enable_taint || enable_cross_file {
+        scan_directory_deep_with_rules_progress(path, None, exclude_dirs, None, Some(scan_opts), None)
+            .await
+            .map(|r| r.findings)
     } else {
         scan_directory_with_opts(path, None, exclude_dirs, None, scan_opts, None).await
-    };
+    }
+}
+
+async fn tool_security_scan(args: &Value) -> Value {
+    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    let deep = args.get("deep").and_then(|v| v.as_bool()).unwrap_or(false);
+    let taint_arg = args
+        .get("enable_taint")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let cross_file_arg = args
+        .get("enable_cross_file")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let severity = args
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let file_role_filter = args
+        .get("file_role_filter")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let min_severity = args
+        .get("min_severity")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let include_details = args
+        .get("include_details")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let enable_taint = taint_arg || deep || cross_file_arg;
+    let enable_cross_file = cross_file_arg || deep;
+
+    let result = run_configured_scan(path, enable_taint, enable_cross_file).await;
 
     match result {
         Ok(findings) => {
@@ -2814,7 +2855,11 @@ async fn tool_start_audit_session_with_state(state: &McpServerState, args: &Valu
         project_path: project_path.clone(),
         session_type: session_type.clone(),
         started_at: now.clone(),
+        groups: Vec::new(),
     };
+
+    // 持久化到磁盘，进程重启后可恢复
+    persist_session(&ctx);
 
     state
         .audit
@@ -2856,10 +2901,11 @@ async fn tool_start_investigation_with_state(state: &McpServerState, args: &Valu
         .get("hypothesis")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let vuln_type_arg = args.get("vuln_type").and_then(|v| v.as_str());
 
-    // 检查会话是否存在
-    let project_path = match state.audit.active_sessions.borrow().get(&session_uuid) {
-        Some(s) => s.project_path.clone(),
+    // 检查会话是否存在（内存未命中时从磁盘加载）
+    let session = match get_or_load_session(state, &session_uuid) {
+        Some(s) => s,
         None => {
             return error_response(&format!(
                 "Session not found: {}. Use start_audit_session first.",
@@ -2867,41 +2913,38 @@ async fn tool_start_investigation_with_state(state: &McpServerState, args: &Valu
             ))
         }
     };
+    let project_path = session.project_path.clone();
+
+    // 确定漏洞类型：优先显式参数，其次从会话分组中按 finding_id 反查
+    let vuln_type = vuln_type_arg
+        .map(String::from)
+        .or_else(|| vuln_type_of_finding(&session, &finding_id).map(String::from));
+
+    // 匹配证据包（匹配不到回退 generic 兜底包）
+    let packs = load_audit_packs();
+    let pack = vuln_type
+        .as_deref()
+        .and_then(|vt| find_pack(&packs, vt, None))
+        .or_else(|| generic_pack(&packs));
+
+    // 用证据包的取证步骤构建建议工具调用，注入 finding 的 file/line
+    let suggested_tools: Vec<serde_json::Value> = match pack {
+        Some(p) => p
+            .evidence_steps
+            .iter()
+            .map(|step| {
+                serde_json::json!({
+                    "tool": step.tool,
+                    "params": evidence_step_params(&step.tool, &project_path, finding_file, finding_line),
+                    "purpose": step.purpose,
+                })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
 
     let investigation_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-
-    // 构建建议的后续工具调用
-    let mut suggested_tools: Vec<serde_json::Value> = Vec::new();
-
-    if let Some(ref file) = finding_file {
-        suggested_tools.push(serde_json::json!({
-            "tool": "get_code_context",
-            "params": { "file_path": file, "line": finding_line.unwrap_or(1) },
-            "purpose": "Read the source code around this finding to understand the context"
-        }));
-        suggested_tools.push(serde_json::json!({
-            "tool": "list_file_functions",
-            "params": { "project_path": project_path, "file_path": file },
-            "purpose": "List all indexed functions in this file"
-        }));
-    }
-
-    suggested_tools.push(serde_json::json!({
-        "tool": "query_callers",
-        "params": { "project_path": project_path, "file_path": finding_file.unwrap_or(""), "function_name": "(see finding details)" },
-        "purpose": "Trace backward: find what calls the sink function"
-    }));
-    suggested_tools.push(serde_json::json!({
-        "tool": "query_middleware_chain",
-        "params": { "project_path": project_path, "file_path": finding_file.unwrap_or("") },
-        "purpose": "Check if auth middleware covers this route"
-    }));
-    suggested_tools.push(serde_json::json!({
-        "tool": "get_graph_stats",
-        "params": { "project_path": project_path },
-        "purpose": "Understand project scale and analysis coverage"
-    }));
 
     let ctx = InvestigationContext {
         investigation_id: investigation_id.clone(),
@@ -2916,22 +2959,42 @@ async fn tool_start_investigation_with_state(state: &McpServerState, args: &Valu
         .audit
         .active_investigations
         .borrow_mut()
-        .insert(investigation_id.clone(), ctx);
+        .insert(investigation_id.clone(), ctx.clone());
+    // 持久化调查，MCP 进程重启后 log/conclude 仍可继续
+    persist_investigation(&ctx);
 
+    let pack_summary = match pack {
+        Some(p) => format!("  Evidence pack: {} ({})\n", p.id, p.name),
+        None => String::new(),
+    };
     let summary = format!(
-        "🕵️ Investigation started\n  ID: {}\n  Finding: {}\n  Session: {}\n  Time: {}\n\nSuggested tools to verify this finding:",
-        investigation_id, finding_id, session_uuid, now
+        "🕵️ Investigation started\n  ID: {}\n  Finding: {}\n  Session: {}\n{}  Time: {}\n\nFollow the evidence steps below, then conclude_investigation with your verdict.",
+        investigation_id, finding_id, session_uuid, pack_summary, now
     );
+
+    let mut detail = serde_json::json!({
+        "investigation_id": investigation_id,
+        "finding_id": finding_id,
+        "vuln_type": vuln_type,
+        "suggested_tools": suggested_tools,
+    });
+    if let Some(p) = pack {
+        detail.as_object_mut().unwrap().insert(
+            "evidence_pack".to_string(),
+            serde_json::json!({
+                "id": p.id,
+                "name": p.name,
+                "tp_criteria": p.tp_criteria,
+                "fp_criteria": p.fp_criteria,
+                "confidence_guide": p.confidence_guide,
+            }),
+        );
+    }
 
     serde_json::json!({
         "content": [
             {"type": "text", "text": summary},
-            {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
-                "investigation_id": investigation_id,
-                "finding_id": finding_id,
-                "suggested_tools": suggested_tools,
-                "evidence_query_hint": "Use query_callers/query_callees/find_call_path with project_path to trace the call graph. Use get_code_context to read actual source code. Use query_middleware_chain to check for auth bypass."
-            })).unwrap_or_default()}
+            {"type": "text", "text": serde_json::to_string_pretty(&detail).unwrap_or_default()}
         ]
     })
 }
@@ -2960,15 +3023,18 @@ async fn tool_log_investigation_step_with_state(state: &McpServerState, args: &V
         reasoning,
     };
 
-    let step_count = match state
-        .audit
-        .active_investigations
-        .borrow_mut()
-        .get_mut(&investigation_id)
-    {
-        Some(inv) => {
+    // 先查内存，未命中则从磁盘恢复（MCP 进程重启场景）
+    let step_count = match get_or_load_investigation(state, &investigation_id) {
+        Some(mut inv) => {
             inv.steps.push(step);
-            inv.steps.len()
+            let count = inv.steps.len();
+            persist_investigation(&inv);
+            state
+                .audit
+                .active_investigations
+                .borrow_mut()
+                .insert(investigation_id.clone(), inv);
+            count
         }
         None => {
             return error_response(&format!(
@@ -3002,14 +3068,17 @@ async fn tool_conclude_investigation_with_state(state: &McpServerState, args: &V
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    // 获取调查上下文
-    let inv = match state
-        .audit
-        .active_investigations
-        .borrow_mut()
-        .remove(&investigation_id)
-    {
-        Some(inv) => inv,
+    // 获取调查上下文（内存优先，磁盘回退；判定后从内存移除，磁盘留档最终状态）
+    let inv = match get_or_load_investigation(state, &investigation_id) {
+        Some(inv) => {
+            persist_investigation(&inv);
+            state
+                .audit
+                .active_investigations
+                .borrow_mut()
+                .remove(&investigation_id)
+                .unwrap_or(inv)
+        }
         None => return error_response(&format!("Investigation not found: {}", investigation_id)),
     };
 
@@ -3076,6 +3145,25 @@ async fn tool_conclude_investigation_with_state(state: &McpServerState, args: &V
         );
     }
 
+    // 更新会话分组状态（finding 所属组标记为 concluded）并持久化
+    if let Some(mut session) = get_or_load_session(state, &inv.session_uuid) {
+        let mut changed = false;
+        for group in session.groups.iter_mut() {
+            if group.findings.iter().any(|f| f.finding_id == inv.finding_id) {
+                group.status = "concluded".to_string();
+                changed = true;
+            }
+        }
+        if changed {
+            persist_session(&session);
+            state
+                .audit
+                .active_sessions
+                .borrow_mut()
+                .insert(session.session_uuid.clone(), session);
+        }
+    }
+
     let verdict_label = match verdict.as_str() {
         "true_positive" => "✅ TRUE POSITIVE",
         "false_positive" => "❌ FALSE POSITIVE",
@@ -3118,36 +3206,34 @@ async fn tool_conclude_audit_session_with_state(state: &McpServerState, args: &V
 
     let total = investigations.len();
 
-    // 收集已下结论的调查（从 audit_log.json）
-    let log_path = std::path::Path::new(".ctx-audit").join("audit_log.json");
-    let log_entries: Vec<serde_json::Value> = if log_path.exists() {
-        std::fs::read_to_string(&log_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // 收集已下结论的调查（从 audit_log.json，仅统计本会话）
+    let session = get_or_load_session(state, &session_uuid);
+    let log_entries = read_audit_log(session.as_ref().map(|s| s.project_path.as_str()));
+    let session_entries: Vec<&serde_json::Value> = log_entries
+        .iter()
+        .filter(|e| e["session_uuid"].as_str() == Some(session_uuid.as_str()))
+        .collect();
 
-    let tp_count = log_entries
+    let tp_count = session_entries
         .iter()
         .filter(|e| e["verdict"].as_str() == Some("true_positive"))
         .count();
-    let fp_count = log_entries
+    let fp_count = session_entries
         .iter()
         .filter(|e| e["verdict"].as_str() == Some("false_positive"))
         .count();
-    let review_count = log_entries
+    let review_count = session_entries
         .iter()
         .filter(|e| e["verdict"].as_str() == Some("needs_review"))
         .count();
 
-    // 移除会话
+    // 从内存移除会话（磁盘文件保留留档）
     let session_info = state
         .audit
         .active_sessions
         .borrow_mut()
-        .remove(&session_uuid);
+        .remove(&session_uuid)
+        .or(session);
 
     let summary = format!(
         "📋 Audit session concluded\n  Session: {}\n  Project: {}\n  Investigations: {} total\n  ✅ True Positives: {}\n  ❌ False Positives: {}\n  ⚠️ Needs Review: {}\n  Active investigations at close: {}\n\n{}",
@@ -3173,8 +3259,355 @@ async fn tool_conclude_audit_session_with_state(state: &McpServerState, args: &V
     })
 }
 
-// ── Response helpers ─────────────────────────────────────
+/// 编排审计计划：deep 扫描 → 分组 → 匹配证据包 → 持久化会话
+async fn tool_audit_plan_with_state(state: &McpServerState, args: &Value) -> Value {
+    let project_path = match args.get("project_path").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => return error_response("Missing required parameter: project_path"),
+    };
+    let min_severity = args
+        .get("min_severity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("high")
+        .to_string();
 
+    if !std::path::Path::new(&project_path).exists() {
+        return error_response(&format!("Project path not found: {}", project_path));
+    }
+
+    // 内部复用 security_scan 的 deep 扫描逻辑（taint + cross-file）
+    let findings = match run_configured_scan(&project_path, true, true).await {
+        Ok(f) => f,
+        Err(e) => return error_response(&format!("Scan failed: {}", e)),
+    };
+
+    // min_severity 过滤
+    let min_rank = severity_rank(&min_severity);
+    let filtered: Vec<&Finding> = findings
+        .iter()
+        .filter(|f| severity_rank(&f.severity.to_lowercase()) <= min_rank)
+        .collect();
+
+    // 按 (vuln_type, file) 分组，保持出现顺序
+    let packs = load_audit_packs();
+    let mut groups: Vec<SessionGroup> = Vec::new();
+    let mut group_index: HashMap<(String, String), usize> = HashMap::new();
+    for f in &filtered {
+        let key = (f.vuln_type.clone(), f.file_path.clone());
+        let idx = match group_index.get(&key) {
+            Some(&i) => i,
+            None => {
+                let pack = find_pack(&packs, &f.vuln_type, None)
+                    .or_else(|| generic_pack(&packs));
+                groups.push(SessionGroup {
+                    vuln_type: f.vuln_type.clone(),
+                    pack_id: pack.map(|p| p.id.clone()).unwrap_or_default(),
+                    status: "pending".to_string(),
+                    findings: Vec::new(),
+                });
+                group_index.insert(key, groups.len() - 1);
+                groups.len() - 1
+            }
+        };
+        groups[idx].findings.push(GroupFinding {
+            finding_id: f.finding_id.clone(),
+            file: f.file_path.clone(),
+            line: f.line_start,
+            severity: f.severity.clone(),
+            description: f.description.chars().take(200).collect(),
+        });
+    }
+
+    // 创建并持久化审计会话
+    let session_uuid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let ctx = SessionContext {
+        session_uuid: session_uuid.clone(),
+        project_path: project_path.clone(),
+        session_type: "full".to_string(),
+        started_at: now.clone(),
+        groups: groups.clone(),
+    };
+    persist_session(&ctx);
+    state
+        .audit
+        .active_sessions
+        .borrow_mut()
+        .insert(session_uuid.clone(), ctx);
+
+    // 组装分组响应（含每组完整证据包内容）
+    let group_details: Vec<Value> = groups
+        .iter()
+        .map(|g| {
+            let pack = packs.iter().find(|p| p.id == g.pack_id);
+            let representative = g.findings.first();
+            serde_json::json!({
+                "vuln_type": g.vuln_type,
+                "file": representative.map(|r| r.file.as_str()).unwrap_or(""),
+                "finding_count": g.findings.len(),
+                "representative_finding": representative.map(|r| serde_json::json!({
+                    "finding_id": r.finding_id,
+                    "file": r.file,
+                    "line": r.line,
+                    "severity": r.severity,
+                })),
+                "pack_id": g.pack_id,
+                "status": g.status,
+                "findings": g.findings.iter().map(|f| serde_json::json!({
+                    "finding_id": f.finding_id,
+                    "file": f.file,
+                    "line": f.line,
+                    "severity": f.severity,
+                })).collect::<Vec<_>>(),
+                "pack": pack.map(|p| serde_json::to_value(p).unwrap_or_default()),
+            })
+        })
+        .collect();
+
+    let summary = format!(
+        "🗂️ Audit plan created\n  Session: {}\n  Project: {}\n  Findings (≥{}): {} in {} groups\n  Session file: {}\n\nWorkflow: for each group, follow its evidence pack — call start_investigation on the representative finding, gather evidence with the suggested tools, then conclude_investigation with your verdict. When all groups are done, call audit_finalize_report.",
+        session_uuid,
+        project_path,
+        min_severity,
+        filtered.len(),
+        groups.len(),
+        session_file_path(&project_path, &session_uuid).display(),
+    );
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                "session_uuid": session_uuid,
+                "project_path": project_path,
+                "min_severity": min_severity,
+                "total_findings": filtered.len(),
+                "group_count": groups.len(),
+                "groups": group_details,
+            })).unwrap_or_default()}
+        ]
+    })
+}
+
+/// 生成 Markdown 审计报告（纯函数，便于单测）
+///
+/// 结构：项目指纹 / 判定统计表 / TP 详情（攻击链、证据、置信度）/ FP 分组摘要
+fn render_audit_report(session: &SessionContext, entries: &[Value]) -> String {
+    let tp: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("true_positive"))
+        .collect();
+    let fp: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("false_positive"))
+        .collect();
+    let nr: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("needs_review"))
+        .collect();
+    let pending_groups = session
+        .groups
+        .iter()
+        .filter(|g| g.status != "concluded")
+        .count();
+
+    let mut out = String::new();
+    out.push_str("# 安全审计报告\n\n");
+
+    // ── 项目指纹 ──
+    out.push_str("## 项目指纹\n\n");
+    out.push_str(&format!("- 项目路径: `{}`\n", session.project_path));
+    out.push_str(&format!(
+        "- 会话: `{}`（类型: {}）\n",
+        session.session_uuid, session.session_type
+    ));
+    out.push_str(&format!("- 开始时间: {}\n", session.started_at));
+    out.push_str(&format!(
+        "- 报告生成时间: {}\n",
+        chrono::Utc::now().to_rfc3339()
+    ));
+    out.push_str(&format!(
+        "- 计划分组: {} 组 / 已判定: {} 条 / 未完结分组: {}\n\n",
+        session.groups.len(),
+        entries.len(),
+        pending_groups
+    ));
+
+    // ── 判定统计 ──
+    out.push_str("## 判定统计\n\n");
+    out.push_str("| 判定 | 数量 |\n| --- | --- |\n");
+    out.push_str(&format!("| ✅ True Positive | {} |\n", tp.len()));
+    out.push_str(&format!("| ❌ False Positive | {} |\n", fp.len()));
+    out.push_str(&format!("| ⚠️ Needs Review | {} |\n\n", nr.len()));
+
+    // ── TP 详情 ──
+    out.push_str("## 确认漏洞（True Positives）\n\n");
+    if tp.is_empty() {
+        out.push_str("无。\n\n");
+    }
+    for (i, e) in tp.iter().enumerate() {
+        let finding_id = e["finding_id"].as_str().unwrap_or("unknown");
+        let vuln_type = vuln_type_of_finding(session, finding_id).unwrap_or("unknown");
+        out.push_str(&format!("### {}. {} — `{}`\n\n", i + 1, vuln_type, finding_id));
+        if let Some(c) = e["confidence"].as_f64() {
+            out.push_str(&format!("- 置信度: {:.0}%\n", c * 100.0));
+        }
+        if let Some(sev) = e["severity_override"].as_str() {
+            out.push_str(&format!("- 严重度修正: {}\n", sev));
+        }
+        out.push_str(&format!(
+            "- 判定理由: {}\n",
+            e["reasoning"].as_str().unwrap_or("")
+        ));
+        // 攻击链与证据引用（调查步骤）
+        if let Some(steps) = e["investigation_steps"].as_array() {
+            if !steps.is_empty() {
+                out.push_str("- 攻击链与证据:\n");
+                for (j, s) in steps.iter().enumerate() {
+                    out.push_str(&format!(
+                        "  {}. `{}`: {}\n",
+                        j + 1,
+                        s["tool_used"].as_str().unwrap_or("?"),
+                        s["finding"].as_str().unwrap_or("")
+                    ));
+                }
+            }
+        }
+        out.push('\n');
+    }
+
+    // ── FP 分组摘要（按 vuln_type 聚类）──
+    out.push_str("## 误报分组摘要\n\n");
+    if fp.is_empty() {
+        out.push_str("无。\n\n");
+    } else {
+        let mut fp_by_type: HashMap<String, Vec<&Value>> = HashMap::new();
+        for e in &fp {
+            let vt = vuln_type_of_finding(session, e["finding_id"].as_str().unwrap_or(""))
+                .unwrap_or("unknown")
+                .to_string();
+            fp_by_type.entry(vt).or_default().push(e);
+        }
+        let mut types: Vec<&String> = fp_by_type.keys().collect();
+        types.sort();
+        for vt in types {
+            let group = &fp_by_type[vt];
+            out.push_str(&format!("### {}（{} 条）\n\n", vt, group.len()));
+            for e in group {
+                out.push_str(&format!(
+                    "- `{}`: {}\n",
+                    e["finding_id"].as_str().unwrap_or("unknown"),
+                    e["reasoning"].as_str().unwrap_or("")
+                ));
+            }
+            out.push('\n');
+        }
+    }
+
+    // ── 待人工复核 ──
+    if !nr.is_empty() {
+        out.push_str("## 待人工复核（Needs Review）\n\n");
+        for e in &nr {
+            let finding_id = e["finding_id"].as_str().unwrap_or("unknown");
+            let vuln_type = vuln_type_of_finding(session, finding_id).unwrap_or("unknown");
+            out.push_str(&format!(
+                "- {} — `{}`: {}\n",
+                vuln_type,
+                finding_id,
+                e["reasoning"].as_str().unwrap_or("")
+            ));
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+/// 汇总会话判定并生成 Markdown 审计报告
+async fn tool_audit_finalize_report_with_state(state: &McpServerState, args: &Value) -> Value {
+    let session_uuid = match args.get("session_uuid").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => return error_response("Missing required parameter: session_uuid"),
+    };
+
+    // 读取会话（内存未命中时从磁盘加载）
+    let session = match get_or_load_session(state, &session_uuid) {
+        Some(s) => s,
+        None => {
+            return error_response(&format!(
+                "Session not found: {}. Provide a valid session_uuid from audit_plan/start_audit_session.",
+                session_uuid
+            ))
+        }
+    };
+
+    // 收集本会话的判定记录
+    let log_entries = read_audit_log(Some(&session.project_path));
+    let session_entries: Vec<Value> = log_entries
+        .into_iter()
+        .filter(|e| e["session_uuid"].as_str() == Some(session_uuid.as_str()))
+        .collect();
+
+    let report = render_audit_report(&session, &session_entries);
+
+    // 默认输出路径：<project>/.ctx-audit/audit_report_<uuid>.md
+    let output_path = args
+        .get("output_path")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(&session.project_path)
+                .join(".ctx-audit")
+                .join(format!("audit_report_{}.md", session_uuid))
+        });
+
+    if let Some(parent) = output_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return error_response(&format!("Failed to create report directory: {}", e));
+        }
+    }
+    if let Err(e) = std::fs::write(&output_path, &report) {
+        return error_response(&format!("Failed to write report: {}", e));
+    }
+
+    let tp = session_entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("true_positive"))
+        .count();
+    let fp = session_entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("false_positive"))
+        .count();
+    let nr = session_entries
+        .iter()
+        .filter(|e| e["verdict"].as_str() == Some("needs_review"))
+        .count();
+
+    let summary = format!(
+        "📄 Audit report generated\n  Session: {}\n  Report: {}\n  ✅ TP: {}  ❌ FP: {}  ⚠️ NR: {}",
+        session_uuid,
+        output_path.display(),
+        tp,
+        fp,
+        nr
+    );
+
+    serde_json::json!({
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "text", "text": serde_json::to_string_pretty(&serde_json::json!({
+                "report_path": output_path.display().to_string(),
+                "session_uuid": session_uuid,
+                "true_positives": tp,
+                "false_positives": fp,
+                "needs_review": nr,
+                "total_verdicts": session_entries.len(),
+            })).unwrap_or_default()}
+        ]
+    })
+}
+
+// ── Response helpers ─────────────────────────────────────
 fn error_response(msg: &str) -> Value {
     serde_json::json!({
         "content": [{"type": "text", "text": msg}],
@@ -3262,15 +3695,46 @@ impl McpAuditState {
 }
 
 /// 审计会话上下文
+///
+/// 创建时持久化到 `<project>/.ctx-audit/audit_sessions/<uuid>.json`，
+/// MCP 进程重启后可从磁盘恢复。
+#[derive(Clone, Serialize, Deserialize)]
 struct SessionContext {
     session_uuid: String,
     project_path: String,
     session_type: String,
     started_at: String,
+    /// 审计分组（audit_plan 生成；start_audit_session 创建时为空）
+    #[serde(default)]
+    groups: Vec<SessionGroup>,
+}
+
+/// 审计分组 —— 同一 (vuln_type, file) 的 findings 归为一组，
+/// 整组共用一个证据包，逐组完成取证与判定
+#[derive(Clone, Serialize, Deserialize)]
+struct SessionGroup {
+    /// 漏洞类型（finding 的 vuln_type）
+    vuln_type: String,
+    /// 匹配到的证据包 id
+    pack_id: String,
+    /// 组状态：pending / concluded
+    status: String,
+    /// 组内 finding 摘要
+    findings: Vec<GroupFinding>,
+}
+
+/// 分组内的 finding 摘要
+#[derive(Clone, Serialize, Deserialize)]
+struct GroupFinding {
+    finding_id: String,
+    file: String,
+    line: usize,
+    severity: String,
+    description: String,
 }
 
 /// 调查上下文 — 对单个 finding 的深度调查
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct InvestigationContext {
     investigation_id: String,
     session_uuid: String,
@@ -3281,11 +3745,190 @@ struct InvestigationContext {
 }
 
 /// 调查步骤记录
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct InvestigationStep {
     tool_used: String,
     finding: String,
     reasoning: String,
+}
+
+/// 调查磁盘文件路径：`.ctx-audit/audit_sessions/inv_<iid>.json`（CWD 相对，与会话加载语义一致）
+fn investigation_file_path(investigation_id: &str) -> std::path::PathBuf {
+    std::path::Path::new(".ctx-audit")
+        .join("audit_sessions")
+        .join(format!("inv_{}.json", investigation_id))
+}
+
+/// 将调查持久化到磁盘（失败仅记录日志，不阻断主流程）
+fn persist_investigation(ctx: &InvestigationContext) {
+    let path = investigation_file_path(&ctx.investigation_id);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!("创建调查目录失败 {:?}: {}", parent, e);
+            return;
+        }
+    }
+    match serde_json::to_string_pretty(ctx) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::warn!("调查持久化失败 {:?}: {}", path, e);
+            }
+        }
+        Err(e) => tracing::warn!("调查序列化失败: {}", e),
+    }
+}
+
+/// 从磁盘加载调查
+fn load_investigation_from_disk(investigation_id: &str) -> Option<InvestigationContext> {
+    let path = investigation_file_path(investigation_id);
+    let content = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<InvestigationContext>(&content) {
+        Ok(ctx) => Some(ctx),
+        Err(e) => {
+            tracing::warn!("调查文件解析失败 {:?}: {}", path, e);
+            None
+        }
+    }
+}
+
+/// 查询调查：先查内存，未命中则从磁盘加载并回填内存（MCP 进程重启后可恢复）
+fn get_or_load_investigation(
+    state: &McpServerState,
+    investigation_id: &str,
+) -> Option<InvestigationContext> {
+    if let Some(ctx) = state
+        .audit
+        .active_investigations
+        .borrow()
+        .get(investigation_id)
+    {
+        return Some(ctx.clone());
+    }
+    let ctx = load_investigation_from_disk(investigation_id)?;
+    state
+        .audit
+        .active_investigations
+        .borrow_mut()
+        .insert(investigation_id.to_string(), ctx.clone());
+    Some(ctx)
+}
+
+// ── 会话磁盘持久化 ──────────────────────────────────────
+
+/// 会话磁盘文件路径：`<project>/.ctx-audit/audit_sessions/<uuid>.json`
+fn session_file_path(project_path: &str, session_uuid: &str) -> std::path::PathBuf {
+    std::path::Path::new(project_path)
+        .join(".ctx-audit")
+        .join("audit_sessions")
+        .join(format!("{}.json", session_uuid))
+}
+
+/// 将会话持久化到磁盘（失败仅记录日志，不阻断主流程）
+fn persist_session(ctx: &SessionContext) {
+    let path = session_file_path(&ctx.project_path, &ctx.session_uuid);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!("创建会话目录失败 {:?}: {}", parent, e);
+            return;
+        }
+    }
+    match serde_json::to_string_pretty(ctx) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::warn!("会话持久化失败 {:?}: {}", path, e);
+            }
+        }
+        Err(e) => tracing::warn!("会话序列化失败: {}", e),
+    }
+}
+
+/// 从磁盘加载会话（按 CWD 相对路径 `.ctx-audit/audit_sessions/<uuid>.json` 查找）
+fn load_session_from_disk(session_uuid: &str) -> Option<SessionContext> {
+    let path = session_file_path(".", session_uuid);
+    let content = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<SessionContext>(&content) {
+        Ok(ctx) => Some(ctx),
+        Err(e) => {
+            tracing::warn!("会话文件解析失败 {:?}: {}", path, e);
+            None
+        }
+    }
+}
+
+/// 查询会话：先查内存，未命中则从磁盘加载并回填内存
+fn get_or_load_session(state: &McpServerState, session_uuid: &str) -> Option<SessionContext> {
+    if let Some(ctx) = state.audit.active_sessions.borrow().get(session_uuid) {
+        return Some(ctx.clone());
+    }
+    let ctx = load_session_from_disk(session_uuid)?;
+    state
+        .audit
+        .active_sessions
+        .borrow_mut()
+        .insert(session_uuid.to_string(), ctx.clone());
+    Some(ctx)
+}
+
+/// 读取审计日志条目：优先 `<project>/.ctx-audit/audit_log.json`，
+/// 不存在时回退 CWD 下的 `.ctx-audit/audit_log.json`（历史行为）
+fn read_audit_log(project_path: Option<&str>) -> Vec<serde_json::Value> {
+    let candidates: Vec<std::path::PathBuf> = match project_path {
+        Some(p) => vec![
+            std::path::Path::new(p).join(".ctx-audit").join("audit_log.json"),
+            std::path::Path::new(".ctx-audit").join("audit_log.json"),
+        ],
+        None => vec![std::path::Path::new(".ctx-audit").join("audit_log.json")],
+    };
+    for path in candidates {
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+                    return entries;
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// 在会话分组中查找 finding 对应的漏洞类型
+fn vuln_type_of_finding<'a>(session: &'a SessionContext, finding_id: &str) -> Option<&'a str> {
+    session
+        .groups
+        .iter()
+        .find(|g| g.findings.iter().any(|f| f.finding_id == finding_id))
+        .map(|g| g.vuln_type.as_str())
+}
+
+/// 按工具名为取证步骤填充调用参数（finding 的 file/line 注入到合适位置）
+fn evidence_step_params(
+    tool: &str,
+    project_path: &str,
+    finding_file: Option<&str>,
+    finding_line: Option<usize>,
+) -> Value {
+    let file = finding_file.unwrap_or("");
+    let line = finding_line.unwrap_or(1);
+    match tool {
+        "get_code_context" => serde_json::json!({"file_path": file, "line": line}),
+        "search_code" => serde_json::json!({
+            "project_path": project_path,
+            "pattern": "<根据本步 purpose 自行构造正则，如变量名/函数名/净化函数名>"
+        }),
+        "query_callers" | "query_callees" => serde_json::json!({
+            "project_path": project_path,
+            "file_path": file,
+            "function_name": "<sink 所在函数名，可先用 enclosing_function_at_line 确认>"
+        }),
+        "query_middleware_chain" | "list_file_functions" => {
+            serde_json::json!({"project_path": project_path, "file_path": file})
+        }
+        "check_sanitizer" => {
+            serde_json::json!({"func_name": "<待查证的净化/解析函数名>"})
+        }
+        "get_graph_stats" => serde_json::json!({"project_path": project_path}),
+        _ => serde_json::json!({"project_path": project_path, "file_path": file, "line": line}),
+    }
 }
 
 impl McpServerState {
@@ -3789,6 +4432,10 @@ async fn handle_request_with_state(
                     "conclude_audit_session" => {
                         tool_conclude_audit_session_with_state(state, &arguments).await
                     }
+                    "audit_plan" => tool_audit_plan_with_state(state, &arguments).await,
+                    "audit_finalize_report" => {
+                        tool_audit_finalize_report_with_state(state, &arguments).await
+                    }
                     // 回退到 MCP 独有工具（不需要 state）
                     _ => handle_tool_call(tool_name, &arguments).await,
                 }
@@ -3803,5 +4450,208 @@ async fn handle_request_with_state(
                 "isError": true
             })
         }
+    }
+}
+
+// ── 单元测试 ─────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造带两个分组的测试会话
+    fn sample_session() -> SessionContext {
+        SessionContext {
+            session_uuid: "test-uuid-1234".to_string(),
+            project_path: "/tmp/demo-project".to_string(),
+            session_type: "full".to_string(),
+            started_at: "2026-07-22T00:00:00Z".to_string(),
+            groups: vec![
+                SessionGroup {
+                    vuln_type: "CrossSiteScripting".to_string(),
+                    pack_id: "cwe-79-xss".to_string(),
+                    status: "concluded".to_string(),
+                    findings: vec![GroupFinding {
+                        finding_id: "f-xss-1".to_string(),
+                        file: "src/views.rs".to_string(),
+                        line: 42,
+                        severity: "high".to_string(),
+                        description: "innerHTML assignment".to_string(),
+                    }],
+                },
+                SessionGroup {
+                    vuln_type: "SqlInjection".to_string(),
+                    pack_id: "cwe-89-sqli".to_string(),
+                    status: "pending".to_string(),
+                    findings: vec![GroupFinding {
+                        finding_id: "f-sqli-1".to_string(),
+                        file: "src/db.rs".to_string(),
+                        line: 10,
+                        severity: "critical".to_string(),
+                        description: "string concat in query".to_string(),
+                    }],
+                },
+            ],
+        }
+    }
+
+    /// 构造各类型判定各一条的审计日志
+    fn sample_entries() -> Vec<Value> {
+        vec![
+            serde_json::json!({
+                "investigation_id": "inv-1",
+                "session_uuid": "test-uuid-1234",
+                "finding_id": "f-xss-1",
+                "verdict": "true_positive",
+                "confidence": 0.95,
+                "reasoning": "外部输入未转义直达 innerHTML",
+                "investigation_steps": [
+                    {"tool_used": "get_code_context", "finding": "sink 为 innerHTML 赋值", "reasoning": "r"},
+                    {"tool_used": "query_callers", "finding": "来源为 HTTP 参数", "reasoning": "r"}
+                ],
+            }),
+            serde_json::json!({
+                "investigation_id": "inv-2",
+                "session_uuid": "test-uuid-1234",
+                "finding_id": "f-sqli-1",
+                "verdict": "false_positive",
+                "confidence": 0.9,
+                "reasoning": "实际为参数化查询",
+                "investigation_steps": [],
+            }),
+            serde_json::json!({
+                "investigation_id": "inv-3",
+                "session_uuid": "test-uuid-1234",
+                "finding_id": "f-other",
+                "verdict": "needs_review",
+                "reasoning": "证据矛盾",
+                "investigation_steps": [],
+            }),
+        ]
+    }
+
+    #[test]
+    fn test_render_audit_report_structure() {
+        let session = sample_session();
+        let entries = sample_entries();
+        let report = render_audit_report(&session, &entries);
+
+        // 结构完整性
+        assert!(report.contains("# 安全审计报告"));
+        assert!(report.contains("## 项目指纹"));
+        assert!(report.contains("## 判定统计"));
+        assert!(report.contains("## 确认漏洞（True Positives）"));
+        assert!(report.contains("## 误报分组摘要"));
+        assert!(report.contains("## 待人工复核（Needs Review）"));
+
+        // 项目指纹
+        assert!(report.contains("/tmp/demo-project"));
+        assert!(report.contains("test-uuid-1234"));
+        // 未完结分组 = 1（sqli 组仍 pending）
+        assert!(report.contains("未完结分组: 1"));
+
+        // 统计数字
+        assert!(report.contains("| ✅ True Positive | 1 |"));
+        assert!(report.contains("| ❌ False Positive | 1 |"));
+        assert!(report.contains("| ⚠️ Needs Review | 1 |"));
+
+        // TP 详情：vuln_type 从分组反查、置信度、攻击链证据
+        assert!(report.contains("CrossSiteScripting — `f-xss-1`"));
+        assert!(report.contains("置信度: 95%"));
+        assert!(report.contains("`get_code_context`: sink 为 innerHTML 赋值"));
+        assert!(report.contains("`query_callers`: 来源为 HTTP 参数"));
+
+        // FP 按 vuln_type 聚类
+        assert!(report.contains("### SqlInjection（1 条）"));
+        assert!(report.contains("`f-sqli-1`: 实际为参数化查询"));
+    }
+
+    #[test]
+    fn test_render_audit_report_empty() {
+        let mut session = sample_session();
+        session.groups.clear();
+        let report = render_audit_report(&session, &[]);
+        assert!(report.contains("| ✅ True Positive | 0 |"));
+        assert!(report.contains("无。"));
+        // 空报告不应有待复核段
+        assert!(!report.contains("## 待人工复核"));
+    }
+
+    #[test]
+    fn test_vuln_type_of_finding() {
+        let session = sample_session();
+        assert_eq!(
+            vuln_type_of_finding(&session, "f-xss-1"),
+            Some("CrossSiteScripting")
+        );
+        assert_eq!(vuln_type_of_finding(&session, "f-sqli-1"), Some("SqlInjection"));
+        assert_eq!(vuln_type_of_finding(&session, "nonexistent"), None);
+    }
+
+    #[test]
+    fn test_evidence_step_params() {
+        // get_code_context 注入 file/line
+        let params = evidence_step_params("get_code_context", "/proj", Some("a.rs"), Some(7));
+        assert_eq!(params["file_path"], "a.rs");
+        assert_eq!(params["line"], 7);
+        assert!(params.get("project_path").is_none());
+
+        // search_code 注入 project_path
+        let params = evidence_step_params("search_code", "/proj", Some("a.rs"), Some(7));
+        assert_eq!(params["project_path"], "/proj");
+        assert!(params["pattern"].as_str().unwrap().contains("purpose"));
+
+        // query_callers 注入 project_path + file
+        let params = evidence_step_params("query_callers", "/proj", Some("a.rs"), None);
+        assert_eq!(params["file_path"], "a.rs");
+        assert_eq!(params["project_path"], "/proj");
+
+        // 未知工具走通用兜底
+        let params = evidence_step_params("some_other_tool", "/proj", Some("a.rs"), Some(3));
+        assert_eq!(params["line"], 3);
+
+        // 无 file 时为空串而非 panic
+        let params = evidence_step_params("get_code_context", "/proj", None, None);
+        assert_eq!(params["file_path"], "");
+        assert_eq!(params["line"], 1);
+    }
+
+    #[test]
+    fn test_session_serialization_roundtrip() {
+        let session = sample_session();
+        let json = serde_json::to_string_pretty(&session).unwrap();
+        let restored: SessionContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.session_uuid, session.session_uuid);
+        assert_eq!(restored.groups.len(), 2);
+        assert_eq!(restored.groups[0].pack_id, "cwe-79-xss");
+        assert_eq!(restored.groups[0].findings[0].line, 42);
+    }
+
+    #[test]
+    fn test_session_file_path_layout() {
+        let path = session_file_path("/proj", "abc-123");
+        let s = path.to_string_lossy().replace('\\', "/");
+        assert_eq!(s, "/proj/.ctx-audit/audit_sessions/abc-123.json");
+    }
+
+    #[test]
+    fn test_audit_plan_tool_registered() {
+        // 新工具必须在工具列表中可见且 schema 完整
+        let defs = tool_definitions();
+        let plan = defs.iter().find(|t| t.name == "audit_plan").unwrap();
+        assert_eq!(plan.input_schema["required"][0], "project_path");
+        assert!(plan.input_schema["properties"]["min_severity"].is_object());
+        assert!(plan.description.contains("audit_finalize_report"));
+
+        let fin = defs
+            .iter()
+            .find(|t| t.name == "audit_finalize_report")
+            .unwrap();
+        assert_eq!(fin.input_schema["required"][0], "session_uuid");
+        assert!(fin.input_schema["properties"]["output_path"].is_object());
+
+        // start_investigation 接受可选 vuln_type
+        let inv = defs.iter().find(|t| t.name == "start_investigation").unwrap();
+        assert!(inv.input_schema["properties"]["vuln_type"].is_object());
     }
 }

@@ -182,6 +182,79 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  - id: "django_archive_extraction"
+    name: "Django Archive Extraction (Zip Slip)"
+    description: "Archive file extraction without path validation"
+    match_mode: "Semantic"
+    namespaces:
+      - "zipfile"
+      - "tarfile"
+      - "shutil"
+    patterns:
+      - ".extractall"
+      - ".extract"
+      - ".unpack_archive"
+    exact_matches:
+      - "zipfile.ZipFile"
+      - "tarfile.open"
+      - "tarfile.TarFile"
+      - "shutil.unpack_archive"
+    languages: ["python"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "django_file_write"
+    name: "Django Arbitrary File Write"
+    description: "File copy/move operations with user-controlled paths"
+    match_mode: "Semantic"
+    namespaces:
+      - "shutil"
+      - "os"
+      - "pathlib"
+    patterns:
+      - ".copy"
+      - ".copy2"
+      - ".move"
+      - ".rename"
+      - ".replace"
+    exact_matches:
+      - "shutil.copy"
+      - "shutil.copy2"
+      - "shutil.move"
+      - "os.rename"
+      - "os.replace"
+      - "Path.rename"
+      - "Path.replace"
+    languages: ["python"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0, 1]
+    ast_patterns: []
+
+  - id: "django_open_redirect"
+    name: "Django Open Redirect"
+    description: "HTTP redirect with user-controlled URL"
+    match_mode: "Semantic"
+    namespaces:
+      - "django.shortcuts"
+      - "django.http"
+    patterns:
+      - "redirect("
+      - "HttpResponseRedirect("
+    exact_matches:
+      - "django.shortcuts.redirect"
+      - "django.http.HttpResponseRedirect"
+    languages: ["python"]
+    vulnerability_type: "OpenRedirect"
+    severity: "High"
+    cwe_id: "CWE-601"
+    sensitive_params: [0]
+    ast_patterns: []
+
 sanitizers:
   - pattern: "escape"
     description: "Django HTML escape"
@@ -195,3 +268,21 @@ sanitizers:
     description: "Django slug validator"
   - pattern: "clean"
     description: "Django form field clean method"
+  - pattern: "realpath"
+    description: "Path canonicalization to resolve symlinks"
+  - pattern: "os.path.realpath"
+    description: "Absolute path with symlinks resolved"
+  - pattern: "abspath"
+    description: "Path to absolute path"
+  - pattern: "os.path.abspath"
+    description: "Absolute path normalization"
+  - pattern: "normpath"
+    description: "Normalize path separators and .. components"
+  - pattern: "os.path.normpath"
+    description: "Normalize path string"
+  - pattern: "Path.resolve"
+    description: "Pathlib resolve with symlinks"
+  - pattern: "urlsplit"
+    description: "URL split for redirect validation"
+  - pattern: "urllib.parse.urlsplit"
+    description: "Parse URL for scheme/host validation"

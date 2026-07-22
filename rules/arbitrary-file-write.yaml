@@ -1,0 +1,21 @@
+category: file-operation
+cwe: CWE-22
+description: "检测任意文件写入风险：用户可控的目标路径用于文件复制、移动或重命名操作"
+id: arbitrary-file-write
+language: all
+name: Arbitrary File Write Detection
+owasp: "A01:2021-Broken Access Control"
+remediation: "对目标路径进行规范化处理（realpath / resolve）；限制目标路径在允许的目录范围内；对文件名进行白名单过滤。"
+references:
+  - "https://owasp.org/www-community/attacks/Path_Traversal"
+  - "https://cwe.mitre.org/data/definitions/22.html"
+severity: high
+patterns:
+  - language: python
+    pattern: '(?i)(shutil\.(copy|copy2|move)\s*\(|os\.rename\s*\(|os\.replace\s*\(|pathlib\.Path\.rename\s*\()'
+  - language: javascript
+    pattern: '(?i)(fs\.(copyFile|copyFileSync|rename|renameSync)\s*\(|fs\.createWriteStream\s*\().*(?:req\.|request|param|input|user)'
+  - language: java
+    pattern: '(?i)(Files\.(copy|move)\s*\(|File\.renameTo\s*\().*(?:request|param|input|user)'
+  - language: go
+    pattern: '(?i)(os\.Rename\s*\(|io\.Copy\s*\(|ioutil\.WriteFile\s*\()'

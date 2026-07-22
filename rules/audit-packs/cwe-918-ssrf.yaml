@@ -1,0 +1,31 @@
+# 审计证据包：服务端请求伪造（SSRF / CWE-918）
+kind: audit-pack
+id: "cwe-918-ssrf"
+name: "SSRF 取证包"
+vuln_types:
+  - "ssrf"
+  - "ServerSideRequestForgery"
+  - "ssrf-detection"
+  - "ssrf-host-header"
+cwe:
+  - "CWE-918"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认请求 URL 的构成：用户输入直接作为 URL/host，还是拼接了用户控制的 path/query 片段。host 可控是高危；仅 path 片段可控需看能否用 ../@/协议绕过。"
+  - tool: query_callers
+    purpose: "追 URL 来源到入口：请求参数（攻击者可控）vs 管理员配置的通知 webhook/回调地址。后者是设计内功能，应降级（medium/low）或判 needs_review 而非直接 TP。"
+  - tool: search_code
+    purpose: "沿调用链搜内网防护：私网段校验（10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、169.254.0.0/16、127.0.0.0/8）、域名白名单、协议白名单（仅 http/https）、DNS rebinding 防护（解析后校验）。守卫缺席是 TP 关键证据。"
+  - tool: search_code
+    purpose: "搜 URL 解析方式：URL 解析库与请求库解析差异（@ 用户信息、# 片段、十进制/八进制 IP）可使前端校验失效；确认校验与发请求用的是同一解析结果。"
+  - tool: get_graph_stats
+    purpose: "确认触达路径是否需要认证、是否仅管理员可用，评估真实攻击面以校准严重度。"
+tp_criteria:
+  - "外部用户可控制请求 URL 的 host 或可通过 @/协议/解析差异逃逸到任意 host"
+  - "无内网 IP/私网段校验、无域名白名单，或校验与请求使用的解析结果不一致"
+  - "端点无需认证或低权限用户可达"
+fp_criteria:
+  - "URL 来自管理员配置的 webhook/通知地址，属设计内功能（记录为降级而非 TP）"
+  - "存在完备的私网段 + 协议 + 域名白名单校验，且校验基于最终请求的解析结果"
+  - "host 为服务端常量，用户输入仅影响查询参数且无法注入分隔符"
+confidence_guide: "外部可控 host + 守卫缺席两方确认 → 0.9+；URL 来源确认但防护逻辑未查完 → 0.7-0.9；来源是管理员配置但暴露面不明确 → <0.7，判 needs_review 并在推理中注明设计内降级理由。"

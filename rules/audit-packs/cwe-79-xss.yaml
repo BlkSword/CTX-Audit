@@ -1,0 +1,35 @@
+# 审计证据包：跨站脚本（XSS / CWE-79）
+kind: audit-pack
+id: "cwe-79-xss"
+name: "跨站脚本（XSS）取证包"
+vuln_types:
+  - "xss"
+  - "CrossSiteScripting"
+  - "xss-detection"
+  - "rails-xss"
+  - "stored-xss"
+  - "reflected-xss"
+cwe:
+  - "CWE-79"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认 sink 形态：innerHTML/document.write/模板输出/ dangerouslySetInnerHTML 的赋值内容来自变量、字面量还是数值表达式。字面量 HTML 与纯数值插值直接走 FP 判据。"
+  - tool: search_code
+    purpose: "以被赋值的变量名/属性名为 pattern 全项目搜索，定位其赋值点；再搜 escapeHtml/sanitize/DOMPurify/html.escape/encodeURIComponent 等服务端或前端转义、净化调用，确认数据流上是否存在有效转义。"
+  - tool: query_callers
+    purpose: "从 sink 所在函数反向追调用链，确认数据来源是外部可控输入（HTTP 请求字段、客户端协议字段、URL 参数、用户提交内容）还是管理员/运营侧配置项。管理员配置属于设计内信任边界，倾向 FP 或降级。"
+  - tool: get_code_context
+    purpose: "检查来源到 sink 之间是否经过数值格式化（bytesToSize/toFixed/百分比/Math.round 等）。数值格式化会破坏任意 HTML 注入面，是强 FP 信号。"
+  - tool: get_graph_stats
+    purpose: "确认 finding 所在文件是否为生产代码（file_role=production），测试/fixture/vendor 文件中的 XSS 不构成真实攻击面。"
+tp_criteria:
+  - "sink 赋值内容可追溯到外部可控输入（HTTP 输入、客户端协议字段、用户生成内容）"
+  - "来源到 sink 的完整路径上无有效转义/净化（或转义与上下文不匹配，如 HTML 属性上下文只做 JS 转义）"
+  - "finding 位于生产代码路径，且攻击者无需管理员权限即可触达"
+fp_criteria:
+  - "sink 赋值为字面量 HTML 或编译期常量"
+  - "赋值内容经过数值格式化（bytesToSize、toFixed、百分比计算），无法注入标签或属性"
+  - "数据来源是管理员配置项/服务端内部状态，属于设计内信任边界"
+  - "路径上存在与输出上下文匹配的有效转义（DOMPurify、html.escape、模板引擎自动转义未被关闭）"
+  - "finding 位于测试、构建脚本或 vendor 第三方库"
+confidence_guide: "调用链完整追到外部输入 + 确认无转义（多证据交叉）→ 0.9+；只看到 sink 与来源但未验证转义环节（一维未验证）→ 0.7-0.9；来源性质与转义证据矛盾（如部分路径有转义）→ <0.7，判 needs_review。"

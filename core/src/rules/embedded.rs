@@ -10,6 +10,7 @@
 
 use include_dir::{include_dir, Dir, DirEntry};
 
+use crate::rules::audit_pack::AuditPack;
 use crate::rules::model::{Rule, RuleSet};
 use crate::rules::taint_loader::LoadedTaintRules;
 use crate::rules::taint_model::TaintRuleSet;
@@ -109,6 +110,28 @@ pub fn embedded_taint_yaml_contents() -> Vec<String> {
         .collect()
 }
 
+/// 嵌入的审计证据包（仅 `audit-packs/` 子目录）
+///
+/// audit-packs 的 YAML 不是模式规则/污点规则格式，
+/// 会被 `load_embedded_pattern_rules` 的 RuleSet/Rule 解析自然跳过，无副作用。
+pub fn load_embedded_audit_packs() -> Vec<AuditPack> {
+    let mut packs = Vec::new();
+    if let Some(dir) = EMBEDDED_RULES.get_dir("audit-packs") {
+        let mut files = Vec::new();
+        collect_yaml_files(dir, &mut files);
+        for (path, content) in files {
+            match serde_yaml::from_str::<AuditPack>(&content) {
+                Ok(pack) => packs.push(pack),
+                Err(e) => {
+                    tracing::debug!("Skipped non-audit-pack embedded YAML {}: {}", path, e);
+                }
+            }
+        }
+    }
+    packs.sort_by(|a, b| a.id.cmp(&b.id));
+    packs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +162,39 @@ mod tests {
             "应包含 Java 框架 sink: {:?}",
             &sink_ids[..sink_ids.len().min(10)]
         );
+    }
+
+    #[test]
+    fn test_embedded_audit_packs_loaded() {
+        let packs = load_embedded_audit_packs();
+        assert!(packs.len() >= 8, "嵌入的证据包数量异常: {}", packs.len());
+        assert!(
+            packs.iter().any(|p| p.id == "generic"),
+            "应包含 generic 兜底包"
+        );
+        for pack in &packs {
+            assert!(
+                !pack.evidence_steps.is_empty(),
+                "嵌入包 {} 缺少 evidence_steps",
+                pack.id
+            );
+        }
+    }
+
+    #[test]
+    fn test_audit_packs_not_parsed_as_pattern_rules() {
+        // audit-packs 的 YAML 不应被误解析为模式规则（缺 severity/language 等必填字段）
+        let yaml = r#"
+kind: audit-pack
+id: "test-pack"
+name: "Test Pack"
+vuln_types: ["xss"]
+cwe: ["CWE-79"]
+evidence_steps:
+  - tool: get_code_context
+    purpose: "test"
+"#;
+        assert!(serde_yaml::from_str::<RuleSet>(yaml).is_err());
+        assert!(serde_yaml::from_str::<Rule>(yaml).is_err());
     }
 }

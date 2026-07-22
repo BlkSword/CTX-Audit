@@ -1,0 +1,27 @@
+# 审计证据包：通用兜底（未匹配到专用证据包时使用）
+kind: audit-pack
+id: "generic"
+name: "通用取证包（兜底）"
+vuln_types: []
+cwe: []
+evidence_steps:
+  - tool: get_code_context
+    purpose: "阅读 finding 周边代码，理解 sink 语义与匹配原因（reasoning_hint），判断规则是否误命中（注释、字符串字面量、测试代码）。"
+  - tool: list_file_functions
+    purpose: "列出 finding 所在文件的所有已索引函数，定位 sink 所在函数名，为调用图查询做准备。"
+  - tool: query_callers
+    purpose: "从 sink 函数反向追调用链，确认数据/控制来源是外部可控输入还是内部信任域。"
+  - tool: query_middleware_chain
+    purpose: "检查该路由/入口是否被认证中间件覆盖，评估攻击者可达性与所需权限。"
+  - tool: get_graph_stats
+    purpose: "了解项目规模与分析覆盖率，确认 finding 文件角色（production/test/build/vendor），校准严重度。"
+tp_criteria:
+  - "存在外部可控来源到危险操作的可达路径"
+  - "路径上无与漏洞类型匹配的有效净化/校验"
+  - "finding 位于生产代码且攻击者可达"
+fp_criteria:
+  - "规则误命中（注释、字面量、非安全语义代码）"
+  - "来源不可控或属于设计内信任边界"
+  - "存在有效净化或安全屏障（参考 finding 的 barriers 字段）"
+  - "finding 位于测试/构建/vendor 代码"
+confidence_guide: "多证据交叉（来源 + sink + 无净化）→ 0.9+；只有一个维度确认、其余未验证 → 0.7-0.9；证据相互矛盾或关键环节无法验证 → <0.7，判 needs_review 并写明缺失的证据。"

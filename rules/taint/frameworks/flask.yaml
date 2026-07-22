@@ -343,6 +343,81 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  - id: "flask_archive_extraction"
+    name: "Flask Archive Extraction (Zip Slip)"
+    description: "Archive file extraction without path validation enables Zip Slip path traversal"
+    match_mode: "Semantic"
+    namespaces:
+      - "zipfile"
+      - "tarfile"
+      - "shutil"
+    patterns:
+      - ".extractall"
+      - ".extract"
+      - ".unpack_archive"
+      - "extract("
+    exact_matches:
+      - "zipfile.ZipFile"
+      - "tarfile.open"
+      - "tarfile.TarFile"
+      - "shutil.unpack_archive"
+    languages: ["python"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "flask_file_write"
+    name: "Flask Arbitrary File Write"
+    description: "File copy/move operations with user-controlled paths"
+    match_mode: "Semantic"
+    namespaces:
+      - "shutil"
+      - "os"
+      - "pathlib"
+    patterns:
+      - ".copy"
+      - ".copy2"
+      - ".move"
+      - ".rename"
+      - ".replace"
+    exact_matches:
+      - "shutil.copy"
+      - "shutil.copy2"
+      - "shutil.move"
+      - "os.rename"
+      - "os.replace"
+      - "Path.rename"
+      - "Path.replace"
+    languages: ["python"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0, 1]
+    ast_patterns: []
+
+  - id: "flask_open_redirect"
+    name: "Flask Open Redirect"
+    description: "HTTP redirect with user-controlled URL or path"
+    match_mode: "Semantic"
+    namespaces:
+      - "flask"
+      - "werkzeug.utils"
+    patterns:
+      - "redirect("
+      - "url_for("
+    exact_matches:
+      - "flask.redirect"
+      - "flask.url_for"
+      - "werkzeug.utils.redirect"
+    languages: ["python"]
+    vulnerability_type: "OpenRedirect"
+    severity: "High"
+    cwe_id: "CWE-601"
+    sensitive_params: [0]
+    ast_patterns: []
+
   - id: "flask_hardcoded_secret"
     name: "Flask Hardcoded Secret Key"
     description: "Hardcoded Flask SECRET_KEY or JWT secret"
@@ -386,3 +461,21 @@ sanitizers:
     description: "URL format validator"
   - pattern: "urlparse"
     description: "URL parser for validation"
+  - pattern: "realpath"
+    description: "Path canonicalization to resolve symlinks"
+  - pattern: "os.path.realpath"
+    description: "Absolute path with symlinks resolved"
+  - pattern: "abspath"
+    description: "Path to absolute path"
+  - pattern: "os.path.abspath"
+    description: "Absolute path normalization"
+  - pattern: "normpath"
+    description: "Normalize path separators and .. components"
+  - pattern: "os.path.normpath"
+    description: "Normalize path string"
+  - pattern: "Path.resolve"
+    description: "Pathlib resolve with symlinks"
+  - pattern: "urlsplit"
+    description: "URL split for redirect validation"
+  - pattern: "urllib.parse.urlsplit"
+    description: "Parse URL for scheme/host validation"
