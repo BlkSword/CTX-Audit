@@ -1,0 +1,22 @@
+id: "csrf-exemption"
+name: "CSRF Protection Exemption"
+description: "检测 CSRF 保护被显式豁免的端点：Flask @csrf.exempt、Django @csrf_exempt、Rails skip_before_action :verify_authenticity_token、Spring @CrossOrigin 无防护组合。豁免 CSRF 令牌校验的认证端点可被跨站表单提交利用（配合会话 Cookie 自动携带，攻击者可冒充已登录用户执行写操作）。"
+severity: "high"
+language: "all"
+patterns:
+  - language: python
+    pattern: "@csrf\\.exempt|@csrf_exempt|csrf_exempt\\s*\\("
+  - language: javascript
+    pattern: "csurf?\\(\\s*\\{\\s*ignore|app\\.use\\(\\s*['\"]/(?!.*csrf)"
+  - language: java
+    pattern: "csrf\\(\\)\\.disable\\(\\)|csrf\\(.*\\)\\.ignoring"
+  - language: ruby
+    pattern: "skip_before_action\\s+:verify_authenticity_token|protect_from_forgery.*except"
+  - language: php
+    pattern: "csrf_exempt|except.*csrf|withoutMiddleware\\(\\[.*csrf"
+cwe: "CWE-352"
+owasp: "A01:2021-Broken Access Control"
+remediation: "避免整站豁免 CSRF 保护；确需豁免的端点（如 bookmarklet/webhook）应改用其他认证机制（HMAC 签名、一次性 token、Origin/Referer 严格校验）；豁免范围应最小化到单个端点而非全局。"
+references:
+  - "https://cwe.mitre.org/data/definitions/352.html"
+  - "https://owasp.org/www-community/attacks/csrf"
