@@ -641,6 +641,16 @@ impl AttackSurfaceMapper {
         let mut entry_points = Vec::new();
         let mut trust_boundaries = Vec::new();
 
+        // 文件级全局认证守卫预检查：Flask before_request + current_user / login_required
+        // 若本文件定义了全局门，所有端点默认视为已认证（与 has_global_auth_middleware 同逻辑，
+        // 但粒度为文件级，在 map_file 路径下也生效）
+        let lower_content = content.to_lowercase();
+        let file_has_global_guard = lower_content.contains("before_request")
+            && (lower_content.contains("current_user")
+                || lower_content.contains("is_authenticated")
+                || lower_content.contains("login_required")
+                || lower_content.contains("authenticate"));
+
         // Flask/Django 路由
         let route_patterns = [
             ("@app.route(", "Flask"),
@@ -655,7 +665,8 @@ impl AttackSurfaceMapper {
                 if line.contains(pattern) {
                     let route = Self::extract_python_route(line);
                     let context = Self::get_context_block(content, line_num, 10);
-                    let auth_required = context.contains("@login_required")
+                    let auth_required = file_has_global_guard
+                        || context.contains("@login_required")
                         || context.contains("@permission_required")
                         || context.contains("is_authenticated")
                         || context.contains("login_required");
@@ -719,6 +730,16 @@ impl AttackSurfaceMapper {
 
         let framework_detected = is_gin || is_echo || is_net_http;
 
+        // 文件级全局认证中间件预检查：Gin r.Use(Auth...) / Echo e.Use(auth...) / net/http middleware
+        let go_file_has_global_auth = (content_lower.contains(".use(")
+            && (content_lower.contains("auth")
+                || content_lower.contains("jwt")
+                || content_lower.contains("token")
+                || content_lower.contains("session")
+                || content_lower.contains("login")
+                || content_lower.contains("requireauth")
+                || content_lower.contains("isauthenticated")));
+
         // 标准库路由: http.HandleFunc("/path", handler)
         if is_net_http {
             for (line_num, line) in content.lines().enumerate() {
@@ -769,7 +790,8 @@ impl AttackSurfaceMapper {
                     let route = Self::extract_go_route(line);
                     // 检测认证中间件
                     let ctx = Self::get_context_block(content, line_num, 10);
-                    let auth_required = ctx.contains("auth")
+                    let auth_required = go_file_has_global_auth
+                        || ctx.contains("auth")
                         || ctx.contains("jwt")
                         || ctx.contains("token")
                         || ctx.contains("middleware")
@@ -974,12 +996,12 @@ impl AttackSurfaceMapper {
     }
 
     /// 检测项目是否有全局认证中间件（Flask before_request / Express app.use(auth) / Django MIDDLEWARE）
-    fn has_global_auth_middleware(project_path: &Path) -> bool {
+    pub fn has_global_auth_middleware(project_path: &Path) -> bool {
         if let Ok(entries) = walk_project(project_path) {
             for file_path in entries {
                 let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                // 只检查 Python 和 JS 文件
-                if !matches!(ext, "py" | "js" | "ts" | "jsx" | "tsx") {
+                // 只检查 Python、JS 和 Go 文件
+                if !matches!(ext, "py" | "js" | "ts" | "jsx" | "tsx" | "go") {
                     continue;
                 }
                 if let Ok(content) = std::fs::read_to_string(&file_path) {
@@ -1003,6 +1025,19 @@ impl AttackSurfaceMapper {
                                 || lower.contains("passport")
                                 || lower.contains("session")
                                 || lower.contains("isauthenticated")
+                                || lower.contains("requireauth"))
+                        {
+                            return true;
+                        }
+                    }
+                    // Go Gin/Echo: r.Use(AuthMiddleware()) / e.Use(auth.Middleware())
+                    if ext == "go" {
+                        if lower.contains(".use(")
+                            && (lower.contains("auth")
+                                || lower.contains("jwt")
+                                || lower.contains("token")
+                                || lower.contains("session")
+                                || lower.contains("login")
                                 || lower.contains("requireauth"))
                         {
                             return true;
@@ -1715,6 +1750,113 @@ export async function action(formData: FormData) {
         assert!(
             ctx2.reaches_privileged_op,
             "Should detect eval as privileged op"
+        );
+    }
+
+    #[test]
+    fn test_has_global_auth_middleware_flask() {
+        let dir = std::env::temp_dir().join("ctx_audit_test_flask_guard");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Flask 全局认证门：before_request + current_user.is_authenticated
+        std::fs::write(
+            dir.join("routes.py"),
+            r#"
+from flask import Flask, redirect, url_for
+from flask_login import current_user
+
+app = Flask(__name__)
+
+@app.before_request
+def check_perms():
+    if not current_user.is_authenticated:
+        return redirect(url_for("login"))
+
+@app.route("/api/data")
+def get_data():
+    return {"data": "secret"}
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            AttackSurfaceMapper::has_global_auth_middleware(&dir),
+            "Should detect Flask before_request + current_user.is_authenticated"
+        );
+
+        // 无认证门的文件
+        let dir2 = std::env::temp_dir().join("ctx_audit_test_no_guard");
+        let _ = std::fs::remove_dir_all(&dir2);
+        std::fs::create_dir_all(&dir2).unwrap();
+        std::fs::write(
+            dir2.join("app.py"),
+            r#"
+from flask import Flask
+app = Flask(__name__)
+
+@app.route("/public")
+def public_page():
+    return "hello"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            !AttackSurfaceMapper::has_global_auth_middleware(&dir2),
+            "Should NOT detect global auth when no before_request guard exists"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn test_flask_file_level_before_request_guard() {
+        // 文件内有 before_request + current_user.is_authenticated → 端点应标为已认证
+        let code = r#"
+from flask import Flask, redirect, url_for
+from flask_login import current_user
+
+app = Flask(__name__)
+
+@app.before_request
+def check_perms():
+    if not current_user.is_authenticated:
+        return redirect(url_for("login"))
+
+@app.route("/api/data")
+def get_data():
+    return {"data": "secret"}
+
+@app.route("/api/admin", methods=["POST"])
+def admin_action():
+    return {"status": "ok"}
+"#;
+        let (eps, _) = AttackSurfaceMapper::analyze_python_file("routes.py", code);
+        assert!(eps.len() >= 2, "Should find at least 2 endpoints, found {}", eps.len());
+        for ep in &eps {
+            assert!(
+                ep.auth_required,
+                "Endpoint {:?} at line {} should be auth_required due to file-level before_request guard",
+                ep.route, ep.line
+            );
+        }
+
+        // 无 before_request 的文件 → 端点保持未认证
+        let code_no_guard = r#"
+from flask import Flask
+app = Flask(__name__)
+
+@app.route("/public")
+def public_page():
+    return "hello"
+"#;
+        let (eps2, _) = AttackSurfaceMapper::analyze_python_file("app.py", code_no_guard);
+        assert!(!eps2.is_empty());
+        assert!(
+            !eps2[0].auth_required,
+            "Endpoint without guard should NOT be auth_required"
         );
     }
 }

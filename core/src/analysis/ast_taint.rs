@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::analysis::alias::{detect_all_aliases, AccessPath, AliasMap};
 use crate::analysis::async_flow::{self, CallbackTaintHint};
-use crate::analysis::enhanced_dataflow::{EdgeType, EnhancedFlowGraph, EnhancedNodeType};
+use crate::analysis::enhanced_dataflow::{EdgeType, EnhancedFlowGraph, EnhancedFlowNode, EnhancedNodeType};
 use crate::analysis::taint::{
     FlowLocation, FlowNode, FlowNodeType, PropagationStep, PropagationStepType, Severity,
     TaintCategory, TaintFlow, TaintSink, TaintSource, VulnerabilityType,
@@ -522,6 +522,13 @@ impl AstTaintAnalyzer {
 
                 EnhancedNodeType::ConditionHeader => {
                     // 条件分支：检查条件表达式中的污点（暂不处理）
+                }
+
+                EnhancedNodeType::LoopHeader => {
+                    // Go for range / Python for in / JS for of：
+                    // 若 range/in/of 后的集合表达式引用了污点变量，
+                    // 将污点传播到迭代变量（:= 或 = 左侧）
+                    self.transfer_loop_header(node, &mut new_state, &alias_map);
                 }
 
                 _ => {}
@@ -2381,9 +2388,9 @@ impl AstTaintAnalyzer {
         } else if let Some(pos) = line.find('=') {
             (line[..pos].trim(), "=")
         } else {
-            // 函数参数（如 request.GET['id'] 中提取的参数名）
-            // 如果没有赋值，返回 None（污点源本身不是变量赋值）
-            return None;
+            // 无赋值形式：检查 binding call（Go ShouldBind/Bind 等污染参数）
+            // 模式：xxx.ShouldBind(&req) / xxx.Bind(&req) / xxx.BindJSON(&req)
+            return self.extract_var_from_binding_call(line);
         };
 
         // 去掉常见声明关键字
@@ -2436,6 +2443,156 @@ impl AstTaintAnalyzer {
         }
 
         None
+    }
+
+    /// 从 binding call 中提取被污染的参数变量
+    /// 模式：c.ShouldBind(&req) / c.Bind(&req) / c.BindJSON(&req) / json.Unmarshal(data, &req)
+    /// 提取 & 后面的变量名
+    fn extract_var_from_binding_call(&self, line: &str) -> Option<String> {
+        // 查找 &var 模式（Go 取地址符后跟变量名）
+        if let Some(amp_pos) = line.find('&') {
+            let after_amp = line[amp_pos + 1..].trim();
+            // 提取变量名：取字母/数字/下划线序列
+            let var_name: String = after_amp
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !var_name.is_empty()
+                && var_name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_alphabetic() || c == '_')
+                    .unwrap_or(false)
+            {
+                return Some(var_name);
+            }
+        }
+        None
+    }
+
+    /// LoopHeader 传播：for range / for in / for of
+    /// 若 range/in/of 后的集合引用了污点变量，将污点传播到迭代变量
+    fn transfer_loop_header(
+        &self,
+        node: &EnhancedFlowNode,
+        state: &mut HashMap<String, TaintInfo>,
+        alias_map: &AliasMap,
+    ) {
+        let code = &node.code;
+        // 解析 "for X, Y := range Z" 或 "for X in Z" 或 "for (X of Z)"
+        // 提取迭代变量（:= 或 = 或 in/of 左侧）和集合表达式（range/in/of 右侧）
+        let (iter_vars, collection_expr) = if let Some(range_pos) = code.find("range ") {
+            // Go: for _, name := range req.Names
+            let before_range = &code[..range_pos];
+            let after_range = &code[range_pos + 6..];
+            // 提取 := 或 = 左侧的变量
+            let lhs = if let Some(pos) = before_range.find(":=") {
+                &before_range[..pos]
+            } else if let Some(pos) = before_range.find('=') {
+                &before_range[..pos]
+            } else {
+                ""
+            };
+            let vars: Vec<String> = lhs
+                .split(',')
+                .filter_map(|v| {
+                    let v = v.trim().trim_start_matches("for ").trim();
+                    if v.is_empty() || v == "_" { None }
+                    else { Some(v.to_string()) }
+                })
+                .collect();
+            (vars, after_range.trim().to_string())
+        } else if let Some(in_pos) = code.find(" in ") {
+            // Python: for name in req.names
+            let before_in = &code[..in_pos];
+            let after_in = &code[in_pos + 4..];
+            let lhs = before_in.trim_start_matches("for ").trim();
+            let vars: Vec<String> = lhs
+                .split(',')
+                .filter_map(|v| {
+                    let v = v.trim();
+                    if v.is_empty() || v == "_" { None }
+                    else { Some(v.to_string()) }
+                })
+                .collect();
+            (vars, after_in.trim().trim_end_matches(':').to_string())
+        } else if let Some(of_pos) = code.find(" of ") {
+            // JS: for (const name of req.names)
+            let before_of = &code[..of_pos];
+            let after_of = &code[of_pos + 4..];
+            let lhs = before_of
+                .trim_start_matches("for ")
+                .trim_start_matches('(')
+                .trim_start_matches("const ")
+                .trim_start_matches("let ")
+                .trim_start_matches("var ")
+                .trim();
+            let vars: Vec<String> = lhs
+                .split(',')
+                .filter_map(|v| {
+                    let v = v.trim();
+                    if v.is_empty() || v == "_" { None }
+                    else { Some(v.to_string()) }
+                })
+                .collect();
+            (vars, after_of.trim().trim_end_matches(')').to_string())
+        } else {
+            return;
+        };
+
+        if iter_vars.is_empty() {
+            return;
+        }
+
+        // 检查集合表达式中是否有污点变量
+        let collection_vars: Vec<&str> = collection_expr
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let mut tainted_source: Option<String> = None;
+        for cv in &collection_vars {
+            let root = cv.split('.').next().unwrap_or(cv);
+            if state.contains_key(root) || state.contains_key(*cv) {
+                tainted_source = Some(root.to_string());
+                break;
+            }
+            // 别名解析
+            for alias in alias_map.resolve(root) {
+                let dotted = alias.as_dotted();
+                if state.contains_key(&dotted) || state.contains_key(alias.root()) {
+                    tainted_source = Some(root.to_string());
+                    break;
+                }
+            }
+            if tainted_source.is_some() {
+                break;
+            }
+        }
+
+        if let Some(source_var) = tainted_source {
+            for var in &iter_vars {
+                if !state.contains_key(var) {
+                    state.insert(
+                        var.clone(),
+                        TaintInfo {
+                            source_line: node.start_line,
+                            source_var: source_var.clone(),
+                            sanitized: false,
+                            sanitizer: None,
+                            propagation_steps: vec![PropagationStep {
+                                step_type: PropagationStepType::FieldPropagation,
+                                from_var: Some(source_var.clone()),
+                                to_var: Some(var.clone()),
+                                line: node.start_line,
+                                code_snippet: Some(code.clone()),
+                                function_name: None,
+                            }],
+                        },
+                    );
+                }
+            }
+        }
     }
 
     fn state_changed(

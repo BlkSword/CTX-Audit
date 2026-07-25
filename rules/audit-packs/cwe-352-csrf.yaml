@@ -1,0 +1,35 @@
+# 审计证据包：跨站请求伪造（CSRF / CWE-352）
+kind: audit-pack
+id: "cwe-352-csrf"
+name: "跨站请求伪造（CSRF）取证包"
+vuln_types:
+  - "csrf"
+  - "CrossSiteRequestForgery"
+  - "csrf-detection"
+  - "csrf-exemption"
+cwe:
+  - "CWE-352"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认 CSRF 豁免形态：是显式 @csrf.exempt / csrf_exempt / skip_authorization 装饰器，还是全局 CSRF 中间件被移除/未启用。记录豁免范围（单端点 vs 整个蓝图/路由组）。"
+  - tool: search_code
+    purpose: "搜索 SESSION_COOKIE_SAMESITE / CSRF_COOKIE_SAMESITE / SameSite / csrf 配置项，确认框架是否配置了 SameSite 属性。未配置时现代浏览器默认 Lax（经典跨域 CSRF 不成立，但同站/同主机不同端口仍成立）。同时搜索 CSRFProtect / CsrfViewMiddleware / protect_from_forgery 确认 CSRF 中间件是否全局启用。"
+  - tool: query_middleware_chain
+    purpose: "检查受影响端点是否被全局认证中间件覆盖（before_request / app.use / MIDDLEWARE）。认证门存在不阻止 CSRF（会话 Cookie 仍自动携带），但确认端点确实需要认证才能访问——无认证端点的 CSRF 无意义。"
+  - tool: get_code_context
+    purpose: "检查受影响端点的 HTTP 方法和副作用：仅 GET 请求无副作用（安全）；POST/PUT/DELETE 且有写操作（创建/修改/删除数据）才构成 CSRF 攻击面。同时检查是否接受 attacker-controlled HTML/content（CSRF → 存储型 XSS 放大路径）。"
+  - tool: search_code
+    purpose: "搜索 Origin / Referer 头校验逻辑（request.headers.get('Origin') / check_referer / verify_origin），确认是否存在 CSRF token 之外的替代防护。若存在有效的 Origin/Referer 校验，CSRF 利用难度显著上升。"
+tp_criteria:
+  - "端点显式豁免 CSRF 保护（装饰器/蓝图级豁免）或全局 CSRF 中间件未启用"
+  - "端点接受 POST/PUT/DELETE 请求且执行写操作（创建/修改/删除数据）"
+  - "端点需要认证（会话 Cookie 自动携带是 CSRF 前提）"
+  - "无有效的 Origin/Referer 校验作为替代防护"
+fp_criteria:
+  - "端点仅接受 GET 请求且无副作用"
+  - "端点不需要认证（公开 API，无会话 Cookie 可被利用）"
+  - "存在有效的 Origin/Referer 校验"
+  - "API 使用 Authorization header（Bearer/API token）认证而非会话 Cookie——CSRF 前提不成立"
+  - "SESSION_COOKIE_SAMESITE 显式配置为 Strict（完全阻止跨站 Cookie 发送）"
+  - "finding 位于测试、构建脚本或 vendor 第三方库"
+confidence_guide: "显式豁免 + 写操作 + 会话认证 + 无 Origin 校验 + SameSite 未配置 → 0.9+；豁免存在但 SameSite=Lax 已配置或端点副作用有限 → 0.7-0.9；豁免存在但端点为只读或认证方式非 Cookie → <0.7，判 needs_review。同站/同主机部署场景（自托管工具典型形态）下 SameSite=Lax 不阻止攻击，置信度不应因此降至 0.7 以下。"

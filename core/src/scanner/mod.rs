@@ -1021,6 +1021,11 @@ async fn scan_directory_with_rules_inner(
         });
     }
 
+    // 全局认证守卫检测：Flask before_request / Express app.use(auth) / Django MIDDLEWARE
+    // 在 per-file 循环外一次性计算，避免每个文件重复遍历项目
+    let has_global_auth =
+        crate::analysis::attack_surface::AttackSurfaceMapper::has_global_auth_middleware(scan_root);
+
     for chunk in code_files.chunks(batch_size) {
         let code_results: Vec<(Vec<Finding>, Vec<Finding>, Option<(String, String)>, usize)> =
             chunk
@@ -1054,6 +1059,11 @@ async fn scan_directory_with_rules_inner(
                             && ep.entry_type
                                 == crate::analysis::attack_surface::EntryType::HttpEndpoint
                         {
+                            // 全局认证守卫（before_request / app.use(auth) / MIDDLEWARE）覆盖时
+                            // 不报告 UnauthenticatedEndpoint——端点受全局门保护
+                            if has_global_auth {
+                                continue;
+                            }
                             // 公开端点（如 /login、/signup）不被报告为认证缺失漏洞
                             if ep
                                 .route

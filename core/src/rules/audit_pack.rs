@@ -337,6 +337,7 @@ confidence_guide: "多证据交叉 0.9+"
         // 必备的核心包
         assert!(packs.iter().any(|p| p.id == "cwe-79-xss"));
         assert!(packs.iter().any(|p| p.id == "cwe-89-sqli"));
+        assert!(packs.iter().any(|p| p.id == "cwe-352-csrf"));
         assert!(packs.iter().any(|p| p.id == "generic"));
 
         // 匹配实战：污点引擎 vuln_type → 正确 pack
@@ -344,6 +345,11 @@ confidence_guide: "多证据交叉 0.9+"
         assert_eq!(found.id, "cwe-89-sqli");
         let found = find_pack(&packs, "command-injection", None).unwrap();
         assert_eq!(found.id, "cwe-78-cmdi");
+        // CSRF 匹配
+        let found = find_pack(&packs, "csrf-exemption", None).unwrap();
+        assert_eq!(found.id, "cwe-352-csrf");
+        let found = find_pack(&packs, "CWE-352", None).unwrap();
+        assert_eq!(found.id, "cwe-352-csrf");
         // 未知类型回退 generic
         assert!(find_pack(&packs, "some-unknown-type", None).is_none());
         assert!(generic_pack(&packs).is_some());
