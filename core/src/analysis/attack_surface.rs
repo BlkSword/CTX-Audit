@@ -963,6 +963,7 @@ impl AttackSurfaceMapper {
 
         // 文件级全局认证预检查：Laravel 路由组中间件 Route::middleware('auth...')->group(...)
         // 注意不匹配单条路由链式调用 ->middleware(...)，那会误伤同文件其他路由
+        // Anchor CMS 路由组：Route::collection(['before' => 'auth,...'], function() {...})
         let file_has_global_auth = (content_lower.contains("route::middleware('auth")
             || content_lower.contains("route::middleware(\"auth")
             || content_lower.contains("route::middleware(['auth")
@@ -970,7 +971,9 @@ impl AttackSurfaceMapper {
             || (content_lower.contains("route::middleware(")
                 && (content_lower.contains("jwt")
                     || content_lower.contains("sanctum")
-                    || content_lower.contains("token"))));
+                    || content_lower.contains("token"))))
+            || content_lower.contains("route::collection(['before' => 'auth")
+            || content_lower.contains("route::collection([\"before\" => \"auth");
 
         // Laravel 风格路由: Route::get('/path', ...), Route::post(...), Route::any(...)
         if is_laravel {
@@ -998,11 +1001,23 @@ impl AttackSurfaceMapper {
                         continue;
                     }
                     let route = Self::extract_go_route(line);
-                    // 仅取当前行 + 上文（Laravel 每行一条路由，对称上下文会吃到下一条路由的 middleware）
+                    // 上文取 10 行（Laravel 每行一条路由，对称上下文会吃到下一条路由的 middleware）；
+                    // 前向扩展到路由数组块结束——Anchor CMS 风格 'before' => 'auth' 过滤器
+                    // 在 Route:: 行之后的数组块内；遇到下一条 Route:: 定义即停
                     let ctx = {
                         let lines: Vec<&str> = content.lines().collect();
                         let start = line_num.saturating_sub(10);
-                        lines[start..=line_num].join("\n")
+                        let mut end = line_num;
+                        for (i, l) in lines.iter().enumerate().skip(line_num + 1) {
+                            if l.trim_start().starts_with("Route::") {
+                                break;
+                            }
+                            end = i;
+                            if end - line_num >= 8 {
+                                break;
+                            }
+                        }
+                        lines[start..=end].join("\n")
                     };
                     let ctx_lower = ctx.to_lowercase();
                     let auth_required = file_has_global_auth
@@ -1010,7 +1025,11 @@ impl AttackSurfaceMapper {
                         || ctx_lower.contains("middleware(\"auth")
                         || ctx_lower.contains("middleware(['auth")
                         || ctx_lower.contains("jwt")
-                        || ctx_lower.contains("sanctum");
+                        || ctx_lower.contains("sanctum")
+                        || ctx_lower.contains("before' => 'auth")
+                        || ctx_lower.contains("before\" => \"auth")
+                        || ctx_lower.contains("before' => ['auth")
+                        || ctx_lower.contains("before\" => [\"auth");
 
                     entry_points.push(EntryPoint {
                         file_path: file_path.to_string(),
@@ -1020,7 +1039,7 @@ impl AttackSurfaceMapper {
                         http_method: method_verb.map(|m| m.to_string()),
                         auth_required,
                         auth_mechanism: if auth_required {
-                            Some("Laravel middleware".to_string())
+                            Some("PHP route auth guard (middleware/before-filter)".to_string())
                         } else {
                             None
                         },
@@ -1865,6 +1884,79 @@ $id = $_GET['id'];
         let (eps, _) = AttackSurfaceMapper::analyze_php_file("admin/article.php", code);
         assert_eq!(eps.len(), 1);
         assert!(eps[0].auth_required, "require globals.php 应识别为受认证保护");
+    }
+
+    #[test]
+    fn test_analyze_php_anchor_before_filter_guard() {
+        // Anchor CMS 风格：路由数组块内 'before' => '<filter>' 声明过滤器，
+        // 'auth' 过滤器等价于认证守卫（Route::action('auth', ...) 中校验 session）
+        let code = r#"<?php
+
+use System\route;
+
+Route::get('admin/login', [
+    'before' => 'guest',
+    'main' => function () {
+        return View::create('auth/login');
+    }
+]);
+
+Route::post('admin/users/add', [
+    'before' => 'auth',
+    'main' => function () {
+        // ...
+    }
+]);
+
+Route::get('admin/posts', [
+    'before' => 'auth',
+    'main' => function () {
+        // ...
+    }
+]);
+"#;
+        let (eps, _) = AttackSurfaceMapper::analyze_php_file("anchor/routes/admin.php", code);
+        assert_eq!(eps.len(), 3, "应提取 3 条 Anchor 风格路由");
+
+        let login = eps.iter().find(|e| e.route.as_deref() == Some("admin/login")).unwrap();
+        assert!(!login.auth_required, "'before' => 'guest' 不是认证守卫");
+
+        let add = eps.iter().find(|e| e.route.as_deref() == Some("admin/users/add")).unwrap();
+        assert!(add.auth_required, "'before' => 'auth' 应识别为认证守卫");
+
+        let posts = eps.iter().find(|e| e.route.as_deref() == Some("admin/posts")).unwrap();
+        assert!(posts.auth_required, "'before' => 'auth' 应识别为认证守卫");
+    }
+
+    #[test]
+    fn test_analyze_php_anchor_collection_group_guard() {
+        // Anchor CMS 路由组：整个文件路由包在 Route::collection(['before' => 'auth,csrf,...'])
+        // 闭包内，组级过滤器覆盖组内所有路由
+        let code = r#"<?php
+
+use System\route;
+
+Route::collection(['before' => 'auth,csrf,install_exists'], function () {
+
+    Route::get('admin/posts', [
+        'main' => function () {
+            // list posts
+        }
+    ]);
+
+    Route::post('admin/posts/add', [
+        'main' => function () {
+            // add post
+        }
+    ]);
+});
+"#;
+        let (eps, _) = AttackSurfaceMapper::analyze_php_file("anchor/routes/posts.php", code);
+        assert_eq!(eps.len(), 2);
+        assert!(
+            eps.iter().all(|e| e.auth_required),
+            "Route::collection 组级 'before' => 'auth,...' 应覆盖组内全部路由"
+        );
     }
 
     #[test]
