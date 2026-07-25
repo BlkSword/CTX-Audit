@@ -2787,6 +2787,7 @@ fn is_ast_supported_file(path: &std::path::Path) -> bool {
                 | "cpp"
                 | "hpp"
                 | "cc"
+                | "php"
         )
     } else {
         false
@@ -3048,6 +3049,7 @@ fn is_supported_file(path: &std::path::Path) -> bool {
                 | "cpp"
                 | "hpp"
                 | "cc"
+                | "php"
         )
     } else {
         false

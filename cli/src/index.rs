@@ -354,7 +354,8 @@ impl IndexManager {
                 Some("rs") | Some("py") | Some("js") | Some("jsx") |
                 Some("ts") | Some("tsx") | Some("go") | Some("java") |
                 Some("c") | Some("h") | Some("cpp") | Some("hpp") |
-                Some("cc") | Some("cxx") | Some("html") | Some("css")
+                Some("cc") | Some("cxx") | Some("html") | Some("css") |
+                Some("php")
             )
         } else {
             false

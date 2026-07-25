@@ -387,6 +387,17 @@ impl AttackSurfaceMapper {
                                 detected_frameworks.insert("net/http".to_string());
                             }
                         }
+                        "php" => {
+                            let (eps, tbs) = Self::analyze_php_file(&file_str, &content);
+                            entry_points.extend(eps);
+                            trust_boundaries.extend(tbs);
+                            if content.contains("Illuminate\\") || content.contains("Route::") {
+                                detected_frameworks.insert("Laravel".to_string());
+                            }
+                            if content.contains("#[Route(") || content.contains("Symfony\\") {
+                                detected_frameworks.insert("Symfony".to_string());
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -458,6 +469,10 @@ impl AttackSurfaceMapper {
             }
             "go" => {
                 let (eps, _) = Self::analyze_go_file(file_path, content);
+                entry_points.extend(eps);
+            }
+            "php" => {
+                let (eps, _) = Self::analyze_php_file(file_path, content);
                 entry_points.extend(eps);
             }
             _ => {}
@@ -925,6 +940,179 @@ impl AttackSurfaceMapper {
                             Some(func_name)
                         },
                         context: EntryContext::default(),
+                    });
+                }
+            }
+        }
+
+        (entry_points, trust_boundaries)
+    }
+
+    /// 分析 PHP 文件中的入口点（Laravel/Symfony 路由 + 原生 PHP 脚本）
+    fn analyze_php_file(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
+        let mut entry_points = Vec::new();
+        let mut trust_boundaries = Vec::new();
+
+        let content_lower = content.to_lowercase();
+
+        // 检测框架特征
+        let is_laravel = content.contains("Route::")
+            || content.contains("Illuminate\\")
+            || content.contains("extends Controller");
+        let is_symfony = content.contains("Route(\"/") || content.contains("#[Route(");
+
+        // 文件级全局认证预检查：Laravel 路由组中间件 Route::middleware('auth...')->group(...)
+        // 注意不匹配单条路由链式调用 ->middleware(...)，那会误伤同文件其他路由
+        let file_has_global_auth = (content_lower.contains("route::middleware('auth")
+            || content_lower.contains("route::middleware(\"auth")
+            || content_lower.contains("route::middleware(['auth")
+            || content_lower.contains("route::middleware([\"auth")
+            || (content_lower.contains("route::middleware(")
+                && (content_lower.contains("jwt")
+                    || content_lower.contains("sanctum")
+                    || content_lower.contains("token"))));
+
+        // Laravel 风格路由: Route::get('/path', ...), Route::post(...), Route::any(...)
+        if is_laravel {
+            let laravel_methods: &[(&str, Option<&str>)] = &[
+                ("get", Some("GET")),
+                ("post", Some("POST")),
+                ("put", Some("PUT")),
+                ("delete", Some("DELETE")),
+                ("patch", Some("PATCH")),
+                ("options", Some("OPTIONS")),
+                ("any", None),
+                ("match", None),
+                ("resource", None),
+                ("apiResource", None),
+            ];
+
+            for (line_num, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                if !trimmed.starts_with("Route::") {
+                    continue;
+                }
+                for (method_func, method_verb) in laravel_methods {
+                    let func_call = format!("Route::{}(", method_func);
+                    if !trimmed.starts_with(&func_call) {
+                        continue;
+                    }
+                    let route = Self::extract_go_route(line);
+                    // 仅取当前行 + 上文（Laravel 每行一条路由，对称上下文会吃到下一条路由的 middleware）
+                    let ctx = {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let start = line_num.saturating_sub(10);
+                        lines[start..=line_num].join("\n")
+                    };
+                    let ctx_lower = ctx.to_lowercase();
+                    let auth_required = file_has_global_auth
+                        || ctx_lower.contains("middleware('auth")
+                        || ctx_lower.contains("middleware(\"auth")
+                        || ctx_lower.contains("middleware(['auth")
+                        || ctx_lower.contains("jwt")
+                        || ctx_lower.contains("sanctum");
+
+                    entry_points.push(EntryPoint {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        entry_type: EntryType::HttpEndpoint,
+                        route,
+                        http_method: method_verb.map(|m| m.to_string()),
+                        auth_required,
+                        auth_mechanism: if auth_required {
+                            Some("Laravel middleware".to_string())
+                        } else {
+                            None
+                        },
+                        risk_score: 0.0,
+                        function_name: None,
+                        context: EntryContext::default(),
+                    });
+                }
+            }
+        }
+
+        // Symfony 属性路由: #[Route('/path', methods: ['GET'])]
+        if is_symfony {
+            for (line_num, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("#[Route(") {
+                    let route = Self::extract_go_route(line);
+                    let ctx = Self::get_context_block(content, line_num, 10);
+                    let auth_required = file_has_global_auth
+                        || ctx.contains("IsGranted")
+                        || ctx.contains("security");
+
+                    entry_points.push(EntryPoint {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        entry_type: EntryType::HttpEndpoint,
+                        route,
+                        http_method: None,
+                        auth_required,
+                        auth_mechanism: if auth_required {
+                            Some("Symfony security".to_string())
+                        } else {
+                            None
+                        },
+                        risk_score: 0.0,
+                        function_name: None,
+                        context: EntryContext::default(),
+                    });
+                }
+            }
+        }
+
+        // 原生 PHP 脚本入口：public 目录下直接读取超全局变量的脚本视为入口点
+        if !is_laravel && !is_symfony {
+            let superglobal_patterns = ["$_GET", "$_POST", "$_REQUEST"];
+            let mut reported = false;
+            for (line_num, line) in content.lines().enumerate() {
+                if reported {
+                    break;
+                }
+                if superglobal_patterns.iter().any(|p| line.contains(p)) {
+                    entry_points.push(EntryPoint {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        entry_type: EntryType::HttpEndpoint,
+                        route: None,
+                        http_method: None,
+                        auth_required: false,
+                        auth_mechanism: None,
+                        risk_score: 0.0,
+                        function_name: None,
+                        context: EntryContext::default(),
+                    });
+                    reported = true;
+                }
+            }
+        }
+
+        // 信任边界: PHP 输入源
+        let input_patterns = [
+            ("$_GET", "HTTP GET parameters"),
+            ("$_POST", "HTTP POST data"),
+            ("$_REQUEST", "HTTP request parameters"),
+            ("$_COOKIE", "HTTP cookie"),
+            ("$_FILES", "File upload"),
+            ("php://input", "Raw HTTP request body"),
+            ("$HTTP_RAW_POST_DATA", "Raw HTTP request body (legacy)"),
+            ("getallheaders(", "HTTP request headers"),
+            ("$request->input(", "Laravel request input"),
+            ("$request->query(", "Laravel query parameter"),
+            ("$request->header(", "Laravel request header"),
+            ("$request->file(", "Laravel file upload"),
+            ("Input::get(", "Laravel input (legacy)"),
+        ];
+        for (pattern, desc) in &input_patterns {
+            for (line_num, line) in content.lines().enumerate() {
+                if line.contains(pattern) {
+                    trust_boundaries.push(TrustBoundary {
+                        file_path: file_path.to_string(),
+                        line: line_num + 1,
+                        description: desc.to_string(),
+                        source: pattern.to_string(),
                     });
                 }
             }
@@ -1505,9 +1693,10 @@ fn walk_project(project_path: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     .into_iter()
     .collect();
 
-    let source_extensions: HashSet<&str> = ["java", "js", "ts", "jsx", "tsx", "py", "go", "rs"]
-        .into_iter()
-        .collect();
+    let source_extensions: HashSet<&str> =
+        ["java", "js", "ts", "jsx", "tsx", "py", "go", "rs", "php"]
+            .into_iter()
+            .collect();
 
     let mut result = Vec::new();
     walk_dir_recursive(project_path, &ignore_dirs, &source_extensions, &mut result);
@@ -1603,6 +1792,48 @@ app.post('/api/users', auth, (req, res) => {
         assert!(post_ep.is_some());
         // POST /api/users 有 auth middleware
         assert!(post_ep.unwrap().auth_required);
+    }
+
+    #[test]
+    fn test_analyze_php_laravel_endpoint() {
+        let code = r#"<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/api/users/{id}', [UserController::class, 'show']);
+Route::post('/api/users', [UserController::class, 'store'])->middleware('auth:sanctum');
+Route::delete('/api/users/{id}', [UserController::class, 'destroy']);
+"#;
+        let (eps, tbs) = AttackSurfaceMapper::analyze_php_file("routes/api.php", code);
+        assert_eq!(eps.len(), 3, "Should find 3 Laravel routes");
+
+        let get_ep = eps
+            .iter()
+            .find(|e| e.http_method.as_deref() == Some("GET"))
+            .unwrap();
+        assert_eq!(get_ep.route.as_deref(), Some("/api/users/{id}"));
+        assert!(!get_ep.auth_required);
+
+        let post_ep = eps
+            .iter()
+            .find(|e| e.http_method.as_deref() == Some("POST"))
+            .unwrap();
+        // middleware('auth:sanctum') 在上下文块内
+        assert!(post_ep.auth_required);
+    }
+
+    #[test]
+    fn test_analyze_php_native_superglobal_entry() {
+        let code = r#"<?php
+$name = $_GET['name'];
+$query = "SELECT * FROM users WHERE name = '" . $name . "'";
+mysql_query($query);
+"#;
+        let (eps, tbs) = AttackSurfaceMapper::analyze_php_file("search.php", code);
+        // 原生 PHP 脚本读取超全局变量 → 1 个入口点
+        assert_eq!(eps.len(), 1);
+        // $_GET 信任边界
+        assert!(tbs.iter().any(|t| t.source == "$_GET"));
     }
 
     #[test]

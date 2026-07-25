@@ -71,6 +71,7 @@ impl ASTParser {
             (".cpp", tree_sitter_cpp::LANGUAGE.into()),
             (".hpp", tree_sitter_cpp::LANGUAGE.into()),
             (".cc", tree_sitter_cpp::LANGUAGE.into()),
+            (".php", tree_sitter_php::LANGUAGE_PHP.into()),
         ];
 
         for (ext, language) in supported_extensions {
@@ -109,6 +110,7 @@ impl ASTParser {
             ".rs" => self.extract_rust_symbols(file_path, content, root_node),
             ".ts" | ".tsx" => self.extract_typescript_symbols(file_path, content, root_node),
             ".js" | ".jsx" => self.extract_javascript_symbols(file_path, content, root_node),
+            ".php" => self.extract_php_symbols(file_path, content, root_node),
             _ => self.extract_generic_symbols(file_path, content, &ext, root_node),
         }
     }
@@ -894,6 +896,128 @@ impl ASTParser {
         Ok(symbols)
     }
 
+    /// PHP 符号提取：class_declaration / function_definition / method_declaration
+    fn extract_php_symbols(
+        &self,
+        file_path: &Path,
+        content: &str,
+        root_node: Node,
+    ) -> Result<Vec<Symbol>, String> {
+        let mut symbols = Vec::new();
+        let mut class_stack: Vec<String> = Vec::new();
+
+        fn visit_node(
+            node: Node,
+            content: &str,
+            file_path: &Path,
+            symbols: &mut Vec<Symbol>,
+            class_stack: &mut Vec<String>,
+        ) {
+            match node.kind() {
+                "class_declaration" => {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        let name = content[name_node.byte_range()].to_string();
+                        class_stack.push(name.clone());
+
+                        let start_line = node.start_position().row + 1;
+                        let end_line = node.end_position().row + 1;
+                        let code = content[node.byte_range()].to_string();
+                        let code = if code.len() > 200 {
+                            truncate_string_safe(&code, 197)
+                        } else {
+                            code
+                        };
+
+                        let symbol = Symbol::new(
+                            name,
+                            SymbolKind::Class,
+                            file_path.to_string_lossy().to_string(),
+                            start_line as u32,
+                            code,
+                        )
+                        .with_end_line(end_line as u32);
+
+                        symbols.push(symbol);
+                    }
+                }
+                "function_definition" => {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        let name = content[name_node.byte_range()].to_string();
+
+                        let start_line = node.start_position().row + 1;
+                        let end_line = node.end_position().row + 1;
+                        let code = content[node.byte_range()].to_string();
+                        let code = if code.len() > 200 {
+                            truncate_string_safe(&code, 197)
+                        } else {
+                            code
+                        };
+
+                        let symbol = Symbol::new(
+                            name,
+                            SymbolKind::Function,
+                            file_path.to_string_lossy().to_string(),
+                            start_line as u32,
+                            code,
+                        )
+                        .with_end_line(end_line as u32);
+
+                        symbols.push(symbol);
+                    }
+                }
+                "method_declaration" => {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        let name = content[name_node.byte_range()].to_string();
+
+                        let start_line = node.start_position().row + 1;
+                        let end_line = node.end_position().row + 1;
+                        let code = content[node.byte_range()].to_string();
+                        let code = if code.len() > 200 {
+                            truncate_string_safe(&code, 197)
+                        } else {
+                            code
+                        };
+
+                        let mut metadata = HashMap::new();
+                        if let Some(class_name) = class_stack.last() {
+                            metadata.insert(
+                                "ownerClass".to_string(),
+                                serde_json::Value::String(class_name.clone()),
+                            );
+                        }
+
+                        let symbol = Symbol::new(
+                            name,
+                            SymbolKind::Method,
+                            file_path.to_string_lossy().to_string(),
+                            start_line as u32,
+                            code,
+                        )
+                        .with_end_line(end_line as u32)
+                        .with_metadata(metadata);
+
+                        symbols.push(symbol);
+                    }
+                }
+                _ => {}
+            }
+
+            // 递归子节点
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                visit_node(child, content, file_path, symbols, class_stack);
+            }
+
+            // 离开 class 时弹栈
+            if node.kind() == "class_declaration" {
+                class_stack.pop();
+            }
+        }
+
+        visit_node(root_node, content, file_path, &mut symbols, &mut class_stack);
+        Ok(symbols)
+    }
+
     fn extract_generic_symbols(
         &self,
         _file_path: &Path,
@@ -1075,6 +1199,9 @@ impl ASTParser {
                 .unwrap_or_default(),
             ".js" | ".jsx" => self
                 .extract_javascript_symbols(file_path, content, root)
+                .unwrap_or_default(),
+            ".php" => self
+                .extract_php_symbols(file_path, content, root)
                 .unwrap_or_default(),
             _ => self
                 .extract_generic_symbols(file_path, content, &ext, root)
@@ -2044,6 +2171,7 @@ impl ASTParser {
             ".rs" => self.extract_rust_symbols(file_path, content, root),
             ".ts" | ".tsx" => self.extract_typescript_symbols(file_path, content, root),
             ".js" | ".jsx" => self.extract_javascript_symbols(file_path, content, root),
+            ".php" => self.extract_php_symbols(file_path, content, root),
             _ => self.extract_generic_symbols(file_path, content, &ext, root),
         };
 
@@ -2190,5 +2318,53 @@ public class Test {
             .find(|p| p.name == "normal")
             .unwrap();
         assert!(normal_param.annotations.is_empty());
+    }
+
+    #[test]
+    fn test_php_symbol_extraction() {
+        let code = r#"<?php
+
+class UserController
+{
+    public function show($id)
+    {
+        $name = $_GET['name'];
+        return $this->render($name);
+    }
+
+    private function render($name)
+    {
+        echo $name;
+    }
+}
+
+function helper_escape($value)
+{
+    return htmlspecialchars($value);
+}
+"#;
+        let mut parser = ASTParser::new();
+        let (symbols_result, _) =
+            parser.parse_and_extract_calls(Path::new("UserController.php"), code);
+        let symbols = symbols_result.unwrap();
+
+        // class 符号
+        let class_sym = symbols.iter().find(|s| s.name == "UserController").unwrap();
+        assert!(matches!(class_sym.kind, SymbolKind::Class));
+
+        // 方法符号，带 ownerClass 元数据
+        let show = symbols.iter().find(|s| s.name == "show").unwrap();
+        assert!(matches!(show.kind, SymbolKind::Method));
+        assert_eq!(
+            show.metadata.get("ownerClass").and_then(|v| v.as_str()),
+            Some("UserController")
+        );
+
+        let render = symbols.iter().find(|s| s.name == "render").unwrap();
+        assert!(matches!(render.kind, SymbolKind::Method));
+
+        // 顶层函数符号
+        let helper = symbols.iter().find(|s| s.name == "helper_escape").unwrap();
+        assert!(matches!(helper.kind, SymbolKind::Function));
     }
 }

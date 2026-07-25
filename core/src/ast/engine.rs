@@ -414,6 +414,7 @@ impl ASTEngine {
                     | "cpp"
                     | "hpp"
                     | "cc"
+                    | "php"
             )
         } else {
             false

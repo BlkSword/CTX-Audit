@@ -9,9 +9,9 @@ patterns:
   - language: php
     pattern: '(?i)(mysql_query\s*\(|mysqli_query\s*\(|mysqli->query\s*\(|PDO::query\s*\(|->exec\s*\().*\$_(GET|POST|REQUEST|COOKIE)'
   - language: php
-    pattern: '(?i)(SELECT|INSERT|UPDATE|DELETE|DROP).*\.\s*\$_(GET|POST|REQUEST|COOKIE)'
+    pattern: '(?i)\b(SELECT|INSERT|UPDATE|DELETE|DROP)\b.*\.\s*\$_(GET|POST|REQUEST|COOKIE)'
   - language: php
-    pattern: '(?i)(WHERE|VALUES|SET).*\$_(GET|POST|REQUEST|COOKIE)'
+    pattern: '(?i)\b(WHERE|VALUES|SET)\b.*\$_(GET|POST|REQUEST|COOKIE)'
 severity: critical
 remediation: "使用 PDO 预处理语句（prepare + bindParam）；使用 Laravel Eloquent / Query Builder；对所有用户输入进行白名单验证。"
 references:

@@ -238,6 +238,7 @@ impl Default for ChunkConfig {
                 "cpp".to_string(),
                 "h".to_string(),
                 "hpp".to_string(),
+                "php".to_string(),
             ],
             exclude_dirs: vec![
                 "node_modules".to_string(),

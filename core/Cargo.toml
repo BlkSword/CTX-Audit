@@ -17,6 +17,7 @@ tree-sitter-css = "0.23"
 tree-sitter-json = "0.23"
 tree-sitter-c = "0.23"
 tree-sitter-cpp = "0.23"
+tree-sitter-php = "0.23"
 
 # 文件遍历
 ignore = "0.4"
