@@ -113,10 +113,14 @@ impl RuleScanner {
 
             match &compiled.matcher {
                 RuleMatcher::Regex(regex) => {
+                    let mut emitted = false;
                     for cap in regex.captures_iter(content) {
+                        if emitted && compiled.rule.once_per_file {
+                            break;
+                        }
                         if let Some(m) = cap.get(0) {
                             let start_pos = m.start();
-                            if is_sanitized_before(content, start_pos, &compiled.rule.sanitizers) {
+                            if is_rule_sanitized(content, start_pos, &compiled.rule) {
                                 continue;
                             }
                             let ranges = comment_ranges_cache
@@ -133,6 +137,8 @@ impl RuleScanner {
                             // 常量参数 / 安全格式串检测：sink 的参数攻击者不可控时
                             // 标记 likely_fp 并降为 info（不丢弃，交由上层/LLM 最终判定）。
                             // 凭证/密钥类规则除外——硬编码常量正是此类规则要发现的问题。
+                            // 缺失检查类规则（missing/unprotected）同样除外——问题在
+                            // "没有调用某校验"，与命中点参数是否字面量无关。
                             let matched_text = &content[start_pos..end_pos];
                             let likely_fp = if is_credential_related(&compiled.rule, matched_text)
                             {
@@ -143,6 +149,8 @@ impl RuleScanner {
                                 } else {
                                     None
                                 }
+                            } else if is_missing_check_related(&compiled.rule) {
+                                None
                             } else {
                                 evaluate_likely_fp_args(content, start_pos, end_pos).or_else(
                                     || {
@@ -165,6 +173,7 @@ impl RuleScanner {
                                 3,
                                 likely_fp,
                             ));
+                            emitted = true;
                         }
                     }
                 }
@@ -189,15 +198,15 @@ impl RuleScanner {
                             let matches =
                                 cursor.matches(query, tree.root_node(), content.as_bytes());
 
+                            let mut emitted = false;
                             for m in matches {
+                                if emitted && compiled.rule.once_per_file {
+                                    break;
+                                }
                                 if let Some(capture) = m.captures.first() {
                                     let node = capture.node;
                                     let start_byte = node.start_byte();
-                                    if is_sanitized_before(
-                                        content,
-                                        start_byte,
-                                        &compiled.rule.sanitizers,
-                                    ) {
+                                    if is_rule_sanitized(content, start_byte, &compiled.rule) {
                                         continue;
                                     }
                                     let start_pos = node.start_position();
@@ -213,6 +222,7 @@ impl RuleScanner {
                                         3,
                                         None,
                                     ));
+                                    emitted = true;
                                 }
                             }
                         }
@@ -234,6 +244,18 @@ impl Scanner for RuleScanner {
     async fn scan_file(&self, path: &PathBuf, content: &str) -> Vec<Finding> {
         self.scan_file_sync(path, content)
     }
+}
+
+/// 检查规则命中是否被 sanitizer 豁免。
+/// 默认前缀语义（命中点之前出现即豁免）；规则声明 `sanitizer_file_scope: true` 时
+/// 全文件任一处出现即豁免（"缺失检查"类规则：校验在文件任意位置都算已接入防护）。
+fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule) -> bool {
+    let effective_pos = if rule.sanitizer_file_scope {
+        content.len()
+    } else {
+        pos
+    };
+    is_sanitized_before(content, effective_pos, &rule.sanitizers)
 }
 
 /// 检查匹配位置之前是否出现任一 sanitizer 模式。
@@ -479,9 +501,14 @@ const PLACEHOLDER_SECRETS: &[&str] = &[
     "******",
 ];
 
+/// 缺失检查类规则（id 含 missing/unprotected）：问题是"没有调用某校验"，
+/// 命中点参数是否字面量与可利用性无关，不做参数字面量降权
+fn is_missing_check_related(rule: &Rule) -> bool {
+    rule.id.contains("missing") || rule.id.contains("unprotected")
+}
+
 /// 判断是否为凭证/密钥类规则（此类规则的"常量"正是问题本身，不做参数字面量降权）
-fn is_credential_related(rule: &Rule, matched_text: &str) -> bool {
-    rule.cwe
+fn is_credential_related(rule: &Rule, matched_text: &str) -> bool {    rule.cwe
         .as_deref()
         .map(|c| c == "CWE-259" || c == "CWE-798")
         .unwrap_or(false)
@@ -843,6 +870,8 @@ mod tests {
             query: None,
             cwe: Some("CWE-259".to_string()),
             sanitizers: vec![],
+            sanitizer_file_scope: false,
+            once_per_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -874,6 +903,8 @@ mod tests {
             query: None,
             cwe: Some("CWE-259".to_string()),
             sanitizers: vec![],
+            sanitizer_file_scope: false,
+            once_per_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -883,6 +914,78 @@ mod tests {
         let findings = scanner.scan_file_sync(&PathBuf::from("a.py"), content);
         assert_eq!(findings.len(), 1);
         assert_ne!(findings[0].severity, "info");
+    }
+
+    #[test]
+    fn test_missing_check_rule_not_downgraded_by_literal_args() {
+        // 缺失检查类规则（php-missing-csrf-token 场景）：命中点参数为字面量
+        // 与可利用性无关——漏洞是"没有调用 token 校验"，不得降权为 info
+        let content = r#"<?php
+$source = Input::postStrVar('source', '');
+$upsql = Input::postStrVar('upsql', '');
+"#;
+        let rule = Rule {
+            id: "php-missing-csrf-token".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Medium,
+            language: "php".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "php".to_string(),
+                pattern: r"\bInput::post[A-Za-z]*\s*\(".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-352".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            once_per_file: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let scanner = RuleScanner::new(vec![rule]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("upgrade.php"), content);
+        assert_eq!(findings.len(), 2);
+        assert!(
+            findings.iter().all(|f| f.severity != "info"),
+            "缺失检查类规则不得因字面量参数降权为 info"
+        );
+    }
+
+    #[test]
+    fn test_sanitizer_file_scope_covers_whole_file() {
+        // sanitizer_file_scope=true：校验调用在命中点之后（文件任意位置）也豁免；
+        // 默认前缀语义则不豁免——emlog widgets.php（:139 才有 checkToken）场景
+        let content = "<?php\n$a = $_POST['title'];\n// ...\nLoginAuth::checkToken();\n";
+        let mk_rule = |file_scope: bool| Rule {
+            id: "php-missing-csrf-token".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Medium,
+            language: "php".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "php".to_string(),
+                pattern: r"\$_POST\s*\[".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-352".to_string()),
+            sanitizers: vec!["checktoken(".to_string()],
+            sanitizer_file_scope: file_scope,
+            once_per_file: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let prefix_findings =
+            RuleScanner::new(vec![mk_rule(false)]).scan_file_sync(&PathBuf::from("w.php"), content);
+        assert_eq!(prefix_findings.len(), 1, "前缀语义下命中点在 checkToken 之前，不豁免");
+        let file_findings =
+            RuleScanner::new(vec![mk_rule(true)]).scan_file_sync(&PathBuf::from("w.php"), content);
+        assert_eq!(file_findings.len(), 0, "文件级语义下全文件任一处 checkToken 即豁免");
     }
 
     #[test]
@@ -915,6 +1018,8 @@ mod tests {
             query: None,
             cwe: Some("CWE-94".to_string()),
             sanitizers: vec![],
+            sanitizer_file_scope: false,
+            once_per_file: false,
             category: None,
             owasp: None,
             remediation: None,

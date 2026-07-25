@@ -39,6 +39,15 @@ pub struct Rule {
     /// 这是通用的规则级去误报机制，任何 regex/AST 规则均可声明。
     #[serde(default)]
     pub sanitizers: Vec<String>,
+    /// sanitizer 作用域：false（默认）仅看命中点之前的文本；
+    /// true 则全文件任一处出现即豁免——适用于"缺失检查"类规则
+    /// （校验调用在文件任意位置都算该项目已接入防护，分支级缺失交给判定层）
+    #[serde(default)]
+    pub sanitizer_file_scope: bool,
+    /// true 时每个文件最多保留一个命中（缺失检查类规则：检查有无是文件级语义，
+    /// 多个命中只是同一问题的重复报告）
+    #[serde(default)]
+    pub once_per_file: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]

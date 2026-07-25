@@ -1,0 +1,30 @@
+category: security-misconfiguration
+cwe: CWE-352
+description: "检测处理 POST 写操作但无任何 CSRF token 校验的原生 PHP 脚本：文件直接使用 $_POST 处理请求，且前文不存在 token 校验调用（典型如后台表单保存接口），同站场景下可被跨站请求伪造以受害者身份执行写操作"
+id: php-missing-csrf-token
+language: php
+name: PHP Missing CSRF Token Validation
+owasp: "A01:2021-Broken Access Control"
+remediation: "为所有处理 POST 写操作的端点增加 CSRF token 校验（服务端会话 token 比对）；表单渲染对应隐藏 token 字段；会话 Cookie 显式设置 SameSite=Lax/Strict。"
+references:
+  - "https://cwe.mitre.org/data/definitions/352.html"
+  - "https://owasp.org/www-community/attacks/csrf"
+severity: medium
+sanitizer_file_scope: true
+once_per_file: true
+patterns:
+  - language: php
+    pattern: '\$_POST\s*\['
+  - language: php
+    pattern: '\bInput::post[A-Za-z]*\s*\('
+sanitizers:
+  - "checktoken("
+  - "check_token("
+  - "verifytoken("
+  - "verify_token("
+  - "csrf"
+  - "xsrf"
+  - "wp_verify_nonce"
+  - "verify_nonce"
+  - "validtoken("
+  - "token->check"
