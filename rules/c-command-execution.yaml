@@ -1,0 +1,18 @@
+category: injection
+cwe: CWE-78
+description: 检测 C/C++ 命令执行 sink：system/popen 调用，参数若拼接外部输入可致命令注入
+id: c-command-execution
+language: c
+name: C/C++ Command Execution
+owasp: "A03:2021-Injection"
+patterns:
+  # 不加 (?i)：C 函数名大小写敏感（见 cpp-buffer-overflow getS 教训）
+  - language: c
+    pattern: '\b(system|popen)\s*\('
+  - language: cpp
+    pattern: '\b(system|popen)\s*\('
+severity: high
+remediation: "避免使用 system/popen 执行拼接命令；改用 execve 族直接传参数数组；必须使用 shell 时对参数做单引号包裹+转义，或白名单校验。"
+references:
+  - "https://cwe.mitre.org/data/definitions/78.html"
+  - "https://owasp.org/www-community/attacks/Command_Injection"
