@@ -22,7 +22,7 @@ patterns:
   # Python：os.system/os.popen 始终高危；subprocess 列表形式（无 shell=True）安全，用负向前瞻排除
   - language: python
     pattern: (?i)(os\.system\s*\(|os\.popen\s*\(|subprocess\.(call|run|Popen)\s*\(\s*(?!\[))
-  # PHP
+  # PHP：system/exec 要求非标识符/非成员调用前缀，避免命中 curl_exec(、.exec()、filesystem( 等
   - language: php
-    pattern: (?i)(shell_exec\s*\(|passthru\s*\(|popen\s*\(|system\s*\(|exec\s*\()
+    pattern: (?i)(shell_exec\s*\(|passthru\s*\(|popen\s*\(|(?:^|[^\w.])(?:system|exec)\s*\()
 severity: critical

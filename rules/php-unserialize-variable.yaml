@@ -1,14 +1,14 @@
 category: security-misconfiguration
 cwe: CWE-502
-description: 检测 PHP 不安全反序列化：unserialize 直接使用超全局用户输入（$_GET/$_POST/$_REQUEST/$_COOKIE），可导致 PHP 对象注入
-id: php-unsafe-deserialization
+description: 检测 PHP unserialize 间接变量来源：unserialize 的参数为普通变量，需人工确认数据是否外部可控（数据库内容、缓存、session 等二阶来源通常风险较低）
+id: php-unserialize-variable
 language: php
-name: PHP Unsafe Deserialization
+name: PHP Unserialize with Indirect Variable
 owasp: "A08:2021-Software and Data Integrity Failures"
 patterns:
   - language: php
-    pattern: '(?i)unserialize\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)'
-severity: critical
+    pattern: '(?i)unserialize\s*\(\s*\$'
+severity: medium
 remediation: "使用 json_decode 替代 unserialize；如必须使用，设置 allowed_classes 选项；避免反序列化用户可控数据。"
 references:
   - "https://owasp.org/www-community/vulnerabilities/PHP_Object_Injection"

@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`php-sql-injection` 规则缺词边界误报**：pattern 中 `(WHERE|VALUES|SET)` 无 `\b`，误命中 `isset(...$_COOKIE...)`（"isset" 含 "set"）与 `setCookie(...)`，typecho 实测产生 2 个 CWE-89 误报。两个 SQL 关键词组均补 `\b` 词边界（与此前 `cpp-format-string` 修复同法）。
+- **证据包 `find_pack` CWE 前缀误匹配**：`vuln_type="CWE-78"` 规范化后为 `"cwe78"`，是 `"cwe787"` 的子串，包含式匹配使 CWE-78 命令注入 finding 挂上 C 内存安全证据包（c-memory 按 id 排序先于 cmdi）。修复：双方都含 CWE 数字且数字不同（如 78 vs 787）时禁止包含式匹配，附回归测试。typecho 审计实测发现并验证。
+- **`command-injection` PHP pattern 子串误报**：裸 `exec\s*\(` 误命中 `curl_exec(` 与 JS `RegExp.prototype.exec()`，裸 `system\s*\(` 可误命中 `filesystem(`。`system|exec` 补 `(?:^|[^\w.])` 前缀边界（与 code-injection `compile` 修复同法），typecho 复扫 2 个 CWE-78 误报消除。
+- **`php-unsafe-deserialization` CWE 归类修正与拆档**：PHP `unserialize` 对象注入正确 CWE 为 CWE-502（原标 CWE-94 导致挂错证据包）；裸 `unserialize($var)` 任意变量 pattern 拆分为独立规则 `php-unserialize-variable`（medium），直接超全局输入保持 critical——数据库内容等二阶来源不再以 critical 噪声进入 high+ 审计范围。
 
 - **CWE-502 误报 `yaml.SafeLoader`**：`unsafe-deserialization.yaml` 的 Python pattern 对 `yaml.load(...)` 无 SafeLoader 排除意识，在显式使用 `Loader=yaml.SafeLoader` 时仍报 CRITICAL。pattern 新增 negative lookahead `(?!.*yaml\.SafeLoader)`；`specialists/deserialization.yaml` safe_patterns 补 `yaml\.SafeLoader`。archivy 复测：CWE-502 1→0。
 - **CrossFileTaintAnalyzer `infer_vuln_type` getter 函数误分类**：`get_db`、`get_items`、`get_config` 等常见 getter/helper 函数被 name fallback 误归为安全 sink（database→SQLi、file read→PathTraversal）。新增 getter prefix 白名单（`get_db`、`get_database`、`get_items`、`get_config` 等 14 个）和 safe prefix（`build_`、`list_`、`load_config`、`init_` 等），命中直接返回 `Generic`。`open_file`/`openfile` 本地工具函数排除 PathTraversal。

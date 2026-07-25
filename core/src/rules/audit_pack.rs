@@ -168,10 +168,21 @@ pub fn find_pack<'a>(
             !vt_norm.is_empty()
                 && p.vuln_types.iter().any(|t| {
                     let t_norm = normalize_id(t);
-                    !t_norm.is_empty()
-                        && (t_norm == vt_norm
-                            || vt_norm.contains(&t_norm)
-                            || t_norm.contains(&vt_norm))
+                    if t_norm.is_empty() {
+                        return false;
+                    }
+                    if t_norm == vt_norm {
+                        return true;
+                    }
+                    // 双方都含 CWE 数字且数字不同（如 CWE-78 vs CWE-787）时，
+                    // 禁止包含式匹配——数字不同的 CWE 是完全不同的漏洞类别
+                    let vt_digits = normalize_cwe(vuln_type);
+                    let t_digits = normalize_cwe(t);
+                    if !vt_digits.is_empty() && !t_digits.is_empty() && vt_digits != t_digits
+                    {
+                        return false;
+                    }
+                    vt_norm.contains(&t_norm) || t_norm.contains(&vt_norm)
                 })
         })
 }
@@ -243,6 +254,23 @@ confidence_guide: "多证据交叉 0.9+"
         assert_eq!(found.id, "cwe-89-sqli");
         // 无对应 pack 的 CWE 编号返回 None（由调用方回退 generic）
         assert!(find_pack(&packs, "CWE-120", None).is_none());
+    }
+
+    #[test]
+    fn test_find_pack_cwe_prefix_not_containment_matched() {
+        // 回归：vuln_type="CWE-78" 不得命中 vuln_types 含 "CWE-787" 的 pack
+        // （"cwe78" 是 "cwe787" 的子串，包含式匹配会跨类别误命中；
+        // 实测 typecho 审计中 CWE-78 命令注入挂上了 C 内存安全包）
+        let packs = vec![
+            sample_pack("cwe-120-134-c-memory", &["CWE-120", "CWE-787"], &["CWE-120", "CWE-787"]),
+            sample_pack("cwe-78-cmdi", &["command injection"], &["CWE-78"]),
+            sample_pack("generic", &[], &[]),
+        ];
+        let found = find_pack(&packs, "CWE-78", None).expect("CWE-78 应命中 cmdi pack");
+        assert_eq!(found.id, "cwe-78-cmdi");
+        // CWE-787 仍正常命中 c-memory pack
+        let found = find_pack(&packs, "CWE-787", None).expect("CWE-787 应命中 c-memory pack");
+        assert_eq!(found.id, "cwe-120-134-c-memory");
     }
 
     #[test]
