@@ -15,7 +15,7 @@ patterns:
   - language: php
     pattern: '(?i)(ORDER\s+BY.*\$_GET|ORDER BY.*\$_POST|orderBy.*\$_(GET|POST))'
   - language: go
-    pattern: '(?i)(Order\s*\(\s*.*request\.|\.Order\(|ORDER BY.*\+)'
+    pattern: '(?i)(Order\s*\(\s*(?:.*request\.|.*c\.Query|.*c\.Param|.*c\.PostForm|.*args\[)|ORDER BY.*\+.*(?:request|query|param|input|args))'
 severity: high
 remediation: "列名使用白名单映射：ALLOWED_SORT_COLUMNS = {'name': 'name', 'date': 'created_at'}；对用户提供的列名做严格白名单校验，拒绝不在白名单中的值。"
 references:

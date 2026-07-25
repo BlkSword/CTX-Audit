@@ -19,9 +19,9 @@ patterns:
   # Java：要求 new ProcessBuilder( 构造形式，避免命中异常消息字符串字面量中的 "ProcessBuilder(...)"
   - language: java
     pattern: (?i)(Runtime\.getRuntime\(\)\.exec\s*\(|new\s+ProcessBuilder\s*\()
-  # Python
+  # Python：os.system/os.popen 始终高危；subprocess 列表形式（无 shell=True）安全，用负向前瞻排除
   - language: python
-    pattern: (?i)(subprocess\.(call|run|Popen)\s*\(|os\.system\s*\(|os\.popen\s*\()
+    pattern: (?i)(os\.system\s*\(|os\.popen\s*\(|subprocess\.(call|run|Popen)\s*\(\s*(?!\[))
   # PHP
   - language: php
     pattern: (?i)(shell_exec\s*\(|passthru\s*\(|popen\s*\(|system\s*\(|exec\s*\()
