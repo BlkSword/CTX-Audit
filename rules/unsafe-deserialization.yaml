@@ -12,8 +12,13 @@ references:
 patterns:
   - language: java
     pattern: (?i)(ObjectInputStream\s*\(|readObject\s*\(|readUnshared\s*\(|XMLDecoder\s*\(|XStream\s*\()
+  # Python：yaml.load 两种危险形态——单变量参数（默认 Loader 不安全）、
+  # 显式指定 Loader/CLoader/UnsafeLoader（SafeLoader/CSafeLoader/BaseLoader 名称中的
+  # "Loader" 前有词字符，\b 边界保证不误命中）；Rust regex 不支持负向前瞻，用边界等价表达
   - language: python
-    pattern: (?i)(pickle\.loads?\s*\(|marshal\.loads?\s*\(|yaml\.load\s*\((?!.*yaml\.SafeLoader)|yaml\.unsafe_load\s*\(|dill\.loads?\s*\()
+    pattern: (?i)(pickle\.loads?\s*\(|marshal\.loads?\s*\(|yaml\.load\s*\(\s*[A-Za-z_][\w.]*\s*\)|yaml\.load\s*\([^)]*=\s*(?:yaml\.)?\b(?:C|Unsafe)?Loader\b|yaml\.unsafe_load\s*\(|dill\.loads?\s*\()
+  # PHP：与 php-unsafe-deserialization/php-unserialize-variable 分级一致，
+  # 任意 unserialize( 由 medium 规则覆盖，此处只保留直接超全局输入
   - language: php
-    pattern: (?i)(unserialize\s*\()
+    pattern: (?i)unserialize\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)
 severity: critical

@@ -15,7 +15,7 @@ patterns:
   - language: python
     # eval/exec 前不能紧跟标识符：排除 ast.literal_eval、cursor.execute 等安全 API
     # compile 前不能紧跟标识符/点号：排除 re.compile、Pattern.compile 等正则编译 API
-    pattern: (?i)((?<![a-zA-Z_])eval\s*\(|(?<![a-zA-Z_])exec\s*\(|__import__\s*\(|(?:^|[^\w.])compile\s*\()
+    pattern: (?i)((?:^|[^a-zA-Z_])eval\s*\(|(?:^|[^a-zA-Z_])exec\s*\(|__import__\s*\(|(?:^|[^\w.])compile\s*\()
   - language: java
     pattern: (?i)(ScriptEngineManager|GroovyShell|ScriptEngine\.eval|SpelExpressionParser|parseExpression|Ognl\.(get|set)Value|MVEL\.eval|MVEL\.executeExpression)
   - language: php

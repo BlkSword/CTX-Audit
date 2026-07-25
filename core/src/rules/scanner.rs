@@ -402,6 +402,24 @@ fn is_string_literal(s: &str) -> bool {
         && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
 }
 
+/// 向下钳制到最近的 char 边界（字节索引可能落在多字节字符内部）
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// 向上钳制到最近的 char 边界
+fn ceil_char_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// 评估 sink 调用的参数是否攻击者不可控（likely_fp）。
 /// 返回 Some(原因) 表示可降级为 info：
 /// - 参数全部为字面量（如 os.popen("netstat ...")）
@@ -414,8 +432,10 @@ fn evaluate_likely_fp_args(content: &str, match_start: usize, match_end: usize) 
     }
 
     // shell=true 是高风险信号 — 不降权，保持高置信度
-    let context_start = match_start.saturating_sub(200);
-    let context_end = (match_end + 200).min(content.len());
+    // 注意：±200 字节的窗口可能落在多字节字符内部，必须钳制到 char 边界，
+    // 否则按字节切片会 panic（emlog 实测：中文注释触发 end byte index 非边界）
+    let context_start = floor_char_boundary(content, match_start.saturating_sub(200));
+    let context_end = ceil_char_boundary(content, (match_end + 200).min(content.len()));
     let context = &content[context_start..context_end].to_lowercase();
     if context.contains("shell=true") || context.contains("shell = true") {
         return None;
@@ -905,6 +925,60 @@ mod tests {
         let findings = scanner.scan_file_sync(&PathBuf::from("a.js"), content);
         assert_eq!(findings.len(), 1, "只应命中未注释的 eval: {:?}", findings.iter().map(|f| f.line_start).collect::<Vec<_>>());
         assert_eq!(findings[0].line_start, 2);
+    }
+
+    /// 规则静默失败防线：所有嵌入规则的 pattern 必须能被 Rust regex 编译。
+    /// Rust regex 不支持 lookaround（`(?<=`/`(?!`/`(?=`），历史上有 5 条规则
+    /// 因此静默失效（eval/subprocess/yaml.load/硬编码密钥/CSRF），扫描照常进行
+    /// 但召回缺失无任何告警。此测试把"pattern 无效"从启动日志升级为编译期失败。
+    #[test]
+    fn test_all_embedded_rule_patterns_compile() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        assert!(!rules.is_empty(), "嵌入规则加载为空");
+        let mut invalid = Vec::new();
+        for rule in &rules {
+            if let Some(patterns) = &rule.patterns {
+                for lp in patterns {
+                    if regex::Regex::new(&lp.pattern).is_err() {
+                        invalid.push(format!("{}({}): {}", rule.id, lp.language, lp.pattern));
+                    }
+                }
+            }
+            if let Some(pattern) = &rule.pattern {
+                if regex::Regex::new(pattern).is_err() {
+                    invalid.push(format!("{}: {}", rule.id, pattern));
+                }
+            }
+        }
+        assert!(invalid.is_empty(), "以下规则 pattern 无法编译:\n{}", invalid.join("\n"));
+    }
+
+    /// yaml.load 危险/安全形态判别（unsafe-deserialization 规则，archivy SafeLoader 场景回归）
+    #[test]
+    fn test_yaml_load_pattern_safeloader_excluded() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "unsafe-deserialization")
+            .expect("unsafe-deserialization 规则应存在");
+        let py_pattern = rule
+            .patterns
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|lp| lp.language == "python")
+            .unwrap();
+        let re = regex::Regex::new(&py_pattern.pattern).unwrap();
+
+        // 危险形态应命中
+        assert!(re.is_match("data = yaml.load(user_input)"));
+        assert!(re.is_match("yaml.load(stream, Loader=yaml.Loader)"));
+        assert!(re.is_match("yaml.load(stream, Loader=UnsafeLoader)"));
+        assert!(re.is_match("yaml.unsafe_load(payload)"));
+        // 安全形态不命中（SafeLoader/CSafeLoader/BaseLoader + 显式 Loader 参数）
+        assert!(!re.is_match("yaml.load(f.read(), Loader=yaml.SafeLoader)"));
+        assert!(!re.is_match("yaml.load(text, Loader=yaml.CSafeLoader)"));
+        assert!(!re.is_match("yaml.load(text, Loader=BaseLoader)"));
     }
 }
 

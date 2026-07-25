@@ -1575,12 +1575,8 @@ impl ASTParser {
                 let byte_range = child.byte_range();
                 let body_range = (byte_range.start, byte_range.end);
                 let body_text = content[byte_range].to_string();
-                // 截断至 500 字符
-                let body_text = if body_text.len() > 500 {
-                    format!("{}...", &body_text[..500])
-                } else {
-                    body_text
-                };
+                // 截断至 500 字符（多字节安全，避免按字节切片 panic）
+                let body_text = truncate_string_safe(&body_text, 500);
 
                 callbacks.push(CallbackArg {
                     params,

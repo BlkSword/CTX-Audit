@@ -1065,6 +1065,19 @@ impl AttackSurfaceMapper {
 
         // 原生 PHP 脚本入口：public 目录下直接读取超全局变量的脚本视为入口点
         if !is_laravel && !is_symfony {
+            // 文件级认证守卫识别（emlog 模式：admin/*.php 统一 require 'globals.php'，
+            // 由被包含文件执行 loginAuth::checkLogin()；或文件内直接调用守卫函数）
+            let native_has_auth_guard = content_lower.contains("checklogin(")
+                || content_lower.contains("requirelogin(")
+                || content_lower.contains("is_user_logged_in(")
+                || content_lower.contains("auth()->check(")
+                || content_lower.contains("auth::check(")
+                || content_lower.contains("checkrolepermission(")
+                || (content_lower.contains("require")
+                    && (content_lower.contains("globals.php")
+                        || content_lower.contains("auth.php")
+                        || content_lower.contains("guard.php")));
+
             let superglobal_patterns = ["$_GET", "$_POST", "$_REQUEST"];
             let mut reported = false;
             for (line_num, line) in content.lines().enumerate() {
@@ -1078,8 +1091,12 @@ impl AttackSurfaceMapper {
                         entry_type: EntryType::HttpEndpoint,
                         route: None,
                         http_method: None,
-                        auth_required: false,
-                        auth_mechanism: None,
+                        auth_required: native_has_auth_guard,
+                        auth_mechanism: if native_has_auth_guard {
+                            Some("PHP auth guard (include/direct call)".to_string())
+                        } else {
+                            None
+                        },
                         risk_score: 0.0,
                         function_name: None,
                         context: EntryContext::default(),
@@ -1832,8 +1849,22 @@ mysql_query($query);
         let (eps, tbs) = AttackSurfaceMapper::analyze_php_file("search.php", code);
         // 原生 PHP 脚本读取超全局变量 → 1 个入口点
         assert_eq!(eps.len(), 1);
+        assert!(!eps[0].auth_required);
         // $_GET 信任边界
         assert!(tbs.iter().any(|t| t.source == "$_GET"));
+    }
+
+    #[test]
+    fn test_analyze_php_native_auth_guard_via_include() {
+        // emlog 模式：admin/*.php 统一 require 'globals.php'，由被包含文件执行 checkLogin
+        let code = r#"<?php
+require_once 'globals.php';
+$action = Input::getStrVar('action');
+$id = $_GET['id'];
+"#;
+        let (eps, _) = AttackSurfaceMapper::analyze_php_file("admin/article.php", code);
+        assert_eq!(eps.len(), 1);
+        assert!(eps[0].auth_required, "require globals.php 应识别为受认证保护");
     }
 
     #[test]

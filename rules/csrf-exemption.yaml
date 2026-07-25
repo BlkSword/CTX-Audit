@@ -7,7 +7,8 @@ patterns:
   - language: python
     pattern: "@csrf\\.exempt|@csrf_exempt|csrf_exempt\\s*\\("
   - language: javascript
-    pattern: "csurf?\\(\\s*\\{\\s*ignore|app\\.use\\(\\s*['\"]/(?!.*csrf)"
+    # Rust regex 不支持负向前瞻，app.use('/' 后无 csrf 的写法无法表达，只保留 csurf({ignore...}) 形式
+    pattern: "csurf?\\(\\s*\\{\\s*ignore"
   - language: java
     pattern: "csrf\\(\\)\\.disable\\(\\)|csrf\\(.*\\)\\.ignoring"
   - language: ruby
