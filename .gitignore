@@ -58,3 +58,4 @@ AGENTS.md
 !benchmarks/evaluate_real_project.py
 !benchmarks/run-baseline.sh
 /docs
+CHANGELOG.md

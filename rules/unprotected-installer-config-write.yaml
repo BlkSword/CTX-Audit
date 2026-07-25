@@ -1,0 +1,24 @@
+category: security-misconfiguration
+cwe: CWE-306
+description: "检测安装/初始化脚本直写 PHP 配置文件：web 可达脚本将配置（数据库凭据等）写入 config/settings/database 类 PHP 文件，若脚本无锁文件与认证检查（典型如遗留的 install.php），匿名攻击者可重放安装流程覆写配置、接管站点（emlog 重装接管漏洞的通用模式）"
+id: unprotected-installer-config-write
+language: php
+name: Unprotected Installer Config Write
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "安装完成后写入 install.lock 并在入口检查；install/setup 脚本要求已认证管理员会话或删除；config.php 部署后设为只读。"
+references:
+  - "https://cwe.mitre.org/data/definitions/306.html"
+severity: high
+patterns:
+  - language: php
+    pattern: '(?i)file_put_contents\s*\([^)]*[''"][^''"]*(config|settings|database)[^''"]*\.php[''"]'
+  - language: php
+    pattern: '(?i)fopen\s*\(\s*[''"][^''"]*(config|settings|database)[^''"]*\.php[''"]\s*,\s*[''"]w'
+sanitizers:
+  - "install.lock"
+  - "installed.lock"
+  - "checkLogin("
+  - "is_user_logged_in("
+  - "Auth::check("
+  - "file_exists(dirname(__FILE__) . '/config"
+  - "file_exists(__DIR__ . '/config"
