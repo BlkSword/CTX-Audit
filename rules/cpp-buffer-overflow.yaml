@@ -6,14 +6,15 @@ language: cpp
 name: C/C++ Buffer Overflow Detection
 owasp: "A04:2021-Insecure Design"
 patterns:
+  # 不加 (?i)：C 函数名大小写敏感，忽略大小写会把 getS( 误判为 gets(
   - language: c
-    pattern: '(?i)\b(strcpy|strcat|gets|sprintf|vsprintf)\s*\('
+    pattern: '\b(strcpy|strcat|gets|sprintf|vsprintf)\s*\('
   - language: cpp
-    pattern: '(?i)\b(strcpy|strcat|gets|sprintf|vsprintf)\s*\('
+    pattern: '\b(strcpy|strcat|gets|sprintf|vsprintf)\s*\('
   - language: c
     pattern: '(?i)memcpy\s*\([^,]+,\s*[^,]+,\s*strlen\s*\('
   - language: cpp
-    pattern: '(?i)memcpy\s*\([^,]+,\s*[^,]+,\s*strlen\s*\(''
+    pattern: '(?i)memcpy\s*\([^,]+,\s*[^,]+,\s*strlen\s*\('
 severity: critical
 remediation: "使用 strncpy/strncat 替代 strcpy/strcat（指定长度）；使用 snprintf 替代 sprintf；使用 fgets 替代 gets；优先使用 C++ std::string。"
 references:

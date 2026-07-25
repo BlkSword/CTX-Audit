@@ -6,10 +6,12 @@ language: cpp
 name: C/C++ Integer Overflow Detection
 owasp: "A04:2021-Insecure Design"
 patterns:
+  # \b 边界避免误伤 zmalloc/hi_calloc/zrealloc 等项目自有分配器包装（其参数已是算好的总大小）
+  # 不含 calloc：主流 libc（glibc/musl/jemalloc）内部检查乘法溢出，flag 全是噪声（memcached 42/47）
   - language: c
-    pattern: '(?i)(malloc\s*\(\s*\w+\s*\*\s*\w+|calloc\s*\(\s*\w+\s*,\s*\w+|realloc\s*\(\s*[^,]+,\s*\w+\s*\*\s*\w+)'
+    pattern: '(?i)(\bmalloc\s*\(\s*\w+\s*\*\s*\w+|\brealloc\s*\(\s*[^,]+,\s*\w+\s*\*\s*\w+)'
   - language: cpp
-    pattern: '(?i)(malloc\s*\(\s*\w+\s*\*\s*\w+|calloc\s*\(\s*\w+\s*,\s*\w+|realloc\s*\(\s*[^,]+,\s*\w+\s*\*\s*\w+)'
+    pattern: '(?i)(\bmalloc\s*\(\s*\w+\s*\*\s*\w+|\brealloc\s*\(\s*[^,]+,\s*\w+\s*\*\s*\w+)'
 severity: high
 remediation: "使用 size_t 类型存储大小；乘法分配前检查是否溢出；使用 calloc 替代 malloc+memset；使用安全的分配函数（如 reallocarray）。"
 references:
