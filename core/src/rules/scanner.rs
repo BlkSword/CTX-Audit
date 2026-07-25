@@ -1,4 +1,4 @@
-use crate::rules::model::Rule;
+use crate::rules::model::{Rule, SanitizerMatch};
 use crate::scanner::{Finding, Scanner};
 use async_trait::async_trait;
 use regex::Regex;
@@ -282,26 +282,36 @@ impl Scanner for RuleScanner {
 /// 检查规则命中是否被 sanitizer 豁免。
 /// 默认前缀语义（命中点之前出现即豁免）；规则声明 `sanitizer_file_scope: true` 时
 /// 全文件任一处出现即豁免（"缺失检查"类规则：校验在文件任意位置都算已接入防护）。
+/// `sanitizer_match: all` 时要求全部 sanitizer 都出现才豁免（防护完整性检查）。
 fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule) -> bool {
     let effective_pos = if rule.sanitizer_file_scope {
         content.len()
     } else {
         pos
     };
-    is_sanitized_before(content, effective_pos, &rule.sanitizers)
+    is_sanitized_before(
+        content,
+        effective_pos,
+        &rule.sanitizers,
+        rule.sanitizer_match == SanitizerMatch::All,
+    )
 }
 
-/// 检查匹配位置之前是否出现任一 sanitizer 模式。
+/// 检查匹配位置之前是否出现 sanitizer 模式。
 /// 用于规则级去误报：命中点之前存在净化代码，则跳过该发现。
-fn is_sanitized_before(content: &str, pos: usize, sanitizers: &[String]) -> bool {
+/// `match_all` 为 true 时要求所有 sanitizer 都出现（任一缺失即不豁免）。
+fn is_sanitized_before(content: &str, pos: usize, sanitizers: &[String], match_all: bool) -> bool {
     if sanitizers.is_empty() || pos == 0 {
         return false;
     }
     let prefix = &content[..pos.min(content.len())];
     let prefix_lower = prefix.to_lowercase();
-    sanitizers
-        .iter()
-        .any(|s| prefix_lower.contains(&s.to_lowercase()))
+    let contains = |s: &String| prefix_lower.contains(&s.to_lowercase());
+    if match_all {
+        sanitizers.iter().all(contains)
+    } else {
+        sanitizers.iter().any(contains)
+    }
 }
 
 /// printf 族函数：格式串为字面量且不含 %s/%[ 时，输出长度有界，
@@ -860,14 +870,36 @@ mod tests {
     fn test_is_sanitized_before_skips_when_sanitizer_precedes() {
         let content = "cookie.setSecure(true);\nresponse.addCookie(cookie);";
         let sanitizers = vec!["setSecure".to_string()];
-        assert!(is_sanitized_before(content, content.len(), &sanitizers));
+        assert!(is_sanitized_before(content, content.len(), &sanitizers, false));
     }
 
     #[test]
     fn test_is_sanitized_before_no_skip_when_sanitizer_absent() {
         let content = "response.addCookie(cookie);";
         let sanitizers = vec!["setSecure".to_string()];
-        assert!(!is_sanitized_before(content, content.len(), &sanitizers));
+        assert!(!is_sanitized_before(content, content.len(), &sanitizers, false));
+    }
+
+    #[test]
+    fn test_is_sanitized_before_match_all_requires_full_set() {
+        // sanitizer_match=all：危险集合必须完整覆盖，缺任一即不豁免。
+        // 场景：CVE-2021-42342——只过滤 LD_ 而缺 DYLD_/LDR_/_RLD/=() 视为防护不完整。
+        let sanitizers: Vec<String> = ["LD_", "DYLD_", "LDR_", "_RLD", "=()"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let partial = "if (sstarts(vp, \"LD_\")) continue;  envp[n++] = sfmt(...);";
+        assert!(
+            !is_sanitized_before(partial, partial.len(), &sanitizers, true),
+            "只覆盖 LD_ 子集：all 语义下不豁免"
+        );
+        let full = "sstarts(vp, \"LD_\"); sstarts(vp, \"LDR_\"); sstarts(vp, \"_RLD\"); sstarts(vp, \"DYLD_\"); strstr(vp, \"=()\");";
+        assert!(
+            is_sanitized_before(full, full.len(), &sanitizers, true),
+            "全集覆盖：all 语义下豁免"
+        );
+        // any 语义保持旧行为：任一出现即豁免
+        assert!(is_sanitized_before(partial, partial.len(), &sanitizers, false));
     }
 
     #[test]
@@ -958,6 +990,7 @@ mod tests {
             cwe: Some("CWE-259".to_string()),
             sanitizers: vec![],
             sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
             category: None,
@@ -992,6 +1025,7 @@ mod tests {
             cwe: Some("CWE-259".to_string()),
             sanitizers: vec![],
             sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
             category: None,
@@ -1028,6 +1062,7 @@ $upsql = Input::postStrVar('upsql', '');
             cwe: Some("CWE-352".to_string()),
             sanitizers: vec![],
             sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
             category: None,
@@ -1064,6 +1099,7 @@ $upsql = Input::postStrVar('upsql', '');
             cwe: Some("CWE-352".to_string()),
             sanitizers: vec!["checktoken(".to_string()],
             sanitizer_file_scope: file_scope,
+            sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
             category: None,
@@ -1116,6 +1152,7 @@ $upsql = Input::postStrVar('upsql', '');
             cwe: Some("CWE-78".to_string()),
             sanitizers: vec![],
             sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: exclude,
             category: None,
@@ -1153,6 +1190,7 @@ $upsql = Input::postStrVar('upsql', '');
             cwe: Some("CWE-120".to_string()),
             sanitizers: vec![],
             sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
             category: None,
@@ -1189,6 +1227,7 @@ $upsql = Input::postStrVar('upsql', '');
             cwe: Some("CWE-78".to_string()),
             sanitizers: vec![],
             sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
             category: None,
@@ -1218,6 +1257,7 @@ $upsql = Input::postStrVar('upsql', '');
             cwe: Some("CWE-94".to_string()),
             sanitizers: vec![],
             sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
             category: None,

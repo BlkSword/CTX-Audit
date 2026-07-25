@@ -44,6 +44,12 @@ pub struct Rule {
     /// （校验调用在文件任意位置都算该项目已接入防护，分支级缺失交给判定层）
     #[serde(default)]
     pub sanitizer_file_scope: bool,
+    /// sanitizer 匹配语义：`any`（默认）任一 sanitizer 出现即豁免；
+    /// `all` 要求全部 sanitizer 都出现才豁免——用于"防护完整性"检查：
+    /// 危险集合必须被完整覆盖（如 CWE-88 要求 LD_/DYLD_/LDR_/_RLD/=() 全集），
+    /// 只覆盖子集视为防护不完整，仍报告。
+    #[serde(default)]
+    pub sanitizer_match: SanitizerMatch,
     /// true 时每个文件最多保留一个命中（缺失检查类规则：检查有无是文件级语义，
     /// 多个命中只是同一问题的重复报告）
     #[serde(default)]
@@ -53,6 +59,16 @@ pub struct Rule {
     /// 凭证类规则不要开：字符串字面量正是它们的目标。
     #[serde(default)]
     pub exclude_string_literals: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SanitizerMatch {
+    /// 任一 sanitizer 出现即豁免（默认，兼容旧规则）
+    #[default]
+    Any,
+    /// 全部 sanitizer 都出现才豁免（防护完整性检查）
+    All,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]

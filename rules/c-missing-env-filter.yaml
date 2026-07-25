@@ -1,6 +1,6 @@
 category: injection
 cwe: CWE-88
-description: 检测 C/C++ CGI 环境变量注入：构建传给子进程的 envp 环境数组，但全文件无 LD_/DYLD_ 等危险链接器变量过滤——请求参数可注入 LD_PRELOAD 实现 RCE
+description: 检测 C/C++ CGI 环境变量注入：构建传给子进程的 envp 环境数组，但对 LD_/DYLD_/LDR_/_RLD/=() 危险链接器变量的过滤不完整——请求参数可注入 LD_PRELOAD 等实现 RCE
 exclude_string_literals: true
 id: c-missing-env-filter
 language: c
@@ -13,17 +13,18 @@ patterns:
     pattern: '\benvp\s*\[[^\]]*\]\s*='
   - language: cpp
     pattern: '\benvp\s*\[[^\]]*\]\s*='
-remediation: "对 CGI 环境变量名做白名单/黑名单过滤（拒绝 LD_*、DYLD_*、LDR_*、_RLD*、BASH_ENV、IFS、=() 等），或为用户参数统一添加固定前缀（如 HTTP_），使其无法覆盖链接器敏感变量。"
+remediation: "对 CGI 环境变量名做白名单/黑名单过滤（拒绝 LD_*、DYLD_*、LDR_*、_RLD*、BASH_ENV、IFS、=() 等），并为用户参数统一添加固定前缀（如 HTTP_/CGI_），使其无法覆盖链接器敏感变量。注意过滤代码必须真实可达——比对对象若为恒 NULL（如 strim(name, 0, ...)）则过滤形同虚设。"
 references:
   - "https://cwe.mitre.org/data/definitions/88.html"
   - "https://www.elttam.com.au/blog/goahead/"
 sanitizer_file_scope: true
+# all：危险变量集合必须被完整过滤才豁免。只过滤 LD_ 而缺 DYLD_/LDR_/_RLD/=()
+# 的版本（如 CVE-2021-42342 涉事版本）视为防护不完整，仍报告。
+sanitizer_match: all
 sanitizers:
   - "LD_"
   - "DYLD_"
   - "LDR_"
   - "_RLD"
-  - "envblacklist"
-  - "blacklist"
   - "=()"
 severity: high
