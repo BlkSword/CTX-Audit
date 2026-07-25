@@ -104,6 +104,8 @@ impl RuleScanner {
         // 注释范围惰性计算：仅在首个命中时解析一次。
         // 命中点位于注释内则丢弃——注释中的代码不会执行，必为误报。
         let mut comment_ranges_cache: Option<Vec<(usize, usize)>> = None;
+        // 字符串字面量范围同理，仅对 exclude_string_literals 的规则生效
+        let mut string_ranges_cache: Option<Vec<(usize, usize)>> = None;
 
         for compiled in &self.compiled_rules {
             // Simple language check based on extension
@@ -127,6 +129,14 @@ impl RuleScanner {
                                 .get_or_insert_with(|| collect_comment_ranges(content, &extension));
                             if position_in_ranges(ranges, start_pos) {
                                 continue;
+                            }
+                            if compiled.rule.exclude_string_literals {
+                                let sranges = string_ranges_cache.get_or_insert_with(|| {
+                                    collect_string_ranges(content, &extension)
+                                });
+                                if position_in_ranges(sranges, start_pos) {
+                                    continue;
+                                }
                             }
                             let end_pos = m.end();
 
@@ -709,6 +719,24 @@ fn get_language_for_extension(extension: &str) -> Option<Language> {
 /// 收集内容中所有注释节点的字节范围（按扩展名选语言）。
 /// 不支持的语言返回空表（即不做注释过滤，行为与旧版一致）。
 fn collect_comment_ranges(content: &str, extension: &str) -> Vec<(usize, usize)> {
+    collect_node_ranges(content, extension, |kind| kind.contains("comment"))
+}
+
+/// 收集内容中所有字符串字面量节点的字节范围（按扩展名选语言）。
+/// 用于 sink 调用类规则排除字符串内的误报（如错误消息里的 "system()"）。
+fn collect_string_ranges(content: &str, extension: &str) -> Vec<(usize, usize)> {
+    collect_node_ranges(content, extension, |kind| {
+        kind.contains("string") && !kind.contains("escape")
+    })
+}
+
+/// 用 tree-sitter 解析内容并收集谓词命中的节点字节范围。
+/// 不支持的语言返回空表（即不做过滤，行为与旧版一致）。
+fn collect_node_ranges(
+    content: &str,
+    extension: &str,
+    pred: impl Fn(&str) -> bool,
+) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let lang = match get_language_for_extension(extension) {
         Some(l) => l,
@@ -734,12 +762,12 @@ fn collect_comment_ranges(content: &str, extension: &str) -> Vec<(usize, usize)>
         None => return ranges,
     };
 
-    // 迭代遍历（避免深递归），收集所有 comment 节点的字节范围
+    // 迭代遍历（避免深递归），收集谓词命中节点的字节范围
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
-        if node.kind().contains("comment") {
+        if pred(node.kind()) {
             ranges.push((node.start_byte(), node.end_byte()));
-            continue; // 注释节点不会再嵌套代码
+            continue; // 该类节点不会再嵌套代码
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -872,6 +900,7 @@ mod tests {
             sanitizers: vec![],
             sanitizer_file_scope: false,
             once_per_file: false,
+            exclude_string_literals: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -905,6 +934,7 @@ mod tests {
             sanitizers: vec![],
             sanitizer_file_scope: false,
             once_per_file: false,
+            exclude_string_literals: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -940,6 +970,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizers: vec![],
             sanitizer_file_scope: false,
             once_per_file: false,
+            exclude_string_literals: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -975,6 +1006,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizers: vec!["checktoken(".to_string()],
             sanitizer_file_scope: file_scope,
             once_per_file: false,
+            exclude_string_literals: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1007,6 +1039,42 @@ $upsql = Input::postStrVar('upsql', '');
     }
 
     #[test]
+    fn test_exclude_string_literals_skips_string_content() {
+        // exclude_string_literals=true：字符串字面量内的 sink 名（如错误消息里的
+        // "system()"）不报，真实调用仍报——sqlite3_rsync.c "popen() failed" 场景
+        let mk_rule = |exclude: bool| Rule {
+            id: "c-command-execution".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "c".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "c".to_string(),
+                pattern: r"\b(system|popen)\s*\(".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-78".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            once_per_file: false,
+            exclude_string_literals: exclude,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let content = "if( (p=popen(cmd,\"r\"))==0 ){\n  fprintf(stderr,\"popen() failed\");\n}\n";
+        let off_findings =
+            RuleScanner::new(vec![mk_rule(false)]).scan_file_sync(&PathBuf::from("a.c"), content);
+        assert_eq!(off_findings.len(), 2, "默认不排除字符串：真实调用 + 字符串内各 1 条");
+        let on_findings =
+            RuleScanner::new(vec![mk_rule(true)]).scan_file_sync(&PathBuf::from("a.c"), content);
+        assert_eq!(on_findings.len(), 1, "开启后只保留真实调用");
+        assert_eq!(on_findings[0].line_start, 1);
+    }
+
+    #[test]
     fn test_regex_rule_skips_commented_code() {        let rule = Rule {
             id: "test-eval".to_string(),
             name: "test".to_string(),
@@ -1020,6 +1088,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizers: vec![],
             sanitizer_file_scope: false,
             once_per_file: false,
+            exclude_string_literals: false,
             category: None,
             owasp: None,
             remediation: None,

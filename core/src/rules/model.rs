@@ -48,6 +48,11 @@ pub struct Rule {
     /// 多个命中只是同一问题的重复报告）
     #[serde(default)]
     pub once_per_file: bool,
+    /// true 时丢弃命中点位于字符串字面量内的 finding——sink 调用形态的规则
+    /// 匹配的是代码而非数据，字符串里的 "system()" 只是文本（如错误消息）。
+    /// 凭证类规则不要开：字符串字面量正是它们的目标。
+    #[serde(default)]
+    pub exclude_string_literals: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]

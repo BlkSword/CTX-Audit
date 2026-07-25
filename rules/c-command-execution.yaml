@@ -12,6 +12,7 @@ patterns:
   - language: cpp
     pattern: '\b(system|popen)\s*\('
 severity: high
+exclude_string_literals: true
 remediation: "避免使用 system/popen 执行拼接命令；改用 execve 族直接传参数数组；必须使用 shell 时对参数做单引号包裹+转义，或白名单校验。"
 references:
   - "https://cwe.mitre.org/data/definitions/78.html"

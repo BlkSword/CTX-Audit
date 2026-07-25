@@ -16,6 +16,7 @@ patterns:
   - language: cpp
     pattern: '(?i)memcpy\s*\([^,]+,\s*[^,]+,\s*strlen\s*\('
 severity: critical
+exclude_string_literals: true
 remediation: "使用 strncpy/strncat 替代 strcpy/strcat（指定长度）；使用 snprintf 替代 sprintf；使用 fgets 替代 gets；优先使用 C++ std::string。"
 references:
   - "https://owasp.org/www-community/vulnerabilities/Buffer_Overflow"

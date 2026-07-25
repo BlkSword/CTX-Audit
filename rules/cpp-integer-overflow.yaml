@@ -13,6 +13,7 @@ patterns:
   - language: cpp
     pattern: '(?i)(\bmalloc\s*\(\s*\w+\s*\*\s*\w+|\brealloc\s*\(\s*[^,]+,\s*\w+\s*\*\s*\w+)'
 severity: high
+exclude_string_literals: true
 remediation: "使用 size_t 类型存储大小；乘法分配前检查是否溢出；使用 calloc 替代 malloc+memset；使用安全的分配函数（如 reallocarray）。"
 references:
   - "https://cwe.mitre.org/data/definitions/120.html"
