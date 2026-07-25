@@ -106,6 +106,9 @@ impl RuleScanner {
         let mut comment_ranges_cache: Option<Vec<(usize, usize)>> = None;
         // 字符串字面量范围同理，仅对 exclude_string_literals 的规则生效
         let mut string_ranges_cache: Option<Vec<(usize, usize)>> = None;
+        // 条件编译块范围（仅 C 家族）：块内命中降 info——如 #ifdef MPE 平台分支
+        // 的死代码（thttpd gets() 场景），不丢弃交由判定层
+        let mut preproc_ranges_cache: Option<Vec<(usize, usize)>> = None;
 
         for compiled in &self.compiled_rules {
             // Simple language check based on extension
@@ -150,6 +153,13 @@ impl RuleScanner {
                             // 缺失检查类规则（missing/unprotected）同样除外——问题在
                             // "没有调用某校验"，与命中点参数是否字面量无关。
                             let matched_text = &content[start_pos..end_pos];
+                            // `sizeof *p`（无括号解引用形式）被分配器乘法 pattern 误读为
+                            // 乘法（redis setproctitle.c 场景），必为误报，直接丢弃。
+                            // 带括号的 sizeof(int) 不受影响——那才是真的乘法。
+                            if is_c_family_ext(&extension) && contains_sizeof_deref(matched_text)
+                            {
+                                continue;
+                            }
                             let likely_fp = if is_credential_related(&compiled.rule, matched_text)
                             {
                                 if is_placeholder_secret(&compiled.rule, matched_text) {
@@ -162,15 +172,28 @@ impl RuleScanner {
                             } else if is_missing_check_related(&compiled.rule) {
                                 None
                             } else {
-                                evaluate_likely_fp_args(content, start_pos, end_pos).or_else(
-                                    || {
+                                evaluate_likely_fp_args(content, start_pos, end_pos)
+                                    .or_else(|| {
+                                        // 条件编译块内（平台分支）的命中降 info：
+                                        // 可能是非目标平台死代码（thttpd #ifdef MPE 场景）
+                                        if is_c_family_ext(&extension) {
+                                            let pranges = preproc_ranges_cache
+                                                .get_or_insert_with(|| {
+                                                    collect_preproc_ranges(content, &extension)
+                                                });
+                                            if position_in_ranges(pranges, start_pos) {
+                                                return Some("位于条件编译块内，可能不适用于目标平台");
+                                            }
+                                        }
+                                        None
+                                    })
+                                    .or_else(|| {
                                         if is_placeholder_secret(&compiled.rule, matched_text) {
                                             Some("值为占位符/示例，非真实凭证")
                                         } else {
                                             None
                                         }
-                                    },
-                                )
+                                    })
                             };
 
                             findings.push(create_finding(
@@ -730,6 +753,42 @@ fn collect_string_ranges(content: &str, extension: &str) -> Vec<(usize, usize)> 
     })
 }
 
+/// C 家族扩展名判定（C/C++ 源与头文件）
+fn is_c_family_ext(extension: &str) -> bool {
+    matches!(extension, "c" | "h" | "cpp" | "cc" | "cxx" | "hpp")
+}
+
+/// 判断文本是否包含无括号 sizeof 解引用形式 `sizeof *p`。
+/// 分配器乘法 pattern（`\w+\s*\*\s*\w+`）会把它误读为乘法。
+fn contains_sizeof_deref(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut idx = 0;
+    while let Some(pos) = text[idx..].find("sizeof") {
+        let abs = idx + pos + "sizeof".len();
+        // sizeof 后跳过空白，若紧跟 `*` 即为无括号解引用形式
+        let mut i = abs;
+        while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+            i += 1;
+        }
+        if i < bytes.len() && bytes[i] == b'*' {
+            return true;
+        }
+        idx = abs;
+    }
+    false
+}
+
+/// 收集条件编译块（#if/#ifdef/#ifndef/#elif/#else）的字节范围。
+/// 排除接近覆盖全文件的范围——那是头文件 include guard，不是平台分支。
+fn collect_preproc_ranges(content: &str, extension: &str) -> Vec<(usize, usize)> {
+    let total = content.len();
+    let mut ranges = collect_node_ranges(content, extension, |kind| {
+        kind.starts_with("preproc_if") || kind == "preproc_elif" || kind == "preproc_else"
+    });
+    ranges.retain(|&(start, end)| (end - start) * 10 < total * 9);
+    ranges
+}
+
 /// 用 tree-sitter 解析内容并收集谓词命中的节点字节范围。
 /// 不支持的语言返回空表（即不做过滤，行为与旧版一致）。
 fn collect_node_ranges(
@@ -1072,6 +1131,78 @@ $upsql = Input::postStrVar('upsql', '');
             RuleScanner::new(vec![mk_rule(true)]).scan_file_sync(&PathBuf::from("a.c"), content);
         assert_eq!(on_findings.len(), 1, "开启后只保留真实调用");
         assert_eq!(on_findings[0].line_start, 1);
+    }
+
+    #[test]
+    fn test_sizeof_deref_not_misread_as_multiplication() {
+        // `sizeof *tmp`（无括号解引用）不得被分配器乘法 pattern 误报；
+        // `n * sizeof(int)` 真实乘法仍应报——redis setproctitle.c 场景
+        let rule = Rule {
+            id: "cpp-integer-overflow".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "c".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "c".to_string(),
+                pattern: r"(?i)(\bmalloc\s*\(\s*\w+\s*\*\s*\w+|\brealloc\s*\(\s*[^,]+,\s*\w+\s*\*\s*\w+)"
+                    .to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-120".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            once_per_file: false,
+            exclude_string_literals: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let scanner = RuleScanner::new(vec![rule]);
+        let fp = scanner.scan_file_sync(
+            &PathBuf::from("a.c"),
+            "if (!(tmp = malloc(sizeof *tmp)))\n",
+        );
+        assert_eq!(fp.len(), 0, "sizeof *tmp 不得误报");
+        let tp = scanner.scan_file_sync(&PathBuf::from("b.c"), "p = malloc(n * sizeof(int));\n");
+        assert_eq!(tp.len(), 1, "n * sizeof(int) 真实乘法仍应报");
+    }
+
+    #[test]
+    fn test_preproc_branch_downgraded_to_info() {
+        // 条件编译平台分支内的命中降 info（thttpd #ifdef MPE gets() 场景），
+        // 块外命中保持原级别
+        let rule = Rule {
+            id: "c-command-execution".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "c".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "c".to_string(),
+                pattern: r"\b(system|popen)\s*\(".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-78".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            once_per_file: false,
+            exclude_string_literals: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let content = "#ifdef MPE\nsystem(cmd1);\n#endif\nsystem(cmd2);\n";
+        let findings = RuleScanner::new(vec![rule]).scan_file_sync(&PathBuf::from("a.c"), content);
+        assert_eq!(findings.len(), 2);
+        let inside = findings.iter().find(|f| f.line_start == 2).unwrap();
+        let outside = findings.iter().find(|f| f.line_start == 4).unwrap();
+        assert_eq!(inside.severity, "info", "条件编译块内应降 info");
+        assert_eq!(outside.severity, "high", "块外保持原级别");
     }
 
     #[test]
