@@ -1,0 +1,29 @@
+category: injection
+cwe: CWE-88
+description: 检测 C/C++ CGI 环境变量注入：构建传给子进程的 envp 环境数组，但全文件无 LD_/DYLD_ 等危险链接器变量过滤——请求参数可注入 LD_PRELOAD 实现 RCE
+exclude_string_literals: true
+id: c-missing-env-filter
+language: c
+name: C/C++ Missing CGI Environment Filter
+once_per_file: true
+owasp: "A03:2021-Injection"
+patterns:
+  # envp 数组赋值（CGI handler 构造子进程环境的标准形态）
+  - language: c
+    pattern: '\benvp\s*\[[^\]]*\]\s*='
+  - language: cpp
+    pattern: '\benvp\s*\[[^\]]*\]\s*='
+remediation: "对 CGI 环境变量名做白名单/黑名单过滤（拒绝 LD_*、DYLD_*、LDR_*、_RLD*、BASH_ENV、IFS、=() 等），或为用户参数统一添加固定前缀（如 HTTP_），使其无法覆盖链接器敏感变量。"
+references:
+  - "https://cwe.mitre.org/data/definitions/88.html"
+  - "https://www.elttam.com.au/blog/goahead/"
+sanitizer_file_scope: true
+sanitizers:
+  - "LD_"
+  - "DYLD_"
+  - "LDR_"
+  - "_RLD"
+  - "envblacklist"
+  - "blacklist"
+  - "=()"
+severity: high
