@@ -216,9 +216,19 @@ impl TaintSink {
 
         // 1. exact_matches 全等匹配
         if !self.exact_matches.is_empty() {
-            for exact in &self.exact_matches {
-                if func_name == exact.as_str() {
-                    return true;
+            // exact_matches 面向非限定调用名（如解构用法的 "exec"）。
+            // 方法调用（带 receiver）传入的裸 callee 不得命中——
+            // 否则 `myModule.exec` 会被为 `const { exec } = require(...)`
+            // 声明的精确名误伤（backlog 10.11 回归）
+            let bare_callee_with_receiver = receiver.is_some()
+                && !func_name.contains('.')
+                && !func_name.contains("::")
+                && !func_name.contains("->");
+            if !bare_callee_with_receiver {
+                for exact in &self.exact_matches {
+                    if func_name == exact.as_str() {
+                        return true;
+                    }
                 }
             }
         }
@@ -232,7 +242,7 @@ impl TaintSink {
                     || func_name.contains(&format!("{}::", namespace))
                 {
                     for pattern in &self.patterns {
-                        if Self::pattern_matches_func_name(pattern, func_name) {
+                        if Self::pattern_matches_method_call(pattern, func_name) {
                             return true;
                         }
                     }
@@ -249,6 +259,8 @@ impl TaintSink {
                     // 短 pattern（≤3 字符）用边界感知匹配：全等，或以后缀出现且
                     // 前置字符非字母数字。避免缩写 pattern 误伤——
                     // 如 "cur" 子串命中 "security"（backlog 10.9）
+                    // 长 pattern 同样边界感知：全等 / 后缀 / 双侧边界包含，
+                    // 避免 "client" 子串命中 "clientConfigs"（backlog 10.11）
                     let hit = if rp.len() <= 3 {
                         recv_lower == rp
                             || (recv_lower.ends_with(&rp)
@@ -258,11 +270,13 @@ impl TaintSink {
                                     .map(|c| !c.is_alphanumeric())
                                     .unwrap_or(true))
                     } else {
-                        recv_lower.contains(&rp)
+                        recv_lower == rp
+                            || recv_lower.ends_with(&rp)
+                            || Self::contains_with_ident_boundaries(&recv_lower, &rp)
                     };
                     if hit {
                         for pattern in &self.patterns {
-                            if Self::pattern_matches_func_name(pattern, func_name) {
+                            if Self::pattern_matches_method_call(pattern, func_name) {
                                 return true;
                             }
                         }
@@ -310,6 +324,99 @@ impl TaintSink {
             return true;
         }
 
+        false
+    }
+
+    /// 语义路径专用的边界感知方法匹配（backlog 10.11）。
+    ///
+    /// 与 `pattern_matches_func_name` 的区别：不做无边界子串匹配——
+    /// `.fetch` 不得命中 `this.fetchClientConfig`、`.raw` 不得命中
+    /// `client.callbackParams(request.raw)` 里的 `request.raw` 片段。
+    /// 纯标识符 pattern 要求：全等 / `.`/`::`/`->` 限定后缀 / 双侧标识符边界包含。
+    /// 含空格或模板语法的文本 pattern（如 `INSERT INTO`）保持子串匹配。
+    fn pattern_matches_method_call(pattern: &str, func_name: &str) -> bool {
+        if pattern == func_name {
+            return true;
+        }
+
+        // 方法 pattern（. 开头）：先归一化（去尾随 `(`，嵌入规则存在
+        // ".exec(" 形态），按带点 pattern 搜索，右侧必须是调用/结尾边界
+        // （非标识符字符）。避免 ".request" 命中
+        // "request.session.loginAuthProviderIdentifier"（request 是属性
+        // 路径段而非方法调用）、".fetch" 命中 "this.fetchClientConfig"（10.11）
+        let trimmed = pattern.trim_end_matches('(').trim_end();
+        if let Some(dot_pattern) = trimmed.strip_prefix('.') {
+            if dot_pattern.is_empty() {
+                return false;
+            }
+            // 裸 callee（无 receiver 前缀）直接全等
+            if func_name == dot_pattern {
+                return true;
+            }
+            let mut start = 0;
+            while let Some(pos) = func_name[start..].find(trimmed) {
+                let abs = start + pos;
+                let after = abs + trimmed.len();
+                let right_ok = func_name[after..]
+                    .chars()
+                    .next()
+                    .map(|c| !c.is_alphanumeric() && c != '_' && c != '$')
+                    .unwrap_or(true);
+                if right_ok {
+                    return true;
+                }
+                start = abs + 1;
+            }
+            return false;
+        }
+
+        let normalized = pattern.trim_end_matches('(').trim_end();
+        if normalized.is_empty() {
+            return false;
+        }
+
+        // 非纯标识符（含空格/模板语法等）保持子串匹配
+        let is_ident = normalized
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '-' | '>' | '$' | '\\'));
+        if !is_ident {
+            return func_name.contains(pattern);
+        }
+
+        func_name == normalized
+            || func_name.ends_with(&format!(".{}", normalized))
+            || func_name.ends_with(&format!("::{}", normalized))
+            || func_name.ends_with(&format!("->{}", normalized))
+            || Self::contains_with_ident_boundaries(func_name, normalized)
+    }
+
+    /// 边界感知子串匹配：pattern 出现处的左右字符均不得为标识符字符
+    /// （字母数字、`_`、`$`）。用于避免 "client" 误伤 "clientConfigs"、
+    /// "fetch" 误伤 "fetchClientConfig"（backlog 10.11）
+    fn contains_with_ident_boundaries(haystack: &str, needle: &str) -> bool {
+        if needle.is_empty() {
+            return false;
+        }
+        let is_ident_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+        let mut start = 0;
+        while let Some(pos) = haystack[start..].find(needle) {
+            let abs = start + pos;
+            let left_ok = haystack[..abs]
+                .chars()
+                .last()
+                .map(|c| !is_ident_char(c))
+                .unwrap_or(true);
+            let after = abs + needle.len();
+            let right_ok = haystack[after..]
+                .chars()
+                .next()
+                .map(|c| !is_ident_char(c))
+                .unwrap_or(true);
+            if left_ok && right_ok {
+                return true;
+            }
+            start = abs + 1;
+        }
         false
     }
 }
@@ -1815,6 +1922,111 @@ mod tests {
         assert!(sink.matches_with_context(".execute", Some("$this->cur"), "php"));
         // "security" 包含 "cur" 子串但无边界，不得命中
         assert!(!sink.matches_with_context(".execute", Some("security"), "python"));
+    }
+
+    #[test]
+    fn test_receiver_pattern_long_boundary() {
+        // 长 receiver pattern 边界感知匹配（backlog 10.11）：
+        // "client" 不得子串误伤 "clientConfigs"
+        let sink = TaintSink {
+            id: "sql".to_string(),
+            name: "SQL".to_string(),
+            description: String::new(),
+            patterns: vec![".get".to_string(), ".query".to_string()],
+            languages: vec!["*".to_string()],
+            vulnerability_type: VulnerabilityType::SqlInjection,
+            severity: Severity::Critical,
+            cwe_id: None,
+            sensitive_params: vec![0],
+            ast_patterns: vec![],
+            match_mode: MatchMode::Semantic,
+            namespaces: vec![],
+            receiver_patterns: vec!["client".to_string(), "connection".to_string()],
+            exact_matches: vec![],
+            sanitizers: vec![],
+            storage_write: false,
+        };
+
+        // 正常命中：全等 / 限定后缀 / 无名 suffix
+        assert!(sink.matches_with_context("client.get", Some("client"), "javascript"));
+        assert!(sink.matches_with_context(
+            "this.client.get",
+            Some("this.client"),
+            "javascript"
+        ));
+        assert!(sink.matches_with_context(
+            "dbConnection.query",
+            Some("dbConnection"),
+            "javascript"
+        ));
+        // "clientConfigs" 包含 "client" 子串但无边界（右侧为字母），不得命中——
+        // 即 Map.get 类调用不得被标 SQL Injection
+        assert!(!sink.matches_with_context(
+            "this.clientConfigs.get",
+            Some("this.clientConfigs"),
+            "javascript"
+        ));
+    }
+
+    #[test]
+    fn test_method_pattern_boundary() {
+        // 语义路径的 method pattern 边界感知匹配（backlog 10.11）：
+        // ".fetch" 不得命中 "fetchClientConfig"，".raw" 不得命中表达式参数片段
+        let ssrf_sink = TaintSink {
+            id: "http".to_string(),
+            name: "HTTP".to_string(),
+            description: String::new(),
+            patterns: vec![".get".to_string(), ".fetch".to_string()],
+            languages: vec!["*".to_string()],
+            vulnerability_type: VulnerabilityType::ServerSideRequestForgery,
+            severity: Severity::High,
+            cwe_id: None,
+            sensitive_params: vec![0],
+            ast_patterns: vec![],
+            match_mode: MatchMode::Semantic,
+            namespaces: vec![],
+            receiver_patterns: vec!["client".to_string()],
+            exact_matches: vec![],
+            sanitizers: vec![],
+            storage_write: false,
+        };
+
+        // fetchClientConfig 含 ".fetch" 子串但右侧为字母，不得命中
+        assert!(!ssrf_sink.matches_with_context(
+            "this.fetchClientConfig",
+            Some("this"),
+            "javascript"
+        ));
+        // 正常命中：方法名后缀边界
+        assert!(ssrf_sink.matches_with_context("client.fetch", Some("client"), "javascript"));
+
+        let sql_sink = TaintSink {
+            id: "sql".to_string(),
+            name: "SQL".to_string(),
+            description: String::new(),
+            patterns: vec![".query".to_string(), ".raw".to_string()],
+            languages: vec!["*".to_string()],
+            vulnerability_type: VulnerabilityType::SqlInjection,
+            severity: Severity::Critical,
+            cwe_id: None,
+            sensitive_params: vec![0],
+            ast_patterns: vec![],
+            match_mode: MatchMode::Semantic,
+            namespaces: vec![],
+            receiver_patterns: vec!["client".to_string()],
+            exact_matches: vec![],
+            sanitizers: vec![],
+            storage_write: false,
+        };
+
+        // callee 为 callbackParams 时不得命中任何 SQL pattern
+        assert!(!sql_sink.matches_with_context(
+            "client.callbackParams",
+            Some("client"),
+            "javascript"
+        ));
+        // knex.raw 形态正常命中（"raw" 左侧为 '.' 边界）
+        assert!(sql_sink.matches_with_context("client.raw", Some("client"), "javascript"));
     }
 
     #[test]

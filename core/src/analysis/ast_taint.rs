@@ -283,21 +283,28 @@ impl AstTaintAnalyzer {
                         .cloned()
                         .collect();
 
-                    // 优先使用 AST-based CFG，fallback 到 text-based
+                    // 优先使用 AST-based CFG，fallback 到 text-based。
+                    // 两个分支统一为"相对 body_text 行号"坐标系（10.10）：
+                    // AST 分支用 from_ast_node_with_base 把绝对行号减为相对，
+                    // 与 from_code 一致；下方 line_offset 统一换算回绝对行号。
+                    let line_base = func.body_start_line.saturating_sub(1);
                     let func_body_node =
                         Self::find_function_body_node_static(&root, func.start_line, func.end_line);
                     let cfg = if let Some(body_node) = func_body_node {
-                        EnhancedFlowGraph::from_ast_node(
+                        EnhancedFlowGraph::from_ast_node_with_base(
                             &body_node,
                             content,
                             &file_path_str,
                             &func.name,
+                            line_base,
                         )
                     } else {
                         EnhancedFlowGraph::from_code(&func.body_text, &file_path_str, &func.name)
                     };
 
-                    let line_offset = func.start_line.saturating_sub(1);
+                    // body_text 的首行是 body_start_line（Python/Ruby 与签名行不同行），
+                    // 此前误用 start_line 导致 Python 系偏移一行（backlog 10.10）
+                    let line_offset = func.body_start_line.saturating_sub(1);
                     let flows = self.forward_taint_analysis(
                         &cfg,
                         &func_assignments,
@@ -629,6 +636,7 @@ impl AstTaintAnalyzer {
                         file_path,
                         language,
                         &alias_map,
+                        line_offset,
                     ) {
                         flows.push(flow);
                     }
@@ -642,6 +650,7 @@ impl AstTaintAnalyzer {
                         file_path,
                         language,
                         &alias_map,
+                        line_offset,
                     ) {
                         flows.push(flow);
                     }
@@ -656,6 +665,7 @@ impl AstTaintAnalyzer {
                         file_path,
                         language,
                         &alias_map,
+                        line_offset,
                     ) {
                         flows.push(flow);
                     }
@@ -1991,9 +2001,11 @@ impl AstTaintAnalyzer {
         file_path: &str,
         language: &str,
         alias_map: &AliasMap,
+        line_offset: usize,
     ) -> Option<TaintFlow> {
-        // 从 AST 提取的赋值中查找匹配
-        if let Some(assign) = assign_by_line.get(&node.start_line) {
+        // CFG 节点为函数体相对行号，assign_by_line 键为文件绝对行号，
+        // 用 line_offset 换算（backlog 10.10）
+        if let Some(assign) = assign_by_line.get(&(node.start_line + line_offset)) {
             // 检查右值是否包含 sanitizer 调用
             let is_sanitized = call_by_line
                 .get(&assign.line)
@@ -2125,8 +2137,11 @@ impl AstTaintAnalyzer {
         file_path: &str,
         language: &str,
         alias_map: &AliasMap,
+        line_offset: usize,
     ) -> Option<TaintFlow> {
-        let call = call_by_line.get(&node.start_line)?;
+        // CFG 节点为函数体相对行号，call_by_line 键为文件绝对行号，
+        // 用 line_offset 换算（backlog 10.10）
+        let call = call_by_line.get(&(node.start_line + line_offset))?;
 
         // 1. 检查是否匹配 sink（方法调用考虑 receiver，如 needle.get）
         if let Some(sink) = self.match_sink_for_call(call, language) {
@@ -2480,16 +2495,29 @@ impl AstTaintAnalyzer {
 
     /// 在表达式中查找是否有 sink 函数调用
     ///
-    /// 优先使用语义匹配（namespaces / receiver_patterns / exact_matches），
-    /// 避免对 `myModule.exec` 这类自定义调用产生误报。
+    /// 语义 sink（namespaces / receiver_patterns / exact_matches）只对解析出的
+    /// callee / receiver.callee 匹配——完整表达式文本中的属性访问片段
+    /// （如 `request.raw` 里的 `.raw`、`this.fetchClientConfig` 里的 `.fetch`）
+    /// 不得触发语义 sink（backlog 10.11 误标根因）。
     ///
-    /// 同时保留对完整表达式的子串匹配，以兼容旧规则中形如 `exec(` 的
-    /// 模式（可匹配 `exec(user_input)`）。
+    /// Substring sink 保持对完整表达式的宽松匹配，兼容旧规则中形如
+    /// `exec(` 的模式（可匹配 `exec(user_input)`）。
     fn find_matching_sink_in_expr(&self, expr: &str, language: &str) -> Option<TaintSink> {
-        let (receiver, _callee) = Self::extract_call_parts_from_expr(expr);
+        let (receiver, callee) = Self::extract_call_parts_from_expr(expr);
         for sink in self.sinks.iter() {
-            // 同时传入完整表达式（兼容 substring 模式）和解析出的 receiver
-            if sink.matches_with_context(expr, receiver, language) {
+            if sink.has_semantic_constraints() {
+                // 语义路径：qualified 优先（支持 exact_matches / namespaces），
+                // 再用裸 callee + receiver 语义
+                if let Some(recv) = receiver {
+                    let qualified = format!("{}.{}", recv, callee);
+                    if sink.matches_with_context(&qualified, Some(recv), language) {
+                        return Some(sink.clone());
+                    }
+                }
+                if sink.matches_with_context(callee, receiver, language) {
+                    return Some(sink.clone());
+                }
+            } else if sink.matches_with_context(expr, receiver, language) {
                 return Some(sink.clone());
             }
         }
@@ -2535,7 +2563,19 @@ impl AstTaintAnalyzer {
     fn extract_sink_name(&self, expr: &str, language: &str) -> String {
         let (receiver, callee) = Self::extract_call_parts_from_expr(expr);
         for sink in self.sinks.iter() {
-            if sink.matches_with_context(expr, receiver, language) {
+            // 与 find_matching_sink_in_expr 同款语义：语义 sink 只看
+            // callee/qualified，Substring sink 才看完整表达式（10.11）
+            let matched = if sink.has_semantic_constraints() {
+                let qualified_hit = receiver.map(|recv| {
+                    let qualified = format!("{}.{}", recv, callee);
+                    sink.matches_with_context(&qualified, Some(recv), language)
+                });
+                qualified_hit == Some(true)
+                    || sink.matches_with_context(callee, receiver, language)
+            } else {
+                sink.matches_with_context(expr, receiver, language)
+            };
+            if matched {
                 return if let Some(recv) = receiver {
                     format!("{}.{}", recv, callee)
                 } else {
@@ -3531,6 +3571,89 @@ function handler() {
         )
     }
 
+    /// 属性路径不得命中 SSRF sink（10.11 第二波）：
+    /// "request.session.loginAuthProviderIdentifier" 中 "request" 是属性
+    /// 路径段而非方法调用，不得命中 ".request" pattern + "request" namespace
+    #[test]
+    fn test_property_path_not_ssrf_sink() {
+        let analyzer = yaml_rule_analyzer();
+        for expr in [
+            "request.session.loginAuthProviderIdentifier",
+            "request.session.oidc?.loginCode ?? undefined",
+        ] {
+            let hit = analyzer.find_matching_sink_in_expr(expr, "typescript");
+            assert!(
+                hit.is_none(),
+                "属性路径 {:?} 不得命中任何 sink: {:?}",
+                expr,
+                hit.map(|s| s.id)
+            );
+        }
+        // 正向保持：request 库的 request.get(url) 形态仍命中
+        let hit = analyzer.find_matching_sink_in_expr("request.get(url)", "javascript");
+        assert!(
+            hit.is_some(),
+            "request.get(url) 应命中 HTTP 请求类 sink"
+        );
+    }
+
+    /// backlog 10.11 回归：真实 YAML 规则下，表达式级 sink 检测不得把
+    /// 非 SQL/非 HTTP 调用误标为语义 sink——
+    /// `client.callbackParams(request.raw)` 曾命中 ".raw"（参数片段子串）、
+    /// `this.clientConfigs.get(...)` 曾命中 receiver "client" 子串 + ".get"、
+    /// `this.fetchClientConfig(...)` 曾命中 ".fetch" 子串。
+    #[test]
+    fn test_expr_sink_semantic_no_mislabel() {
+        let analyzer = yaml_rule_analyzer();
+
+        // 表达式中的参数属性片段不得触发语义 SQL sink
+        let hit = analyzer.find_matching_sink_in_expr("client.callbackParams(request.raw)", "typescript");
+        assert!(
+            hit.as_ref().map(|s| &s.id) != Some(&"sql_exec".to_string()),
+            "request.raw 参数片段不得命中 sql_exec: {:?}",
+            hit.map(|s| s.id)
+        );
+
+        // Map.get 不得命中 SQL sink（receiver "clientConfigs" 无边界）
+        let hit = analyzer
+            .find_matching_sink_in_expr("this.clientConfigs.get(oidcIdentifier)", "typescript");
+        assert!(
+            hit.is_none(),
+            "clientConfigs.get 不得命中任何 sink: {:?}",
+            hit.map(|s| s.id)
+        );
+
+        // fetchClientConfig 不得命中 SSRF sink
+        let hit =
+            analyzer.find_matching_sink_in_expr("this.fetchClientConfig(oidcConfig)", "typescript");
+        assert!(
+            hit.as_ref().map(|s| &s.id) != Some(&"http_request".to_string()),
+            "fetchClientConfig 不得命中 http_request: {:?}",
+            hit.map(|s| s.id)
+        );
+
+        // 正向保持：真实 SQL/HTTP 调用仍命中（防过度收紧）
+        let hit = analyzer.find_matching_sink_in_expr("connection.query(sql)", "javascript");
+        assert_eq!(
+            hit.as_ref().map(|s| s.id.as_str()),
+            Some("sql_exec"),
+            "connection.query 应命中 sql_exec"
+        );
+        let hit = analyzer.find_matching_sink_in_expr("client.fetch(url)", "javascript");
+        assert_eq!(
+            hit.as_ref().map(|s| s.id.as_str()),
+            Some("http_request"),
+            "client.fetch 应命中 http_request"
+        );
+        // Substring sink 保持完整表达式宽松匹配
+        let hit = analyzer.find_matching_sink_in_expr("eval(userInput)", "javascript");
+        assert_eq!(
+            hit.as_ref().map(|s| s.id.as_str()),
+            Some("eval"),
+            "eval(userInput) 应命中 eval sink"
+        );
+    }
+
 
     #[test]
     fn test_xss_via_innerhtml() {
@@ -3625,6 +3748,36 @@ response = requests.get(url)"#;
         let flows = analyzer.analyze_file(&path, code);
         // No functions → no taint flows
         assert!(flows.is_empty());
+    }
+
+    /// backlog 10.10 回归：analyze_file 对多函数 Python 文件，
+    /// 非首函数内的污点链必须闭合并报告正确的文件绝对行号——
+    /// 此前 line_offset 误用 start_line（签名行），Python 体首行在下一行，
+    /// CFG 节点与 assign/call 元数据错位导致查表失败、0 flow。
+    #[test]
+    fn test_analyze_file_python_second_function_offset() {
+        let mut analyzer = AstTaintAnalyzer::new();
+        let code = r#"def helper():
+    return 1
+
+
+def handler():
+    user_input = request.args.get('cmd')
+    eval(user_input)
+"#;
+        let path = std::path::PathBuf::from("app.py");
+        let flows = analyzer.analyze_file(&path, code);
+        assert!(
+            !flows.is_empty(),
+            "analyze_file 应检出第二个函数中的 request.args → eval 链"
+        );
+        let flow = &flows[0];
+        // eval 在第 7 行（文件绝对行号），偏移错误时会偏到 6 或 8
+        assert_eq!(
+            flow.sink.line, 7,
+            "sink 行号应为文件绝对行号 7，实际: {}",
+            flow.sink.line
+        );
     }
 
     // ===== Alias-aware taint propagation tests =====

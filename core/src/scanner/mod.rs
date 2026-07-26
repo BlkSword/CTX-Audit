@@ -802,6 +802,57 @@ fn is_test_path(path: &str) -> bool {
     false
 }
 
+/// 判断文件名是否为测试文件（Stage B 污点分析跳过——测试文件不承载
+/// 生产攻击面，只消耗分析量并产噪，方法论 10.12；规则层 Stage A 行为不变）
+fn is_test_file_name(path: &str) -> bool {
+    let name = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_lowercase();
+    name.contains(".spec.")
+        || name.contains(".test.")
+        || name.ends_with("_test.go")
+        || name.ends_with("_test.py")
+        || (name.starts_with("test_") && name.ends_with(".py"))
+}
+
+/// Stage B 进度与慢文件日志 guard：map 闭包内声明一次，
+/// drop 时计数并按需输出（10.12 性能缺口的定位手段）
+struct TaintProgressGuard<'a> {
+    file: &'a str,
+    start: std::time::Instant,
+    done_counter: &'a std::sync::atomic::AtomicUsize,
+    total: usize,
+    scan_start: std::time::Instant,
+}
+
+impl Drop for TaintProgressGuard<'_> {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed();
+        let done = self
+            .done_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        // 单文件超 10s 大概率是病态文件（超线性热点定位线索）
+        if elapsed.as_secs() >= 10 {
+            tracing::warn!(
+                "[TaintAnalysis] 慢文件 {:.1}s: {}",
+                elapsed.as_secs_f64(),
+                self.file
+            );
+        }
+        if done % 100 == 0 || done == self.total {
+            tracing::info!(
+                "[TaintAnalysis] Stage B 进度 {}/{}，累计 {:.1}s",
+                done,
+                self.total,
+                self.scan_start.elapsed().as_secs_f64()
+            );
+        }
+    }
+}
+
 /// severity 排序值
 fn severity_rank(s: &str) -> u8 {
     match s.to_lowercase().as_str() {
@@ -1387,6 +1438,10 @@ pub async fn scan_directory_deep_with_rules_progress(
                 if is_excluded(rel, &excludes) {
                     continue;
                 }
+                // 测试文件不进污点分析（10.12）
+                if is_test_path(&p_str) || is_test_file_name(&p_str) {
+                    continue;
+                }
                 if let Ok(meta) = std::fs::metadata(p) {
                     if meta.len() as usize > max_taint_file_kb * 1024 {
                         continue;
@@ -1409,6 +1464,9 @@ pub async fn scan_directory_deep_with_rules_progress(
         .filter(|(_, content)| content.len() <= max_taint_file_kb * 1024)
         // vendor / minified 第三方库不进入污点分析（只产生噪声）
         .filter(|(fp, content)| classify_file_role_with_content(fp, content) != "vendor")
+        // 测试文件不进入污点分析（10.12：约占分析量两成，纯浪费且只产噪；
+        // Stage A 规则扫描对它们的行为不变）
+        .filter(|(fp, _)| !is_test_path(fp) && !is_test_file_name(fp))
         .map(|(fp, _)| fp.clone())
         .take(max_candidate_files)
         .collect();
@@ -1527,6 +1585,9 @@ pub async fn scan_directory_deep_with_rules_progress(
 
     // 并行分析 — 通过 CPG 构建后再做污点分析
     // 同时收集 CPG 缓存、taint_flows 和已解析 AST 产物供 Stage C 使用
+    let taint_scan_start = std::time::Instant::now();
+    let taint_done_counter = std::sync::atomic::AtomicUsize::new(0);
+    let taint_total_files = all_file_data.len();
     type FileAst = (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>);
     let all_results: Vec<(
         String,
@@ -1538,6 +1599,14 @@ pub async fn scan_directory_deep_with_rules_progress(
         .into_par_iter()
         .map(|(ref file_path_str, ref content)| {
             use crate::analysis::cpg::CPGBuilder;
+
+            let _progress = TaintProgressGuard {
+                file: file_path_str,
+                start: std::time::Instant::now(),
+                done_counter: &taint_done_counter,
+                total: taint_total_files,
+                scan_start: taint_scan_start,
+            };
 
             let mut parsed_symbols: Vec<crate::ast::Symbol> = Vec::new();
             let mut parsed_calls: Vec<crate::ast::CallInfo> = Vec::new();
@@ -1884,6 +1953,13 @@ pub async fn scan_directory_deep_with_rules_progress(
             )
         })
         .collect();
+
+    tracing::info!(
+        "[TaintAnalysis] Stage B 完成：{} 文件，耗时 {:.1}s，产出 {} findings",
+        taint_total_files,
+        taint_scan_start.elapsed().as_secs_f64(),
+        all_results.iter().map(|(_, f, _, _, _)| f.len()).sum::<usize>()
+    );
 
     // 收集 findings + CPG 缓存 + Stage B 已解析 AST 产物
     for (fp, mut file_findings, file_cpgs, file_flows, file_ast) in all_results {

@@ -180,8 +180,22 @@ impl EnhancedFlowGraph {
         file_path: &str,
         function_name: &str,
     ) -> Self {
+        Self::from_ast_node_with_base(func_body_node, content, file_path, function_name, 0)
+    }
+
+    /// 从 tree-sitter AST 节点构建 CFG，节点行号减去 `line_base`
+    /// 转为相对行号（analyze_file 按函数分析时传 body_start_line - 1，
+    /// 与 from_code 的文本 CFG 坐标系一致，backlog 10.10）
+    pub fn from_ast_node_with_base(
+        func_body_node: &Node,
+        content: &str,
+        file_path: &str,
+        function_name: &str,
+        line_base: usize,
+    ) -> Self {
         let mut graph = Self::new(file_path, function_name);
         let mut builder = AstCFGBuilder::new(&mut graph);
+        builder.line_base = line_base;
         builder.build_from_node(func_body_node, content);
         graph.compute_dominators();
         graph
@@ -853,6 +867,10 @@ impl<'a> CFGBuilder<'a> {
 struct AstCFGBuilder<'a> {
     graph: &'a mut EnhancedFlowGraph,
     next_id: usize,
+    /// 行号基准：节点绝对行号减去该值，得到相对行号。
+    /// 0 = 保持文件绝对行号（默认，兼容既有调用方）；
+    /// analyze_file 按函数分析时传 body_start_line - 1（backlog 10.10）
+    line_base: usize,
 }
 
 impl<'a> AstCFGBuilder<'a> {
@@ -860,6 +878,7 @@ impl<'a> AstCFGBuilder<'a> {
         Self {
             graph,
             next_id: 2, // 跳过 entry(0) 和 exit(1)
+            line_base: 0,
         }
     }
 
@@ -930,7 +949,7 @@ impl<'a> AstCFGBuilder<'a> {
         scope_depth: usize,
     ) -> usize {
         let kind = node.kind();
-        let line = node.start_position().row + 1;
+        let line = (node.start_position().row + 1).saturating_sub(self.line_base);
         let code = content[node.byte_range()].to_string();
         let code_display = Self::truncate_to_char_boundary(&code, 200);
 
@@ -1058,7 +1077,7 @@ impl<'a> AstCFGBuilder<'a> {
         prev_id: usize,
         scope_depth: usize,
     ) -> usize {
-        let line = node.start_position().row + 1;
+        let line = (node.start_position().row + 1).saturating_sub(self.line_base);
         let code = content[node.byte_range()].to_string();
         let code_display = Self::truncate_to_char_boundary(&code, 200);
         let uses = self.extract_uses(node, content);
@@ -1156,7 +1175,7 @@ impl<'a> AstCFGBuilder<'a> {
         prev_id: usize,
         scope_depth: usize,
     ) -> usize {
-        let line = node.start_position().row + 1;
+        let line = (node.start_position().row + 1).saturating_sub(self.line_base);
         let code = content[node.byte_range()].to_string();
         let code_display = Self::truncate_to_char_boundary(&code, 200);
         let uses = self.extract_uses(node, content);
@@ -1215,7 +1234,7 @@ impl<'a> AstCFGBuilder<'a> {
         prev_id: usize,
         scope_depth: usize,
     ) -> usize {
-        let line = node.start_position().row + 1;
+        let line = (node.start_position().row + 1).saturating_sub(self.line_base);
 
         let try_id = self.create_node(
             EnhancedNodeType::Statement,
