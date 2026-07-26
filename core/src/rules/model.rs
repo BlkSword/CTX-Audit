@@ -50,6 +50,13 @@ pub struct Rule {
     /// 只覆盖子集视为防护不完整，仍报告。
     #[serde(default)]
     pub sanitizer_match: SanitizerMatch,
+    /// 命中点之后 N 行内出现 sanitizer 即豁免（默认 0 = 关闭）。
+    /// 用于"先取路径后校验"形态：校验调用在 sink 之后（如
+    /// `path = root.resolve(name); checkDirectoryTraversal(root, path);`），
+    /// 前缀语义看不到、文件级语义又会被同文件其他守卫/ import 误豁免。
+    /// 设置后替代前缀语义（仅看后向窗口，不看命中点之前）。
+    #[serde(default)]
+    pub sanitizer_after_lines: usize,
     /// true 时每个文件最多保留一个命中（缺失检查类规则：检查有无是文件级语义，
     /// 多个命中只是同一问题的重复报告）
     #[serde(default)]

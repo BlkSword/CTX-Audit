@@ -11,11 +11,17 @@ references:
   - "https://cwe.mitre.org/data/definitions/22.html"
 patterns:
   - language: java
-    pattern: (?i)(new\s+File\s*\(|FileInputStream\s*\(|Path\.of\s*\(|Paths\.get\s*\().*(?:request|param|input|user)
+    # CVE-2026-16088 回放反哺：补充 Path.resolve(受控文件名) 形态（getter 源无 request 字样）
+    pattern: (?i)(new\s+File\s*\(|FileInputStream\s*\(|Path\.of\s*\(|Paths\.get\s*\().*(?:request|param|input|user)|\.resolve\s*\([^)]*(?:getFilename|getOriginalFilename|fileName)
   - language: javascript
     pattern: '(?i)(readFile\s*\(|readFileSync\s*\(|writeFile\s*\(|writeFileSync\s*\(|fs\.open\s*\(|path\.join\s*\()[^)]*(?:req\.|request|param|input|user|socket\.on|callback)'
   - language: python
     pattern: '(?i)(open\s*\(|read_file\s*\(|file_get_contents\s*\().*(?:request|param|input|user)'
   - language: php
     pattern: (?i)(fopen\s*\(|readfile\s*\(|file_get_contents\s*\(|include\s*\(|require\s*\().*(?:\$_GET|\$_POST|\$_REQUEST|request|input)
+# 修复形态为 resolve 之后紧跟 checkDirectoryTraversal 校验（先取路径后校验），
+# 前缀语义看不到、文件级语义会被同文件 import/其他守卫误豁免，用后向窗口
+sanitizers:
+  - "checkDirectoryTraversal("
+sanitizer_after_lines: 3
 severity: high

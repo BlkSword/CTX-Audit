@@ -428,28 +428,59 @@ fn resolve_php_include(dir: &PathBuf, lit: &str) -> Option<PathBuf> {
 /// `sanitizer_match: all` 时要求全部 sanitizer 都出现才豁免（防护完整性检查）。
 /// `guard` 为 include 链守卫内容（10.13），命中即豁免——全局校验无"位置"语义。
 fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>) -> bool {
-    let effective_pos = if rule.sanitizer_file_scope {
-        content.len()
+    let match_all = rule.sanitizer_match == SanitizerMatch::All;
+    if rule.sanitizer_after_lines > 0 {
+        // 后向窗口语义：仅看命中点之后 N 行（替代前缀语义），
+        // 避免同文件 import/其他守卫造成的前缀误豁免
+        if is_sanitized_within_lines_after(content, pos, &rule.sanitizers, match_all, rule.sanitizer_after_lines) {
+            return true;
+        }
     } else {
-        pos
-    };
-    if is_sanitized_before(
-        content,
-        effective_pos,
-        &rule.sanitizers,
-        rule.sanitizer_match == SanitizerMatch::All,
-    ) {
-        return true;
+        let effective_pos = if rule.sanitizer_file_scope {
+            content.len()
+        } else {
+            pos
+        };
+        if is_sanitized_before(content, effective_pos, &rule.sanitizers, match_all) {
+            return true;
+        }
     }
     if let Some(guard) = guard {
-        return is_sanitized_before(
-            guard,
-            guard.len(),
-            &rule.sanitizers,
-            rule.sanitizer_match == SanitizerMatch::All,
-        );
+        return is_sanitized_before(guard, guard.len(), &rule.sanitizers, match_all);
     }
     false
+}
+
+/// 检查命中点之后 N 行内（含命中行剩余部分）是否出现 sanitizer 模式。
+/// 用于"先取路径后校验"形态：校验调用紧跟 sink 之后。
+fn is_sanitized_within_lines_after(
+    content: &str,
+    pos: usize,
+    sanitizers: &[String],
+    match_all: bool,
+    lines: usize,
+) -> bool {
+    if sanitizers.is_empty() || pos >= content.len() {
+        return false;
+    }
+    let mut end = content.len();
+    let mut seen = 0;
+    for (i, b) in content[pos..].bytes().enumerate() {
+        if b == b'\n' {
+            seen += 1;
+            if seen >= lines {
+                end = pos + i;
+                break;
+            }
+        }
+    }
+    let window = content[pos..end].to_lowercase();
+    let contains = |s: &String| window.contains(&s.to_lowercase());
+    if match_all {
+        sanitizers.iter().all(contains)
+    } else {
+        sanitizers.iter().any(contains)
+    }
 }
 
 /// 检查匹配位置之前是否出现 sanitizer 模式。
@@ -1209,6 +1240,7 @@ mod tests {
             exclude_string_literals: false,
             sanitizer_include_chain: false,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1246,6 +1278,7 @@ mod tests {
             exclude_string_literals: false,
             sanitizer_include_chain: false,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1285,6 +1318,7 @@ $upsql = Input::postStrVar('upsql', '');
             exclude_string_literals: false,
             sanitizer_include_chain: false,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1324,6 +1358,7 @@ $upsql = Input::postStrVar('upsql', '');
             exclude_string_literals: false,
             sanitizer_include_chain: false,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1335,6 +1370,55 @@ $upsql = Input::postStrVar('upsql', '');
         let file_findings =
             RuleScanner::new(vec![mk_rule(true)]).scan_file_sync(&PathBuf::from("w.php"), content);
         assert_eq!(file_findings.len(), 0, "文件级语义下全文件任一处 checkToken 即豁免");
+    }
+
+    #[test]
+    fn test_sanitizer_after_lines_window() {
+        // sanitizer_after_lines=N：命中点之后 N 行内出现 sanitizer 即豁免，
+        // 且不受命中点之前文本影响（import/其他守卫不造成误豁免）。
+        // CVE-2026-16088 场景：resolve 后紧跟 checkDirectoryTraversal 校验
+        let guarded = "import static x.FileUtils.checkDirectoryTraversal;\nclass T {\n  void f() {\n    var p = root.resolve(name);\n    checkDirectoryTraversal(root, p);\n  }\n}\n";
+        let unguarded = "import static x.FileUtils.checkDirectoryTraversal;\nclass T {\n  void f() {\n    var p = root.resolve(name);\n    return new FileSystemResource(p);\n  }\n}\n";
+        let mk_rule = |after: usize| Rule {
+            id: "path-traversal".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "java".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "java".to_string(),
+                pattern: r"\.resolve\s*\(".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-22".to_string()),
+            sanitizers: vec!["checkDirectoryTraversal(".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: after,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        // 前缀语义：校验在命中点之后 → 守卫版也无法豁免（正是本字段要解决的问题）
+        let prefix_guarded =
+            RuleScanner::new(vec![mk_rule(0)]).scan_file_sync(&PathBuf::from("T.java"), guarded);
+        assert_eq!(prefix_guarded.len(), 1, "前缀语义看不到命中点之后的校验");
+        let prefix_unguarded =
+            RuleScanner::new(vec![mk_rule(0)]).scan_file_sync(&PathBuf::from("T.java"), unguarded);
+        assert_eq!(prefix_unguarded.len(), 1);
+        // 后向窗口：守卫版豁免（校验在窗口内），未守卫版保留
+        let win_guarded =
+            RuleScanner::new(vec![mk_rule(2)]).scan_file_sync(&PathBuf::from("T.java"), guarded);
+        assert_eq!(win_guarded.len(), 0, "校验在命中后 2 行内，豁免");
+        let win_unguarded =
+            RuleScanner::new(vec![mk_rule(2)]).scan_file_sync(&PathBuf::from("T.java"), unguarded);
+        assert_eq!(win_unguarded.len(), 1, "窗口内无校验，保留命中");
     }
 
     #[test]
@@ -1379,6 +1463,7 @@ $upsql = Input::postStrVar('upsql', '');
             exclude_string_literals: exclude,
             sanitizer_include_chain: false,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1419,6 +1504,7 @@ $upsql = Input::postStrVar('upsql', '');
             exclude_string_literals: false,
             sanitizer_include_chain: false,
             php_bare_call_only: bare_only,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1468,6 +1554,7 @@ $upsql = Input::postStrVar('upsql', '');
             exclude_string_literals: false,
             sanitizer_include_chain: false,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1507,6 +1594,7 @@ $upsql = Input::postStrVar('upsql', '');
             exclude_string_literals: false,
             sanitizer_include_chain: false,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1539,6 +1627,7 @@ $upsql = Input::postStrVar('upsql', '');
             exclude_string_literals: false,
             sanitizer_include_chain: false,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
@@ -1644,6 +1733,7 @@ $upsql = Input::postStrVar('upsql', '');
             exclude_string_literals: false,
             sanitizer_include_chain: true,
             php_bare_call_only: false,
+            sanitizer_after_lines: 0,
             category: None,
             owasp: None,
             remediation: None,
