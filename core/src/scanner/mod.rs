@@ -825,6 +825,7 @@ struct TaintProgressGuard<'a> {
     done_counter: &'a std::sync::atomic::AtomicUsize,
     total: usize,
     scan_start: std::time::Instant,
+    trace: bool,
 }
 
 impl Drop for TaintProgressGuard<'_> {
@@ -834,6 +835,9 @@ impl Drop for TaintProgressGuard<'_> {
             .done_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
+        if self.trace {
+            tracing::info!("[TaintAnalysis] 完成分析: {}", self.file);
+        }
         // 单文件超 10s 大概率是病态文件（超线性热点定位线索）
         if elapsed.as_secs() >= 10 {
             tracing::warn!(
@@ -1588,6 +1592,9 @@ pub async fn scan_directory_deep_with_rules_progress(
     let taint_scan_start = std::time::Instant::now();
     let taint_done_counter = std::sync::atomic::AtomicUsize::new(0);
     let taint_total_files = all_file_data.len();
+    // 卡死文件定位手段：CTX_AUDIT_TRACE_FILES=1 时逐文件记录"开始分析"，
+    // 日志里最后一个有开始无完成的文件即病态文件（慢文件告警只在完成后触发，抓不到卡死）
+    let taint_trace_files = std::env::var_os("CTX_AUDIT_TRACE_FILES").is_some();
     type FileAst = (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>);
     let all_results: Vec<(
         String,
@@ -1606,7 +1613,11 @@ pub async fn scan_directory_deep_with_rules_progress(
                 done_counter: &taint_done_counter,
                 total: taint_total_files,
                 scan_start: taint_scan_start,
+                trace: taint_trace_files,
             };
+            if taint_trace_files {
+                tracing::info!("[TaintAnalysis] 开始分析: {}", file_path_str);
+            }
 
             let mut parsed_symbols: Vec<crate::ast::Symbol> = Vec::new();
             let mut parsed_calls: Vec<crate::ast::CallInfo> = Vec::new();

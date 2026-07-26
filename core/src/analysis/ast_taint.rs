@@ -407,6 +407,28 @@ impl AstTaintAnalyzer {
         content: &str,
         callback_hints: &[crate::analysis::async_flow::CallbackTaintHint],
     ) -> (Vec<TaintFlow>, HashMap<String, (String, usize)>) {
+        // 分支预算（10.12）：路径敏感污点状态随分支点数指数增长
+        // （合成用例实测每 +50 个 if 耗时翻倍，250 if ≈ 31s，300+ if 卡死），
+        // 超预算函数跳过污点传播，防止单个巨型函数拖死整轮扫描；
+        // 规则层扫描不受影响，仍覆盖该文件。
+        const MAX_TAINT_BRANCH_POINTS: usize = 80;
+        let branch_points = cpg
+            .cfg
+            .nodes
+            .iter()
+            .filter(|n| n.successors.len() >= 2)
+            .count();
+        if branch_points > MAX_TAINT_BRANCH_POINTS {
+            tracing::warn!(
+                "[TaintAnalysis] 函数 {} 分支点 {} 超过预算 {}，跳过污点传播（{}:{}）",
+                cpg.signature.name,
+                branch_points,
+                MAX_TAINT_BRANCH_POINTS,
+                cpg.signature.file_path,
+                cpg.signature.start_line
+            );
+            return (Vec::new(), HashMap::new());
+        }
         let assignments: Vec<Assignment> = cpg
             .node_meta
             .values()
@@ -3777,6 +3799,45 @@ def handler():
             flow.sink.line, 7,
             "sink 行号应为文件绝对行号 7，实际: {}",
             flow.sink.line
+        );
+    }
+
+    /// backlog 10.12 回归：分支点超过预算（80）的函数跳过污点传播——
+    /// 路径敏感状态随分支数指数增长（合成用例每 +50 if 耗时翻倍，
+    /// 300+ if 卡死整轮扫描，nocodb columns.service.ts columnUpdate 案例）。
+    /// 必须用 JS/TS 验证：fragment CPG 才构建真实分支边（Python 走
+    /// text 回退 CFG，无分支结构，不会爆炸也不会触发预算）。
+    #[test]
+    fn test_branch_budget_skips_giant_function() {
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("app.js");
+
+        let mut big = String::from("async function handler(req) {\n  const q = req.query.x;\n");
+        for i in 0..120 {
+            big.push_str(&format!(
+                "  if (req.c{i}) {{ document.getElementById(\"a\").innerHTML = q; }}\n"
+            ));
+        }
+        big.push_str("}\n");
+        let report = analyzer.analyze_file_cpg(&path, &big);
+        assert!(
+            report.flows.is_empty(),
+            "分支超预算函数应跳过污点传播，实际产出 {} 条 flow",
+            report.flows.len()
+        );
+
+        // 对照：预算内的同构代码正常检出（证明预算分支是跳过原因，而非链路本身不工作）
+        let mut small = String::from("async function handler(req) {\n  const q = req.query.x;\n");
+        for i in 0..5 {
+            small.push_str(&format!(
+                "  if (req.c{i}) {{ document.getElementById(\"a\").innerHTML = q; }}\n"
+            ));
+        }
+        small.push_str("}\n");
+        let report = analyzer.analyze_file_cpg(&path, &small);
+        assert!(
+            !report.flows.is_empty(),
+            "预算内函数的污点流应正常产出"
         );
     }
 
