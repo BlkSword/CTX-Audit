@@ -1445,21 +1445,28 @@ impl AstTaintAnalyzer {
         if let Some(call) = call_by_line.get(&(node.start_line + line_offset)) {
             // 检查 sink（方法调用考虑 receiver，如 needle.get）
             if let Some(sink) = self.match_sink_for_call(call, language) {
-                let tainted_arg = call.arguments.iter().find(|arg| {
-                    arg.referenced_vars
-                        .iter()
-                        .any(|v| self.is_var_tainted_cpg(v, state, alias_map))
-                });
-
-                // 1. 检查参数是否被污染
+                // 1. 检查参数是否被污染；污点变量仅在净化器调用内部出现的参数
+                //    （内联净化，如 HtmlUtils.htmlEscape(keyword)）跳过
                 let mut tainted_var: Option<String> = None;
-                if let Some(arg) = tainted_arg {
-                    tainted_var = arg
+                for arg in &call.arguments {
+                    let Some(used_var) = arg
                         .referenced_vars
                         .iter()
                         .find(|v| self.is_var_tainted_cpg(v, state, alias_map))
-                        .and_then(|v| self.resolve_tainted_var_cpg(v, state, alias_map))
-                        .or_else(|| Some(arg.referenced_vars[0].clone()));
+                    else {
+                        continue;
+                    };
+                    let resolved = self
+                        .resolve_tainted_var_cpg(used_var, state, alias_map)
+                        .unwrap_or_else(|| arg.referenced_vars[0].clone());
+                    // 表达式文本中出现的是 used_var（可能是别名），两者都检查
+                    if self.is_inline_sanitized(&arg.text, used_var)
+                        || self.is_inline_sanitized(&arg.text, &resolved)
+                    {
+                        continue;
+                    }
+                    tainted_var = Some(resolved);
+                    break;
                 }
 
                 // 2. 检查 receiver 是否被污染（如 statement.executeQuery() 中 statement 由 prepareCall(sql) 生成）
@@ -2167,18 +2174,29 @@ impl AstTaintAnalyzer {
 
         // 1. 检查是否匹配 sink（方法调用考虑 receiver，如 needle.get）
         if let Some(sink) = self.match_sink_for_call(call, language) {
-            // 检查参数是否包含污点变量（直接 + 别名解析）
+            // 检查参数是否包含污点变量（直接 + 别名解析）；
+            // 污点变量仅在净化器调用内部出现的参数（内联净化，
+            // 如 HtmlUtils.htmlEscape(keyword)）跳过
             let mut tainted_var: Option<String> = None;
-            if let Some(arg) = call.arguments.iter().find(|arg| {
-                arg.referenced_vars
-                    .iter()
-                    .any(|v| self.is_var_tainted(v, state, alias_map))
-            }) {
-                tainted_var = arg
+            for arg in &call.arguments {
+                let Some(used_var) = arg
                     .referenced_vars
                     .iter()
-                    .find_map(|v| self.resolve_tainted_var(v, state, alias_map))
-                    .or_else(|| Some(arg.referenced_vars[0].clone()));
+                    .find(|v| self.is_var_tainted(v, state, alias_map))
+                else {
+                    continue;
+                };
+                let resolved = self
+                    .resolve_tainted_var(used_var, state, alias_map)
+                    .unwrap_or_else(|| arg.referenced_vars[0].clone());
+                // 表达式文本中出现的是 used_var（可能是别名），两者都检查
+                if self.is_inline_sanitized(&arg.text, used_var)
+                    || self.is_inline_sanitized(&arg.text, &resolved)
+                {
+                    continue;
+                }
+                tainted_var = Some(resolved);
+                break;
             }
 
             // 检查 receiver 是否被污染（如 statement.executeQuery()）
@@ -2634,6 +2652,103 @@ impl AstTaintAnalyzer {
             start = abs + 1;
         }
         false
+    }
+
+    /// 判断污点变量在表达式中是否仅出现在净化器调用内部（内联净化）。
+    ///
+    /// 典型场景：sink 调用的参数被净化器就地包裹，
+    /// 如 `model.addAttribute("keyword", HtmlUtils.htmlEscape(keyword))`，
+    /// 此时污点变量 keyword 虽然到达 sink，但已被内联净化，不应产生 finding。
+    ///
+    /// 判定逻辑：
+    /// 1. 按标识符边界收集表达式中所有净化器调用的参数区间（平衡括号），
+    ///    复用 expr_mentions_sanitizer 的边界语义，避免 encode/encodeBase64 误命中；
+    /// 2. 污点变量的每次完整出现（标识符边界）都必须落在某个净化器调用的
+    ///    参数区间内，否则视为未净化（如 `sink(escape(x), x)` 中第二个 x）。
+    fn is_inline_sanitized(&self, expr: &str, tainted_var: &str) -> bool {
+        if tainted_var.is_empty() {
+            return false;
+        }
+        let bytes = expr.as_bytes();
+        let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+        // ── 收集净化器调用的参数区间（开括号到配对的闭括号）──────────────
+        let mut sanitized_spans: Vec<(usize, usize)> = Vec::new();
+        for pattern in self.sanitizer_patterns.iter() {
+            let mut start = 0;
+            while let Some(pos) = expr[start..].find(pattern.as_str()) {
+                let abs = start + pos;
+                let end = abs + pattern.len();
+                // 与 expr_mentions_sanitizer 一致的后置边界语义
+                let followed_by_ident = bytes.get(end).map(|&b| is_ident(b)).unwrap_or(false);
+                if followed_by_ident {
+                    start = abs + 1;
+                    continue;
+                }
+                // 跳过空白与可选的 .method 链（如 HtmlUtils.htmlEscape），定位开括号
+                let mut i = end;
+                loop {
+                    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    if bytes.get(i) == Some(&b'.') {
+                        i += 1;
+                        while i < bytes.len() && is_ident(bytes[i]) {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+                if bytes.get(i) == Some(&b'(') {
+                    // 平衡括号提取整个调用的参数区间
+                    let mut depth = 0usize;
+                    let mut j = i;
+                    while j < bytes.len() {
+                        match bytes[j] {
+                            b'(' => depth += 1,
+                            b')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        j += 1;
+                    }
+                    if depth == 0 {
+                        sanitized_spans.push((i, j));
+                    }
+                }
+                start = abs + 1;
+            }
+        }
+        if sanitized_spans.is_empty() {
+            return false;
+        }
+
+        // ── 污点变量的每次完整出现都必须位于某个净化器调用区间内 ──────────
+        let mut found_any = false;
+        let mut start = 0;
+        while let Some(pos) = expr[start..].find(tainted_var) {
+            let abs = start + pos;
+            let end = abs + tainted_var.len();
+            let prev_ok = abs == 0 || !is_ident(bytes[abs - 1]);
+            let next_ok = end >= bytes.len() || !is_ident(bytes[end]);
+            start = abs + 1;
+            if !prev_ok || !next_ok {
+                continue;
+            }
+            found_any = true;
+            if !sanitized_spans
+                .iter()
+                .any(|&(s, e)| abs > s && end <= e)
+            {
+                return false;
+            }
+        }
+        found_any
     }
 
     /// 数据类型推断：检测是否使用了参数化查询模式
@@ -4029,6 +4144,134 @@ eval(user_input)"#;
             "analyze_file should detect Java SQLi, got {} flows",
             flows.len()
         );
+    }
+
+    #[test]
+    fn test_java_xss_inline_sanitizer_in_sink_arg_no_flow() {
+        // 内联净化：污点变量仅在 sink 参数的净化器调用内部出现，不应产生 finding。
+        // 使用无 receiver 的净化器（escapeHtml），保证按行去重后 sink 调用
+        // （addAttribute）本身被保留，真正走到 is_inline_sanitized 判定。
+        let code = r#"public class SearchController {
+    public String search(HttpServletRequest request, Model model) {
+        String keyword = request.getParameter("keyword");
+        model.addAttribute("keyword", escapeHtml(keyword));
+        return "search";
+    }
+}"#;
+        let mut analyzer = analyzer_with_yaml_rules();
+        let path = std::path::PathBuf::from("SearchController.java");
+        let flows = analyzer.analyze_code(code, &path, "search", &[], &[]);
+        assert!(
+            flows.is_empty(),
+            "内联净化的 addAttribute 参数不应产生 XSS finding，实际 {} 条",
+            flows.len()
+        );
+    }
+
+    #[test]
+    fn test_java_xss_sink_arg_without_sanitizer_reports() {
+        // 对照组：去掉内联净化后，同样的 addAttribute 调用必须报出
+        let code = r#"public class SearchController {
+    public String search(HttpServletRequest request, Model model) {
+        String keyword = request.getParameter("keyword");
+        model.addAttribute("keyword", keyword);
+        return "search";
+    }
+}"#;
+        let mut analyzer = analyzer_with_yaml_rules();
+        let path = std::path::PathBuf::from("SearchController.java");
+        let flows = analyzer.analyze_code(code, &path, "search", &[], &[]);
+        assert!(
+            !flows.is_empty(),
+            "未净化的 addAttribute 参数应产生 XSS finding"
+        );
+    }
+
+    #[test]
+    fn test_java_analyze_file_xss_inline_sanitizer_no_flow() {
+        // halo ContentSearchController 误报原样形态（HtmlUtils.htmlEscape 包裹
+        // addAttribute 参数），analyze_file 路径不应产生 finding
+        let code = r#"public class SearchController {
+    public String search(HttpServletRequest request, Model model) {
+        String keyword = request.getParameter("keyword");
+        model.addAttribute("keyword", HtmlUtils.htmlEscape(keyword));
+        return "search";
+    }
+}"#;
+        let mut analyzer = analyzer_with_yaml_rules();
+        let path = std::path::PathBuf::from("SearchController.java");
+        let flows = analyzer.analyze_file(&path, code);
+        assert!(
+            flows.is_empty(),
+            "analyze_file 路径下内联净化不应产生 XSS finding，实际 {} 条",
+            flows.len()
+        );
+    }
+
+    #[test]
+    fn test_java_xss_partial_inline_sanitizer_still_reports() {
+        // 部分净化：同一调用中另一个参数仍直接引用污点变量，必须报出
+        let code = r#"public class SearchController {
+    public String search(HttpServletRequest request, Model model) {
+        String keyword = request.getParameter("keyword");
+        model.addAttribute(escapeHtml(keyword), keyword);
+        return "search";
+    }
+}"#;
+        let mut analyzer = analyzer_with_yaml_rules();
+        let path = std::path::PathBuf::from("SearchController.java");
+        let flows = analyzer.analyze_code(code, &path, "search", &[], &[]);
+        assert!(
+            !flows.is_empty(),
+            "存在未净化参数时应仍产生 XSS finding"
+        );
+    }
+
+    #[test]
+    fn test_java_xss_inline_sanitizer_cpg_path() {
+        // CPG 生产路径（analyze_file_cpg）开/关对照：
+        // 带内联净化不报、去掉净化报
+        let sanitized_code = r#"public class SearchController {
+    public String search(HttpServletRequest request, Model model) {
+        String keyword = request.getParameter("keyword");
+        model.addAttribute("keyword", escapeHtml(keyword));
+        return "search";
+    }
+}"#;
+        let raw_code = sanitized_code.replace("escapeHtml(keyword)", "keyword");
+        let path = std::path::PathBuf::from("SearchController.java");
+
+        let mut analyzer = analyzer_with_yaml_rules();
+        let report = analyzer.analyze_file_cpg(&path, sanitized_code);
+        assert!(
+            report.flows.is_empty(),
+            "CPG 路径下内联净化不应产生 XSS finding，实际 {} 条",
+            report.flows.len()
+        );
+
+        let mut analyzer = analyzer_with_yaml_rules();
+        let report = analyzer.analyze_file_cpg(&path, &raw_code);
+        assert!(
+            !report.flows.is_empty(),
+            "CPG 路径下未净化的 addAttribute 参数应产生 XSS finding"
+        );
+    }
+
+    #[test]
+    fn test_is_inline_sanitized_unit() {
+        // is_inline_sanitized 辅助函数的边界语义直测
+        let analyzer = analyzer_with_yaml_rules();
+        // 污点变量仅在净化器调用内部 → true
+        assert!(analyzer.is_inline_sanitized("HtmlUtils.htmlEscape(keyword)", "keyword"));
+        assert!(analyzer.is_inline_sanitized("escapeHtml(keyword)", "keyword"));
+        assert!(analyzer.is_inline_sanitized("URLEncoder.encode(x, \"UTF-8\")", "x"));
+        // 无净化器 / 净化器外仍有裸引用 → false
+        assert!(!analyzer.is_inline_sanitized("keyword", "keyword"));
+        assert!(!analyzer.is_inline_sanitized("escapeHtml(keyword) + keyword", "keyword"));
+        // 标识符边界：encodeBase64 不得命中 "encode" 净化器
+        assert!(!analyzer.is_inline_sanitized("Base64.encodeBase64(data)", "data"));
+        // 变量名边界：keyword 不得命中 key
+        assert!(!analyzer.is_inline_sanitized("escapeHtml(keyword)", "key"));
     }
 
     #[test]
