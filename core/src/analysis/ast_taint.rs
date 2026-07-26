@@ -1255,7 +1255,11 @@ impl AstTaintAnalyzer {
 
             if let Some(src_var) = tainted_source_var {
                 let src_path = AccessPath::from_dotted(&src_var);
-                let src_vt = state.find_taint_for_path(&src_path).unwrap().clone();
+                // 防御：is/resolve 判定与 find_taint_for_path 存在边角不一致
+                // （如 sanitized 条目），解析不到就放弃本次传播而不是 panic
+                let Some(src_vt) = state.find_taint_for_path(&src_path).cloned() else {
+                    return None;
+                };
                 let mut steps = src_vt.propagation_steps.clone();
                 steps.push(PropagationStep {
                     step_type: if is_sanitized {
@@ -1366,7 +1370,10 @@ impl AstTaintAnalyzer {
                     .unwrap_or_else(|| node.uses[0].clone());
 
                 let src_path = AccessPath::from_dotted(&tainted_var);
-                let src_vt = state.find_taint_for_path(&src_path).unwrap().clone();
+                // 防御：解析不到污点状态时跳过，不 panic
+                let Some(src_vt) = state.find_taint_for_path(&src_path).cloned() else {
+                    return None;
+                };
                 for def in &node.defs {
                     let mut steps = src_vt.propagation_steps.clone();
                     steps.push(PropagationStep {
@@ -1533,6 +1540,13 @@ impl AstTaintAnalyzer {
         // 别名解析
         for alias_path in alias_map.resolve(var) {
             if state.get_exact(&alias_path).is_some() {
+                return Some(alias_path.as_dotted());
+            }
+        }
+        // 别名前缀匹配 — 与 is_var_tainted_cpg 的判定保持一致，
+        // 避免"判定污染但解析不出路径"导致上游 unwrap panic
+        for alias_path in alias_map.resolve(var) {
+            if state.find_taint_for_path(&alias_path).is_some() {
                 return Some(alias_path.as_dotted());
             }
         }
