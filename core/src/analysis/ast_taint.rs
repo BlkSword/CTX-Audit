@@ -2414,7 +2414,25 @@ impl AstTaintAnalyzer {
                 }
             }
         }
-        self.find_matching_sink(&call.callee, None, language)
+        if let Some(s) = self.find_matching_sink(&call.callee, None, language) {
+            return Some(s);
+        }
+
+        // storage_write 闸门 sink 补充匹配：SQL 写往往包在字符串参数里
+        // （$this->db->query("INSERT INTO ...")、cursor.execute("UPDATE ...")），
+        // callee/receiver 匹配不到。闸门只发事件不产 finding，
+        // 容许对参数文本做子串匹配（backlog 10.9 的闸门侧修复）
+        self.sinks.iter().find(|sink| {
+            sink.storage_write
+                && sink.match_mode == super::taint::MatchMode::Substring
+                && (language == "*"
+                    || language.is_empty()
+                    || sink.languages.iter().any(|l| l == "*" || l == language))
+                && call
+                    .arguments
+                    .iter()
+                    .any(|a| sink.patterns.iter().any(|p| a.text.contains(p.as_str())))
+        })
     }
 
     /// 从简单的调用表达式字符串中尝试提取 (receiver, callee)。
@@ -4610,6 +4628,66 @@ def save(cur):
             report.tainted_vars.contains_key("debug"),
             "expected 'debug' in tainted_vars, got: {:?}",
             report.tainted_vars.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_python_cur_execute_abbreviated_receiver() {
+        // backlog 10.9：缩写 receiver（cur vs cursor）此前导致 SQL sink 失配。
+        // R21 合成验证 save.py 的 cur.execute(sql) 一阶 SQLi 未检出即此缺口。
+        let code = r#"from flask import request
+
+def save():
+    name = request.args.get('name')
+    sql = "SELECT * FROM users WHERE name = '" + name + "'"
+    cur.execute(sql)
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("save.py");
+        let report = analyzer.analyze_file_cpg(&path, code);
+        assert!(
+            report
+                .flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::SqlInjection)),
+            "expected SQL Injection flow via cur.execute, got: {:?}",
+            report
+                .flows
+                .iter()
+                .map(|f| format!("{}:{}", f.vulnerability_type, f.sink.symbol))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_storage_write_gate_via_sql_string_arg() {
+        // storage_write 闸门补充匹配：SQL 写包在字符串参数里
+        // （$this->repo->write("INSERT INTO ...")），callee/receiver 匹配不到
+        // 任何 sink 时，对参数文本做子串匹配发出闸门事件。
+        // 注：若调用本身命中 SQLi sink（如 mysqli_query），优先产出 SQLi flow
+        // （一阶注入本就该报），闸门事件不重复发——scanner 闸门统计的已知残缺口。
+        let code = r#"<?php
+class Repo {
+    function save() {
+        $name = $_POST['name'];
+        $this->repo->write("INSERT INTO comments (name) VALUES ('$name')");
+    }
+}
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("comment.php");
+        let report = analyzer.analyze_file_cpg(&path, code);
+        assert!(
+            report
+                .flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::StorageWrite)),
+            "expected StorageWrite gate flow, got: {:?}",
+            report
+                .flows
+                .iter()
+                .map(|f| format!("{}:{}", f.vulnerability_type, f.sink.symbol))
+                .collect::<Vec<_>>()
         );
     }
 }

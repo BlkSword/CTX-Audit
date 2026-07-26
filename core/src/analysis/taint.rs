@@ -245,7 +245,22 @@ impl TaintSink {
             if !self.receiver_patterns.is_empty() && !self.patterns.is_empty() {
                 let recv_lower = recv.to_lowercase();
                 for receiver_pattern in &self.receiver_patterns {
-                    if recv_lower.contains(&receiver_pattern.to_lowercase()) {
+                    let rp = receiver_pattern.to_lowercase();
+                    // 短 pattern（≤3 字符）用边界感知匹配：全等，或以后缀出现且
+                    // 前置字符非字母数字。避免缩写 pattern 误伤——
+                    // 如 "cur" 子串命中 "security"（backlog 10.9）
+                    let hit = if rp.len() <= 3 {
+                        recv_lower == rp
+                            || (recv_lower.ends_with(&rp)
+                                && recv_lower[..recv_lower.len() - rp.len()]
+                                    .chars()
+                                    .last()
+                                    .map(|c| !c.is_alphanumeric())
+                                    .unwrap_or(true))
+                    } else {
+                        recv_lower.contains(&rp)
+                    };
+                    if hit {
                         for pattern in &self.patterns {
                             if Self::pattern_matches_func_name(pattern, func_name) {
                                 return true;
@@ -1769,6 +1784,37 @@ mod tests {
         assert!(!sink.matches_with_context("query", Some("document"), "python"));
         // Semantic 模式未命中时不应回退到 substring
         assert!(!sink.matches("myObj.query()", "python"));
+    }
+
+    #[test]
+    fn test_receiver_pattern_short_boundary() {
+        // 短 receiver pattern（≤3 字符）边界感知匹配：
+        // "cur" 全等/边界后缀命中，但不得子串误伤 "security"（backlog 10.9）
+        let sink = TaintSink {
+            id: "sql".to_string(),
+            name: "SQL".to_string(),
+            description: String::new(),
+            patterns: vec![".execute".to_string()],
+            languages: vec!["*".to_string()],
+            vulnerability_type: VulnerabilityType::SqlInjection,
+            severity: Severity::Critical,
+            cwe_id: None,
+            sensitive_params: vec![0],
+            ast_patterns: vec![],
+            match_mode: MatchMode::Semantic,
+            namespaces: vec![],
+            receiver_patterns: vec!["cursor".to_string(), "cur".to_string()],
+            exact_matches: vec![],
+            sanitizers: vec![],
+            storage_write: false,
+        };
+
+        assert!(sink.matches_with_context(".execute", Some("cur"), "python"));
+        assert!(sink.matches_with_context(".execute", Some("cursor"), "python"));
+        // "$this->cur" 边界后缀（前置字符非字母数字）应命中
+        assert!(sink.matches_with_context(".execute", Some("$this->cur"), "php"));
+        // "security" 包含 "cur" 子串但无边界，不得命中
+        assert!(!sink.matches_with_context(".execute", Some("security"), "python"));
     }
 
     #[test]

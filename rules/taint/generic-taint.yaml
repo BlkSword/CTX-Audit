@@ -102,6 +102,8 @@ sinks:
       - "pool"
       - "client"
       - "cursor"
+      - "cur"
+      - "cnn"
       - "db"
       - "database"
       - "statement"
