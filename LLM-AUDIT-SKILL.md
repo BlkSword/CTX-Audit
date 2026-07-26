@@ -21,7 +21,9 @@
 
 ---
 
-## 完整审计工作流（4 阶段）
+## 完整审计工作流（4 阶段 + Phase 2.5 链式深审）
+
+> 漏斗管全量（Phase 0-3），链式管高价值切片（Phase 2.5）。混合模式定义见 docs/audit-rounds/methodology.md 第 11 节（本地私有）。
 
 ### Phase 0: 项目理解（2 步）
 
@@ -75,6 +77,47 @@
     如果调用者是中间层 → 继续 query_callers 往上追
     如果调用者是 JVM 内部（如 defaultReadObject）→ 这是 gadget，继续查其他 finding
 ```
+
+### Phase 2.5: 链式深审（高价值切片，插入 Phase 2 与 Phase 3 之间）
+
+**进入条件**（满足其一即对该切片启动链式深审，其余 finding 继续走 Phase 2 抽样裁决）：
+
+1. 二阶 finding（source 标签含 `(second-order)`）且项目存在 StorageWrite 闸门事件——疑似存储型漏洞两半都在；
+2. 高危 finding 组在 Phase 2 取证中出现"链中段证据充分但 source/sink 端点存疑"；
+3. 跨文件 flow 在注册点/回调处断链但两端各自成立。
+
+**切片挑选规则**（按优先级，每轮深审不超过 5 条链）：
+
+- P0：二阶 finding——链天然断成两截，抽样裁决误判率最高；
+- P1：critical/high 且传播路径 ≥ 3 跳——长链中段最容易藏净化；
+- P2：跨文件 flow，或 confidence 在 0.5–0.8 之间——引擎自己不确定的。
+
+**链式深审固定五步**（每条链完整走完，不抽样）：
+
+```
+C1 拿到链：从 audit_plan 分组 / trace_taint / query_taint(模式C) 获取完整 flow
+C2 核实 source 端点：
+    query_taint(file_path=<flow所在文件>, variable=<source变量>)
+    → 确认变量确被污染、被谁污染、来源行
+    二阶 source 额外确认"存储点存在"：
+    query_taint(storage_writes=true, path=<相关目录>)
+C3 逐跳核实（沿 flow.path 每个节点）：
+    get_code_context(file, line, context_lines=10)
+    每跳只回答三个问题：
+    ① 数据真的从上一跳流到这里吗（读代码确认赋值/传参关系）
+    ② 这一跳有净化吗（check_sanitizer + 读代码确认强转/白名单/预编译，
+       注意同行净化如 (int)$row['pid']）
+    ③ 这一跳可达吗（死代码/条件编译/未注册路由）
+C4 核实 sink 语义：sink 规则命中 ≠ 漏洞成立
+    （如 preg_replace 无 /e 修饰符不是代码执行，mysqli_prepare 是预编译）
+C5 结论回写（见下）
+```
+
+**结论回写规范**（每条链必须有且仅有一个结论）：
+
+- **闭环（TP）**：五步全部通过 → `log_investigation_step` 记录完整攻击链（入口→每跳→sink），`conclude_investigation` 标记 TP，进入 `audit_finalize_report` 报告候选；
+- **断链（FP）**：必须记录断在哪一跳、为什么（净化/不可达/sink 语义不成立），`conclude_investigation` 标记 FP——这些判据是规则反哺的输入，不能只写"误报"；
+- **存疑**：标注缺什么证据（如"无法确认存储点是否被攻击者可控数据写入"），不进报告但不丢弃，留在会话中供后续轮次复查。
 
 ### Phase 3: 交叉验证 + 判定
 
@@ -135,6 +178,7 @@
 | `check_sanitizer` | 检查函数是否为已知净化器 |
 | `list_sources` | 列出文件内所有污点源 |
 | `list_sinks` | 列出文件内所有污点汇 |
+| `query_taint` | **新**——反向查询污点状态：变量是否被污染（被谁污染、来源行）、列出项目持久层写入事件（StorageWrite 闸门）、文件级污点摘要。Phase 2.5 链式深审核心工具 |
 
 ### 代码搜索
 
