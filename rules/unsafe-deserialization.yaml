@@ -1,5 +1,6 @@
 category: security-misconfiguration
 cwe: CWE-502
+php_bare_call_only: true
 description: 检测不安全的反序列化：使用不安全的反序列化方法
 id: unsafe-deserialization
 language: all

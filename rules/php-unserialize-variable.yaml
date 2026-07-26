@@ -1,5 +1,6 @@
 category: security-misconfiguration
 cwe: CWE-502
+php_bare_call_only: true
 description: 检测 PHP unserialize 间接变量来源：unserialize 的参数为普通变量，需人工确认数据是否外部可控（数据库内容、缓存、session 等二阶来源通常风险较低）
 id: php-unserialize-variable
 language: php

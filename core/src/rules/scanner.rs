@@ -112,6 +112,9 @@ impl RuleScanner {
         // PHP include 链守卫内容（10.13）：仅在带 sanitizer_include_chain 的
         // 规则首次做 sanitizer 检查时解析一次
         let mut guard_content_cache: Option<Option<String>> = None;
+        // PHP 非裸调用形态的名字范围（php_bare_call_only 规则）：->method(、
+        // ::method(、new Foo(、function foo( 的命中不是内建函数裸调用
+        let mut php_bare_call_ranges_cache: Option<Vec<(usize, usize)>> = None;
 
         for compiled in &self.compiled_rules {
             // Simple language check based on extension
@@ -147,6 +150,17 @@ impl RuleScanner {
                                     collect_string_ranges(content, &extension)
                                 });
                                 if position_in_ranges(sranges, start_pos) {
+                                    continue;
+                                }
+                            }
+                            if compiled.rule.php_bare_call_only {
+                                // 命中文本与"非裸调用名"范围有交叠即丢弃——
+                                // $pdo->exec( 的命中带前缀字符 `>`，用区间
+                                // 交叠而非点位判断
+                                let branges = php_bare_call_ranges_cache.get_or_insert_with(|| {
+                                    collect_php_non_bare_call_ranges(content, &extension)
+                                });
+                                if range_overlaps_ranges(branges, start_pos, m.end()) {
                                     continue;
                                 }
                             }
@@ -876,6 +890,7 @@ fn get_language_for_rule(language: &str) -> Option<Language> {
 fn get_language_for_extension(extension: &str) -> Option<Language> {
     match extension {
         "py" => Some(tree_sitter_python::LANGUAGE.into()),
+        "php" | "phtml" => Some(tree_sitter_php::LANGUAGE_PHP.into()),
         "js" | "jsx" | "mjs" | "cjs" => Some(tree_sitter_javascript::LANGUAGE.into()),
         "ts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
@@ -978,6 +993,64 @@ fn collect_node_ranges(
         if pred(node.kind()) {
             ranges.push((node.start_byte(), node.end_byte()));
             continue; // 该类节点不会再嵌套代码
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    ranges.sort_unstable();
+    ranges
+}
+
+/// 判断字节区间 [start, end) 是否与任一已排序范围有交叠
+fn range_overlaps_ranges(ranges: &[(usize, usize)], start: usize, end: usize) -> bool {
+    if start >= end {
+        return false;
+    }
+    // 二分找到第一个 end > start 的范围，若其 start < end 则交叠
+    let idx = ranges.partition_point(|&(_, e)| e <= start);
+    match ranges.get(idx) {
+        Some(&(s, _)) => s < end,
+        None => false,
+    }
+}
+
+/// 收集 PHP 文件中"非裸调用"形态的被调用名/定义名字节范围：
+/// 方法调用（member_call_expression）、静态调用（scoped_call_expression）、
+/// 构造调用（object_creation_expression）、函数/方法定义（function_definition /
+/// method_declaration）。命中点落在这些名字范围内即不是内建函数裸调用
+/// （`$pdo->exec(`、`Foo::exec(`、`new System()`、`function exec(`）。
+/// 非 PHP 文件返回空表（即不做过滤）。
+fn collect_php_non_bare_call_ranges(content: &str, extension: &str) -> Vec<(usize, usize)> {
+    if extension != "php" && extension != "phtml" {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    let lang: Language = tree_sitter_php::LANGUAGE_PHP.into();
+    let mut parser = Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return ranges;
+    }
+    let tree = match parser.parse(content, None) {
+        Some(t) => t,
+        None => return ranges,
+    };
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let name_node = match node.kind() {
+            // $obj->method(：被调用方法名
+            "member_call_expression" => node.child_by_field_name("name"),
+            // Foo::method(：被调用方法名
+            "scoped_call_expression" => node.child_by_field_name("name"),
+            // new Foo(：类名（0.23 无 name 字段，取首个命名子节点）
+            "object_creation_expression" => node.named_child(0),
+            // function foo(/方法定义：定义名
+            "function_definition" | "method_declaration" => node.child_by_field_name("name"),
+            _ => None,
+        };
+        if let Some(n) = name_node {
+            ranges.push((n.start_byte(), n.end_byte()));
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -1135,6 +1208,7 @@ mod tests {
             once_per_file: false,
             exclude_string_literals: false,
             sanitizer_include_chain: false,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1171,6 +1245,7 @@ mod tests {
             once_per_file: false,
             exclude_string_literals: false,
             sanitizer_include_chain: false,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1209,6 +1284,7 @@ $upsql = Input::postStrVar('upsql', '');
             once_per_file: false,
             exclude_string_literals: false,
             sanitizer_include_chain: false,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1247,6 +1323,7 @@ $upsql = Input::postStrVar('upsql', '');
             once_per_file: false,
             exclude_string_literals: false,
             sanitizer_include_chain: false,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1301,6 +1378,7 @@ $upsql = Input::postStrVar('upsql', '');
             once_per_file: false,
             exclude_string_literals: exclude,
             sanitizer_include_chain: false,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1314,6 +1392,55 @@ $upsql = Input::postStrVar('upsql', '');
             RuleScanner::new(vec![mk_rule(true)]).scan_file_sync(&PathBuf::from("a.c"), content);
         assert_eq!(on_findings.len(), 1, "开启后只保留真实调用");
         assert_eq!(on_findings[0].line_start, 1);
+    }
+
+    #[test]
+    fn test_php_bare_call_only_drops_non_bare_call_forms() {
+        // php_bare_call_only=true：$pdo->exec(、Foo::exec(、new System()、
+        // function exec( 定义点全部丢弃；裸 exec( 调用保留——kanboard Schema
+        // $pdo->exec 与 pagekit Connection::exec 定义点场景
+        let mk_rule = |bare_only: bool| Rule {
+            id: "command-injection".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Critical,
+            language: "php".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "php".to_string(),
+                pattern: r"(?i)(?:^|[^\w])(?:system|exec)\s*\(".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-78".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: bare_only,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let content = concat!(
+            "<?php\n",
+            "class C { public function exec($s) { return parent::exec($s); } }\n",
+            "$pdo->exec($sql);\n",
+            "Foo::exec($cmd);\n",
+            "$d = new System();\n",
+            "exec($user_input);\n",
+        );
+        let off = RuleScanner::new(vec![mk_rule(false)])
+            .scan_file_sync(&PathBuf::from("a.php"), content);
+        assert!(off.len() >= 5, "默认不消歧：方法/静态/构造/定义/裸调用全报，实际 {}", off.len());
+        let on = RuleScanner::new(vec![mk_rule(true)])
+            .scan_file_sync(&PathBuf::from("a.php"), content);
+        assert_eq!(on.len(), 1, "开启后只保留裸调用，实际 {:?}", on.iter().map(|f| f.line_start).collect::<Vec<_>>());
+        // 行号为 5 的原因：命中含前缀换行符（(?:^|[^\w]) 消费了 \n），
+        // 行号按命中起点计算——与生产 pattern 行为一致
+        assert_eq!(on[0].line_start, 5, "保留的应是裸 exec($user_input)");
     }
 
     #[test]
@@ -1340,6 +1467,7 @@ $upsql = Input::postStrVar('upsql', '');
             once_per_file: false,
             exclude_string_literals: false,
             sanitizer_include_chain: false,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1378,6 +1506,7 @@ $upsql = Input::postStrVar('upsql', '');
             once_per_file: false,
             exclude_string_literals: false,
             sanitizer_include_chain: false,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1409,6 +1538,7 @@ $upsql = Input::postStrVar('upsql', '');
             once_per_file: false,
             exclude_string_literals: false,
             sanitizer_include_chain: false,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1513,6 +1643,7 @@ $upsql = Input::postStrVar('upsql', '');
             once_per_file: true,
             exclude_string_literals: false,
             sanitizer_include_chain: true,
+            php_bare_call_only: false,
             category: None,
             owasp: None,
             remediation: None,

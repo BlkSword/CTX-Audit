@@ -1,5 +1,6 @@
 category: security-misconfiguration
 cwe: CWE-502
+php_bare_call_only: true
 description: 检测 PHP 不安全反序列化：unserialize 直接使用超全局用户输入（$_GET/$_POST/$_REQUEST/$_COOKIE），可导致 PHP 对象注入
 id: php-unsafe-deserialization
 language: php

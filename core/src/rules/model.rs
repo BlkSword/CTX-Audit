@@ -65,6 +65,13 @@ pub struct Rule {
     /// 仅对 .php 文件生效；链解析有界（深度≤3、文件≤16）。
     #[serde(default)]
     pub sanitizer_include_chain: bool,
+    /// true 时丢弃命中点位于 PHP 非裸调用形态内的 finding——方法调用（->）、
+    /// 静态调用（::）、构造调用（new）与函数/方法定义点的同名文本不是内建函数
+    /// 调用（如 `$pdo->exec(`、`Foo::exec(`、`new System()`、`function exec(`）。
+    /// regex 层无前视/后视能力无法表达该消歧，用 tree-sitter 节点范围实现。
+    /// 仅对 .php 文件生效。
+    #[serde(default)]
+    pub php_bare_call_only: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]

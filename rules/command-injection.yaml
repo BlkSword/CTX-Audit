@@ -1,5 +1,6 @@
 category: injection
 cwe: CWE-78
+php_bare_call_only: true
 exclude_string_literals: true
 description: "检测命令注入风险：用户输入直接用于命令执行。注意：spawn/execFile 使用数组参数且 shell:false 时风险较低，工具会自动检测安全屏障并降级。"
 id: command-injection
