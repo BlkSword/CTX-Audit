@@ -11,6 +11,7 @@ references:
   - "https://owasp.org/www-community/attacks/csrf"
 severity: medium
 sanitizer_file_scope: true
+sanitizer_include_chain: true
 once_per_file: true
 patterns:
   - language: php

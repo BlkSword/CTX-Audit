@@ -109,6 +109,9 @@ impl RuleScanner {
         // 条件编译块范围（仅 C 家族）：块内命中降 info——如 #ifdef MPE 平台分支
         // 的死代码（thttpd gets() 场景），不丢弃交由判定层
         let mut preproc_ranges_cache: Option<Vec<(usize, usize)>> = None;
+        // PHP include 链守卫内容（10.13）：仅在带 sanitizer_include_chain 的
+        // 规则首次做 sanitizer 检查时解析一次
+        let mut guard_content_cache: Option<Option<String>> = None;
 
         for compiled in &self.compiled_rules {
             // Simple language check based on extension
@@ -125,7 +128,13 @@ impl RuleScanner {
                         }
                         if let Some(m) = cap.get(0) {
                             let start_pos = m.start();
-                            if is_rule_sanitized(content, start_pos, &compiled.rule) {
+                            let guard = guard_for_rule(
+                                &compiled.rule,
+                                path,
+                                &extension,
+                                &mut guard_content_cache,
+                            );
+                            if is_rule_sanitized(content, start_pos, &compiled.rule, guard) {
                                 continue;
                             }
                             let ranges = comment_ranges_cache
@@ -239,7 +248,13 @@ impl RuleScanner {
                                 if let Some(capture) = m.captures.first() {
                                     let node = capture.node;
                                     let start_byte = node.start_byte();
-                                    if is_rule_sanitized(content, start_byte, &compiled.rule) {
+                                    let guard = guard_for_rule(
+                                        &compiled.rule,
+                                        path,
+                                        &extension,
+                                        &mut guard_content_cache,
+                                    );
+                                    if is_rule_sanitized(content, start_byte, &compiled.rule, guard) {
                                         continue;
                                     }
                                     let start_pos = node.start_position();
@@ -279,22 +294,148 @@ impl Scanner for RuleScanner {
     }
 }
 
+/// 带 sanitizer_include_chain 的规则：惰性解析当前文件的 PHP include 链，
+/// 返回守卫文件合并内容（无链或非 PHP 返回 None）。
+fn guard_for_rule<'a>(
+    rule: &Rule,
+    path: &PathBuf,
+    extension: &str,
+    cache: &'a mut Option<Option<String>>,
+) -> Option<&'a str> {
+    if !rule.sanitizer_include_chain {
+        return None;
+    }
+    cache
+        .get_or_insert_with(|| collect_php_guard_content(path, extension))
+        .as_deref()
+}
+
+/// PHP include/require 链解析（backlog 10.13）：从被扫描文件出发，提取
+/// include/require 语句中的路径字面量，best-effort 解析为磁盘文件并递归，
+/// 收集守卫文件内容（深度≤3、文件≤16、仅 .php，环路去重）。
+///
+/// 解析启发式：`__DIR__`/`dirname(__FILE__)` → 当前文件目录；
+/// 其余常量前缀（如 ROOT_DIR）同样回落到当前文件目录；
+/// 字符串里的 `..`/`./` 手工归一。解析失败的路径直接跳过——
+/// 这是去误报辅助，宁可漏豁免也不引入异常。
+fn collect_php_guard_content(path: &PathBuf, extension: &str) -> Option<String> {
+    if extension != "php" {
+        return None;
+    }
+    let mut visited = std::collections::HashSet::new();
+    let mut out = String::new();
+    let mut budget = 16usize;
+    collect_php_guard_recursive(path, 0, &mut visited, &mut budget, &mut out);
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn collect_php_guard_recursive(
+    path: &PathBuf,
+    depth: usize,
+    visited: &mut std::collections::HashSet<PathBuf>,
+    budget: &mut usize,
+    out: &mut String,
+) {
+    if depth > 3 || *budget == 0 {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Some(dir) = path.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    for inc in extract_php_include_literals(&content) {
+        if *budget == 0 {
+            return;
+        }
+        let Some(resolved) = resolve_php_include(&dir, &inc) else {
+            continue;
+        };
+        if resolved.extension().and_then(|e| e.to_str()) != Some("php") {
+            continue;
+        }
+        if !visited.insert(resolved.clone()) {
+            continue;
+        }
+        if let Ok(guard) = std::fs::read_to_string(&resolved) {
+            *budget -= 1;
+            out.push_str(&guard);
+            out.push('\n');
+            collect_php_guard_recursive(&resolved, depth + 1, visited, budget, out);
+        }
+    }
+}
+
+/// 提取 include/require 语句中的字符串字面量路径。
+fn extract_php_include_literals(content: &str) -> Vec<String> {
+    let stmt_re = regex::Regex::new(r"(?i)(?:require|include)(?:_once)?\s*\(?\s*([^;\n]{1,200})")
+        .expect("include stmt regex");
+    let str_re = regex::Regex::new(r#"['"]([^'"]{1,200})['"]"#).expect("string lit regex");
+    let mut lits = Vec::new();
+    for cap in stmt_re.captures_iter(content) {
+        let expr = &cap[1];
+        // 表达式中不得有函数调用（动态路径不解析），变量拼接按字面量部分尝试
+        for scap in str_re.captures_iter(expr) {
+            lits.push(scap[1].to_string());
+        }
+    }
+    lits
+}
+
+/// 把 include 字面量解析为磁盘路径：优先相对当前文件目录；
+/// 归一化 `./`、`../` 与前导 `/`（ROOT_DIR.'/x.php' 场景）。
+fn resolve_php_include(dir: &PathBuf, lit: &str) -> Option<PathBuf> {
+    let cleaned = lit.trim_start_matches('/').replace('\\', "/");
+    let mut candidate = dir.clone();
+    for part in cleaned.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                candidate.pop();
+            }
+            p => candidate.push(p),
+        }
+    }
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
 /// 检查规则命中是否被 sanitizer 豁免。
 /// 默认前缀语义（命中点之前出现即豁免）；规则声明 `sanitizer_file_scope: true` 时
 /// 全文件任一处出现即豁免（"缺失检查"类规则：校验在文件任意位置都算已接入防护）。
 /// `sanitizer_match: all` 时要求全部 sanitizer 都出现才豁免（防护完整性检查）。
-fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule) -> bool {
+/// `guard` 为 include 链守卫内容（10.13），命中即豁免——全局校验无"位置"语义。
+fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>) -> bool {
     let effective_pos = if rule.sanitizer_file_scope {
         content.len()
     } else {
         pos
     };
-    is_sanitized_before(
+    if is_sanitized_before(
         content,
         effective_pos,
         &rule.sanitizers,
         rule.sanitizer_match == SanitizerMatch::All,
-    )
+    ) {
+        return true;
+    }
+    if let Some(guard) = guard {
+        return is_sanitized_before(
+            guard,
+            guard.len(),
+            &rule.sanitizers,
+            rule.sanitizer_match == SanitizerMatch::All,
+        );
+    }
+    false
 }
 
 /// 检查匹配位置之前是否出现 sanitizer 模式。
@@ -993,6 +1134,7 @@ mod tests {
             sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
+            sanitizer_include_chain: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1028,6 +1170,7 @@ mod tests {
             sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
+            sanitizer_include_chain: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1065,6 +1208,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
+            sanitizer_include_chain: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1102,6 +1246,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
+            sanitizer_include_chain: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1155,6 +1300,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: exclude,
+            sanitizer_include_chain: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1193,6 +1339,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
+            sanitizer_include_chain: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1230,6 +1377,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
+            sanitizer_include_chain: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1260,6 +1408,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_match: SanitizerMatch::Any,
             once_per_file: false,
             exclude_string_literals: false,
+            sanitizer_include_chain: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1324,6 +1473,66 @@ $upsql = Input::postStrVar('upsql', '');
         assert!(!re.is_match("yaml.load(f.read(), Loader=yaml.SafeLoader)"));
         assert!(!re.is_match("yaml.load(text, Loader=yaml.CSafeLoader)"));
         assert!(!re.is_match("yaml.load(text, Loader=BaseLoader)"));
+    }
+
+    /// backlog 10.13：sanitizer_include_chain=true 时，bootstrap include 链中的
+    /// 全局守卫文件（如统一校验 CSRF 的 security/csrf.php）参与豁免判定——
+    /// projectsend 形态：页面 → bootstrap.php → includes/security/csrf.php。
+    #[test]
+    fn test_sanitizer_include_chain_global_guard() {
+        let dir = std::env::temp_dir().join(format!("ctx_audit_1013_{}", std::process::id()));
+        let sec = dir.join("includes").join("security");
+        std::fs::create_dir_all(&sec).unwrap();
+        std::fs::write(
+            dir.join("bootstrap.php"),
+            "<?php\nrequire_once ROOT_DIR . '/includes/security/csrf.php';\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sec.join("csrf.php"),
+            "<?php\nif (!defined('IS_INSTALL') && $_POST && !validateCsrfToken()) { exit; }\n",
+        )
+        .unwrap();
+        let page = dir.join("users-add.php");
+        let page_content = "<?php\nrequire_once 'bootstrap.php';\n$name = $_POST['name'];\n";
+        std::fs::write(&page, page_content).unwrap();
+
+        let mut rule = Rule {
+            id: "php-missing-csrf-token".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Medium,
+            language: "php".to_string(),
+            pattern: Some(r"\$_POST\s*\[".to_string()),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-352".to_string()),
+            sanitizers: vec!["validatecsrftoken(".to_string()],
+            sanitizer_file_scope: true,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: true,
+            exclude_string_literals: false,
+            sanitizer_include_chain: true,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let scanner = RuleScanner::new(vec![rule.clone()]);
+        let findings = scanner.scan_file_sync(&page, page_content);
+        assert!(
+            findings.is_empty(),
+            "全局守卫文件含校验调用，页面应被豁免: {:?}",
+            findings.len()
+        );
+
+        // 对照：同一文件不开 include_chain → 仍报告（证明豁免来自守卫链）
+        rule.sanitizer_include_chain = false;
+        let scanner = RuleScanner::new(vec![rule]);
+        let findings = scanner.scan_file_sync(&page, page_content);
+        assert_eq!(findings.len(), 1, "不开 include_chain 时应报告缺失校验");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

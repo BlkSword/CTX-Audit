@@ -72,6 +72,24 @@ sources:
     category: "FileInput"
     ast_patterns: []
 
+  - id: "go_router_upload_input"
+    name: "Go Router Params and Multipart Upload"
+    description: "Path params (gorilla/mux, chi) and multipart upload metadata (filename is attacker-controlled; filepath.Base normalization is platform-dependent and keeps backslash traversal on Linux)"
+    patterns:
+      - "mux.Vars"
+      - "chi.URLParam"
+      - "part.FileName"
+      - "FormFile"
+      - "MultipartForm"
+      - "r.URL.Path"
+      - "r.URL.RawQuery"
+      - "req.URL.Path"
+      - "r.Host"
+    languages: ["go"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
 sinks:
   - id: "go_sql_exec"
     name: "Go SQL Execution"
@@ -260,6 +278,31 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  - id: "go_archive_entry"
+    name: "Go Archive Entry Name"
+    description: "zip/tar archive entry created with a user-controlled name (zip slip). Entry names must be sanitized — filepath.Base is platform-dependent and keeps backslash traversal on Linux servers"
+    match_mode: "Semantic"
+    namespaces:
+      - "archive/zip"
+      - "archive/tar"
+    receiver_patterns:
+      - "archive"
+      - "zw"
+      - "tw"
+    patterns:
+      - ".CreateHeader"
+      - "zip.FileHeader"
+      - "tar.Header"
+    exact_matches:
+      - "archive.CreateHeader"
+      - "zip.CreateHeader"
+    languages: ["go"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
   - id: "go_template_injection"
     name: "Go Template Injection"
     description: "text/template and html/template execution with user input"
@@ -319,12 +362,18 @@ sinks:
       - ".Write"
       - "fmt.Fprint"
       - "fmt.Fprintf"
+      - "template.HTML"
+      - "template.JS"
+      - "template.URL"
+      - "template.HTMLAttr"
     exact_matches:
       - "c.HTML"
       - "c.String"
       - "c.XML"
       - "ctx.HTML"
       - "w.Write"
+      - "template.HTML"
+      - "template.JS"
     languages: ["go"]
     vulnerability_type: "CrossSiteScripting"
     severity: "High"

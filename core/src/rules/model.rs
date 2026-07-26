@@ -59,6 +59,12 @@ pub struct Rule {
     /// 凭证类规则不要开：字符串字面量正是它们的目标。
     #[serde(default)]
     pub exclude_string_literals: bool,
+    /// true 时 sanitizer 检查扩展到 PHP include/require 链解析出的守卫文件
+    /// （backlog 10.13）：校验常放在 bootstrap include 的全局安全文件中
+    /// （如 csrf.php 对所有 POST 统一校验），单文件检查会把全局防护误判为缺失。
+    /// 仅对 .php 文件生效；链解析有界（深度≤3、文件≤16）。
+    #[serde(default)]
+    pub sanitizer_include_chain: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
