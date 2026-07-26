@@ -1329,6 +1329,26 @@ impl AstTaintAnalyzer {
                         ));
                     }
                 }
+
+                // 检查赋值目标中的 sink（x.innerHTML = tainted 形态：
+                // sink 模式在左值属性上，右值只携带污点数据）
+                if !is_sanitized {
+                    if let Some((sink, sink_name)) =
+                        self.find_matching_sink_in_assign_target(&assign.target, language)
+                    {
+                        let vt = state.find_taint_for_path(&src_path).unwrap().clone();
+                        return Some(self.build_taint_flow_cpg(
+                            &vt,
+                            &src_var,
+                            &sink_name,
+                            &sink,
+                            assign.line,
+                            assign.line,
+                            file_path,
+                            &assign.source_expr,
+                        ));
+                    }
+                }
             }
         } else {
             // 回退到 defs/uses 分析
@@ -2442,6 +2462,41 @@ impl AstTaintAnalyzer {
             }
         }
         None
+    }
+
+    /// 赋值目标（左值）的 sink 匹配
+    ///
+    /// 用于 `x.innerHTML = tainted` 形态：sink 模式在左值属性上。
+    /// 要求 sink 模式是目标的后缀且前置边界为 '.'（属性赋值），
+    /// 避免 ".get" 这类调用模式误配 `document.getElementById(...)`
+    /// 中的 callee 片段。返回 (sink, sink 名)。
+    fn find_matching_sink_in_assign_target(
+        &self,
+        target: &str,
+        language: &str,
+    ) -> Option<(TaintSink, String)> {
+        let target = target.trim();
+        self.sinks
+            .iter()
+            .filter(|s| !s.storage_write)
+            .filter(|s| {
+                language == "*"
+                    || language.is_empty()
+                    || s.languages.iter().any(|l| l == "*" || l == language)
+            })
+            .find_map(|s| {
+                s.patterns.iter().find_map(|p| {
+                    if target.len() >= p.len()
+                        && target.ends_with(p.as_str())
+                        && (target.len() == p.len()
+                            || target[..target.len() - p.len()].ends_with('.'))
+                    {
+                        Some((s.clone(), p.clone()))
+                    } else {
+                        None
+                    }
+                })
+            })
     }
 
     /// 从表达式中提取 sink 函数名
@@ -4494,6 +4549,38 @@ public class Test extends HttpServlet {
                 .iter()
                 .any(|f| matches!(f.vulnerability_type, VulnerabilityType::XPathInjection)),
             "Expected XPath injection via nested Base64 calls and String constructor (fragment CPG)"
+        );
+    }
+
+    #[test]
+    fn test_js_getjson_second_order_xss() {
+        // ServerStatus 形态：jQuery getJSON 回调参数（服务端存储 JSON，二阶场景）
+        // → innerHTML 输出。R24 前 HTTP 回调提示不覆盖 $.getJSON + function 表达式，
+        // 该形态 AstTaint 产出为 0。
+        let code = r##"
+function loadServers() {
+    $.getJSON("json/stats.json", function(result) {
+        for (var i = 0; i < result.servers.length; i++) {
+            document.getElementById("name").innerHTML = result.servers[i].name;
+        }
+    });
+}
+"##;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("serverstatus.js");
+        let report = analyzer.analyze_file_cpg(&path, code);
+        assert!(
+            report.tainted_vars.keys().any(|k| k == "result"),
+            "expected callback param 'result' tainted, got: {:?}",
+            report.tainted_vars.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            report
+                .flows
+                .iter()
+                .any(|f| f.sink.symbol.contains("innerHTML")),
+            "expected innerHTML XSS flow, got sinks: {:?}",
+            report.flows.iter().map(|f| &f.sink.symbol).collect::<Vec<_>>()
         );
     }
 

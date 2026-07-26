@@ -181,6 +181,16 @@ const HTTP_REQUEST_LIBS: &[&str] = &[
     "got(",
     "superagent",
     "fetch(",
+    // jQuery / axios 的 JSON API（响应数据往往是服务端存储数据——二阶场景）
+    "$.getJSON",
+    "$.ajax",
+    "$.get(",
+    "$.post(",
+    "axios.get",
+    "axios.post",
+    "axios.put",
+    "axios.delete",
+    "axios(",
 ];
 
 /// 从 HTTP 请求回调中提取最后一个参数（响应体）作为污点源
@@ -224,6 +234,27 @@ fn extract_http_callback_hint(line: &str, line_num: usize) -> Option<CallbackTai
                         callback_start_line: line_num,
                         hint_type: CallbackHintType::HttpResponseCallback,
                     });
+                }
+            }
+        }
+    }
+
+    // jQuery 风格 function 表达式回调: $.getJSON(url, function(data) { ... })
+    // jQuery success 回调的第一个参数是响应数据（data, textStatus, jqXHR）
+    if let Some(fn_pos) = line.find("function") {
+        let after_fn = &line[fn_pos + "function".len()..];
+        if let Some(paren_start) = after_fn.find('(') {
+            let inner = &after_fn[paren_start + 1..];
+            if let Some(paren_end) = inner.find(')') {
+                let first = inner[..paren_end].split(',').next().map(|s| s.trim());
+                if let Some(first) = first {
+                    if is_valid_param_name(first) {
+                        return Some(CallbackTaintHint {
+                            param_name: first.to_string(),
+                            callback_start_line: line_num,
+                            hint_type: CallbackHintType::HttpResponseCallback,
+                        });
+                    }
                 }
             }
         }
@@ -304,6 +335,37 @@ mod tests {
         let code = "const x = 1\nconst y = x + 2";
         let hints = detect_callback_hints(code);
         assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn test_jquery_getjson_function_callback() {
+        // jQuery JSON API + function 表达式回调：第一个参数是响应数据（二阶场景）
+        let code = r#"$.getJSON("json/stats.json", function(result) { render(result); });"#;
+        let hints = detect_callback_hints(code);
+        assert!(
+            hints.iter().any(|h| h.param_name == "result"
+                && h.hint_type == CallbackHintType::HttpResponseCallback),
+            "expected HttpResponseCallback hint for 'result', got: {:?}",
+            hints.iter().map(|h| &h.param_name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_axios_arrow_callback() {
+        let code = "axios.get(url).then((resp) => render(resp.data));";
+        let hints = detect_callback_hints(code);
+        assert!(hints
+            .iter()
+            .any(|h| h.param_name == "resp" && h.hint_type == CallbackHintType::HttpResponseCallback));
+    }
+
+    #[test]
+    fn test_jquery_post_function_callback() {
+        let code = r##"$.post("/api", function(data) { $("#x").html(data); });"##;
+        let hints = detect_callback_hints(code);
+        assert!(hints
+            .iter()
+            .any(|h| h.param_name == "data" && h.hint_type == CallbackHintType::HttpResponseCallback));
     }
 
     #[test]
