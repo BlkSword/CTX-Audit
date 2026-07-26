@@ -18,7 +18,8 @@ patterns:
   - language: python
     pattern: (?i)(pickle\.loads?\s*\(|marshal\.loads?\s*\(|yaml\.load\s*\(\s*[A-Za-z_][\w.]*\s*\)|yaml\.load\s*\([^)]*=\s*(?:yaml\.)?\b(?:C|Unsafe)?Loader\b|yaml\.unsafe_load\s*\(|dill\.loads?\s*\()
   # PHP：与 php-unsafe-deserialization/php-unserialize-variable 分级一致，
-  # 任意 unserialize( 由 medium 规则覆盖，此处只保留直接超全局输入
+  # 任意 unserialize( 由 medium 规则覆盖，此处只保留直接超全局输入；
+  # 排除方法/静态调用形态（->unserialize(、::unserialize(）
   - language: php
-    pattern: (?i)unserialize\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)
+    pattern: (?i)(?:^|[^\w.>:])unserialize\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)
 severity: critical

@@ -1,5 +1,6 @@
 category: injection
 cwe: CWE-78
+exclude_string_literals: true
 description: "检测命令注入风险：用户输入直接用于命令执行。注意：spawn/execFile 使用数组参数且 shell:false 时风险较低，工具会自动检测安全屏障并降级。"
 id: command-injection
 language: all
@@ -23,7 +24,8 @@ patterns:
   # Rust regex 不支持负向前瞻 (?!\[)，用首字符为引号等价表达
   - language: python
     pattern: (?i)(os\.system\s*\(|os\.popen\s*\(|subprocess\.(call|run|Popen)\s*\(\s*["'])
-  # PHP：system/exec 要求非标识符/非成员调用前缀，避免命中 curl_exec(、.exec()、filesystem( 等
+  # PHP：system/exec 要求非标识符/非成员调用前缀，避免命中 curl_exec(、.exec()、filesystem( 等；
+  # 同时排除 `>`（$pdo->exec( 方法调用）与 `:`（Foo::exec( 静态调用）——PHP 内建 exec/system 只会以裸函数形式调用
   - language: php
-    pattern: (?i)(shell_exec\s*\(|passthru\s*\(|popen\s*\(|(?:^|[^\w.])(?:system|exec)\s*\()
+    pattern: (?i)(shell_exec\s*\(|passthru\s*\(|popen\s*\(|(?:^|[^\w.>:])(?:system|exec)\s*\()
 severity: critical

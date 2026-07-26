@@ -1667,6 +1667,25 @@ pub async fn scan_directory_deep_with_rules_progress(
                 // 加载回调提示
                 let callback_hints = crate::analysis::async_flow::detect_callback_hints(content);
 
+                // 10.14：纯数据文件快路径——无函数且无调用的 PHP 文件不存在可达 sink
+                // （sink 均为函数调用；echo/print 本就不进 CallInfo，见 backlog 10.8），
+                // 跳过整文件 CPG，避免巨型数组字面量（语言包/配置类）在路径敏感
+                // 分析中的病态耗时（kanboard Locale 实测 ~240s/文件 → 0）
+                let is_php_file = std::path::Path::new(file_path_str)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("php"))
+                    .unwrap_or(false);
+                if functions.is_empty() && file_calls.is_empty() && is_php_file {
+                    return (
+                        file_path_str.clone(),
+                        Vec::new(),
+                        cpg_cache,
+                        cpg_flows,
+                        (parsed_symbols, parsed_calls),
+                    );
+                }
+
                 if functions.is_empty() {
                     // 无函数体：整个文件构建一个 CPG
                     let func_cpg = CPGBuilder::build_file_cpg(

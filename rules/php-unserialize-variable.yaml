@@ -7,7 +7,8 @@ name: PHP Unserialize with Indirect Variable
 owasp: "A08:2021-Software and Data Integrity Failures"
 patterns:
   - language: php
-    pattern: '(?i)unserialize\s*\(\s*\$'
+    # 排除方法/静态调用形态（->unserialize(、::unserialize(）——自定义同名方法（如 json_decode 封装）不是内建反序列化
+    pattern: '(?i)(?:^|[^\w.>:])unserialize\s*\(\s*\$'
 severity: medium
 remediation: "使用 json_decode 替代 unserialize；如必须使用，设置 allowed_classes 选项；避免反序列化用户可控数据。"
 references:
