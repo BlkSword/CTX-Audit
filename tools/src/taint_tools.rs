@@ -413,6 +413,295 @@ impl Tool for GlobalTaintAnalysisTool {
     }
 }
 
+/// 污点状态查询工具（探索向）
+///
+/// 让 LLM 在链式深审中反向查询引擎污点状态，三种模式：
+/// - 模式 A（storage_writes=true）：列出目录下所有"写入持久层"的闸门事件
+/// - 模式 B（file_path + variable）：查询变量是否被污染、被谁污染、来源行
+/// - 模式 C（仅 file_path）：文件全部污点流 + 污染变量摘要
+pub struct QueryTaintTool {
+    project_path: String,
+}
+
+impl QueryTaintTool {
+    pub fn new(project_path: String) -> Self {
+        Self { project_path }
+    }
+
+    /// 与生产扫描一致的分析器（加载 YAML 污点规则，含嵌入回退）
+    fn production_analyzer() -> AstTaintAnalyzer {
+        AstTaintAnalyzer::new()
+    }
+
+    /// 将一条污点流格式化为 JSON
+    fn flow_to_json(flow: &deepaudit_core::TaintFlow) -> serde_json::Value {
+        serde_json::json!({
+            "vulnerability_type": format!("{}", flow.vulnerability_type),
+            "severity": format!("{}", flow.severity),
+            "confidence": flow.confidence,
+            "source": {
+                "file": flow.source.file_path,
+                "line": flow.source.line,
+                "symbol": flow.source.symbol,
+                "code": flow.source.code_snippet,
+            },
+            "sink": {
+                "file": flow.sink.file_path,
+                "line": flow.sink.line,
+                "symbol": flow.sink.symbol,
+                "code": flow.sink.code_snippet,
+            },
+            "path": flow.path.iter().map(|n| serde_json::json!({
+                "line": n.line,
+                "symbol": n.symbol,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    /// 模式 A：收集目录下全部 StorageWrite 闸门事件
+    async fn list_storage_writes(&self, sub_path: &str) -> Result<ToolResult, ToolError> {
+        let scan_path = Path::new(&self.project_path).join(sub_path);
+        if !scan_path.exists() {
+            return Err(ToolError::ExecutionFailed(format!(
+                "路径不存在: {}",
+                sub_path
+            )));
+        }
+
+        let mut files = Vec::new();
+        collect_files(&scan_path, None, &mut files);
+
+        let analyzer = Self::production_analyzer();
+        let mut events = Vec::new();
+
+        for file_path in &files {
+            if let Ok(content) = tokio::fs::read_to_string(file_path).await {
+                let relative = file_path
+                    .strip_prefix(&self.project_path)
+                    .unwrap_or(file_path)
+                    .to_string_lossy()
+                    .to_string();
+                let report = analyzer.analyze_file_cpg(file_path, &content);
+                for flow in &report.flows {
+                    if matches!(
+                        flow.vulnerability_type,
+                        deepaudit_core::analysis::taint::VulnerabilityType::StorageWrite
+                    ) {
+                        events.push(serde_json::json!({
+                            "file": relative,
+                            "line": flow.sink.line,
+                            "sink": flow.sink.symbol,
+                            "code": flow.sink.code_snippet,
+                            "source": flow.source.symbol,
+                            "source_line": flow.source.line,
+                            "confidence": flow.confidence,
+                        }));
+                    }
+                }
+            }
+        }
+
+        let summary = format!(
+            "扫描 {} 个文件，发现 {} 个持久层写入事件（StorageWrite 闸门）",
+            files.len(),
+            events.len()
+        );
+        Ok(ToolResult::json(
+            serde_json::json!({
+                "storage_writes": events,
+                "count": events.len(),
+                "files_scanned": files.len(),
+            }),
+            Some(summary),
+        ))
+    }
+
+    /// 模式 B/C：单文件污点状态查询
+    async fn query_file(
+        &self,
+        file_path: &str,
+        variable: Option<&str>,
+    ) -> Result<ToolResult, ToolError> {
+        let full_path = Path::new(&self.project_path).join(file_path);
+        let content = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
+            ToolError::ExecutionFailed(format!("无法读取文件 '{}': {}", file_path, e))
+        })?;
+
+        let analyzer = Self::production_analyzer();
+        let report = analyzer.analyze_file_cpg(&full_path, &content);
+
+        if let Some(var) = variable {
+            // 模式 B：变量反查
+            let matches: Vec<serde_json::Value> = report
+                .tainted_vars
+                .iter()
+                .filter(|(k, _)| {
+                    k.as_str() == var
+                        || k.starts_with(&format!("{}.", var))
+                        || k.trim_start_matches('$') == var.trim_start_matches('$')
+                })
+                .map(|(k, (src, line))| {
+                    serde_json::json!({
+                        "variable": k,
+                        "source_var": src,
+                        "source_line": line,
+                    })
+                })
+                .collect();
+
+            // 经过该变量的污点流（路径任一节点符号匹配）
+            let related_flows: Vec<serde_json::Value> = report
+                .flows
+                .iter()
+                .filter(|f| {
+                    f.source.symbol.contains(var)
+                        || f.sink.symbol.contains(var)
+                        || f.path.iter().any(|n| n.symbol.contains(var))
+                })
+                .map(Self::flow_to_json)
+                .collect();
+
+            let tainted = !matches.is_empty();
+            let summary = if tainted {
+                let (src, line) = &report.tainted_vars[matches[0]["variable"].as_str().unwrap_or(var)];
+                format!(
+                    "变量 '{}' 已被污染（来源: {}，第 {} 行），经过它的污点流: {} 条",
+                    var,
+                    src,
+                    line,
+                    related_flows.len()
+                )
+            } else {
+                format!("变量 '{}' 未被污染（分析覆盖的函数体内无污点来源）", var)
+            };
+
+            Ok(ToolResult::json(
+                serde_json::json!({
+                    "file": file_path,
+                    "variable": var,
+                    "tainted": tainted,
+                    "taint_entries": matches,
+                    "related_flows": related_flows,
+                    "related_flow_count": related_flows.len(),
+                }),
+                Some(summary),
+            ))
+        } else {
+            // 模式 C：文件级摘要
+            let tainted_list: Vec<serde_json::Value> = report
+                .tainted_vars
+                .iter()
+                .map(|(k, (src, line))| {
+                    serde_json::json!({
+                        "variable": k,
+                        "source_var": src,
+                        "source_line": line,
+                    })
+                })
+                .collect();
+            let flows: Vec<serde_json::Value> =
+                report.flows.iter().map(Self::flow_to_json).collect();
+
+            let summary = format!(
+                "文件 {}: {} 个被污染变量，{} 条污点流",
+                file_path,
+                tainted_list.len(),
+                flows.len()
+            );
+            Ok(ToolResult::json(
+                serde_json::json!({
+                    "file": file_path,
+                    "tainted_vars": tainted_list,
+                    "flows": flows,
+                    "flow_count": flows.len(),
+                }),
+                Some(summary),
+            ))
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for QueryTaintTool {
+    fn name(&self) -> &str {
+        "query_taint"
+    }
+
+    fn description(&self) -> &str {
+        "查询污点状态：变量是否被污染（被谁污染、来源行）、列出项目内所有持久层写入事件。用于链式深审中反向确认引擎污点结论"
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Analysis
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new(self.name(), self.description(), self.category())
+            .add_parameter(ToolParameter {
+                name: "file_path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "要查询的文件路径（相对于项目根目录）。与 variable 配合做变量反查；单独使用返回文件污点摘要".to_string(),
+                required: false,
+                default: None,
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
+                name: "variable".to_string(),
+                param_type: ToolParameterType::String,
+                description: "要反查的变量名（如 \"name\"、\"$commentId\"），需配合 file_path".to_string(),
+                required: false,
+                default: None,
+                enum_values: None,
+                format: None,
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
+                name: "storage_writes".to_string(),
+                param_type: ToolParameterType::Boolean,
+                description: "为 true 时列出 path 目录下所有持久层写入事件（StorageWrite 闸门），用于寻找二阶漏洞的存储点".to_string(),
+                required: false,
+                default: Some(serde_json::json!(false)),
+                enum_values: None,
+                format: None,
+                items: None,
+                properties: None,
+            })
+            .add_parameter(ToolParameter {
+                name: "path".to_string(),
+                param_type: ToolParameterType::String,
+                description: "storage_writes 模式下要扫描的目录（相对于项目根目录，默认为根目录）".to_string(),
+                required: false,
+                default: Some(serde_json::json!(".")),
+                enum_values: None,
+                format: Some("path".to_string()),
+                items: None,
+                properties: None,
+            })
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> Result<ToolResult, ToolError> {
+        let storage_writes = input["storage_writes"].as_bool().unwrap_or(false);
+        let file_path = input["file_path"].as_str();
+        let variable = input["variable"].as_str();
+
+        if storage_writes {
+            let sub_path = input["path"].as_str().unwrap_or(".");
+            return self.list_storage_writes(sub_path).await;
+        }
+
+        match file_path {
+            Some(fp) => self.query_file(fp, variable).await,
+            None => Err(ToolError::InvalidArgument(
+                "缺少 file_path 参数（或将 storage_writes 设为 true 列出持久层写入事件）".to_string(),
+            )),
+        }
+    }
+}
+
 /// 递归收集文件
 pub fn collect_files(dir: &Path, pattern: Option<&str>, files: &mut Vec<std::path::PathBuf>) {
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -473,7 +762,8 @@ fn is_code_file(ext: &str) -> bool {
 pub async fn register_taint_tools(registry: &Arc<ToolRegistry>, project_path: String) {
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(TraceTaintTool::new(project_path.clone())),
-        Arc::new(GlobalTaintAnalysisTool::new(project_path)),
+        Arc::new(GlobalTaintAnalysisTool::new(project_path.clone())),
+        Arc::new(QueryTaintTool::new(project_path)),
     ];
 
     for tool in tools {

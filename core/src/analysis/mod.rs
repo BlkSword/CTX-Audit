@@ -24,7 +24,7 @@ pub mod taint;
 pub mod type_hierarchy;
 
 pub use alias::{AccessPath, AliasMap};
-pub use ast_taint::AstTaintAnalyzer;
+pub use ast_taint::{AstTaintAnalyzer, FileTaintReport};
 pub use async_flow::{detect_callback_hints, CallbackHintType, CallbackTaintHint};
 pub use attack_surface::{
     AttackSurface, AttackSurfaceMapper, AttackSurfaceStats, EntryContext, EntryPoint, EntryType,

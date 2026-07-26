@@ -49,6 +49,15 @@ fn downgrade_severity(severity: super::taint::Severity) -> super::taint::Severit
     }
 }
 
+/// 单文件污点报告（生产 CPG 路径）
+#[derive(Debug, Default)]
+pub struct FileTaintReport {
+    /// 全部污点流（含 StorageWrite 闸门流，不做 finding 过滤）
+    pub flows: Vec<TaintFlow>,
+    /// 分析中曾被污染的变量（含未达 sink 的）：var -> (source_var, source_line)
+    pub tainted_vars: HashMap<String, (String, usize)>,
+}
+
 /// 不再持有 ASTParser：tree-sitter Parser 不是 Send/Sync，会限制并行。
 /// analyze_function_cpg 等核心路径只依赖规则定义；需要解析的地方使用线程本地 parser。
 pub struct AstTaintAnalyzer {
@@ -375,6 +384,22 @@ impl AstTaintAnalyzer {
         content: &str,
         callback_hints: &[crate::analysis::async_flow::CallbackTaintHint],
     ) -> Vec<TaintFlow> {
+        self.analyze_function_cpg_with_state(cpg, content, callback_hints)
+            .0
+    }
+
+    /// 从 FunctionCPG 分析，同时返回分析结束时的污点状态
+    ///
+    /// 返回 (flows, tainted_vars)：
+    /// - flows：到达 sink 的污点流（含 StorageWrite 闸门流，不过滤）
+    /// - tainted_vars：分析过程中曾被污染的变量全集（含未到达 sink 的），
+    ///   var -> (source_var, source_line)。供探索向查询（"这个变量被污染了吗"）
+    pub fn analyze_function_cpg_with_state(
+        &self,
+        cpg: &super::cpg::FunctionCPG,
+        content: &str,
+        callback_hints: &[crate::analysis::async_flow::CallbackTaintHint],
+    ) -> (Vec<TaintFlow>, HashMap<String, (String, usize)>) {
         let assignments: Vec<Assignment> = cpg
             .node_meta
             .values()
@@ -388,7 +413,7 @@ impl AstTaintAnalyzer {
         let language = Self::detect_language(&cpg.signature.file_path);
 
         let line_offset = cpg.line_offset;
-        self.forward_taint_analysis_cpg(
+        let (flows, taint_state) = self.forward_taint_analysis_cpg(
             &cpg.cfg,
             &assignments,
             &calls,
@@ -399,7 +424,123 @@ impl AstTaintAnalyzer {
             &cpg.signature.params,
             callback_hints,
             line_offset,
-        )
+        );
+
+        // 汇总各节点状态：变量首次被标记的来源（含未达 sink 的中间污染）
+        let mut tainted_vars: HashMap<String, (String, usize)> = HashMap::new();
+        for state in taint_state.values() {
+            for (path, vt) in state.all_entries() {
+                tainted_vars
+                    .entry(path.as_dotted())
+                    .or_insert_with(|| (vt.source_var.clone(), vt.source_line));
+            }
+        }
+        (flows, tainted_vars)
+    }
+
+    /// 单文件污点报告（生产 CPG 路径）
+    ///
+    /// 与 scanner Stage B 同款路径：extract_all_for_taint_with_tree →
+    /// 逐函数构建 CPG（fragment 优先，text 回退）→ analyze_function_cpg。
+    /// flows 不做 finding 过滤（StorageWrite 闸门流保留，由调用方解释）。
+    pub fn analyze_file_cpg(&self, file_path: &Path, content: &str) -> FileTaintReport {
+        let file_path_str = file_path.to_string_lossy().to_string();
+        let mut report = FileTaintReport::default();
+
+        let extracted = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            ast_parser.extract_all_for_taint_with_tree(&file_path.to_path_buf(), content)
+        });
+
+        if let Some((_tree, _symbols, functions, file_assignments, file_calls)) = extracted {
+            let callback_hints = async_flow::detect_callback_hints(content);
+
+            if functions.is_empty() {
+                // 无函数体：整个文件构建一个 CPG
+                let func_cpg = super::cpg::CPGBuilder::build_file_cpg(
+                    content,
+                    &file_path_str,
+                    &file_assignments,
+                    &file_calls,
+                );
+                let (flows, tainted) =
+                    self.analyze_function_cpg_with_state(&func_cpg, content, &callback_hints);
+                report.flows.extend(flows);
+                report.tainted_vars.extend(tainted);
+            } else {
+                let ext = file_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                for func in &functions {
+                    let func_hints: Vec<_> = callback_hints
+                        .iter()
+                        .filter(|h| {
+                            h.callback_start_line >= func.start_line
+                                && h.callback_start_line <= func.end_line
+                        })
+                        .cloned()
+                        .collect();
+                    let func_assignments: Vec<_> = file_assignments
+                        .iter()
+                        .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+                        .cloned()
+                        .collect();
+                    let func_calls: Vec<_> = file_calls
+                        .iter()
+                        .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+                        .cloned()
+                        .collect();
+
+                    // 与 Stage B 一致：fragment 重解析优先，失败回退 text-based CPG
+                    let func_cpg = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+                        if let Some(tree) = ast_parser.parse_fragment(&func.body_text, ext) {
+                            let root = tree.root_node();
+                            let mut cursor = root.walk();
+                            let body_node = root.children(&mut cursor).find(|n| {
+                                matches!(
+                                    n.kind(),
+                                    "block"
+                                        | "statement_block"
+                                        | "body"
+                                        | "suite"
+                                        | "block_stmt"
+                                )
+                            });
+                            if let Some(body_node) = body_node {
+                                return super::cpg::CPGBuilder::build_function_cpg_from_fragment(
+                                    &body_node,
+                                    &func.body_text,
+                                    &file_path_str,
+                                    func,
+                                    &func_assignments,
+                                    &func_calls,
+                                );
+                            }
+                        }
+                        super::cpg::CPGBuilder::build_function_cpg_from_text(
+                            &func.body_text,
+                            &file_path_str,
+                            func,
+                            &func_assignments,
+                            &func_calls,
+                        )
+                    });
+
+                    let (flows, tainted) = self.analyze_function_cpg_with_state(
+                        &func_cpg,
+                        &func.body_text,
+                        &func_hints,
+                    );
+                    report.flows.extend(flows);
+                    report.tainted_vars.extend(tainted);
+                }
+            }
+        } else {
+            // AST 解析失败，回退到 legacy 路径（无状态输出）
+            report.flows = self.analyze_file(file_path, content);
+        }
+
+        report
     }
 
     /// 前向污点传播（worklist 算法）
@@ -569,7 +710,7 @@ impl AstTaintAnalyzer {
         typed_params: &[TypedParam],
         callback_hints: &[CallbackTaintHint],
         line_offset: usize,
-    ) -> Vec<TaintFlow> {
+    ) -> (Vec<TaintFlow>, HashMap<usize, super::cpg::PathSensitiveState>) {
         use super::cpg::{ConditionInfo, PathCondition, PathSensitiveState, VarTaintState};
         use crate::analysis::enhanced_dataflow::EdgeType;
 
@@ -711,7 +852,7 @@ impl AstTaintAnalyzer {
             }
         }
 
-        flows
+        (flows, taint_state)
     }
 
     /// 路径敏感 Join：考虑入边类型和条件信息
@@ -4353,6 +4494,35 @@ public class Test extends HttpServlet {
                 .iter()
                 .any(|f| matches!(f.vulnerability_type, VulnerabilityType::XPathInjection)),
             "Expected XPath injection via nested Base64 calls and String constructor (fragment CPG)"
+        );
+    }
+
+    #[test]
+    fn test_analyze_file_cpg_exposes_tainted_vars() {
+        // 二阶样例：DB 读取 → 中间变量传播，但不到达任何 sink。
+        // 验证 analyze_file_cpg 的 tainted_vars 能暴露"被污染但未达 sink"的变量，
+        // 供探索向查询（"这个变量被污染了吗"）使用。
+        let code = r#"import sqlite3
+
+def save(cur):
+    row = cur.fetchone()
+    name = row[0]
+    debug = name
+    print(debug)
+"#;
+        let analyzer = yaml_rules_analyzer();
+        let path = std::path::PathBuf::from("save.py");
+        let report = analyzer.analyze_file_cpg(&path, code);
+        // 中间变量应被记录为污染（来源为二阶 source 或传播链）
+        assert!(
+            report.tainted_vars.contains_key("name"),
+            "expected 'name' in tainted_vars, got: {:?}",
+            report.tainted_vars.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            report.tainted_vars.contains_key("debug"),
+            "expected 'debug' in tainted_vars, got: {:?}",
+            report.tainted_vars.keys().collect::<Vec<_>>()
         );
     }
 }
