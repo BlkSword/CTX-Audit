@@ -142,6 +142,8 @@ impl CPGBuilder {
             node_meta,
             alias_map,
             signature,
+            // 整文件 AST 构建：CFG 节点行号已是文件绝对行号
+            line_offset: 0,
         }
     }
 
@@ -150,7 +152,8 @@ impl CPGBuilder {
     /// 与 `build_function_cpg` 的区别：
     /// - `func_body_node` 是从函数体文本片段解析出来的局部 AST 节点，
     ///   其行号是相对于片段的；
-    /// - `assignments`/`calls` 仍使用文件绝对行号，方法内部会转换为相对行号。
+    /// - `assignments`/`calls` 使用文件绝对行号；node_meta 保留绝对行号，
+    ///   与 CFG 节点（片段相对行号）匹配时用 `node_line + line_offset` 换算。
     pub fn build_function_cpg_from_fragment(
         func_body_node: &tree_sitter::Node,
         content: &str,
@@ -161,34 +164,18 @@ impl CPGBuilder {
     ) -> FunctionCPG {
         let cfg = EnhancedFlowGraph::from_ast_node(func_body_node, content, file_path, &func.name);
 
-        // CFG 节点行号是相对于函数体文本的，需要把 assignments/calls 也转为相对行号
+        // CFG 节点行号相对于函数体文本（1 起），assignments/calls 为文件绝对行号。
+        // 元数据统一存绝对行号（供污点分析直接产出文件级行号），
+        // 节点匹配时用 node.start_line + line_offset 换算。
         let line_offset = func.body_start_line.saturating_sub(1);
-        let relative_assignments: Vec<Assignment> = assignments
-            .iter()
-            .map(|a| {
-                let mut a = a.clone();
-                a.line = a.line.saturating_sub(line_offset);
-                a.target_node.line = a.target_node.line.saturating_sub(line_offset);
-                a
-            })
-            .collect();
-        let relative_calls: Vec<CallInfo> = calls
-            .iter()
-            .map(|c| {
-                let mut c = c.clone();
-                c.line = c.line.saturating_sub(line_offset);
-                c
-            })
-            .collect();
-
         let assign_by_line: HashMap<usize, &Assignment> =
-            relative_assignments.iter().map(|a| (a.line, a)).collect();
-        let call_refs: Vec<&CallInfo> = relative_calls.iter().collect();
+            assignments.iter().map(|a| (a.line, a)).collect();
+        let call_refs: Vec<&CallInfo> = calls.iter().collect();
         let call_by_line = select_outermost_call_per_line(&call_refs);
 
         let mut node_meta = HashMap::new();
         for node in &cfg.nodes {
-            let line = node.start_line;
+            let line = node.start_line + line_offset;
             let ast_kind = node
                 .code
                 .split('(')
@@ -216,7 +203,7 @@ impl CPGBuilder {
             );
         }
 
-        let alias_map = Self::build_alias_map(&relative_assignments);
+        let alias_map = Self::build_alias_map(assignments);
 
         let signature = FunctionSignature {
             name: func.name.clone(),
@@ -231,6 +218,7 @@ impl CPGBuilder {
             node_meta,
             alias_map,
             signature,
+            line_offset,
         }
     }
 
@@ -248,35 +236,21 @@ impl CPGBuilder {
         let cfg = EnhancedFlowGraph::from_code(content, file_path, &func.name);
 
         // from_code 生成的 CFG 节点行号是相对于函数体文本的（从 1 开始），
-        // 而传入的 assignments/calls 仍使用文件绝对行号。需要统一为相对行号，
-        // 才能使 node_meta 正确附加 assignment/call_info。
-        let line_offset = func.start_line.saturating_sub(1);
-        let relative_assignments: Vec<Assignment> = assignments
-            .iter()
-            .map(|a| {
-                let mut a = a.clone();
-                a.line = a.line.saturating_sub(line_offset);
-                a.target_node.line = a.target_node.line.saturating_sub(line_offset);
-                a
-            })
-            .collect();
-        let relative_calls: Vec<CallInfo> = calls
-            .iter()
-            .map(|c| {
-                let mut c = c.clone();
-                c.line = c.line.saturating_sub(line_offset);
-                c
-            })
-            .collect();
-
+        // 而传入的 assignments/calls 使用文件绝对行号。
+        // 注意：body_text 从函数体首行开始（body_start_line），而非 def 签名行
+        // （start_line）。Python/Ruby 等体首行在签名下一行的语言若用 start_line
+        // 会整体偏移一行，导致 assignment/call 永远匹配不到 CFG 节点。
+        // 元数据统一存绝对行号（供污点分析直接产出文件级行号），
+        // 节点匹配时用 node.start_line + line_offset 换算。
+        let line_offset = func.body_start_line.saturating_sub(1);
         let assign_by_line: HashMap<usize, &Assignment> =
-            relative_assignments.iter().map(|a| (a.line, a)).collect();
-        let call_refs: Vec<&CallInfo> = relative_calls.iter().collect();
+            assignments.iter().map(|a| (a.line, a)).collect();
+        let call_refs: Vec<&CallInfo> = calls.iter().collect();
         let call_by_line = select_outermost_call_per_line(&call_refs);
 
         let mut node_meta = HashMap::new();
         for node in &cfg.nodes {
-            let line = node.start_line;
+            let line = node.start_line + line_offset;
             let ast_kind = node
                 .code
                 .split('(')
@@ -304,7 +278,7 @@ impl CPGBuilder {
             );
         }
 
-        let alias_map = Self::build_alias_map(&relative_assignments);
+        let alias_map = Self::build_alias_map(assignments);
 
         let signature = FunctionSignature {
             name: func.name.clone(),
@@ -319,6 +293,7 @@ impl CPGBuilder {
             node_meta,
             alias_map,
             signature,
+            line_offset,
         }
     }
 
@@ -380,6 +355,8 @@ impl CPGBuilder {
             node_meta,
             alias_map,
             signature,
+            // 整文件构建：行号已是文件绝对行号
+            line_offset: 0,
         }
     }
 
@@ -562,5 +539,92 @@ mod tests {
     fn test_extract_variables() {
         let vars = CPGBuilder::extract_variables("req.body.name !== undefined");
         assert!(vars.contains(&"req".to_string()));
+    }
+
+    /// 回归测试：Python 等"函数体首行在签名下一行"的语言，
+    /// from_text 路径必须以 body_start_line（而非 start_line）换算相对行号，
+    /// 否则 assignment/call 元数据整体偏移一行、永远匹配不到 CFG 节点。
+    #[test]
+    fn test_from_text_line_offset_uses_body_start_line() {
+        use crate::ast::symbol::{ArgInfo, NodeInfo};
+
+        // 模拟文件：
+        //   4: def handler():
+        //   5:     cmd = request.args.get("cmd")
+        //   6:     os.system(cmd)
+        // body_text 从第 5 行开始（tree-sitter block 首行不含缩进）。
+        let func = FunctionBody {
+            name: "handler".to_string(),
+            params: vec![],
+            start_line: 4,
+            end_line: 6,
+            body_start_line: 5,
+            body_text: "cmd = request.args.get(\"cmd\")\n    os.system(cmd)".to_string(),
+            typed_params: vec![],
+        };
+        let assignments = vec![Assignment {
+            target: "cmd".to_string(),
+            target_node: NodeInfo {
+                line: 5,
+                column: 4,
+                byte_start: 0,
+                byte_end: 3,
+            },
+            source_expr: "request.args.get(\"cmd\")".to_string(),
+            source_vars: vec!["request".to_string()],
+            line: 5,
+            column: 4,
+        }];
+        let calls = vec![
+            CallInfo {
+                callee: "get".to_string(),
+                arguments: vec![ArgInfo {
+                    text: "\"cmd\"".to_string(),
+                    referenced_vars: vec![],
+                }],
+                line: 5,
+                column: 8,
+                is_method: true,
+                receiver: Some("request.args".to_string()),
+                callback_args: vec![],
+            },
+            CallInfo {
+                callee: "system".to_string(),
+                arguments: vec![ArgInfo {
+                    text: "cmd".to_string(),
+                    referenced_vars: vec!["cmd".to_string()],
+                }],
+                line: 6,
+                column: 4,
+                is_method: true,
+                receiver: Some("os".to_string()),
+                callback_args: vec![],
+            },
+        ];
+
+        let cpg = CPGBuilder::build_function_cpg_from_text(
+            &func.body_text,
+            "test.py",
+            &func,
+            &assignments,
+            &calls,
+        );
+
+        // 绝对行号换算偏移应为 body_start_line - 1 = 4
+        assert_eq!(cpg.line_offset, 4);
+
+        // 赋值元数据必须挂到 Assignment 节点上
+        let has_assignment = cpg
+            .node_meta
+            .values()
+            .any(|m| m.assignment.as_ref().map(|a| a.target.as_str()) == Some("cmd"));
+        assert!(has_assignment, "assignment 元数据未匹配到 CFG 节点");
+
+        // os.system 调用必须挂到对应 Call 节点（而非错配到 request.args.get）
+        let has_system_call = cpg
+            .node_meta
+            .values()
+            .any(|m| m.call_info.as_ref().map(|c| c.callee.as_str()) == Some("system"));
+        assert!(has_system_call, "os.system 调用元数据未匹配到 CFG 节点");
     }
 }

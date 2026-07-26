@@ -1,0 +1,119 @@
+kind: taint-rules
+name: "Second-Order Flow Rules"
+version: "1.0"
+
+# 二阶流建模（MVP）：
+# - sources 标记 second_order: true——数据来自存储点（DB 行/session），
+#   不是直接用户输入；flow 置信度 ×0.7，严重度保留
+# - sinks 标记 storage_write: true——不产出 finding，只记录"污点写入存储点"
+#   事件；项目内无此事件时，二阶 finding 降级为 info（闸门）
+# 典型场景：存储型 XSS（用户输入 → INSERT → 读出 → echo 未转义）、
+# 二阶 SQL 注入（用户输入 → 存储 → 读出 → 拼接查询）
+
+sources:
+  - id: "so_php_db_read"
+    name: "PHP Database Row Read"
+    description: "从数据库结果集读取数据（二阶 source：数据可能由先前的用户输入写入）"
+    patterns:
+      - "->fetch_assoc("
+      - "->fetch_array("
+      - "->fetch_object("
+      - "->fetch_row("
+      - "->fetchAll("
+      - "mysqli_fetch_"
+      - "mysql_fetch_"
+      - "$row["
+    languages: ["php"]
+    severity: "Medium"
+    category: "DatabaseInput"
+    second_order: true
+    ast_patterns: []
+
+  - id: "so_php_session_read"
+    name: "PHP Session Read"
+    description: "读取 session 数据（二阶 source：session 内容可能由先前请求写入）"
+    patterns:
+      - "$_SESSION["
+    languages: ["php"]
+    severity: "Medium"
+    category: "DatabaseInput"
+    second_order: true
+    ast_patterns: []
+
+  - id: "so_python_db_read"
+    name: "Python Database Row Read"
+    description: "从数据库游标读取数据（二阶 source）"
+    patterns:
+      - ".fetchone("
+      - ".fetchall("
+      - ".fetchmany("
+    languages: ["python"]
+    severity: "Medium"
+    category: "DatabaseInput"
+    second_order: true
+    ast_patterns: []
+
+  - id: "so_python_session_read"
+    name: "Python Session Read"
+    description: "读取 session 数据（Flask/Django，二阶 source）"
+    patterns:
+      - "session.get("
+      - "session["
+      - "request.session["
+    languages: ["python"]
+    severity: "Medium"
+    category: "DatabaseInput"
+    second_order: true
+    ast_patterns: []
+
+sinks:
+  - id: "so_sql_write"
+    name: "SQL Write"
+    description: "SQL 写入语句（存储写入闸门信号：污点数据进入持久层）"
+    match_mode: "Substring"
+    patterns:
+      - "INSERT INTO"
+      - "insert into"
+      - "UPDATE "
+      - "REPLACE INTO"
+    languages: ["*"]
+    vulnerability_type: "StorageWrite"
+    severity: "Info"
+    sensitive_params: [0]
+    storage_write: true
+    ast_patterns: []
+
+  - id: "so_orm_write"
+    name: "ORM / Query Builder Write"
+    description: "ORM 或查询构造器写入（存储写入闸门信号）"
+    match_mode: "Substring"
+    patterns:
+      - "->insert("
+      - "->update("
+      - "->save("
+      - "->create("
+      - ".objects.create("
+      - ".save("
+      - "->set("
+    languages: ["php", "python"]
+    severity: "Info"
+    vulnerability_type: "StorageWrite"
+    sensitive_params: [0]
+    storage_write: true
+    ast_patterns: []
+
+  - id: "so_file_write"
+    name: "File Write"
+    description: "文件写入（存储写入闸门信号）"
+    match_mode: "Substring"
+    patterns:
+      - "file_put_contents("
+      - "fwrite("
+    languages: ["php", "python"]
+    severity: "Info"
+    vulnerability_type: "StorageWrite"
+    sensitive_params: [0]
+    storage_write: true
+    ast_patterns: []
+
+sanitizers: []

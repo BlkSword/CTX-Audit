@@ -37,6 +37,11 @@ pub struct FunctionCPG {
     pub alias_map: AliasMap,
     /// 函数签名
     pub signature: FunctionSignature,
+    /// CFG 节点行号 → 文件绝对行号的偏移（绝对行号 = CFG 节点行号 + line_offset）。
+    /// 整文件构建为 0；函数体片段构建为 body_start_line - 1。
+    /// node_meta 中的 assignment/call_info 统一存文件绝对行号；
+    /// CFG 节点行号为函数体相对行号，消费方匹配时需自行加 line_offset。
+    pub line_offset: usize,
 }
 
 /// CFG 节点附加的 AST 元数据

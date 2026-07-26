@@ -33,6 +33,13 @@ pub struct TaintSource {
     /// 类别
     pub category: TaintCategory,
 
+    /// 二阶 source（存储点读出：数据库行/session/缓存）。
+    /// 污点由"已存储的数据"引入而非直接用户输入：flow 置信度打折，
+    /// 且仅在项目内检测到污点写入存储点（storage_write sink 事件）时
+    /// 才按正常严重度上报，否则降级为 info 参考。
+    #[serde(default)]
+    pub second_order: bool,
+
     /// AST 匹配模式（可选，用于精确匹配）
     /// 例如: "member_expression[object=req,property=body]"
     #[serde(default)]
@@ -50,6 +57,7 @@ impl TaintSource {
             languages: vec!["*".to_string()],
             severity: Severity::High,
             category: TaintCategory::UserInput,
+            second_order: false,
             ast_patterns: Vec::new(),
         }
     }
@@ -140,6 +148,12 @@ pub struct TaintSink {
     /// 示例: ["setSecure", "setHttpOnly", "encodeForHtml"]
     #[serde(default)]
     pub sanitizers: Vec<String>,
+
+    /// 存储写入点（非漏洞 sink）：SQL 写/ORM 写/文件写等。
+    /// 命中不产出 finding，仅记录"污点写入存储点"事件，
+    /// 作为二阶 source（second_order）finding 的项目级闸门。
+    #[serde(default)]
+    pub storage_write: bool,
 }
 
 impl TaintSink {
@@ -161,6 +175,7 @@ impl TaintSink {
             receiver_patterns: Vec::new(),
             exact_matches: Vec::new(),
             sanitizers: Vec::new(),
+            storage_write: false,
         }
     }
 
@@ -540,6 +555,10 @@ pub enum VulnerabilityType {
     BufferOverflow,
     /// 格式化字符串
     FormatString,
+    /// 硬编码凭据
+    HardcodedCredentials,
+    /// 存储写入点（非漏洞：二阶流闸门信号，不产出 finding）
+    StorageWrite,
     /// 通用
     Generic,
 }
@@ -567,6 +586,8 @@ impl std::fmt::Display for VulnerabilityType {
             VulnerabilityType::CachePoisoning => write!(f, "Cache Poisoning"),
             VulnerabilityType::BufferOverflow => write!(f, "Buffer Overflow"),
             VulnerabilityType::FormatString => write!(f, "Format String"),
+            VulnerabilityType::HardcodedCredentials => write!(f, "Hardcoded Credentials"),
+            VulnerabilityType::StorageWrite => write!(f, "Storage Write"),
             VulnerabilityType::Generic => write!(f, "Potential Security Issue"),
         }
     }
@@ -840,6 +861,7 @@ impl TaintAnalyzer {
                 severity: Severity::High,
                 category: TaintCategory::UserInput,
                 ast_patterns: vec![],
+                second_order: false,
             },
             // 文件读取
             TaintSource {
@@ -859,6 +881,7 @@ impl TaintAnalyzer {
                 severity: Severity::Medium,
                 category: TaintCategory::FileInput,
                 ast_patterns: vec![],
+                second_order: false,
             },
             // 环境变量
             TaintSource {
@@ -876,6 +899,7 @@ impl TaintAnalyzer {
                 severity: Severity::Medium,
                 category: TaintCategory::Environment,
                 ast_patterns: vec![],
+                second_order: false,
             },
             // Java HTTP 输入（增强）
             TaintSource {
@@ -902,6 +926,7 @@ impl TaintAnalyzer {
                 severity: Severity::High,
                 category: TaintCategory::UserInput,
                 ast_patterns: vec![],
+                second_order: false,
             },
         ]
     }
@@ -936,6 +961,7 @@ impl TaintAnalyzer {
                 receiver_patterns: vec![],
                 exact_matches: vec![],
                 sanitizers: vec![],
+                storage_write: false,
             },
             // 命令执行
             TaintSink {
@@ -965,6 +991,7 @@ impl TaintAnalyzer {
                 receiver_patterns: vec![],
                 exact_matches: vec![],
                 sanitizers: vec![],
+                storage_write: false,
             },
             // 文件路径操作
             TaintSink {
@@ -995,6 +1022,7 @@ impl TaintAnalyzer {
                 receiver_patterns: vec![],
                 exact_matches: vec![],
                 sanitizers: vec![],
+                storage_write: false,
             },
             // HTML 输出
             TaintSink {
@@ -1020,6 +1048,7 @@ impl TaintAnalyzer {
                 receiver_patterns: vec![],
                 exact_matches: vec![],
                 sanitizers: vec![],
+                storage_write: false,
             },
             // SSRF
             TaintSink {
@@ -1049,6 +1078,7 @@ impl TaintAnalyzer {
                 receiver_patterns: vec![],
                 exact_matches: vec![],
                 sanitizers: vec![],
+                storage_write: false,
             },
             // eval
             TaintSink {
@@ -1074,6 +1104,7 @@ impl TaintAnalyzer {
                 receiver_patterns: vec![],
                 exact_matches: vec![],
                 sanitizers: vec![],
+                storage_write: false,
             },
             // Java SQL 执行（语义匹配，降低误报）
             TaintSink {
@@ -1118,6 +1149,7 @@ impl TaintAnalyzer {
                     "PreparedStatement.executeUpdate".to_string(),
                 ],
                 sanitizers: vec!["prepare".to_string(), "setString".to_string()],
+                storage_write: false,
             },
             // Java 命令执行（语义匹配）
             TaintSink {
@@ -1153,6 +1185,7 @@ impl TaintAnalyzer {
                     "ProcessBuilder.start".to_string(),
                 ],
                 sanitizers: vec![],
+                storage_write: false,
             },
             // Java HTML 输出（语义匹配）
             TaintSink {
@@ -1180,6 +1213,7 @@ impl TaintAnalyzer {
                 ],
                 exact_matches: vec![],
                 sanitizers: vec!["escapeHtml".to_string(), "encodeForHTML".to_string()],
+                storage_write: false,
             },
         ]
     }
@@ -1723,6 +1757,7 @@ mod tests {
             receiver_patterns: vec!["connection".to_string(), "pool".to_string()],
             exact_matches: vec!["cursor.execute".to_string()],
             sanitizers: vec![],
+            storage_write: false,
         };
 
         // exact_matches 应命中
@@ -1754,6 +1789,7 @@ mod tests {
             receiver_patterns: vec![],
             exact_matches: vec![],
             sanitizers: vec![],
+            storage_write: false,
         };
 
         assert!(sink.matches("child_process.exec(cmd)", "javascript"));

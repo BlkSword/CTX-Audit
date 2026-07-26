@@ -387,7 +387,7 @@ impl AstTaintAnalyzer {
             .collect();
         let language = Self::detect_language(&cpg.signature.file_path);
 
-        let line_offset = cpg.signature.start_line.saturating_sub(1);
+        let line_offset = cpg.line_offset;
         self.forward_taint_analysis_cpg(
             &cpg.cfg,
             &assignments,
@@ -640,6 +640,7 @@ impl AstTaintAnalyzer {
                         file_path,
                         language,
                         &alias_map,
+                        line_offset,
                     ) {
                         flows.push(flow);
                     }
@@ -653,6 +654,7 @@ impl AstTaintAnalyzer {
                         file_path,
                         language,
                         &alias_map,
+                        line_offset,
                     ) {
                         flows.push(flow);
                     }
@@ -683,6 +685,7 @@ impl AstTaintAnalyzer {
                             file_path,
                             language,
                             &alias_map,
+                            line_offset,
                         ) {
                             flows.push(flow);
                         }
@@ -988,11 +991,18 @@ impl AstTaintAnalyzer {
                 if source.matches(line, language) {
                     if let Some(var_name) = self.extract_var_from_source(line) {
                         if state.get_var(&var_name).is_none() {
+                            // 二阶 source（存储点读出）：标签携带 (second-order)，
+                            // flow 构建时据此降置信度
+                            let label = if source.second_order {
+                                format!("{} (second-order)", var_name)
+                            } else {
+                                var_name.clone()
+                            };
                             state.insert_var(
                                 var_name.clone(),
                                 VarTaintState::from_taint(
                                     line_num,
-                                    var_name.clone(),
+                                    label,
                                     vec![PropagationStep {
                                         step_type: PropagationStepType::DirectAssignment,
                                         from_var: None,
@@ -1037,22 +1047,27 @@ impl AstTaintAnalyzer {
             if state.get_var(local_var).is_some() {
                 continue;
             }
-            let path_matches_source = paths.iter().any(|path| {
+            let matched_source = paths.iter().find_map(|path| {
                 let dotted = path.as_dotted();
-                self.sources.iter().any(|s| s.matches(&dotted, language))
+                self.sources.iter().find(|s| s.matches(&dotted, language))
             });
-            if path_matches_source {
+            if let Some(matched) = matched_source {
                 let line_num = code
                     .lines()
                     .enumerate()
                     .find(|(_, l)| l.contains(local_var))
                     .map(|(i, _)| i + 1 + line_offset)
                     .unwrap_or(1);
+                let label = if matched.second_order {
+                    format!("{} (second-order)", local_var)
+                } else {
+                    local_var.clone()
+                };
                 state.insert_var(
                     local_var.clone(),
                     VarTaintState::from_taint(
                         line_num,
-                        local_var.clone(),
+                        label,
                         vec![PropagationStep {
                             step_type: PropagationStepType::DirectAssignment,
                             from_var: None,
@@ -1077,10 +1092,13 @@ impl AstTaintAnalyzer {
         file_path: &str,
         language: &str,
         alias_map: &AliasMap,
+        line_offset: usize,
     ) -> Option<TaintFlow> {
         use super::cpg::VarTaintState;
 
-        if let Some(assign) = assign_by_line.get(&node.start_line) {
+        // assign_by_line/call_by_line 键为文件绝对行号（node_meta 统一存绝对行号），
+        // CFG 节点行号为函数体相对行号，查找时用 node.start_line + line_offset 换算
+        if let Some(assign) = assign_by_line.get(&(node.start_line + line_offset)) {
             let is_sanitized = call_by_line
                 .get(&assign.line)
                 .map(|c| self.is_sanitizer(&c.callee))
@@ -1194,7 +1212,7 @@ impl AstTaintAnalyzer {
                         step_type: PropagationStepType::DirectAssignment,
                         from_var: Some(tainted_var.clone()),
                         to_var: Some(def.clone()),
-                        line: node.start_line,
+                        line: node.start_line + line_offset,
                         code_snippet: Some(node.code.clone()),
                         function_name: None,
                     });
@@ -1221,8 +1239,10 @@ impl AstTaintAnalyzer {
         file_path: &str,
         language: &str,
         alias_map: &AliasMap,
+        line_offset: usize,
     ) -> Option<TaintFlow> {
-        if let Some(call) = call_by_line.get(&node.start_line) {
+        // call_by_line 键为文件绝对行号，CFG 节点为函数体相对行号，加 line_offset 换算
+        if let Some(call) = call_by_line.get(&(node.start_line + line_offset)) {
             // 检查 sink（方法调用考虑 receiver，如 needle.get）
             if let Some(sink) = self.match_sink_for_call(call, language) {
                 let tainted_arg = call.arguments.iter().find(|arg| {
@@ -1418,8 +1438,13 @@ impl AstTaintAnalyzer {
         // 降一级严重度并降低置信度，交由上层/LLM 判定（如 SSRF 通知配置场景）
         let is_speculative_source = taint_state.source_var.contains("(callback param)")
             || taint_state.source_var.contains("(tainted param)");
+        // 二阶 source（存储点读出）：数据流真实但来源是已存储数据，
+        // 保留严重度（存储型 XSS 等本身即高危），只降置信度
+        let is_second_order = taint_state.source_var.contains("(second-order)");
         let (severity, confidence) = if is_speculative_source {
             (downgrade_severity(sink.severity), confidence * 0.7)
+        } else if is_second_order {
+            (sink.severity, confidence * 0.7)
         } else {
             (sink.severity, confidence)
         };
@@ -1685,11 +1710,17 @@ impl AstTaintAnalyzer {
                 if source.matches(line, language) {
                     let var_name = self.extract_var_from_source(line);
                     if let Some(var_name) = var_name {
+                        // 二阶 source（存储点读出）：标签携带 (second-order)
+                        let label = if source.second_order {
+                            format!("{} (second-order)", var_name)
+                        } else {
+                            var_name.clone()
+                        };
                         state.insert(
                             var_name.clone(),
                             TaintInfo {
                                 source_line: line_num,
-                                source_var: var_name.clone(),
+                                source_var: label,
                                 sanitized: false,
                                 sanitizer: None,
                                 propagation_steps: vec![PropagationStep {
@@ -1746,11 +1777,16 @@ impl AstTaintAnalyzer {
                             .map(|(i, _)| i + 1 + line_offset)
                             .unwrap_or(1);
 
+                        let label = if source.second_order {
+                            format!("{} (second-order)", path_str)
+                        } else {
+                            path_str.clone()
+                        };
                         state.insert(
                             local_var.clone(),
                             TaintInfo {
                                 source_line: var_line,
-                                source_var: path_str.clone(),
+                                source_var: label,
                                 sanitized: false,
                                 sanitizer: None,
                                 propagation_steps: vec![PropagationStep {
@@ -2061,8 +2097,12 @@ impl AstTaintAnalyzer {
         // 推测性参数 source 降级（同 flow 构造主路径）
         let is_speculative_source = taint_info.source_var.contains("(callback param)")
             || taint_info.source_var.contains("(tainted param)");
+        // 二阶 source（存储点读出）：保留严重度，降置信度
+        let is_second_order = taint_info.source_var.contains("(second-order)");
         let (severity, confidence) = if is_speculative_source {
             (downgrade_severity(sink.severity), confidence * 0.7)
+        } else if is_second_order {
+            (sink.severity, confidence * 0.7)
         } else {
             (sink.severity, confidence)
         };
@@ -2436,7 +2476,8 @@ impl AstTaintAnalyzer {
             && var_name
                 .chars()
                 .next()
-                .map(|c| c.is_alphabetic() || c == '_')
+                // PHP 变量以 $ 开头（$v / $_GET），赋值提取与参数引用均保留 $ 符
+                .map(|c| c.is_alphabetic() || c == '_' || c == '$')
                 .unwrap_or(false)
         {
             return Some(var_name);
@@ -3068,6 +3109,200 @@ content = f.read()"#;
 
         assert!(!flows.is_empty(), "Should detect Python path traversal");
     }
+
+    #[test]
+    fn test_second_order_source_confidence_discount_keeps_severity() {
+        // 二阶 source（存储点读出）：source 标签携带 (second-order)，
+        // flow 置信度打折（0.85×0.7≈0.6），严重度保留（存储型漏洞本身即高危）
+        let mut so_source = TaintSource::new("so_db", "DB Row", vec![".fetchone("]);
+        so_source.second_order = true;
+        so_source.languages = vec!["python".to_string()];
+
+        let sink = TaintSink::new(
+            "eval",
+            "Eval",
+            vec!["eval("],
+            VulnerabilityType::CodeInjection,
+        );
+
+        let analyzer = AstTaintAnalyzer::new()
+            .with_sources(vec![so_source])
+            .with_sinks(vec![sink]);
+
+        let code = r#"data = cursor.fetchone()
+eval(data)"#;
+        let path = std::path::PathBuf::from("show.py");
+        let flows = analyzer.analyze_code(code, &path, "render", &[], &[]);
+
+        assert!(!flows.is_empty(), "二阶 source → sink 应产生 flow");
+        let flow = &flows[0];
+        assert!(
+            flow.source.symbol.contains("(second-order)"),
+            "source 标签应携带 (second-order): {}",
+            flow.source.symbol
+        );
+        assert!(
+            flow.confidence < 0.7,
+            "二阶 flow 置信度应打折: {}",
+            flow.confidence
+        );
+        assert!(
+            matches!(flow.severity, Severity::High | Severity::Critical),
+            "二阶 flow 严重度不应降级: {:?}",
+            flow.severity
+        );
+    }
+
+    #[test]
+    fn test_storage_write_sink_produces_gate_flow() {
+        // storage_write sink：污点到达存储写入点时产生 StorageWrite 类型的 flow
+        //（finding 过滤与闸门统计在 scanner 层完成）
+        let source = TaintSource::new("input", "Input", vec!["request.args"]);
+        let mut sw_sink = TaintSink::new(
+            "sql_write",
+            "SQL Write",
+            vec!["db_query("],
+            VulnerabilityType::StorageWrite,
+        );
+        sw_sink.storage_write = true;
+
+        let analyzer = AstTaintAnalyzer::new()
+            .with_sources(vec![source])
+            .with_sinks(vec![sw_sink]);
+
+        let code = r#"v = request.args.get('title')
+sql = "INSERT INTO t VALUES ('%s')" % v
+db_query(sql)"#;
+        let path = std::path::PathBuf::from("save.py");
+        let flows = analyzer.analyze_code(code, &path, "save", &[], &[]);
+
+        assert!(!flows.is_empty(), "污点写入应产生闸门 flow");
+        assert_eq!(
+            flows[0].vulnerability_type,
+            VulnerabilityType::StorageWrite,
+            "闸门 flow 类型应为 StorageWrite"
+        );
+    }
+    /// 生产 Stage B 路径回归：extract_all_for_taint_with_tree →
+    /// build_function_cpg_from_text → analyze_function_cpg。
+    /// Python 二阶流（DB 读出 → 模板渲染）必须产出带 (second-order) 标签的 flow。
+    /// （历史上 body_start_line 偏移 bug 使该路径产出 0 flow）
+    #[test]
+    fn test_production_cpg_path_python_second_order() {
+        let code = r#"import sqlite3
+from flask import render_template_string
+
+def show():
+    conn = sqlite3.connect("app.db")
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM users LIMIT 1")
+    row = cur.fetchone()
+    name = row[0]
+    return render_template_string("<h1>" + name + "</h1>")
+"#;
+        let (cpg, func) = build_production_cpg(code, "show.py", "show");
+        let analyzer = yaml_rule_analyzer();
+        let flows = analyzer.analyze_function_cpg(&cpg, &func.body_text, &[]);
+        assert!(!flows.is_empty(), "生产 CPG 路径应产出二阶 flow");
+        assert!(
+            flows.iter().any(|f| f.source.symbol.contains("(second-order)")),
+            "应存在二阶 flow: {:?}",
+            flows.iter().map(|f| f.source.symbol.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    /// 生产路径回归：一阶输入写入 SQL 字符串赋值时，
+    /// storage_write sink（INSERT INTO）在赋值右值命中并产出闸门 flow
+    #[test]
+    fn test_production_cpg_path_storage_write_gate() {
+        let code = r#"import sqlite3
+from flask import request
+
+def save():
+    name = request.args.get("name")
+    conn = sqlite3.connect("app.db")
+    cur = conn.cursor()
+    sql = "INSERT INTO users (name) VALUES ('%s')" % name
+    cur.execute(sql)
+    conn.commit()
+    return "ok"
+"#;
+        let (cpg, func) = build_production_cpg(code, "save.py", "save");
+        let analyzer = yaml_rule_analyzer();
+        let flows = analyzer.analyze_function_cpg(&cpg, &func.body_text, &[]);
+        assert!(
+            flows.iter().any(|f| f.vulnerability_type == VulnerabilityType::StorageWrite),
+            "污点写入存储点应产生闸门 flow: {:?}",
+            flows.iter().map(|f| format!("{}", f.vulnerability_type)).collect::<Vec<_>>()
+        );
+    }
+
+    /// 生产路径回归：PHP 函数内一阶链（$_GET → eval）。
+    /// 覆盖两个历史 bug：PHP 调用节点（function_call_expression 等）未提取、
+    /// $ 开头变量名被 extract_var_from_source 拒绝
+    #[test]
+    fn test_production_cpg_path_php_first_order() {
+        let code = r#"<?php
+function handler() {
+    $v = $_GET['x'];
+    eval($v);
+}
+"#;
+        let (cpg, func) = build_production_cpg(code, "a.php", "handler");
+        let analyzer = yaml_rule_analyzer();
+        let flows = analyzer.analyze_function_cpg(&cpg, &func.body_text, &[]);
+        assert!(
+            flows.iter().any(|f| f.sink.symbol.contains("eval")),
+            "PHP 一阶链应产出 flow: {:?}",
+            flows.iter().map(|f| format!("{}->{}", f.source.symbol, f.sink.symbol)).collect::<Vec<_>>()
+        );
+    }
+
+    /// 模拟生产 Stage B：从文件内容提取函数并构建 text-based CPG
+    fn build_production_cpg(
+        code: &str,
+        file: &str,
+        func_name: &str,
+    ) -> (crate::analysis::cpg::FunctionCPG, crate::ast::symbol::FunctionBody) {
+        let pb = std::path::PathBuf::from(file);
+        let extracted = crate::ast::parser::with_thread_local_parser(|p| {
+            p.extract_all_for_taint_with_tree(&pb, code)
+        });
+        let (_tree, _symbols, functions, file_assignments, file_calls) =
+            extracted.expect("extract_all_for_taint_with_tree 失败");
+        let func = functions
+            .iter()
+            .find(|f| f.name == func_name)
+            .unwrap_or_else(|| panic!("{} 函数未提取", func_name))
+            .clone();
+        let fa: Vec<_> = file_assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let fc: Vec<_> = file_calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let cpg = crate::analysis::cpg::CPGBuilder::build_function_cpg_from_text(
+            &func.body_text, file, &func, &fa, &fc,
+        );
+        (cpg, func)
+    }
+
+    /// 与 CLI 生产环境一致的 YAML 污点规则分析器
+    fn yaml_rule_analyzer() -> AstTaintAnalyzer {
+        let loaded = crate::rules::taint_loader::load_taint_rules_with_embedded_fallback(
+            std::path::Path::new("rules/taint"),
+        );
+        AstTaintAnalyzer::from_rules_arc(
+            std::sync::Arc::new(loaded.sources),
+            std::sync::Arc::new(loaded.sinks),
+            std::sync::Arc::new(loaded.sanitizer_patterns),
+        )
+    }
+
 
     #[test]
     fn test_xss_via_innerhtml() {

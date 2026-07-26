@@ -1707,6 +1707,12 @@ pub async fn scan_directory_deep_with_rules_progress(
 
             let findings_list: Vec<Finding> = flows
                 .iter()
+                // 存储写入点不是漏洞：不产出 finding，flow 保留在 cpg_flows 中
+                // 供扫描收尾的二阶流闸门统计
+                .filter(|flow| {
+                    flow.vulnerability_type
+                        != crate::analysis::taint::VulnerabilityType::StorageWrite
+                })
                 .map(|flow| {
                     let file_str = file_path.to_string_lossy().to_string();
                     let trail: Vec<String> = flow
@@ -1812,7 +1818,12 @@ pub async fn scan_directory_deep_with_rules_progress(
                         ),
                         analysis_trail: Some(trail),
                         llm_output: None,
-                        confidence: Some(0.85),
+                        // 二阶流（存储点读出）：数据流真实但来源是已存储数据，置信度 0.85→0.6
+                        confidence: Some(if flow.source.symbol.contains("(second-order)") {
+                            0.6
+                        } else {
+                            0.85
+                        }),
                         corroboration_count: None,
                         code_snippet: Some(extract_code_context(
                             content,
@@ -1837,7 +1848,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                             Some(flow_barriers)
                         },
                         reasoning_hint: Some(format!(
-                            "Taint flow: {} → {} via {} steps. {}{}",
+                            "Taint flow: {} → {} via {} steps. {}{}{}",
                             flow.source.symbol,
                             flow.sink.symbol,
                             flow.path.len(),
@@ -1849,6 +1860,11 @@ pub async fn scan_directory_deep_with_rules_progress(
                                     == crate::analysis::taint::FlowNodeType::Sanitized)
                             {
                                 "；路径中检测到净化处理"
+                            } else {
+                                ""
+                            },
+                            if flow.source.symbol.contains("(second-order)") {
+                                "；二阶流（存储点读出，需确认存在对应的污点写入路径）"
                             } else {
                                 ""
                             }
@@ -1907,6 +1923,13 @@ pub async fn scan_directory_deep_with_rules_progress(
     }
 
     findings.extend(taint_findings);
+
+    // 二阶流闸门事件计数：Stage B 各文件命中 storage_write sink 的 flow（跨文件部分在 Stage C 累加）
+    let mut storage_write_events = accumulated_flows
+        .values()
+        .flatten()
+        .filter(|f| f.vulnerability_type == crate::analysis::taint::VulnerabilityType::StorageWrite)
+        .count();
 
     // Stage C: 跨文件污点分析（enable_cross_file = true）
     let mut cross_file_result_opt: Option<crate::analysis::cross_file::CrossFileTaintResult> = None;
@@ -2043,6 +2066,12 @@ pub async fn scan_directory_deep_with_rules_progress(
                     .collect();
 
             for flow in &cross_file_result.taint_flows {
+                // 存储写入点不是漏洞：不产出 finding，但计入二阶流闸门事件
+                if flow.vulnerability_type == crate::analysis::taint::VulnerabilityType::StorageWrite
+                {
+                    storage_write_events += 1;
+                    continue;
+                }
                 let intermediate: Vec<String> = flow
                     .interprocedural_path
                     .iter()
@@ -2135,6 +2164,20 @@ pub async fn scan_directory_deep_with_rules_progress(
     // 跨文件模式已由调用图引擎填充的 finding 在此处被跳过，行为保持不变；
     // 纯规则扫描（无 Stage B 数据）时该表为空，调用为 no-op。
     enrich_findings_with_enclosing_function_from_symbols(&mut findings, &file_function_ranges);
+
+    // 二阶流闸门：项目内未检测到"污点写入存储点"（storage_write sink 命中）时，
+    // 二阶 source（存储点读出）的 finding 降级为 info 参考——降权不丢弃。
+    // 有污点写入事件时保持原严重度：存储型漏洞的写入路径已被证实存在。
+    if storage_write_events == 0 {
+        for finding in &mut findings {
+            if finding.description.contains("(second-order)") {
+                finding.severity = "info".to_string();
+                if let Some(ref mut hint) = finding.reasoning_hint {
+                    hint.push_str("；项目内未检测到污点写入存储点，降级为参考");
+                }
+            }
+        }
+    }
 
     Ok(ScanResult {
         findings,

@@ -1427,6 +1427,11 @@ impl ASTParser {
                 | "method_invocation"
                 | "function_call"
                 | "object_creation_expression"
+                // tree-sitter-php 0.23：普通/成员/静态调用
+                | "function_call_expression"
+                | "member_call_expression"
+                | "nullsafe_member_call_expression"
+                | "scoped_call_expression"
         ) {
             let func_node = node
                 .child_by_field_name("function")
@@ -1441,9 +1446,31 @@ impl ASTParser {
                 // Java method_invocation 的字段在节点本身（object/name），
                 // 而不是 function/name 子节点，需要特殊处理以保留接收者信息。
                 // object_creation_expression 的构造函数名在 type 字段（如 File）。
+                // PHP 成员调用（member_call_expression 等）同样是 object/name 结构。
                 let (is_method, receiver, callee_name) = if kind == "method_invocation" {
                     let recv = node
                         .child_by_field_name("object")
+                        .map(|n| content[n.byte_range()].to_string());
+                    let name = node
+                        .child_by_field_name("name")
+                        .map(|n| content[n.byte_range()].to_string())
+                        .unwrap_or_else(|| callee_text.clone());
+                    (recv.is_some(), recv, name)
+                } else if kind == "member_call_expression"
+                    || kind == "nullsafe_member_call_expression"
+                {
+                    let recv = node
+                        .child_by_field_name("object")
+                        .map(|n| content[n.byte_range()].to_string());
+                    let name = node
+                        .child_by_field_name("name")
+                        .map(|n| content[n.byte_range()].to_string())
+                        .unwrap_or_else(|| callee_text.clone());
+                    (recv.is_some(), recv, name)
+                } else if kind == "scoped_call_expression" {
+                    // PHP 静态调用 Class::method()：scope 作为 receiver
+                    let recv = node
+                        .child_by_field_name("scope")
                         .map(|n| content[n.byte_range()].to_string());
                     let name = node
                         .child_by_field_name("name")
