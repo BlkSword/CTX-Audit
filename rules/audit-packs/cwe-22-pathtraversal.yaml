@@ -32,4 +32,6 @@ fp_criteria:
   - "路径经 realpath/resolve/normalize 规范化后做了正确的根目录 prefix 校验"
   - "文件名经 path.basename/secure_filename 处理，目录部分被剥离"
   - "路径来源是配置项或服务端常量，外部不可控"
+  - "Python zipfile 形态：CPython 的 zipfile._extract_member 会剥离成员名中的 '..'、'.'、空段、盘符与绝对路径成分（3.12.3 实测：'../../../../../tmp/x' 解压为 tmpdir/tmp/x）——纯 '..' zip slip 对 zipfile.extract/extractall 不可利用，判 FP。真风险面：① tarfile（<3.12 无 filter，3.12-3.13 默认 fully_trusted，3.14+ 默认 data）；② 应用后处理使用原始成员名（namelist()+move/open 自行写盘）绕过 zipfile 清洗；③ Windows 分隔符变体在对应平台。以实机验证为准（2026-07 实测：11 条 zipfile extractall 初审候选因此判据全部证伪）"
+  - "语言生态/框架自带清洗（如 Go http.Dir、Python zipfile、前端 textContent）时 sink 命中不等于可利用"
 confidence_guide: "外部来源 + 无有效净化 + sink 可达三方确认 → 0.9+；确认拼接但 prefix 校验逻辑未完全验证 → 0.7-0.9；净化存在但校验正确性存疑（如前缀比较不带分隔符）→ <0.7，判 needs_review 并说明疑点。"

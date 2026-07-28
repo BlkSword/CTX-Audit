@@ -111,7 +111,7 @@ sinks:
       - "jdbc"
       - "template"
     # 注：`.get`/`.all` 已移除——Java 生态中 `client.get(...)`/`session.get(...)`
-    # 是存储/ORM 读取而非 SQL 执行（halo WebFlux FP 家族）；
+    # 是存储/ORM 读取而非 SQL 执行（WebFlux FP 家族）；
     # node sqlite3/better-sqlite3 的 `db.get`/`db.all` 由下方 exact_matches 补偿。
     # class_literal_exempt：参数含 `Type.class` 的调用是仓库/类型注册查找，不匹配。
     class_literal_exempt: true
@@ -259,7 +259,7 @@ sinks:
     receiver_patterns:
       - "client"
     # 注：`.fetch` 已移除——Java 生态 `fetch` 是存储/JPA 语义（ReactiveExtensionClient、
-    # Spring Data），并非 HTTP 动词（halo WebFlux FP 家族）；JS 全局 `fetch(` 本就不
+    # Spring Data），并非 HTTP 动词（WebFlux FP 家族）；JS 全局 `fetch(` 本就不
     # 经 receiver 语义命中（由 express-node 字典的 `fetch(` 覆盖）。
     # class_literal_exempt：参数含 `Type.class` 的调用是仓库/类型注册查找，不匹配。
     class_literal_exempt: true
