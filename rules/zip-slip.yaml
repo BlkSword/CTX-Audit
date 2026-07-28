@@ -20,3 +20,10 @@ patterns:
     pattern: '(?i).extract\s*\('
   - language: python
     pattern: '(?i)tarfile\.extractall\s*\(|tarfile\.extract\s*\('
+# CVE-2026-29065 回放反哺：修复形态为 realpath+startswith 校验后逐条 extract，
+# 前缀语义（sanitizer 在命中点之前出现即豁免）正好覆盖"先校验后提取"。
+# match all：realpath 和 startswith 必须同时出现才算完整防护。
+sanitizers:
+  - "realpath("
+  - ".startswith("
+sanitizer_match: all

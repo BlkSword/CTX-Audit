@@ -1,0 +1,23 @@
+category: injection
+cwe: CWE-22
+description: "检测 XPath 3.0 评估使用默认解析器（未移除 unparsed-text/doc/environment-variable 等危险函数），攻击者可通过构造 XPath 表达式读取服务器文件或环境变量"
+id: python-xpath-unsafe-parser
+language: python
+name: Python XPath Unsafe Parser (Arbitrary File Read)
+owasp: "A01:2021-Broken Access Control"
+remediation: "使用受限 XPath 解析器：从 XPath3Parser.symbol_table 中移除 unparsed-text、doc、environment-variable 等危险函数；或对用户 XPath 表达式做函数白名单校验。"
+references:
+  - "https://cwe.mitre.org/data/definitions/22.html"
+  - "https://www.w3.org/TR/xpath-functions-30/#func-unparsed-text"
+severity: high
+patterns:
+  - language: python
+    pattern: '(?i)elementpath\.select\s*\('
+  - language: python
+    pattern: '(?i)from\s+elementpath\.xpath3\s+import\s+XPath3Parser'
+# CVE-2026-29039 回放反哺：修复形态为 SafeXPath3Parser（从 symbol_table 移除危险函数），
+# 文件级豁免：文件中出现 SafeXPath3Parser 或 symbol_table.pop 说明已构建受限解析器。
+sanitizers:
+  - "SafeXPath3Parser"
+  - "symbol_table.pop"
+sanitizer_file_scope: true
