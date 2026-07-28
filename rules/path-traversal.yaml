@@ -22,8 +22,9 @@ patterns:
   - language: php
     pattern: (?i)(fopen\s*\(|readfile\s*\(|file_get_contents\s*\(|include\s*\(|require\s*\().*(?:\$_GET|\$_POST|\$_REQUEST|request|input)
 # 修复形态为 resolve 之后紧跟 checkDirectoryTraversal 校验（先取路径后校验），
-# 前缀语义看不到、文件级语义会被同文件 import/其他守卫误豁免，用后向窗口
+# 前缀语义看不到、文件级语义会被同文件 import/其他守卫误豁免，用后向窗口。
+# 窗口取 5 行：if/else 分支内 resolve 再出分支校验的形态（守卫距命中可达 4 行）
 sanitizers:
   - "checkDirectoryTraversal("
-sanitizer_after_lines: 3
+sanitizer_after_lines: 5
 severity: high
