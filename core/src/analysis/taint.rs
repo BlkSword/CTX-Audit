@@ -154,6 +154,15 @@ pub struct TaintSink {
     /// 作为二阶 source（second_order）finding 的项目级闸门。
     #[serde(default)]
     pub storage_write: bool,
+
+    /// 类字面量参数豁免（Java 仓库/类型注册查找去误报）。
+    /// 为 true 时，若命中调用的参数中含 Java 类字面量（如 `Policy.class`），
+    /// 视为 `get(Class, name)` / `fetch(Class, name)` 形态的存储查找，
+    /// 而非 SQL 执行/外发 HTTP——SQL/HTTP API 不会以 Class 对象为参数。
+    /// 仅应对 SQL/SSRF 类 sink 开启；反序列化（Jackson `readValue(json, Foo.class)`）
+    /// 的类字面量是目标类型而非豁免信号，不得开启。
+    #[serde(default)]
+    pub class_literal_exempt: bool,
 }
 
 impl TaintSink {
@@ -176,7 +185,37 @@ impl TaintSink {
             exact_matches: Vec::new(),
             sanitizers: Vec::new(),
             storage_write: false,
+            class_literal_exempt: false,
         }
+    }
+
+    /// 判断参数文本是否为 Java 类字面量（如 `Policy.class`、`com.foo.Policy.class`）。
+    ///
+    /// 要求 `.class` 结尾、整体为点分标识符，且**最后一段**大写字母开头
+    /// （Java 类名约定；包名段小写不影响），
+    /// 避免把 `some.class` 属性路径误判为类字面量。
+    pub fn arg_is_class_literal(arg_text: &str) -> bool {
+        let t = arg_text.trim();
+        let Some(prefix) = t.strip_suffix(".class") else {
+            return false;
+        };
+        if prefix.is_empty()
+            || !prefix
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '$'))
+        {
+            return false;
+        }
+        let last_segment = prefix.rsplit('.').next().unwrap_or(prefix);
+        matches!(last_segment.chars().next(), Some(c) if c.is_ascii_uppercase())
+    }
+
+    /// 判断当前 sink 是否应被类字面量参数豁免
+    pub fn is_class_literal_exempt(&self, arg_texts: &[String]) -> bool {
+        self.class_literal_exempt
+            && arg_texts
+                .iter()
+                .any(|a| Self::arg_is_class_literal(a))
     }
 
     /// 检查当前 sink 是否配置了语义匹配约束
@@ -329,12 +368,14 @@ impl TaintSink {
 
     /// 语义路径专用的边界感知方法匹配（backlog 10.11）。
     ///
+    /// pub(crate)：cross_file 的函数体 sink 匹配复用同一边界语义。
+    ///
     /// 与 `pattern_matches_func_name` 的区别：不做无边界子串匹配——
     /// `.fetch` 不得命中 `this.fetchClientConfig`、`.raw` 不得命中
     /// `client.callbackParams(request.raw)` 里的 `request.raw` 片段。
     /// 纯标识符 pattern 要求：全等 / `.`/`::`/`->` 限定后缀 / 双侧标识符边界包含。
     /// 含空格或模板语法的文本 pattern（如 `INSERT INTO`）保持子串匹配。
-    fn pattern_matches_method_call(pattern: &str, func_name: &str) -> bool {
+    pub(crate) fn pattern_matches_method_call(pattern: &str, func_name: &str) -> bool {
         if pattern == func_name {
             return true;
         }
@@ -1084,6 +1125,7 @@ impl TaintAnalyzer {
                 exact_matches: vec![],
                 sanitizers: vec![],
                 storage_write: false,
+                class_literal_exempt: false,
             },
             // 命令执行
             TaintSink {
@@ -1114,6 +1156,7 @@ impl TaintAnalyzer {
                 exact_matches: vec![],
                 sanitizers: vec![],
                 storage_write: false,
+                class_literal_exempt: false,
             },
             // 文件路径操作
             TaintSink {
@@ -1145,6 +1188,7 @@ impl TaintAnalyzer {
                 exact_matches: vec![],
                 sanitizers: vec![],
                 storage_write: false,
+                class_literal_exempt: false,
             },
             // HTML 输出
             TaintSink {
@@ -1171,6 +1215,7 @@ impl TaintAnalyzer {
                 exact_matches: vec![],
                 sanitizers: vec![],
                 storage_write: false,
+                class_literal_exempt: false,
             },
             // SSRF
             TaintSink {
@@ -1201,6 +1246,7 @@ impl TaintAnalyzer {
                 exact_matches: vec![],
                 sanitizers: vec![],
                 storage_write: false,
+                class_literal_exempt: false,
             },
             // eval
             TaintSink {
@@ -1227,6 +1273,7 @@ impl TaintAnalyzer {
                 exact_matches: vec![],
                 sanitizers: vec![],
                 storage_write: false,
+                class_literal_exempt: false,
             },
             // Java SQL 执行（语义匹配，降低误报）
             TaintSink {
@@ -1272,6 +1319,7 @@ impl TaintAnalyzer {
                 ],
                 sanitizers: vec!["prepare".to_string(), "setString".to_string()],
                 storage_write: false,
+                class_literal_exempt: false,
             },
             // Java 命令执行（语义匹配）
             TaintSink {
@@ -1308,6 +1356,7 @@ impl TaintAnalyzer {
                 ],
                 sanitizers: vec![],
                 storage_write: false,
+                class_literal_exempt: false,
             },
             // Java HTML 输出（语义匹配）
             TaintSink {
@@ -1336,6 +1385,7 @@ impl TaintAnalyzer {
                 exact_matches: vec![],
                 sanitizers: vec!["escapeHtml".to_string(), "encodeForHTML".to_string()],
                 storage_write: false,
+                class_literal_exempt: false,
             },
         ]
     }
@@ -1880,6 +1930,7 @@ mod tests {
             exact_matches: vec!["cursor.execute".to_string()],
             sanitizers: vec![],
             storage_write: false,
+            class_literal_exempt: false,
         };
 
         // exact_matches 应命中
@@ -1914,6 +1965,7 @@ mod tests {
             exact_matches: vec![],
             sanitizers: vec![],
             storage_write: false,
+            class_literal_exempt: false,
         };
 
         assert!(sink.matches_with_context(".execute", Some("cur"), "python"));
@@ -1945,6 +1997,7 @@ mod tests {
             exact_matches: vec![],
             sanitizers: vec![],
             storage_write: false,
+            class_literal_exempt: false,
         };
 
         // 正常命中：全等 / 限定后缀 / 无名 suffix
@@ -1989,6 +2042,7 @@ mod tests {
             exact_matches: vec![],
             sanitizers: vec![],
             storage_write: false,
+            class_literal_exempt: false,
         };
 
         // fetchClientConfig 含 ".fetch" 子串但右侧为字母，不得命中
@@ -2017,6 +2071,7 @@ mod tests {
             exact_matches: vec![],
             sanitizers: vec![],
             storage_write: false,
+            class_literal_exempt: false,
         };
 
         // callee 为 callbackParams 时不得命中任何 SQL pattern
@@ -2048,6 +2103,7 @@ mod tests {
             exact_matches: vec![],
             sanitizers: vec![],
             storage_write: false,
+            class_literal_exempt: false,
         };
 
         assert!(sink.matches("child_process.exec(cmd)", "javascript"));

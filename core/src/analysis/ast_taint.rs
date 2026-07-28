@@ -2448,15 +2448,24 @@ impl AstTaintAnalyzer {
         None
     }
 
-    fn find_matching_sink(
+    /// 带调用参数上下文的 sink 匹配。
+    ///
+    /// 命中但声明了类字面量豁免、且参数含 Java 类字面量（`Policy.class`）
+    /// 的 sink 视为仓库/类型注册查找（`client.get(Class, name)` 形态），
+    /// 跳过——WebFlux/R2DBC 项目中 ReactiveExtensionClient 等内部存储
+    /// 客户端因此被误标 SQL Injection/SSRF（halo 深审 FP 家族）。
+    fn find_matching_sink_for_call(
         &self,
         callee: &str,
         receiver: Option<&str>,
         language: &str,
+        call: &crate::ast::CallInfo,
     ) -> Option<&TaintSink> {
-        self.sinks
-            .iter()
-            .find(|sink| sink.matches_with_context(callee, receiver, language))
+        let arg_texts: Vec<String> = call.arguments.iter().map(|a| a.text.clone()).collect();
+        self.sinks.iter().find(|sink| {
+            sink.matches_with_context(callee, receiver, language)
+                && !sink.is_class_literal_exempt(&arg_texts)
+        })
     }
 
     /// 匹配 sink，对方法调用优先用 receiver.callee（如 needle.get）匹配。
@@ -2474,16 +2483,20 @@ impl AstTaintAnalyzer {
             if let Some(ref recv) = call.receiver {
                 let qualified = format!("{}.{}", recv, call.callee);
                 // 先用 qualified 名称匹配（支持 exact_matches 与 namespaces）
-                if let Some(s) = self.find_matching_sink(&qualified, Some(recv), language) {
+                if let Some(s) =
+                    self.find_matching_sink_for_call(&qualified, Some(recv), language, call)
+                {
                     return Some(s);
                 }
                 // 再用 receiver 语义 + callee 匹配
-                if let Some(s) = self.find_matching_sink(&call.callee, Some(recv), language) {
+                if let Some(s) =
+                    self.find_matching_sink_for_call(&call.callee, Some(recv), language, call)
+                {
                     return Some(s);
                 }
             }
         }
-        if let Some(s) = self.find_matching_sink(&call.callee, None, language) {
+        if let Some(s) = self.find_matching_sink_for_call(&call.callee, None, language, call) {
             return Some(s);
         }
 
@@ -2533,6 +2546,16 @@ impl AstTaintAnalyzer {
         (None, callee_part)
     }
 
+    /// 表达式中是否出现 Java 类字面量（`Policy.class`）。
+    ///
+    /// 按标识符字符切词后逐段判断，供类字面量豁免的 sink 使用：
+    /// 赋值/返回表达式里的 `client.get(Policy.class, name)` 是存储查找，
+    /// 不得标为 SQL/SSRF。
+    fn expr_has_class_literal(expr: &str) -> bool {
+        expr.split(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '$')))
+            .any(|tok| super::taint::TaintSink::arg_is_class_literal(tok))
+    }
+
     /// 在表达式中查找是否有 sink 函数调用
     ///
     /// 语义 sink（namespaces / receiver_patterns / exact_matches）只对解析出的
@@ -2544,7 +2567,13 @@ impl AstTaintAnalyzer {
     /// `exec(` 的模式（可匹配 `exec(user_input)`）。
     fn find_matching_sink_in_expr(&self, expr: &str, language: &str) -> Option<TaintSink> {
         let (receiver, callee) = Self::extract_call_parts_from_expr(expr);
+        // 类字面量豁免：表达式含 `Type.class` 时跳过声明了豁免的 sink
+        // （`client.get(Policy.class, name)` 是存储查找而非 SQL/SSRF）
+        let class_literal_exempt = Self::expr_has_class_literal(expr);
         for sink in self.sinks.iter() {
+            if class_literal_exempt && sink.class_literal_exempt {
+                continue;
+            }
             if sink.has_semantic_constraints() {
                 // 语义路径：qualified 优先（支持 exact_matches / namespaces），
                 // 再用裸 callee + receiver 语义
@@ -2602,7 +2631,12 @@ impl AstTaintAnalyzer {
     /// 从表达式中提取 sink 函数名
     fn extract_sink_name(&self, expr: &str, language: &str) -> String {
         let (receiver, callee) = Self::extract_call_parts_from_expr(expr);
+        // 与 find_matching_sink_in_expr 一致的类字面量豁免
+        let class_literal_exempt = Self::expr_has_class_literal(expr);
         for sink in self.sinks.iter() {
+            if class_literal_exempt && sink.class_literal_exempt {
+                continue;
+            }
             // 与 find_matching_sink_in_expr 同款语义：语义 sink 只看
             // callee/qualified，Substring sink 才看完整表达式（10.11）
             let matched = if sink.has_semantic_constraints() {
@@ -3776,11 +3810,14 @@ function handler() {
             Some("sql_exec"),
             "connection.query 应命中 sql_exec"
         );
-        let hit = analyzer.find_matching_sink_in_expr("client.fetch(url)", "javascript");
+        // axios 实例形态（client.get）仍命中 SSRF sink；
+        // `.fetch` 已从通用字典移除（Java 存储语义误伤），JS 全局 fetch(
+        // 由 express-node 字典覆盖
+        let hit = analyzer.find_matching_sink_in_expr("client.get(url)", "javascript");
         assert_eq!(
             hit.as_ref().map(|s| s.id.as_str()),
             Some("http_request"),
-            "client.fetch 应命中 http_request"
+            "client.get 应命中 http_request"
         );
         // Substring sink 保持完整表达式宽松匹配
         let hit = analyzer.find_matching_sink_in_expr("eval(userInput)", "javascript");
@@ -3789,6 +3826,44 @@ function handler() {
             Some("eval"),
             "eval(userInput) 应命中 eval sink"
         );
+    }
+
+    /// 类字面量豁免（halo WebFlux FP 家族）：`client.get(Policy.class, name)`
+    /// 是仓库/类型注册查找，不得命中声明了 class_literal_exempt 的 SQL/SSRF sink；
+    /// 无类字面量参数的同形态调用不受影响。
+    #[test]
+    fn test_class_literal_exempt_sink() {
+        let analyzer = yaml_rule_analyzer();
+
+        // 类字面量参数 → SQL/SSRF sink 豁免
+        let hit = analyzer
+            .find_matching_sink_in_expr("client.get(Policy.class, name)", "java");
+        assert!(
+            hit.as_ref().map(|s| &s.id) != Some(&"sql_exec".to_string())
+                && hit.as_ref().map(|s| &s.id) != Some(&"http_request".to_string()),
+            "client.get(Policy.class, name) 不得命中 SQL/SSRF sink: {:?}",
+            hit.map(|s| s.id)
+        );
+        let hit =
+            analyzer.find_matching_sink_in_expr("session.fetch(User.class, id)", "java");
+        assert!(
+            hit.as_ref().map(|s| &s.id) != Some(&"http_request".to_string()),
+            "session.fetch(User.class, id) 不得命中 SSRF sink: {:?}",
+            hit.map(|s| s.id)
+        );
+
+        // 无类字面量参数 → 正常命中（防过度收紧）
+        let hit = analyzer.find_matching_sink_in_expr("client.get(url)", "javascript");
+        assert_eq!(
+            hit.as_ref().map(|s| s.id.as_str()),
+            Some("http_request"),
+            "client.get(url) 应命中 http_request"
+        );
+
+        // 小写开头属性路径（some.class）不得误判为类字面量
+        assert!(!crate::analysis::taint::TaintSink::arg_is_class_literal("some.class"));
+        assert!(crate::analysis::taint::TaintSink::arg_is_class_literal("Policy.class"));
+        assert!(crate::analysis::taint::TaintSink::arg_is_class_literal("com.foo.Policy.class"));
     }
 
 

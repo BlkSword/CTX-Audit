@@ -1422,6 +1422,46 @@ $upsql = Input::postStrVar('upsql', '');
     }
 
     #[test]
+    fn test_deserialization_self_write_exempt() {
+        // unsafe-deserialization 内外源区分：同文件命中点之前出现
+        // ObjectOutputStream/writeObject（自产自销回环，如 Lucene 索引自写自读）
+        // → 内部可信源，豁免；无自写逻辑 → 保留
+        let guarded = "class T {\n  void save() { var o = new ObjectOutputStream(fos); o.writeObject(idx); }\n  Object load() { return new ObjectInputStream(fis).readObject(); }\n}\n";
+        let unguarded = "class T {\n  Object load() { return new ObjectInputStream(req.getInputStream()).readObject(); }\n}\n";
+        let rule = Rule {
+            id: "unsafe-deserialization".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Critical,
+            language: "java".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "java".to_string(),
+                pattern: r"ObjectInputStream\s*\(".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-502".to_string()),
+            sanitizers: vec!["ObjectOutputStream".to_string(), "writeObject".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let g = RuleScanner::new(vec![rule.clone()])
+            .scan_file_sync(&PathBuf::from("T.java"), guarded);
+        assert_eq!(g.len(), 0, "自写自读回环应豁免");
+        let u = RuleScanner::new(vec![rule]).scan_file_sync(&PathBuf::from("T.java"), unguarded);
+        assert_eq!(u.len(), 1, "外部输入反序列化应保留");
+    }
+
+    #[test]
     fn test_likely_fp_strcpy_literal_source() {
         // strcpy 源为字面量 → likely_fp（json.c e_alloc_failure 场景）
         let content = r#"strcpy (error, "Memory allocation failure");"#;

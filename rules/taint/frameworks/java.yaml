@@ -499,11 +499,14 @@ sinks:
     name: "Java SpEL / Expression Language Injection"
     description: "Spring Expression Language (SpEL) and script engine evaluation — Substring mode catches all without namespace restriction"
     match_mode: "Substring"
+    # 注：`.getValue` 已移除——Substring 模式下它会命中任意无参 getter
+    # （`cookie.getValue()`、`mapEntry.getValue()`），halo 深审中 DeviceServiceImpl
+    # 的 Cookie.getValue() 即被误标 CWE-94。真实 SpEL 注入点在表达式解析侧，
+    # 由 parseExpression/SpelExpressionParser 等保留模式覆盖。
     patterns:
       - "SpelExpressionParser"
       - "parseExpression"
       - "ExpressionParser"
-      - ".getValue"
       - "StandardEvaluationContext"
       - "SimpleEvaluationContext"
       - "TemplateParserContext"

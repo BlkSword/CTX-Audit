@@ -24,3 +24,13 @@ patterns:
   - language: php
     pattern: (?i)(?:^|[^\w.>:])unserialize\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)
 severity: critical
+# 内外源区分（设计权衡）：regex 层无法追踪 readObject 的数据来源。
+# 采用"自产自销回环"豁免——同文件在命中点之前出现 ObjectOutputStream/writeObject，
+# 说明该应用自己序列化写入了这份数据（如 halo LuceneSearchEngine 对自己写出的
+# 索引段做 ObjectInputStream 回读），数据源是内部可信文件而非外部输入，豁免。
+# 已知残余盲区：攻击者若能改写该存储文件（如共享目录/被篡改的索引），
+# 反序列化仍可被利用——该判断需要理解存储的写入口径，交给 LLM 判定层。
+# sanitizer 为规则级（Java 特有字符串），Python/PHP 文件不会出现，不受影响。
+sanitizers:
+  - "ObjectOutputStream"
+  - "writeObject"

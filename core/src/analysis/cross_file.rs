@@ -2599,6 +2599,12 @@ impl CrossFileTaintAnalyzer {
         (false, None)
     }
 
+    /// 函数体文本中是否出现 Java 类字面量（`Type.class`），供类字面量豁免判断
+    fn body_has_class_literal(body: &str) -> bool {
+        body.split(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '$')))
+            .any(|tok| TaintSink::arg_is_class_literal(tok))
+    }
+
     /// 函数体匹配 sink。
     /// Semantic 模式的 sink 要求函数体内存在语义锚点
     /// （namespace / receiver_pattern / exact_match 之一），
@@ -2612,6 +2618,11 @@ impl CrossFileTaintAnalyzer {
         if sink.match_mode != MatchMode::Semantic || !has_semantic {
             return sink.matches(body, "*");
         }
+        // 类字面量豁免：函数体出现 `Type.class`（存储查找形态，
+        // 如 `client.get(Policy.class, name)`）时跳过声明豁免的 sink
+        if sink.class_literal_exempt && Self::body_has_class_literal(body) {
+            return false;
+        }
         let lower = body.to_lowercase();
         // exact_matches 锚点（函数体为文本，按子串近似）
         for exact in &sink.exact_matches {
@@ -2619,11 +2630,16 @@ impl CrossFileTaintAnalyzer {
                 return true;
             }
         }
-        // pattern 子串 + 语义锚点（namespace 或 receiver_pattern 出现在函数体中）
+        // pattern 子串 + 语义锚点（namespace 或 receiver_pattern 出现在函数体中）。
+        // 点开头的方法 pattern 做右边界感知匹配，避免 ".get" 子串误中函数体里的
+        // "getSpec"/"getUsername" 等 getter 片段（halo WebFlux FP 家族）
         let has_pattern = sink.patterns.iter().any(|p| {
             let pl = p.to_lowercase();
-            let pl = pl.trim_start_matches('.');
-            !pl.is_empty() && lower.contains(pl)
+            if pl.starts_with('.') {
+                TaintSink::pattern_matches_method_call(&pl, &lower)
+            } else {
+                !pl.is_empty() && lower.contains(&pl)
+            }
         });
         if !has_pattern {
             return false;
@@ -2679,7 +2695,13 @@ impl CrossFileTaintAnalyzer {
 
     /// 判断单个函数调用是否命中某个 sink 规则（支持 Semantic 规则）
     fn is_sink_call(&self, call: &CallInfo) -> Option<VulnerabilityType> {
+        // 类字面量豁免：`client.get(Policy.class, name)` 是仓库/类型注册查找，
+        // 不得标 SQL/SSRF（halo WebFlux FP 家族，与 ast_taint 同款逻辑）
+        let arg_texts: Vec<String> = call.arguments.iter().map(|a| a.text.clone()).collect();
         for s in self.sink_patterns.iter() {
+            if s.is_class_literal_exempt(&arg_texts) {
+                continue;
+            }
             // 先按 callee + receiver 做语义匹配
             if s.matches_with_context(&call.callee, call.receiver.as_deref(), "*") {
                 return Some(s.vulnerability_type);
