@@ -11,8 +11,10 @@ references:
   - "https://cwe.mitre.org/data/definitions/22.html"
 patterns:
   - language: java
-    # CVE-2026-16088 回放反哺：补充 Path.resolve(受控文件名) 形态（getter 源无 request 字样）
-    pattern: (?i)(new\s+File\s*\(|FileInputStream\s*\(|Path\.of\s*\(|Paths\.get\s*\().*(?:request|param|input|user)|\.resolve\s*\([^)]*(?:getFilename|getOriginalFilename|fileName)
+    # CVE-2026-16088 / CVE-2026-15326 回放反哺：补充 Path.resolve(受控名) 形态
+    # （getter 源无 request 字样；*Name 后缀变量覆盖 themeName/entryName/getName() 等，
+    #  判定是 LLM 的事，配置类 themeRoot.resolve(themeName) 由判定层排除）
+    pattern: (?i)(new\s+File\s*\(|FileInputStream\s*\(|Path\.of\s*\(|Paths\.get\s*\().*(?:request|param|input|user)|\.resolve\s*\([^)]*(?:fileName|getFilename|getOriginalFilename|(?-i:[A-Za-z_.]*Name\b))
   - language: javascript
     pattern: '(?i)(readFile\s*\(|readFileSync\s*\(|writeFile\s*\(|writeFileSync\s*\(|fs\.open\s*\(|path\.join\s*\()[^)]*(?:req\.|request|param|input|user|socket\.on|callback)'
   - language: python
