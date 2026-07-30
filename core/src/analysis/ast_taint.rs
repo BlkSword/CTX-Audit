@@ -1446,9 +1446,17 @@ impl AstTaintAnalyzer {
             // 检查 sink（方法调用考虑 receiver，如 needle.get）
             if let Some(sink) = self.match_sink_for_call(call, language) {
                 // 1. 检查参数是否被污染；污点变量仅在净化器调用内部出现的参数
-                //    （内联净化，如 HtmlUtils.htmlEscape(keyword)）跳过
+                //    （内联净化，如 HtmlUtils.htmlEscape(keyword)）跳过。
+                //    sensitive_params 非空时只看敏感下标的参数——
+                //    cur.execute(query, (q,)) 中 q 在 arg1（参数绑定元组），
+                //    属于参数化查询，不应判定为注入。
                 let mut tainted_var: Option<String> = None;
-                for arg in &call.arguments {
+                for (arg_idx, arg) in call.arguments.iter().enumerate() {
+                    if !sink.sensitive_params.is_empty()
+                        && !sink.sensitive_params.contains(&arg_idx)
+                    {
+                        continue;
+                    }
                     let Some(used_var) = arg
                         .referenced_vars
                         .iter()
@@ -2176,9 +2184,15 @@ impl AstTaintAnalyzer {
         if let Some(sink) = self.match_sink_for_call(call, language) {
             // 检查参数是否包含污点变量（直接 + 别名解析）；
             // 污点变量仅在净化器调用内部出现的参数（内联净化，
-            // 如 HtmlUtils.htmlEscape(keyword)）跳过
+            // 如 HtmlUtils.htmlEscape(keyword)）跳过。
+            // sensitive_params 非空时只看敏感下标的参数——
+            // cur.execute(query, (q,)) 中 q 在 arg1（参数绑定元组），
+            // 属于参数化查询，不应判定为注入。
             let mut tainted_var: Option<String> = None;
-            for arg in &call.arguments {
+            for (arg_idx, arg) in call.arguments.iter().enumerate() {
+                if !sink.sensitive_params.is_empty() && !sink.sensitive_params.contains(&arg_idx) {
+                    continue;
+                }
                 let Some(used_var) = arg
                     .referenced_vars
                     .iter()
@@ -3673,6 +3687,58 @@ def save():
             flows.iter().any(|f| f.vulnerability_type == VulnerabilityType::StorageWrite),
             "污点写入存储点应产生闸门 flow: {:?}",
             flows.iter().map(|f| format!("{}", f.vulnerability_type)).collect::<Vec<_>>()
+        );
+    }
+
+    /// sensitive_params 参数位置感知：cur.execute(query, (q,)) 中污点 q 位于
+    /// arg1（参数绑定元组），SQL sink 的敏感参数是 arg0（查询串），
+    /// 参数化查询不应产出 SQLi flow（healthchecks docs_search 形态）
+    #[test]
+    fn test_production_cpg_path_parameterized_execute_not_sqli() {
+        let code = r#"import sqlite3
+from flask import request
+
+def search():
+    q = request.args.get("q")
+    conn = sqlite3.connect("app.db")
+    cur = conn.cursor()
+    query = "SELECT slug FROM docs WHERE docs MATCH ?"
+    cur.execute(query, (q,))
+    return "ok"
+"#;
+        let (cpg, func) = build_production_cpg(code, "search.py", "search");
+        let analyzer = yaml_rule_analyzer();
+        let flows = analyzer.analyze_function_cpg(&cpg, &func.body_text, &[]);
+        assert!(
+            !flows
+                .iter()
+                .any(|f| f.vulnerability_type == VulnerabilityType::SqlInjection),
+            "参数化 execute（污点在 arg1 绑定元组）不应报 SQLi: {:?}",
+            flows.iter().map(|f| format!("{}", f.vulnerability_type)).collect::<Vec<_>>()
+        );
+    }
+
+    /// sensitive_params 正例对照：污点经拼接进入 arg0 查询串仍必须检出
+    #[test]
+    fn test_production_cpg_path_concat_query_still_sqli() {
+        let code = r#"import sqlite3
+from flask import request
+
+def search():
+    q = request.args.get("q")
+    conn = sqlite3.connect("app.db")
+    cur = conn.cursor()
+    cur.execute("SELECT slug FROM docs WHERE slug = '" + q + "'")
+    return "ok"
+"#;
+        let (cpg, func) = build_production_cpg(code, "search.py", "search");
+        let analyzer = yaml_rule_analyzer();
+        let flows = analyzer.analyze_function_cpg(&cpg, &func.body_text, &[]);
+        assert!(
+            flows
+                .iter()
+                .any(|f| f.vulnerability_type == VulnerabilityType::SqlInjection),
+            "拼接查询串（污点在 arg0）必须报 SQLi"
         );
     }
 

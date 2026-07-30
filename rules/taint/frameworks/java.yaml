@@ -373,7 +373,8 @@ sinks:
     vulnerability_type: "CrossSiteScripting"
     severity: "High"
     cwe_id: "CWE-79"
-    sensitive_params: [0]
+    # addAttribute(name, value) 的用户数据在 arg1；print/write 系列在 arg0
+    sensitive_params: [0, 1]
     ast_patterns: []
 
   - id: "java_xpath"
