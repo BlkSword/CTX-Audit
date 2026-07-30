@@ -1,0 +1,26 @@
+category: improper-access-control
+cwe: CWE-290
+description: 检测 Go 应用中基于 IP 白名单的访问控制（net.ParseIP + CIDR Contains 匹配）解析的是一个普通变量而非 r.RemoteAddr 直达值：若该变量上游来源于 X-Forwarded-For / X-Real-Ip 等客户端可控 HTTP 头，未认证攻击者可伪造头值绕过白名单，访问受限端点。修复方向是安全决策必须使用 TCP 层对端地址（r.RemoteAddr），代理头仅可用于日志展示
+exclude_string_literals: true
+id: go-unverified-client-ip-allowlist
+language: go
+name: Go IP Allowlist Parsing Variable Instead of RemoteAddr (Spoofable Proxy Headers)
+once_per_file: true
+owasp: "A01:2021-Broken Access Control"
+patterns:
+  # 形态一：直接解析框架/封装层的 ClientIP/RealIP 风格取值函数返回值——这类助手普遍
+  # 信任 X-Forwarded-For / X-Real-Ip 代理头，将其结果用于安全判定即可被伪造绕过
+  - language: go
+    pattern: 'net\.ParseIP\(\s*\w+\.(ClientIP|ClientIp|RealIP|GetClientIP)\s*\('
+  # 形态二：CIDR 白名单判定槽点 Contains(net.ParseIP(变量)) 中参数为裸标识符；
+  # 若安全决策直接使用 r.RemoteAddr 或封装函数调用（参数含 . 或 (），天然不匹配
+  - language: go
+    pattern: 'Contains\(\s*net\.ParseIP\(\s*[a-zA-Z_]\w*\s*\)\s*\)'
+remediation: "IP 白名单等安全决策必须基于 net.SplitHostPort(r.RemoteAddr) 得到的 TCP 层对端地址；X-Forwarded-For / X-Real-Ip 头仅在信任链受控（前置可信反代且剥离外部头）时才可用于展示性用途，不得参与访问控制判定。"
+references:
+  - "https://cwe.mitre.org/data/definitions/290.html"
+sanitizer_file_scope: true
+# 文件内出现 RemoteAddr 说明该文件的安全决策已注意到 TCP 层对端地址，视为已做可信源校验
+sanitizers:
+  - "RemoteAddr"
+severity: medium
