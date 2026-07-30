@@ -1,0 +1,22 @@
+category: improper-input-validation
+cwe: CWE-98
+description: 检测 PHP 应用中 include/require 直接包含一个裸变量：若该变量上游来源于请求参数、Cookie 等客户端可控输入且未经白名单校验（如 in_array 对照允许列表），未认证攻击者可构造路径实现本地文件包含（LFI），读取敏感文件或在能落地 PHP 文件时远程代码执行
+exclude_string_literals: true
+id: php-dynamic-include-variable
+language: php
+name: PHP Dynamic Include/Require of Bare Variable (Missing Whitelist)
+once_per_file: true
+owasp: "A03:2021-Injection"
+patterns:
+  # 仅锚裸变量形态（include $var; / require $var;）：$this->x、$arr['x']、
+  # 函数返回值等形态不命中——变量被整体替换为攻击者路径时才是直读 LFI 面
+  - language: php
+    pattern: '\b(?:include|require|include_once|require_once)\s+\$[A-Za-z_]\w*\s*;'
+remediation: "对被包含的变量做白名单校验：将候选值与允许列表（如 in_array($path, glob($dir . '*.php'), true)）严格比对后再 include；或使用 basename() 剥离路径成分并拼接固定目录。避免仅做 file_exists 检查——存在性检查不能阻止目录穿越。"
+references:
+  - "https://cwe.mitre.org/data/definitions/98.html"
+sanitizer_file_scope: true
+# 文件内出现 in_array 白名单校验视为已做包含目标限制（白名单是此类修复的标准形态）
+sanitizers:
+  - "in_array("
+severity: high
