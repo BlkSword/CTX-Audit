@@ -1342,27 +1342,36 @@ impl AstTaintAnalyzer {
                     state.insert_path(tp, vt);
                 }
 
-                // 检查赋值右值中的 sink
+                // 检查赋值右值中的 sink（sensitive_params 位置感知：
+                // 污点仅在非敏感参数如 cur.execute(query, (q,)) 的绑定
+                // 元组中出现时，属于参数化查询，跳过该右值 sink，
+                // 继续检查赋值目标 sink）
                 if !is_sanitized {
                     if let Some(sink) =
                         self.find_matching_sink_in_expr(&assign.source_expr, language)
                     {
-                        let target_ap = AccessPath::from_dotted(&assign.target);
-                        let vt = state
-                            .find_taint_for_path(&target_ap)
-                            .or_else(|| state.find_taint_for_path(&src_path))
-                            .unwrap()
-                            .clone();
-                        return Some(self.build_taint_flow_cpg(
-                            &vt,
-                            &src_var,
-                            &self.extract_sink_name(&assign.source_expr, language),
-                            &sink,
-                            assign.line,
-                            assign.line,
-                            file_path,
+                        if Self::tainted_var_in_sensitive_args(
                             &assign.source_expr,
-                        ));
+                            &sink,
+                            &src_var,
+                        ) {
+                            let target_ap = AccessPath::from_dotted(&assign.target);
+                            let vt = state
+                                .find_taint_for_path(&target_ap)
+                                .or_else(|| state.find_taint_for_path(&src_path))
+                                .unwrap()
+                                .clone();
+                            return Some(self.build_taint_flow_cpg(
+                                &vt,
+                                &src_var,
+                                &self.extract_sink_name(&assign.source_expr, language),
+                                &sink,
+                                assign.line,
+                                assign.line,
+                                file_path,
+                                &assign.source_expr,
+                            ));
+                        }
                     }
                 }
 
@@ -2100,10 +2109,19 @@ impl AstTaintAnalyzer {
 
                 // 即使是赋值节点，也检查右值是否直接包含 sink 调用
                 // 例如: result = exec(userInput) 中的 exec(
+                // （sensitive_params 位置感知：污点仅在非敏感参数如
+                //   cur.execute(query, (q,)) 的绑定元组中时不产出 flow）
                 if !is_sanitized {
                     if let Some(sink) =
                         self.find_matching_sink_in_expr(&assign.source_expr, language)
                     {
+                        if !Self::tainted_var_in_sensitive_args(
+                            &assign.source_expr,
+                            &sink,
+                            &src_var,
+                        ) {
+                            return None;
+                        }
                         let taint_info = state
                             .get(assign.target.as_str())
                             .or_else(|| state.get(&src_var))
@@ -2558,6 +2576,82 @@ impl AstTaintAnalyzer {
         }
 
         (None, callee_part)
+    }
+
+    /// 按标识符字符切词后判断表达式中是否出现指定变量（边界安全，避免
+    /// `q` 误配 `query`；PHP `$row` 含 `$` 前缀仍可匹配）。
+    fn expr_mentions_var(expr: &str, var: &str) -> bool {
+        let last_segment = var.rsplit('.').next().unwrap_or(var);
+        expr.split(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '$')))
+            .any(|tok| tok == var || tok == last_segment)
+    }
+
+    /// 切分调用参数串的顶层参数（忽略嵌套括号/引号内的逗号）。
+    fn split_top_level_args(args_text: &str) -> Vec<&str> {
+        let mut args = Vec::new();
+        let mut depth = 0i32;
+        let mut quote: Option<u8> = None;
+        let mut start = 0usize;
+        let bytes = args_text.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            if let Some(q) = quote {
+                if b == q && (i == 0 || bytes[i - 1] != b'\\') {
+                    quote = None;
+                }
+                continue;
+            }
+            match b {
+                b'"' | b'\'' | b'`' => quote = Some(b),
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b',' if depth == 0 => {
+                    args.push(&args_text[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        let tail = args_text[start..].trim();
+        if !tail.is_empty() {
+            args.push(&args_text[start..]);
+        }
+        args
+    }
+
+    /// 判断污点变量是否出现在 sink 调用的敏感参数位置（赋值右值形态）。
+    /// `sensitive_params` 为空时回退旧行为（任意参数）；
+    /// 表达式无法解析为调用时保守返回 true（不误杀）。
+    /// `cur.execute(query, (q,))` 中 q 仅出现在 arg1（参数绑定元组），
+    /// SQL sink 敏感参数为 arg0（查询串），应返回 false。
+    fn tainted_var_in_sensitive_args(expr: &str, sink: &TaintSink, var: &str) -> bool {
+        if sink.sensitive_params.is_empty() {
+            return true;
+        }
+        let start = match expr.find('(') {
+            Some(i) => i,
+            None => return true,
+        };
+        let bytes = expr.as_bytes();
+        let mut depth = 0i32;
+        let mut end = None;
+        for (i, &b) in bytes.iter().enumerate().skip(start) {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { return true };
+        let args = Self::split_top_level_args(&expr[start + 1..end]);
+        sink.sensitive_params
+            .iter()
+            .any(|&idx| args.get(idx).is_some_and(|a| Self::expr_mentions_var(a, var)))
     }
 
     /// 表达式中是否出现 Java 类字面量（`Policy.class`）。
@@ -3703,8 +3797,8 @@ def search():
     conn = sqlite3.connect("app.db")
     cur = conn.cursor()
     query = "SELECT slug FROM docs WHERE docs MATCH ?"
-    cur.execute(query, (q,))
-    return "ok"
+    res = cur.execute(query, (q,))
+    return res
 "#;
         let (cpg, func) = build_production_cpg(code, "search.py", "search");
         let analyzer = yaml_rule_analyzer();
@@ -3713,7 +3807,7 @@ def search():
             !flows
                 .iter()
                 .any(|f| f.vulnerability_type == VulnerabilityType::SqlInjection),
-            "参数化 execute（污点在 arg1 绑定元组）不应报 SQLi: {:?}",
+            "参数化 execute（污点在 arg1 绑定元组，含赋值右值形态）不应报 SQLi: {:?}",
             flows.iter().map(|f| format!("{}", f.vulnerability_type)).collect::<Vec<_>>()
         );
     }
