@@ -1,0 +1,23 @@
+category: improper-permissions
+cwe: CWE-732
+description: 检测 PHP 应用中自定义 chmod 包装函数缺少权限位校验：权限值最终来自用户输入，若未限制在 0-777 范围（屏蔽 setuid/setgid/sticky 特殊位），低权限用户可对自行上传的可执行文件设置 setuid 位，本地执行后提权到 Web 服务账户（docker 等以 root 运行的部署中即 root）
+exclude_string_literals: true
+id: php-unsafe-chmod-permissions
+language: php
+name: PHP Unsafe chmod Permission Bits (Missing Validation)
+once_per_file: true
+owasp: "A01:2021-Broken Access Control"
+patterns:
+  # chmod 包装函数定义点（应用层封装 native chmod 的标准形态）：函数名限 chmod/chmodItem
+  # 等短后缀（\w{0,4} 排除 chmodItems 这类路由动作），首参数限 string 路径（排除 Request 动作签名）
+  - language: php
+    pattern: 'function\s+chmod\w{0,4}\s*\(\s*string\s+\$'
+remediation: "在 chmod 包装函数入口校验权限值：拒绝 <0 或 >0777 的值（屏蔽 setuid/setgid/sticky 特殊位），并校验每位均为 0-7 的合法八进制数字。"
+references:
+  - "https://cwe.mitre.org/data/definitions/732.html"
+sanitizer_file_scope: true
+# 文件内出现 0777 上限校验或八进制位校验（如 preg_match('/^[0-7]{1,3}$/'）视为已做权限位验证
+sanitizers:
+  - "777"
+  - "[0-7]"
+severity: high
