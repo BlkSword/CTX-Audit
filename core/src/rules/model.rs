@@ -79,6 +79,16 @@ pub struct Rule {
     /// 仅对 .php 文件生效。
     #[serde(default)]
     pub php_bare_call_only: bool,
+    /// true 时对 Go 的 `io.Copy(` 命中要求"同一函数内存在文件打开调用"
+    /// （os.Create / os.OpenFile 及其 `*Os*Create/OpenFile` 包装）才保留
+    /// （backlog 10.19）。io.Copy 的参数是 io.Reader/io.Writer 接口——
+    /// HTTP 响应、管道、zip writer、临时文件等流拷贝目标均非文件路径写入，
+    /// 直接把 io.Copy 当文件写入 sink 误标率近 100%（transfer.sh/miniflux/
+    /// filestash 三连）。真正的危险形态是"用户可控路径创建文件后 Copy"，
+    /// 共现式近似即此语义；os.CreateTemp 属良性临时文件，不计入。
+    /// 仅对 .go 文件生效。
+    #[serde(default)]
+    pub go_io_copy_requires_open_file: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]

@@ -176,6 +176,18 @@ impl RuleScanner {
                             // 缺失检查类规则（missing/unprotected）同样除外——问题在
                             // "没有调用某校验"，与命中点参数是否字面量无关。
                             let matched_text = &content[start_pos..end_pos];
+                            // `io.Copy(` 共现检查（backlog 10.19）：io.Copy 的参数是
+                            // io.Reader/io.Writer 接口，流拷贝目标（HTTP 响应/管道/
+                            // zip writer/临时文件）不是文件路径写入。仅当同一函数内
+                            // 存在文件打开调用（os.Create/os.OpenFile）才保留——
+                            // 那才是"用户可控路径 → 打开 → 拷贝"的危险形态。
+                            if compiled.rule.go_io_copy_requires_open_file
+                                && extension == "go"
+                                && matched_text.to_lowercase().contains("io.copy(")
+                                && !go_enclosing_func_has_file_open(content, start_pos)
+                            {
+                                continue;
+                            }
                             // `sizeof *p`（无括号解引用形式）被分配器乘法 pattern 误读为
                             // 乘法（redis setproctitle.c 场景），必为误报，直接丢弃。
                             // 带括号的 sizeof(int) 不受影响——那才是真的乘法。
@@ -1047,6 +1059,71 @@ fn range_overlaps_ranges(ranges: &[(usize, usize)], start: usize, end: usize) ->
     }
 }
 
+/// 文件打开调用正则（io.Copy 共现检查用，backlog 10.19）：
+/// `os.Create(`/`os.OpenFile(`（排除 `os.CreateTemp(`——临时文件良性）以及
+/// `*Os*Create/OpenFile` 命名包装（如 `SafeOsOpenFile(`——打开语义同 os.OpenFile，
+/// 清洗与否属判定层职责）。编译失败时返回 None（不豁免，保守保留）。
+fn go_file_open_call_regex() -> Option<&'static Regex> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)(?:\bos\.(?:Create|OpenFile)\s*\(|[A-Z][A-Za-z]*Os(?:Create|OpenFile)\s*\()"#)
+            .ok()
+    })
+    .as_ref()
+}
+
+/// Go：`io.Copy(` 命中点的共现检查（backlog 10.19）——查找命中点所在的最深
+/// 函数/方法/函数字面量节点，判断其函数体是否包含文件打开调用
+/// （os.Create / os.OpenFile 及包装）。无函数包裹（顶层裸调用）保守返回 false
+/// （不豁免）；无法解析时不豁免。已知限制：注释/字符串内的打开调用也会计数。
+fn go_enclosing_func_has_file_open(content: &str, pos: usize) -> bool {
+    thread_local! {
+        static GO_PARSER_CACHE: RefCell<HashMap<String, Parser>> = RefCell::new(HashMap::new());
+    }
+    let tree = GO_PARSER_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let parser = cache.entry("go".to_string()).or_insert_with(|| {
+            let mut p = Parser::new();
+            let _ = p.set_language(&tree_sitter_go::LANGUAGE.into());
+            p
+        });
+        parser.parse(content, None)
+    });
+    let tree = match tree {
+        Some(t) => t,
+        None => return false,
+    };
+    // 递归查找包含 pos 的最深函数类节点（function_declaration /
+    // method_declaration / func_literal）
+    fn find_func<'a>(node: tree_sitter::Node<'a>, pos: usize) -> Option<tree_sitter::Node<'a>> {
+        if node.start_byte() > pos || node.end_byte() <= pos {
+            return None;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = find_func(child, pos) {
+                return Some(found);
+            }
+        }
+        if matches!(
+            node.kind(),
+            "function_declaration" | "method_declaration" | "func_literal"
+        ) {
+            Some(node)
+        } else {
+            None
+        }
+    }
+    let Some(func) = find_func(tree.root_node(), pos) else {
+        return false;
+    };
+    let body = &content[func.start_byte()..func.end_byte()];
+    go_file_open_call_regex()
+        .map(|re| re.is_match(body))
+        .unwrap_or(false)
+}
+
 /// 收集 PHP 文件中"非裸调用"形态的被调用名/定义名字节范围：
 /// 方法调用（member_call_expression）、静态调用（scoped_call_expression）、
 /// 构造调用（object_creation_expression）、函数/方法定义（function_definition /
@@ -1241,6 +1318,7 @@ mod tests {
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1279,6 +1357,7 @@ mod tests {
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1319,6 +1398,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1359,6 +1439,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1400,6 +1481,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: after,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1449,6 +1531,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1504,6 +1587,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1545,6 +1629,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: bare_only,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1595,6 +1680,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1635,6 +1721,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1668,6 +1755,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1774,6 +1862,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: true,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1794,6 +1883,158 @@ $upsql = Input::postStrVar('upsql', '');
         assert_eq!(findings.len(), 1, "不开 include_chain 时应报告缺失校验");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn mk_go_io_copy_rule(require_open: bool) -> Rule {
+        Rule {
+            id: "arbitrary-file-write".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "all".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "go".to_string(),
+                pattern: r"(?i)(os\.Rename\s*\(|os\.WriteFile\s*\(|io\.Copy\s*\(|ioutil\.WriteFile\s*\()"
+                    .to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-22".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            go_io_copy_requires_open_file: require_open,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        }
+    }
+
+    #[test]
+    fn test_go_io_copy_kept_when_same_func_opens_user_file() {
+        // 正例：同函数 os.Create(用户路径) + io.Copy —— 任意文件写入危险形态
+        let content = r#"package main
+
+func save(path string, r io.Reader) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, r)
+	f.Close()
+	return err
+}
+"#;
+        let scanner = RuleScanner::new(vec![mk_go_io_copy_rule(true)]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("a.go"), content);
+        assert_eq!(findings.len(), 1, "同函数文件打开+io.Copy 应保留");
+        assert_eq!(findings[0].line_start, 8);
+    }
+
+    #[test]
+    fn test_go_io_copy_kept_with_os_openfile_wrapper() {
+        // 正例：*Os*OpenFile 命名包装（SafeOsOpenFile 形态）同样计入共现
+        let content = r#"package main
+
+func store(path string, r io.Reader) error {
+	f, err := SafeOsOpenFile(path, os.O_WRONLY|os.O_CREATE, 0664)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(f, r); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+"#;
+        let scanner = RuleScanner::new(vec![mk_go_io_copy_rule(true)]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("a.go"), content);
+        assert_eq!(findings.len(), 1, "包装打开调用也应计入共现");
+    }
+
+    #[test]
+    fn test_go_io_copy_exempted_for_stream_copy() {
+        // 负例：HTTP 响应流拷贝（无文件打开）——R46 filestash 误标主形态
+        let content = r#"package main
+
+func handler(w http.ResponseWriter, f *os.File) {
+	io.Copy(w, f)
+}
+"#;
+        let scanner = RuleScanner::new(vec![mk_go_io_copy_rule(true)]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("a.go"), content);
+        assert!(
+            findings.is_empty(),
+            "流拷贝（无文件打开）应豁免，got {}",
+            findings.len()
+        );
+    }
+
+    #[test]
+    fn test_go_io_copy_exempted_for_create_temp() {
+        // 负例：os.CreateTemp 是良性临时文件，不计入共现
+        let content = r#"package main
+
+func extract(zipFile io.Reader) error {
+	f, err := os.CreateTemp("", "tmpzip.*.zip")
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, zipFile)
+	return err
+}
+"#;
+        let scanner = RuleScanner::new(vec![mk_go_io_copy_rule(true)]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("a.go"), content);
+        assert!(
+            findings.is_empty(),
+            "CreateTemp+io.Copy 应豁免，got {}",
+            findings.len()
+        );
+    }
+
+    #[test]
+    fn test_go_io_copy_exempted_when_open_in_other_func() {
+        // 负例：文件打开在另一函数（跨函数链），共现式不做函数间关联
+        let content = r#"package main
+
+func open(path string) (*os.File, error) {
+	return os.Create(path)
+}
+
+func copyTo(f *os.File, r io.Reader) error {
+	_, err := io.Copy(f, r)
+	return err
+}
+"#;
+        let scanner = RuleScanner::new(vec![mk_go_io_copy_rule(true)]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("a.go"), content);
+        assert!(
+            findings.is_empty(),
+            "跨函数文件打开不应计入共现，got {}",
+            findings.len()
+        );
+    }
+
+    #[test]
+    fn test_go_io_copy_flag_off_keeps_finding() {
+        // 对照：规则字段关闭时保持旧行为（向后兼容）
+        let content = r#"package main
+
+func handler(w http.ResponseWriter, f *os.File) {
+	io.Copy(w, f)
+}
+"#;
+        let scanner = RuleScanner::new(vec![mk_go_io_copy_rule(false)]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("a.go"), content);
+        assert_eq!(findings.len(), 1, "字段关闭时保持旧行为");
     }
 }
 

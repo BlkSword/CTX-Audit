@@ -10,6 +10,10 @@ references:
   - "https://owasp.org/www-community/attacks/Path_Traversal"
   - "https://cwe.mitre.org/data/definitions/22.html"
 severity: high
+# io.Copy 的目标是 io.Writer 接口——HTTP 响应/管道/zip writer/临时文件等
+# 流拷贝不是文件路径写入（transfer.sh/miniflux/filestash 三连误标）。
+# 开启后要求同一函数内存在文件打开调用（os.Create/os.OpenFile）才保留。
+go_io_copy_requires_open_file: true
 patterns:
   - language: python
     pattern: '(?i)(shutil\.(copy|copy2|move)\s*\(|os\.rename\s*\(|os\.replace\s*\(|pathlib\.Path\.rename\s*\()'
@@ -18,4 +22,4 @@ patterns:
   - language: java
     pattern: '(?i)(Files\.(copy|move)\s*\(|File\.renameTo\s*\().*(?:request|param|input|user)'
   - language: go
-    pattern: '(?i)(os\.Rename\s*\(|io\.Copy\s*\(|ioutil\.WriteFile\s*\()'
+    pattern: '(?i)(os\.Rename\s*\(|os\.WriteFile\s*\(|io\.Copy\s*\(|ioutil\.WriteFile\s*\()'
