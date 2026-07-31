@@ -1,0 +1,27 @@
+category: injection
+cwe: CWE-89
+description: 检测 PHP SQLite json_extract 路径注入：字段名未转义直接插值/拼接到 json_extract SQL 片段中，攻击者可通过聚合查询字段名注入任意 SQL（CVE-2026-31891 根因模式）
+id: php-sqlite-json-extract-injection
+language: php
+name: PHP SQLite json_extract Path Injection
+owasp: "A03:2021-Injection"
+patterns:
+  # 双引号字符串内 {$var} 插值进 json_extract 路径参数
+  - language: php
+    pattern: 'json_extract\s*\(.*?\{\$'
+  # 字符串拼接进 json_extract 路径参数
+  - language: php
+    pattern: 'json_extract\s*\(.*?[''"]\s*\.\s*\$'
+remediation: "对字段名进行 SQL 转义（单引号 doubling: str_replace(\"'\", \"''\", $field)）；或使用白名单验证字段名；或使用 PDO::quote()。"
+references:
+  - "https://www.sqlite.org/json1.html"
+  - "https://owasp.org/www-community/attacks/SQL_Injection"
+sanitizer_file_scope: true
+sanitizers:
+  - "escapeJsonPath"
+  - "toJsonPath"
+  - "toOptimizedJsonPath"
+  - "addslashes"
+  - "PDO::quote"
+  - "mysqli_real_escape_string"
+severity: high
