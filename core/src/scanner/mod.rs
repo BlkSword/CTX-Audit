@@ -817,6 +817,15 @@ fn is_test_file_name(path: &str) -> bool {
         || (name.starts_with("test_") && name.ends_with(".py"))
 }
 
+/// 判断文件名是否为 TypeScript 声明文件（*.d.ts，backlog 10.14 扩展，R49）：
+/// 纯类型声明（declare 语句/接口/联合类型），零可执行逻辑、零实现体，
+/// 不存在可达 sink；巨型声明文件（openapi 生成的 API 类型）在 CPG 构建/
+/// 污点分析中病态耗时（实测 karakeep-api.d.ts 单文件 1892s），Stage B
+/// 在 extract 之前直接跳过无损。
+fn is_ts_declaration_file(path: &str) -> bool {
+    path.ends_with(".d.ts")
+}
+
 /// Stage B 进度与慢文件日志 guard：map 闭包内声明一次，
 /// drop 时计数并按需输出（10.12 性能缺口的定位手段）
 struct TaintProgressGuard<'a> {
@@ -1634,6 +1643,21 @@ pub async fn scan_directory_deep_with_rules_progress(
                         (parsed_symbols, parsed_calls),
                     );
                 }
+            }
+
+            // 10.14 扩展（R49）：TypeScript 声明文件快路径——*.d.ts 是纯类型
+            // 声明（declare 语句/接口/联合类型，零可执行逻辑、零实现体），
+            // 不存在可达 sink，且巨型声明文件（openapi 生成的 API 类型）在
+            // CPG 构建/污点分析中病态耗时（实测 karakeep-api.d.ts 单文件
+            // 1892s），在 extract 之前直接跳过无损。
+            if is_ts_declaration_file(file_path_str) {
+                return (
+                    file_path_str.clone(),
+                    Vec::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    (parsed_symbols, parsed_calls),
+                );
             }
 
             let file_path = std::path::Path::new(file_path_str);
@@ -3255,6 +3279,19 @@ mod tests {
         assert!(!is_minified_content(&normal));
         // 小文件不判定
         assert!(!is_minified_content("var a=1;"));
+    }
+
+    #[test]
+    fn test_is_ts_declaration_file() {
+        // d.ts 声明文件 → 跳过（10.14 扩展，R49：karakeep-api.d.ts 单文件 1892s）
+        assert!(is_ts_declaration_file("packages/sdk/src/karakeep-api.d.ts"));
+        assert!(is_ts_declaration_file("types/index.d.ts"));
+        // 普通 TS 源文件 → 正常分析
+        assert!(!is_ts_declaration_file("packages/sdk/src/index.ts"));
+        assert!(!is_ts_declaration_file("apps/web/app/page.tsx"));
+        // 扩展名匹配须精确（.d.ts 后缀，非 .ts 误伤）
+        assert!(!is_ts_declaration_file("apps/web/app/page.d.tsx"));
+        assert!(!is_ts_declaration_file("foo.d.ts.bak"));
     }
 
     #[test]
