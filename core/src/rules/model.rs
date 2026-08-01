@@ -57,6 +57,12 @@ pub struct Rule {
     /// 设置后替代前缀语义（仅看后向窗口，不看命中点之前）。
     #[serde(default)]
     pub sanitizer_after_lines: usize,
+    /// 命中点之前 N 行内出现 sanitizer 即豁免（默认 0 = 关闭）。
+    /// 用于"先净化后使用"形态（如 `const safe = sanitize(name); path.join(dir, safe)`），
+    /// 与无界前缀语义的区别是窗口有界：同文件远处的 import/无关守卫不会误豁免。
+    /// 与 sanitizer_after_lines 可并存（两个窗口任一命中即豁免）。
+    #[serde(default)]
+    pub sanitizer_before_lines: usize,
     /// true 时每个文件最多保留一个命中（缺失检查类规则：检查有无是文件级语义，
     /// 多个命中只是同一问题的重复报告）
     #[serde(default)]

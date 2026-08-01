@@ -447,6 +447,13 @@ fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>
         if is_sanitized_within_lines_after(content, pos, &rule.sanitizers, match_all, rule.sanitizer_after_lines) {
             return true;
         }
+        // 前向窗口语义（有界，10.25）：仅看命中点之前 N 行，
+        // 覆盖"先净化后使用"形态（sanitize 在 sink 上一两行），远处 import/守卫不吃
+        if rule.sanitizer_before_lines > 0
+            && is_sanitized_within_lines_before(content, pos, &rule.sanitizers, match_all, rule.sanitizer_before_lines)
+        {
+            return true;
+        }
     } else {
         let effective_pos = if rule.sanitizer_file_scope {
             content.len()
@@ -464,6 +471,7 @@ fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>
 }
 
 /// 检查命中点之后 N 行内（含命中行剩余部分）是否出现 sanitizer 模式。
+/// 检查匹配位置之后 N 行内是否出现 sanitizer（后向窗口语义）。
 /// 用于"先取路径后校验"形态：校验调用紧跟 sink 之后。
 fn is_sanitized_within_lines_after(
     content: &str,
@@ -487,6 +495,39 @@ fn is_sanitized_within_lines_after(
         }
     }
     let window = content[pos..end].to_lowercase();
+    let contains = |s: &String| window.contains(&s.to_lowercase());
+    if match_all {
+        sanitizers.iter().all(contains)
+    } else {
+        sanitizers.iter().any(contains)
+    }
+}
+
+/// 检查匹配位置之前 N 行内是否出现 sanitizer（前向窗口语义，10.25）。
+/// 用于"先净化后使用"形态（`const safe = sanitize(x); sink(dir, safe)`），
+/// 窗口有界以避免同文件远处 import/无关守卫误豁免。
+fn is_sanitized_within_lines_before(
+    content: &str,
+    pos: usize,
+    sanitizers: &[String],
+    match_all: bool,
+    lines: usize,
+) -> bool {
+    if sanitizers.is_empty() || pos == 0 {
+        return false;
+    }
+    let mut start = 0;
+    let mut seen = 0;
+    for (i, b) in content[..pos].bytes().enumerate().rev() {
+        if b == b'\n' {
+            seen += 1;
+            if seen >= lines {
+                start = i + 1;
+                break;
+            }
+        }
+    }
+    let window = content[start..pos].to_lowercase();
     let contains = |s: &String| window.contains(&s.to_lowercase());
     if match_all {
         sanitizers.iter().all(contains)
@@ -1318,6 +1359,7 @@ mod tests {
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1357,6 +1399,7 @@ mod tests {
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1398,6 +1441,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1439,6 +1483,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1481,6 +1526,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: after,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1501,6 +1547,60 @@ $upsql = Input::postStrVar('upsql', '');
         let win_unguarded =
             RuleScanner::new(vec![mk_rule(2)]).scan_file_sync(&PathBuf::from("T.java"), unguarded);
         assert_eq!(win_unguarded.len(), 1, "窗口内无校验，保留命中");
+    }
+
+    #[test]
+    fn test_sanitizer_before_lines_window() {
+        // sanitizer_before_lines=N：命中点之前 N 行内出现 sanitizer 即豁免，
+        // 覆盖"先净化后使用"形态（sanitize 在 sink 上一两行），
+        // 且不受同文件远处文本影响（无界前缀语义会把远处 import/守卫误当净化）。
+        // 真实修复形态：const sanitized = sanitize(name); path.join(dir, sanitized);
+        let guarded = "const sanitize = require('x');\nfunction f(dir, name) {\n  const sanitized = sanitize(name);\n  return path.join(dir, sanitized);\n}\n";
+        let unguarded = "const sanitize = require('x');\nfunction f(dir, name) {\n  return path.join(dir, name);\n}\n";
+        let distant = "const y = sanitize(q);\n\n\n\n\n\n\nfunction f(dir, name) {\n  return path.join(dir, name);\n}\n";
+        let mk_rule = |after: usize, before: usize| Rule {
+            id: "path-traversal".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "javascript".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "javascript".to_string(),
+                pattern: r"path\.join\s*\(".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-22".to_string()),
+            sanitizers: vec!["sanitize(".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: after,
+            sanitizer_before_lines: before,
+            go_io_copy_requires_open_file: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        // 仅后向窗口（现有语义）：净化在命中点之前 → 守卫版也不豁免
+        let after_only =
+            RuleScanner::new(vec![mk_rule(2, 0)]).scan_file_sync(&PathBuf::from("f.js"), guarded);
+        assert_eq!(after_only.len(), 1, "后向窗口看不到命中点之前的净化");
+        // 前向窗口：守卫版豁免（净化在窗口内），未守卫版保留
+        let win_guarded =
+            RuleScanner::new(vec![mk_rule(2, 2)]).scan_file_sync(&PathBuf::from("f.js"), guarded);
+        assert_eq!(win_guarded.len(), 0, "净化在命中前 2 行内，豁免");
+        let win_unguarded =
+            RuleScanner::new(vec![mk_rule(2, 2)]).scan_file_sync(&PathBuf::from("f.js"), unguarded);
+        assert_eq!(win_unguarded.len(), 1, "窗口内无净化，保留命中");
+        // 远处净化（超出窗口）不误豁免——与无界前缀语义的关键区别
+        let win_distant =
+            RuleScanner::new(vec![mk_rule(2, 2)]).scan_file_sync(&PathBuf::from("f.js"), distant);
+        assert_eq!(win_distant.len(), 1, "净化超出前向窗口，不误豁免");
     }
 
     #[test]
@@ -1531,6 +1631,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1587,6 +1688,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1629,6 +1731,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: bare_only,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1680,6 +1783,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1721,6 +1825,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1755,6 +1860,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1862,6 +1968,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: true,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             category: None,
             owasp: None,
@@ -1908,6 +2015,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: require_open,
             category: None,
             owasp: None,

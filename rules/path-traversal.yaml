@@ -17,6 +17,10 @@ patterns:
     pattern: (?i)(new\s+File\s*\(|FileInputStream\s*\(|Path\.of\s*\(|Paths\.get\s*\().*(?:request|param|input|user)|\.resolve\s*\([^)]*(?:fileName|getFilename|getOriginalFilename|(?-i:[A-Za-z_.]*Name\b))
   - language: javascript
     pattern: '(?i)(readFile\s*\(|readFileSync\s*\(|writeFile\s*\(|writeFileSync\s*\(|fs\.open\s*\(|path\.join\s*\()[^)]*(?:req\.|request|param|input|user|socket\.on|callback)'
+  - language: javascript
+    # 文件删除 sink 单列紧锚点（删除接口文件名参数直拼路径家族）：不放 user 锚点，
+    # 避免 job.user_id/userUploadsDir 等会话变量词内子串误伤（\b 防 confirm( 词尾误中 rm()
+    pattern: '(?i)\b(?:unlink|rmSync|rm|rmdir)\s*\([^)]*(?:req\.|body\.|params\.|query\.|filename|fileName)'
   - language: python
     pattern: '(?i)(open\s*\(|read_file\s*\(|file_get_contents\s*\().*(?:request|param|input|user)'
   - language: php
@@ -31,5 +35,10 @@ sanitizers:
   - "sanitize_filename"
   - "os.path.basename"
   - "os.path.normpath"
+  # npm sanitize-filename 包（JS/TS 文件名净化的主流修复形态）
+  - "sanitize("
 sanitizer_after_lines: 5
+# 前向窗口（10.25）："先净化后使用"形态（sanitize 在 sink 上一两行），
+# 与后向窗口并存，两个窗口任一命中即豁免；有界避免远处 import 误豁免
+sanitizer_before_lines: 5
 severity: high
