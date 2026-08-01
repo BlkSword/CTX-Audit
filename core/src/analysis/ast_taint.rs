@@ -3302,6 +3302,15 @@ impl AstTaintAnalyzer {
                     "getenv",
                 ],
             ),
+            TaintSource::new(
+                "template_render_output",
+                "Template Render Output",
+                vec![
+                    "template.render",
+                    "env.from_string",
+                    "render_template_string",
+                ],
+            ),
         ]
     }
 
@@ -3341,7 +3350,15 @@ impl AstTaintAnalyzer {
             TaintSink::new(
                 "file_path",
                 "File Path",
-                vec!["open(", "fopen", "readFile", "writeFile", "fs.open"],
+                vec![
+                    "open(",
+                    "fopen",
+                    "readFile",
+                    "writeFile",
+                    "fs.open",
+                    // 10.16 扩展（R51）：Python pathlib Path(x) 构造即路径操作
+                    "Path(",
+                ],
                 VulnerabilityType::PathTraversal,
             )
             .with_cwe("CWE-22"),
@@ -3655,6 +3672,59 @@ content = f.read()"#;
         let flows = analyzer.analyze_code(code, &path, "download", &[], &[]);
 
         assert!(!flows.is_empty(), "Should detect Python path traversal");
+    }
+
+    /// 10.16 回归（R42 GHSA-28cf 回放）：Jinja2 模板渲染输出用作文件路径
+    /// 必须被识别为路径遍历 source（漏洞版：render 输出直接拼路径，无净化）
+    #[test]
+    fn test_python_template_render_as_path_source() {
+        let code = r#"from jinja2 import Environment
+env = Environment()
+template = env.from_string("path: {{ user_input }}")
+target = template.render(user_input=request.args.get('p'))
+f = open("/var/data/" + target)
+content = f.read()"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("views.py");
+        let flows = analyzer.analyze_code(code, &path, "download", &[], &[]);
+
+        assert!(!flows.is_empty(), "模板渲染输出用作路径应命中路径遍历");
+    }
+
+    /// 10.16 补充（R51）：render 输出直接经 pathlib Path() 构造（GHSA-28cf 真实链
+    /// 形态：filepath.py render → file_handling.py `base_path = Path(rendered_path)`）
+    #[test]
+    fn test_python_template_render_into_pathlib() {
+        let code = r#"from jinja2 import Environment
+from pathlib import Path
+env = Environment()
+template = env.from_string("path: {{ user_input }}")
+rendered_path = template.render(user_input=request.args.get('p'))
+base_path = Path(rendered_path)
+print(base_path)"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("views.py");
+        let flows = analyzer.analyze_code(code, &path, "download", &[], &[]);
+
+        assert!(!flows.is_empty(), "render 输出经 Path() 构造应命中路径遍历");
+    }
+
+    /// 10.16 负例：渲染输出经 basename 净化后不应命中（修复形态）
+    #[test]
+    fn test_python_template_render_sanitized_no_flow() {
+        let code = r#"from jinja2 import Environment
+import os
+env = Environment()
+template = env.from_string("path: {{ user_input }}")
+target = template.render(user_input=request.args.get('p'))
+safe = os.path.basename(target)
+f = open("/var/data/" + safe)
+content = f.read()"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("views.py");
+        let flows = analyzer.analyze_code(code, &path, "download", &[], &[]);
+
+        assert!(flows.is_empty(), "basename 净化后不应命中路径遍历");
     }
 
     #[test]

@@ -71,8 +71,22 @@ sources:
       - "std::env::var"
       - "getenv"
     languages: ["*"]
-    severity: "Medium"
+    # 10.15③（R36 登记）：env 是部署者配置（威胁模型外），不构成
+    # 硬编码凭证/命令注入/路径遍历的用户可控污点源——保留为 Low 参考级
+    severity: "Low"
     category: "Environment"
+    ast_patterns: []
+
+  - id: "template_render_output"
+    name: "Template Render Output"
+    description: "Jinja2/Django 模板渲染输出（template.render / env.from_string / render_template_string）。输出内容含模板上下文（可含用户数据），用作文件路径/命令等 sink 时构成路径遍历（10.16，R42 GHSA-28cf 回放）。仅作文件路径类 sink 的 source，流经 HTML 响应输出场景由判定层排除。"
+    patterns:
+      - "template.render"
+      - "env.from_string"
+      - "render_template_string"
+    languages: ["python"]
+    severity: "Medium"
+    category: "TemplateRender"
     ast_patterns: []
 
 sinks:
@@ -208,6 +222,9 @@ sinks:
       - "File("
       - "FileReader"
       - "FileWriter"
+      # 10.16 扩展（R51）：Python pathlib `Path(x)` 构造即路径操作
+      # （GHSA-28cf 链：template.render → Path(rendered_path)）
+      - "Path("
       - "std::fs::File"
       - "std::fs::read"
       - "std::fs::write"

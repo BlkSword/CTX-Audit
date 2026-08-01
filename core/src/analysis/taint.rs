@@ -673,6 +673,9 @@ pub enum TaintCategory {
     DatabaseInput,
     /// 命令行参数（非远程攻击面）
     CliInput,
+    /// 模板渲染输出（Jinja2 `template.render`/`from_string` 等，内容可含用户数据；
+    /// 用作文件路径等 sink 时构成路径遍历——10.16，R42 GHSA-28cf 回放登记）
+    TemplateRender,
 }
 
 /// 漏洞类型
@@ -1050,7 +1053,7 @@ impl TaintAnalyzer {
             TaintSource {
                 id: "env_input".to_string(),
                 name: "Environment Variable".to_string(),
-                description: "环境变量".to_string(),
+                description: "环境变量（部署者配置，威胁模型外——10.15③ R36 降级为 Low 参考级）".to_string(),
                 patterns: vec![
                     "process.env".to_string(),
                     "os.environ".to_string(),
@@ -1059,8 +1062,24 @@ impl TaintAnalyzer {
                     "getenv".to_string(),
                 ],
                 languages: vec!["*".to_string()],
-                severity: Severity::Medium,
+                severity: Severity::Low,
                 category: TaintCategory::Environment,
+                ast_patterns: vec![],
+                second_order: false,
+            },
+            // 模板渲染输出（10.16 R42 GHSA-28cf 回放：Jinja2 render 输出用作文件路径）
+            TaintSource {
+                id: "template_render_output".to_string(),
+                name: "Template Render Output".to_string(),
+                description: "模板渲染输出（template.render / from_string / render_template_string）".to_string(),
+                patterns: vec![
+                    "template.render".to_string(),
+                    "env.from_string".to_string(),
+                    "render_template_string".to_string(),
+                ],
+                languages: vec!["python".to_string()],
+                severity: Severity::Medium,
+                category: TaintCategory::TemplateRender,
                 ast_patterns: vec![],
                 second_order: false,
             },
@@ -1175,6 +1194,9 @@ impl TaintAnalyzer {
                     "FileReader".to_string(),
                     "FileWriter".to_string(),
                     "std::fs::File".to_string(),
+                    // 10.16 扩展（R51）：Python pathlib `Path(x)` 构造即路径操作
+                    // （GHSA-28cf 链：template.render → Path(rendered_path)）
+                    "Path(".to_string(),
                 ],
                 languages: vec!["*".to_string()],
                 vulnerability_type: VulnerabilityType::PathTraversal,

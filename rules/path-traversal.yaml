@@ -26,5 +26,10 @@ patterns:
 # 窗口取 5 行：if/else 分支内 resolve 再出分支校验的形态（守卫距命中可达 4 行）
 sanitizers:
   - "checkDirectoryTraversal("
+  # 10.16 补充（R42 GHSA-28cf 回放）：Python 路径净化函数
+  - "_is_safe_relative_path"
+  - "sanitize_filename"
+  - "os.path.basename"
+  - "os.path.normpath"
 sanitizer_after_lines: 5
 severity: high
