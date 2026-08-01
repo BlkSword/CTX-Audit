@@ -24,6 +24,11 @@ sources:
       - "request.text"
       - "request.json"
       - "request.formData"
+      # 08.01 补充（R61 CVE-2024-52004 回放）：Django 上传文件、
+      # DRF 请求体与原始 body 同为远程可控输入
+      - "request.FILES"
+      - "request.data"
+      - "request.body"
       - "cookies().get"
       - "headers().get"
       - "searchParams.get"
@@ -228,6 +233,15 @@ sinks:
       - "std::fs::File"
       - "std::fs::read"
       - "std::fs::write"
+      # 08.01 补充（R61 CVE-2024-52004 回放）：Python 文件删除/移动/复制
+      # 操作同样是路径遍历 sink——该 CVE 正是 shutil.rmtree(用户可控路径)
+      # 导致任意目录删除。不含 `.save(`（会误命中全部 ORM save）。
+      - "shutil.rmtree"
+      - "shutil.move("
+      - "shutil.copy"
+      - "os.remove("
+      - "os.unlink("
+      - "os.rename("
     languages: ["*"]
     vulnerability_type: "PathTraversal"
     severity: "High"
