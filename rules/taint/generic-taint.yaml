@@ -317,7 +317,7 @@ sinks:
       - "PyYAML"
       - "cPickle"
       - "marshal"
-      - "serde_json"
+      # 移除 serde_json：数据专用反序列化器，无 gadget 链，非 CWE-502（误标修复）
     patterns:
       - ".parse"
       - ".readValue"
@@ -331,7 +331,7 @@ sinks:
       - "pickle.load"
       - "yaml.load"
       - "yaml.unsafe_load"
-      - "serde_json::from_str"
+      # 移除 serde_json::from_str：同上
     languages: ["*"]
     vulnerability_type: "InsecureDeserialization"
     severity: "Critical"

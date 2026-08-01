@@ -323,12 +323,8 @@ const RUST_PATTERNS: PatternSet = PatternSet {
         "client.query",
         "statement.execute",
     ],
-    deser_sinks: &[
-        "serde_json::from_str",
-        "serde_json::from_reader",
-        "toml::from_str",
-        "bincode::deserialize",
-    ],
+    // 数据专用反序列化器（serde/toml/bincode）无 gadget 链，非 CWE-502——置空（误标修复）
+    deser_sinks: &[],
     code_sinks: &["std::process::command::new"],
     path_sinks: &[
         "std::fs::read_to_string",
