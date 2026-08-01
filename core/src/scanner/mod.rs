@@ -448,6 +448,16 @@ pub fn classify_file_role(path: &str) -> &'static str {
         "/plugins/",
         "/libs/",
         "/webjars/",
+        // R51: 捆绑随附组件与虚拟环境（R50 kkFileView LibreOfficePortable 全仓扫描噪声源）
+        "/libreofficeportable/",
+        "/libreoffice/",
+        "/site-packages/",
+        "/dist-packages/",
+        "/venv/",
+        "/.venv/",
+        "/virtualenv/",
+        "/bundle/",
+        "/dependencies/",
     ];
     for marker in &vendor_markers {
         if normalized.contains(marker) {
@@ -3264,9 +3274,17 @@ mod tests {
         // 知名第三方库文件名前缀
         assert_eq!(classify_file_role("web/js/jquery.js"), "vendor");
         assert_eq!(classify_file_role("web/js/bootstrap.js"), "vendor");
+        // R51: 捆绑随附组件/虚拟环境（R50 kkFileView LibreOfficePortable 噪声源）
+        assert_eq!(
+            classify_file_role("server/LibreOfficePortable/python-core/lib/python/site-packages/yaml.py"),
+            "vendor"
+        );
+        assert_eq!(classify_file_role("env/.venv/lib/python3.11/site-packages/requests/api.py"), "vendor");
+        assert_eq!(classify_file_role("code-server/lib/vscode/node_modules/vs/workbench/x.js"), "vendor");
         // 业务文件不受影响
         assert_eq!(classify_file_role("src/main.py"), "production");
         assert_eq!(classify_file_role("web/js/serverstatus.js"), "production");
+        assert_eq!(classify_file_role("server/lib/python/office/convert.py"), "production");
     }
 
     #[test]
