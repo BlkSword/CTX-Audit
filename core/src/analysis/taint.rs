@@ -403,7 +403,13 @@ impl TaintSink {
                     .next()
                     .map(|c| !c.is_alphanumeric() && c != '_' && c != '$')
                     .unwrap_or(true);
-                if right_ok {
+                // R55：链式调用接收者误绑修复——pattern 命中的方法必须是链上
+                // 最后一个调用。`window.$http.get(url).then(cb)` 中 ".get" 之后
+                // 还有 ").then" 链式延续，真正的 callee 是 then，其参数（回调）
+                // 不是 .get 的 URL 参数，不得绑定（SSRF/SQLi 同族 FP）。
+                // `mysql2.createConnection().query(sql)` 的 ".query" 在链尾，仍命中。
+                let chain_continues = func_name[after..].contains(").");
+                if right_ok && !chain_continues {
                     return true;
                 }
                 start = abs + 1;
@@ -2227,5 +2233,25 @@ cursor.execute(query)
         assert!(java_xss.matches_with_context("print", Some("response"), "java"));
         assert!(java_xss.matches_with_context("println", Some("out"), "java"));
         assert!(!java_xss.matches_with_context("print", Some("logger"), "java"));
+    }
+
+    #[test]
+    fn test_chain_receiver_misbinding_r55() {
+        // R55：链式调用接收者误绑——`.get`/`.query` 命中必须位于调用链尾部，
+        // `X.get(url).then(cb)` 的 then 参数（回调）不得绑定 .get sink（SSRF/SQLi FP 家族）
+        assert!(!super::TaintSink::pattern_matches_method_call(
+            ".get",
+            "window.$http.get(`/attachments/get/page/${this.pageId}`).then",
+        ));
+        // 链尾方法仍命中（mysql2.createConnection().query 语义保留）
+        assert!(super::TaintSink::pattern_matches_method_call(
+            ".query",
+            "mysql2.createConnection().query",
+        ));
+        assert!(super::TaintSink::pattern_matches_method_call(".get", "needle.get"));
+        assert!(super::TaintSink::pattern_matches_method_call(
+            ".get",
+            "window.$http.get",
+        ));
     }
 }

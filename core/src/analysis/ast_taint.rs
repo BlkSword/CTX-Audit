@@ -2980,6 +2980,7 @@ impl AstTaintAnalyzer {
         match sink.vulnerability_type {
             VulnerabilityType::ServerSideRequestForgery => {
                 Self::expr_ssrf_literal_host(expr, tainted_var)
+                    || Self::expr_ssrf_relative_url(expr)
             }
             VulnerabilityType::PathTraversal => {
                 Self::expr_var_numeric_coerced(expr, tainted_var)
@@ -3009,13 +3010,23 @@ impl AstTaintAnalyzer {
     }
 
 
-    /// R55（10.15① 扩展）：SSRF 同源相对 URL 豁免（BookStack 客户端 XHR FP 家族）。
+    /// R55（10.15① 扩展）：SSRF 同源相对 URL 豁免（浏览器端 XHR FP 家族，R55 实扫沉淀）。
     /// 污点参数为以 `/` 开头的字符串/模板字面量（`` `/api/${id}` ``）时是同源
     /// 相对 URL——路径段如何被污染 host 都不可控，不构成 SSRF（浏览器 XHR 与
     /// 服务端代码同理）。`//` 开头是协议相对 URL（host 可控），不豁免。
     fn expr_ssrf_relative_url(arg_text: &str) -> bool {
         let t = arg_text.trim();
-        let bytes = t.as_bytes();
+        // 两种输入形态：污点参数文本（`` `/api/${id}` ``）或完整调用/赋值表达式
+        // （`window.$http.get(`/api/${id}`)`——sink 在赋值右值内的检出路径）。
+        // 后者定位第一个 `(` 后的引号字面量；`axios.get(base + '/x')` 首字符非
+        // 引号不豁免（host 仍可被 base 控制）。
+        let candidate = if t.starts_with(['\'', '"', '`']) {
+            t
+        } else {
+            let Some(paren) = t.find('(') else { return false };
+            t[paren + 1..].trim_start()
+        };
+        let bytes = candidate.as_bytes();
         if bytes.len() < 2 {
             return false;
         }
@@ -5911,7 +5922,7 @@ r = requests.get("https://" + host + "/api")
     #[test]
     fn test_ssrf_relative_url_exempt() {
         // R55：同源相对 URL（`/path/${id}`）host 不可控，不构成 SSRF
-        // （BookStack 客户端 XHR FP 家族，window.$http.get）
+        // （浏览器端 XHR FP 家族，window.$http.get）
         let code = r#"const id = req.query.id;
 window.$http.get(`/attachments/get/page/${id}`);"#;
         let mut analyzer = AstTaintAnalyzer::new();
@@ -5922,6 +5933,27 @@ window.$http.get(`/attachments/get/page/${id}`);"#;
                 .iter()
                 .any(|f| matches!(f.vulnerability_type, VulnerabilityType::ServerSideRequestForgery)),
             "同源相对 URL 不应报 SSRF, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ssrf_relative_url_in_assignment_rvalue_exempt() {
+        // R55：sink 在赋值右值内的检出路径（`const r = window.$http.get(`/x/${id}`)`）
+        // 同样豁免同源相对 URL——赋值右值内 sink 实际形态
+        let code = r#"const id = req.query.id;
+const resp = await window.$http.get(`/attachments/get/page/${id}`);"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("attachments.js");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            !flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::ServerSideRequestForgery)),
+            "赋值右值内的相对 URL 不应报 SSRF, got: {:?}",
             flows
                 .iter()
                 .map(|f| format!("{:?}", f.vulnerability_type))
