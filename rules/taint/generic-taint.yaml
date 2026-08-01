@@ -311,7 +311,6 @@ sinks:
       - "new Function("
       - "Function("
       - "__import__"
-      - "compile("
       - "vm.runInContext"
       - "vm.runInNewContext"
       - "vm.runInThisContext"

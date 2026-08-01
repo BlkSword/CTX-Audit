@@ -1350,11 +1350,13 @@ impl AstTaintAnalyzer {
                     if let Some(sink) =
                         self.find_matching_sink_in_expr(&assign.source_expr, language)
                     {
-                        if Self::tainted_var_in_sensitive_args(
-                            &assign.source_expr,
-                            &sink,
-                            &src_var,
-                        ) {
+                        if !Self::sink_exempt(&sink, &assign.source_expr, &src_var)
+                            && Self::tainted_var_in_sensitive_args(
+                                &assign.source_expr,
+                                &sink,
+                                &src_var,
+                            )
+                        {
                             let target_ap = AccessPath::from_dotted(&assign.target);
                             let vt = state
                                 .find_taint_for_path(&target_ap)
@@ -1460,6 +1462,8 @@ impl AstTaintAnalyzer {
                 //    cur.execute(query, (q,)) 中 q 在 arg1（参数绑定元组），
                 //    属于参数化查询，不应判定为注入。
                 let mut tainted_var: Option<String> = None;
+                let mut tainted_used_var: Option<String> = None;
+                let mut tainted_arg_text: Option<String> = None;
                 for (arg_idx, arg) in call.arguments.iter().enumerate() {
                     if !sink.sensitive_params.is_empty()
                         && !sink.sensitive_params.contains(&arg_idx)
@@ -1483,6 +1487,8 @@ impl AstTaintAnalyzer {
                         continue;
                     }
                     tainted_var = Some(resolved);
+                    tainted_used_var = Some(used_var.clone());
+                    tainted_arg_text = Some(arg.text.clone());
                     break;
                 }
 
@@ -1510,6 +1516,39 @@ impl AstTaintAnalyzer {
                 if let Some(tainted_var) = tainted_var {
                     let src_path = AccessPath::from_dotted(&tainted_var);
                     let src_vt = state.find_taint_for_path(&src_path).unwrap().clone();
+
+                    // 10.15①/② sink 级豁免：sink 调用处的参数文本只是变量名时，
+                    // 取传播链最近一个赋值步骤的右值表达式来判定
+                    // （`path = "/uploads/" + str(int(user_id))` → open(path) 形态）。
+                    // 注意步骤链在 used_var（如 path）的状态里，源头变量（user_id）无此步骤。
+                    let steps_expr = tainted_used_var
+                        .as_deref()
+                        .and_then(|u| {
+                            state.find_taint_for_path(&AccessPath::from_dotted(u))
+                        })
+                        .or_else(|| state.find_taint_for_path(&src_path))
+                        .and_then(|vt| Self::last_assign_snippet(&vt.propagation_steps))
+                        .map(|s| s.to_string());
+                    let exempt_expr =
+                        steps_expr.unwrap_or_else(|| tainted_var.clone());
+                    let exempt = match sink.vulnerability_type {
+                        VulnerabilityType::ServerSideRequestForgery => {
+                            Self::sink_exempt(&sink, &exempt_expr, &tainted_var)
+                                // R55：污点所在参数为同源相对 URL（`/api/${id}`）时豁免
+                                || tainted_arg_text
+                                    .as_deref()
+                                    .map(Self::expr_ssrf_relative_url)
+                                    .unwrap_or(false)
+                        }
+                        VulnerabilityType::PathTraversal => Self::expr_taints_all_numeric_with(
+                            &exempt_expr,
+                            |v| self.is_var_tainted_cpg(v, state, alias_map),
+                        ),
+                        _ => false,
+                    };
+                    if exempt {
+                        return None;
+                    }
 
                     // 检查参数化查询
                     if self.is_parameterized_query(&call.callee, &node.code) {
@@ -2115,11 +2154,13 @@ impl AstTaintAnalyzer {
                     if let Some(sink) =
                         self.find_matching_sink_in_expr(&assign.source_expr, language)
                     {
-                        if !Self::tainted_var_in_sensitive_args(
-                            &assign.source_expr,
-                            &sink,
-                            &src_var,
-                        ) {
+                        if Self::sink_exempt(&sink, &assign.source_expr, &src_var)
+                            || !Self::tainted_var_in_sensitive_args(
+                                &assign.source_expr,
+                                &sink,
+                                &src_var,
+                            )
+                        {
                             return None;
                         }
                         let taint_info = state
@@ -2207,6 +2248,8 @@ impl AstTaintAnalyzer {
             // cur.execute(query, (q,)) 中 q 在 arg1（参数绑定元组），
             // 属于参数化查询，不应判定为注入。
             let mut tainted_var: Option<String> = None;
+            let mut tainted_used_var: Option<String> = None;
+            let mut tainted_arg_text: Option<String> = None;
             for (arg_idx, arg) in call.arguments.iter().enumerate() {
                 if !sink.sensitive_params.is_empty() && !sink.sensitive_params.contains(&arg_idx) {
                     continue;
@@ -2228,6 +2271,8 @@ impl AstTaintAnalyzer {
                     continue;
                 }
                 tainted_var = Some(resolved);
+                tainted_used_var = Some(used_var.clone());
+                tainted_arg_text = Some(arg.text.clone());
                 break;
             }
 
@@ -2251,6 +2296,33 @@ impl AstTaintAnalyzer {
             if let Some(tainted_var) = tainted_var {
                 let taint_info = state.get(&tainted_var)?;
 
+                // 10.15①/② sink 级豁免：sink 调用处参数只是变量名时回溯最近
+                // 赋值步骤的右值表达式（`path = ".../" + str(int(uid))` → open(path)）
+                let steps_expr = tainted_used_var
+                    .as_deref()
+                    .and_then(|u| state.get(u))
+                    .or_else(|| state.get(&tainted_var))
+                    .and_then(|info| Self::last_assign_snippet(&info.propagation_steps))
+                    .map(|s| s.to_string());
+                let exempt_expr = steps_expr.unwrap_or_else(|| tainted_var.clone());
+                let exempt = match sink.vulnerability_type {
+                    VulnerabilityType::ServerSideRequestForgery => {
+                        Self::sink_exempt(&sink, &exempt_expr, &tainted_var)
+                            // R55：污点所在参数为同源相对 URL（`/api/${id}`）时豁免
+                            || tainted_arg_text
+                                .as_deref()
+                                .map(Self::expr_ssrf_relative_url)
+                                .unwrap_or(false)
+                    }
+                    VulnerabilityType::PathTraversal => Self::expr_taints_all_numeric_with(
+                        &exempt_expr,
+                        |v| self.is_var_tainted(v, state, alias_map),
+                    ),
+                    _ => false,
+                };
+                if exempt {
+                    return None;
+                }
                 // 数据类型推断：检查是否使用了参数化查询
                 let code_line = &node.code;
                 let is_parameterized = self.is_parameterized_query(&call.callee, code_line);
@@ -2893,6 +2965,209 @@ impl AstTaintAnalyzer {
         found_any
     }
 
+    /// 10.15①/② sink 级豁免（判定层沉淀的去误报方向，R51 扩展）。
+    ///
+    /// - SSRF（10.15①）：sink 表达式中 URL host 为字面量常量时目标固定，
+    ///   污点仅影响路径/查询段，不构成 SSRF（`"https://api.com" + path`）；
+    ///   host 来自变量（`"https://" + host`）时表达式无完整字面量 `://`，保守不豁免。
+    /// - PathTraversal（10.15②）：污点变量的所有出现都处于数值强制转换调用内
+    ///   （int()/Number()/parseInt()/parseFloat() 等），插值数字化（DB 自增 id、
+    ///   数字主键）拼接进路径不构成路径遍历。
+    fn sink_exempt(sink: &TaintSink, expr: &str, tainted_var: &str) -> bool {
+        if tainted_var.is_empty() {
+            return false;
+        }
+        match sink.vulnerability_type {
+            VulnerabilityType::ServerSideRequestForgery => {
+                Self::expr_ssrf_literal_host(expr, tainted_var)
+            }
+            VulnerabilityType::PathTraversal => {
+                Self::expr_var_numeric_coerced(expr, tainted_var)
+            }
+            _ => false,
+        }
+    }
+
+    /// 取传播步骤链中最近一个带代码片段的步骤的右值表达式。
+    /// 用于 sink 调用处只有变量名时回溯赋值来源（如 `path = ".../" + str(int(uid))` → open(path)）。
+    fn last_assign_snippet(steps: &[PropagationStep]) -> Option<&str> {
+        steps.iter().rev().find_map(|s| s.code_snippet.as_deref())
+    }
+
+    /// 10.15①：URL host 字面量判定。只认 `"scheme://literal"` 直接形态，
+    /// host 段取 `://` 后到 `/ ? # " ' 空白 ;` 的第一个分隔符。
+    fn expr_ssrf_literal_host(expr: &str, tainted_var: &str) -> bool {
+        let Some(pos) = expr.find("://") else {
+            return false;
+        };
+        let rest = &expr[pos + 3..];
+        let host_end = rest
+            .find(|c: char| matches!(c, '/' | '?' | '#' | '"' | '\'' | ' ' | ';' | '\t' | '\n'))
+            .unwrap_or(rest.len());
+        let host = &rest[..host_end];
+        !host.is_empty() && !host.contains(tainted_var)
+    }
+
+
+    /// R55（10.15① 扩展）：SSRF 同源相对 URL 豁免（BookStack 客户端 XHR FP 家族）。
+    /// 污点参数为以 `/` 开头的字符串/模板字面量（`` `/api/${id}` ``）时是同源
+    /// 相对 URL——路径段如何被污染 host 都不可控，不构成 SSRF（浏览器 XHR 与
+    /// 服务端代码同理）。`//` 开头是协议相对 URL（host 可控），不豁免。
+    fn expr_ssrf_relative_url(arg_text: &str) -> bool {
+        let t = arg_text.trim();
+        let bytes = t.as_bytes();
+        if bytes.len() < 2 {
+            return false;
+        }
+        if !matches!(bytes[0], b'\'' | b'"' | b'`') {
+            return false;
+        }
+        bytes[1] == b'/' && bytes.get(2) != Some(&b'/')
+    }
+
+    /// 10.15②：污点变量所有出现是否都处于数值强制转换调用参数区间内。
+    /// 复用 is_inline_sanitized 的平衡括号配对语义，但转换函数列表固定
+    /// （不依赖 sanitizer_patterns——"int(" 子串会误中 print( 等，不能进全局净化器）。
+    fn expr_var_numeric_coerced(expr: &str, tainted_var: &str) -> bool {
+        if tainted_var.is_empty() {
+            return false;
+        }
+        let coercion_spans = Self::numeric_coercion_spans(expr);
+        if coercion_spans.is_empty() {
+            return false;
+        }
+        let bytes = expr.as_bytes();
+        let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+        // ── 污点变量的每次完整出现都必须落在某个转换调用区间内 ──────────
+        let mut found_any = false;
+        let mut start = 0;
+        while let Some(pos) = expr[start..].find(tainted_var) {
+            let abs = start + pos;
+            let end = abs + tainted_var.len();
+            let prev_ok = abs == 0 || !is_ident(bytes[abs - 1]);
+            let next_ok = end >= bytes.len() || !is_ident(bytes[end]);
+            start = abs + 1;
+            if !prev_ok || !next_ok {
+                continue;
+            }
+            found_any = true;
+            if !coercion_spans
+                .iter()
+                .any(|&(s, e)| abs > s && end <= e)
+            {
+                return false;
+            }
+        }
+        found_any
+    }
+
+    /// 收集表达式中所有数值强制转换调用的参数区间（开括号到配对闭括号）。
+    fn numeric_coercion_spans(expr: &str) -> Vec<(usize, usize)> {
+        const COERCIONS: &[&str] = &[
+            "int",
+            "integer",
+            "Number",
+            "parseInt",
+            "parseFloat",
+            "float",
+            "long",
+            "double",
+            "toInt",
+            "atoi",
+            "intval",
+            "strtol",
+            "strtod",
+        ];
+        let bytes = expr.as_bytes();
+        let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+        let mut coercion_spans: Vec<(usize, usize)> = Vec::new();
+        for name in COERCIONS {
+            let mut start = 0;
+            while let Some(pos) = expr[start..].find(name) {
+                let abs = start + pos;
+                let end = abs + name.len();
+                let prev_ok = abs == 0 || !is_ident(bytes[abs - 1]);
+                let next_ok = end >= bytes.len() || !is_ident(bytes[end]);
+                if !prev_ok || !next_ok {
+                    start = abs + 1;
+                    continue;
+                }
+                // 跳过空白，定位开括号
+                let mut i = end;
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if bytes.get(i) != Some(&b'(') {
+                    start = abs + 1;
+                    continue;
+                }
+                let mut depth = 0usize;
+                let mut j = i;
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if depth == 0 {
+                    coercion_spans.push((i, j));
+                }
+                start = abs + 1;
+            }
+        }
+        coercion_spans
+    }
+
+    /// 10.15② 表达式级判定：表达式中**所有污点标识符**是否都落在数值转换
+    /// 区间内（含源头变量被包裹、sink 调用处只有变量名的回溯场景）。
+    /// 任一污点标识符出现在转换区间外 → 不豁免（`str(int(a)) + b` 形态）。
+    /// 泛型 state：t 判断单个标识符是否为污点。
+    fn expr_taints_all_numeric_with<F>(expr: &str, is_tainted: F) -> bool
+    where
+        F: Fn(&str) -> bool,
+    {
+        let coercion_spans = Self::numeric_coercion_spans(expr);
+        if coercion_spans.is_empty() {
+            return false;
+        }
+        let bytes = expr.as_bytes();
+        let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut found_taint = false;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if !is_ident(bytes[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && is_ident(bytes[i]) {
+                i += 1;
+            }
+            let ident = &expr[start..i];
+            if !is_tainted(ident) {
+                continue;
+            }
+            found_taint = true;
+            // 污点标识符必须整体落在某个转换区间内
+            if !coercion_spans
+                .iter()
+                .any(|&(s, e)| start >= s && i <= e)
+            {
+                return false;
+            }
+        }
+        found_taint
+    }
+
     /// 数据类型推断：检测是否使用了参数化查询模式
     ///
     /// 保守策略：仅当代码行出现显式参数占位符（? / %s / :name）且没有字符串拼接时，
@@ -3398,7 +3673,10 @@ impl AstTaintAnalyzer {
             TaintSink::new(
                 "eval",
                 "Code Evaluation",
-                vec!["eval(", "Function(", "__import__", "compile("],
+                // compile( 已于 10.15④ 移除：JS 侧 Handlebars/WebAssembly/RegExp
+                // compile 为静态模板/正则编译非动态执行；Python 侧 re.compile 高频无害，
+                // 真动态执行面由 eval(/exec(/Function( 覆盖
+                vec!["eval(", "Function(", "__import__"],
                 VulnerabilityType::CodeInjection,
             )
             .with_cwe("CWE-94"),
@@ -5463,6 +5741,210 @@ class Repo {
                 .flows
                 .iter()
                 .map(|f| format!("{}:{}", f.vulnerability_type, f.sink.symbol))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // ── 10.15 判定层 sink/source 去误报（R51 扩展）───────────────────────
+
+    #[test]
+    fn test_handlebars_compile_not_code_injection() {
+        // 10.15④：Handlebars.compile 是模板编译（默认转义），非动态代码执行。
+        // compile( 已从 code-injection sink 移除；eval(/Function( 仍覆盖真动态执行。
+        let code = r#"
+const Handlebars = require('handlebars');
+const userInput = req.query.tpl;
+const compiled = Handlebars.compile(userInput);
+const html = compiled({ name: 'x' });
+res.send(html);
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("t.js");
+        let flows = analyzer.analyze_code(code, &path, "handler", &[], &[]);
+        assert!(
+            !flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::CodeInjection)),
+            "Handlebars.compile 不应命中 code-injection sink, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_python_re_compile_not_code_injection() {
+        // 10.15④ 移除 compile( 后，re.compile（正则编译）不再误报
+        let code = r#"
+pattern = request.GET['p']
+rx = re.compile(pattern)
+m = rx.search(data)
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("t.py");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            !flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::CodeInjection)),
+            "re.compile 不应命中 code-injection sink, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_eval_still_reported_after_compile_removal() {
+        // ④ 回归：真动态执行 eval( 必须仍命中
+        let code = r#"
+src = request.GET['src']
+result = eval(src)
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("t.py");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::CodeInjection)),
+            "eval( 应仍命中 code-injection sink, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_numeric_coerced_path_exempt() {
+        // 10.15②：污点经 int() 数值强制转换后拼接路径，非路径遍历
+        let code = r#"
+user_id = request.GET['id']
+path = "/uploads/" + str(int(user_id))
+open(path)
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("t.py");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            !flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::PathTraversal)),
+            "int() 数值化后的路径拼接不应命中 path traversal, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_tainted_path_still_reported() {
+        // ② 回归：未数值化的污点路径拼接必须仍命中
+        let code = r#"
+name = request.GET['name']
+path = "/uploads/" + name
+open(path)
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("t.py");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::PathTraversal)),
+            "未数值化的污点路径拼接应命中 path traversal, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ssrf_literal_host_exempt() {
+        // 10.15①：host 为字面量常量（污点仅影响路径段），目标固定非 SSRF
+        let code = r#"
+path = request.GET['path']
+r = requests.get("https://api.internal.example.com/" + path)
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("t.py");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            !flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::ServerSideRequestForgery)),
+            "字面量 host 不应命中 SSRF sink, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ssrf_tainted_host_still_reported() {
+        // ① 回归：host 来自污点变量时（表达式无完整字面量 host），必须仍命中
+        let code = r#"
+host = request.GET['host']
+r = requests.get("https://" + host + "/api")
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("t.py");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::ServerSideRequestForgery)),
+            "污点 host 应命中 SSRF sink, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ssrf_relative_url_exempt() {
+        // R55：同源相对 URL（`/path/${id}`）host 不可控，不构成 SSRF
+        // （BookStack 客户端 XHR FP 家族，window.$http.get）
+        let code = r#"const id = req.query.id;
+window.$http.get(`/attachments/get/page/${id}`);"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("attachments.js");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            !flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::ServerSideRequestForgery)),
+            "同源相对 URL 不应报 SSRF, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ssrf_protocol_relative_url_not_exempt() {
+        // R55 回归：`//` 开头是协议相对 URL（host 可控），仍应报 SSRF
+        let code = r#"const host = req.query.host;
+window.$http.get(`//${host}/api`);"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("p.js");
+        let flows = analyzer.analyze_code(code, &path, "f", &[], &[]);
+        assert!(
+            flows
+                .iter()
+                .any(|f| matches!(f.vulnerability_type, VulnerabilityType::ServerSideRequestForgery)),
+            "协议相对 URL 应报 SSRF, got: {:?}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
                 .collect::<Vec<_>>()
         );
     }

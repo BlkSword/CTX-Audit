@@ -1281,7 +1281,6 @@ impl TaintAnalyzer {
                     "exec(".to_string(),
                     "execfile".to_string(),
                     "__import__".to_string(),
-                    "compile(".to_string(),
                 ],
                 languages: vec!["*".to_string()],
                 vulnerability_type: VulnerabilityType::CodeInjection,

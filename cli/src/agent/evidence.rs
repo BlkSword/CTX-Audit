@@ -425,7 +425,7 @@ const PYTHON_PATTERNS: PatternSet = PatternSet {
         "yaml.unsafe_load",
         "json.loads",
     ],
-    code_sinks: &["eval(", "exec(", "compile("],
+    code_sinks: &["eval(", "exec("],
     path_sinks: &["open(", "os.path.join", "pathlib.path"],
     ssrf_sinks: &[
         "requests.get",
