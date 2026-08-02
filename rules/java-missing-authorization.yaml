@@ -1,0 +1,37 @@
+category: access-control
+cwe: CWE-862
+description: "检测 Java 资源操作方法缺失授权校验：按 id/name 操作的 get/delete/update/remove/find 等资源方法，函数体内无任何身份/属主校验（@PreAuthorize/@Secured/@RolesAllowed/SecurityContext/currentUser/getAuthentication/hasRole 等）——普通用户可直接操作他人资源（IDOR/越权）。授权是函数级语义：同文件远处 import 的 auth 模块不豁免本函数。"
+id: java-missing-authorization
+language: java
+name: Java Missing Authorization Check
+owasp: "A01:2021-Broken Access Control"
+remediation: "为每个资源操作方法添加身份/属主校验：方法级注解（@PreAuthorize/@Secured/@RolesAllowed）、SecurityContextHolder 获取当前用户后与资源属主比对，或调用 hasRole/hasAuthority 权限判断；列表/详情/删除操作逐一覆盖，避免仅校验入口而遗漏派生方法。"
+references:
+  - "https://cwe.mitre.org/data/definitions/862.html"
+  - "https://owasp.org/Top10/A01_2021-Broken_Access_Control/"
+severity: high
+auth_check_in_func: true
+once_per_file: false
+patterns:
+  - language: java
+    pattern: '(?m)\bpublic\s+(?:[\w<>\[\],\s]+)\s+\w*(?:getById|getTargetIdList|findById|deleteById|updateById|removeById|getShare|deleteEntry|updateEntry|removeEntry|editById|modifyById)\s*\([^)]*\)\s*\{'
+sanitizers:
+  - "@preauthorize"
+  - "@secured"
+  - "@rolesallowed"
+  - "@requiresauthority"
+  - "securitycontextholder"
+  - "getcurrentuser"
+  - "getauthentication"
+  - "getprincipal"
+  - "hasrole"
+  - "hasauthority"
+  - "haspermission"
+  - "isadmin"
+  - "currentuser"
+  - "authentication"
+  - "principal"
+  - "getuserid"
+  - "getcurrentuserid"
+  - "checkpermission"
+  - "requirepermission"

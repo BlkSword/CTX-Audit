@@ -2996,6 +2996,20 @@ fn deduplicate_findings(mut findings: Vec<Finding>, line_tolerance: usize) -> Ve
     let mut deduped_indices = std::collections::HashSet::with_capacity(findings.len());
 
     for (_key, indices) in groups {
+        // 同点多 finding：若漏洞类型各不相同（多引擎独立发现不同问题），
+        // 不合并——保留全部（missing-auth 与 UnauthenticatedEndpoint 同点
+        // 是互补发现而非重复，backlog 10.27）；仅类型相同的合并。
+        let types: std::collections::HashSet<&str> =
+            indices.iter().map(|&i| findings[i].vuln_type.as_str()).collect();
+        if types.len() > 1 {
+            for &idx in &indices {
+                if !deduped_indices.contains(&idx) {
+                    deduped_indices.insert(idx);
+                    result.push(findings[idx].clone());
+                }
+            }
+            continue;
+        }
         if indices.len() == 1 {
             let idx = indices[0];
             if !deduped_indices.contains(&idx) {
@@ -3482,8 +3496,20 @@ mod tests {
     #[test]
     fn test_enrich_from_symbols_empty_table_is_noop() {
         let ranges: HashMap<String, Vec<FunctionRange>> = HashMap::new();
-        let mut findings = vec![make_finding("src/Login.java", 20)];
+        let mut findings = vec![make_finding("src/Login.java", 1)];
         enrich_findings_with_enclosing_function_from_symbols(&mut findings, &ranges);
         assert!(findings[0].enclosing_function.is_none());
+    }
+
+    #[test]
+    fn test_dedup_keeps_different_vuln_types_at_same_point() {
+        // backlog 10.27：同点不同漏洞类型（missing-auth + UnauthenticatedEndpoint）
+        // 是互补发现而非重复，去重不应合并吞掉
+        let f1 = make_finding("a.go", 4);
+        let mut f2 = make_finding("a.go", 4);
+        f2.vuln_type = "CWE-862".to_string();
+        f2.detector = "RegexRule: go-missing-authorization".to_string();
+        let deduped = deduplicate_findings(vec![f1, f2], 3);
+        assert_eq!(deduped.len(), 2, "不同类型同点 finding 应都保留");
     }
 }

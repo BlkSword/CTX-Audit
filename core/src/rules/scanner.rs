@@ -56,7 +56,7 @@ impl RuleScanner {
             } else if let Some(patterns) = &rule.patterns {
                 // 多语言模式：为每个 LanguagePattern 创建独立的编译规则
                 for lp in patterns {
-                    if let Ok(regex) = Regex::new(&lp.pattern) {
+                    if let Ok(regex) = compile_rule_regex(&lp.pattern) {
                         // 创建一条带特定语言的副本
                         let mut lang_rule = rule.clone();
                         lang_rule.language = lp.language.clone();
@@ -75,7 +75,7 @@ impl RuleScanner {
                     }
                 }
             } else if let Some(pattern) = &rule.pattern {
-                if let Ok(regex) = Regex::new(pattern) {
+                if let Ok(regex) = compile_rule_regex(pattern) {
                     compiled_rules.push(CompiledRule {
                         rule: rule.clone(),
                         matcher: RuleMatcher::Regex(regex),
@@ -138,6 +138,19 @@ impl RuleScanner {
                                 &mut guard_content_cache,
                             );
                             if is_rule_sanitized(content, start_pos, &compiled.rule, guard) {
+                                continue;
+                            }
+                            // 函数级授权检查（backlog 10.27）：资源操作函数体内
+                            // 无身份/属主校验即"缺失授权"候选。函数级语义——
+                            // 同文件远处 import 的 auth 模块不豁免本函数。
+                            if compiled.rule.auth_check_in_func
+                                && enclosing_func_has_auth_check(
+                                    content,
+                                    start_pos,
+                                    &extension,
+                                    &compiled.rule.sanitizers,
+                                )
+                            {
                                 continue;
                             }
                             let ranges = comment_ranges_cache
@@ -318,6 +331,48 @@ impl Scanner for RuleScanner {
     async fn scan_file(&self, path: &PathBuf, content: &str) -> Vec<Finding> {
         self.scan_file_sync(path, content)
     }
+}
+
+/// 编译规则正则。Rust regex crate 不支持 `(?m)`/`(?s)`/`(?i)` 等 inline flag
+/// （`Regex::new("(?m)...")` 直接报错导致规则静默跳过——规则作者常踩的坑）。
+/// 这里把行首 inline flag 组（(?m)(?s)(?i)(?im)... 形态）转换为等价语义：
+///   `(?m)` -> RegexBuilder::multi_line(true)（^/$ 按行匹配）
+///   `(?s)` -> RegexBuilder::dot_matches_new_line(true)
+///   `(?i)` -> RegexBuilder::case_insensitive(true)
+/// 组合（如 `(?im)`）按字符逐个解析。非 flag 前缀（命名组 `(?P<name>`、
+/// `(?<name>`）不匹配"全 m/s/i 字符"条件，原样保留由 RegexBuilder 处理。
+fn compile_rule_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    // 解析行首 inline flag 组并从 pattern 中剥除
+    let mut flags = String::new();
+    let mut rest = pattern;
+    if let Some(inner) = pattern.strip_prefix("(?") {
+        if let Some(end) = inner.find(')') {
+            let flag_part = &inner[..end];
+            // 仅当全部是 m/s/i 字符时才视为 flag 组（排除命名组 (?P<...>、(?<...>)
+            if !flag_part.is_empty()
+                && flag_part.chars().all(|c| matches!(c, 'm' | 's' | 'i'))
+            {
+                flags.push_str(flag_part);
+                rest = &inner[end + 1..];
+            }
+        }
+    }
+    let mut builder = regex::RegexBuilder::new(rest);
+    for c in flags.chars() {
+        match c {
+            'm' => {
+                builder.multi_line(true);
+            }
+            's' => {
+                builder.dot_matches_new_line(true);
+            }
+            'i' => {
+                builder.case_insensitive(true);
+            }
+            _ => {}
+        }
+    }
+    builder.build()
 }
 
 /// 带 sanitizer_include_chain 的规则：惰性解析当前文件的 PHP include 链，
@@ -1165,6 +1220,81 @@ fn go_enclosing_func_has_file_open(content: &str, pos: usize) -> bool {
         .unwrap_or(false)
 }
 
+/// 授权检查语义（missing-authorization 家族，backlog 10.27）：
+/// 命中点所在函数/方法体内是否出现任一授权关键字。
+/// 资源操作（按 id/name 的 get/delete/update/remove 等）的函数体内
+/// 没有身份/属主校验（currentUser/owner/isAdmin/hasRole 等）即为
+/// "缺失授权"候选（CWE-862）。函数作用域语义：同文件远处 import 的
+/// auth 模块不豁免本函数（区别于 sanitizer_file_scope 的文件级语义）。
+/// 授权关键字由调用方提供（规则 sanitizers 列表）。
+/// 支持语言：go/java/python/javascript/typescript/php/rust/c/cpp。
+/// 解析失败或无法确定函数范围时返回 false（保守：不豁免，交由判定层）。
+fn enclosing_func_has_auth_check(
+    content: &str,
+    pos: usize,
+    extension: &str,
+    auth_keywords: &[String],
+) -> bool {
+    if auth_keywords.is_empty() || pos >= content.len() {
+        return false;
+    }
+    let lang = match get_language_for_extension(extension) {
+        Some(l) => l,
+        None => return false,
+    };
+    let mut parser = Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return false;
+    }
+    let tree = match parser.parse(content, None) {
+        Some(t) => t,
+        None => return false,
+    };
+    // 递归查找包含 pos 的最深函数类节点——函数/方法定义体是授权检查的
+    // 作用域边界。按语言映射函数节点类型：
+    //   go:    function_declaration / method_declaration / func_literal
+    //   java:  method_declaration / constructor_declaration
+    //   python:function_definition
+    //   js/ts: function_declaration / method_definition / arrow_function /
+    //          function_expression / generator_function_declaration
+    //   php:   function_definition / method_declaration
+    //   rust:  function_item / closure_expression
+    //   c/cpp: function_definition
+    fn find_func<'a>(node: tree_sitter::Node<'a>, pos: usize) -> Option<tree_sitter::Node<'a>> {
+        if node.start_byte() > pos || node.end_byte() <= pos {
+            return None;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = find_func(child, pos) {
+                return Some(found);
+            }
+        }
+        match node.kind() {
+            "function_declaration"
+            | "method_declaration"
+            | "func_literal"
+            | "constructor_declaration"
+            | "function_definition"
+            | "method_definition"
+            | "arrow_function"
+            | "function_expression"
+            | "generator_function_declaration"
+            | "function_item"
+            | "closure_expression" => Some(node),
+            _ => None,
+        }
+    }
+    let Some(func) = find_func(tree.root_node(), pos) else {
+        return false;
+    };
+    let body = &content[func.start_byte()..func.end_byte()];
+    let body_lower = body.to_lowercase();
+    auth_keywords
+        .iter()
+        .any(|kw| body_lower.contains(&kw.to_lowercase()))
+}
+
 /// 收集 PHP 文件中"非裸调用"形态的被调用名/定义名字节范围：
 /// 方法调用（member_call_expression）、静态调用（scoped_call_expression）、
 /// 构造调用（object_creation_expression）、函数/方法定义（function_definition /
@@ -1361,6 +1491,7 @@ mod tests {
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1401,6 +1532,7 @@ mod tests {
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1443,6 +1575,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1485,6 +1618,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1528,6 +1662,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: after,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1581,6 +1716,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: after,
             sanitizer_before_lines: before,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1633,6 +1769,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1690,6 +1827,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1733,6 +1871,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1785,6 +1924,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1827,6 +1967,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1862,6 +2003,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1970,6 +2112,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2017,6 +2160,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_after_lines: 0,
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: require_open,
+            auth_check_in_func: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2143,6 +2287,103 @@ func handler(w http.ResponseWriter, f *os.File) {
         let scanner = RuleScanner::new(vec![mk_go_io_copy_rule(false)]);
         let findings = scanner.scan_file_sync(&PathBuf::from("a.go"), content);
         assert_eq!(findings.len(), 1, "字段关闭时保持旧行为");
+    }
+
+    #[test]
+    fn test_compile_rule_regex_inline_flags() {
+        // Rust regex 支持 (?i)/(?m)/(?s) inline flag——compile_rule_regex 不应破坏它们
+        let re = compile_rule_regex(r"(?m)^foo").expect("compile (?m)");
+        assert!(re.is_match("abc\nfoo"));
+        let re2 = compile_rule_regex(r"(?i)FOO").expect("compile (?i)");
+        assert!(re2.is_match("foo"));
+        let re3 = compile_rule_regex(r"(?s)a.b").expect("compile (?s)");
+        assert!(re3.is_match("a\nb"));
+        let re4 = compile_rule_regex(r"^func\s+").expect("compile plain");
+        assert!(re4.is_match("func bar"));
+    }
+
+    #[test]
+    fn test_missing_authorization_func_scope() {
+        // 漏洞版：资源操作函数体内无授权关键字 → 应命中
+        let vuln = r#"package main
+func (s *Server) UpdateAccount(w http.ResponseWriter, r *http.Request) {
+    var req accountRequest
+    json.NewDecoder(r.Body).Decode(&req)
+    s.db.UpdateAccount(req)
+    w.WriteHeader(200)
+}
+"#;
+        let rule = Rule {
+            id: "go-missing-authorization".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "go".to_string(),
+            pattern: Some(r"(?m)^\s*func\s+(?:\([^)]*\)\s+)?\w*(?:Get|Delete|Update|Remove|Find|Edit|Modify|GetById|DeleteById|UpdateById)\w*\s*\([^)]*\)\s*\{".to_string()),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-862".to_string()),
+            sanitizers: vec!["user_id".to_string(), "currentuser".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: true,
+            category: None,
+            owasp: None,
+            references: None,
+            remediation: None,
+        };
+        let scanner = RuleScanner::new(vec![rule]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("vuln.go"), vuln);
+        assert!(!findings.is_empty(), "vuln.go 应命中 missing-authorization");
+
+        // 修复版：函数体内有 user_id 校验 → 应豁免
+        let fixed = r#"package main
+func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
+    userID := c.GetString("user_id")
+    if userID == "" {
+        http.Error(w, "unauthorized", 401)
+        return
+    }
+    s.db.UpdateAccount(req)
+    w.WriteHeader(200)
+}
+"#;
+        let rule2 = Rule {
+            id: "go-missing-authorization".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "go".to_string(),
+            pattern: Some(r"(?m)^\s*func\s+(?:\([^)]*\)\s+)?\w*(?:Get|Delete|Update|Remove|Find|Edit|Modify|GetById|DeleteById|UpdateById)\w*\s*\([^)]*\)\s*\{".to_string()),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-862".to_string()),
+            sanitizers: vec!["user_id".to_string(), "currentuser".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: true,
+            category: None,
+            owasp: None,
+            references: None,
+            remediation: None,
+        };
+        let scanner2 = RuleScanner::new(vec![rule2]);
+        let findings2 = scanner2.scan_file_sync(&PathBuf::from("fixed.go"), fixed);
+        assert!(findings2.is_empty(), "fixed.go 应豁免 missing-authorization");
     }
 }
 

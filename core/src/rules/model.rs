@@ -95,6 +95,16 @@ pub struct Rule {
     /// 仅对 .go 文件生效。
     #[serde(default)]
     pub go_io_copy_requires_open_file: bool,
+    /// 授权检查语义（missing-authorization 家族，backlog 10.27）：
+    /// 命中点所在函数/方法体内必须出现任一授权关键字才豁免。
+    /// 资源操作（按 id/name 的 get/delete/update/remove 等）的函数体内
+    /// 没有身份/属主校验（currentUser/owner/isAdmin/hasRole 等）即为
+    /// "缺失授权"候选（CWE-862）。区别于 sanitizer_file_scope 的文件级
+    /// 语义：同文件远处 import 的 auth 模块不应豁免本函数——授权是
+    /// 函数级语义，文件级匹配会系统性误豁免。
+    /// 授权关键字从规则声明的 sanitizers 列表读取（复用现有机制）。
+    #[serde(default)]
+    pub auth_check_in_func: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
