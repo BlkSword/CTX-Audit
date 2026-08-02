@@ -1,0 +1,36 @@
+category: upload
+cwe: CWE-434
+description: "检测 Go(gin) 文件上传缺失扩展名守卫：ctx.SaveUploadedFile 直接保存上传文件，而函数体内无任何扩展名/MIME 白名单校验（ValidExt/allowedMime/ext 白名单辅助函数）——若上传内容随后被静态目录同源服务（StaticFS/Static，按扩展名推导 Content-Type），攻击者可上传 .html/.svg 获得存储型 XSS。注意：仅做魔数嗅探（filetype.IsImage/http.DetectContentType）不豁免——扩展名仍攻击者可控时 GIF+HTML polyglot 可绕过魔数检查。守卫是函数级语义：同文件远处的校验函数定义不豁免本函数。判定层需确认：① 文件是否可被 HTTP 访问（静态服务/下载端点）；② 服务侧 MIME/Content-Disposition 行为；③ 文件名/扩展名是否攻击者可控；④ 扩展是否由检测出的真实类型强制改写（此种安全）。"
+id: go-upload-without-type-guard
+language: go
+name: Go File Upload Without Extension Guard
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "上传后保存前做扩展名白名单校验（仅放行业务必需扩展，拒绝 .html/.svg/.xml），或由服务端按检测出的真实类型强制改写扩展名；保存时使用服务端生成的随机文件名；服务侧加 Content-Disposition: attachment 或 nosniff/CSP sandbox。仅魔数嗅探不足以防止 polyglot 文件 XSS。"
+references:
+  - "https://cwe.mitre.org/data/definitions/434.html"
+severity: medium
+auth_check_in_func: true
+once_per_file: false
+patterns:
+  - language: go
+    pattern: '\.\s*SaveUploadedFile\s*\('
+sanitizers:
+  - "validext"
+  - "imageext"
+  - "fileext"
+  - "allowedext"
+  - "allowed_ext"
+  - "extwhitelist"
+  - "allowedimage"
+  - "allowedmime"
+  - "allowed_mime"
+  - "mimewhitelist"
+  - "allowedtype"
+  - "allowed_type"
+  - "validimage"
+  - "validateimage"
+  - "checkimage"
+  - "checkext"
+  - "checkfiletype"
+  - "validatefile"
+  - "sanitizefilename"
