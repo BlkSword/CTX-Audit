@@ -676,6 +676,11 @@ fn args_all_literals(args: &str) -> bool {
     while i < bytes.len() {
         let c = bytes[i];
         if let Some(q) = in_str {
+            // 模板字面量含 ${} 插值则不是纯字面量（响应头拼接场景：
+            // `filename="${name}"` 变量攻击者可控，降 info 会埋没真问题）
+            if q == b'`' && c == b'{' && prev == b'$' && (i < 2 || bytes[i - 2] != b'\\') {
+                return false;
+            }
             if c == q && prev != b'\\' {
                 in_str = None;
             }
@@ -1798,6 +1803,31 @@ $upsql = Input::postStrVar('upsql', '');
         let start = content.find("strcpy(").unwrap();
         let end = start + "strcpy(".len();
         assert!(evaluate_likely_fp_args(content, start, end).is_none());
+    }
+
+    #[test]
+    fn test_template_literal_with_interpolation_not_literal() {
+        // 模板字面量含 ${} 插值 → 非纯字面量，不降权
+        // （Content-Disposition `filename="${folder.name}"` 场景）
+        assert!(!args_all_literals("\"Content-Disposition\", `attachment; filename=\"${folder.name}.zip\"`"));
+        // 转义 \${ 不是插值 → 仍为字面量
+        assert!(args_all_literals("\"Content-Type\", `attachment; filename=\\${literal}`"));
+        // 无插值模板字面量 → 纯字面量，维持降权
+        assert!(args_all_literals("\"Content-Type\", `application/zip`"));
+    }
+
+    #[test]
+    fn test_likely_fp_template_literal_interpolation_not_downgraded() {
+        // 端到端：setHeader 第二参数为含插值的模板字面量 → 不降 info
+        let content = "res.raw.setHeader('Content-Disposition', `attachment; filename=\"${folder.name}.zip\"`);";
+        let start = content.find("setHeader(").unwrap() - 4; // 从 .setHeader 前的点起算，模拟 pattern 命中
+        let end = content.find("setHeader(").unwrap() + "setHeader(".len();
+        assert!(evaluate_likely_fp_args(content, start, end).is_none());
+        // 纯字面量第二参数 → 仍降权
+        let content2 = "res.raw.setHeader('Content-Type', 'application/zip');";
+        let start2 = content2.find("setHeader(").unwrap() - 4;
+        let end2 = content2.find("setHeader(").unwrap() + "setHeader(".len();
+        assert!(evaluate_likely_fp_args(content2, start2, end2).is_some());
     }
 
     #[test]
