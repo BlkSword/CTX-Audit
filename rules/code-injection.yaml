@@ -23,7 +23,11 @@ patterns:
   - language: java
     pattern: (?i)(ScriptEngineManager|GroovyShell|ScriptEngine\.eval|SpelExpressionParser|parseExpression|Ognl\.(get|set)Value|MVEL\.eval|MVEL\.executeExpression)
   - language: php
-    pattern: (?i)(eval\s*\(|assert\s*\(|create_function\s*\(|preg_replace\s*\(.*/[a-z]*e[a-z]*['"])
+    # assert 收窄为单字符串实参形态（PHP 7 的 assert('...') 字符串求值 RCE 面）；
+    # PHPStan 类型断言 `assert($expr, 'message')`（变量表达式 + 字符串消息）是
+    # 静态分析辅助，PHP 8 已移除 assert 字符串求值，且表达式实参不构成代码执行
+    # （R58/R66 反哺：graby ×9 + simplepie ×19 全为 PHPStan 断言误标家族）
+    pattern: (?i)(eval\s*\(|assert\s*\(\s*['"]|create_function\s*\(|preg_replace\s*\(.*/[a-z]*e[a-z]*['"])
 # CVE-2022-22963 回放反哺：SpEL 修复形态是求值上下文换成 SimpleEvaluationContext
 # （SimpleEvaluationContext 默认禁用类型引用/反射，无 RCE 面），文件级豁免
 sanitizers:
