@@ -1,0 +1,19 @@
+category: injection
+cwe: CWE-611
+description: "检测 JVM 全局关闭 XML 实体扩展限制：通过 System.setProperty 将 jdk.xml.maxGeneralEntitySizeLimit / jdk.xml.totalEntitySizeLimit 等安全上限置 0——该写操作是 JVM 进程级全局生效，关闭后进程内所有 XML 解析器（含第三方库）对 Billion Laughs/实体膨胀 DoS 不设防。其安全性完全依赖\"每个用户 XML 解析点前都做 DOCTYPE 剥离\"这一约定，新增解析路径漏清洗即失守（Billion Laughs 家族的真实修复是逐路径清洗而非恢复全局限制，故修复版命中同形态属设计内启发式，供判定层裁决）。"
+id: java-xml-entity-limit-disable
+language: java
+name: "Java JVM-wide XML Entity Expansion Limit Disable"
+owasp: "A05:2021-Security Misconfiguration"
+patterns:
+  # SystemProperties 常量形式（JDK 内部 API）
+  - language: java
+    pattern: 'System\.setProperty\s*\(\s*SystemProperties\.JDK_XML_[A-Z_]*(ENTITY_SIZE_LIMIT|ENTITY_EXPANSION_LIMIT)[A-Z_]*\s*,\s*"0"'
+  # 字符串字面量形式（jdk.xml.* 属性名）
+  - language: java
+    pattern: 'System\.setProperty\s*\(\s*"jdk\.xml\.[a-zA-Z]*(entitySizeLimit|EntitySizeLimit|entityExpansionLimit)[a-zA-Z]*"\s*,\s*"0"'
+severity: medium
+remediation: "避免 JVM 全局关闭实体限制；如需兼容大实体场景，改为在解析入口对用户 XML 做 DOCTYPE 剥离（白名单清洗），或在解析器实例级配置（SAXParserFactory.setFeature / XMLInputFactory 属性）缩小影响面；全局关闭时必须保证所有用户可控 XML 解析路径前置清洗。"
+references:
+  - "https://cwe.mitre.org/data/definitions/611.html"
+  - "https://owasp.org/www-community/vulnerabilities/XML_External_Entity_(XXE)_Processing"
