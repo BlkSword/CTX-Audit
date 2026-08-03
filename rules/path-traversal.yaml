@@ -37,6 +37,11 @@ sanitizers:
   - "os.path.normpath"
   # npm sanitize-filename 包（JS/TS 文件名净化的主流修复形态）
   - "sanitize("
+  # R77 Owncast 反哺：Go 标准库路径遍历防护四件套
+  - "filepath.Base("
+  - "filepath.IsLocal("
+  - "os.OpenInRoot("
+  - "filepath.Clean("
 sanitizer_after_lines: 5
 # 前向窗口（10.25）："先净化后使用"形态（sanitize 在 sink 上一两行），
 # 与后向窗口并存，两个窗口任一命中即豁免；有界避免远处 import 误豁免
