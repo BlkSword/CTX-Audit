@@ -197,4 +197,44 @@ evidence_steps:
         assert!(serde_yaml::from_str::<RuleSet>(yaml).is_err());
         assert!(serde_yaml::from_str::<Rule>(yaml).is_err());
     }
+
+    #[test]
+    fn test_embedded_xxe_rules_hardening_fields() {
+        // CVE-2021-23901 回放反哺（R85）：xxe 两条规则必须携带 setFeature 加固
+        // sanitizers 与有界窗口字段——YAML 新增字段静默解析失败会直接导致
+        // 修复版豁免腿失效（R21 教训：加字段必查反序列化兼容）。
+        let rules = load_embedded_pattern_rules();
+        let xxe_detection = rules
+            .iter()
+            .find(|r| r.id == "xxe-detection")
+            .expect("应嵌入 xxe-detection 规则");
+        assert!(
+            xxe_detection.sanitizers.iter().any(|s| s.contains("disallow-doctype-decl")),
+            "xxe-detection 应识别 disallow-doctype-decl 加固"
+        );
+        assert!(
+            xxe_detection.sanitizer_after_lines >= 4,
+            "xxe-detection 应有后向加固窗口（工厂创建后紧跟 setFeature 形态）"
+        );
+        assert!(
+            !xxe_detection
+                .pattern
+                .as_deref()
+                .unwrap_or("")
+                .contains("javax\\.xml\\.parsers\\.SAXParser|"),
+            "xxe-detection 不应再以无词边界的 FQN 匹配 import 行"
+        );
+        let xxe_injection = rules
+            .iter()
+            .find(|r| r.id == "xxe-injection")
+            .expect("应嵌入 xxe-injection 规则");
+        assert!(
+            xxe_injection.sanitizers.iter().any(|s| s.contains("disallow-doctype-decl")),
+            "xxe-injection 应识别 disallow-doctype-decl 加固"
+        );
+        assert!(
+            xxe_injection.sanitizer_before_lines >= 4,
+            "xxe-injection 应有前向加固窗口（解析前配置工厂形态）"
+        );
+    }
 }

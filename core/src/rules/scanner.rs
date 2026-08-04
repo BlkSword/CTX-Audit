@@ -1745,6 +1745,148 @@ $upsql = Input::postStrVar('upsql', '');
     }
 
     #[test]
+    fn test_java_xxe_factory_hardening_setfeature_exempt() {
+        // CVE-2021-23901（NUTCH-2841）回放反哺：DmozParser 修复形态——
+        // SAXParserFactory.newInstance() 后紧跟 setFeature(disallow-doctype-decl,
+        // true) + external-general-entities=false 即视为已加固，豁免；
+        // 漏洞版（仅工厂创建+解析，无加固）保留命中。
+        let hardened = "class R {\n  void parseDmozFile(File f) throws Exception {\n    SAXParserFactory parserFactory = SAXParserFactory.newInstance();\n    parserFactory.setFeature(\"http://xml.org/sax/features/external-general-entities\", false);\n    parserFactory.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true);\n    SAXParser parser = parserFactory.newSAXParser();\n    XMLReader reader = parser.getXMLReader();\n    reader.parse(new InputSource(in));\n  }\n}\n";
+        let vulnerable = "class R {\n  void parseDmozFile(File f) throws Exception {\n    SAXParserFactory parserFactory = SAXParserFactory.newInstance();\n    SAXParser parser = parserFactory.newSAXParser();\n    XMLReader reader = parser.getXMLReader();\n    reader.parse(new InputSource(in));\n  }\n}\n";
+        let mk_rule = |after: usize, before: usize| Rule {
+            id: "xxe-detection".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Critical,
+            language: "java".to_string(),
+            pattern: Some(
+                r"(?i)(DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLReaderFactory\.createXMLReader|TransformerFactory\.newInstance|SchemaFactory\.newInstance)"
+                    .to_string(),
+            ),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-611".to_string()),
+            sanitizers: vec![
+                "disallow-doctype-decl".to_string(),
+                "external-general-entities".to_string(),
+                "external-parameter-entities".to_string(),
+                "load-external-dtd".to_string(),
+            ],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: after,
+            sanitizer_before_lines: before,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        // 无窗口（仅前缀语义）：加固在命中点之后 → 加固版也命中（正是本字段要解决的问题）
+        let prefix = RuleScanner::new(vec![mk_rule(0, 0)])
+            .scan_file_sync(&PathBuf::from("R.java"), hardened);
+        assert_eq!(prefix.len(), 1, "前缀语义看不到工厂创建之后的加固");
+        // 后向窗口：加固版豁免，漏洞版保留
+        let win_hardened = RuleScanner::new(vec![mk_rule(8, 0)])
+            .scan_file_sync(&PathBuf::from("R.java"), hardened);
+        assert_eq!(win_hardened.len(), 0, "setFeature 加固在命中后 8 行内，豁免");
+        let win_vulnerable = RuleScanner::new(vec![mk_rule(8, 0)])
+            .scan_file_sync(&PathBuf::from("R.java"), vulnerable);
+        assert_eq!(win_vulnerable.len(), 1, "无加固调用，保留命中");
+    }
+
+    #[test]
+    fn test_java_xxe_parse_sink_hardened_before_window() {
+        // xxe-injection 的 .parse( sink：加固 setFeature 在解析调用之前（工厂配置
+        // 形态）→ 前向窗口豁免；无加固保留。
+        let hardened = "class T {\n  void f(InputStream is) throws Exception {\n    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();\n    factory.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true);\n    javax.xml.parsers.DocumentBuilder.parse(is);\n  }\n}\n";
+        let vulnerable = "class T {\n  void f(InputStream is) throws Exception {\n    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();\n    javax.xml.parsers.DocumentBuilder.parse(is);\n  }\n}\n";
+        let rule = Rule {
+            id: "xxe-injection".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Critical,
+            language: "java".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "java".to_string(),
+                pattern: r"(?i)(DocumentBuilder\.parse\s*\(|SAXParser\.parse\s*\(|XMLReader\.parse\s*\()"
+                    .to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-611".to_string()),
+            sanitizers: vec![
+                "disallow-doctype-decl".to_string(),
+                "external-general-entities".to_string(),
+                "external-parameter-entities".to_string(),
+                "load-external-dtd".to_string(),
+            ],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 1,
+            sanitizer_before_lines: 8,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let hardened_res =
+            RuleScanner::new(vec![rule.clone()]).scan_file_sync(&PathBuf::from("T.java"), hardened);
+        assert_eq!(hardened_res.len(), 0, "解析前的 setFeature 加固豁免 parse sink");
+        let vulnerable_res =
+            RuleScanner::new(vec![rule]).scan_file_sync(&PathBuf::from("T.java"), vulnerable);
+        assert_eq!(vulnerable_res.len(), 1, "无加固，parse sink 保留命中");
+    }
+
+    #[test]
+    fn test_java_xxe_import_line_not_flagged() {
+        // 回归：xxe-detection 旧模式 `javax.xml.parsers.SAXParser` 无词边界，
+        // 会把 `import javax.xml.parsers.SAXParserFactory;` 整行误标。
+        let import_only = "import javax.xml.parsers.SAXParserFactory;\nimport javax.xml.parsers.DocumentBuilderFactory;\nclass T {}\n";
+        let rule = Rule {
+            id: "xxe-detection".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Critical,
+            language: "java".to_string(),
+            pattern: Some(
+                r"(?i)(DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLReaderFactory\.createXMLReader|TransformerFactory\.newInstance|SchemaFactory\.newInstance)"
+                    .to_string(),
+            ),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-611".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let res = RuleScanner::new(vec![rule]).scan_file_sync(&PathBuf::from("T.java"), import_only);
+        assert_eq!(res.len(), 0, "import 行不构成 XML 解析器创建");
+    }
+
+    #[test]
     fn test_deserialization_self_write_exempt() {
         // unsafe-deserialization 内外源区分：同文件命中点之前出现
         // ObjectOutputStream/writeObject（自产自销回环，如 Lucene 索引自写自读）
