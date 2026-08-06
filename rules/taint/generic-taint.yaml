@@ -94,6 +94,18 @@ sources:
     category: "TemplateRender"
     ast_patterns: []
 
+  - id: "http_response_headers"
+    name: "HTTP Response Headers"
+    description: "上游响应头（axios/fetch/requests 的 response.headers / res.headers）。响应头内容受上游服务器/中间人控制（如 ETag、Content-Disposition、Location），用作文件名/路径/SSRF 目标时构成攻击面（R89 GHSA-mc6w-69r3-62h8 回放：上游 ETag → 缓存文件名 → 路径穿越 RCE）。"
+    patterns:
+      - "response.headers"
+      - "res.headers"
+      - "resp.headers"
+    languages: ["javascript", "typescript", "python"]
+    severity: "Medium"
+    category: "UserInput"
+    ast_patterns: []
+
 sinks:
   - id: "sql_exec"
     name: "SQL Execution"
@@ -450,3 +462,5 @@ sanitizers:
     description: "Go path.Base (strips directory components)"
   - pattern: "ValidateNameComponent"
     description: "Filename validation (strips path traversal)"
+  - pattern: "[^\\w-]"
+    description: "JS 字符集白名单清洗（replace(/[^\\w-]/g, '') 形态，R89 GHSA-mc6w-69r3-62h8 修复形态：ETag 清洗仅留 word/dash 字符，路径穿越序列被剥除）"

@@ -3564,6 +3564,18 @@ impl AstTaintAnalyzer {
                     "x-forwarded-proto",
                 ],
             ),
+            // R89 GHSA-mc6w-69r3-62h8 回放：上游响应头（axios/fetch/requests 的
+            // response.headers / res.headers / resp.headers）受上游/中间人控制，
+            // 用作文件名/路径 sink 时构成路径穿越（ETag → 缓存文件名 → RCE）
+            TaintSource::new(
+                "http_response_headers",
+                "HTTP Response Headers",
+                vec![
+                    "response.headers",
+                    "res.headers",
+                    "resp.headers",
+                ],
+            ),
             TaintSource::new(
                 "file_input",
                 "File Input",
@@ -3781,6 +3793,9 @@ impl AstTaintAnalyzer {
             "bindParam".into(),
             "real_escape_string".into(),
             "escape_string".into(),
+            // R89 GHSA-mc6w-69r3-62h8 修复形态：JS 字符集白名单清洗
+            // replace(/[^\w-]/g, '')——非 word/dash 字符全剥（路径穿越序列消除）
+            "[^\\w-]".into(),
         ]
     }
 }
@@ -3836,6 +3851,59 @@ result = exec(userInput)"#;
             !flows.is_empty(),
             "Should detect command injection: found {} flows",
             flows.len()
+        );
+    }
+
+    #[test]
+    fn test_response_headers_path_write_vulnerable() {
+        // R89 GHSA-mc6w-69r3-62h8 漏洞形态（单函数扁平切片）：
+        // 上游响应头 ETag（仅剥双引号）→ 缓存文件名 → writeFile
+        // → 路径穿越写盘（3.4.0 前 seerr ImageProxy 真实形态）
+        let code = r#"
+async function set() {
+  const response = await axios.get(url);
+  const etag = (response.headers.etag ?? '').replace(/"/g, '');
+  const filename = path.join(cacheDir, `${etag}.js`);
+  await fs.promises.writeFile(filename, buffer);
+}
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("imageproxy.ts");
+        let flows = analyzer.analyze_code(code, &path, "set", &[], &[]);
+        assert!(
+            flows.iter().any(|f| f.confidence > 0.5),
+            "Should detect path traversal from response header ETag: {}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+
+    #[test]
+    fn test_response_headers_whitelist_replace_exempt() {
+        // 修复形态（3.4.0）：replace(/[^\w-]/g, '') 字符集白名单清洗
+        // → 非 word/dash 字符全剥，路径穿越序列消除 → 不再构成污点
+        let code = r#"
+async function set() {
+  const response = await axios.get(url);
+  const etag = (response.headers.etag ?? '').replace(/[^\w-]/g, '');
+  const filename = path.join(cacheDir, `${etag}.js`);
+  await fs.promises.writeFile(filename, buffer);
+}
+"#;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let path = std::path::PathBuf::from("imageproxy.ts");
+        let flows = analyzer.analyze_code(code, &path, "set", &[], &[]);
+        assert!(
+            flows.is_empty(),
+            "Whitelist charset replace should exempt the flow: {}",
+            flows
+                .iter()
+                .map(|f| format!("{:?}", f.vulnerability_type))
+                .collect::<Vec<_>>()
+                .join(",")
         );
     }
 
