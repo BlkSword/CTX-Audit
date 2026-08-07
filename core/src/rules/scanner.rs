@@ -2214,6 +2214,39 @@ $upsql = Input::postStrVar('upsql', '');
         assert!(invalid.is_empty(), "以下规则 pattern 无法编译:\n{}", invalid.join("\n"));
     }
 
+    /// 原型污染规则（CWE-1321）：for..in 拷贝循环的 hasOwnProperty 守卫豁免 +
+    /// options 合并拷贝形态召回（无守卫的 for..in 属性拷贝是原型污染入口）
+    #[test]
+    fn test_prototype_pollution_rule_hasownproperty_exemption() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "prototype-pollution")
+            .expect("prototype-pollution 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 负例 1：无守卫的 merge/copy 函数 for..in 拷贝 → 命中
+        let vulnerable = "function shallowCopyObject(obj) {\n  var ret = {};\n  for (var i in obj) {\n    ret[i] = obj[i];\n  }\n  return ret;\n}";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("vuln.js"), vulnerable);
+        assert!(!f1.is_empty(), "无守卫拷贝循环应命中");
+
+        // 正例 1：循环内 hasOwnProperty 守卫（修复形态）→ 豁免
+        let fixed = "function shallowCopyObject(obj) {\n  var ret = {};\n  for (var i in obj) {\n    if (Object.prototype.hasOwnProperty.call(obj, i)) {\n      ret[i] = obj[i];\n    }\n  }\n  return ret;\n}";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("fixed.js"), fixed);
+        assert!(f2.is_empty(), "hasOwnProperty 守卫应豁免: {:?}", f2.len());
+
+        // 负例 2：options 合并拷贝（无守卫）→ 命中
+        let opts_merge = "function wrap(options) {\n  var opts = {};\n  if (options) {\n    for (var key in options) {\n      opts[key] = options[key];\n    }\n  }\n}";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("merge.js"), opts_merge);
+        assert!(!f3.is_empty(), "options 无守卫合并拷贝应命中");
+
+        // 正例 2：options 合并拷贝带 hasOwnProperty 守卫 → 豁免
+        let opts_guarded = "function wrap(options) {\n  var opts = {};\n  for (var key in options) {\n    if (Object.prototype.hasOwnProperty.call(options, key)) {\n      opts[key] = options[key];\n    }\n  }\n}";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("merge_fixed.js"), opts_guarded);
+        assert!(f4.is_empty(), "带守卫的 options 合并应豁免: {:?}", f4.len());
+    }
+
     /// yaml.load 危险/安全形态判别（unsafe-deserialization 规则，archivy SafeLoader 场景回归）
     #[test]
     fn test_yaml_load_pattern_safeloader_excluded() {
