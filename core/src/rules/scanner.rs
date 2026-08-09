@@ -2069,6 +2069,75 @@ $upsql = Input::postStrVar('upsql', '');
     }
 
     #[test]
+    fn test_php_http_sink_download_variable_url_forms() {
+        // php-http-sink-download 规则形态（CVE-2026-47260 回放）：
+        // Http::sink($file)->get($episode->path) 变量 URL 命中；
+        // 字面量 URL、SafeHttp->download 封装、无 sink 的 Http::get($url) 均豁免
+        let rule = Rule {
+            id: "php-http-sink-download".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Medium,
+            language: "php".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "php".to_string(),
+                pattern: r"(?i)Http::sink\s*\([^)]*\)\s*->\s*(?:get|post)\s*\(\s*[^)]*\$".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-918".to_string()),
+            sanitizers: vec!["issafeurl(".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 8,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        // 正例：CVE-2026-47260 漏洞版形态（enclosure URL 二阶来源直下载）+ post 变体
+        let vuln = concat!(
+            "<?php\n",
+            "Http::sink($file)->get($episode->path)->throw();\n",
+            "Http::sink($target)->post($row->download_url, ['verify' => false]);\n",
+        );
+        let hits = RuleScanner::new(vec![rule.clone()])
+            .scan_file_sync(&PathBuf::from("a.php"), vuln);
+        assert_eq!(hits.len(), 2, "变量 URL 的 sink 下载应命中，实际 {:?}", hits.iter().map(|f| f.line_start).collect::<Vec<_>>());
+
+        // 负例：字面量 URL / SafeHttp 封装下载 / 无 sink 的普通请求
+        let safe = concat!(
+            "<?php\n",
+            "Http::sink($file)->get('https://api.example.com/fixture.mp3');\n",
+            "$safeHttp->download((string) $episode->path, $file);\n",
+            "$resp = Http::get($url);\n",
+        );
+        let clean = RuleScanner::new(vec![rule.clone()])
+            .scan_file_sync(&PathBuf::from("b.php"), safe);
+        assert_eq!(clean.len(), 0, "字面量 URL 与封装下载不应命中，实际 {:?}", clean.iter().map(|f| f.line_start).collect::<Vec<_>>());
+
+        // 负例：CVE-2026-47260 修复形态——isSafeUrl 前置校验（有界前向窗口豁免）
+        let guarded = concat!(
+            "<?php\n",
+            "if (!Network::isSafeUrl((string) $episode->path)) {\n",
+            "    throw UnsafeUrlException::forUrl((string) $episode->path);\n",
+            "}\n",
+            "\n",
+            "Http::sink($file)->get($episode->path)->throw();\n",
+        );
+        let exempt = RuleScanner::new(vec![rule])
+            .scan_file_sync(&PathBuf::from("c.php"), guarded);
+        assert_eq!(exempt.len(), 0, "isSafeUrl 前置校验应豁免，实际 {:?}", exempt.iter().map(|f| f.line_start).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn test_sizeof_deref_not_misread_as_multiplication() {
         // `sizeof *tmp`（无括号解引用）不得被分配器乘法 pattern 误报；
         // `n * sizeof(int)` 真实乘法仍应报——redis setproctitle.c 场景
@@ -2589,6 +2658,60 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
         let scanner2 = RuleScanner::new(vec![rule2]);
         let findings2 = scanner2.scan_file_sync(&PathBuf::from("fixed.go"), fixed);
         assert!(findings2.is_empty(), "fixed.go 应豁免 missing-authorization");
+    }
+
+    #[test]
+    fn test_eval_pattern_excludes_angular_dollar_eval() {
+        // R76 登记：AngularJS 的 $$eval(/$eval( 是框架作用域求值 API，
+        // 不得命中 JS eval 代码注入规则；原生 eval( 仍须命中
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let scanner = RuleScanner::new(rules);
+        let content = "scope.$$eval('a + b');\nscope.$eval('a + b');\neval(userInput);\n";
+        let findings = scanner.scan_file_sync(&PathBuf::from("app.js"), content);
+        let eval_hits: Vec<_> = findings
+            .iter()
+            .filter(|f| f.detector == "RegexRule: code-injection")
+            .collect();
+        assert_eq!(
+            eval_hits.len(),
+            1,
+            "仅原生 eval( 应命中 code-injection: {:?}",
+            eval_hits.iter().map(|f| f.line_start).collect::<Vec<_>>()
+        );
+        assert_eq!(eval_hits[0].line_start, 3);
+    }
+
+    /// Bun/Deno 运行时文件 sink（10.25②）：上传接口 Bun.write(dir + filename)
+    /// 路径穿越任意写家族；紧锚点（req./filename 等）防宽松词回归
+    #[test]
+    fn test_path_traversal_bun_deno_sinks() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "path-traversal")
+            .expect("path-traversal 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 正例 1：Bun.write 拼接请求体文件名（真实 CVE 形态）→ 命中
+        let bun_vuln = "export async function upload(req: Request) {\n  const name = req.body.name;\n  await Bun.write(uploadDir + req.body.name, data);\n}";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("upload.js"), bun_vuln);
+        assert!(!f1.is_empty(), "Bun.write(req.body.name) 应命中 path-traversal");
+
+        // 正例 2：Deno.writeTextFile 拼接 query 参数 → 命中
+        let deno_vuln = "await Deno.writeTextFile(dir + params.filename, body);";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("serve.js"), deno_vuln);
+        assert!(!f2.is_empty(), "Deno.writeTextFile(params.filename) 应命中 path-traversal");
+
+        // 负例 1：sanitize 净化形态（sanitizers 窗口豁免 + 无锚点词）→ 不命中
+        let sanitized = "await Bun.write(join(dir, sanitize(name)), data);";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("fixed.js"), sanitized);
+        assert!(f3.is_empty(), "sanitize 净化形态应豁免: {:?}", f3.len());
+
+        // 负例 2：静态字面量路径（无用户输入锚点）→ 不命中
+        let static_path = "await Bun.write(\"dist/index.html\", html);";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("build.js"), static_path);
+        assert!(f4.is_empty(), "静态字面量路径不应命中: {:?}", f4.len());
     }
 }
 
