@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "agent",
     "cli",
     "core",
     "daemon",
@@ -67,6 +68,7 @@ similar = { version = "2.5", features = ["text", "inline", "bytes"] }
 deepaudit-core = { path = "core" }
 ctx-audit-tools = { path = "tools" }
 ctx-audit-daemon = { path = "daemon" }
+ctx-audit-agent = { path = "agent" }
 
 [profile.release]
 lto = true

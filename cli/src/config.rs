@@ -632,6 +632,18 @@ pub struct AgentConfig {
     /// LLM 详细配置
     #[serde(default)]
     pub llm: LlmConfig,
+
+    /// 原生 Agent LLM provider 配置（ctx-audit agent run）
+    #[serde(default)]
+    pub native_provider: NativeProviderConfig,
+
+    /// 原生 Agent 预算配置
+    #[serde(default)]
+    pub native_budget: NativeBudgetConfig,
+
+    /// 原生 Agent 人工闸门配置（M2）
+    #[serde(default)]
+    pub native_gate: NativeGateConfig,
 }
 
 fn default_triage_concurrency() -> usize {
@@ -677,6 +689,9 @@ impl Default for AgentConfig {
             taint_walk_enabled: true,
             planner: PlannerConfig::default(),
             llm: LlmConfig::default(),
+            native_provider: NativeProviderConfig::default(),
+            native_budget: NativeBudgetConfig::default(),
+            native_gate: NativeGateConfig::default(),
         }
     }
 }
@@ -736,6 +751,99 @@ impl Default for LlmConfig {
             timeout_sec: 60,
             max_tokens: 2048,
         }
+    }
+}
+
+// ── 原生 Agent 配置（native agent M1） ───────────────────
+
+/// 原生 Agent LLM provider 配置
+///
+/// 密钥只走环境变量（api_key_env 指定变量名），不入库不写日志。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeProviderConfig {
+    /// API 基础地址（OpenAI-compatible，如 https://api.deepseek.com/v1）
+    #[serde(default)]
+    pub base_url: Option<String>,
+
+    /// 存放 API 密钥的环境变量名（默认 CTX_AUDIT_LLM_API_KEY）
+    #[serde(default = "default_native_api_key_env")]
+    pub api_key_env: String,
+
+    /// 模型名
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+fn default_native_api_key_env() -> String {
+    "CTX_AUDIT_LLM_API_KEY".to_string()
+}
+
+impl Default for NativeProviderConfig {
+    fn default() -> Self {
+        Self {
+            base_url: None,
+            api_key_env: default_native_api_key_env(),
+            model: None,
+        }
+    }
+}
+
+/// 原生 Agent 预算配置（三层：单次 max_tokens / 单轮 max_turns + max_minutes）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeBudgetConfig {
+    /// 单次 LLM 调用 max_tokens（默认 8192）
+    #[serde(default = "default_native_max_tokens")]
+    pub max_tokens: usize,
+
+    /// 单轮 agent 最大轮数（默认 20）
+    #[serde(default = "default_native_max_turns")]
+    pub max_turns: usize,
+
+    /// 单轮 agent 最大时长（分钟，默认 30）
+    #[serde(default = "default_native_max_minutes")]
+    pub max_minutes: u64,
+
+    /// 初审分片阈值（M4）：findings 数 > 该值时按 (漏洞类型, 文件) 分片并行初审，
+    /// 0 = 禁用分片（默认 50）
+    #[serde(default = "default_native_subagent_threshold")]
+    pub subagent_threshold: usize,
+}
+
+fn default_native_max_tokens() -> usize {
+    8192
+}
+fn default_native_max_turns() -> usize {
+    20
+}
+fn default_native_max_minutes() -> u64 {
+    30
+}
+fn default_native_subagent_threshold() -> usize {
+    50
+}
+
+impl Default for NativeBudgetConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens: default_native_max_tokens(),
+            max_turns: default_native_max_turns(),
+            max_minutes: default_native_max_minutes(),
+            subagent_threshold: default_native_subagent_threshold(),
+        }
+    }
+}
+
+/// 原生 Agent 人工闸门配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeGateConfig {
+    /// gate 通知 webhook（POST JSON，可选；通知文件始终会写）
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+}
+
+impl Default for NativeGateConfig {
+    fn default() -> Self {
+        Self { webhook_url: None }
     }
 }
 
@@ -946,6 +1054,29 @@ impl ConfigManager {
             "agent.llm.endpoint" => self.config.agent.llm.endpoint.clone(),
             "agent.llm.timeout_sec" => Some(self.config.agent.llm.timeout_sec.to_string()),
             "agent.llm.max_tokens" => Some(self.config.agent.llm.max_tokens.to_string()),
+            // agent.native_provider.* / agent.native_budget.*（原生 Agent M1）
+            "agent.native_provider.base_url" => self.config.agent.native_provider.base_url.clone(),
+            "agent.native_provider.api_key_env" => {
+                Some(self.config.agent.native_provider.api_key_env.clone())
+            }
+            "agent.native_provider.model" => self.config.agent.native_provider.model.clone(),
+            "agent.native_budget.max_tokens" => {
+                Some(self.config.agent.native_budget.max_tokens.to_string())
+            }
+            "agent.native_budget.max_turns" => {
+                Some(self.config.agent.native_budget.max_turns.to_string())
+            }
+            "agent.native_budget.max_minutes" => {
+                Some(self.config.agent.native_budget.max_minutes.to_string())
+            }
+            "agent.native_budget.subagent_threshold" => Some(
+                self.config
+                    .agent
+                    .native_budget
+                    .subagent_threshold
+                    .to_string(),
+            ),
+            "agent.native_gate.webhook_url" => self.config.agent.native_gate.webhook_url.clone(),
             _ => None,
         }
     }
@@ -1181,6 +1312,41 @@ impl ConfigManager {
             "agent.llm.max_tokens" => {
                 self.config.agent.llm.max_tokens = value.parse().context("无效的数字")?;
             }
+            // agent.native_provider.* / agent.native_budget.*（原生 Agent M1）
+            "agent.native_provider.base_url" => {
+                self.config.agent.native_provider.base_url =
+                    if value.is_empty() { None } else { Some(value) };
+            }
+            "agent.native_provider.api_key_env" => {
+                if value.is_empty() {
+                    anyhow::bail!("api_key_env 不能为空");
+                }
+                self.config.agent.native_provider.api_key_env = value;
+            }
+            "agent.native_provider.model" => {
+                self.config.agent.native_provider.model =
+                    if value.is_empty() { None } else { Some(value) };
+            }
+            "agent.native_budget.max_tokens" => {
+                self.config.agent.native_budget.max_tokens =
+                    value.parse().context("无效的数字")?;
+            }
+            "agent.native_budget.max_turns" => {
+                self.config.agent.native_budget.max_turns =
+                    value.parse().context("无效的数字")?;
+            }
+            "agent.native_budget.max_minutes" => {
+                self.config.agent.native_budget.max_minutes =
+                    value.parse().context("无效的分钟数")?;
+            }
+            "agent.native_budget.subagent_threshold" => {
+                self.config.agent.native_budget.subagent_threshold =
+                    value.parse().context("无效的数字")?;
+            }
+            "agent.native_gate.webhook_url" => {
+                self.config.agent.native_gate.webhook_url =
+                    if value.is_empty() { None } else { Some(value) };
+            }
             _ => anyhow::bail!("未知的配置键: {}", key),
         }
         Ok(())
@@ -1264,6 +1430,20 @@ impl ConfigManager {
             "agent.llm.endpoint" => self.config.agent.llm.endpoint = None,
             "agent.llm.timeout_sec" => self.config.agent.llm.timeout_sec = 60,
             "agent.llm.max_tokens" => self.config.agent.llm.max_tokens = 2048,
+            // agent.native_provider.* / agent.native_budget.*（原生 Agent M1）
+            "agent.native_provider.base_url" => self.config.agent.native_provider.base_url = None,
+            "agent.native_provider.api_key_env" => {
+                self.config.agent.native_provider.api_key_env =
+                    "CTX_AUDIT_LLM_API_KEY".to_string()
+            }
+            "agent.native_provider.model" => self.config.agent.native_provider.model = None,
+            "agent.native_budget.max_tokens" => self.config.agent.native_budget.max_tokens = 8192,
+            "agent.native_budget.max_turns" => self.config.agent.native_budget.max_turns = 20,
+            "agent.native_budget.max_minutes" => self.config.agent.native_budget.max_minutes = 30,
+            "agent.native_budget.subagent_threshold" => {
+                self.config.agent.native_budget.subagent_threshold = 50
+            }
+            "agent.native_gate.webhook_url" => self.config.agent.native_gate.webhook_url = None,
             _ => anyhow::bail!("无法重置配置键: {}", key),
         }
         Ok(())

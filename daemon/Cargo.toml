@@ -19,6 +19,7 @@ path = "src/lib.rs"
 # Internal
 deepaudit-core = { workspace = true }
 ctx-audit-tools = { workspace = true }
+ctx-audit-agent = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
