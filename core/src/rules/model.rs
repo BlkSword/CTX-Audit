@@ -105,6 +105,13 @@ pub struct Rule {
     /// 授权关键字从规则声明的 sanitizers 列表读取（复用现有机制）。
     #[serde(default)]
     pub auth_check_in_func: bool,
+    /// true 时跳过 const-args/字面量参数的 likely_fp 降权（默认 false）。
+    /// 用于"API 存在即风险"类规则（如 Prisma $queryRawUnsafe）——其参数
+    /// 形态多样（模板字面量含嵌套括号时 extract_call_args 按 rfind('(')
+    /// 取参数会错位，误判"参数全部为字面量"降 info，埋没真问题）；
+    /// 且该 API 语义上即反模式，常量参数也不构成安全保证。
+    #[serde(default)]
+    pub skip_likely_fp: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]

@@ -1,0 +1,32 @@
+category: injection
+cwe: CWE-89
+description: "检测 Prisma $queryRawUnsafe 原始 SQL 直插（R154 ghostfolio CVE-2026-28785 回放反哺）：模板字面量/字符串拼接形态下用户输入直接进入 SQL。$queryRaw（tagged template 参数化）与 Prisma.sql 为安全修复形态。"
+id: js-prisma-queryraw-injection
+language: all
+name: "Prisma Raw Query Injection (JS/TS)"
+owasp: "A03:2021-Injection"
+patterns:
+  - language: javascript
+    # $queryRawUnsafe 语义=允许运行时拼 SQL，无论参数形态都是反模式；
+    # 锚定模板插值 ${} / 字符串拼接 + / 变量参数收紧噪声面。
+    # [^;]* 而非 [^)]*：模板字面量内嵌套括号（IN (...)、join(',')）会
+    # 让 [^)] 提前终止匹配、match_end 落在字面量内部——extract_call_args
+    # 按 rfind('(') 取参数时错位，误判"参数全部为字面量"降 info（实测）
+    # user/input 需词边界：无边界子串会误中 FROM users 等表名
+    pattern: '(?i)\$queryRawUnsafe\s*\([^;]*(?:\$\{|\.join\(|req\.|body\.|params\.|query\.|\binput\b|\buser\b)'
+  - language: typescript
+    pattern: '(?i)\$queryRawUnsafe\s*\([^;]*(?:\$\{|\.join\(|req\.|body\.|params\.|query\.|\binput\b|\buser\b)'
+sanitizers:
+  # 注意不能写裸 "$queryRaw"（子串含在 $queryRawUnsafe 内会自我豁免）——
+  # $queryRaw 的调用形态是 tagged template（反引号），以此区分
+  - "$queryRaw`"
+  - "Prisma.sql"
+sanitizer_before_lines: 5
+# API 存在即风险类规则：模板字面量含嵌套括号时 const-args 降权会错位
+# （rfind('(') 取参数），且常量参数不构成安全保证——跳过 likely_fp 降权
+skip_likely_fp: true
+severity: high
+remediation: "使用参数化查询：prisma.$queryRaw`SELECT * FROM x WHERE id = ${id}`；需要动态拼接标识符时用 Prisma.sql 或白名单映射。"
+references:
+  - "https://cwe.mitre.org/data/definitions/89.html"
+  - "https://www.prisma.io/docs/orm/prisma-client/queries/raw-database-access/raw-queries"

@@ -522,7 +522,10 @@ impl AstTaintAnalyzer {
 
                     // 与 Stage B 一致：fragment 重解析优先，失败回退 text-based CPG
                     let func_cpg = crate::ast::parser::with_thread_local_parser(|ast_parser| {
-                        if let Some(tree) = ast_parser.parse_fragment(&func.body_text, ext) {
+                        // backlog 10.7：Python/Ruby suite body_text 带缩进而无外层
+                        // def 包装，直接重解析恒失败——统一去缩进后再解析与切片
+                        let fragment = crate::ast::parser::dedent_fragment(&func.body_text);
+                        if let Some(tree) = ast_parser.parse_fragment(&fragment, ext) {
                             let root = tree.root_node();
                             let mut cursor = root.walk();
                             let body_node = root.children(&mut cursor).find(|n| {
@@ -538,7 +541,7 @@ impl AstTaintAnalyzer {
                             if let Some(body_node) = body_node {
                                 return super::cpg::CPGBuilder::build_function_cpg_from_fragment(
                                     &body_node,
-                                    &func.body_text,
+                                    &fragment,
                                     &file_path_str,
                                     func,
                                     &func_assignments,
@@ -3526,6 +3529,7 @@ impl AstTaintAnalyzer {
                     "request.text",
                     "request.json",
                     "request.formData",
+                    "request.url",
                     "cookies().get",
                     "headers().get",
                     "searchParams.get",
@@ -4281,6 +4285,33 @@ function handler() {
             flows.iter().any(|f| f.sink.symbol.contains("eval")),
             "PHP 一阶链应产出 flow: {:?}",
             flows.iter().map(|f| format!("{}->{}", f.source.symbol, f.sink.symbol)).collect::<Vec<_>>()
+        );
+    }
+
+    /// backlog 10.8：echo/print 合成 CallInfo 后，PHP 反射型/存储型 XSS 的
+    /// 主输出构造应闭合污点链（此前 echo 不产生 CallInfo，最后一跳断掉）
+    #[test]
+    fn test_production_cpg_path_php_echo_xss() {
+        let code = r#"<?php
+function handler() {
+    $v = $_GET['x'];
+    echo $v;
+    print $v;
+}
+"#;
+        let (cpg, func) = build_production_cpg(code, "a.php", "handler");
+        let analyzer = yaml_rule_analyzer();
+        let flows = analyzer.analyze_function_cpg(&cpg, &func.body_text, &[]);
+        let sinks: Vec<_> = flows.iter().map(|f| f.sink.symbol.clone()).collect();
+        assert!(
+            sinks.iter().any(|s| s.contains("echo")),
+            "echo 输出应闭合污点链: {:?}",
+            sinks
+        );
+        assert!(
+            sinks.iter().any(|s| s.contains("print")),
+            "print 输出应闭合污点链: {:?}",
+            sinks
         );
     }
 

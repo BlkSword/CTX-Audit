@@ -1420,6 +1420,52 @@ impl ASTParser {
 
     fn collect_calls_recursive(node: &Node, content: &str, results: &mut Vec<CallInfo>) {
         let kind = node.kind();
+
+        // PHP echo/print 是语言构造而非函数调用（backlog 10.8）：tree-sitter 不产生
+        // call_expression，`echo $row['name']` 这类存储型/反射型 XSS 的主输出构造
+        // 永不命中 sink，污点链在最后一跳断掉。合成 callee="echo"/"print" 的
+        // CallInfo，使 php_xss_output 的 "echo "/"print(" pattern 接到参数污点。
+        // 不提前 return：表达式内部的函数调用（echo foo($x)）继续递归。
+        if kind == "echo_statement" || kind == "print_intrinsic" {
+            let callee = if kind == "echo_statement" {
+                "echo".to_string()
+            } else {
+                "print".to_string()
+            };
+            let mut arg_nodes: Vec<Node> = Vec::new();
+            let mut walker = node.walk();
+            for child in node.named_children(&mut walker) {
+                if child.kind() == "sequence_expression" {
+                    // echo $a, $b; —— 多表达式包在 sequence_expression（逗号分隔）
+                    let mut inner = child.walk();
+                    arg_nodes.extend(child.named_children(&mut inner));
+                } else {
+                    arg_nodes.push(child);
+                }
+            }
+            let arguments = arg_nodes
+                .iter()
+                .filter(|n| n.kind() != ",")
+                .map(|child| {
+                    let text = content[child.byte_range()].to_string();
+                    let referenced_vars = Self::collect_identifiers(child, content);
+                    ArgInfo {
+                        text,
+                        referenced_vars,
+                    }
+                })
+                .collect();
+            results.push(CallInfo {
+                callee,
+                arguments,
+                line: node.start_position().row + 1,
+                column: node.start_position().column,
+                is_method: false,
+                receiver: None,
+                callback_args: Vec::new(),
+            });
+        }
+
         if matches!(
             kind,
             "call_expression"
@@ -2129,6 +2175,55 @@ fn extract_java_field(node: &Node, content: &str) -> Result<Field, String> {
     }
 }
 
+/// 对代码片段做统一去缩进（backlog 10.7）。
+///
+/// 函数体 body_text 提取自 AST body 节点：Python/Ruby 的 suite 首行带缩进
+/// （4 空格）而无外层 def 包装，fragment 重解析恒失败，静默回退 text-based
+/// CFG（AST-based CPG 对 Python 系实际从未生效）。按全部非空行的最小缩进
+/// 统一移除；首行无缩进的语言（JS block 首行 `{`）min_indent=0 直接返回
+/// 原样，零影响。
+///
+/// 注意：调用方必须用**去缩进后的文本**同时喂 parse 与后续 content 切片，
+/// 否则 tree 的字节位置与切片文本错位。
+pub fn dedent_fragment(code: &str) -> String {
+    let mut min_indent: Option<usize> = None;
+    for line in code.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        min_indent = Some(match min_indent {
+            Some(m) => m.min(indent),
+            None => indent,
+        });
+    }
+    let Some(indent) = min_indent else {
+        return code.to_string();
+    };
+    if indent == 0 {
+        return code.to_string();
+    }
+    let mut out = String::with_capacity(code.len());
+    let mut first = true;
+    for line in code.lines() {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        if line.trim().is_empty() {
+            out.push_str(line);
+        } else if line.len() >= indent {
+            out.push_str(&line[indent..]);
+        } else {
+            out.push_str(line.trim_start());
+        }
+    }
+    if code.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 fn extract_method_name(node: &Node, content: &str) -> String {
     if let Some(name_node) = node.child_by_field_name("name") {
         content[name_node.byte_range()].to_string()
@@ -2389,5 +2484,47 @@ function helper_escape($value)
         // 顶层函数符号
         let helper = symbols.iter().find(|s| s.name == "helper_escape").unwrap();
         assert!(matches!(helper.kind, SymbolKind::Function));
+    }
+
+    #[test]
+    fn test_php_echo_print_synthetic_call_info() {
+        // backlog 10.8：echo/print 是语言构造，原不产生 CallInfo——存储型/反射型
+        // XSS 主输出构造的污点链在最后一跳断掉。合成后 callee 应可被
+        // php_xss_output 的 "echo "/"print(" pattern 匹配到参数污点。
+        let code = r#"<?php
+function show($row) {
+    echo $row['name'];
+    echo $a, $b;
+    print $row['email'];
+    echo esc($row['title']);
+}
+"#;
+        let mut parser = ASTParser::new();
+        let calls = parser.extract_calls(Path::new("view.php"), code);
+
+        let echoes: Vec<&CallInfo> = calls
+            .iter()
+            .filter(|c| c.callee == "echo")
+            .collect();
+        assert_eq!(echoes.len(), 3, "三处 echo 均应合成 CallInfo: {:?}", calls.iter().map(|c| &c.callee).collect::<Vec<_>>());
+
+        // 单表达式 echo：参数文本 = 表达式源码，引用变量含 $row
+        assert_eq!(echoes[0].arguments.len(), 1);
+        assert_eq!(echoes[0].arguments[0].text, "$row['name']");
+        assert!(echoes[0].arguments[0].referenced_vars.iter().any(|v| v.contains("row")));
+
+        // echo $a, $b; —— sequence_expression 拆为两个参数
+        assert_eq!(echoes[1].arguments.len(), 2);
+        assert_eq!(echoes[1].arguments[0].text.trim(), "$a");
+        assert_eq!(echoes[1].arguments[1].text.trim(), "$b");
+
+        // print 合成
+        let prints: Vec<&CallInfo> = calls.iter().filter(|c| c.callee == "print").collect();
+        assert_eq!(prints.len(), 1);
+        assert_eq!(prints[0].arguments.len(), 1);
+        assert!(prints[0].arguments[0].text.contains("row"));
+
+        // 普通函数调用不受影响
+        assert!(calls.iter().any(|c| c.callee == "esc"));
     }
 }

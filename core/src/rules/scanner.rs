@@ -219,6 +219,12 @@ impl RuleScanner {
                                 }
                             } else if is_missing_check_related(&compiled.rule) {
                                 None
+                            } else if compiled.rule.skip_likely_fp {
+                                // skip_likely_fp：API 存在即风险类规则不降权——
+                                // 模板字面量含嵌套括号时 extract_call_args 按
+                                // rfind('(') 取参数会错位误判"参数全部为字面量"，
+                                // 且该语义下常量参数也不构成安全保证
+                                None
                             } else {
                                 evaluate_likely_fp_args(content, start_pos, end_pos)
                                     .or_else(|| {
@@ -1497,6 +1503,7 @@ mod tests {
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1538,6 +1545,7 @@ mod tests {
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1581,6 +1589,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1624,6 +1633,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1668,6 +1678,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1722,6 +1733,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: before,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1781,6 +1793,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: before,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1835,6 +1848,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 8,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1877,6 +1891,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1917,6 +1932,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2000,6 +2016,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2044,6 +2061,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2097,6 +2115,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 8,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2166,6 +2185,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2209,6 +2229,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2245,6 +2266,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2387,6 +2409,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2435,6 +2458,7 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: require_open,
             auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2608,6 +2632,7 @@ func (s *Server) UpdateAccount(w http.ResponseWriter, r *http.Request) {
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: true,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             references: None,
@@ -2650,6 +2675,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
             sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
             auth_check_in_func: true,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             references: None,
@@ -2712,6 +2738,139 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
         let static_path = "await Bun.write(\"dist/index.html\", html);";
         let f4 = scanner.scan_file_sync(&PathBuf::from("build.js"), static_path);
         assert!(f4.is_empty(), "静态字面量路径不应命中: {:?}", f4.len());
+    }
+
+    /// 文件移动/复制 sink（10.30，R123 MeshCentral 0day 漏检根因）：
+    /// fs.rename/fs.copyFile 的 dst（第二参数）为用户路径形态；
+    /// src（第一参数）参数序约束防 multiparty 临时文件误报
+    #[test]
+    fn test_path_traversal_rename_copy_sinks() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "path-traversal")
+            .expect("path-traversal 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 正例 1：R123 真实形态——dst = path.join(serverpath, 未清洗文件名)
+        let mesh_vuln = "function handleUploadFileBatch(req, res) {\n  const ftarget = getRandomPassword() + '-' + file.originalFilename;\n  fs.rename(tmpPath, path.join(serverpath, ftarget), cb);\n}";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("webserver.js"), mesh_vuln);
+        assert!(
+            !f1.is_empty(),
+            "fs.rename dst=path.join(用户文件名) 应命中 path-traversal"
+        );
+
+        // 正例 2：copyFile 第二参数直接为请求体文件名 → 命中
+        let copy_vuln = "fs.copyFile(src, uploadDir + req.body.filename, cb);";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("upload.js"), copy_vuln);
+        assert!(!f2.is_empty(), "fs.copyFile(req.body.filename) 应命中");
+
+        // 正例 3：Python os.rename dst 为请求参数 → 命中
+        let py_vuln = "os.rename(tmp, os.path.join(UPLOAD_DIR, request.files['f'].filename))";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("upload.py"), py_vuln);
+        assert!(!f3.is_empty(), "os.rename 用户 dst 应命中");
+
+        // 正例 4：Go os.Rename 第二参数为用户路径 → 命中
+        let go_vuln = "os.Rename(tmp, filepath.Join(uploadDir, r.FormValue(\"name\")))";
+        let f7 = scanner.scan_file_sync(&PathBuf::from("upload.go"), go_vuln);
+        assert!(!f7.is_empty(), "os.Rename 用户 dst 应命中");
+
+        // 负例 1：src 参数含用户输入但 dst 为常量（参数序约束）→ 不命中
+        let src_only = "fs.rename(req.body.src, \"backup.db\", cb);";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("backup.js"), src_only);
+        assert!(
+            f4.is_empty(),
+            "仅 src 用户可控不应命中（dst 语义区分）: {:?}",
+            f4.len()
+        );
+
+        // 负例 2：dst 经 path.basename 净化 → 豁免
+        let sanitized = "fs.rename(tmp, path.join(dir, path.basename(name)), cb);";
+        let f5 = scanner.scan_file_sync(&PathBuf::from("fixed.js"), sanitized);
+        assert!(f5.is_empty(), "path.basename 净化形态应豁免: {:?}", f5.len());
+
+        // 负例 3：静态字面量 dst → 不命中
+        let static_dst = "fs.copyFile(src, \"/var/backups/snap.db\");";
+        let f6 = scanner.scan_file_sync(&PathBuf::from("snap.js"), static_dst);
+        assert!(f6.is_empty(), "静态字面量 dst 不应命中: {:?}", f6.len());
+    }
+
+    /// Prisma $queryRawUnsafe 原始 SQL 直插（R154 ghostfolio 回放反哺）：
+    /// 模板字面量/拼接形态命中；$queryRaw tagged-template 参数化豁免
+    #[test]
+    fn test_prisma_queryraw_injection() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "js-prisma-queryraw-injection")
+            .expect("js-prisma-queryraw-injection 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 正例 1：R154 真实形态——symbols.join 直插（CVE-2026-28785 漏洞版）
+        let vuln = "const rows = await prisma.$queryRawUnsafe(`SELECT * FROM \"AssetProfile\" WHERE symbol IN (${symbols.join(',')})`);";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("data-provider.service.ts"), vuln);
+        assert!(!f1.is_empty(), "$queryRawUnsafe 模板插值应命中");
+        // 嵌套括号形态不得被 const-args 降级（rfind('(') 错位误判字面量）
+        assert_eq!(
+            f1[0].severity, "high",
+            "嵌套括号模板字面量应保持 high（skip_likely_fp）: {:?}",
+            f1[0].reasoning_hint
+        );
+
+        // 正例 2：模板插值直插
+        let vuln2 = "await prisma.$queryRawUnsafe(`UPDATE users SET name = '${req.body.name}'`);";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("update.js"), vuln2);
+        assert!(!f2.is_empty(), "$queryRawUnsafe req.body 插值应命中");
+
+        // 负例 1：$queryRaw 参数化形态（修复版）→ 豁免
+        let fixed = "const rows = await prisma.$queryRaw`SELECT * FROM \"AssetProfile\" WHERE symbol IN (${Prisma.join(symbols)})`;";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("data-provider.service.ts"), fixed);
+        assert!(f3.is_empty(), "$queryRaw 参数化形态应豁免: {:?}", f3.len());
+
+        // 负例 2：常量直插（无插值/无用户锚点）→ 不命中
+        let const_query = "await prisma.$queryRawUnsafe(`SELECT COUNT(*) FROM users`);";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("count.js"), const_query);
+        assert!(f4.is_empty(), "常量查询不应命中: {:?}", f4.len());
+    }
+
+    /// 客户端模板裸插提示（10.22，R54 calibre-web 0day 漏检盲区）：
+    /// mustache 三花 / EJS <%- / Vue v-html 低置信 XSS 提示
+    #[test]
+    fn test_client_template_bare_insert() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "client-template-bare-insert")
+            .expect("client-template-bare-insert 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 正例 1：mustache 三花裸插（R54 同族——template-book-result 全字段裸插）
+        let hbs = "<script type=\"text/template\">\n<a href=\"{{url}}\">{{{title}}}</a>\n</script>";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("book_edit.html"), hbs);
+        assert!(!f1.is_empty(), "三花裸插应命中");
+
+        // 正例 2：EJS <%- 裸插
+        let ejs = "<div><%- userHtml %></div>";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("view.html"), ejs);
+        assert!(!f2.is_empty(), "<%- %> EJS 裸插应命中");
+
+        // 正例 3：Vue v-html 绑定
+        let vue = "<p v-html=\"post.body\"></p>";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("Post.html"), vue);
+        assert!(!f3.is_empty(), "v-html 绑定应命中");
+
+        // 负例 1：双花转义形态不命中
+        let escaped = "<p>{{ title }}</p>";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("safe.html"), escaped);
+        assert!(f4.is_empty(), "{{ }} 转义形态不应命中: {:?}", f4.len());
+
+        // 负例 2：EJS 转义形态 <%= %> 不命中
+        let ejs_safe = "<p><%= user.name %></p>";
+        let f5 = scanner.scan_file_sync(&PathBuf::from("view.html"), ejs_safe);
+        assert!(f5.is_empty(), "<%= %> EJS 转义形态不应命中: {:?}", f5.len());
     }
 }
 
