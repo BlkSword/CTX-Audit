@@ -21,10 +21,33 @@ patterns:
     # 文件删除 sink 单列紧锚点（删除接口文件名参数直拼路径家族）：不放 user 锚点，
     # 避免 job.user_id/userUploadsDir 等会话变量词内子串误伤（\b 防 confirm( 词尾误中 rm()
     pattern: '(?i)\b(?:unlink|rmSync|rm|rmdir)\s*\([^)]*(?:req\.|body\.|params\.|query\.|filename|fileName)'
+  - language: javascript
+    # Bun/Deno 运行时文件 sink 单列紧锚点（10.25②）：上传接口
+    # Bun.write(dir + filename) 路径穿越任意写家族。沿用 rm sink 的锚点组
+    # （req./body./params./query./filename），不放宽松词防 R60 式词内子串回归；
+    # sanitize( 净化由 sanitizers 窗口豁免（join(dir, sanitize(name)) 修复形态）
+    pattern: '(?i)(?:Bun\.write|Bun\.file|Deno\.writeTextFile|Deno\.writeFile)\s*\([^)]*(?:req\.|body\.|params\.|query\.|filename|fileName)'
+  - language: javascript
+    # 文件移动/复制 sink 单列紧锚点（10.30，R123 MeshCentral 0day 漏检根因）：
+    # fs.rename/fs.copyFile 的 dst（第二参数）为用户路径形态——dst 侧锚点组含
+    # 用户输入（req./body./params./query./filename）+ path.join(（R123 形态
+    # dst = path.join(serverpath, 随机前缀+未清洗文件名)，filename 锚点在赋值行
+    # 不在 sink 行，join 形态必须纳入）；src（第一参数）语义区分=参数序约束
+    # [^,]+,\s* 使第一参数仅匹配无逗号表达式（multiparty 临时文件不误报）
+    pattern: '(?i)\b(?:fs\.(?:rename|copyFile|renameSync|copyFileSync)|renameSync|copyFileSync)\s*\(\s*[^,]+,\s*[^)]*(?:req\.|body\.|params\.|query\.|filename|fileName|path\.join)'
+  - language: python
+    # 文件移动/替换 sink（10.30 同族）：os.rename/os.replace/shutil.move 的
+    # dst（第二参数）为用户路径形态；锚点组与既有 python pattern 一致
+    pattern: '(?i)\b(?:os\.(?:rename|replace)|shutil\.(?:move|rename))\s*\(\s*[^,]+,\s*[^)]*(?:request|user|filename|input|params|query|body)'
   - language: python
     pattern: '(?i)(open\s*\(|read_file\s*\(|file_get_contents\s*\().*(?:request|param|input|user)'
   - language: php
     pattern: (?i)(fopen\s*\(|readfile\s*\(|file_get_contents\s*\(|include\s*\(|require\s*\().*(?:\$_GET|\$_POST|\$_REQUEST|request|input)
+  - language: go
+    # 文件移动 sink（10.30 同族）：os.Rename 的 new（第二参数）为用户路径形态；
+    # old（第一参数）语义区分=参数序约束；净化形态 filepath.Base/Clean 由
+    # sanitizers 窗口豁免（R77 四件套已含）
+    pattern: '(?i)\b(?:os\.Rename|os\.RenameAll)\s*\(\s*[^,]+,\s*[^)]*(?:req\.|r\.|filename|fileName|user|input)'
 # 修复形态为 resolve 之后紧跟 checkDirectoryTraversal 校验（先取路径后校验），
 # 前缀语义看不到、文件级语义会被同文件 import/其他守卫误豁免，用后向窗口。
 # 窗口取 5 行：if/else 分支内 resolve 再出分支校验的形态（守卫距命中可达 4 行）
@@ -37,6 +60,10 @@ sanitizers:
   - "os.path.normpath"
   # npm sanitize-filename 包（JS/TS 文件名净化的主流修复形态）
   - "sanitize("
+  # 10.30 补充：Node path 模块 basename/normalize 是 rename/copyFile dst
+  # 净化的标准修复形态（fs.rename(tmp, path.basename(userName))）
+  - "path.basename("
+  - "path.normalize("
   # R77 Owncast 反哺：Go 标准库路径遍历防护四件套
   - "filepath.Base("
   - "filepath.IsLocal("

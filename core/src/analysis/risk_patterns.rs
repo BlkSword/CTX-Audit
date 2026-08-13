@@ -476,6 +476,42 @@ export async function createUser(formData: FormData) {
     }
 
     #[test]
+    fn test_eval_sink_excludes_angular_dollar_eval() {
+        // R76 登记：AngularJS 的 $$eval(/$eval( 不得命中 eval sink 条件；
+        // 同时守护含 eval 的条件正则必须真实编译进扫描器
+        // （compile 失败会被 filter_map 静默丢弃）
+        let scanner = RiskPatternScanner::new(Path::new("."));
+        let mut checked = 0;
+        for compiled in &scanner.patterns {
+            for cond in compiled
+                .sink_conditions
+                .iter()
+                .chain(compiled.source_conditions.iter())
+            {
+                if cond.original.pattern.contains("eval") {
+                    checked += 1;
+                    assert!(
+                        !cond.regex.is_match("scope.$$eval('a + b');"),
+                        "$$eval( 不应命中: {}",
+                        cond.original.pattern
+                    );
+                    assert!(
+                        !cond.regex.is_match("scope.$eval('a + b');"),
+                        "$eval( 不应命中: {}",
+                        cond.original.pattern
+                    );
+                    assert!(
+                        cond.regex.is_match("eval(userInput);"),
+                        "原生 eval( 应命中: {}",
+                        cond.original.pattern
+                    );
+                }
+            }
+        }
+        assert!(checked >= 2, "应至少覆盖两处 eval sink 条件，实际 {}", checked);
+    }
+
+    #[test]
     fn test_empty_attack_surface() {
         let scanner = RiskPatternScanner::new(Path::new("."));
         let surface = AttackSurface {

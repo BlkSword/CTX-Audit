@@ -1028,6 +1028,12 @@ impl TaintAnalyzer {
                     "sys.argv".to_string(),
                     "os.Args".to_string(),
                     "env::args".to_string(),
+                    // R136 回放反哺：Remix/React-Router loader/action 的 request 对象
+                    // （与 ast_taint 内置字典、express-node.yaml 三处同步）
+                    "request.formData".to_string(),
+                    "request.text".to_string(),
+                    "request.json".to_string(),
+                    "request.url".to_string(),
                 ],
                 languages: vec!["*".to_string()],
                 severity: Severity::High,
@@ -1277,6 +1283,11 @@ impl TaintAnalyzer {
                 class_literal_exempt: false,
             },
             // eval
+            // 残留说明（R76/R103）：taint 层 sink 匹配是子串语义，`$$eval(`/`$eval(`
+            // （AngularJS 框架 API）仍会命中内置 "eval(" pattern——与既有
+            // `safe_eval(` 命中同属已知子串放宽（见本文件 matches 测试注释）。
+            // YAML regex 层（code-injection.yaml/risk-patterns.yaml）已按边界排除；
+            // taint 层改边界语义会影响全部 substring sink，改动面大，本轮不动。
             TaintSink {
                 id: "eval".to_string(),
                 name: "Code Evaluation".to_string(),

@@ -263,7 +263,10 @@ const GO_PATTERNS: PatternSet = PatternSet {
     ],
     cmd_sinks: &["exec.command", "os/exec", "syscall.exec"],
     sql_sinks: &["db.query", "db.exec", "db.queryrow", "sql.db", "stmt.exec"],
-    deser_sinks: &["json.unmarshal", "gob.newdecoder", "yaml.unmarshal"],
+    // 数据专用反序列化器（encoding/json、gopkg.in/yaml、encoding/gob）无 gadget 链，
+    // 非 CWE-502——置空（误标修复，与 Rust 侧 serde 同判据；gob.Register 属类型注册
+    // 而非运行时类型实例化入口，10.21 登记同属数据专用家族）
+    deser_sinks: &[],
     code_sinks: &["plugin.open"],
     path_sinks: &[
         "os.open",
@@ -640,5 +643,33 @@ mod tests {
 }
 "#;
         assert!(find_local_source_sink("App.java", "CWE-78", "Command injection", content, 4).is_none());
+    }
+
+    #[test]
+    fn test_find_local_source_sink_go_deserialization_excluded() {
+        // Go 数据专用反序列化器（encoding/json、yaml、gob）无 gadget 链，非 CWE-502
+        // （10.21 登记，与 Rust 侧 serde 同判据）——json.Unmarshal 不再产出 source→sink 共现
+        let content = r#"package main
+
+import "encoding/json"
+
+func handle(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var v map[string]interface{}
+	json.Unmarshal(body, &v)
+	_ = v
+}
+"#;
+        // sink 行指向 json.Unmarshal（第 8 行），CWE-502 下 Go deser_sinks 已置空
+        assert!(find_local_source_sink("main.go", "CWE-502", "Unsafe deserialization", content, 8).is_none());
+        // 守护：Java ObjectInputStream（真 gadget 链家族）仍须命中
+        let java = r#"public class App {
+  void process(@RequestBody String body) throws Exception {
+    ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(body.getBytes()));
+    ois.readObject();
+  }
+}
+"#;
+        assert!(find_local_source_sink("App.java", "CWE-502", "Unsafe deserialization", java, 4).is_some());
     }
 }
