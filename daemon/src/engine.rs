@@ -368,6 +368,7 @@ impl AnalysisEngine {
                 attack_surface: Default::default(),
                 cross_file_result: None,
                 project_profile: Default::default(),
+                encoding_fallback_files: Vec::new(),
             }
         };
         let findings = scan_result.findings;

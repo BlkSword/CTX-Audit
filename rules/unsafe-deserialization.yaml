@@ -12,7 +12,10 @@ references:
   - "https://cwe.mitre.org/data/definitions/502.html"
 patterns:
   - language: java
-    pattern: (?i)(ObjectInputStream\s*\(|readObject\s*\(|readUnshared\s*\(|XMLDecoder\s*\(|XStream\s*\()
+    # ObjectInputStream/XMLDecoder/XStream 为运行时类型实例化 gadget 链（真 CWE-502）；
+    # 裸 readObject( 已收窄为 ObjectInputStream 形态——jakarta.json JsonReader.readObject()
+    # 等数据专用反序列化器无 gadget 链（10.21 判据 Java 侧，R57 误标 ×3 家族）
+    pattern: (?i)(ObjectInputStream\s*\(|ObjectInputStream\.readObject\s*\(|readUnshared\s*\(|XMLDecoder\s*\(|XStream\s*\()
   # Python：yaml.load 两种危险形态——单变量参数（默认 Loader 不安全）、
   # 显式指定 Loader/CLoader/UnsafeLoader（SafeLoader/CSafeLoader/BaseLoader 名称中的
   # "Loader" 前有词字符，\b 边界保证不误命中）；Rust regex 不支持负向前瞻，用边界等价表达

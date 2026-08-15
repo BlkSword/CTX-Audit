@@ -21,12 +21,16 @@ evidence_steps:
     purpose: "搜项目内对 eval 参数的预处理（JSON Schema 校验、AST 白名单如 simpleeval/asteval、受限命名空间），存在完备沙箱 → FP 或降级。"
   - tool: search_code
     purpose: "以 new Function、eval(、exec(、compile( 为 pattern 扫同文件/同模块，确认是否存在同类惯用法（如日志模板、配置 DSL），区分设计内动态执行与真实注入面。"
+  - tool: get_code_context
+    purpose: "模板引擎调用点（Handlebars.compile/ejs/template.compile/nunjucks.renderString，10.15④ 起不入引擎规则）：反向追模板串参数来源——模板串来自仓库静态文件/字面量 → FP；模板串来自用户输入/请求体拼接 → SSTI 面（该引擎是否存在表达式求值/helper 注入面需结合引擎文档）。"
 tp_criteria:
   - "eval/exec/Function 的参数包含外部可控输入，且无 AST 白名单/沙箱限制"
   - "代码路径可被远程攻击者触达（路由、消息消费者、插件加载点）"
+  - "模板引擎（Handlebars/ejs/nunjucks）的模板串来源为用户可控输入，且引擎支持表达式求值或 helper 注入"
 fp_criteria:
   - "命中的是 re.compile/Pattern.compile 等正则编译，不执行任意代码"
   - "eval 参数为字面量常量或完全由服务端生成"
   - "存在受限执行环境（simpleeval、asteval、vm2 且未禁用沙箱）"
   - "代码仅用于构建期/代码生成工具，不处理运行时输入"
+  - "模板引擎调用点的模板串为仓库内静态文件/字符串字面量（10.15④：静态模板 + 默认转义非注入）"
 confidence_guide: "参数外部可控 + 无沙箱 + 路径可达三方确认 → 0.9+；确认 eval 拼接但来源或触达性未验证 → 0.7-0.9；sink 语义存疑（可能是正则编译/模板引擎内部用法）→ <0.7，判 needs_review。"

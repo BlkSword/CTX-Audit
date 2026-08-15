@@ -1,0 +1,16 @@
+category: injection
+cwe: CWE-89
+description: "检测 Go fmt.Sprintf SQL 片段插值：格式串含 SQL 语法特征（SELECT/FROM/WHERE/JSON 路径 ->>/json_tree 等）且带 %s/%v 占位符——SQL 标识符与 JSON 路径段无法参数化，占位符参数若为用户可控（HTTP 参数、框架回调注入的过滤值）即构成注入。合法查询构造应使用 squirrel/dbx 等 builder 或参数化占位符（?），Sprintf 拼 SQL 本身就是危险信号。"
+id: go-sql-sprintf-injection
+language: go
+name: "Go fmt.Sprintf SQL Fragment Interpolation"
+owasp: "A03:2021-Injection"
+patterns:
+  # 格式串含 SQL 关键字或 JSON 路径操作符且带字符串占位符
+  - language: go
+    pattern: 'fmt\.Sprintf\("[^"]*(?:SELECT |FROM |WHERE |INSERT INTO|UPDATE |DELETE FROM|ORDER BY|GROUP BY|->>|json_tree|JSON_EXTRACT)[^"]*%[sv]'
+severity: high
+remediation: "标识符/JSON 路径段使用白名单校验后拼接（如 model.AllRoles 成员检查），值一律使用参数化占位符（?）；优先使用 squirrel/dbx 等类型安全查询构造器。"
+references:
+  - "https://cwe.mitre.org/data/definitions/89.html"
+  - "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"

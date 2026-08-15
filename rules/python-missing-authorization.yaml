@@ -1,0 +1,43 @@
+category: access-control
+cwe: CWE-862
+description: "检测 Python 资源操作视图/方法缺失授权校验：按 id/name 操作的 get/delete/update/remove 等资源方法，函数体内无任何身份/属主校验（request.user/current_user/is_authenticated/@login_required/@permission_required/get_object_or_404/owner 等）——普通用户可直接操作他人资源（IDOR/越权）。授权是函数级语义：同文件远处的登录装饰器/中间件不豁免本函数。"
+id: python-missing-authorization
+language: python
+name: Python Missing Authorization Check
+owasp: "A01:2021-Broken Access Control"
+remediation: "为每个资源操作视图/方法添加身份/属主校验：@login_required/@permission_required 装饰器、request.user 与资源属主比对（get_object_or_404 带 user 过滤）、或 has_perm/is_owner 权限判断；删除/更新类操作优先属主校验而非仅登录校验。"
+references:
+  - "https://cwe.mitre.org/data/definitions/862.html"
+  - "https://owasp.org/Top10/A01_2021-Broken_Access_Control/"
+severity: high
+auth_check_in_func: true
+once_per_file: false
+patterns:
+  - language: python
+    pattern: '(?m)^\s*def\s+\w*(?:get|delete|update|remove|edit|destroy|modify)\w*\s*\([^)]*(?:request|self)[^)]*\)\s*:'
+sanitizers:
+  - "request.user"
+  - "current_user"
+  - "is_authenticated"
+  - "login_required"
+  - "permission_required"
+  - "user_passes_test"
+  - "get_object_or_404"
+  - "has_perm"
+  - "has_permission"
+  - "is_owner"
+  - "check_permission"
+  - "check_permissions"
+  - "user.id"
+  - "user_id"
+  - "created_by"
+  - "author"
+  - "owner"
+  - "can_edit"
+  - "can_delete"
+  - "verify_permission"
+  - "require_role"
+  # R76 Taiga 反哺：Django REST framework 类级/方法级授权形态
+  - "permission_classes"
+  - "get_queryset"
+  - "filter_backends"

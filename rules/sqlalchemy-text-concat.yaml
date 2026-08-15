@@ -1,0 +1,19 @@
+category: injection
+cwe: CWE-89
+description: "检测 SQLAlchemy text() 字符串拼接注入：text() 的参数由变量拼接（+、%、f-string）构成时，等价于原始 SQL 拼接，参数化完全失效。正确形态是 text('... :param ...') 绑定参数；排序列名等标识符场景必须用白名单。"
+id: sqlalchemy-text-concat
+language: python
+name: "SQLAlchemy text() Concatenation Injection"
+owasp: "A03:2021-Injection"
+patterns:
+  - language: python
+    # text(f"...) / text(var + ...) / text(var % ...)：拼接进 SQL 文本即注入面
+    pattern: '(?i)\btext\s*\(\s*(?:f["\x27]|[A-Za-z_]\w*\s*(?:\+|%))'
+sanitizers:
+  # 修复形态：排序列名白名单校验（同函数内对拼接变量做白名单过滤）
+  - "__table__.columns.keys()"
+severity: high
+remediation: "SQL 语句用绑定参数（text('... :p ...').bindparams(...)）；列名/表名等无法参数化的标识符必须走白名单映射（ALLOWED_COLUMNS = {...}），拒绝白名单外的值。"
+references:
+  - "https://cwe.mitre.org/data/definitions/89.html"
+  - "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"

@@ -57,6 +57,12 @@ pub struct Rule {
     /// 设置后替代前缀语义（仅看后向窗口，不看命中点之前）。
     #[serde(default)]
     pub sanitizer_after_lines: usize,
+    /// 命中点之前 N 行内出现 sanitizer 即豁免（默认 0 = 关闭）。
+    /// 用于"先净化后使用"形态（如 `const safe = sanitize(name); path.join(dir, safe)`），
+    /// 与无界前缀语义的区别是窗口有界：同文件远处的 import/无关守卫不会误豁免。
+    /// 与 sanitizer_after_lines 可并存（两个窗口任一命中即豁免）。
+    #[serde(default)]
+    pub sanitizer_before_lines: usize,
     /// true 时每个文件最多保留一个命中（缺失检查类规则：检查有无是文件级语义，
     /// 多个命中只是同一问题的重复报告）
     #[serde(default)]
@@ -89,6 +95,23 @@ pub struct Rule {
     /// 仅对 .go 文件生效。
     #[serde(default)]
     pub go_io_copy_requires_open_file: bool,
+    /// 授权检查语义（missing-authorization 家族，backlog 10.27）：
+    /// 命中点所在函数/方法体内必须出现任一授权关键字才豁免。
+    /// 资源操作（按 id/name 的 get/delete/update/remove 等）的函数体内
+    /// 没有身份/属主校验（currentUser/owner/isAdmin/hasRole 等）即为
+    /// "缺失授权"候选（CWE-862）。区别于 sanitizer_file_scope 的文件级
+    /// 语义：同文件远处 import 的 auth 模块不应豁免本函数——授权是
+    /// 函数级语义，文件级匹配会系统性误豁免。
+    /// 授权关键字从规则声明的 sanitizers 列表读取（复用现有机制）。
+    #[serde(default)]
+    pub auth_check_in_func: bool,
+    /// true 时跳过 const-args/字面量参数的 likely_fp 降权（默认 false）。
+    /// 用于"API 存在即风险"类规则（如 Prisma $queryRawUnsafe）——其参数
+    /// 形态多样（模板字面量含嵌套括号时 extract_call_args 按 rfind('(')
+    /// 取参数会错位，误判"参数全部为字面量"降 info，埋没真问题）；
+    /// 且该 API 语义上即反模式，常量参数也不构成安全保证。
+    #[serde(default)]
+    pub skip_likely_fp: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]

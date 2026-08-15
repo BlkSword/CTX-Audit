@@ -903,6 +903,8 @@ impl CrossFileTaintAnalyzer {
                 return;
             }
 
+            // 本文件语言（供 YAML 规则 languages 字段过滤，替代旧的 "*" 通配）
+            let file_language = Self::detect_language(&file_path_str);
             for symbol in &symbols {
                 if !matches!(
                     symbol.kind,
@@ -932,13 +934,13 @@ impl CrossFileTaintAnalyzer {
                     symbol.start_line as usize,
                     symbol.end_line as usize,
                 );
-                let is_source = self.is_taint_source(&func_name, &body_text);
+                let is_source = self.is_taint_source(&func_name, &body_text, &file_language);
 
                 // 优先按函数体内的具体 sink 调用判断（可处理 response.getWriter().println、
                 // stmt.executeBatch 等 Semantic 规则），函数名兜底。
                 let (mut is_sink, mut sink_type, mut sink_match_source) = (false, None, None);
                 for call in &calls_in_range {
-                    if let Some(vt) = self.is_sink_call(call) {
+                    if let Some(vt) = self.is_sink_call(call, &file_language) {
                         is_sink = true;
                         sink_type = Some(vt);
                         sink_match_source = Some(SinkMatchSource::YamlRule);
@@ -946,7 +948,7 @@ impl CrossFileTaintAnalyzer {
                     }
                 }
                 if !is_sink {
-                    let (body_match, body_type) = self.is_taint_sink(&func_name, &body_text);
+                    let (body_match, body_type) = self.is_taint_sink(&func_name, &body_text, &file_language);
                     is_sink = body_match;
                     sink_type = body_type;
                     sink_match_source = if body_type.is_some() {
@@ -1015,7 +1017,7 @@ impl CrossFileTaintAnalyzer {
                             })
                             .collect();
 
-                        let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text);
+                        let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text, &file_language);
                         let cb_match_source = if cb_sink_type.is_some() {
                             Some(SinkMatchSource::BodyKeyword)
                         } else if cb_is_sink {
@@ -1715,6 +1717,8 @@ impl CrossFileTaintAnalyzer {
 
         // 从 symbols 中提取函数/方法定义
         let language = self.infer_language(file_path).to_string();
+        // 本文件语言（供 YAML 规则 languages 字段过滤，替代旧的 "*" 通配）
+        let file_language = Self::detect_language(&file_path_str);
         for symbol in &symbols {
             if !matches!(
                 symbol.kind,
@@ -1758,19 +1762,20 @@ impl CrossFileTaintAnalyzer {
             }
 
             // 检测函数参数中哪些可能是污点
-            let parameters: Vec<FunctionParameter> = self.extract_ast_parameters(symbol, &content);
+            let parameters: Vec<FunctionParameter> =
+                self.extract_ast_parameters(symbol, &content, &file_language);
 
             let body_text = Self::extract_body(
                 &content,
                 symbol.start_line as usize,
                 symbol.end_line as usize,
             );
-            let is_source = self.is_taint_source(&func_name, &body_text);
+            let is_source = self.is_taint_source(&func_name, &body_text, &file_language);
 
             // 优先按函数体内的具体调用判断 sink（能处理 Semantic 规则如 stmt.executeQuery）
             let (mut is_sink, mut sink_type, mut sink_match_source) = (false, None, None);
             for call in &calls_in_range {
-                if let Some(vt) = self.is_sink_call(call) {
+                if let Some(vt) = self.is_sink_call(call, &file_language) {
                     is_sink = true;
                     sink_type = Some(vt);
                     sink_match_source = Some(SinkMatchSource::YamlRule);
@@ -1778,7 +1783,7 @@ impl CrossFileTaintAnalyzer {
                 }
             }
             if !is_sink {
-                let (body_match, body_type) = self.is_taint_sink(&func_name, &body_text);
+                let (body_match, body_type) = self.is_taint_sink(&func_name, &body_text, &file_language);
                 is_sink = body_match;
                 sink_type = body_type;
                 sink_match_source = if body_type.is_some() {
@@ -1830,7 +1835,7 @@ impl CrossFileTaintAnalyzer {
                         })
                         .collect();
 
-                    let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text);
+                    let (cb_is_sink, cb_sink_type) = self.is_taint_sink("", &cb.body_text, &file_language);
                     let cb_match_source = if cb_sink_type.is_some() {
                         Some(SinkMatchSource::BodyKeyword)
                     } else if cb_is_sink {
@@ -1924,6 +1929,7 @@ impl CrossFileTaintAnalyzer {
         &self,
         symbol: &crate::ast::Symbol,
         content: &str,
+        language: &str,
     ) -> Vec<FunctionParameter> {
         let mut params = Vec::new();
         let func_name = &symbol.name;
@@ -1932,7 +1938,7 @@ impl CrossFileTaintAnalyzer {
             symbol.start_line as usize,
             symbol.end_line as usize,
         );
-        let is_source = self.is_taint_source(func_name, &body_text);
+        let is_source = self.is_taint_source(func_name, &body_text, language);
 
         // 尝试从 symbol 的 metadata 中提取参数
         if let Some(params_val) = symbol.metadata.get("params") {
@@ -2025,6 +2031,8 @@ impl CrossFileTaintAnalyzer {
     fn extract_functions(&self, code: &str, file_path: &str, language: &str) -> Vec<CallGraphNode> {
         let mut functions = Vec::new();
         let lines: Vec<&str> = code.lines().collect();
+        // 本文件语言（供 YAML 规则 languages 字段过滤，替代旧的 "*" 通配）
+        let file_language = Self::detect_language(file_path);
 
         for (i, line) in lines.iter().enumerate() {
             let line = line.trim();
@@ -2034,8 +2042,8 @@ impl CrossFileTaintAnalyzer {
                 let func_id = format!("{}:{}", file_path, func_name);
 
                 // 检查是否是污点源或汇（fallback 路径：仅函数名兜底，函数体提取成本高且此路径少走）
-                let is_source = self.is_taint_source(&func_name, "");
-                let (is_sink, sink_type) = self.is_taint_sink(&func_name, "");
+                let is_source = self.is_taint_source(&func_name, "", &file_language);
+                let (is_sink, sink_type) = self.is_taint_sink(&func_name, "", &file_language);
                 let sm_source = if sink_type.is_some() {
                     Some(SinkMatchSource::BodyKeyword)
                 } else if is_sink {
@@ -2394,6 +2402,32 @@ impl CrossFileTaintAnalyzer {
         }
     }
 
+    /// 根据文件路径推断语言标识（与 ast_taint::detect_language 同一映射）
+    ///
+    /// 用于 YAML 污点规则 `languages` 字段过滤；jsx/tsx 保持与 ast_taint
+    /// 一致的取值，确保跨文件与单文件污点分析的语言过滤语义统一。
+    fn detect_language(file_path: &str) -> String {
+        let ext = std::path::Path::new(file_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+
+        match ext.to_lowercase().as_str() {
+            "rs" => "rust",
+            "go" => "go",
+            "java" => "java",
+            "c" => "c",
+            "cpp" | "cc" | "cxx" => "cpp",
+            "py" => "python",
+            "js" => "javascript",
+            "ts" => "typescript",
+            "jsx" => "jsx",
+            "tsx" => "tsx",
+            _ => ext,
+        }
+        .to_string()
+    }
+
     /// 检查参数名是否可能是污点（基于常见命名模式）
     fn param_may_be_tainted(name: &str) -> bool {
         let lower = name.to_lowercase();
@@ -2437,7 +2471,8 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 按函数名判断是否是污点源（兜底：教学/测试代码的语义命名）
-    fn is_source_by_name(&self, func_name: &str) -> bool {
+    /// language 为 "*" 或 "" 时不做语言过滤（兼容旧行为）
+    fn is_source_by_name(&self, func_name: &str, language: &str) -> bool {
         let lower = func_name.to_lowercase();
         let lower = lower.as_str();
 
@@ -2519,7 +2554,7 @@ impl CrossFileTaintAnalyzer {
 
         self.source_patterns
             .iter()
-            .any(|s| s.matches(func_name, "*"))
+            .any(|s| s.matches(func_name, language))
     }
 
     /// 检查是否是污点源：函数名兜底 + 函数体内容匹配（核心修复）
@@ -2527,15 +2562,18 @@ impl CrossFileTaintAnalyzer {
     /// 真实项目用业务命名（handleLoginRequest/displayResearch），函数名不含
     /// get_/input 等关键词，但函数体里会出现 req.body 等真实 source。
     /// 因此对函数体内容做 pattern 匹配，by-name 仅作兜底。
-    fn is_taint_source(&self, func_name: &str, body: &str) -> bool {
-        if self.is_source_by_name(func_name) {
+    fn is_taint_source(&self, func_name: &str, body: &str, language: &str) -> bool {
+        if self.is_source_by_name(func_name, language) {
             return true;
         }
-        self.source_patterns.iter().any(|s| s.matches(body, "*"))
+        self.source_patterns
+            .iter()
+            .any(|s| s.matches(body, language))
     }
 
     /// 按函数名判断是否是污点汇（兜底）
-    fn is_sink_by_name(&self, func_name: &str) -> bool {
+    /// language 为 "*" 或 "" 时不做语言过滤（兼容旧行为）
+    fn is_sink_by_name(&self, func_name: &str, language: &str) -> bool {
         let lower = func_name.to_lowercase();
         let lower = lower.as_str();
 
@@ -2580,20 +2618,29 @@ impl CrossFileTaintAnalyzer {
             return true;
         }
 
-        self.sink_patterns.iter().any(|s| s.matches(func_name, "*"))
+        self.sink_patterns
+            .iter()
+            .any(|s| s.matches(func_name, language))
     }
 
     /// 检查是否是污点汇：函数名兜底 + 函数体内容匹配（核心修复）
     /// 返回 (is_sink, matched_vulnerability_type)
-    fn is_taint_sink(&self, func_name: &str, body: &str) -> (bool, Option<VulnerabilityType>) {
+    fn is_taint_sink(
+        &self,
+        func_name: &str,
+        body: &str,
+        language: &str,
+    ) -> (bool, Option<VulnerabilityType>) {
         // 优先按函数体内容匹配（可确定漏洞类型）
         for s in self.sink_patterns.iter() {
-            if Self::body_matches_sink(body, s) && !Self::is_body_sanitized_for_sink(body, s) {
+            if Self::body_matches_sink(body, s, language)
+                && !Self::is_body_sanitized_for_sink(body, s)
+            {
                 return (true, Some(s.vulnerability_type));
             }
         }
         // 按函数名兜底（无法确定具体类型）
-        if self.is_sink_by_name(func_name) {
+        if self.is_sink_by_name(func_name, language) {
             return (true, None);
         }
         (false, None)
@@ -2611,12 +2658,19 @@ impl CrossFileTaintAnalyzer {
     /// 否则 `.exec` / `.run` 这类短 pattern 会把任何包含该子串的函数
     /// （如 DB 连接的 `connection.exec`）误判为对应类型 sink。
     /// Substring 模式保持原有子串匹配行为。
-    fn body_matches_sink(body: &str, sink: &TaintSink) -> bool {
+    /// language 为 "*" 或 "" 时不做语言过滤（兼容旧行为）；否则按规则
+    /// `languages` 字段过滤——Semantic 分支不走 `sink.matches`，需在此显式守卫。
+    fn body_matches_sink(body: &str, sink: &TaintSink, language: &str) -> bool {
+        if language != "*" && !language.is_empty() {
+            if !sink.languages.iter().any(|l| l == "*" || l == language) {
+                return false;
+            }
+        }
         let has_semantic = !sink.namespaces.is_empty()
             || !sink.receiver_patterns.is_empty()
             || !sink.exact_matches.is_empty();
         if sink.match_mode != MatchMode::Semantic || !has_semantic {
-            return sink.matches(body, "*");
+            return sink.matches(body, language);
         }
         // 类字面量豁免：函数体出现 `Type.class`（存储查找形态，
         // 如 `client.get(Policy.class, name)`）时跳过声明豁免的 sink
@@ -2694,7 +2748,8 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 判断单个函数调用是否命中某个 sink 规则（支持 Semantic 规则）
-    fn is_sink_call(&self, call: &CallInfo) -> Option<VulnerabilityType> {
+    /// language 为 "*" 或 "" 时不做语言过滤（兼容旧行为）
+    fn is_sink_call(&self, call: &CallInfo, language: &str) -> Option<VulnerabilityType> {
         // 类字面量豁免：`client.get(Policy.class, name)` 是仓库/类型注册查找，
         // 不得标 SQL/SSRF（halo WebFlux FP 家族，与 ast_taint 同款逻辑）
         let arg_texts: Vec<String> = call.arguments.iter().map(|a| a.text.clone()).collect();
@@ -2703,13 +2758,13 @@ impl CrossFileTaintAnalyzer {
                 continue;
             }
             // 先按 callee + receiver 做语义匹配
-            if s.matches_with_context(&call.callee, call.receiver.as_deref(), "*") {
+            if s.matches_with_context(&call.callee, call.receiver.as_deref(), language) {
                 return Some(s.vulnerability_type);
             }
             // 再按完整调用表达式做子串/语义匹配（如 stmt.executeQuery）
             if let Some(receiver) = &call.receiver {
                 let qualified = format!("{}.{}", receiver, call.callee);
-                if s.matches_with_context(&qualified, Some(receiver), "*") {
+                if s.matches_with_context(&qualified, Some(receiver), language) {
                     return Some(s.vulnerability_type);
                 }
             }
@@ -2746,12 +2801,13 @@ impl CrossFileTaintAnalyzer {
         if vars.is_empty() {
             if let Some(node) = self.call_graph.nodes.get(func_id) {
                 if node.is_taint_source {
+                    let file_language = Self::detect_language(&node.file_path);
                     if let Some(lines) = self.get_file_lines(&node.file_path) {
                         let body =
                             Self::extract_body_from_lines(lines, node.start_line, node.end_line);
                         for line in body.iter() {
                             for source in self.source_patterns.iter() {
-                                if source.matches(line, "*") {
+                                if source.matches(line, &file_language) {
                                     if let Some(var) = Self::extract_var_from_source_line(line) {
                                         vars.insert(var);
                                     }
@@ -3169,9 +3225,53 @@ impl CrossFileTaintAnalyzer {
     fn find_interprocedural_taint_flows(&self, max_flows: usize) -> Vec<InterproceduralTaintFlow> {
         let mut summary_flows = self.propagate_taint_with_summaries(max_flows);
         if !summary_flows.is_empty() {
-            return summary_flows;
+            return Self::dedup_flows_by_source(summary_flows, max_flows);
         }
-        self.find_interprocedural_taint_flows_fallback(max_flows)
+        let fallback = self.find_interprocedural_taint_flows_fallback(max_flows);
+        Self::dedup_flows_by_source(fallback, max_flows)
+    }
+
+    /// 同 source 流收敛：同一 source 节点衍生的多条跨文件链按置信度降序保留 Top-N，
+    /// 并过滤低置信度深层假链（R103 追加：summary 传播过深导致单 source 喷射
+    /// 9+ 条不同类型链——query/get/fetch 等普通方法被裸子串 sink 误标，跳数衰减后
+    /// 置信度可区分真假，按置信度收敛避免噪声淹没真实链）。
+    fn dedup_flows_by_source(
+        flows: Vec<InterproceduralTaintFlow>,
+        max_flows: usize,
+    ) -> Vec<InterproceduralTaintFlow> {
+        const MAX_FLOWS_PER_SOURCE: usize = 3;
+        const MIN_CONFIDENCE: f32 = 0.35;
+
+        let mut by_source: HashMap<String, Vec<InterproceduralTaintFlow>> = HashMap::new();
+        for flow in flows {
+            let key = format!(
+                "{}:{}",
+                flow.source.file_path, flow.source.line
+            );
+            by_source.entry(key).or_default().push(flow);
+        }
+
+        let mut out = Vec::with_capacity(max_flows.min(by_source.len() * MAX_FLOWS_PER_SOURCE));
+        for mut group in by_source.into_values() {
+            // 置信度降序，保留高置信链
+            group.sort_by(|a, b| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mut kept = 0;
+            for flow in group {
+                if flow.confidence < MIN_CONFIDENCE {
+                    break; // 已排序，后续更低
+                }
+                if kept >= MAX_FLOWS_PER_SOURCE {
+                    break;
+                }
+                kept += 1;
+                out.push(flow);
+            }
+        }
+        out
     }
 
     /// 预计算：从所有 sink 反向 BFS，得到“可能到达 sink”的节点集合。
@@ -3520,7 +3620,6 @@ impl CrossFileTaintAnalyzer {
                 vec![
                     "ObjectInputStream",
                     "ObjectInputStream.readObject",
-                    "readObject(",
                     "defaultReadObject",
                     "ObjectMapper.readValue",
                     "objectMapper.readValue",
@@ -3706,6 +3805,8 @@ impl CrossFileTaintAnalyzer {
 
         // 回退到 heuristic
         let node = self.call_graph.nodes.get(func_id)?;
+        // 本文件语言（供 YAML 规则 languages 字段过滤，替代旧的 "*" 通配）
+        let file_language = Self::detect_language(&node.file_path);
 
         let mut taint_propagation = Vec::new();
         let mut direct_sinks = Vec::new();
@@ -3719,14 +3820,14 @@ impl CrossFileTaintAnalyzer {
 
                 // 检查函数体内是否有直接调用 sink
                 for ct in &node.calls {
-                    if self.is_sink_by_name(&ct.callee) {
+                    if self.is_sink_by_name(&ct.callee, &file_language) {
                         direct_sinks.push(SinkReachability {
                             sink_name: ct.callee.clone(),
                             from_param: param_idx,
                             sanitized: false,
                             sanitizer: None,
                             sink_line: 0, // 精确行号需要更深层分析
-                            vuln_type: self.infer_vuln_type(&ct.callee),
+                            vuln_type: VulnerabilityType::Generic,
                         });
                     }
                 }
@@ -3747,7 +3848,7 @@ impl CrossFileTaintAnalyzer {
         // 来自 bad() 的污染参数后将其传入 println/exec 等 sink。
         if node.is_taint_sink {
             for ct in &node.calls {
-                if self.is_sink_by_name(&ct.callee) {
+                if self.is_sink_by_name(&ct.callee, &file_language) {
                     for (param_idx, _param) in node.parameters.iter().enumerate() {
                         // 避免重复记录同一 param + sink
                         let already = direct_sinks.iter().any(|ds: &SinkReachability| {
@@ -3760,7 +3861,7 @@ impl CrossFileTaintAnalyzer {
                                 sanitized: false,
                                 sanitizer: None,
                                 sink_line: ct.line,
-                                vuln_type: self.infer_vuln_type(&ct.callee),
+                                vuln_type: VulnerabilityType::Generic,
                             });
                         }
                     }
@@ -3797,193 +3898,6 @@ impl CrossFileTaintAnalyzer {
             param_to_calls,
             body_hash: None,
         })
-    }
-
-    /// 从 sink 函数名推断漏洞类型
-    fn infer_vuln_type(&self, func_name: &str) -> VulnerabilityType {
-        let lower = func_name.to_lowercase();
-
-        // ── 排除常见的 getter/helper 函数 ──────────────────────────
-        // 这些函数通常只是获取连接/配置/数据，不应被分类为安全 sink
-        let getter_prefixes = [
-            "get_db",
-            "get_database",
-            "get_connection",
-            "get_conn",
-            "get_config",
-            "get_items",
-            "get_files",
-            "get_data",
-            "get_user",
-            "get_client",
-            "get_session",
-            "get_cache",
-            "get_logger",
-            "get_request",
-            "get_function_params",
-            "get_input_schema",
-            "get_cell_data",
-            "get_block_name",
-            "get_inputs_outputs",
-            "get_metadata",
-            "get_hash_seed",
-            "get_vibe_code",
-            "get_vibe_starter_queries",
-            "get_item_or_file",
-            "get_dataset_schema",
-            "get_video_duration",
-            "get_video_duration_ffprobe",
-            "get_space",
-            "get_svg",
-            "get_oauth_available",
-        ];
-        for prefix in &getter_prefixes {
-            if lower.starts_with(prefix) || lower == *prefix {
-                return VulnerabilityType::Generic;
-            }
-        }
-        // 排除 build_* / list_* / load_* 辅助函数（非安全敏感操作）
-        let safe_prefixes = [
-            "build_", "list_", "load_config", "load_env", "load_settings",
-            "init_", "setup_", "create_dir", "create_folder",
-            "parse_", "format_", "validate_", "check_", "verify_",
-            "serialize_", "encode_", "decode_", "marshal", "unmarshal",
-            "read_", "write_", "scan_", "walk_",
-            // Python/Gradio 常见工具函数
-            "postprocess_", "preprocess_", "deserialize_", "close_",
-            "add_configuration_", "check_gcloud_", "start_node_",
-            "verify_server_", "handle_", "resolve_", "extract_",
-            "encode_", "convert_", "simplify_", "populate_",
-            "compute_", "generate_", "register_", "install_",
-            "deploy_", "upload_", "download_", "stream_",
-            "preview_", "render_", "display_", "transform_",
-            "combine_", "process_", "collect_", "normalize_",
-            "clean_", "filter_", "sort_", "find_", "search_",
-            "load_from_cache",
-        ];
-        for prefix in &safe_prefixes {
-            if lower.starts_with(prefix) {
-                return VulnerabilityType::Generic;
-            }
-        }
-
-        // ── 通用 Python / 跨语言 safe 函数 ──────────────────────
-        // 这些函数名常见但非安全 sink
-        let generic_safe = [
-            "example_payload", "example_value", "api_info", "api_info_as_input",
-            "to_dict", "to_arg", "toorjson",
-            "postprocess_data", "postprocess_output_data",
-            "preprocess_data", "validate_inputs", "validate_outputs",
-            "queue_data", "queue_data_helper", "heartbeat",
-            "pwa_icon", "mount_gradio_app",
-            "on_part_data", "_pop_last_user_message",
-            "launch", "queue", "copy", "load", "from_spaces", "from_spaces_blocks",
-        ];
-        if generic_safe.contains(&lower.as_str()) {
-            return VulnerabilityType::Generic;
-        }
-
-        if lower.contains("exec")
-            || lower.contains("system")
-            || lower.contains("spawn")
-            || lower.contains("runtime")
-            || lower.contains("processbuilder")
-            || lower.contains("shell_exec")
-            || lower.contains("passthru")
-        {
-            return VulnerabilityType::CommandInjection;
-        }
-
-        if lower.contains("query")
-            || lower.contains("sql")
-            || lower.contains("cursor")
-            || lower.contains("jdbctemplate")
-            || lower.contains("statement")
-            || lower.contains("preparedstatement")
-            || lower.contains("database")
-        {
-            return VulnerabilityType::SqlInjection;
-        }
-
-        if lower.contains("eval")
-            || lower.contains("compile")
-            || lower.contains("scriptengine")
-            || lower.contains("groovyshell")
-            || lower.contains("__import__")
-        {
-            return VulnerabilityType::CodeInjection;
-        }
-
-        // Path Traversal: 排除 "open_file" 等本地工具函数
-        if (lower.contains("open") && !lower.contains("response")
-            && !lower.contains("open_file") && !lower.contains("openfile"))
-            || lower.contains("readfile")
-            || lower.contains("writefile")
-            || lower.contains("fileinputstream")
-            || lower.contains("fileoutputstream")
-        {
-            return VulnerabilityType::PathTraversal;
-        }
-
-        if lower.contains("fetch")
-            || lower.contains("httpclient")
-            || lower.contains("urlconnection")
-            || lower.contains("resttemplate")
-            || lower.contains("webclient")
-            || lower.contains("sendrequest")
-        {
-            return VulnerabilityType::ServerSideRequestForgery;
-        }
-
-        if lower.contains("innerhtml")
-            || lower.contains("document.write")
-            || lower.contains("getwriter")
-            || lower.contains("dangerouslysetinnerhtml")
-            || lower.contains("writestring")
-            || lower.contains("writeresponse")
-        {
-            return VulnerabilityType::CrossSiteScripting;
-        }
-
-        if lower.contains("deserialize")
-            || lower.contains("readobject")
-            || lower.contains("objectinputstream")
-            || lower.contains("readvalue")
-            || lower.contains("pickle")
-            || lower.contains("unserialize")
-        {
-            return VulnerabilityType::InsecureDeserialization;
-        }
-
-        if lower.contains("redirect") || lower.contains("sendredirect") {
-            return VulnerabilityType::OpenRedirect;
-        }
-
-        if lower.contains("ldap") {
-            return VulnerabilityType::LdapInjection;
-        }
-
-        if lower.contains("xpath") || lower.contains("jxpath") {
-            return VulnerabilityType::XPathInjection;
-        }
-
-        if lower.contains("md5") || lower.contains("sha1") || lower.contains("messagedigest") {
-            return VulnerabilityType::WeakHashAlgorithm;
-        }
-
-        if lower.contains("addcookie") || lower.contains("responsecookie") {
-            return VulnerabilityType::InsecureCookie;
-        }
-
-        if lower.contains("setattribute") || lower.contains("putvalue") {
-            return VulnerabilityType::TrustBoundaryViolation;
-        }
-
-        if lower.contains("request") {
-            return VulnerabilityType::ServerSideRequestForgery;
-        }
-
-        VulnerabilityType::Generic
     }
 
     /// 利用已有的函数摘要做跨函数污点传播
@@ -4371,44 +4285,88 @@ mod tests {
     #[test]
     fn test_is_taint_source() {
         let analyzer = CrossFileTaintAnalyzer::new();
-        // 函数名兜底（教学/测试命名）
-        assert!(analyzer.is_taint_source("getUserInput", ""));
-        assert!(analyzer.is_taint_source("read_file", ""));
-        assert!(!analyzer.is_taint_source("calculate", ""));
+        // 函数名兜底（教学/测试命名）；语言 "*" 保持旧的通配行为
+        assert!(analyzer.is_taint_source("getUserInput", "", "*"));
+        assert!(analyzer.is_taint_source("read_file", "", "*"));
+        assert!(!analyzer.is_taint_source("calculate", "", "*"));
         // 核心修复：函数体内容匹配（真实项目用业务命名，source 在函数体里）
-        assert!(analyzer.is_taint_source("handler", "const x = req.body.name;"));
-        assert!(analyzer.is_taint_source("callback", "return req.query.url;"));
+        assert!(analyzer.is_taint_source("handler", "const x = req.body.name;", "*"));
+        assert!(analyzer.is_taint_source("callback", "return req.query.url;", "*"));
     }
 
     #[test]
     fn test_is_taint_sink() {
         let analyzer = CrossFileTaintAnalyzer::new();
-        // 函数名兜底（只返回 bool，无具体类型）
-        assert!(analyzer.is_taint_sink("executeQuery", "").0);
-        assert!(analyzer.is_taint_sink("system", "").0);
-        assert!(!analyzer.is_taint_sink("format", "").0);
+        // 函数名兜底（只返回 bool，无具体类型）；语言 "*" 保持旧的通配行为
+        assert!(analyzer.is_taint_sink("executeQuery", "", "*").0);
+        assert!(analyzer.is_taint_sink("system", "", "*").0);
+        assert!(!analyzer.is_taint_sink("format", "", "*").0);
         // 核心修复：函数体内容匹配（返回具体漏洞类型）
-        assert!(analyzer.is_taint_sink("handler", "eval(req.body.x);").0);
+        assert!(analyzer.is_taint_sink("handler", "eval(req.body.x);", "*").0);
         assert_eq!(
-            analyzer.is_taint_sink("handler", "eval(req.body.x);").1,
+            analyzer.is_taint_sink("handler", "eval(req.body.x);", "*").1,
             Some(VulnerabilityType::CodeInjection)
         );
-        assert!(analyzer.is_taint_sink("callback", "needle.get(url);").0);
+        assert!(analyzer.is_taint_sink("callback", "needle.get(url);", "*").0);
         assert_eq!(
-            analyzer.is_taint_sink("callback", "needle.get(url);").1,
+            analyzer.is_taint_sink("callback", "needle.get(url);", "*").1,
             Some(VulnerabilityType::ServerSideRequestForgery)
         );
         assert!(
             analyzer
-                .is_taint_sink("callback", "usersCol.findOne({userName});")
+                .is_taint_sink("callback", "usersCol.findOne({userName});", "*")
                 .0
         );
         assert_eq!(
             analyzer
-                .is_taint_sink("callback", "usersCol.findOne({userName});")
+                .is_taint_sink("callback", "usersCol.findOne({userName});", "*")
                 .1,
             Some(VulnerabilityType::NoSqlInjection)
         );
+    }
+
+    #[test]
+    fn test_language_scoped_sink_filtering() {
+        // java-only sink（模拟 rules/taint/frameworks/java.yaml 的 java_ldap：
+        // Semantic 模式，languages: ["java"]）
+        let mut java_ldap = TaintSink::new(
+            "java_ldap",
+            "Java LDAP Injection",
+            vec![".search"],
+            VulnerabilityType::LdapInjection,
+        );
+        java_ldap.languages = vec!["java".to_string()];
+        java_ldap.match_mode = MatchMode::Semantic;
+        java_ldap.receiver_patterns = vec!["ctx".to_string(), "ldapTemplate".to_string()];
+        java_ldap.exact_matches = vec!["DirContext.search".to_string()];
+        let analyzer = CrossFileTaintAnalyzer::with_rules(vec![], vec![java_ldap]);
+
+        let body = "ctx.search(filter);";
+        // Java 语言下命中
+        assert!(analyzer.is_taint_sink("handler", body, "java").0);
+        // Python 语言下 java-only sink 被 languages 字段过滤，不命中
+        // （ArchiveBox LDAP 误报家族：Python 函数名含 search 片段不再误中）
+        assert!(!analyzer.is_taint_sink("handler", body, "python").0);
+        // 语言为 "*" 时保持旧的通配行为
+        assert!(analyzer.is_taint_sink("handler", body, "*").0);
+        // 函数名路径（is_sink_by_name 内的 sink_patterns 匹配）同样受语言过滤
+        assert!(analyzer.is_sink_by_name("DirContext.search", "java"));
+        assert!(!analyzer.is_sink_by_name("DirContext.search", "python"));
+        // 调用点路径（is_sink_call）同样受语言过滤
+        let call = CallInfo {
+            callee: "search".to_string(),
+            receiver: Some("ctx".to_string()),
+            arguments: Vec::new(),
+            line: 1,
+            column: 0,
+            is_method: true,
+            callback_args: Vec::new(),
+        };
+        assert_eq!(
+            analyzer.is_sink_call(&call, "java"),
+            Some(VulnerabilityType::LdapInjection)
+        );
+        assert_eq!(analyzer.is_sink_call(&call, "python"), None);
     }
 
     #[test]

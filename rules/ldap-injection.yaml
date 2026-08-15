@@ -1,13 +1,26 @@
 category: injection
 cwe: CWE-90
 owasp: "A03:2021-Injection"
-remediation: "使用参数化 LDAP 查询; 对用户输入进行 LDAP 特殊字符转义; 使用白名单验证输入。"
+remediation: "使用参数化 LDAP 查询; 对用户输入进行 LDAP 特殊字符转义（如 LdapEncoder.filterEncode / LdapNameBuilder）; 使用白名单验证输入。"
 references:
   - "https://owasp.org/www-community/attacks/LDAP_injection"
   - "https://cwe.mitre.org/data/definitions/90.html"
-description: 检测LDAP注入风险：用户输入直接用于LDAP查询
+description: 检测LDAP注入风险：用户输入直接用于LDAP查询（含 DirContext/lookup 拼接、search 过滤器经 String.replace 占位符替换构造等形态）
 id: ldap-injection
 language: java
 name: LDAP Injection Detection
-pattern: (?i)(DirContext|InitialDirContext|LdapContext|search\(|lookup\().*\+.*filter|searchControls.*filter.*\+
+patterns:
+  - language: java
+    # 经典形态：DirContext/search/lookup 同行拼接 filter
+    pattern: '(?i)(DirContext|InitialDirContext|LdapContext|search\(|lookup\().*\+.*filter|searchControls.*filter.*\+'
+  - language: java
+    # 占位符替换形态：LDAP_FILTER 常量经 .replace("PLACEHOLDER", 变量) 构造过滤器（过滤器文本在常量/配置中，拼接发生在 replace 调用点）
+    pattern: '(?i)\bLDAP[A-Z_]*\)?\s*\.replace\s*\(\s*"[A-Z_]{3,}"\s*,\s*[a-z_]'
+sanitizers:
+  # 修复形态：过滤器编码（ESAPI/Apache LdapEncoder/Spring LdapUtils）
+  - "filterEncode"
+  - "LdapEncoder"
+  - "encodeForLDAP"
+# 编码调用与 replace 构造点同行/紧邻（在命中点之后），用后向窗口而非前缀语义
+sanitizer_after_lines: 2
 severity: high

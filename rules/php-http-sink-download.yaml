@@ -1,0 +1,22 @@
+category: injection
+cwe: CWE-918
+description: 检测 Laravel Http::sink() 远程下载且 URL 为变量的形态：抓取远程内容写入服务端磁盘属高危 SSRF/内容下载面。URL 若来自数据库/缓存/外部 feed 等二阶来源，需人工确认取回前是否经过公网 IP 校验（CVE-2026-47260 回放形态：podcast enclosure URL 订阅时未校验直接入库，播放时经 Http::sink 下载）
+id: php-http-sink-download
+language: php
+name: Laravel Http::sink Download with Variable URL
+owasp: "A10:2021-Server-Side Request Forgery"
+patterns:
+  - language: php
+    # Http::sink($file)->get($url)/->post($url)——要求 URL 参数含变量（$）；
+    # 固定字面量 URL（如 Http::sink($f)->get('https://api.example.com/x')）不命中
+    pattern: '(?i)Http::sink\s*\([^)]*\)\s*->\s*(?:get|post)\s*\(\s*[^)]*\$'
+sanitizers:
+  # 前置校验形态（"先校验后下载"，CVE-2026-47260 修复形态 isSafeUrl 前置抛异常）
+  - "issafeurl("
+  - "validateurl("
+sanitizer_before_lines: 8
+severity: medium
+remediation: "下载前对 URL 做 scheme 白名单 + 解析主机公网 IP 校验（全部解析结果均须公网），并将校验得到的 IP 固定（如 CURLOPT_RESOLVE）供实际连接使用，关闭校验-连接之间的 DNS 重绑定窗口；来自 feed/用户提交的 URL 入库时与取回时均应校验。"
+references:
+  - "https://cwe.mitre.org/data/definitions/918.html"
+  - "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery"

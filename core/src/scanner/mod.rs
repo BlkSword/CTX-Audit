@@ -448,6 +448,22 @@ pub fn classify_file_role(path: &str) -> &'static str {
         "/plugins/",
         "/libs/",
         "/webjars/",
+        // R51: 捆绑随附组件与虚拟环境（R50 kkFileView LibreOfficePortable 全仓扫描噪声源）
+        "/libreofficeportable/",
+        "/libreoffice/",
+        "/site-packages/",
+        "/dist-packages/",
+        "/venv/",
+        "/.venv/",
+        "/virtualenv/",
+        "/bundle/",
+        "/dependencies/",
+        // 10.24⑤（R57 kkFileView 后第三次）：Java Web 项目 webapp 目录下的
+        // 第三方 JS/库存放模式（webapp/lib、webapp/src/lib）——不裸加 /src/lib/
+        // （Python src/lib 是业务代码，误伤面大），只认 webapp 组合形态
+        "/webapp/lib/",
+        "/webapp/src/lib/",
+        "/webapp/static/vendor/",
     ];
     for marker in &vendor_markers {
         if normalized.contains(marker) {
@@ -921,7 +937,7 @@ pub async fn scan_directory_with_opts(
     scan_opts: ScanOptions,
     progress: Option<ProgressCallback>,
 ) -> Result<Vec<Finding>, String> {
-    let (findings, _) = scan_directory_with_rules_inner(
+    let (findings, _, _) = scan_directory_with_rules_inner(
         path,
         rules_dir,
         exclude_dirs,
@@ -934,7 +950,7 @@ pub async fn scan_directory_with_opts(
     Ok(findings)
 }
 
-/// 内部实现：返回 findings 和文件内容缓存（用于 deep scan 复用）
+/// 内部实现：返回 findings、文件内容缓存（用于 deep scan 复用）和非 UTF-8 降级文件清单
 async fn scan_directory_with_rules_inner(
     path: &str,
     rules_dir: Option<&str>,
@@ -943,8 +959,11 @@ async fn scan_directory_with_rules_inner(
     sca_options: Option<ScaScanOptions>,
     scan_opts: Option<ScanOptions>,
     progress: Option<ProgressCallback>,
-) -> Result<(Vec<Finding>, HashMap<String, String>), String> {
+) -> Result<(Vec<Finding>, HashMap<String, String>, Vec<String>), String> {
     use ignore::Walk;
+
+    // 非 UTF-8 降级文件清单（backlog 10.6）
+    let mut encoding_fallback_files: Vec<String> = Vec::new();
 
     // 排除列表完全由调用方（CLI 配置）提供，core 不硬编码任何排除项
     let mut excludes: Vec<String> = exclude_dirs.unwrap_or_default();
@@ -1046,10 +1065,22 @@ async fn scan_directory_with_rules_inner(
             });
         }
         for (i, path_buf) in dep_files.iter().enumerate() {
-            if let Ok(content) = std::fs::read_to_string(path_buf) {
-                let sca_findings = sca_scanner.scan_file(path_buf, &content).await;
-                findings.extend(sca_findings);
-            }
+            // backlog 10.6：依赖清单文件同样可能非 UTF-8，lossy 降级避免静默跳过
+            let content = match std::fs::read_to_string(path_buf) {
+                Ok(c) => c,
+                Err(_) => match std::fs::read(path_buf) {
+                    Ok(bytes) => {
+                        tracing::warn!(
+                            "非 UTF-8 依赖文件 {} 已降级 lossy 转换",
+                            path_buf.display()
+                        );
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    }
+                    Err(_) => continue,
+                },
+            };
+            let sca_findings = sca_scanner.scan_file(path_buf, &content).await;
+            findings.extend(sca_findings);
             if let Some(ref cb) = progress {
                 cb(ScanProgress {
                     phase: ScanPhase::ScaScanning,
@@ -1091,20 +1122,34 @@ async fn scan_directory_with_rules_inner(
         crate::analysis::attack_surface::AttackSurfaceMapper::has_global_auth_middleware(scan_root);
 
     for chunk in code_files.chunks(batch_size) {
-        let code_results: Vec<(Vec<Finding>, Vec<Finding>, Option<(String, String)>, usize)> =
-            chunk
-                .par_iter()
-                .map(|path_buf| {
-                    let rel_path = path_buf.strip_prefix(scan_root).unwrap_or(path_buf.as_path());
+        let code_results: Vec<(
+            Vec<Finding>,
+            Vec<Finding>,
+            Option<(String, String)>,
+            usize,
+            Option<String>,
+        )> = chunk
+            .par_iter()
+            .map(|path_buf| {
+                let rel_path = path_buf.strip_prefix(scan_root).unwrap_or(path_buf.as_path());
 
-                    let content = match std::fs::read_to_string(path_buf) {
-                        Ok(c) => c,
-                        Err(_) => return (Vec::new(), Vec::new(), None, 0),
+                // backlog 10.6：非 UTF-8 源文件（ISO-8859/GBK 等）此前读取失败被
+                // 静默跳过（整文件 0 命中且无告警）。降级 lossy 转换继续扫描，
+                // 并把文件路径上报到结果（encoding_fallback_files）。
+                let (content, encoding_fallback) =
+                    match std::fs::read_to_string(path_buf) {
+                        Ok(c) => (c, false),
+                        Err(_) => match std::fs::read(path_buf) {
+                            Ok(bytes) => {
+                                (String::from_utf8_lossy(&bytes).into_owned(), true)
+                            }
+                            Err(_) => return (Vec::new(), Vec::new(), None, 0, None),
+                        },
                     };
 
-                    let content_len = content.len();
-                    let mut file_findings = Vec::new();
-                    let file_str = path_buf.to_string_lossy().to_string();
+                let content_len = content.len();
+                let mut file_findings = Vec::new();
+                let file_str = path_buf.to_string_lossy().to_string();
 
                     // 规则扫描（同步调用，无需 async runtime）
                     if let Some(ref scanner) = rule_scanner {
@@ -1192,13 +1237,23 @@ async fn scan_directory_with_rules_inner(
                         None
                     };
 
-                    (file_findings, attack_surface_findings, cached, content_len)
+                    (file_findings, attack_surface_findings, cached, content_len, {
+                        if encoding_fallback {
+                            tracing::warn!(
+                                "非 UTF-8 源文件 {} 已降级 lossy 转换（结果可能缺失字符）",
+                                rel_path.display()
+                            );
+                            Some(rel_path.to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .collect();
 
         total_bytes_read += code_results
             .iter()
-            .map(|(_, _, _, len)| *len)
+            .map(|(_, _, _, len, _)| *len)
             .sum::<usize>();
         if total_bytes_read > opts.memory_budget {
             tracing::warn!(
@@ -1208,12 +1263,15 @@ async fn scan_directory_with_rules_inner(
             break;
         }
 
-        for (mut batch, mut as_batch, cached, _) in code_results {
+        for (mut batch, mut as_batch, cached, _, encoding_fallback_path) in code_results {
             if let Some((path, content)) = cached {
                 content_cache.insert(path, content);
             }
             findings.append(&mut batch);
             findings.append(&mut as_batch);
+            if let Some(p) = encoding_fallback_path {
+                encoding_fallback_files.push(p);
+            }
         }
 
         scanned_files += chunk.len();
@@ -1297,7 +1355,7 @@ async fn scan_directory_with_rules_inner(
         content_cache.retain(|path, _| remaining_files.contains(path));
     }
 
-    Ok((findings, content_cache))
+    Ok((findings, content_cache, encoding_fallback_files))
 }
 
 /// 带攻击面信息的扫描结果
@@ -1310,6 +1368,10 @@ pub struct ScanResult {
     pub cross_file_result: Option<crate::analysis::cross_file::CrossFileTaintResult>,
     /// 项目安全框架配置（从 pom.xml / build.gradle 中检测）
     pub project_profile: crate::analysis::ProjectProfile,
+    /// backlog 10.6：非 UTF-8（ISO-8859/GBK 等）源文件清单——已降级 lossy 转换，
+    /// 结果可能缺失字符，调用方可据此提示用户
+    #[serde(default)]
+    pub encoding_fallback_files: Vec<String>,
 }
 
 /// 扫描目录并返回完整结果（含攻击面） — 使用无进度回调的默认扫描
@@ -1327,6 +1389,7 @@ pub async fn scan_directory_with_attack_surface(path: &str) -> Result<ScanResult
         project_profile: crate::analysis::framework_detector::detect_project_profile(
             std::path::Path::new(path),
         ),
+        encoding_fallback_files: Vec::new(),
     })
 }
 
@@ -1391,7 +1454,7 @@ pub async fn scan_directory_deep_with_rules_progress(
 
     // 保存排除列表副本用于二次收集
     let excludes_for_secondary = exclude_dirs.clone();
-    let (mut findings, mut content_cache) = scan_directory_with_rules_inner(
+    let (mut findings, mut content_cache, encoding_fallback_files) = scan_directory_with_rules_inner(
         path,
         rules_dir,
         exclude_dirs,
@@ -1410,6 +1473,7 @@ pub async fn scan_directory_deep_with_rules_progress(
             attack_surface: crate::analysis::attack_surface::AttackSurface::default(),
             cross_file_result: None,
             project_profile: Default::default(),
+            encoding_fallback_files,
         });
     }
 
@@ -1460,11 +1524,23 @@ pub async fn scan_directory_deep_with_rules_progress(
                         continue;
                     }
                 }
-                if let Ok(content) = std::fs::read_to_string(p) {
-                    if content.len() <= max_taint_file_kb * 1024 {
-                        content_cache.insert(p_str, content);
-                        extra_cached += 1;
-                    }
+                // backlog 10.6：二次收集同样 lossy 降级非 UTF-8 文件（防 AST 文件静默缺失）
+                let content = match std::fs::read_to_string(p) {
+                    Ok(c) => c,
+                    Err(_) => match std::fs::read(p) {
+                        Ok(bytes) => {
+                            tracing::warn!(
+                                "非 UTF-8 AST 文件 {} 已降级 lossy 转换",
+                                p.display()
+                            );
+                            String::from_utf8_lossy(&bytes).into_owned()
+                        }
+                        Err(_) => continue,
+                    },
+                };
+                if content.len() <= max_taint_file_kb * 1024 {
+                    content_cache.insert(p_str, content);
+                    extra_cached += 1;
                 }
             }
         }
@@ -1774,8 +1850,13 @@ pub async fn scan_directory_deep_with_rules_progress(
                             .map(|(func, func_assignments, func_calls, func_hints)| {
                                 let func_cpg =
                                     crate::ast::parser::with_thread_local_parser(|ast_parser| {
+                                        // backlog 10.7：Python/Ruby suite body_text 带缩进
+                                        // 而无外层 def 包装，直接重解析恒失败——统一去
+                                        // 缩进后再解析与切片
+                                        let fragment =
+                                            crate::ast::parser::dedent_fragment(&func.body_text);
                                         if let Some(tree) =
-                                            ast_parser.parse_fragment(&func.body_text, ext)
+                                            ast_parser.parse_fragment(&fragment, ext)
                                         {
                                             let root = tree.root_node();
                                             let mut cursor = root.walk();
@@ -1791,7 +1872,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                                             });
                                             if let Some(body_node) = body_node {
                                                 return CPGBuilder::build_function_cpg_from_fragment(
-                                                &body_node, &func.body_text, file_path_str,
+                                                &body_node, &fragment, file_path_str,
                                                 &func, &func_assignments, &func_calls,
                                             );
                                             }
@@ -2314,6 +2395,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         attack_surface: crate::analysis::attack_surface::AttackSurface::default(),
         cross_file_result: cross_file_result_opt,
         project_profile: Default::default(),
+        encoding_fallback_files,
     })
 }
 
@@ -2986,6 +3068,20 @@ fn deduplicate_findings(mut findings: Vec<Finding>, line_tolerance: usize) -> Ve
     let mut deduped_indices = std::collections::HashSet::with_capacity(findings.len());
 
     for (_key, indices) in groups {
+        // 同点多 finding：若漏洞类型各不相同（多引擎独立发现不同问题），
+        // 不合并——保留全部（missing-auth 与 UnauthenticatedEndpoint 同点
+        // 是互补发现而非重复，backlog 10.27）；仅类型相同的合并。
+        let types: std::collections::HashSet<&str> =
+            indices.iter().map(|&i| findings[i].vuln_type.as_str()).collect();
+        if types.len() > 1 {
+            for &idx in &indices {
+                if !deduped_indices.contains(&idx) {
+                    deduped_indices.insert(idx);
+                    result.push(findings[idx].clone());
+                }
+            }
+            continue;
+        }
         if indices.len() == 1 {
             let idx = indices[0];
             if !deduped_indices.contains(&idx) {
@@ -3264,9 +3360,17 @@ mod tests {
         // 知名第三方库文件名前缀
         assert_eq!(classify_file_role("web/js/jquery.js"), "vendor");
         assert_eq!(classify_file_role("web/js/bootstrap.js"), "vendor");
+        // R51: 捆绑随附组件/虚拟环境（R50 kkFileView LibreOfficePortable 噪声源）
+        assert_eq!(
+            classify_file_role("server/LibreOfficePortable/python-core/lib/python/site-packages/yaml.py"),
+            "vendor"
+        );
+        assert_eq!(classify_file_role("env/.venv/lib/python3.11/site-packages/requests/api.py"), "vendor");
+        assert_eq!(classify_file_role("code-server/lib/vscode/node_modules/vs/workbench/x.js"), "vendor");
         // 业务文件不受影响
         assert_eq!(classify_file_role("src/main.py"), "production");
         assert_eq!(classify_file_role("web/js/serverstatus.js"), "production");
+        assert_eq!(classify_file_role("server/lib/python/office/convert.py"), "production");
     }
 
     #[test]
@@ -3464,8 +3568,63 @@ mod tests {
     #[test]
     fn test_enrich_from_symbols_empty_table_is_noop() {
         let ranges: HashMap<String, Vec<FunctionRange>> = HashMap::new();
-        let mut findings = vec![make_finding("src/Login.java", 20)];
+        let mut findings = vec![make_finding("src/Login.java", 1)];
         enrich_findings_with_enclosing_function_from_symbols(&mut findings, &ranges);
         assert!(findings[0].enclosing_function.is_none());
+    }
+
+    #[test]
+    fn test_dedup_keeps_different_vuln_types_at_same_point() {
+        // backlog 10.27：同点不同漏洞类型（missing-auth + UnauthenticatedEndpoint）
+        // 是互补发现而非重复，去重不应合并吞掉
+        let f1 = make_finding("a.go", 4);
+        let mut f2 = make_finding("a.go", 4);
+        f2.vuln_type = "CWE-862".to_string();
+        f2.detector = "RegexRule: go-missing-authorization".to_string();
+        let deduped = deduplicate_findings(vec![f1, f2], 3);
+        assert_eq!(deduped.len(), 2, "不同类型同点 finding 应都保留");
+    }
+
+    #[test]
+    fn test_non_utf8_file_encoding_fallback() {
+        // backlog 10.6：非 UTF-8（ISO-8859/GBK）源文件此前读取失败被静默跳过
+        // （整文件 0 命中且无告警）。lossy 降级后应继续产出 findings，
+        // 并在结果 encoding_fallback_files 中记录文件路径。
+        let dir = std::env::temp_dir().join(format!("ctxa-enc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // ISO-8859-1：Latin-1 © (0xA9) 破坏 UTF-8 + 真实命令注入形态
+        let bytes = b"<?php\n// Latin-1 comment \xA9\n$x = $_GET['cmd'];\nsystem($x);\n";
+        std::fs::write(dir.join("vuln.php"), bytes).unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt
+            .block_on(super::scan_directory_deep_with_rules_progress(
+                dir.to_str().unwrap(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        assert!(
+            result
+                .encoding_fallback_files
+                .iter()
+                .any(|p| p.contains("vuln.php")),
+            "encoding_fallback_files 应含 vuln.php: {:?}",
+            result.encoding_fallback_files
+        );
+        // lossy 内容仍应被规则扫描命中命令注入（vuln_type 序列化为 CWE-78）
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.vuln_type.contains("CWE-78")),
+            "lossy 降级后 system() 命令注入应被检出: {:?}",
+            result.findings.iter().map(|f| &f.vuln_type).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -299,6 +299,190 @@ enum Commands {
         #[command(subcommand)]
         action: RulesAction,
     },
+
+    /// 原生 Agent（M1 最小闭环）
+    ///
+    /// 进程内直接运行 LLM 审计 Agent（消息驱动主循环 + 工具调用）
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+}
+
+/// 原生 Agent 子命令
+#[derive(Subcommand, Debug)]
+enum AgentAction {
+    /// 运行一轮 agent
+    Run {
+        /// 审计指令（prompt）
+        #[arg(value_name = "PROMPT")]
+        prompt: String,
+
+        /// 项目路径（默认当前目录）
+        #[arg(long, value_name = "PATH")]
+        project: Option<String>,
+
+        /// NDJSON 事件输出（默认人性化渲染）
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 列出项目下的会话
+    Sessions {
+        /// 项目路径（默认当前目录）
+        #[arg(long, value_name = "PATH")]
+        project: Option<String>,
+    },
+
+    /// 轮次 runner（M2 状态机）
+    Round {
+        #[command(subcommand)]
+        action: RoundAction,
+    },
+
+    /// 人工闸门（TP 候选审批）
+    Gate {
+        #[command(subcommand)]
+        action: GateAction,
+    },
+
+    /// cron 定时轮（M3，需 daemon 运行）
+    Cron {
+        #[command(subcommand)]
+        action: CronAction,
+    },
+
+    /// CVE 回放反哺（M4 机械层，确定性无 LLM）
+    Feedback {
+        #[command(subcommand)]
+        action: FeedbackAction,
+    },
+}
+
+/// 轮次 runner 子命令
+#[derive(Subcommand, Debug)]
+enum RoundAction {
+    /// 启动或续跑一轮（选目标→资格核实→扫描→初审→深审→闸门→登记草稿）
+    Run {
+        /// 审计目标：本地路径或 git URL（clone 到 .ctx-audit/runner/targets/）
+        #[arg(long, value_name = "TARGET")]
+        target: String,
+
+        /// 轮次 ID（缺省自动生成；同名未完结轮次从断点续跑）
+        #[arg(long, value_name = "ID")]
+        round_id: Option<String>,
+
+        /// NDJSON 事件输出（默认人性化渲染）
+        #[arg(long)]
+        json: bool,
+
+        /// 通过守护进程执行（默认进程内直连）
+        #[arg(long)]
+        daemon: bool,
+    },
+
+    /// 查看轮次状态（缺省列出全部）
+    Status {
+        /// 轮次 ID
+        #[arg(value_name = "ID")]
+        round_id: Option<String>,
+
+        /// 通过守护进程查询
+        #[arg(long)]
+        daemon: bool,
+    },
+
+    /// 续跑已有轮次（target 从状态文件读）
+    Resume {
+        /// 轮次 ID
+        #[arg(value_name = "ID")]
+        round_id: String,
+
+        /// NDJSON 事件输出
+        #[arg(long)]
+        json: bool,
+
+        /// 通过守护进程执行
+        #[arg(long)]
+        daemon: bool,
+    },
+}
+
+/// 人工闸门子命令
+#[derive(Subcommand, Debug)]
+enum GateAction {
+    /// 列出待决闸门（AwaitHuman 状态的轮次）
+    List,
+
+    /// 认定 TP 候选成立，轮次进入登记草稿阶段
+    Approve {
+        /// 轮次 ID
+        #[arg(value_name = "ID")]
+        round_id: String,
+
+        /// 审批备注
+        #[arg(long)]
+        note: Option<String>,
+
+        /// 通过守护进程执行
+        #[arg(long)]
+        daemon: bool,
+    },
+
+    /// 驳回 TP 候选，轮次进入登记草稿阶段（草稿标注驳回）
+    Reject {
+        /// 轮次 ID
+        #[arg(value_name = "ID")]
+        round_id: String,
+
+        /// 驳回理由
+        #[arg(long)]
+        note: Option<String>,
+
+        /// 通过守护进程执行
+        #[arg(long)]
+        daemon: bool,
+    },
+}
+
+/// cron 定时轮子命令（走 daemon IPC，需 daemon 运行）
+#[derive(Subcommand, Debug)]
+enum CronAction {
+    /// 注册定时轮（5 字段 cron 表达式：分 时 日 月 周）
+    Add {
+        /// cron 表达式，如 "0 3 * * *"（每天 03:00）
+        #[arg(value_name = "SCHEDULE")]
+        schedule: String,
+
+        /// 审计目标（路径或 git URL）
+        #[arg(long, value_name = "TARGET")]
+        target: String,
+    },
+
+    /// 列出定时任务
+    List,
+
+    /// 删除定时任务
+    Delete {
+        /// 任务 ID
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+}
+
+/// CVE 回放反哺子命令（M4 机械层）
+#[derive(Subcommand, Debug)]
+enum FeedbackAction {
+    /// 单独执行一个回放任务（clone→双版本扫描→对比→报告 JSON）
+    Run {
+        /// 任务 JSON 文件路径（cve_id/git_url/vulnerable_ref/fixed_ref/expected_*）
+        #[arg(value_name = "TASK_JSON")]
+        task: String,
+
+        /// 通过守护进程执行（默认进程内直连）
+        #[arg(long)]
+        daemon: bool,
+    },
 }
 
 /// 漏洞管理子命令
@@ -623,6 +807,67 @@ async fn main() -> Result<()> {
         Commands::Rules { action } => match action {
             RulesAction::List { rules } => commands::rules::list(rules).await,
             RulesAction::Validate { rules } => commands::rules::validate(rules).await,
+        },
+
+        Commands::Agent { action } => match action {
+            AgentAction::Run {
+                prompt,
+                project,
+                json,
+            } => commands::agent::run(prompt, project, json).await,
+
+            AgentAction::Sessions { project } => commands::agent::sessions(project).await,
+
+            AgentAction::Round { action } => match action {
+                RoundAction::Run {
+                    target,
+                    round_id,
+                    json,
+                    daemon,
+                } => commands::agent::round_run(target, round_id, json, daemon).await,
+
+                RoundAction::Status { round_id, daemon } => {
+                    commands::agent::round_status(round_id, daemon).await
+                }
+
+                RoundAction::Resume {
+                    round_id,
+                    json,
+                    daemon,
+                } => commands::agent::round_resume(round_id, json, daemon).await,
+            },
+
+            AgentAction::Gate { action } => match action {
+                GateAction::List => commands::agent::gate_list().await,
+
+                GateAction::Approve {
+                    round_id,
+                    note,
+                    daemon,
+                } => commands::agent::gate_decide(round_id, true, note, daemon).await,
+
+                GateAction::Reject {
+                    round_id,
+                    note,
+                    daemon,
+                } => commands::agent::gate_decide(round_id, false, note, daemon).await,
+            },
+
+            AgentAction::Cron { action } => match action {
+                CronAction::Add { schedule, target } => {
+                    commands::agent::cron_add(schedule, target).await
+                }
+
+                CronAction::List => commands::agent::cron_list().await,
+
+                CronAction::Delete { id } => commands::agent::cron_delete(id).await,
+            },
+
+            AgentAction::Feedback { action } => match action {
+                FeedbackAction::Run { task, daemon } => {
+                    commands::agent::feedback_run(task, daemon).await
+                }
+            },
         },
     }
 }

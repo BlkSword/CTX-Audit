@@ -1,0 +1,47 @@
+category: access-control
+cwe: CWE-862
+description: "检测 Go 资源操作方法缺失授权校验：按 id/name 操作的 get/delete/update/remove/find 等资源方法（含路由 handler），函数体内无任何身份/属主校验（c.GetString(\"user_id\")/r.Context().Value/currentUser/IsAdmin/hasRole 等）——普通用户可直接操作他人资源（IDOR/越权）。授权是函数级语义：同文件远处的 auth 中间件注册不豁免本函数。"
+id: go-missing-authorization
+language: go
+name: Go Missing Authorization Check
+owasp: "A01:2021-Broken Access Control"
+remediation: "为每个资源操作方法添加身份/属主校验：handler 内从上下文/会话取当前用户（c.GetString(\"user_id\")/r.Context().Value）后与资源属主比对，或调用 IsAdmin/hasRole/CheckPermission 权限判断；删除/更新类操作优先属主校验而非仅登录校验。"
+references:
+  - "https://cwe.mitre.org/data/definitions/862.html"
+  - "https://owasp.org/Top10/A01_2021-Broken_Access_Control/"
+severity: high
+auth_check_in_func: true
+once_per_file: false
+patterns:
+  - language: go
+    pattern: '(?m)^\s*func\s+(?:\([^)]*\)\s+)?\w*(?:Get|Delete|Update|Remove|Find|Edit|Modify|GetById|DeleteById|UpdateById)\w*\s*\([^)]*\)\s*\{'
+sanitizers:
+  - "user_id"
+  - "userid"
+  - "currentuser"
+  - "getcurrentuser"
+  - "currentuserid"
+  - "isadmin"
+  - "isowner"
+  - "hasrole"
+  - "haspermission"
+  - "checkpermission"
+  - "requirepermission"
+  - "authuser"
+  - "getauthuser"
+  - "context.value"
+  - "session"
+  - "claims"
+  - "useridfrom"
+  - "getuseridfrom"
+  - "belongsto"
+  - "canedit"
+  - "candelete"
+  # R77 Owncast 反哺：Go middleware/router 层认证形态
+  - "middleware"
+  - "requireauth"
+  - "authenticate"
+  - "authorize"
+  - "checkaccess"
+  - "requireadmin"
+  - "accesstoken"

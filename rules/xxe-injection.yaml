@@ -12,6 +12,13 @@ patterns:
     pattern: '(?i)(DocumentBuilder\.parse\s*\(|SAXParser\.parse\s*\(|XMLReader\.parse\s*\(|TransformerFactory\.newInstance\s*\()'
   - language: javascript
     pattern: '(?i)(xml2js\.parseString\s*\(|libxmljs\.parseXml\s*\(|fast-xml-parser\.parse\s*\()'
+sanitizers:
+  - 'disallow-doctype-decl'
+  - 'external-general-entities'
+  - 'external-parameter-entities'
+  - 'load-external-dtd'
+sanitizer_after_lines: 1
+sanitizer_before_lines: 8
 severity: critical
 remediation: "Python: 使用 defusedxml 替代标准 XML 库。Java: 设置 FEATURE_SECURE_PROCESSING=true, 禁用外部实体 (setFeature('http://apache.org/xml/features/disallow-doctype-decl', true))。"
 references:

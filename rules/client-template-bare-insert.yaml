@@ -1,0 +1,27 @@
+category: injection
+cwe: CWE-79
+description: "客户端模板裸插标记（10.22，R54 calibre-web 0day 漏检盲区）：mustache/handlebars 三重大括号 {{{ }}}（无转义语义）、EJS <%- %> 裸插、Vue v-html 绑定为无转义输出提示。低置信提示——模板变量可能是静态文本/已净化值，判定归 LLM 层（audit-pack 取证：追模板渲染入口的数据来源是否为服务端 API/用户可控）。注意 EJS 语义与 underscore 相反（<%= %> 在 EJS 是转义、在 underscore 是裸插），故只列语义无歧义形态。"
+id: client-template-bare-insert
+language: all
+name: "Client-Side Template Bare Insertion (XSS hint)"
+owasp: "A03:2021-Injection"
+patterns:
+  - language: html
+    # mustache/handlebars 三重大括号 = 无转义裸插（{{ }} 双花为转义，语义无歧义）
+    pattern: '\{\{\{[^}]*\}\}\}'
+  - language: html
+    # EJS <%- %> = 裸插（<%= %> 在 EJS 是转义形态，不列）
+    pattern: '<%-[^%>]*%>'
+  - language: html
+    # Vue v-html = 原生 HTML 绑定（v-text 为文本绑定，不列）
+    pattern: '(?i)v-html\s*=\s*["\x27][^"\x27]*["\x27]'
+sanitizers:
+  - "escape("
+  - "htmlEscape"
+  - "encodeURIComponent"
+  - "DOMPurify"
+sanitizer_before_lines: 5
+severity: medium
+remediation: "模板变量输出前转义；mustache/handlebars 用 {{ }} 双花（自动转义）替代 {{{ }}}；EJS 用 <%= %>（转义）替代 <%- %>；Vue 用 v-text 替代 v-html，或在 v-html 前对内容做 DOMPurify 净化。"
+references:
+  - "https://cwe.mitre.org/data/definitions/79.html"

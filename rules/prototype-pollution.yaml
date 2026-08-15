@@ -13,6 +13,8 @@ patterns:
   - language: javascript
     pattern: (?s)(?:function\s+\w*[Mm]erge|function\s+\w*[Ee]xtend|function\s+\w*[Cc]opy|const\s+\w+[Mm]erge|const\s+\w+[Ee]xtend).*for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*\w+\[\w+\]\s*=\s*\w+\[\w+\]
   - language: javascript
+    pattern: for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+(?:options|opts|config|conf|settings|params|props)\s*\)\s*\{[^}]*\w+\[\w+\]\s*=\s*\w+\[\w+\]
+  - language: javascript
     pattern: (?i)Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req\.|request\.|body|query|params|ctx\.)
   - language: javascript
     pattern: (?s)for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*__proto__
@@ -23,7 +25,13 @@ patterns:
   - language: typescript
     pattern: (?s)(?:function\s+\w*[Mm]erge|function\s+\w*[Ee]xtend|function\s+\w*[Cc]opy|const\s+\w+[Mm]erge|const\s+\w+[Ee]xtend).*for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*\w+\[\w+\]\s*=\s*\w+\[\w+\]
   - language: typescript
+    pattern: for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+(?:options|opts|config|conf|settings|params|props)\s*\)\s*\{[^}]*\w+\[\w+\]\s*=\s*\w+\[\w+\]
+  - language: typescript
     pattern: (?i)Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req\.|request\.|body|query|params|ctx\.)
   - language: typescript
     pattern: (?i)\w+\[['"]__proto__['"]\]\s*=
 severity: high
+sanitizer_after_lines: 8
+sanitizers:
+  - "hasownproperty"
+  - "getownpropertynames"

@@ -151,33 +151,12 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
-  - id: "rust_deserialization"
-    name: "Rust Unsafe Deserialization"
-    description: "Deserialization via serde and other crates"
-    match_mode: "Semantic"
-    namespaces:
-      - "serde_json"
-      - "serde_yaml"
-      - "serde_xml_rs"
-      - "bincode"
-      - "rmp_serde"
-    receiver_patterns:
-      - "deserializer"
-    patterns:
-      - "::from_str"
-      - "::from_slice"
-      - "::from_reader"
-    exact_matches:
-      - "serde_json::from_str"
-      - "serde_json::from_slice"
-      - "serde_yaml::from_str"
-      - "bincode::deserialize"
-    languages: ["rust"]
-    vulnerability_type: "InsecureDeserialization"
-    severity: "Critical"
-    cwe_id: "CWE-502"
-    sensitive_params: [0]
-    ast_patterns: []
+  # 注：原 rust_deserialization sink（serde_json/serde_yaml/serde_xml_rs/bincode/
+  # rmp_serde 的 from_str/from_slice/from_reader → Critical CWE-502）已移除。
+  # 这些 crate 均为数据专用反序列化器——只能构造编译期确定的 Deserialize 实现类型，
+  # 不存在 Java ObjectInputStream / Python pickle 式运行时类型实例化 gadget 链，
+  # 主流 Rust 生态没有 CWE-502 形态。全部命中均为误标（实扫实证 critical FP）。
+  # bincode 等格式对畸形输入可 panic/内存放大（CWE-400 DoS 面），归判定层评估。
 
   - id: "rust_file_path"
     name: "Rust File Path"

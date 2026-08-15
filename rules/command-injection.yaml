@@ -19,14 +19,17 @@ patterns:
   - language: javascript
     pattern: (?i)(child_process\.spawn\s*\(|\.spawn\s*\()
   # Java：要求 new ProcessBuilder( 构造形式，避免命中异常消息字符串字面量中的 "ProcessBuilder(...)"
+  # 10.24③：ProcessBuilder(List) 数组形态不经 shell 是安全实践（kavita/grimmory ffmpeg argv 家族
+  # FP 根源）——收紧为 shell 执行形态（sh/bash + -c）或用户输入锚点形态才报
   - language: java
-    pattern: (?i)(Runtime\.getRuntime\(\)\.exec\s*\(|new\s+ProcessBuilder\s*\()
+    pattern: '(?i)(Runtime\.getRuntime\(\)\.exec\s*\(|new\s+ProcessBuilder\s*\([^)]*(?:sh|bash|cmd|powershell|pwsh)[^)]*[-]{1,2}c|new\s+ProcessBuilder\s*\([^)]*(?:req\.|request|param|input|user))'
   # Python：os.system/os.popen 始终高危；subprocess 仅匹配字符串首参形式（列表形式无 shell 风险），
   # Rust regex 不支持负向前瞻 (?!\[)，用首字符为引号等价表达
   - language: python
     pattern: (?i)(os\.system\s*\(|os\.popen\s*\(|subprocess\.(call|run|Popen)\s*\(\s*["'])
   # PHP：system/exec 要求非标识符/非成员调用前缀，避免命中 curl_exec(、.exec()、filesystem( 等；
   # 同时排除 `>`（$pdo->exec( 方法调用）与 `:`（Foo::exec( 静态调用）——PHP 内建 exec/system 只会以裸函数形式调用
+  # 10.23⑤：passthru 加同款边界——fpassthru( 是文件流函数，名称表层命中 passthru( 误标 CWE-78
   - language: php
-    pattern: (?i)(shell_exec\s*\(|passthru\s*\(|popen\s*\(|(?:^|[^\w.>:])(?:system|exec)\s*\()
+    pattern: '(?i)(shell_exec\s*\(|(?:^|[^\w.>:])passthru\s*\(|popen\s*\(|(?:^|[^\w.>:])(?:system|exec)\s*\()'
 severity: critical

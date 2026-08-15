@@ -13,9 +13,11 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::agent_host::{AgentHost, HostEvent};
 use crate::engine::AnalysisEngine;
 use crate::protocol::{CacheStats, Envelope, Request, RequestCommand, Response};
 use crate::state::DaemonState;
+use ctx_audit_agent::cron::{CronScheduler, CronStore};
 use deepaudit_core::watcher::{FileWatcher, WatcherConfig};
 
 /// IPC 服务器默认端口（用 TCP loopback 替代 Named Pipe，跨平台统一）
@@ -28,6 +30,7 @@ type WatcherHandle = tokio::sync::watch::Sender<bool>;
 pub struct Server {
     state: Arc<DaemonState>,
     engine: Arc<AnalysisEngine>,
+    agent_host: Arc<AgentHost>,
     addr: String,
     auth_token: String,
     shutdown: tokio::sync::watch::Receiver<bool>,
@@ -43,6 +46,7 @@ impl Server {
         Self {
             state,
             engine,
+            agent_host: Arc::new(AgentHost::from_env()),
             addr: DEFAULT_ADDR.to_string(),
             auth_token,
             shutdown,
@@ -78,6 +82,11 @@ impl Server {
             self.shutdown.clone(),
         );
 
+        // 启动 cron 调度器（M3：每分钟对齐 tick，任务存 .ctx-audit/cron.json）
+        let cron_store = CronStore::open(cron_store_path());
+        let cron_scheduler = CronScheduler::new(cron_store, self.agent_host.clone());
+        let cron_handle = tokio::spawn(cron_scheduler.run(self.shutdown.clone()));
+
         let auth_token = Arc::new(self.auth_token.clone());
         let watchers = self.watchers.clone();
 
@@ -92,8 +101,9 @@ impl Server {
                             let shutdown_tx = self.shutdown_tx.clone();
                             let auth = auth_token.clone();
                             let watchers = watchers.clone();
+                            let agent_host = self.agent_host.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = handle_client(stream, state, engine, shutdown_tx, &auth, watchers).await {
+                                if let Err(e) = handle_client(stream, state, engine, shutdown_tx, &auth, watchers, agent_host).await {
                                     error!("客户端处理错误: {}", e);
                                 }
                             });
@@ -119,6 +129,7 @@ impl Server {
 
         // 清理
         let _ = heartbeat_handle.await;
+        let _ = cron_handle.await;
         let _ = std::fs::remove_file(pid_file_path());
         let _ = std::fs::remove_file(heartbeat_file_path());
         let _ = std::fs::remove_file(token_file_path());
@@ -139,6 +150,7 @@ async fn handle_client(
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     auth_token: &str,
     watchers: Arc<RwLock<HashMap<String, WatcherHandle>>>,
+    agent_host: Arc<AgentHost>,
 ) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -178,12 +190,22 @@ async fn handle_client(
             }
         }
 
+        // 流式命令特判：同一连接上连续写多个 Envelope，以 AgentRoundDone 收尾
+        if matches!(
+            request.command,
+            RequestCommand::AgentRoundRun { .. } | RequestCommand::AgentRoundResume { .. }
+        ) {
+            handle_agent_stream(request.command, &agent_host, &mut writer).await?;
+            continue;
+        }
+
         let response = handle_request(
             request.command,
             &state,
             &engine,
             &shutdown_tx,
             watchers.clone(),
+            &agent_host,
         )
         .await;
         let envelope = Envelope::new(uuid::Uuid::new_v4().to_string(), response);
@@ -192,6 +214,83 @@ async fn handle_client(
         writer.flush().await?;
     }
 
+    Ok(())
+}
+
+/// 处理 agent 流式命令（AgentRoundRun / AgentRoundResume）
+///
+/// 序列：AgentRoundStarted → AgentEvent* → AgentRoundDone；
+/// 启动失败返回单个 Error envelope。
+async fn handle_agent_stream(
+    command: RequestCommand,
+    host: &Arc<AgentHost>,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+) -> anyhow::Result<()> {
+    let result = match command {
+        RequestCommand::AgentRoundRun { target, round_id } => {
+            host.start_round(&target, round_id).await
+        }
+        RequestCommand::AgentRoundResume {
+            round_id,
+            approve,
+            note,
+        } => host.resume_round(&round_id, approve, note).await,
+        _ => unreachable!("非流式命令不应进入此分支"),
+    };
+
+    let (round_id, mut rx) = match result {
+        Ok(v) => v,
+        Err(msg) => {
+            return write_response_line(
+                writer,
+                Response::Error {
+                    code: "agent_start_failed".to_string(),
+                    message: msg,
+                },
+            )
+            .await;
+        }
+    };
+
+    write_response_line(writer, Response::AgentRoundStarted {
+        round_id: round_id.clone(),
+    })
+    .await?;
+
+    // 事件流：Done 为终止标记；通道异常关闭（如 abort）按 aborted 收尾
+    let mut final_status = "aborted".to_string();
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            HostEvent::Event(json) => {
+                write_response_line(writer, Response::AgentEvent {
+                    round_id: round_id.clone(),
+                    event: json,
+                })
+                .await?;
+            }
+            HostEvent::Done(status) => {
+                final_status = status;
+                break;
+            }
+        }
+    }
+
+    write_response_line(writer, Response::AgentRoundDone {
+        round_id,
+        status: final_status,
+    })
+    .await
+}
+
+/// 写一个 Response Envelope 行（NDJSON）
+async fn write_response_line(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    resp: Response,
+) -> anyhow::Result<()> {
+    let envelope = Envelope::new(uuid::Uuid::new_v4().to_string(), resp);
+    let json = serde_json::to_string(&envelope)?;
+    writer.write_all(format!("{}\n", json).as_bytes()).await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -213,6 +312,7 @@ async fn handle_request(
     engine: &Arc<AnalysisEngine>,
     shutdown_tx: &tokio::sync::watch::Sender<bool>,
     watchers: Arc<RwLock<HashMap<String, WatcherHandle>>>,
+    agent_host: &Arc<AgentHost>,
 ) -> Response {
     match command {
         RequestCommand::Ping => Response::Pong {
@@ -586,7 +686,106 @@ async fn handle_request(
                 message: e.to_string(),
             },
         },
+
+        // ── 原生 Agent / 轮次 runner（M3） ──────────────
+        // AgentRoundRun / AgentRoundResume 为流式命令，已在 handle_client 特判
+        RequestCommand::AgentRoundRun { .. } | RequestCommand::AgentRoundResume { .. } => {
+            Response::Error {
+                code: "internal".into(),
+                message: "流式命令路由错误".into(),
+            }
+        }
+
+        RequestCommand::AgentRoundStatus { round_id } => {
+            match agent_host.round_status(round_id).await {
+                Ok(state) => Response::AgentRoundInfo { state },
+                Err(e) => Response::Error {
+                    code: "round_not_found".into(),
+                    message: e,
+                },
+            }
+        }
+
+        RequestCommand::AgentAbort { round_id } => {
+            if agent_host.abort_round(&round_id).await {
+                Response::Ack {
+                    message: format!("aborted: {}", round_id),
+                }
+            } else {
+                Response::Error {
+                    code: "not_running".into(),
+                    message: format!("轮次 {} 未在执行", round_id),
+                }
+            }
+        }
+
+        RequestCommand::CronAdd { schedule, target } => {
+            let mut store = CronStore::open(cron_store_path());
+            match store.add(&schedule, &target) {
+                Ok(job) => Response::Ack {
+                    message: format!("cron_added: {}", job.id),
+                },
+                Err(e) => Response::Error {
+                    code: "invalid_schedule".into(),
+                    message: format!("cron 表达式非法: {}", e),
+                },
+            }
+        }
+
+        RequestCommand::CronList => {
+            let store = CronStore::open(cron_store_path());
+            Response::CronJobList {
+                jobs: serde_json::to_value(store.list()).unwrap_or_default(),
+            }
+        }
+
+        RequestCommand::CronDelete { id } => {
+            let mut store = CronStore::open(cron_store_path());
+            if store.remove(&id) {
+                Response::Ack {
+                    message: format!("cron_deleted: {}", id),
+                }
+            } else {
+                Response::Error {
+                    code: "not_found".into(),
+                    message: format!("cron 任务 {} 不存在", id),
+                }
+            }
+        }
+
+        // M4：CVE 回放反哺机械层（确定性，无 LLM）
+        RequestCommand::AgentFeedbackRun { task_path } => {
+            let task_result = std::fs::read_to_string(&task_path)
+                .map_err(|e| format!("任务文件读取失败 {}: {}", task_path, e))
+                .and_then(|content| {
+                    serde_json::from_str::<ctx_audit_agent::FeedbackTask>(&content)
+                        .map_err(|e| format!("任务 JSON 解析失败: {}", e))
+                });
+            match task_result {
+                Err(message) => Response::Error {
+                    code: "invalid_task".into(),
+                    message,
+                },
+                Ok(task) => {
+                    let feedback_root = std::path::PathBuf::from(".ctx-audit").join("feedback");
+                    match ctx_audit_agent::replay::run_replay(&task, &feedback_root).await {
+                        Ok((report, _)) => Response::AgentFeedbackReport {
+                            report: serde_json::to_value(&report).unwrap_or_default(),
+                        },
+                        Err(e) => Response::Error {
+                            code: "feedback_failed".into(),
+                            message: e.to_string(),
+                        },
+                    }
+                }
+            }
+        }
     }
+}
+
+/// cron 任务存储文件路径（与 pid/token 同目录约定）
+pub fn cron_store_path() -> std::path::PathBuf {
+    std::path::Path::new(".ctx-audit/cron.json").to_path_buf()
 }
 
 /// 将项目路径转为安全的文件名

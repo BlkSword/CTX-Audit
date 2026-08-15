@@ -1,0 +1,36 @@
+category: security-misconfiguration
+cwe: CWE-113
+description: "检测 JS/TS 响应头值拼接用户可控数据（HTTP Response Header Injection / CWE-113 家族）：res.setHeader/res.header 的第二参数为含 ${} 插值的模板字面量或与标识符直接拼接的字符串——若插值变量用户可控（如文件夹名/文件名/用户名），攻击者可注入引号打破 Content-Disposition 等头的值结构（Node 运行时只挡 CRLF，不挡 \" 等可打印字符），造成下载文件名伪造、Content-Type 混淆；在反射型头（Location/Refresh/Set-Cookie）上影响更大。判定层需确认：① 插值变量是否用户可控；② 头名是否为安全敏感头；③ 变量上游是否已做字符白名单。"
+id: response-header-injection
+language: all
+name: Response Header Value Injection via Interpolation
+owasp: "A03:2021-Injection"
+remediation: "对拼进响应头值的变量做字符白名单（剔除引号/反斜杠/非可见字符）或 encodeURIComponent；Content-Disposition 同时给出 filename*=UTF-8'' 编码形式；避免直接拼接，优先使用框架的安全 API（如 res.download）。"
+references:
+  - "https://cwe.mitre.org/data/definitions/113.html"
+severity: medium
+sanitizer_before_lines: 8
+sanitizers:
+  - "encodeuricomponent"
+  - "sanitiz"
+  - ".replace("
+  - "escape("
+  - "he.encode"
+  - "striphtml"
+patterns:
+  - language: javascript
+    pattern: '\.\s*setHeader\s*\(\s*[''"][^''"]+[''"]\s*,\s*`[^`]*\$\{'
+  - language: typescript
+    pattern: '\.\s*setHeader\s*\(\s*[''"][^''"]+[''"]\s*,\s*`[^`]*\$\{'
+  - language: javascript
+    pattern: '\.\s*setHeader\s*\(\s*[''"][^''"]+[''"]\s*,\s*[''"][^''"]*[''"]\s*\+\s*[A-Za-z_$]'
+  - language: typescript
+    pattern: '\.\s*setHeader\s*\(\s*[''"][^''"]+[''"]\s*,\s*[''"][^''"]*[''"]\s*\+\s*[A-Za-z_$]'
+  - language: javascript
+    pattern: '\.\s*header\s*\(\s*[''"][^''"]+[''"]\s*,\s*`[^`]*\$\{'
+  - language: typescript
+    pattern: '\.\s*header\s*\(\s*[''"][^''"]+[''"]\s*,\s*`[^`]*\$\{'
+  - language: javascript
+    pattern: '\.\s*header\s*\(\s*[''"][^''"]+[''"]\s*,\s*[''"][^''"]*[''"]\s*\+\s*[A-Za-z_$]'
+  - language: typescript
+    pattern: '\.\s*header\s*\(\s*[''"][^''"]+[''"]\s*,\s*[''"][^''"]*[''"]\s*\+\s*[A-Za-z_$]'

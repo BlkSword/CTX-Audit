@@ -266,6 +266,45 @@ impl DaemonClient {
             .await
     }
 
+    /// 发送流式请求（AgentRoundRun / AgentRoundResume）
+    ///
+    /// 中间事件经 `on_event` 回调（AgentRoundStarted / AgentEvent），
+    /// 返回值为终止帧（AgentRoundDone 或 Error）。
+    /// 流式请求不做自动重连（重连会丢失事件序列），失败直接报错。
+    pub async fn send_streaming_request<F>(
+        &mut self,
+        command: RequestCommand,
+        mut on_event: F,
+    ) -> Result<Response>
+    where
+        F: FnMut(Response),
+    {
+        let request = Request {
+            auth_token: self.auth_token.clone(),
+            command,
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stream
+            .write_all(format!("{}\n", json).as_bytes())
+            .await?;
+        self.stream.flush().await?;
+
+        let mut reader = BufReader::new(&mut self.stream);
+        loop {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line).await?;
+            if n == 0 {
+                anyhow::bail!("守护进程关闭了连接");
+            }
+            let envelope: Envelope = serde_json::from_str(&line)?;
+            match envelope.payload {
+                done @ Response::AgentRoundDone { .. } => return Ok(done),
+                err @ Response::Error { .. } => return Ok(err),
+                other => on_event(other),
+            }
+        }
+    }
+
     fn detect_addr() -> Result<String> {
         let path = std::path::Path::new(".ctx-audit/daemon.pid");
         if path.exists() {

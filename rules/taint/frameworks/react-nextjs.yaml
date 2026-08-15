@@ -110,6 +110,18 @@ sources:
     category: "UserInput"
     ast_patterns: []
 
+  - id: "nextjs_pages_router_query"
+    name: "Next.js Pages Router Query"
+    description: "URL query parameters in Pages Router (getServerSideProps context / useRouter)"
+    patterns:
+      - "context.query"
+      - "ctx.query"
+      - "router.query"
+    languages: ["javascript", "typescript"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
 sinks:
   - id: "react_dangerously_set_inner_html"
     name: "dangerouslySetInnerHTML"
@@ -197,6 +209,22 @@ sinks:
       - "NextResponse.redirect"
       - "NextResponse.rewrite"
       - "NextResponse.json"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "OpenRedirect"
+    severity: "High"
+    cwe_id: "CWE-601"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "nextjs_router_navigation"
+    name: "Client-side Router Navigation"
+    description: "router.replace/push with user-controlled URL — open redirect and javascript: scheme XSS vector (Pages Router useRouter)"
+    match_mode: "Semantic"
+    receiver_patterns:
+      - "router"
+    patterns:
+      - ".replace("
+      - ".push("
     languages: ["javascript", "typescript"]
     vulnerability_type: "OpenRedirect"
     severity: "High"

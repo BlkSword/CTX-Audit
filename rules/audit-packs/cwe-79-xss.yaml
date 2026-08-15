@@ -21,15 +21,38 @@ evidence_steps:
   - tool: get_code_context
     purpose: "检查来源到 sink 之间是否经过数值格式化（bytesToSize/toFixed/百分比/Math.round 等）。数值格式化会破坏任意 HTML 注入面，是强 FP 信号。"
   - tool: get_graph_stats
-    purpose: "确认 finding 所在文件是否为生产代码（file_role=production），测试/fixture/vendor 文件中的 XSS 不构成真实攻击面。"
+    purpose: "确定 finding 所在文件是否为生产代码（file_role=production）；测试/fixture/vendor 文件中的 XSS 候选无实际攻击面。"
+  # 10.22 取证步骤（R54 calibre-web 0day 漏检盲区）：客户端模板裸插形态
+  # （{{{ }}}/<%- %>/v-html，规则 client-template-bare-insert）——模板变量为
+  # 静态文本/字面量则直接 FP；赋值点为服务端 API 字段/URL 参数且无渲染前
+  # escape/DOMPurify 转义管道则向 TP 加权
+  - tool: query_callers
+    purpose: "追模板裸插变量（{{{ var }}}/<%- var %>/v-html=var）的赋值点：服务端 API/JSON 响应字段、URL 参数（可注入）还是静态文本/已净化值（FP）；并用 search_code 搜全部赋值点确认渲染前有无转义管道。"
 tp_criteria:
-  - "sink 赋值内容可追溯到外部可控输入（HTTP 输入、客户端协议字段、用户生成内容）"
-  - "来源到 sink 的完整路径上无有效转义/净化（或转义与上下文不匹配，如 HTML 属性上下文只做 JS 转义）"
-  - "finding 位于生产代码路径，且攻击者无需管理员权限即可触达"
+  - "sink 赋值内容可追溯到外部可控输入（HTTP 输入、客户端协议字段、用户提交数据）"
+  - "来源到 sink 的整条路径无有效转义/净化（转义函数不匹配，如 HTML 上下文只用 JS 转义）"
+  - "finding 位于生产代码路径，且攻击者无需管理员权限即可触发"
+  # 10.22 判据：客户端模板裸插（{{{ }}}/<%- %>/v-html）——TP 需
+  # 模板变量可追溯到服务端 API/JSON 响应字段或 URL 参数，且无渲染前净化
+  - "模板裸插变量（{{{ var }}}/<%- var %>/v-html=var）可追溯到服务端 API 返回的用户可控字段或 URL 参数（跨 HTTP 边界链：服务端 JSON → 前端模板变量）"
+  # 10.18 判据（R45 登记，wger CVE-2026-40353 回放）：
+  # Django 模板 `{{ var|safe }}` 输出点需反向追变量来源——若来自模型 @property
+  # 用 f-string 拼接用户字段进 HTML（`f'<a href="{self.url}">'`），且未净化，
+  # 即构成存储型 XSS。|safe 用在纯静态/已净化变量上为 FP。
+  - "模板 `{{ var|safe }}` 的 var 可追溯到模型 @property/方法中 f-string/format 拼接用户可控字段的 HTML 构造（`f'<a ...>'`、`f'<img ...'` 等标签起始模式）"
+  - "该字段经模型字段/DB 存储（存储型），或经 URL 参数直接注入（反射型）"
+  - "f-string 拼接点无 html 转义（format_map/format 无 escape 调用），|safe 无配套净化"
 fp_criteria:
   - "sink 赋值为字面量 HTML 或编译期常量"
   - "赋值内容经过数值格式化（bytesToSize、toFixed、百分比计算），无法注入标签或属性"
   - "数据来源是管理员配置项/服务端内部状态，属于设计内信任边界"
   - "路径上存在与输出上下文匹配的有效转义（DOMPurify、html.escape、模板引擎自动转义未被关闭）"
   - "finding 位于测试、构建脚本或 vendor 第三方库"
+  - "|safe 的变量来自纯静态 HTML 片段或字面量"
+  - "模型属性拼接点存在 escape/bleach/format_html（Django 内置转义）调用"
+  - "字段为数值/枚举等不可注入类型（Django IntegerField/ChoiceField 白名单值）"
+  - "服务端 CSP/响应头已全局阻断脚本执行（需人工确认 nonce 配置）"
+  # 10.22 判据：模板裸插 FP——变量为静态文本/字面量、渲染前有转义管道
+  - "模板裸插变量为静态文本/已净化值（渲染入口固定赋值、后端已 escape/DOMPurify 净化后才注入）"
+  - "模板引擎自动转义未被关闭（如 EJS <%= %> 转义形态被误报）"
 confidence_guide: "调用链完整追到外部输入 + 确认无转义（多证据交叉）→ 0.9+；只看到 sink 与来源但未验证转义环节（一维未验证）→ 0.7-0.9；来源性质与转义证据矛盾（如部分路径有转义）→ <0.7，判 needs_review。"

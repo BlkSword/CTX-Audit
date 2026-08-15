@@ -56,7 +56,7 @@ impl RuleScanner {
             } else if let Some(patterns) = &rule.patterns {
                 // 多语言模式：为每个 LanguagePattern 创建独立的编译规则
                 for lp in patterns {
-                    if let Ok(regex) = Regex::new(&lp.pattern) {
+                    if let Ok(regex) = compile_rule_regex(&lp.pattern) {
                         // 创建一条带特定语言的副本
                         let mut lang_rule = rule.clone();
                         lang_rule.language = lp.language.clone();
@@ -75,7 +75,7 @@ impl RuleScanner {
                     }
                 }
             } else if let Some(pattern) = &rule.pattern {
-                if let Ok(regex) = Regex::new(pattern) {
+                if let Ok(regex) = compile_rule_regex(pattern) {
                     compiled_rules.push(CompiledRule {
                         rule: rule.clone(),
                         matcher: RuleMatcher::Regex(regex),
@@ -138,6 +138,19 @@ impl RuleScanner {
                                 &mut guard_content_cache,
                             );
                             if is_rule_sanitized(content, start_pos, &compiled.rule, guard) {
+                                continue;
+                            }
+                            // 函数级授权检查（backlog 10.27）：资源操作函数体内
+                            // 无身份/属主校验即"缺失授权"候选。函数级语义——
+                            // 同文件远处 import 的 auth 模块不豁免本函数。
+                            if compiled.rule.auth_check_in_func
+                                && enclosing_func_has_auth_check(
+                                    content,
+                                    start_pos,
+                                    &extension,
+                                    &compiled.rule.sanitizers,
+                                )
+                            {
                                 continue;
                             }
                             let ranges = comment_ranges_cache
@@ -205,6 +218,12 @@ impl RuleScanner {
                                     None
                                 }
                             } else if is_missing_check_related(&compiled.rule) {
+                                None
+                            } else if compiled.rule.skip_likely_fp {
+                                // skip_likely_fp：API 存在即风险类规则不降权——
+                                // 模板字面量含嵌套括号时 extract_call_args 按
+                                // rfind('(') 取参数会错位误判"参数全部为字面量"，
+                                // 且该语义下常量参数也不构成安全保证
                                 None
                             } else {
                                 evaluate_likely_fp_args(content, start_pos, end_pos)
@@ -318,6 +337,48 @@ impl Scanner for RuleScanner {
     async fn scan_file(&self, path: &PathBuf, content: &str) -> Vec<Finding> {
         self.scan_file_sync(path, content)
     }
+}
+
+/// 编译规则正则。Rust regex crate 不支持 `(?m)`/`(?s)`/`(?i)` 等 inline flag
+/// （`Regex::new("(?m)...")` 直接报错导致规则静默跳过——规则作者常踩的坑）。
+/// 这里把行首 inline flag 组（(?m)(?s)(?i)(?im)... 形态）转换为等价语义：
+///   `(?m)` -> RegexBuilder::multi_line(true)（^/$ 按行匹配）
+///   `(?s)` -> RegexBuilder::dot_matches_new_line(true)
+///   `(?i)` -> RegexBuilder::case_insensitive(true)
+/// 组合（如 `(?im)`）按字符逐个解析。非 flag 前缀（命名组 `(?P<name>`、
+/// `(?<name>`）不匹配"全 m/s/i 字符"条件，原样保留由 RegexBuilder 处理。
+fn compile_rule_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    // 解析行首 inline flag 组并从 pattern 中剥除
+    let mut flags = String::new();
+    let mut rest = pattern;
+    if let Some(inner) = pattern.strip_prefix("(?") {
+        if let Some(end) = inner.find(')') {
+            let flag_part = &inner[..end];
+            // 仅当全部是 m/s/i 字符时才视为 flag 组（排除命名组 (?P<...>、(?<...>)
+            if !flag_part.is_empty()
+                && flag_part.chars().all(|c| matches!(c, 'm' | 's' | 'i'))
+            {
+                flags.push_str(flag_part);
+                rest = &inner[end + 1..];
+            }
+        }
+    }
+    let mut builder = regex::RegexBuilder::new(rest);
+    for c in flags.chars() {
+        match c {
+            'm' => {
+                builder.multi_line(true);
+            }
+            's' => {
+                builder.dot_matches_new_line(true);
+            }
+            'i' => {
+                builder.case_insensitive(true);
+            }
+            _ => {}
+        }
+    }
+    builder.build()
 }
 
 /// 带 sanitizer_include_chain 的规则：惰性解析当前文件的 PHP include 链，
@@ -447,6 +508,13 @@ fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>
         if is_sanitized_within_lines_after(content, pos, &rule.sanitizers, match_all, rule.sanitizer_after_lines) {
             return true;
         }
+        // 前向窗口语义（有界，10.25）：仅看命中点之前 N 行，
+        // 覆盖"先净化后使用"形态（sanitize 在 sink 上一两行），远处 import/守卫不吃
+        if rule.sanitizer_before_lines > 0
+            && is_sanitized_within_lines_before(content, pos, &rule.sanitizers, match_all, rule.sanitizer_before_lines)
+        {
+            return true;
+        }
     } else {
         let effective_pos = if rule.sanitizer_file_scope {
             content.len()
@@ -464,6 +532,7 @@ fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>
 }
 
 /// 检查命中点之后 N 行内（含命中行剩余部分）是否出现 sanitizer 模式。
+/// 检查匹配位置之后 N 行内是否出现 sanitizer（后向窗口语义）。
 /// 用于"先取路径后校验"形态：校验调用紧跟 sink 之后。
 fn is_sanitized_within_lines_after(
     content: &str,
@@ -487,6 +556,39 @@ fn is_sanitized_within_lines_after(
         }
     }
     let window = content[pos..end].to_lowercase();
+    let contains = |s: &String| window.contains(&s.to_lowercase());
+    if match_all {
+        sanitizers.iter().all(contains)
+    } else {
+        sanitizers.iter().any(contains)
+    }
+}
+
+/// 检查匹配位置之前 N 行内是否出现 sanitizer（前向窗口语义，10.25）。
+/// 用于"先净化后使用"形态（`const safe = sanitize(x); sink(dir, safe)`），
+/// 窗口有界以避免同文件远处 import/无关守卫误豁免。
+fn is_sanitized_within_lines_before(
+    content: &str,
+    pos: usize,
+    sanitizers: &[String],
+    match_all: bool,
+    lines: usize,
+) -> bool {
+    if sanitizers.is_empty() || pos == 0 {
+        return false;
+    }
+    let mut start = 0;
+    let mut seen = 0;
+    for (i, b) in content[..pos].bytes().enumerate().rev() {
+        if b == b'\n' {
+            seen += 1;
+            if seen >= lines {
+                start = i + 1;
+                break;
+            }
+        }
+    }
+    let window = content[start..pos].to_lowercase();
     let contains = |s: &String| window.contains(&s.to_lowercase());
     if match_all {
         sanitizers.iter().all(contains)
@@ -580,6 +682,11 @@ fn args_all_literals(args: &str) -> bool {
     while i < bytes.len() {
         let c = bytes[i];
         if let Some(q) = in_str {
+            // 模板字面量含 ${} 插值则不是纯字面量（响应头拼接场景：
+            // `filename="${name}"` 变量攻击者可控，降 info 会埋没真问题）
+            if q == b'`' && c == b'{' && prev == b'$' && (i < 2 || bytes[i - 2] != b'\\') {
+                return false;
+            }
             if c == q && prev != b'\\' {
                 in_str = None;
             }
@@ -1124,6 +1231,81 @@ fn go_enclosing_func_has_file_open(content: &str, pos: usize) -> bool {
         .unwrap_or(false)
 }
 
+/// 授权检查语义（missing-authorization 家族，backlog 10.27）：
+/// 命中点所在函数/方法体内是否出现任一授权关键字。
+/// 资源操作（按 id/name 的 get/delete/update/remove 等）的函数体内
+/// 没有身份/属主校验（currentUser/owner/isAdmin/hasRole 等）即为
+/// "缺失授权"候选（CWE-862）。函数作用域语义：同文件远处 import 的
+/// auth 模块不豁免本函数（区别于 sanitizer_file_scope 的文件级语义）。
+/// 授权关键字由调用方提供（规则 sanitizers 列表）。
+/// 支持语言：go/java/python/javascript/typescript/php/rust/c/cpp。
+/// 解析失败或无法确定函数范围时返回 false（保守：不豁免，交由判定层）。
+fn enclosing_func_has_auth_check(
+    content: &str,
+    pos: usize,
+    extension: &str,
+    auth_keywords: &[String],
+) -> bool {
+    if auth_keywords.is_empty() || pos >= content.len() {
+        return false;
+    }
+    let lang = match get_language_for_extension(extension) {
+        Some(l) => l,
+        None => return false,
+    };
+    let mut parser = Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return false;
+    }
+    let tree = match parser.parse(content, None) {
+        Some(t) => t,
+        None => return false,
+    };
+    // 递归查找包含 pos 的最深函数类节点——函数/方法定义体是授权检查的
+    // 作用域边界。按语言映射函数节点类型：
+    //   go:    function_declaration / method_declaration / func_literal
+    //   java:  method_declaration / constructor_declaration
+    //   python:function_definition
+    //   js/ts: function_declaration / method_definition / arrow_function /
+    //          function_expression / generator_function_declaration
+    //   php:   function_definition / method_declaration
+    //   rust:  function_item / closure_expression
+    //   c/cpp: function_definition
+    fn find_func<'a>(node: tree_sitter::Node<'a>, pos: usize) -> Option<tree_sitter::Node<'a>> {
+        if node.start_byte() > pos || node.end_byte() <= pos {
+            return None;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = find_func(child, pos) {
+                return Some(found);
+            }
+        }
+        match node.kind() {
+            "function_declaration"
+            | "method_declaration"
+            | "func_literal"
+            | "constructor_declaration"
+            | "function_definition"
+            | "method_definition"
+            | "arrow_function"
+            | "function_expression"
+            | "generator_function_declaration"
+            | "function_item"
+            | "closure_expression" => Some(node),
+            _ => None,
+        }
+    }
+    let Some(func) = find_func(tree.root_node(), pos) else {
+        return false;
+    };
+    let body = &content[func.start_byte()..func.end_byte()];
+    let body_lower = body.to_lowercase();
+    auth_keywords
+        .iter()
+        .any(|kw| body_lower.contains(&kw.to_lowercase()))
+}
+
 /// 收集 PHP 文件中"非裸调用"形态的被调用名/定义名字节范围：
 /// 方法调用（member_call_expression）、静态调用（scoped_call_expression）、
 /// 构造调用（object_creation_expression）、函数/方法定义（function_definition /
@@ -1318,7 +1500,10 @@ mod tests {
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1357,7 +1542,10 @@ mod tests {
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1398,7 +1586,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1439,7 +1630,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1481,7 +1675,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: after,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1501,6 +1698,207 @@ $upsql = Input::postStrVar('upsql', '');
         let win_unguarded =
             RuleScanner::new(vec![mk_rule(2)]).scan_file_sync(&PathBuf::from("T.java"), unguarded);
         assert_eq!(win_unguarded.len(), 1, "窗口内无校验，保留命中");
+    }
+
+    #[test]
+    fn test_sanitizer_before_lines_window() {
+        // sanitizer_before_lines=N：命中点之前 N 行内出现 sanitizer 即豁免，
+        // 覆盖"先净化后使用"形态（sanitize 在 sink 上一两行），
+        // 且不受同文件远处文本影响（无界前缀语义会把远处 import/守卫误当净化）。
+        // 真实修复形态：const sanitized = sanitize(name); path.join(dir, sanitized);
+        let guarded = "const sanitize = require('x');\nfunction f(dir, name) {\n  const sanitized = sanitize(name);\n  return path.join(dir, sanitized);\n}\n";
+        let unguarded = "const sanitize = require('x');\nfunction f(dir, name) {\n  return path.join(dir, name);\n}\n";
+        let distant = "const y = sanitize(q);\n\n\n\n\n\n\nfunction f(dir, name) {\n  return path.join(dir, name);\n}\n";
+        let mk_rule = |after: usize, before: usize| Rule {
+            id: "path-traversal".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "javascript".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "javascript".to_string(),
+                pattern: r"path\.join\s*\(".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-22".to_string()),
+            sanitizers: vec!["sanitize(".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: after,
+            sanitizer_before_lines: before,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        // 仅后向窗口（现有语义）：净化在命中点之前 → 守卫版也不豁免
+        let after_only =
+            RuleScanner::new(vec![mk_rule(2, 0)]).scan_file_sync(&PathBuf::from("f.js"), guarded);
+        assert_eq!(after_only.len(), 1, "后向窗口看不到命中点之前的净化");
+        // 前向窗口：守卫版豁免（净化在窗口内），未守卫版保留
+        let win_guarded =
+            RuleScanner::new(vec![mk_rule(2, 2)]).scan_file_sync(&PathBuf::from("f.js"), guarded);
+        assert_eq!(win_guarded.len(), 0, "净化在命中前 2 行内，豁免");
+        let win_unguarded =
+            RuleScanner::new(vec![mk_rule(2, 2)]).scan_file_sync(&PathBuf::from("f.js"), unguarded);
+        assert_eq!(win_unguarded.len(), 1, "窗口内无净化，保留命中");
+        // 远处净化（超出窗口）不误豁免——与无界前缀语义的关键区别
+        let win_distant =
+            RuleScanner::new(vec![mk_rule(2, 2)]).scan_file_sync(&PathBuf::from("f.js"), distant);
+        assert_eq!(win_distant.len(), 1, "净化超出前向窗口，不误豁免");
+    }
+
+    #[test]
+    fn test_java_xxe_factory_hardening_setfeature_exempt() {
+        // CVE-2021-23901（NUTCH-2841）回放反哺：DmozParser 修复形态——
+        // SAXParserFactory.newInstance() 后紧跟 setFeature(disallow-doctype-decl,
+        // true) + external-general-entities=false 即视为已加固，豁免；
+        // 漏洞版（仅工厂创建+解析，无加固）保留命中。
+        let hardened = "class R {\n  void parseDmozFile(File f) throws Exception {\n    SAXParserFactory parserFactory = SAXParserFactory.newInstance();\n    parserFactory.setFeature(\"http://xml.org/sax/features/external-general-entities\", false);\n    parserFactory.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true);\n    SAXParser parser = parserFactory.newSAXParser();\n    XMLReader reader = parser.getXMLReader();\n    reader.parse(new InputSource(in));\n  }\n}\n";
+        let vulnerable = "class R {\n  void parseDmozFile(File f) throws Exception {\n    SAXParserFactory parserFactory = SAXParserFactory.newInstance();\n    SAXParser parser = parserFactory.newSAXParser();\n    XMLReader reader = parser.getXMLReader();\n    reader.parse(new InputSource(in));\n  }\n}\n";
+        let mk_rule = |after: usize, before: usize| Rule {
+            id: "xxe-detection".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Critical,
+            language: "java".to_string(),
+            pattern: Some(
+                r"(?i)(DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLReaderFactory\.createXMLReader|TransformerFactory\.newInstance|SchemaFactory\.newInstance)"
+                    .to_string(),
+            ),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-611".to_string()),
+            sanitizers: vec![
+                "disallow-doctype-decl".to_string(),
+                "external-general-entities".to_string(),
+                "external-parameter-entities".to_string(),
+                "load-external-dtd".to_string(),
+            ],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: after,
+            sanitizer_before_lines: before,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        // 无窗口（仅前缀语义）：加固在命中点之后 → 加固版也命中（正是本字段要解决的问题）
+        let prefix = RuleScanner::new(vec![mk_rule(0, 0)])
+            .scan_file_sync(&PathBuf::from("R.java"), hardened);
+        assert_eq!(prefix.len(), 1, "前缀语义看不到工厂创建之后的加固");
+        // 后向窗口：加固版豁免，漏洞版保留
+        let win_hardened = RuleScanner::new(vec![mk_rule(8, 0)])
+            .scan_file_sync(&PathBuf::from("R.java"), hardened);
+        assert_eq!(win_hardened.len(), 0, "setFeature 加固在命中后 8 行内，豁免");
+        let win_vulnerable = RuleScanner::new(vec![mk_rule(8, 0)])
+            .scan_file_sync(&PathBuf::from("R.java"), vulnerable);
+        assert_eq!(win_vulnerable.len(), 1, "无加固调用，保留命中");
+    }
+
+    #[test]
+    fn test_java_xxe_parse_sink_hardened_before_window() {
+        // xxe-injection 的 .parse( sink：加固 setFeature 在解析调用之前（工厂配置
+        // 形态）→ 前向窗口豁免；无加固保留。
+        let hardened = "class T {\n  void f(InputStream is) throws Exception {\n    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();\n    factory.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true);\n    javax.xml.parsers.DocumentBuilder.parse(is);\n  }\n}\n";
+        let vulnerable = "class T {\n  void f(InputStream is) throws Exception {\n    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();\n    javax.xml.parsers.DocumentBuilder.parse(is);\n  }\n}\n";
+        let rule = Rule {
+            id: "xxe-injection".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Critical,
+            language: "java".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "java".to_string(),
+                pattern: r"(?i)(DocumentBuilder\.parse\s*\(|SAXParser\.parse\s*\(|XMLReader\.parse\s*\()"
+                    .to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-611".to_string()),
+            sanitizers: vec![
+                "disallow-doctype-decl".to_string(),
+                "external-general-entities".to_string(),
+                "external-parameter-entities".to_string(),
+                "load-external-dtd".to_string(),
+            ],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 1,
+            sanitizer_before_lines: 8,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let hardened_res =
+            RuleScanner::new(vec![rule.clone()]).scan_file_sync(&PathBuf::from("T.java"), hardened);
+        assert_eq!(hardened_res.len(), 0, "解析前的 setFeature 加固豁免 parse sink");
+        let vulnerable_res =
+            RuleScanner::new(vec![rule]).scan_file_sync(&PathBuf::from("T.java"), vulnerable);
+        assert_eq!(vulnerable_res.len(), 1, "无加固，parse sink 保留命中");
+    }
+
+    #[test]
+    fn test_java_xxe_import_line_not_flagged() {
+        // 回归：xxe-detection 旧模式 `javax.xml.parsers.SAXParser` 无词边界，
+        // 会把 `import javax.xml.parsers.SAXParserFactory;` 整行误标。
+        let import_only = "import javax.xml.parsers.SAXParserFactory;\nimport javax.xml.parsers.DocumentBuilderFactory;\nclass T {}\n";
+        let rule = Rule {
+            id: "xxe-detection".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Critical,
+            language: "java".to_string(),
+            pattern: Some(
+                r"(?i)(DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLReaderFactory\.createXMLReader|TransformerFactory\.newInstance|SchemaFactory\.newInstance)"
+                    .to_string(),
+            ),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-611".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        let res = RuleScanner::new(vec![rule]).scan_file_sync(&PathBuf::from("T.java"), import_only);
+        assert_eq!(res.len(), 0, "import 行不构成 XML 解析器创建");
     }
 
     #[test]
@@ -1531,7 +1929,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1563,6 +1964,31 @@ $upsql = Input::postStrVar('upsql', '');
     }
 
     #[test]
+    fn test_template_literal_with_interpolation_not_literal() {
+        // 模板字面量含 ${} 插值 → 非纯字面量，不降权
+        // （Content-Disposition `filename="${folder.name}"` 场景）
+        assert!(!args_all_literals("\"Content-Disposition\", `attachment; filename=\"${folder.name}.zip\"`"));
+        // 转义 \${ 不是插值 → 仍为字面量
+        assert!(args_all_literals("\"Content-Type\", `attachment; filename=\\${literal}`"));
+        // 无插值模板字面量 → 纯字面量，维持降权
+        assert!(args_all_literals("\"Content-Type\", `application/zip`"));
+    }
+
+    #[test]
+    fn test_likely_fp_template_literal_interpolation_not_downgraded() {
+        // 端到端：setHeader 第二参数为含插值的模板字面量 → 不降 info
+        let content = "res.raw.setHeader('Content-Disposition', `attachment; filename=\"${folder.name}.zip\"`);";
+        let start = content.find("setHeader(").unwrap() - 4; // 从 .setHeader 前的点起算，模拟 pattern 命中
+        let end = content.find("setHeader(").unwrap() + "setHeader(".len();
+        assert!(evaluate_likely_fp_args(content, start, end).is_none());
+        // 纯字面量第二参数 → 仍降权
+        let content2 = "res.raw.setHeader('Content-Type', 'application/zip');";
+        let start2 = content2.find("setHeader(").unwrap() - 4;
+        let end2 = content2.find("setHeader(").unwrap() + "setHeader(".len();
+        assert!(evaluate_likely_fp_args(content2, start2, end2).is_some());
+    }
+
+    #[test]
     fn test_exclude_string_literals_skips_string_content() {
         // exclude_string_literals=true：字符串字面量内的 sink 名（如错误消息里的
         // "system()"）不报，真实调用仍报——sqlite3_rsync.c "popen() failed" 场景
@@ -1587,7 +2013,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1629,7 +2058,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: bare_only,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1652,6 +2084,76 @@ $upsql = Input::postStrVar('upsql', '');
         // 行号为 5 的原因：命中含前缀换行符（(?:^|[^\w]) 消费了 \n），
         // 行号按命中起点计算——与生产 pattern 行为一致
         assert_eq!(on[0].line_start, 5, "保留的应是裸 exec($user_input)");
+    }
+
+    #[test]
+    fn test_php_http_sink_download_variable_url_forms() {
+        // php-http-sink-download 规则形态（CVE-2026-47260 回放）：
+        // Http::sink($file)->get($episode->path) 变量 URL 命中；
+        // 字面量 URL、SafeHttp->download 封装、无 sink 的 Http::get($url) 均豁免
+        let rule = Rule {
+            id: "php-http-sink-download".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::Medium,
+            language: "php".to_string(),
+            pattern: None,
+            patterns: Some(vec![crate::rules::model::LanguagePattern {
+                language: "php".to_string(),
+                pattern: r"(?i)Http::sink\s*\([^)]*\)\s*->\s*(?:get|post)\s*\(\s*[^)]*\$".to_string(),
+            }]),
+            query: None,
+            cwe: Some("CWE-918".to_string()),
+            sanitizers: vec!["issafeurl(".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 8,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+        // 正例：CVE-2026-47260 漏洞版形态（enclosure URL 二阶来源直下载）+ post 变体
+        let vuln = concat!(
+            "<?php\n",
+            "Http::sink($file)->get($episode->path)->throw();\n",
+            "Http::sink($target)->post($row->download_url, ['verify' => false]);\n",
+        );
+        let hits = RuleScanner::new(vec![rule.clone()])
+            .scan_file_sync(&PathBuf::from("a.php"), vuln);
+        assert_eq!(hits.len(), 2, "变量 URL 的 sink 下载应命中，实际 {:?}", hits.iter().map(|f| f.line_start).collect::<Vec<_>>());
+
+        // 负例：字面量 URL / SafeHttp 封装下载 / 无 sink 的普通请求
+        let safe = concat!(
+            "<?php\n",
+            "Http::sink($file)->get('https://api.example.com/fixture.mp3');\n",
+            "$safeHttp->download((string) $episode->path, $file);\n",
+            "$resp = Http::get($url);\n",
+        );
+        let clean = RuleScanner::new(vec![rule.clone()])
+            .scan_file_sync(&PathBuf::from("b.php"), safe);
+        assert_eq!(clean.len(), 0, "字面量 URL 与封装下载不应命中，实际 {:?}", clean.iter().map(|f| f.line_start).collect::<Vec<_>>());
+
+        // 负例：CVE-2026-47260 修复形态——isSafeUrl 前置校验（有界前向窗口豁免）
+        let guarded = concat!(
+            "<?php\n",
+            "if (!Network::isSafeUrl((string) $episode->path)) {\n",
+            "    throw UnsafeUrlException::forUrl((string) $episode->path);\n",
+            "}\n",
+            "\n",
+            "Http::sink($file)->get($episode->path)->throw();\n",
+        );
+        let exempt = RuleScanner::new(vec![rule])
+            .scan_file_sync(&PathBuf::from("c.php"), guarded);
+        assert_eq!(exempt.len(), 0, "isSafeUrl 前置校验应豁免，实际 {:?}", exempt.iter().map(|f| f.line_start).collect::<Vec<_>>());
     }
 
     #[test]
@@ -1680,7 +2182,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1721,7 +2226,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1755,7 +2263,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1792,6 +2303,39 @@ $upsql = Input::postStrVar('upsql', '');
             }
         }
         assert!(invalid.is_empty(), "以下规则 pattern 无法编译:\n{}", invalid.join("\n"));
+    }
+
+    /// 原型污染规则（CWE-1321）：for..in 拷贝循环的 hasOwnProperty 守卫豁免 +
+    /// options 合并拷贝形态召回（无守卫的 for..in 属性拷贝是原型污染入口）
+    #[test]
+    fn test_prototype_pollution_rule_hasownproperty_exemption() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "prototype-pollution")
+            .expect("prototype-pollution 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 负例 1：无守卫的 merge/copy 函数 for..in 拷贝 → 命中
+        let vulnerable = "function shallowCopyObject(obj) {\n  var ret = {};\n  for (var i in obj) {\n    ret[i] = obj[i];\n  }\n  return ret;\n}";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("vuln.js"), vulnerable);
+        assert!(!f1.is_empty(), "无守卫拷贝循环应命中");
+
+        // 正例 1：循环内 hasOwnProperty 守卫（修复形态）→ 豁免
+        let fixed = "function shallowCopyObject(obj) {\n  var ret = {};\n  for (var i in obj) {\n    if (Object.prototype.hasOwnProperty.call(obj, i)) {\n      ret[i] = obj[i];\n    }\n  }\n  return ret;\n}";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("fixed.js"), fixed);
+        assert!(f2.is_empty(), "hasOwnProperty 守卫应豁免: {:?}", f2.len());
+
+        // 负例 2：options 合并拷贝（无守卫）→ 命中
+        let opts_merge = "function wrap(options) {\n  var opts = {};\n  if (options) {\n    for (var key in options) {\n      opts[key] = options[key];\n    }\n  }\n}";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("merge.js"), opts_merge);
+        assert!(!f3.is_empty(), "options 无守卫合并拷贝应命中");
+
+        // 正例 2：options 合并拷贝带 hasOwnProperty 守卫 → 豁免
+        let opts_guarded = "function wrap(options) {\n  var opts = {};\n  for (var key in options) {\n    if (Object.prototype.hasOwnProperty.call(options, key)) {\n      opts[key] = options[key];\n    }\n  }\n}";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("merge_fixed.js"), opts_guarded);
+        assert!(f4.is_empty(), "带守卫的 options 合并应豁免: {:?}", f4.len());
     }
 
     /// yaml.load 危险/安全形态判别（unsafe-deserialization 规则，archivy SafeLoader 场景回归）
@@ -1862,7 +2406,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: true,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -1908,7 +2455,10 @@ $upsql = Input::postStrVar('upsql', '');
             sanitizer_include_chain: false,
             php_bare_call_only: false,
             sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
             go_io_copy_requires_open_file: require_open,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
             category: None,
             owasp: None,
             remediation: None,
@@ -2035,6 +2585,292 @@ func handler(w http.ResponseWriter, f *os.File) {
         let scanner = RuleScanner::new(vec![mk_go_io_copy_rule(false)]);
         let findings = scanner.scan_file_sync(&PathBuf::from("a.go"), content);
         assert_eq!(findings.len(), 1, "字段关闭时保持旧行为");
+    }
+
+    #[test]
+    fn test_compile_rule_regex_inline_flags() {
+        // Rust regex 支持 (?i)/(?m)/(?s) inline flag——compile_rule_regex 不应破坏它们
+        let re = compile_rule_regex(r"(?m)^foo").expect("compile (?m)");
+        assert!(re.is_match("abc\nfoo"));
+        let re2 = compile_rule_regex(r"(?i)FOO").expect("compile (?i)");
+        assert!(re2.is_match("foo"));
+        let re3 = compile_rule_regex(r"(?s)a.b").expect("compile (?s)");
+        assert!(re3.is_match("a\nb"));
+        let re4 = compile_rule_regex(r"^func\s+").expect("compile plain");
+        assert!(re4.is_match("func bar"));
+    }
+
+    #[test]
+    fn test_missing_authorization_func_scope() {
+        // 漏洞版：资源操作函数体内无授权关键字 → 应命中
+        let vuln = r#"package main
+func (s *Server) UpdateAccount(w http.ResponseWriter, r *http.Request) {
+    var req accountRequest
+    json.NewDecoder(r.Body).Decode(&req)
+    s.db.UpdateAccount(req)
+    w.WriteHeader(200)
+}
+"#;
+        let rule = Rule {
+            id: "go-missing-authorization".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "go".to_string(),
+            pattern: Some(r"(?m)^\s*func\s+(?:\([^)]*\)\s+)?\w*(?:Get|Delete|Update|Remove|Find|Edit|Modify|GetById|DeleteById|UpdateById)\w*\s*\([^)]*\)\s*\{".to_string()),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-862".to_string()),
+            sanitizers: vec!["user_id".to_string(), "currentuser".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: true,
+            skip_likely_fp: false,
+            category: None,
+            owasp: None,
+            references: None,
+            remediation: None,
+        };
+        let scanner = RuleScanner::new(vec![rule]);
+        let findings = scanner.scan_file_sync(&PathBuf::from("vuln.go"), vuln);
+        assert!(!findings.is_empty(), "vuln.go 应命中 missing-authorization");
+
+        // 修复版：函数体内有 user_id 校验 → 应豁免
+        let fixed = r#"package main
+func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
+    userID := c.GetString("user_id")
+    if userID == "" {
+        http.Error(w, "unauthorized", 401)
+        return
+    }
+    s.db.UpdateAccount(req)
+    w.WriteHeader(200)
+}
+"#;
+        let rule2 = Rule {
+            id: "go-missing-authorization".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "go".to_string(),
+            pattern: Some(r"(?m)^\s*func\s+(?:\([^)]*\)\s+)?\w*(?:Get|Delete|Update|Remove|Find|Edit|Modify|GetById|DeleteById|UpdateById)\w*\s*\([^)]*\)\s*\{".to_string()),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-862".to_string()),
+            sanitizers: vec!["user_id".to_string(), "currentuser".to_string()],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: true,
+            skip_likely_fp: false,
+            category: None,
+            owasp: None,
+            references: None,
+            remediation: None,
+        };
+        let scanner2 = RuleScanner::new(vec![rule2]);
+        let findings2 = scanner2.scan_file_sync(&PathBuf::from("fixed.go"), fixed);
+        assert!(findings2.is_empty(), "fixed.go 应豁免 missing-authorization");
+    }
+
+    #[test]
+    fn test_eval_pattern_excludes_angular_dollar_eval() {
+        // R76 登记：AngularJS 的 $$eval(/$eval( 是框架作用域求值 API，
+        // 不得命中 JS eval 代码注入规则；原生 eval( 仍须命中
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let scanner = RuleScanner::new(rules);
+        let content = "scope.$$eval('a + b');\nscope.$eval('a + b');\neval(userInput);\n";
+        let findings = scanner.scan_file_sync(&PathBuf::from("app.js"), content);
+        let eval_hits: Vec<_> = findings
+            .iter()
+            .filter(|f| f.detector == "RegexRule: code-injection")
+            .collect();
+        assert_eq!(
+            eval_hits.len(),
+            1,
+            "仅原生 eval( 应命中 code-injection: {:?}",
+            eval_hits.iter().map(|f| f.line_start).collect::<Vec<_>>()
+        );
+        assert_eq!(eval_hits[0].line_start, 3);
+    }
+
+    /// Bun/Deno 运行时文件 sink（10.25②）：上传接口 Bun.write(dir + filename)
+    /// 路径穿越任意写家族；紧锚点（req./filename 等）防宽松词回归
+    #[test]
+    fn test_path_traversal_bun_deno_sinks() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "path-traversal")
+            .expect("path-traversal 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 正例 1：Bun.write 拼接请求体文件名（真实 CVE 形态）→ 命中
+        let bun_vuln = "export async function upload(req: Request) {\n  const name = req.body.name;\n  await Bun.write(uploadDir + req.body.name, data);\n}";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("upload.js"), bun_vuln);
+        assert!(!f1.is_empty(), "Bun.write(req.body.name) 应命中 path-traversal");
+
+        // 正例 2：Deno.writeTextFile 拼接 query 参数 → 命中
+        let deno_vuln = "await Deno.writeTextFile(dir + params.filename, body);";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("serve.js"), deno_vuln);
+        assert!(!f2.is_empty(), "Deno.writeTextFile(params.filename) 应命中 path-traversal");
+
+        // 负例 1：sanitize 净化形态（sanitizers 窗口豁免 + 无锚点词）→ 不命中
+        let sanitized = "await Bun.write(join(dir, sanitize(name)), data);";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("fixed.js"), sanitized);
+        assert!(f3.is_empty(), "sanitize 净化形态应豁免: {:?}", f3.len());
+
+        // 负例 2：静态字面量路径（无用户输入锚点）→ 不命中
+        let static_path = "await Bun.write(\"dist/index.html\", html);";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("build.js"), static_path);
+        assert!(f4.is_empty(), "静态字面量路径不应命中: {:?}", f4.len());
+    }
+
+    /// 文件移动/复制 sink（10.30，R123 MeshCentral 0day 漏检根因）：
+    /// fs.rename/fs.copyFile 的 dst（第二参数）为用户路径形态；
+    /// src（第一参数）参数序约束防 multiparty 临时文件误报
+    #[test]
+    fn test_path_traversal_rename_copy_sinks() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "path-traversal")
+            .expect("path-traversal 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 正例 1：R123 真实形态——dst = path.join(serverpath, 未清洗文件名)
+        let mesh_vuln = "function handleUploadFileBatch(req, res) {\n  const ftarget = getRandomPassword() + '-' + file.originalFilename;\n  fs.rename(tmpPath, path.join(serverpath, ftarget), cb);\n}";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("webserver.js"), mesh_vuln);
+        assert!(
+            !f1.is_empty(),
+            "fs.rename dst=path.join(用户文件名) 应命中 path-traversal"
+        );
+
+        // 正例 2：copyFile 第二参数直接为请求体文件名 → 命中
+        let copy_vuln = "fs.copyFile(src, uploadDir + req.body.filename, cb);";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("upload.js"), copy_vuln);
+        assert!(!f2.is_empty(), "fs.copyFile(req.body.filename) 应命中");
+
+        // 正例 3：Python os.rename dst 为请求参数 → 命中
+        let py_vuln = "os.rename(tmp, os.path.join(UPLOAD_DIR, request.files['f'].filename))";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("upload.py"), py_vuln);
+        assert!(!f3.is_empty(), "os.rename 用户 dst 应命中");
+
+        // 正例 4：Go os.Rename 第二参数为用户路径 → 命中
+        let go_vuln = "os.Rename(tmp, filepath.Join(uploadDir, r.FormValue(\"name\")))";
+        let f7 = scanner.scan_file_sync(&PathBuf::from("upload.go"), go_vuln);
+        assert!(!f7.is_empty(), "os.Rename 用户 dst 应命中");
+
+        // 负例 1：src 参数含用户输入但 dst 为常量（参数序约束）→ 不命中
+        let src_only = "fs.rename(req.body.src, \"backup.db\", cb);";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("backup.js"), src_only);
+        assert!(
+            f4.is_empty(),
+            "仅 src 用户可控不应命中（dst 语义区分）: {:?}",
+            f4.len()
+        );
+
+        // 负例 2：dst 经 path.basename 净化 → 豁免
+        let sanitized = "fs.rename(tmp, path.join(dir, path.basename(name)), cb);";
+        let f5 = scanner.scan_file_sync(&PathBuf::from("fixed.js"), sanitized);
+        assert!(f5.is_empty(), "path.basename 净化形态应豁免: {:?}", f5.len());
+
+        // 负例 3：静态字面量 dst → 不命中
+        let static_dst = "fs.copyFile(src, \"/var/backups/snap.db\");";
+        let f6 = scanner.scan_file_sync(&PathBuf::from("snap.js"), static_dst);
+        assert!(f6.is_empty(), "静态字面量 dst 不应命中: {:?}", f6.len());
+    }
+
+    /// Prisma $queryRawUnsafe 原始 SQL 直插（R154 ghostfolio 回放反哺）：
+    /// 模板字面量/拼接形态命中；$queryRaw tagged-template 参数化豁免
+    #[test]
+    fn test_prisma_queryraw_injection() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "js-prisma-queryraw-injection")
+            .expect("js-prisma-queryraw-injection 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 正例 1：R154 真实形态——symbols.join 直插（CVE-2026-28785 漏洞版）
+        let vuln = "const rows = await prisma.$queryRawUnsafe(`SELECT * FROM \"AssetProfile\" WHERE symbol IN (${symbols.join(',')})`);";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("data-provider.service.ts"), vuln);
+        assert!(!f1.is_empty(), "$queryRawUnsafe 模板插值应命中");
+        // 嵌套括号形态不得被 const-args 降级（rfind('(') 错位误判字面量）
+        assert_eq!(
+            f1[0].severity, "high",
+            "嵌套括号模板字面量应保持 high（skip_likely_fp）: {:?}",
+            f1[0].reasoning_hint
+        );
+
+        // 正例 2：模板插值直插
+        let vuln2 = "await prisma.$queryRawUnsafe(`UPDATE users SET name = '${req.body.name}'`);";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("update.js"), vuln2);
+        assert!(!f2.is_empty(), "$queryRawUnsafe req.body 插值应命中");
+
+        // 负例 1：$queryRaw 参数化形态（修复版）→ 豁免
+        let fixed = "const rows = await prisma.$queryRaw`SELECT * FROM \"AssetProfile\" WHERE symbol IN (${Prisma.join(symbols)})`;";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("data-provider.service.ts"), fixed);
+        assert!(f3.is_empty(), "$queryRaw 参数化形态应豁免: {:?}", f3.len());
+
+        // 负例 2：常量直插（无插值/无用户锚点）→ 不命中
+        let const_query = "await prisma.$queryRawUnsafe(`SELECT COUNT(*) FROM users`);";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("count.js"), const_query);
+        assert!(f4.is_empty(), "常量查询不应命中: {:?}", f4.len());
+    }
+
+    /// 客户端模板裸插提示（10.22，R54 calibre-web 0day 漏检盲区）：
+    /// mustache 三花 / EJS <%- / Vue v-html 低置信 XSS 提示
+    #[test]
+    fn test_client_template_bare_insert() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "client-template-bare-insert")
+            .expect("client-template-bare-insert 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        // 正例 1：mustache 三花裸插（R54 同族——template-book-result 全字段裸插）
+        let hbs = "<script type=\"text/template\">\n<a href=\"{{url}}\">{{{title}}}</a>\n</script>";
+        let f1 = scanner.scan_file_sync(&PathBuf::from("book_edit.html"), hbs);
+        assert!(!f1.is_empty(), "三花裸插应命中");
+
+        // 正例 2：EJS <%- 裸插
+        let ejs = "<div><%- userHtml %></div>";
+        let f2 = scanner.scan_file_sync(&PathBuf::from("view.html"), ejs);
+        assert!(!f2.is_empty(), "<%- %> EJS 裸插应命中");
+
+        // 正例 3：Vue v-html 绑定
+        let vue = "<p v-html=\"post.body\"></p>";
+        let f3 = scanner.scan_file_sync(&PathBuf::from("Post.html"), vue);
+        assert!(!f3.is_empty(), "v-html 绑定应命中");
+
+        // 负例 1：双花转义形态不命中
+        let escaped = "<p>{{ title }}</p>";
+        let f4 = scanner.scan_file_sync(&PathBuf::from("safe.html"), escaped);
+        assert!(f4.is_empty(), "{{ }} 转义形态不应命中: {:?}", f4.len());
+
+        // 负例 2：EJS 转义形态 <%= %> 不命中
+        let ejs_safe = "<p><%= user.name %></p>";
+        let f5 = scanner.scan_file_sync(&PathBuf::from("view.html"), ejs_safe);
+        assert!(f5.is_empty(), "<%= %> EJS 转义形态不应命中: {:?}", f5.len());
     }
 }
 

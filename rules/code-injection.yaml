@@ -11,7 +11,15 @@ references:
   - "https://cwe.mitre.org/data/definitions/94.html"
 patterns:
   - language: javascript
-    pattern: (?i)(eval\s*\(|new\s+Function\s*\(|setTimeout\s*\(\s*['"]|setInterval\s*\(\s*['"]|vm\.runInNewContext|vm\.runInThisContext|vm\.runInContext|engine\.parse\s*\(|\.parseAndCompile\s*\(|template\.compile\s*\(|ejs\.compile\s*\(|ejs\.render\s*\(|Handlebars\.compile\s*\(|nunjucks\.renderString\s*\()
+    # 模板引擎族（Handlebars.compile/ejs/template.compile/nunjucks.renderString）
+    # 已从本规则移除（10.15④）：模板编译是静态文件 + 默认转义，与 eval 语义
+    # 不同；模板串是否用户可控（SSTI）需跨数据流判定，归 LLM 判定层
+    # （audit-pack 判据：模板引擎调用点模板串来源追溯）。
+    # eval 排除 $ 前缀形态：AngularJS 的 $$eval(/$eval( 是框架作用域求值 API，
+    # 非原生 eval 动态代码执行（R76 登记：old/ 目录 + bin js 误标家族）。
+    # (?m) + 边界类排除 \n：扫描器对全文匹配、按 match 起点归因行号，
+    # 若边界符吃掉行尾 \n，行首 eval( 会被归到上一行（行号偏移修复）
+    pattern: (?im)((?:^|[^\w$\n])eval\s*\(|new\s+Function\s*\(|setTimeout\s*\(\s*['"]|setInterval\s*\(\s*['"]|vm\.runInNewContext|vm\.runInThisContext|vm\.runInContext|engine\.parse\s*\(|\.parseAndCompile\s*\()
   - language: python
     # eval/exec 前不能紧跟标识符：排除 ast.literal_eval、cursor.execute 等安全 API
     # compile 前不能紧跟标识符/点号：排除 re.compile、Pattern.compile 等正则编译 API
@@ -19,7 +27,11 @@ patterns:
   - language: java
     pattern: (?i)(ScriptEngineManager|GroovyShell|ScriptEngine\.eval|SpelExpressionParser|parseExpression|Ognl\.(get|set)Value|MVEL\.eval|MVEL\.executeExpression)
   - language: php
-    pattern: (?i)(eval\s*\(|assert\s*\(|create_function\s*\(|preg_replace\s*\(.*/[a-z]*e[a-z]*['"])
+    # assert 收窄为单字符串实参形态（PHP 7 的 assert('...') 字符串求值 RCE 面）；
+    # PHPStan 类型断言 `assert($expr, 'message')`（变量表达式 + 字符串消息）是
+    # 静态分析辅助，PHP 8 已移除 assert 字符串求值，且表达式实参不构成代码执行
+    # （R58/R66 反哺：graby ×9 + simplepie ×19 全为 PHPStan 断言误标家族）
+    pattern: (?i)(eval\s*\(|assert\s*\(\s*['"]|create_function\s*\(|preg_replace\s*\(.*/[a-z]*e[a-z]*['"])
 # CVE-2022-22963 回放反哺：SpEL 修复形态是求值上下文换成 SimpleEvaluationContext
 # （SimpleEvaluationContext 默认禁用类型引用/反射，无 RCE 面），文件级豁免
 sanitizers:

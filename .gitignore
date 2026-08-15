@@ -59,3 +59,12 @@ AGENTS.md
 !benchmarks/run-baseline.sh
 /docs
 CHANGELOG.md
+/docs
+/.opencode
+
+# 本地 opencode 配置（不入库）
+/opencode.json
+
+# 审计目标与临时产物
+.audit-targets/
+r68probe/

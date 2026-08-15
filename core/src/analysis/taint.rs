@@ -403,7 +403,13 @@ impl TaintSink {
                     .next()
                     .map(|c| !c.is_alphanumeric() && c != '_' && c != '$')
                     .unwrap_or(true);
-                if right_ok {
+                // R55：链式调用接收者误绑修复——pattern 命中的方法必须是链上
+                // 最后一个调用。`window.$http.get(url).then(cb)` 中 ".get" 之后
+                // 还有 ").then" 链式延续，真正的 callee 是 then，其参数（回调）
+                // 不是 .get 的 URL 参数，不得绑定（SSRF/SQLi 同族 FP）。
+                // `mysql2.createConnection().query(sql)` 的 ".query" 在链尾，仍命中。
+                let chain_continues = func_name[after..].contains(").");
+                if right_ok && !chain_continues {
                     return true;
                 }
                 start = abs + 1;
@@ -673,6 +679,9 @@ pub enum TaintCategory {
     DatabaseInput,
     /// 命令行参数（非远程攻击面）
     CliInput,
+    /// 模板渲染输出（Jinja2 `template.render`/`from_string` 等，内容可含用户数据；
+    /// 用作文件路径等 sink 时构成路径遍历——10.16，R42 GHSA-28cf 回放登记）
+    TemplateRender,
 }
 
 /// 漏洞类型
@@ -1019,6 +1028,12 @@ impl TaintAnalyzer {
                     "sys.argv".to_string(),
                     "os.Args".to_string(),
                     "env::args".to_string(),
+                    // R136 回放反哺：Remix/React-Router loader/action 的 request 对象
+                    // （与 ast_taint 内置字典、express-node.yaml 三处同步）
+                    "request.formData".to_string(),
+                    "request.text".to_string(),
+                    "request.json".to_string(),
+                    "request.url".to_string(),
                 ],
                 languages: vec!["*".to_string()],
                 severity: Severity::High,
@@ -1050,7 +1065,7 @@ impl TaintAnalyzer {
             TaintSource {
                 id: "env_input".to_string(),
                 name: "Environment Variable".to_string(),
-                description: "环境变量".to_string(),
+                description: "环境变量（部署者配置，威胁模型外——10.15③ R36 降级为 Low 参考级）".to_string(),
                 patterns: vec![
                     "process.env".to_string(),
                     "os.environ".to_string(),
@@ -1059,8 +1074,24 @@ impl TaintAnalyzer {
                     "getenv".to_string(),
                 ],
                 languages: vec!["*".to_string()],
-                severity: Severity::Medium,
+                severity: Severity::Low,
                 category: TaintCategory::Environment,
+                ast_patterns: vec![],
+                second_order: false,
+            },
+            // 模板渲染输出（10.16 R42 GHSA-28cf 回放：Jinja2 render 输出用作文件路径）
+            TaintSource {
+                id: "template_render_output".to_string(),
+                name: "Template Render Output".to_string(),
+                description: "模板渲染输出（template.render / from_string / render_template_string）".to_string(),
+                patterns: vec![
+                    "template.render".to_string(),
+                    "env.from_string".to_string(),
+                    "render_template_string".to_string(),
+                ],
+                languages: vec!["python".to_string()],
+                severity: Severity::Medium,
+                category: TaintCategory::TemplateRender,
                 ast_patterns: vec![],
                 second_order: false,
             },
@@ -1175,6 +1206,9 @@ impl TaintAnalyzer {
                     "FileReader".to_string(),
                     "FileWriter".to_string(),
                     "std::fs::File".to_string(),
+                    // 10.16 扩展（R51）：Python pathlib `Path(x)` 构造即路径操作
+                    // （GHSA-28cf 链：template.render → Path(rendered_path)）
+                    "Path(".to_string(),
                 ],
                 languages: vec!["*".to_string()],
                 vulnerability_type: VulnerabilityType::PathTraversal,
@@ -1249,6 +1283,11 @@ impl TaintAnalyzer {
                 class_literal_exempt: false,
             },
             // eval
+            // 残留说明（R76/R103）：taint 层 sink 匹配是子串语义，`$$eval(`/`$eval(`
+            // （AngularJS 框架 API）仍会命中内置 "eval(" pattern——与既有
+            // `safe_eval(` 命中同属已知子串放宽（见本文件 matches 测试注释）。
+            // YAML regex 层（code-injection.yaml/risk-patterns.yaml）已按边界排除；
+            // taint 层改边界语义会影响全部 substring sink，改动面大，本轮不动。
             TaintSink {
                 id: "eval".to_string(),
                 name: "Code Evaluation".to_string(),
@@ -1259,7 +1298,6 @@ impl TaintAnalyzer {
                     "exec(".to_string(),
                     "execfile".to_string(),
                     "__import__".to_string(),
-                    "compile(".to_string(),
                 ],
                 languages: vec!["*".to_string()],
                 vulnerability_type: VulnerabilityType::CodeInjection,
@@ -2206,5 +2244,25 @@ cursor.execute(query)
         assert!(java_xss.matches_with_context("print", Some("response"), "java"));
         assert!(java_xss.matches_with_context("println", Some("out"), "java"));
         assert!(!java_xss.matches_with_context("print", Some("logger"), "java"));
+    }
+
+    #[test]
+    fn test_chain_receiver_misbinding_r55() {
+        // R55：链式调用接收者误绑——`.get`/`.query` 命中必须位于调用链尾部，
+        // `X.get(url).then(cb)` 的 then 参数（回调）不得绑定 .get sink（SSRF/SQLi FP 家族）
+        assert!(!super::TaintSink::pattern_matches_method_call(
+            ".get",
+            "window.$http.get(`/attachments/get/page/${this.pageId}`).then",
+        ));
+        // 链尾方法仍命中（mysql2.createConnection().query 语义保留）
+        assert!(super::TaintSink::pattern_matches_method_call(
+            ".query",
+            "mysql2.createConnection().query",
+        ));
+        assert!(super::TaintSink::pattern_matches_method_call(".get", "needle.get"));
+        assert!(super::TaintSink::pattern_matches_method_call(
+            ".get",
+            "window.$http.get",
+        ));
     }
 }

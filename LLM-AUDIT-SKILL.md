@@ -23,7 +23,7 @@
 
 ## 完整审计工作流（4 阶段 + Phase 2.5 链式深审）
 
-> 漏斗管全量（Phase 0-3），链式管高价值切片（Phase 2.5）。混合模式定义见 docs/audit-rounds/methodology.md 第 11 节（本地私有）。
+> 漏斗管全量（Phase 0-3），链式管高价值切片（Phase 2.5）。混合模式定义见 docs/audit-rounds/methodology.md 第 6 节（本地私有）。
 
 ### Phase 0: 项目理解（2 步）
 

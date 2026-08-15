@@ -192,35 +192,6 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
-  - id: "go_deserialization"
-    name: "Go Unsafe Deserialization"
-    description: "JSON, YAML, and Gob deserialization"
-    match_mode: "Semantic"
-    namespaces:
-      - "encoding/json"
-      - "encoding/gob"
-      - "gopkg.in/yaml"
-      - "github.com/go-yaml/yaml"
-      - "sigs.k8s.io/yaml"
-    patterns:
-      - "json.Unmarshal"
-      - "json.NewDecoder"
-      - "gob.Decode"
-      - "gob.NewDecoder"
-      - "yaml.Unmarshal"
-      - "yaml.UnmarshalStrict"
-    exact_matches:
-      - "json.Unmarshal"
-      - "json.NewDecoder"
-      - "gob.Decode"
-      - "yaml.Unmarshal"
-    languages: ["go"]
-    vulnerability_type: "InsecureDeserialization"
-    severity: "Critical"
-    cwe_id: "CWE-502"
-    sensitive_params: [0]
-    ast_patterns: []
-
   - id: "go_file_path"
     name: "Go File Path"
     description: "File system operations with user-controlled paths"

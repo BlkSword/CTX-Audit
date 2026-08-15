@@ -14,6 +14,10 @@ patterns:
     pattern: '(?i)(\.innerHTML\s*=|document\.write\s*\(|dangerouslySetInnerHTML|\.outerHTML\s*=)'
   - language: javascript
     pattern: '(?i)\.html\s*\(\s*[^)]*\$|\.html\s*\(\s*req\.|\.html\s*\(\s*params'
+  - language: javascript
+    # jQuery .html(裸变量)：仅匹配外部输入特征命名（文件名/内容/响应/消息等），
+    # 泛化到任意标识符会在 jQuery 惯用法上产生大量噪声（实扫回归 +10/项目）
+    pattern: '(?i)\.html\s*\(\s*(?:filename|file|filepath|content|message|msg|data|response|resp|html|markup|text)\s*\)'
   - language: python
     pattern: '(?i)(render_template_string\s*\(|Markup\s*\(|\|safe\b)'
   - language: java

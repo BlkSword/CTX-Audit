@@ -795,6 +795,21 @@ impl<'a> CFGBuilder<'a> {
             return (EnhancedNodeType::Return, defs, uses);
         }
 
+        // PHP echo/print 语言构造（backlog 10.8）：无括号形态
+        // （echo $v; / print $v; / <?= $v ?>）不满足下方函数调用的
+        // contains("(") 条件，会被归为 Statement 而不检查 sink——
+        // XSS 污点链在最后一跳断掉。归为 Call 节点使 transfer_call_cpg
+        // 能匹配 php_xss_output 的 "echo "/"print(" pattern。
+        if line_lower.starts_with("echo ")
+            || line_lower.starts_with("echo\t")
+            || line_lower.starts_with("print ")
+            || line_lower.starts_with("print\t")
+            || line_lower.starts_with("<?=")
+        {
+            Self::extract_variables(line, &mut uses);
+            return (EnhancedNodeType::Call, defs, uses);
+        }
+
         // 函数调用
         if line.contains("(") && line.contains(")") && !Self::has_assignment_operator(line) {
             Self::extract_variables(line, &mut uses);
@@ -1052,6 +1067,24 @@ impl<'a> AstCFGBuilder<'a> {
                 }
             }
 
+            let uses = self.extract_uses(node, content);
+            let call_id = self.create_node(
+                EnhancedNodeType::Call,
+                code_display,
+                line,
+                line,
+                &[],
+                &uses,
+                scope_depth,
+            );
+            self.graph.add_edge(prev_id, call_id, EdgeType::Sequential);
+            return call_id;
+        }
+
+        // PHP echo/print 语言构造（backlog 10.8）：AST 侧无括号形态同样不在
+        // 函数调用分类（echo_statement 此前落到"其他：跳过"被静默丢弃），
+        // 归为 Call 节点使 transfer_call_cpg 匹配 php_xss_output sink
+        if matches!(kind, "echo_statement" | "print_intrinsic") {
             let uses = self.extract_uses(node, content);
             let call_id = self.create_node(
                 EnhancedNodeType::Call,

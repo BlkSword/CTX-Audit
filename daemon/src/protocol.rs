@@ -117,6 +117,41 @@ pub enum RequestCommand {
         file_path: String,
         function_name: String,
     },
+
+    // ── 原生 Agent / 轮次 runner（M3） ──────────────────
+
+    /// 启动一轮审计 runner（流式：AgentRoundStarted → AgentEvent* → AgentRoundDone）
+    AgentRoundRun {
+        target: String,
+        round_id: Option<String>,
+    },
+
+    /// 查询轮次状态（None = 全部轮次）
+    AgentRoundStatus { round_id: Option<String> },
+
+    /// 续跑轮次；approve 带值时表示人工闸门决策（true=通过，false=驳回）
+    AgentRoundResume {
+        round_id: String,
+        approve: Option<bool>,
+        /// 闸门决策备注（仅 approve 带值时有效）
+        #[serde(default)]
+        note: Option<String>,
+    },
+
+    /// 中止正在执行的轮次
+    AgentAbort { round_id: String },
+
+    /// 注册 cron 定时轮
+    CronAdd { schedule: String, target: String },
+
+    /// 列出 cron 任务
+    CronList,
+
+    /// 删除 cron 任务
+    CronDelete { id: String },
+
+    /// 执行 CVE 回放反哺任务（M4 机械层；task_path 为任务 JSON 文件路径）
+    AgentFeedbackRun { task_path: String },
 }
 
 /// IPC 响应
@@ -170,6 +205,29 @@ pub enum Response {
 
     /// 调用图查询结果
     GraphQueryResult { result: serde_json::Value },
+
+    // ── 原生 Agent / 轮次 runner（M3） ──────────────────
+
+    /// 轮次已启动（流式序列开始）
+    AgentRoundStarted { round_id: String },
+
+    /// 轮次状态查询结果（单轮对象或数组）
+    AgentRoundInfo { state: serde_json::Value },
+
+    /// 轮次事件（流式增量，event 为 AgentEvent 的 JSON）
+    AgentEvent {
+        round_id: String,
+        event: serde_json::Value,
+    },
+
+    /// 轮次结束（流式序列终止标记；status: done/await_human/aborted/failed:...）
+    AgentRoundDone { round_id: String, status: String },
+
+    /// cron 任务列表
+    CronJobList { jobs: serde_json::Value },
+
+    /// CVE 回放报告（M4 机械层结果，report 为 ReplayReport 的 JSON）
+    AgentFeedbackReport { report: serde_json::Value },
 }
 
 /// 缓存统计
@@ -327,5 +385,150 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["ast_cache_entries"], 5);
         assert_eq!(parsed["taint_cache_entries"], 10);
+    }
+
+    // ── M3：agent / cron 协议 roundtrip ──
+
+    #[test]
+    fn test_agent_round_commands_roundtrip() {
+        // AgentRoundRun（round_id 可选）
+        let req = Request {
+            auth_token: Some("tok".into()),
+            command: RequestCommand::AgentRoundRun {
+                target: "/tmp/proj".into(),
+                round_id: Some("R9".into()),
+            },
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        match parsed.command {
+            RequestCommand::AgentRoundRun { target, round_id } => {
+                assert_eq!(target, "/tmp/proj");
+                assert_eq!(round_id.as_deref(), Some("R9"));
+            }
+            _ => panic!("Expected AgentRoundRun"),
+        }
+
+        // AgentRoundStatus（None = 全部）
+        let req = Request {
+            auth_token: None,
+            command: RequestCommand::AgentRoundStatus { round_id: None },
+        };
+        let parsed: Request =
+            serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert!(matches!(
+            parsed.command,
+            RequestCommand::AgentRoundStatus { round_id: None }
+        ));
+
+        // AgentRoundResume 带闸门决策
+        let req = Request {
+            auth_token: None,
+            command: RequestCommand::AgentRoundResume {
+                round_id: "R9".into(),
+                approve: Some(false),
+                note: Some("证据不足".into()),
+            },
+        };
+        let parsed: Request =
+            serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        match parsed.command {
+            RequestCommand::AgentRoundResume {
+                round_id,
+                approve,
+                note,
+            } => {
+                assert_eq!(round_id, "R9");
+                assert_eq!(approve, Some(false));
+                assert_eq!(note.as_deref(), Some("证据不足"));
+            }
+            _ => panic!("Expected AgentRoundResume"),
+        }
+
+        // AgentAbort / CronAdd / CronList / CronDelete / AgentFeedbackRun
+        let cmds = vec![
+            r#"{"type":"AgentAbort","data":{"round_id":"R9"}}"#,
+            r#"{"type":"CronAdd","data":{"schedule":"0 3 * * *","target":"/tmp/p"}}"#,
+            r#"{"type":"CronList"}"#,
+            r#"{"type":"CronDelete","data":{"id":"abc12345"}}"#,
+            r#"{"type":"AgentFeedbackRun","data":{"task_path":"/tmp/cve-task.json"}}"#,
+        ];
+        for json in cmds {
+            let _: Request = serde_json::from_str(json).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_agent_stream_responses_roundtrip() {
+        // AgentRoundStarted
+        let resp = Response::AgentRoundStarted {
+            round_id: "R9".into(),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        assert_eq!(v["type"], "AgentRoundStarted");
+        assert_eq!(v["data"]["round_id"], "R9");
+
+        // AgentEvent（流式增量）
+        let resp = Response::AgentEvent {
+            round_id: "R9".into(),
+            event: serde_json::json!({"type":"text","delta":"你好"}),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: Response = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Response::AgentEvent { round_id, event } => {
+                assert_eq!(round_id, "R9");
+                assert_eq!(event["type"], "text");
+            }
+            _ => panic!("Expected AgentEvent"),
+        }
+
+        // AgentRoundDone（流终止标记）
+        let resp = Response::AgentRoundDone {
+            round_id: "R9".into(),
+            status: "await_human".into(),
+        };
+        let parsed: Response =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        match parsed {
+            Response::AgentRoundDone { round_id, status } => {
+                assert_eq!(round_id, "R9");
+                assert_eq!(status, "await_human");
+            }
+            _ => panic!("Expected AgentRoundDone"),
+        }
+
+        // AgentRoundInfo / CronJobList
+        let resp = Response::AgentRoundInfo {
+            state: serde_json::json!([{"round_id":"R9"}]),
+        };
+        let parsed: Response =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        assert!(matches!(parsed, Response::AgentRoundInfo { .. }));
+
+        let resp = Response::CronJobList {
+            jobs: serde_json::json!([{"id":"a","schedule":"* * * * *"}]),
+        };
+        let parsed: Response =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        match parsed {
+            Response::CronJobList { jobs } => assert_eq!(jobs[0]["id"], "a"),
+            _ => panic!("Expected CronJobList"),
+        }
+
+        // AgentFeedbackReport（M4）
+        let resp = Response::AgentFeedbackReport {
+            report: serde_json::json!({"cve_id":"CVE-TEST","verdict":{"conclusion":"pass"}}),
+        };
+        let parsed: Response =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        match parsed {
+            Response::AgentFeedbackReport { report } => {
+                assert_eq!(report["cve_id"], "CVE-TEST");
+                assert_eq!(report["verdict"]["conclusion"], "pass");
+            }
+            _ => panic!("Expected AgentFeedbackReport"),
+        }
     }
 }

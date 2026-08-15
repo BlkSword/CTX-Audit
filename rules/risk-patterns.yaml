@@ -36,7 +36,7 @@ patterns:
         languages: ["*"]
         context: "function"
     sink_conditions:
-      - pattern: '(?:fs\.|writeFile|readFile|\.execute\s*\(|\.query\s*\(|exec\s*\(|system\s*\(|child_process|subprocess|DB::|database\.|eval\s*\()'
+      - pattern: '(?:fs\.|writeFile|readFile|\.execute\s*\(|\.query\s*\(|exec\s*\(|system\s*\(|child_process|subprocess|DB::|database\.|(?:^|[^\w$])eval\s*\()'
         languages: ["*"]
         context: "file"
     missing_patterns:
@@ -58,7 +58,8 @@ patterns:
         languages: ["*"]
         context: "function"
     sink_conditions:
-      - pattern: '(?:eval\s*\(|new\s+Function\s*\(|child_process\.exec|vm\.runInContext|vm\.runInNewContext|vm\.compileFunction|dangerouslySetInnerHTML)'
+      # eval 排除 $ 前缀形态（AngularJS $$eval/$eval 误标家族，同 code-injection.yaml）
+      - pattern: '(?:(?:^|[^\w$])eval\s*\(|new\s+Function\s*\(|child_process\.exec|vm\.runInContext|vm\.runInNewContext|vm\.compileFunction|dangerouslySetInnerHTML)'
         languages: ["*"]
         context: "file"
     missing_patterns:

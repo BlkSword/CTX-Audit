@@ -9,5 +9,11 @@ remediation: "禁用 XML 外部实体：setFeature(\"http://apache.org/xml/featu
 references:
   - "https://owasp.org/www-community/attacks/XXE"
   - "https://cwe.mitre.org/data/definitions/611.html"
-pattern: (?i)(DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLReaderFactory\.createXMLReader|javax\.xml\.parsers\.SAXParser|TransformerFactory\.newInstance|SchemaFactory\.newInstance)
+pattern: (?i)(DocumentBuilderFactory\.newInstance|SAXParserFactory\.newInstance|XMLReaderFactory\.createXMLReader|TransformerFactory\.newInstance|SchemaFactory\.newInstance)
+sanitizers:
+  - 'disallow-doctype-decl'
+  - 'external-general-entities'
+  - 'external-parameter-entities'
+  - 'load-external-dtd'
+sanitizer_after_lines: 8
 severity: critical
