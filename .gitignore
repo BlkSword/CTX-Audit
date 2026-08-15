@@ -64,3 +64,10 @@ CHANGELOG.md
 
 # 本地 opencode 配置（不入库）
 /opencode.json
+<<<<<<< HEAD
+=======
+
+# 审计目标与临时产物
+.audit-targets/
+r68probe/
+>>>>>>> vps103/main
