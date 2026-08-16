@@ -112,6 +112,11 @@ pub struct Rule {
     /// 且该 API 语义上即反模式，常量参数也不构成安全保证。
     #[serde(default)]
     pub skip_likely_fp: bool,
+    /// 死过滤模式（10.5 最低成本近似）：任一条正则命中内容时，判定该规则的
+    /// sanitizer 防护"文本存在但恒不生效"，跳过 sanitizer 豁免继续报告。
+    /// 用于 strim(name, 0, ...) 恒 NULL 这类常量陷阱 API。
+    #[serde(default)]
+    pub dead_sanitizer_patterns: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]

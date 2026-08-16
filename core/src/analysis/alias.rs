@@ -371,7 +371,58 @@ pub fn detect_all_aliases(assign: &Assignment) -> AliasDetection {
         result.new_aliases.extend(simple.new_aliases);
     }
 
+    // C 指针简单别名（10.3 近似）：`char *p = &x` / `int *p = q`。
+    // 只处理“取地址 + 裸变量”与“同变量赋值”，遇指针算术保守不处理。
+    if result.new_aliases.is_empty() {
+        let c_alias = detect_c_pointer_assignment(assign);
+        result.new_aliases.extend(c_alias.new_aliases);
+    }
+
     result
+}
+
+/// 10.3 最低成本近似：C 指针简单别名。
+///
+/// 目标形如 `char *p = ...`、`FILE *fp = ...` 时提取最后一个标识符作为别名目标；
+/// 右值形如 `&x` 或裸标识符时建立 target → x/q 的别名边。
+fn detect_c_pointer_assignment(assign: &Assignment) -> AliasDetection {
+    let mut detection = AliasDetection::default();
+    let target = assign.target.trim();
+    let source = assign.source_expr.trim();
+
+    // 提取 `type *name` 中的 name（仅常见标量/指针类型前缀，避免误伤 JS）
+    let target_name = if let Some(idx) = target.rfind('*') {
+        let candidate = target[idx + 1..].trim();
+        if is_valid_identifier(candidate) {
+            candidate.to_string()
+        } else {
+            return detection;
+        }
+    } else {
+        clean_target_name(target).to_string()
+    };
+    if !is_valid_identifier(&target_name) {
+        return detection;
+    }
+
+    // p = &x
+    if let Some(stripped) = source.strip_prefix('&') {
+        let stripped = stripped.trim();
+        if is_valid_identifier(stripped) {
+            detection
+                .new_aliases
+                .push((target_name, AccessPath::simple(stripped)));
+            return detection;
+        }
+    }
+
+    // p = q（纯变量，不带 * / 算术）
+    if assign.source_vars.len() == 1 && is_valid_identifier(source) {
+        detection
+            .new_aliases
+            .push((target_name, AccessPath::simple(source)));
+    }
+    detection
 }
 
 /// 清理 target 名称：去掉 const/let/var 前缀

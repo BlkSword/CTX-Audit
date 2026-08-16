@@ -21,6 +21,10 @@ sanitizer_file_scope: true
 # all：危险变量集合必须被完整过滤才豁免。只过滤 LD_ 而缺 DYLD_/LDR_/_RLD/=()
 # 的版本（如 CVE-2021-42342 涉事版本）视为防护不完整，仍报告。
 sanitizer_match: all
+# 10.5：strim(name, 0, ...) 恒返回 NULL——过滤代码文本在但实际不生效，
+# 此时不得用 sanitizer 豁免该 finding。
+dead_sanitizer_patterns:
+  - '(?i)strim\s*\(\s*name\s*,\s*0'
 sanitizers:
   - "LD_"
   - "DYLD_"

@@ -501,6 +501,18 @@ fn resolve_php_include(dir: &PathBuf, lit: &str) -> Option<PathBuf> {
 /// `sanitizer_match: all` 时要求全部 sanitizer 都出现才豁免（防护完整性检查）。
 /// `guard` 为 include 链守卫内容（10.13），命中即豁免——全局校验无"位置"语义。
 fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>) -> bool {
+    // 10.5：死过滤模式命中时 sanitizer 豁免不成立（文本存在但恒不生效）
+    if !rule.dead_sanitizer_patterns.is_empty() {
+        let lower = content.to_lowercase();
+        for pattern in &rule.dead_sanitizer_patterns {
+            if let Ok(re) = Regex::new(pattern) {
+                if re.is_match(&lower) {
+                    return false;
+                }
+            }
+        }
+    }
+
     let match_all = rule.sanitizer_match == SanitizerMatch::All;
     if rule.sanitizer_after_lines > 0 {
         // 后向窗口语义：仅看命中点之后 N 行（替代前缀语义），
@@ -1504,6 +1516,7 @@ mod tests {
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1546,6 +1559,7 @@ mod tests {
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1590,6 +1604,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1634,6 +1649,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1679,6 +1695,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1734,6 +1751,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1794,6 +1812,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1849,6 +1868,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1892,6 +1912,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1933,6 +1954,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2017,6 +2039,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2062,6 +2085,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2116,6 +2140,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2186,6 +2211,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2230,6 +2256,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2267,6 +2294,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2410,6 +2438,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: false,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2459,6 +2488,7 @@ $upsql = Input::postStrVar('upsql', '');
             go_io_copy_requires_open_file: require_open,
             auth_check_in_func: false,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2633,6 +2663,7 @@ func (s *Server) UpdateAccount(w http.ResponseWriter, r *http.Request) {
             go_io_copy_requires_open_file: false,
             auth_check_in_func: true,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             references: None,
@@ -2676,6 +2707,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
             go_io_copy_requires_open_file: false,
             auth_check_in_func: true,
             skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
             category: None,
             owasp: None,
             references: None,
