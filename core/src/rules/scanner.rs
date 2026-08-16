@@ -3014,6 +3014,34 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
         let f5 = scanner.scan_file_sync(&PathBuf::from("view.html"), ejs_safe);
         assert!(f5.is_empty(), "<%= %> EJS 转义形态不应命中: {:?}", f5.len());
     }
+
+    #[test]
+    fn test_expand_c_object_macros_keeps_lines() {
+        let src = "#define SYSTEM system
+int main(void) {
+  SYSTEM(\"ls\");
+  return 0;
+}
+";
+        let expanded = maybe_expand_c_object_macros(src, "c");
+        assert_eq!(expanded.lines().count(), src.lines().count());
+        assert!(expanded.contains("system(\"ls\")"));
+        // 非 C 文件不展开
+        let unchanged = maybe_expand_c_object_macros(src, "js");
+        assert_eq!(unchanged, src);
+    }
+
+    #[test]
+    fn test_replace_c_macro_ident_word_boundary() {
+        assert_eq!(
+            replace_c_macro_ident("SYSTEM(\"ls\")", "SYSTEM", "system"),
+            "system(\"ls\")"
+        );
+        assert_eq!(
+            replace_c_macro_ident("MY_SYSTEM(\"ls\")", "SYSTEM", "system"),
+            "MY_SYSTEM(\"ls\")"
+        );
+    }
 }
 
 fn rule_matches_extension(language: &str, extension: &str) -> bool {

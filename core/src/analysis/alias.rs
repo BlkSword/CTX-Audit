@@ -292,6 +292,10 @@ pub fn detect_simple_alias(assign: &Assignment) -> AliasDetection {
     if target.is_empty() || source.is_empty() {
         return detection;
     }
+    // 目标必须是裸标识符；`char *p` / `self.attr` 交给 C 指针或属性路径逻辑
+    if !is_valid_identifier(target) {
+        return detection;
+    }
 
     // 条件: source_vars 恰好一个，且 source_expr 等于该变量名（无运算符）
     if assign.source_vars.len() == 1
@@ -674,5 +678,23 @@ mod tests {
         let detection = detect_all_aliases(&assign);
         assert_eq!(detection.new_aliases.len(), 1);
         assert_eq!(detection.new_aliases[0].1.as_dotted(), "promise");
+    }
+
+    #[test]
+    fn test_detect_c_pointer_assignment_address_of() {
+        let assign = make_assign("char *p", "&x", vec!["x"]);
+        let detection = detect_all_aliases(&assign);
+        assert_eq!(detection.new_aliases.len(), 1);
+        assert_eq!(detection.new_aliases[0].0, "p");
+        assert_eq!(detection.new_aliases[0].1.as_dotted(), "x");
+    }
+
+    #[test]
+    fn test_detect_c_pointer_assignment_simple() {
+        let assign = make_assign("FILE *fp", "q", vec!["q"]);
+        let detection = detect_all_aliases(&assign);
+        assert_eq!(detection.new_aliases.len(), 1);
+        assert_eq!(detection.new_aliases[0].0, "fp");
+        assert_eq!(detection.new_aliases[0].1.as_dotted(), "q");
     }
 }
