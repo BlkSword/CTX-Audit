@@ -3258,24 +3258,21 @@ fn deduplicate_with_tolerance(findings: Vec<Finding>, line_tolerance: usize) -> 
         let mut indices = indices.clone();
         indices.sort_by_key(|&idx| findings[idx].line_start);
 
-        // 聚类：行号相近的分为同一 cluster
+        // 聚类：按行号排序后，以 cluster 首行 ± line_tolerance 为窗口。
+        // 不使用“与任意成员距离”的单链接——那会把 866/868/870/872 链式
+        // 合并成一个大 cluster；以首行锚定可避免排序后过度合并，并保持
+        // 与历史按规则顺序聚类相近的粒度。
         let mut clusters: Vec<Vec<usize>> = Vec::new();
         for &idx in &indices {
             let line = findings[idx].line_start;
-            let mut found = false;
-            for cluster in &mut clusters {
-                if cluster
-                    .iter()
-                    .any(|&c_idx| findings[c_idx].line_start.abs_diff(line) <= line_tolerance)
-                {
-                    cluster.push(idx);
-                    found = true;
-                    break;
+            if let Some(last) = clusters.last_mut() {
+                let first_line = findings[last[0]].line_start;
+                if line.abs_diff(first_line) <= line_tolerance {
+                    last.push(idx);
+                    continue;
                 }
             }
-            if !found {
-                clusters.push(vec![idx]);
-            }
+            clusters.push(vec![idx]);
         }
 
         for cluster in clusters {
