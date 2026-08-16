@@ -391,7 +391,7 @@ impl AstTaintAnalyzer {
         content: &str,
         callback_hints: &[crate::analysis::async_flow::CallbackTaintHint],
     ) -> Vec<TaintFlow> {
-        self.analyze_function_cpg_with_state(cpg, content, callback_hints)
+        self.analyze_function_cpg_with_state(cpg, content, callback_hints, &[])
             .0
     }
 
@@ -406,6 +406,7 @@ impl AstTaintAnalyzer {
         cpg: &super::cpg::FunctionCPG,
         content: &str,
         callback_hints: &[crate::analysis::async_flow::CallbackTaintHint],
+        instance_sources: &[String],
     ) -> (Vec<TaintFlow>, HashMap<String, (String, usize)>) {
         // 分支预算（10.12）：路径敏感污点状态随分支点数指数增长
         // （合成用例实测每 +50 个 if 耗时翻倍，250 if ≈ 31s，300+ if 卡死），
@@ -453,6 +454,7 @@ impl AstTaintAnalyzer {
             &cpg.signature.params,
             callback_hints,
             line_offset,
+            instance_sources,
         );
 
         // 汇总各节点状态：变量首次被标记的来源（含未达 sink 的中间污染）
@@ -482,6 +484,9 @@ impl AstTaintAnalyzer {
 
         if let Some((_tree, _symbols, functions, file_assignments, file_calls)) = extracted {
             let callback_hints = async_flow::detect_callback_hints(content);
+            let language = Self::detect_language(&file_path_str);
+            let instance_sources =
+                self.collect_instance_attribute_sources(&file_assignments, &language);
 
             if functions.is_empty() {
                 // 无函数体：整个文件构建一个 CPG
@@ -491,8 +496,12 @@ impl AstTaintAnalyzer {
                     &file_assignments,
                     &file_calls,
                 );
-                let (flows, tainted) =
-                    self.analyze_function_cpg_with_state(&func_cpg, content, &callback_hints);
+                let (flows, tainted) = self.analyze_function_cpg_with_state(
+                    &func_cpg,
+                    content,
+                    &callback_hints,
+                    &instance_sources,
+                );
                 report.flows.extend(flows);
                 report.tainted_vars.extend(tainted);
             } else {
@@ -562,6 +571,7 @@ impl AstTaintAnalyzer {
                         &func_cpg,
                         &func.body_text,
                         &func_hints,
+                        &instance_sources,
                     );
                     report.flows.extend(flows);
                     report.tainted_vars.extend(tainted);
@@ -745,6 +755,7 @@ impl AstTaintAnalyzer {
         typed_params: &[TypedParam],
         callback_hints: &[CallbackTaintHint],
         line_offset: usize,
+        instance_sources: &[String],
     ) -> (Vec<TaintFlow>, HashMap<usize, super::cpg::PathSensitiveState>) {
         use super::cpg::{ConditionInfo, PathCondition, PathSensitiveState, VarTaintState};
         use crate::analysis::enhanced_dataflow::EdgeType;
@@ -805,6 +816,18 @@ impl AstTaintAnalyzer {
                         language,
                         line_offset,
                     );
+                    // 10.26：文件级收集的实例属性污点源（构造器 self.attr = source）
+                    // 在函数入口注入，解决跨方法 self.attr 读写的污点保持。
+                    for attr_path in instance_sources {
+                        new_state.insert_path(
+                            AccessPath::from_dotted(attr_path),
+                            super::cpg::VarTaintState::from_taint(
+                                node.start_line,
+                                attr_path.clone(),
+                                vec![],
+                            ),
+                        );
+                    }
                 }
 
                 EnhancedNodeType::Assignment => {
@@ -1040,6 +1063,36 @@ impl AstTaintAnalyzer {
     }
 
     /// 检查入口源（PathSensitiveState 版本）
+    /// 10.26 近似：收集“构造器参数/请求数据 → self.attr”的文件级实例属性污点源。
+    ///
+    /// 只收集 assignment 目标为 `self.<attr>` 且右值命中任一 taint source
+    /// pattern 的条目。返回 AccessPath 列表，供每个函数入口统一注入。
+    fn collect_instance_attribute_sources(
+        &self,
+        assignments: &[Assignment],
+        language: &str,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        for assign in assignments {
+            let target = assign.target.trim();
+            if !target.starts_with("self.") {
+                continue;
+            }
+            let path = AccessPath::from_dotted(target);
+            if path.depth() < 2 {
+                continue;
+            }
+            let expr = assign.source_expr.trim();
+            if self.sources.iter().any(|s| s.matches(expr, language)) {
+                let dotted = path.as_dotted();
+                if !out.contains(&dotted) {
+                    out.push(dotted);
+                }
+            }
+        }
+        out
+    }
+
     fn check_entry_sources_cpg(
         &self,
         node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
