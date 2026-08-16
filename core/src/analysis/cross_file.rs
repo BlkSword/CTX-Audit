@@ -693,50 +693,12 @@ impl CrossFileTaintAnalyzer {
 
     /// 分析项目
     pub fn analyze_project(&mut self, project_path: &Path) -> CrossFileTaintResult {
-        let mut stats = CrossFileAnalysisStats::default();
-
-        // 1. 收集所有源文件
+        // 收集所有源文件，并复用 analyze_files_with_content 的并行构建路径。
+        // 该路径已包含：预加载文件内容、并行构建文件级子图、跨文件调用解析、
+        // 中间件建模、污点流查找与统计。
         let source_files = self.collect_source_files(project_path);
-        stats.files_analyzed = source_files.len();
-
-        // 1.5 预加载文件内容，避免后续反复读盘
-        self.preload_file_contents(&source_files);
-
-        // 2. 构建调用图（逐文件提取函数节点和内部调用）
-        for file_path in &source_files {
-            self.build_call_graph_for_file(file_path);
-        }
-
-        // 3. 跨文件调用解析：将裸函数名匹配到已知函数节点
-        self.filter_constructor_fps();
-        self.resolve_cross_file_calls();
-        self.inject_middleware_edges();
-
-        stats.total_functions = self.call_graph.nodes.len();
-        stats.taint_sources = self.call_graph.taint_sources.len();
-        stats.taint_sinks = self.call_graph.taint_sinks.len();
-
-        // 4. 查找跨文件污点流
-        let taint_flows = self.find_interprocedural_taint_flows(5000);
-        stats.taint_flows = taint_flows.len();
-        stats.cross_file_flows = taint_flows
-            .iter()
-            .filter(|f| {
-                // 跨文件 = source 和 sink 在不同文件，或路径跨多个文件
-                f.source.file_path != f.sink.file_path || f.interprocedural_path.len() > 1
-            })
-            .count();
-
-        CrossFileTaintResult {
-            project_path: project_path.to_string_lossy().to_string(),
-            call_graph: Arc::new(std::mem::take(&mut self.call_graph)),
-            taint_flows,
-            stats,
-            type_hierarchy: std::mem::take(&mut self.type_hierarchy),
-            middleware_model: std::mem::take(&mut self.middleware_model),
-            file_import_aliases: std::mem::take(&mut self.file_import_aliases),
-            variable_type_map: std::mem::take(&mut self.variable_type_map),
-        }
+        let content_cache = HashMap::new();
+        self.analyze_files_with_content(project_path, &source_files, &content_cache)
     }
 
     /// 分析指定文件子集（用于深度扫描，避免全项目遍历）
