@@ -1,0 +1,56 @@
+kind: taint-rules
+name: "LLM Application Taint Rules"
+version: "1.0"
+
+# ── LLM 应用 / Agent 框架污点规则 ──────────────────────────
+#
+# 定位：LLM 应用的"模型输出注入"这一类（LLM 输出被间接 prompt 注入操控后
+# 流入传统 sink）。这是引擎在此猎场唯一能确定性贡献的一类——把 LLM 调用点
+# 的返回值标记为污点源，追踪到传统 sink（SQL/命令/HTML/文件路径，已有覆盖）。
+#
+# 明确不覆盖（引擎表达力边界，归 LLM 深审 + checklist）：
+#   - 纯 prompt 注入（语义/行为缺陷，非数据流）
+#   - 工具调用越权 / RAG 知识库越权（授权逻辑缺陷，非 source→sink 数据流）
+# 这两类由 docs/audit-rounds/llm-app-checklists.md 的三张 checklist 驱动深审。
+
+sources:
+  - id: "llm_output"
+    name: "LLM Model Output"
+    description: "LLM 输出（llm.invoke/chain.run/agent.run 等返回值）。输出内容可被间接 prompt 注入操控（攻击者控制 LLM 读取的网页/文档/邮件），流入 SQL/命令/HTML/文件路径等 sink 时构成模型输出注入。category 复用 TemplateRender 的'生成/渲染输出可含用户数据'语义。"
+    patterns:
+      # LangChain / LangGraph（Python + JS 同构 API）
+      - "llm.invoke"
+      - "llm.ainvoke"
+      - "llm.predict"
+      - "llm.generate"
+      - "chain.invoke"
+      - "chain.ainvoke"
+      - "chain.run"
+      - "runnable.invoke"
+      - "agent_executor.run"
+      - "agent_executor.invoke"
+      # LlamaIndex
+      - "query_engine.query"
+      - "chat_engine.chat"
+      - "index.as_query_engine"
+      # OpenAI SDK（Python + JS 同构）
+      - "chat.completions.create"
+      # 通用 agent
+      - "agent.run"
+    languages: ["python", "javascript", "typescript"]
+    severity: "Medium"
+    category: "TemplateRender"
+    ast_patterns: []
+
+  - id: "llm_tool_call_arguments"
+    name: "LLM Tool Call Arguments"
+    description: "LLM 工具调用的参数（tool_call.arguments / function_call.arguments / action_input）。参数由 LLM 生成、可被 prompt 注入操控，流入数据访问/文件操作时构成越权或注入。"
+    patterns:
+      - "tool_call.arguments"
+      - "function_call.arguments"
+      - "action_input"
+      - "tool_input"
+    languages: ["python", "javascript", "typescript"]
+    severity: "Medium"
+    category: "TemplateRender"
+    ast_patterns: []
