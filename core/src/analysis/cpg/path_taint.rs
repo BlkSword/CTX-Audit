@@ -394,7 +394,11 @@ mod tests {
         true_state.insert_var("x".into(), true_vt);
 
         let mut false_state = PathSensitiveState::new();
-        let false_vt = VarTaintState::from_taint(1, "x".into(), vec![]);
+        let mut false_vt = VarTaintState::from_taint(1, "x".into(), vec![]);
+        // 与 join_predecessors_cpg 的 False 分支注入一致：isSafe(x)=false 路径仍污染
+        false_vt
+            .tainted_on
+            .push(make_pc(5, EdgeType::FalseBranch, "isSafe(x)"));
         false_state.insert_var("x".into(), false_vt);
 
         let merged = PathSensitiveState::merge_branches(&true_state, &false_state);
