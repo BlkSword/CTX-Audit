@@ -746,14 +746,14 @@ impl AttackSurfaceMapper {
         let framework_detected = is_gin || is_echo || is_net_http;
 
         // 文件级全局认证中间件预检查：Gin r.Use(Auth...) / Echo e.Use(auth...) / net/http middleware
-        let go_file_has_global_auth = (content_lower.contains(".use(")
+        let go_file_has_global_auth = content_lower.contains(".use(")
             && (content_lower.contains("auth")
                 || content_lower.contains("jwt")
                 || content_lower.contains("token")
                 || content_lower.contains("session")
                 || content_lower.contains("login")
                 || content_lower.contains("requireauth")
-                || content_lower.contains("isauthenticated")));
+                || content_lower.contains("isauthenticated"));
 
         // 标准库路由: http.HandleFunc("/path", handler)
         if is_net_http {
