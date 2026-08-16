@@ -10,7 +10,7 @@
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-336%20passed-green?style=flat-square)]()
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-blue?style=flat-square)](.github/workflows/ci.yml)
 
 [English](README_EN.md)
 
@@ -295,10 +295,10 @@ CTX-Audit
 | 跨文件分析 | 调用图 + Import 别名 + Callback + receiver + 类型层次 + 虚方法 + 中间件 |
 | 语言覆盖 | Java/Python/JS/TS/Go/Rust/C/C++/PHP — 12 种 AST，7 种污点规则 |
 | YAML 规则 | 68 sinks + 101 sanitizers（Spring/React/Django/Express 框架感知） |
-| MCP 工具 | 32+（扫描/调用图查询/代码搜索/污点追踪/审计会话） |
+| MCP 工具 | 35+（扫描/调用图查询/代码搜索/污点追踪/审计会话） |
 | 证据质量 | enclosing_function 97%，evidence_refs 4-70%（项目类型决定） |
 | Agent 模式 | 已搁置（`llm_mode=noop`）。MCP 协作是推荐方向 |
-| 测试 | 239 passed，0 failed |
+| 测试 | 由 `.github/workflows/ci.yml` 统一执行，不维护单一静态计数 |
 | 基准 | 7 项目，819 findings 验证 |
 | 已知 CVE 检出 | ✅ CVE-2016-4437（Shiro），⚠️ CVE-2017-18349（Fastjson），CVE-2023-27025（RuoYi 部分） |
 

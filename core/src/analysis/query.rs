@@ -204,6 +204,9 @@ pub struct CallGraphQueryEngine {
     all_callers_cache: Mutex<HashMap<String, Vec<String>>>,
     /// 递归被调用者缓存（按需计算）
     all_callees_cache: Mutex<HashMap<String, Vec<String>>>,
+    /// 调用路径缓存：(source_id, sink_id) -> Option<raw_path>
+    /// 避免 LLM 多次查询同一 source→sink 时重复 BFS。
+    path_cache: Mutex<HashMap<(String, String), Option<Vec<String>>>>,
     /// 图统计缓存
     stats_cache: Mutex<Option<CachedGraphStats>>,
 }
@@ -235,6 +238,7 @@ impl CallGraphQueryEngine {
             direct_callee_index,
             all_callers_cache: Mutex::new(HashMap::new()),
             all_callees_cache: Mutex::new(HashMap::new()),
+            path_cache: Mutex::new(HashMap::new()),
             stats_cache: Mutex::new(None),
         }
     }
@@ -256,6 +260,7 @@ impl CallGraphQueryEngine {
             direct_callee_index,
             all_callers_cache: Mutex::new(HashMap::new()),
             all_callees_cache: Mutex::new(HashMap::new()),
+            path_cache: Mutex::new(HashMap::new()),
             stats_cache: Mutex::new(None),
         }
     }
@@ -499,7 +504,25 @@ impl CallGraphQueryEngine {
         // 尝试每个 source-sink 组合
         for source_id in &source_ids {
             for sink_id in &sink_ids {
-                if let Some(raw_path) = self.call_graph.find_call_path(source_id, sink_id) {
+                let key = (source_id.clone(), sink_id.clone());
+                // 命中缓存：Some(path) 直接返回，None 表示此前已确认无路径
+                let cached = self
+                    .path_cache
+                    .lock()
+                    .ok()
+                    .and_then(|c| c.get(&key).cloned());
+                let raw_path = match cached {
+                    Some(Some(path)) => Some(path),
+                    Some(None) => None,
+                    None => {
+                        let found = self.call_graph.find_call_path(source_id, sink_id);
+                        if let Ok(mut cache) = self.path_cache.lock() {
+                            cache.insert(key, found.clone());
+                        }
+                        found
+                    }
+                };
+                if let Some(raw_path) = raw_path {
                     return Some(self.build_call_path(&raw_path));
                 }
             }

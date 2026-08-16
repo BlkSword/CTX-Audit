@@ -4344,6 +4344,36 @@ fn slugify(s: &str) -> String {
         .to_string()
 }
 
+/// 记录 MCP 工具调用指标（轻量 JSONL，写入 .ctx-audit/mcp_metrics.jsonl）
+///
+/// 指标用于评估 MCP 工作流的成本与产出：每次工具调用的名称、耗时、是否错误。
+/// 路径可用环境变量 `CTX_AUDIT_METRICS_PATH` 覆盖；默认写入当前工作目录的
+/// `.ctx-audit/mcp_metrics.jsonl`。
+fn record_mcp_tool_metric(tool_name: &str, duration_ms: u64, is_error: bool) {
+    use std::io::Write;
+
+    let path = std::env::var("CTX_AUDIT_METRICS_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from(".ctx-audit").join("mcp_metrics.jsonl"));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    let entry = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "tool": tool_name,
+        "duration_ms": duration_ms,
+        "is_error": is_error,
+    });
+    let _ = writeln!(file, "{}", entry);
+}
+
 async fn handle_request_with_state(
     state: &McpServerState,
     method: String,
@@ -4405,8 +4435,8 @@ async fn handle_request_with_state(
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
 
-            // 先尝试 ToolRegistry
-            if let Some(tool) = state.tool_registry.get_tool(tool_name) {
+            let start = std::time::Instant::now();
+            let response = if let Some(tool) = state.tool_registry.get_tool(tool_name) {
                 match tool.execute(arguments).await {
                     Ok(result) => result.to_mcp_response(),
                     Err(e) => serde_json::json!({
@@ -4439,7 +4469,17 @@ async fn handle_request_with_state(
                     // 回退到 MCP 独有工具（不需要 state）
                     _ => handle_tool_call(tool_name, &arguments).await,
                 }
-            }
+            };
+            let is_error = response
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            record_mcp_tool_metric(
+                tool_name,
+                start.elapsed().as_millis() as u64,
+                is_error,
+            );
+            response
         }
         "ping" => {
             serde_json::json!({})
