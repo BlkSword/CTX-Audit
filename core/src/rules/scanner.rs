@@ -1114,7 +1114,7 @@ fn maybe_expand_c_object_macros(content: &str, extension: &str) -> String {
         if !is_c_macro_ident(name)
             || body.is_empty()
             || body.len() > 200
-            || body.contains('\')
+            || body.contains('\\')
         {
             continue;
         }
