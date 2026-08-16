@@ -66,3 +66,8 @@ CHANGELOG.md
 # 审计目标与临时产物
 .audit-targets/
 r68probe/
+
+# DSH harness runtime artifacts
+harness/dsh-home/sessions/
+harness/dsh-home/profiles/*/node_modules/
+harness/dsh-home/profiles/node_modules/
