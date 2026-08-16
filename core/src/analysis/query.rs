@@ -209,6 +209,8 @@ pub struct CallGraphQueryEngine {
     path_cache: Mutex<HashMap<(String, String), Option<Vec<String>>>>,
     /// 可达性查询缓存：(file_path, function_name, max_depth) -> Option<ReachabilityResult>
     reachable_cache: Mutex<HashMap<(String, String, usize), Option<ReachabilityResult>>>,
+    /// 变量流追踪缓存：(file_path, function_name) -> VariableFlowResult
+    variable_flow_cache: Mutex<HashMap<(String, String), VariableFlowResult>>,
     /// 图统计缓存
     stats_cache: Mutex<Option<CachedGraphStats>>,
 }
@@ -242,6 +244,7 @@ impl CallGraphQueryEngine {
             all_callees_cache: Mutex::new(HashMap::new()),
             path_cache: Mutex::new(HashMap::new()),
             reachable_cache: Mutex::new(HashMap::new()),
+            variable_flow_cache: Mutex::new(HashMap::new()),
             stats_cache: Mutex::new(None),
         }
     }
@@ -265,6 +268,7 @@ impl CallGraphQueryEngine {
             all_callees_cache: Mutex::new(HashMap::new()),
             path_cache: Mutex::new(HashMap::new()),
             reachable_cache: Mutex::new(HashMap::new()),
+            variable_flow_cache: Mutex::new(HashMap::new()),
             stats_cache: Mutex::new(None),
         }
     }
@@ -1008,6 +1012,16 @@ impl CallGraphQueryEngine {
     /// 利用调用图的 BFS 查找所有从 source 到任意 sink 的路径。
     pub fn trace_variable_flow(&self, file_path: &str, function_name: &str) -> VariableFlowResult {
         let normalized_file = normalize_path(file_path);
+        let cache_key = (normalized_file.clone(), function_name.to_string());
+        if let Some(cached) = self
+            .variable_flow_cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&cache_key).cloned())
+        {
+            return cached;
+        }
+
         let source_ids = self.find_func_ids(&normalized_file, function_name);
 
         let mut all_sink_paths = Vec::new();
@@ -1059,14 +1073,18 @@ impl CallGraphQueryEngine {
             .first()
             .and_then(|id| self.call_graph.nodes.get(id));
 
-        VariableFlowResult {
+        let result = VariableFlowResult {
             variable_name: function_name.to_string(),
             source_file: source_node.map(|n| n.file_path.clone()).unwrap_or_default(),
             source_line: source_node.map(|n| n.start_line).unwrap_or(0),
             source_function: source_node.map(|n| n.name.clone()).unwrap_or_default(),
             flows_to_sinks: all_sink_paths,
             total_sinks_reached: total_sinks,
+        };
+        if let Ok(mut cache) = self.variable_flow_cache.lock() {
+            cache.insert(cache_key, result.clone());
         }
+        result
     }
 
     // ── 调用图统计 ────────────────────────────────────

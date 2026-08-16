@@ -4344,6 +4344,10 @@ fn slugify(s: &str) -> String {
         .to_string()
 }
 
+/// 单个 MCP 工具调用的最大执行时间（秒）。
+/// 防止扫描/跨文件分析等长任务卡死整个 MCP Server。
+const MCP_TOOL_TIMEOUT_SECS: u64 = 600;
+
 /// 记录 MCP 工具调用指标（轻量 JSONL，写入 .ctx-audit/mcp_metrics.jsonl）
 ///
 /// 指标用于评估 MCP 工作流的成本与产出：每次工具调用的名称、耗时、是否错误。
@@ -4434,42 +4438,51 @@ async fn handle_request_with_state(
                 .get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
+            let tool_name_owned = tool_name.to_string();
 
             let start = std::time::Instant::now();
-            let response = if let Some(tool) = state.tool_registry.get_tool(tool_name) {
-                match tool.execute(arguments).await {
-                    Ok(result) => result.to_mcp_response(),
-                    Err(e) => serde_json::json!({
-                        "content": [{"type": "text", "text": format!("Tool error: {}", e)}],
-                        "isError": true
-                    }),
-                }
-            } else {
-                // 审计会话工具（需要 state 访问）
-                match tool_name {
-                    "start_audit_session" => {
-                        tool_start_audit_session_with_state(state, &arguments).await
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(MCP_TOOL_TIMEOUT_SECS),
+                async {
+                    if let Some(tool) = state.tool_registry.get_tool(&tool_name_owned) {
+                        match tool.execute(arguments).await {
+                            Ok(result) => result.to_mcp_response(),
+                            Err(e) => serde_json::json!({
+                                "content": [{"type": "text", "text": format!("Tool error: {}", e)}],
+                                "isError": true
+                            }),
+                        }
+                    } else {
+                        // 审计会话工具（需要 state 访问）
+                        match tool_name_owned.as_str() {
+                            "start_audit_session" => {
+                                tool_start_audit_session_with_state(state, &arguments).await
+                            }
+                            "start_investigation" => {
+                                tool_start_investigation_with_state(state, &arguments).await
+                            }
+                            "log_investigation_step" => {
+                                tool_log_investigation_step_with_state(state, &arguments).await
+                            }
+                            "conclude_investigation" => {
+                                tool_conclude_investigation_with_state(state, &arguments).await
+                            }
+                            "conclude_audit_session" => {
+                                tool_conclude_audit_session_with_state(state, &arguments).await
+                            }
+                            "audit_plan" => tool_audit_plan_with_state(state, &arguments).await,
+                            "audit_finalize_report" => {
+                                tool_audit_finalize_report_with_state(state, &arguments).await
+                            }
+                            // 回退到 MCP 独有工具（不需要 state）
+                            _ => handle_tool_call(&tool_name_owned, &arguments).await,
+                        }
                     }
-                    "start_investigation" => {
-                        tool_start_investigation_with_state(state, &arguments).await
-                    }
-                    "log_investigation_step" => {
-                        tool_log_investigation_step_with_state(state, &arguments).await
-                    }
-                    "conclude_investigation" => {
-                        tool_conclude_investigation_with_state(state, &arguments).await
-                    }
-                    "conclude_audit_session" => {
-                        tool_conclude_audit_session_with_state(state, &arguments).await
-                    }
-                    "audit_plan" => tool_audit_plan_with_state(state, &arguments).await,
-                    "audit_finalize_report" => {
-                        tool_audit_finalize_report_with_state(state, &arguments).await
-                    }
-                    // 回退到 MCP 独有工具（不需要 state）
-                    _ => handle_tool_call(tool_name, &arguments).await,
-                }
-            };
+                },
+            )
+            .await
+            .unwrap_or_else(|_| error_response("Tool call timed out"));
+
             let is_error = response
                 .get("isError")
                 .and_then(|v| v.as_bool())

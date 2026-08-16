@@ -264,7 +264,7 @@ pub struct MiddlewareEvidence {
 }
 
 /// 调用图统计快照
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GraphSnapshot {
     /// 总函数节点数
     pub total_nodes: usize,
@@ -2448,7 +2448,7 @@ fn build_evidence_refs_from_flow(
         }),
         sanitizer_chain: Vec::new(),
         middleware_coverage: shared_middleware_coverage.to_vec(),
-        graph_snapshot: Some(graph_snapshot.clone()),
+        graph_snapshot: Some(*graph_snapshot),
     }
 }
 
