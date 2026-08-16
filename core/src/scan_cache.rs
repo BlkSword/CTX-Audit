@@ -325,3 +325,72 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 }
+
+#[cfg(test)]
+mod cache_roundtrip_tests {
+    use super::*;
+    use crate::analysis::attack_surface::AttackSurface;
+    use crate::analysis::framework_detector::ProjectProfile;
+
+    fn sample_result() -> ScanResult {
+        ScanResult {
+            findings: vec![],
+            attack_surface: AttackSurface::default(),
+            cross_file_result: None,
+            project_profile: ProjectProfile::default(),
+            encoding_fallback_files: vec![],
+        }
+    }
+
+    #[test]
+    fn test_scan_cache_bincode_roundtrip() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ctx-audit-scan-cache-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let project = tmp.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("main.py"), "print('hello')\n").unwrap();
+
+        let cache_dir = tmp.join("cache");
+        let result = sample_result();
+        save_scan_result(&cache_dir, &project, &result, "rules-hash", "opts-hash").unwrap();
+
+        let loaded = load_scan_result(&cache_dir, &project, "rules-hash", "opts-hash");
+        assert!(loaded.is_some(), "bincode cache should roundtrip");
+        assert_eq!(loaded.unwrap().findings.len(), 0);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_scan_cache_version_mismatch_invalidates() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ctx-audit-scan-cache-version-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let project = tmp.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("main.py"), "print('hello')\n").unwrap();
+
+        let cache_dir = tmp.join("cache");
+        let result = sample_result();
+        save_scan_result(&cache_dir, &project, &result, "rules-hash", "opts-hash").unwrap();
+
+        // 模拟旧格式：manifest 版本改为 1，数据仍是 bincode，但应判定缓存失效
+        let manifest_path = cache_dir.join(SCAN_CACHE_MANIFEST);
+        let mut manifest: ScanCacheManifest =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest.format_version = 1;
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_scan_result(&cache_dir, &project, "rules-hash", "opts-hash");
+        assert!(loaded.is_none(), "version mismatch should invalidate cache");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+}
