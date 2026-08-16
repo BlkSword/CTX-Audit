@@ -59,7 +59,7 @@ ctx-audit scan ./project [OPTIONS]
 ctx-audit mcp    # Start MCP Server (stdio JSON-RPC)
 ```
 
-Exposes 32+ tools via MCP for Claude Code / Cursor / any MCP Agent. LLM can autonomously drive: project understanding → scan → call graph queries → code review → evidence-based verdicts.
+Exposes 35+ tools via MCP for Claude Code / Cursor / any MCP Agent. LLM can autonomously drive: project understanding → scan → call graph queries → code review → evidence-based verdicts.
 
 Claude Code config (`.claude/settings.json`):
 
@@ -117,7 +117,7 @@ ctx-audit audit ./project --agent           # [DEPRECATED] Internal agent mode
 | Cross-file analysis | Call graph + import aliasing + callback + receiver + type hierarchy + virtual dispatch + middleware |
 | Language coverage | Java/Python/JS/TS/Go/Rust/C/C++/PHP — 12 AST, 7 taint rulesets |
 | YAML rules | 68 sinks + 101 sanitizers (Spring/React/Django/Express) |
-| MCP tools | 32+ (scan/call graph query/code search/taint trace/audit session) |
+| MCP tools | 35+ (scan/call graph query/code search/taint trace/audit session) |
 | Evidence quality | enclosing_function 97%, evidence_refs 4-70% (project-dependent) |
 | Agent mode | Deprecated. MCP collaboration is the recommended path |
 | Tests | 239 passed, 0 failed |

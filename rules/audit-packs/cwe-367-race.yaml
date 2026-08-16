@@ -1,0 +1,32 @@
+# 审计证据包：竞态与 TOCTOU（CWE-367 / CWE-362）
+kind: audit-pack
+id: "cwe-367-race"
+name: "竞态与 TOCTOU 取证包"
+vuln_types:
+  - "race-condition"
+  - "race_condition"
+  - "toctou"
+  - "time-of-check-time-of-use"
+  - "concurrency"
+cwe:
+  - "CWE-362"
+  - "CWE-367"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认“检查-使用”模式：先校验路径/文件/余额/状态，再做实际操作；中间是否可能被并发请求改变状态。"
+  - tool: search_code
+    purpose: "搜索 lock / mutex / transaction / compare-and-swap / atomic 等同步原语，确认关键操作是否在同一临界区内。"
+  - tool: query_callers
+    purpose: "追入口调用链，确认该操作是否可从多个并发请求/多线程触发，以及是否经过统一的锁或事务封装。"
+  - tool: get_code_context
+    purpose: "检查文件写入/上传/扣款等操作的步骤顺序：先检查后写入且无锁，或先创建临时文件再 rename 等模式。"
+tp_criteria:
+  - "存在 check→use 两步操作，且两步之间无锁/事务/原子比较"
+  - "操作可从外部并发触发（HTTP 多请求、多线程 worker）"
+  - "竞态窗口可被攻击者利用获得实际收益（覆盖文件、重复扣款、越权）"
+fp_criteria:
+  - "关键操作在数据库事务或分布式锁内"
+  - "使用原子比较（CAS）或版本号乐观锁"
+  - "使用临时文件 + rename 原子替换，且路径不可预测"
+  - "并发窗口不可达（单用户本地操作、无共享状态）"
+confidence_guide: "确认 check→use 无同步原语 + 外部并发可达 + 利用后果明确 → 0.9+；只看到无锁但无法确认并发可达 → 0.7-0.9；存在部分防护但可绕过 → 0.5-0.7。"

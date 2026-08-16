@@ -1,0 +1,36 @@
+# 审计证据包：会话管理缺陷（CWE-613 / CWE-672）
+kind: audit-pack
+id: "cwe-613-672-session"
+name: "会话固定与不可撤销会话取证包"
+vuln_types:
+  - "session-fixation"
+  - "session_fixation"
+  - "session-revocation"
+  - "session_revocation"
+  - "session-management"
+  - "CWE-613"
+  - "CWE-672"
+cwe:
+  - "CWE-613"
+  - "CWE-672"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认登录成功后的会话处理：是否调用 regenerate/session_regenerate_id/rotate，还是直接沿用登录前 session id。"
+  - tool: search_code
+    purpose: "搜索 logout / revoke / invalidate / destroy 等会话失效逻辑，确认服务端是否会删除会话记录或使 token 失效。"
+  - tool: query_callers
+    purpose: "追会话创建与销毁函数，确认所有登出入口都经过同一失效逻辑，而不是只删除本地 cookie/缓存。"
+  - tool: get_code_context
+    purpose: "检查会话/token 是否含过期时间、是否绑定用户/IP/设备等上下文，确认被盗 token 是否可长期复用。"
+tp_criteria:
+  - "登录后未更换 session id（固定会话）"
+  - "注销仅删除客户端 cookie/localStorage，服务端会话/token 仍有效"
+  - "会话/token 无过期时间或过期时间过长"
+  - "会话/token 不可撤销，且泄露后无法通过任何管理操作使其失效"
+  - "密码修改后旧会话/token 仍然有效"
+fp_criteria:
+  - "登录成功后有 regenerate/rotate 会话标识"
+  - "注销时服务端删除会话记录或 token 进入黑名单"
+  - "会话/token 有合理过期时间与刷新策略"
+  - "会话绑定到密码修改/设备变更事件并同步失效"
+confidence_guide: "完整追到登录/注销/密码修改三条路径且均存在缺陷 → 0.9+；只确认注销未失效服务端会话 → 0.7-0.9；存在部分失效但需特定条件绕过 → 0.5-0.7。"

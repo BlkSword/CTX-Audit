@@ -1,0 +1,41 @@
+# 审计证据包：缺失授权 / 越权（Missing Authorization / IDOR / BOLA）
+kind: audit-pack
+id: "cwe-862-863-authorization"
+name: "缺失授权与越权（CWE-862/CWE-863）取证包"
+vuln_types:
+  - "missing-authorization"
+  - "missing_authorization"
+  - "UnauthenticatedEndpoint"
+  - "unauthorized"
+  - "idor"
+  - "bola"
+  - "broken-access-control"
+  - "access-control"
+cwe:
+  - "CWE-862"
+  - "CWE-863"
+  - "CWE-639"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认命中点所在函数/路由的上下文：是否已有身份认证（当前用户、session、token）、是否只做了登录校验未做属主校验。"
+  - tool: query_callers
+    purpose: "反向追调用链，确认该函数/端点是否被路由暴露给外部，以及外部请求到该函数之间是否有认证中间件/过滤器。"
+  - tool: query_middleware_chain
+    purpose: "确认 Express/Django 等框架的路由是否被认证中间件覆盖；如果路由在认证中间件注册之前或未被覆盖，则向 TP 加权。"
+  - tool: search_code
+    purpose: "搜索 currentUser / session / owner / isAdmin / hasRole / permission 等授权关键字，确认资源操作函数内是否存在属主或角色校验。"
+  - tool: get_code_context
+    purpose: "对比同类资源操作（get/update/delete）是否有统一的授权辅助函数；如果其他操作有校验而本操作没有，这是缺失授权的强信号。"
+tp_criteria:
+  - "资源操作（按 id/name 的 get/delete/update/remove 等）函数体内没有身份/属主校验"
+  - "路由可被外部请求到达，且没有认证中间件覆盖"
+  - "同文件/同控制器其他资源操作存在授权校验，而当前操作缺失"
+  - "数据来源为 HTTP 参数中的资源标识（id、name、path 等），且未绑定到当前用户"
+  - "通过替换资源标识即可访问其他用户/租户的数据（IDOR/BOLA）"
+fp_criteria:
+  - "函数体或调用链上存在有效的身份/属主校验（currentUser/owner/isAdmin/hasRole/权限校验）"
+  - "路由被认证中间件全局覆盖，且该操作无需额外属主校验（如管理员操作）"
+  - "资源标识来自服务端会话/内部状态，攻击者不可控"
+  - "操作为公开设计内端点（登录/注册/健康检查等白名单路由）"
+  - "测试、构建、vendor 文件"
+confidence_guide: "调用链完整追到外部路由 + 确认函数体无授权校验 + 同类操作有校验对照 → 0.9+；只看到函数体无校验但未确认路由可达 → 0.7-0.9；存在部分校验但可绕过（如仅登录未校验属主）→ 0.5-0.7，判 needs_review。"
