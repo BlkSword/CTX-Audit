@@ -3254,9 +3254,13 @@ fn deduplicate_with_tolerance(findings: Vec<Finding>, line_tolerance: usize) -> 
             continue;
         }
 
+        // 排序后聚类，保证合并代表与规则迭代顺序无关
+        let mut indices = indices.clone();
+        indices.sort_by_key(|&idx| findings[idx].line_start);
+
         // 聚类：行号相近的分为同一 cluster
         let mut clusters: Vec<Vec<usize>> = Vec::new();
-        for &idx in indices {
+        for &idx in &indices {
             let line = findings[idx].line_start;
             let mut found = false;
             for cluster in &mut clusters {
@@ -3293,6 +3297,15 @@ fn deduplicate_with_tolerance(findings: Vec<Finding>, line_tolerance: usize) -> 
         .map(|(_, f)| f)
         .collect();
     result.extend(to_add);
+    // 稳定输出顺序，避免 HashMap/规则加载顺序影响 JSON diff
+    result.sort_by(|a, b| {
+        a.file_path
+            .cmp(&b.file_path)
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.line_end.cmp(&b.line_end))
+            .then(a.vuln_type.cmp(&b.vuln_type))
+            .then(a.detector.cmp(&b.detector))
+    });
     result
 }
 
