@@ -1,0 +1,29 @@
+# 存储 XSS 服务侧提示：上传内容以原始 MIME + Content-Disposition: inline 同源服务
+# （10.24 服务侧草案）：无类型限制上传 → MIME 探测入库 → inline 同源输出 = 存储 XSS 高发组合。
+# 单点 pattern 无数据流上下文，定位为 low/medium 提示 + LLM 判定层（audit-pack 追上传类型白名单、
+# 是否同源、Cookie HttpOnly/CSP）。
+# sanitizer：attachment / nosniff / sandbox / 显式 MIME 白名单。
+id: stored-xss-inline-serve
+name: Stored XSS via Inline Content-Disposition (hint)
+description: "检测服务端以 Content-Disposition: inline 输出用户可控内容的高危组合提示。无数据流上下文时 FP 率较高，仅作提示，最终判定交给 LLM 层。"
+severity: low
+language: all
+category: xss
+cwe: CWE-79
+owasp: "A03:2021-Injection"
+patterns:
+  - language: java
+    pattern: '(?i)(setHeader\s*\(\s*"Content-Disposition"\s*,\s*"inline|addHeader\s*\(\s*"Content-Disposition"\s*,\s*"inline)'
+  - language: go
+    pattern: '(?i)(Header\(\)\.Set\s*\(\s*"Content-Disposition"\s*,\s*"inline|w\.Header\(\)\.Set\s*\(\s*"Content-Disposition"\s*,\s*"inline)'
+  - language: javascript
+    pattern: '(?i)(setHeader\s*\(\s*["\x27]Content-Disposition["\x27]\s*,\s*["\x27]inline|writeHead\s*\([^)]*["\x27]Content-Disposition["\x27][^)]*["\x27]inline)'
+  - language: python
+    pattern: '(?i)(Content-Disposition["\x27]\s*,\s*["\x27]inline|content_disposition\s*=\s*["\x27]inline)'
+sanitizers:
+  - "attachment"
+  - "nosniff"
+  - "X-Content-Type-Options"
+  - "sandbox"
+  - "Content-Security-Policy"
+remediation: "优先使用 Content-Disposition: attachment；如需 inline 展示，必须对上传内容做类型白名单、强制服务端扩展名/MIME、添加 nosniff/CSP sandbox，并确保 Cookie HttpOnly。"

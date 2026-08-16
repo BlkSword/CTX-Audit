@@ -1714,9 +1714,16 @@ impl AstTaintAnalyzer {
         // 二阶 source（存储点读出）：数据流真实但来源是已存储数据，
         // 保留严重度（存储型 XSS 等本身即高危），只降置信度
         let is_second_order = taint_state.source_var.contains("(second-order)");
+        // 跨 HTTP 边界（resp.data/response.data 等）：服务端渲染转义不可见，
+        // 置信度应降权（10.23③ BookStack 同族）
+        let is_http_response_boundary = taint_state.source_var.contains("resp.data")
+            || taint_state.source_var.contains("response.data")
+            || taint_state.source_var.contains("res.data");
         let (severity, confidence) = if is_speculative_source {
             (downgrade_severity(sink.severity), confidence * 0.7)
         } else if is_second_order {
+            (sink.severity, confidence * 0.7)
+        } else if is_http_response_boundary {
             (sink.severity, confidence * 0.7)
         } else {
             (sink.severity, confidence)
@@ -2436,9 +2443,16 @@ impl AstTaintAnalyzer {
             || taint_info.source_var.contains("(tainted param)");
         // 二阶 source（存储点读出）：保留严重度，降置信度
         let is_second_order = taint_info.source_var.contains("(second-order)");
+        // 跨 HTTP 边界（resp.data/response.data 等）：服务端渲染转义不可见，
+        // 置信度应降权（10.23③ BookStack 同族）
+        let is_http_response_boundary = taint_info.source_var.contains("resp.data")
+            || taint_info.source_var.contains("response.data")
+            || taint_info.source_var.contains("res.data");
         let (severity, confidence) = if is_speculative_source {
             (downgrade_severity(sink.severity), confidence * 0.7)
         } else if is_second_order {
+            (sink.severity, confidence * 0.7)
+        } else if is_http_response_boundary {
             (sink.severity, confidence * 0.7)
         } else {
             (sink.severity, confidence)

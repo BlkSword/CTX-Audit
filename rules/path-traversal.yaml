@@ -14,9 +14,9 @@ patterns:
     # CVE-2026-16088 / CVE-2026-15326 回放反哺：补充 Path.resolve(受控名) 形态
     # （getter 源无 request 字样；*Name 后缀变量覆盖 themeName/entryName/getName() 等，
     #  判定是 LLM 的事，配置类 themeRoot.resolve(themeName) 由判定层排除）
-    pattern: (?i)(new\s+File\s*\(|FileInputStream\s*\(|Path\.of\s*\(|Paths\.get\s*\().*(?:request|param|input|user)|\.resolve\s*\([^)]*(?:fileName|getFilename|getOriginalFilename|(?-i:[A-Za-z_.]*Name\b))
+    pattern: (?i)(new\s+File\s*\(|FileInputStream\s*\(|Path\.of\s*\(|Paths\.get\s*\().*(?:request|param|input|\buser\b)|\.resolve\s*\([^)]*(?:fileName|getFilename|getOriginalFilename|(?-i:[A-Za-z_.]*Name\b))
   - language: javascript
-    pattern: '(?i)(readFile\s*\(|readFileSync\s*\(|writeFile\s*\(|writeFileSync\s*\(|fs\.open\s*\(|path\.join\s*\()[^)]*(?:req\.|request|param|input|user|socket\.on|callback)'
+    pattern: '(?i)(readFile\s*\(|readFileSync\s*\(|writeFile\s*\(|writeFileSync\s*\(|fs\.open\s*\(|path\.join\s*\()[^)]*(?:req\.|request|param|input|\buser\b|socket\.on|callback)'
   - language: javascript
     # 文件删除 sink 单列紧锚点（删除接口文件名参数直拼路径家族）：不放 user 锚点，
     # 避免 job.user_id/userUploadsDir 等会话变量词内子串误伤（\b 防 confirm( 词尾误中 rm()
@@ -38,16 +38,16 @@ patterns:
   - language: python
     # 文件移动/替换 sink（10.30 同族）：os.rename/os.replace/shutil.move 的
     # dst（第二参数）为用户路径形态；锚点组与既有 python pattern 一致
-    pattern: '(?i)\b(?:os\.(?:rename|replace)|shutil\.(?:move|rename))\s*\(\s*[^,]+,\s*[^)]*(?:request|user|filename|input|params|query|body)'
+    pattern: '(?i)\b(?:os\.(?:rename|replace)|shutil\.(?:move|rename))\s*\(\s*[^,]+,\s*[^)]*(?:request|\buser\b|filename|input|params|query|body)'
   - language: python
-    pattern: '(?i)(open\s*\(|read_file\s*\(|file_get_contents\s*\().*(?:request|param|input|user)'
+    pattern: '(?i)(open\s*\(|read_file\s*\(|file_get_contents\s*\().*(?:request|param|input|\buser\b)'
   - language: php
     pattern: (?i)(fopen\s*\(|readfile\s*\(|file_get_contents\s*\(|include\s*\(|require\s*\().*(?:\$_GET|\$_POST|\$_REQUEST|request|input)
   - language: go
     # 文件移动 sink（10.30 同族）：os.Rename 的 new（第二参数）为用户路径形态；
     # old（第一参数）语义区分=参数序约束；净化形态 filepath.Base/Clean 由
     # sanitizers 窗口豁免（R77 四件套已含）
-    pattern: '(?i)\b(?:os\.Rename|os\.RenameAll)\s*\(\s*[^,]+,\s*[^)]*(?:req\.|r\.|filename|fileName|user|input)'
+    pattern: '(?i)\b(?:os\.Rename|os\.RenameAll)\s*\(\s*[^,]+,\s*[^)]*(?:req\.|r\.|filename|fileName|\buser\b|input)'
 # 修复形态为 resolve 之后紧跟 checkDirectoryTraversal 校验（先取路径后校验），
 # 前缀语义看不到、文件级语义会被同文件 import/其他守卫误豁免，用后向窗口。
 # 窗口取 5 行：if/else 分支内 resolve 再出分支校验的形态（守卫距命中可达 4 行）
