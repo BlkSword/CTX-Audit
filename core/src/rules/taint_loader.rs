@@ -79,8 +79,19 @@ pub fn load_taint_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<LoadedTaintR
                 }
             }
             Err(e) => {
-                // 非 taint-rules 格式的 YAML 文件（如普通 Rule），跳过不报错
-                tracing::debug!("Skipped non-taint YAML file {:?}: {}", file_path, e);
+                // 形似 taint-rules 但解析失败时必须告警——R12 教训：
+                // TaintCategory 等枚举漏加变体会导致整个 taint 文件静默失败，
+                // 表现为 0 flows 而非加载错误。启动时让错误可见。
+                if content.contains("kind: taint-rules") {
+                    tracing::error!(
+                        "污点规则文件 {:?} 解析失败，已跳过：{}；请检查 TaintCategory/VulnerabilityType 枚举值是否已同步",
+                        file_path,
+                        e
+                    );
+                } else {
+                    // 非 taint-rules 格式的 YAML 文件（如普通 Rule），跳过不报错
+                    tracing::debug!("Skipped non-taint YAML file {:?}: {}", file_path, e);
+                }
             }
         }
     }

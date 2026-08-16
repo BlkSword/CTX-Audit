@@ -22,7 +22,20 @@ pub fn load_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<Vec<Rule>> {
                     } else if let Ok(rule) = serde_yaml::from_str::<Rule>(&content) {
                         rules.push(rule);
                     } else {
-                        tracing::debug!("Skipping non-pattern-rule file: {:?}", path);
+                        // 10.20 低可用项：规则 schema 化校验。形似规则文件但解析失败时
+                        // 必须告警而非静默跳过——R12 教训（枚举未加变体 -> 整个文件
+                        // 静默失败 -> 0 flows）的根治手段是启动时让错误可见。
+                        let looks_like_rule = content.contains("rules:")
+                            || content.contains("\nid:")
+                            || content.contains("\nname:");
+                        if looks_like_rule {
+                            tracing::error!(
+                                "规则文件 {:?} 解析失败，已跳过；请检查 YAML schema/枚举值",
+                                path
+                            );
+                        } else {
+                            tracing::debug!("Skipping non-pattern-rule file: {:?}", path);
+                        }
                     }
                 }
             }

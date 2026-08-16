@@ -718,6 +718,7 @@ impl CrossFileTaintAnalyzer {
             self.build_call_graph_for_file(file_path);
         }
 
+        self.add_c_callback_edges();
         self.filter_constructor_fps();
         self.resolve_cross_file_calls();
         self.inject_middleware_edges();
@@ -802,6 +803,7 @@ impl CrossFileTaintAnalyzer {
             self.merge_from(partial);
         }
 
+        self.add_c_callback_edges();
         self.filter_constructor_fps();
         self.resolve_cross_file_calls();
         self.inject_middleware_edges();
@@ -1241,6 +1243,75 @@ impl CrossFileTaintAnalyzer {
     /// 背景：`SessionHandler(db)` 等构造函数 body 覆盖整个文件（包含所有 `this.method =`
     /// 定义），函数体文本匹配到 req.body/res.redirect 等 pattern 后会被误标为 source+sink，
     /// 产生大量 FP 跨文件流。实际 source/sink 是内层 Method 节点。
+    /// 10.1 最低成本近似：C 函数指针/回调注册惯用法显式建边。
+    ///
+    /// 识别 `websDefineHandler("path", handler)`、`signal(SIG, handler)`、
+    /// `pthread_create(&t, NULL, thread_fn, ...)` 等注册-回调模式，
+    /// 把“包含注册调用的函数”与“被注册 handler”连成调用边，
+    /// 使跨文件污点能追到 handler 内部，而不在注册点断链。
+    fn add_c_callback_edges(&mut self) {
+        let patterns: [&str; 4] = [
+            // websDefineHandler("...", handler)
+            r#"websDefineHandler\s*\(\s*"[^"]*"\s*,\s*([A-Za-z_]\w*)"#,
+            // websDefineHandler(any, handler)
+            r#"websDefineHandler\s*\(\s*[^,]+,\s*([A-Za-z_]\w*)"#,
+            // signal(SIGALRM, handler)
+            r#"signal\s*\(\s*[^,]+,\s*([A-Za-z_]\w*)"#,
+            // pthread_create(&tid, NULL, thread_fn, ...)
+            r#"pthread_create\s*\([^;]*?,\s*([A-Za-z_]\w*)\s*[),]"#,
+        ];
+
+        let mut registrations: Vec<(String, usize, String)> = Vec::new();
+        for (file_path, content) in &self.file_content_cache {
+            for (idx, line) in content.lines().enumerate() {
+                for pat in &patterns {
+                    if let Ok(re) = regex::Regex::new(pat) {
+                        if let Some(caps) = re.captures(line) {
+                            if let Some(handler) = caps.get(1) {
+                                registrations.push((
+                                    file_path.clone(),
+                                    idx + 1,
+                                    handler.as_str().to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (file_path, line, handler_name) in registrations {
+            // 注册点所在的函数（行号落在函数区间内）
+            let caller_id = self
+                .call_graph
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.file_path == file_path && n.start_line <= line && line <= n.end_line)
+                .min_by_key(|(_, n)| n.end_line - n.start_line)
+                .map(|(id, _)| id.clone());
+
+            // 被注册的 handler（同文件优先，跨文件回退）
+            let callee_id = self
+                .call_graph
+                .nodes
+                .iter()
+                .find(|(_, n)| n.name == handler_name && n.file_path == file_path)
+                .or_else(|| {
+                    self.call_graph
+                        .nodes
+                        .iter()
+                        .find(|(_, n)| n.name == handler_name)
+                })
+                .map(|(id, _)| id.clone());
+
+            if let (Some(caller_id), Some(callee_id)) = (caller_id, callee_id) {
+                if caller_id != callee_id {
+                    self.call_graph.add_call(&caller_id, &callee_id);
+                }
+            }
+        }
+    }
+
     fn filter_constructor_fps(&mut self) {
         // 收集所有节点按文件分组
         let mut file_nodes: HashMap<String, Vec<(String, usize, usize, bool, bool)>> =
