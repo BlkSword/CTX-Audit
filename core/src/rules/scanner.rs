@@ -116,6 +116,9 @@ impl RuleScanner {
         // ::method(、new Foo(、function foo( 的命中不是内建函数裸调用
         let mut php_bare_call_ranges_cache: Option<Vec<(usize, usize)>> = None;
 
+        // 10.2：C 系 regex 匹配使用展开后的内容，行号保持不变；代码片段仍取自原文
+        let expanded_content = maybe_expand_c_object_macros(content, &extension);
+
         for compiled in &self.compiled_rules {
             // Simple language check based on extension
             if !rule_matches_extension(&compiled.rule.language, &extension) {
@@ -124,6 +127,12 @@ impl RuleScanner {
 
             match &compiled.matcher {
                 RuleMatcher::Regex(regex) => {
+                    let original_content = content;
+                    let content = if is_c_family_ext(&extension) {
+                        expanded_content.as_str()
+                    } else {
+                        content
+                    };
                     let mut emitted = false;
                     for cap in regex.captures_iter(content) {
                         if emitted && compiled.rule.once_per_file {
@@ -256,7 +265,7 @@ impl RuleScanner {
                                 line_start,
                                 line_end,
                                 format!("RegexRule: {}", compiled.rule.id),
-                                content,
+                                original_content,
                                 3,
                                 likely_fp,
                             ));
@@ -1069,6 +1078,107 @@ fn get_language_for_extension(extension: &str) -> Option<Language> {
 
 /// 收集内容中所有注释节点的字节范围（按扩展名选语言）。
 /// 不支持的语言返回空表（即不做注释过滤，行为与旧版一致）。
+/// 10.2 最低成本近似：C/C++ 对象宏展开（行保持）。
+///
+/// 仅处理单行、无续行符、无参数的对象宏（`#define NAME body`），
+/// 正文去重替换 `NAME` 标识符为 body，不新增/删除换行，因此行号不变。
+/// 函数宏、带 `\` 续行、正文超长（>200）的宏跳过——这些属于研究级部分。
+fn maybe_expand_c_object_macros(content: &str, extension: &str) -> String {
+    if !is_c_family_ext(extension) {
+        return content.to_string();
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut macros: Vec<(String, String)> = Vec::new();
+
+    for line in &lines {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("#define") {
+            continue;
+        }
+        let rest = trimmed["#define".len()..].trim();
+        let mut body_start = None;
+        for (i, ch) in rest.char_indices() {
+            if ch == ' ' || ch == '\t' {
+                body_start = Some(i);
+                break;
+            }
+            if ch == '(' {
+                body_start = None;
+                break;
+            }
+        }
+        let Some(idx) = body_start else { continue };
+        let name = rest[..idx].trim();
+        let body = rest[idx..].trim();
+        if !is_c_macro_ident(name)
+            || body.is_empty()
+            || body.len() > 200
+            || body.contains('\')
+        {
+            continue;
+        }
+        macros.push((name.to_string(), body.to_string()));
+    }
+
+    if macros.is_empty() {
+        return content.to_string();
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#define") {
+            out.push((*line).to_string());
+            continue;
+        }
+        let mut expanded = (*line).to_string();
+        for (name, body) in &macros {
+            expanded = replace_c_macro_ident(&expanded, name, body);
+        }
+        out.push(expanded);
+    }
+    out.join("\n")
+}
+
+fn is_c_macro_ident(s: &str) -> bool {
+    if s.is_empty() || !s.is_ascii() {
+        return false;
+    }
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// 替换字符串中的 C 标识符（避免词内子串）。不做注释/字符串感知——命中语法
+/// 范围过滤仍由 collect_comment_ranges / collect_string_ranges 在展开后内容上兜底。
+fn replace_c_macro_ident(line: &str, ident: &str, body: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    loop {
+        let Some(idx) = rest.find(ident) else {
+            out.push_str(rest);
+            break;
+        };
+        let end = idx + ident.len();
+        let before_ok = idx == 0 || !is_c_ident_byte(rest.as_bytes()[idx - 1]);
+        let after_ok = end >= rest.len() || !is_c_ident_byte(rest.as_bytes()[end]);
+        if before_ok && after_ok {
+            out.push_str(&rest[..idx]);
+            out.push_str(body);
+            rest = &rest[end..];
+        } else {
+            out.push_str(&rest[..idx + 1]);
+            rest = &rest[idx + 1..];
+        }
+    }
+    out
+}
+
+fn is_c_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 fn collect_comment_ranges(content: &str, extension: &str) -> Vec<(usize, usize)> {
     collect_node_ranges(content, extension, |kind| kind.contains("comment"))
 }
