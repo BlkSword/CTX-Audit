@@ -19,6 +19,8 @@ use crate::scanning::ScanResult;
 /// 缓存文件常量
 pub const SCAN_CACHE_FILE: &str = "scan_cache.bin";
 pub const SCAN_CACHE_MANIFEST: &str = "scan_cache_manifest.json";
+/// 缓存格式版本：2 = bincode 序列化 + zstd 压缩
+pub const SCAN_CACHE_FORMAT_VERSION: u32 = 2;
 
 /// 单个文件在缓存清单中的元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +36,9 @@ pub struct FileManifest {
 /// 扫描缓存清单
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanCacheManifest {
+    /// 缓存格式版本（用于兼容旧 JSON 缓存）
+    #[serde(default)]
+    pub format_version: u32,
     /// 项目绝对路径（仅作信息记录）
     pub project_path: String,
     /// 缓存生成时间戳（毫秒）
@@ -67,6 +72,11 @@ pub fn load_scan_result(
         Err(_) => return None,
     };
 
+    if manifest.format_version != SCAN_CACHE_FORMAT_VERSION {
+        log::debug!("[ScanCache] 缓存格式版本变化：{} -> {}，缓存失效", manifest.format_version, SCAN_CACHE_FORMAT_VERSION);
+        return None;
+    }
+
     if manifest.rules_hash != rules_hash || manifest.options_hash != options_hash {
         log::debug!(
             "[ScanCache] rules/options 变化，rules {} -> {}, options {} -> {}",
@@ -91,14 +101,7 @@ pub fn load_scan_result(
             return None;
         }
     };
-    let text = match String::from_utf8(data) {
-        Ok(t) => t,
-        Err(e) => {
-            log::warn!("[ScanCache] 缓存不是有效 UTF-8：{}，将重新扫描", e);
-            return None;
-        }
-    };
-    match serde_json::from_str::<ScanResult>(&text) {
+    match bincode::deserialize::<ScanResult>(&data) {
         Ok(result) => {
             log::info!("[ScanCache] 命中缓存：{} 个 finding", result.findings.len());
             Some(result)
@@ -124,6 +127,7 @@ pub fn save_scan_result(
 
     let files = build_project_manifest(project_path)?;
     let manifest = ScanCacheManifest {
+        format_version: SCAN_CACHE_FORMAT_VERSION,
         project_path: project_path.to_string_lossy().to_string(),
         created_at_ms: current_time_ms(),
         rules_hash: rules_hash.to_string(),
@@ -138,10 +142,10 @@ pub fn save_scan_result(
         .map_err(|e| format!("序列化缓存清单失败: {}", e))?;
     fs::write(&manifest_path, manifest_json).map_err(|e| format!("写入缓存清单失败: {}", e))?;
 
-    let json =
-        serde_json::to_string(scan_result).map_err(|e| format!("序列化扫描结果失败: {}", e))?;
+    let bytes = bincode::serialize(scan_result)
+        .map_err(|e| format!("序列化扫描结果失败: {}", e))?;
     let compressed =
-        zstd::encode_all(json.as_bytes(), 0).map_err(|e| format!("压缩缓存失败: {}", e))?;
+        zstd::encode_all(bytes.as_slice(), 0).map_err(|e| format!("压缩缓存失败: {}", e))?;
     fs::write(&cache_path, compressed).map_err(|e| format!("写入缓存文件失败: {}", e))?;
 
     log::info!(

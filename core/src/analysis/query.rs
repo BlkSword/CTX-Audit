@@ -207,6 +207,8 @@ pub struct CallGraphQueryEngine {
     /// 调用路径缓存：(source_id, sink_id) -> Option<raw_path>
     /// 避免 LLM 多次查询同一 source→sink 时重复 BFS。
     path_cache: Mutex<HashMap<(String, String), Option<Vec<String>>>>,
+    /// 可达性查询缓存：(file_path, function_name, max_depth) -> Option<ReachabilityResult>
+    reachable_cache: Mutex<HashMap<(String, String, usize), Option<ReachabilityResult>>>,
     /// 图统计缓存
     stats_cache: Mutex<Option<CachedGraphStats>>,
 }
@@ -239,6 +241,7 @@ impl CallGraphQueryEngine {
             all_callers_cache: Mutex::new(HashMap::new()),
             all_callees_cache: Mutex::new(HashMap::new()),
             path_cache: Mutex::new(HashMap::new()),
+            reachable_cache: Mutex::new(HashMap::new()),
             stats_cache: Mutex::new(None),
         }
     }
@@ -261,6 +264,7 @@ impl CallGraphQueryEngine {
             all_callers_cache: Mutex::new(HashMap::new()),
             all_callees_cache: Mutex::new(HashMap::new()),
             path_cache: Mutex::new(HashMap::new()),
+            reachable_cache: Mutex::new(HashMap::new()),
             stats_cache: Mutex::new(None),
         }
     }
@@ -574,6 +578,9 @@ impl CallGraphQueryEngine {
     // ── 可达性查询 ──────────────────────────────────
 
     /// 查询：从指定 source 函数出发，N 跳内可达的所有函数和 sink
+    ///
+    /// 同一 (file_path, function_name, max_depth) 的结果会被缓存，避免 LLM
+    /// 在多次取证中重复 BFS。
     pub fn query_reachable(
         &self,
         file_path: &str,
@@ -581,6 +588,20 @@ impl CallGraphQueryEngine {
         max_depth: usize,
     ) -> Option<ReachabilityResult> {
         let normalized_file = normalize_path(file_path);
+        let cache_key = (
+            normalized_file.clone(),
+            function_name.to_string(),
+            max_depth,
+        );
+        if let Some(cached) = self
+            .reachable_cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&cache_key).cloned())
+        {
+            return cached;
+        }
+
         let source_ids = self.find_func_ids(&normalized_file, function_name);
         let source_id = source_ids.first()?;
 
@@ -636,14 +657,18 @@ impl CallGraphQueryEngine {
             }
         }
 
-        Some(ReachabilityResult {
+        let result = ReachabilityResult {
             source_id: source_id.clone(),
             source_name: source_node.name.clone(),
             source_file: source_node.file_path.clone(),
             max_depth,
             reachable_nodes,
             reachable_sinks,
-        })
+        };
+        if let Ok(mut cache) = self.reachable_cache.lock() {
+            cache.insert(cache_key, Some(result.clone()));
+        }
+        Some(result)
     }
 
     // ── 方法调用解析 ──────────────────────────────────
