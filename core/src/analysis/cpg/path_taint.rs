@@ -401,6 +401,9 @@ mod tests {
         let merged_vt = merged.get_var("x").unwrap();
         assert!(!merged_vt.sanitized);
         assert!(!merged_vt.sanitized_on.is_empty());
+        // 10.4：分支级净化只影响置信度，不把“部分路径净化”误判为全路径净化
+        assert!(merged.is_path_tainted(&AccessPath::simple("x")));
+        assert!((merged_vt.confidence() - 0.5).abs() < 0.01);
     }
 
     #[test]
