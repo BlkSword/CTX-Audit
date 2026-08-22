@@ -278,6 +278,9 @@ const GO_PATTERNS: PatternSet = PatternSet {
     ssrf_sinks: &[
         "http.get",
         "http.post",
+        "http.newrequest",
+        ".do(req",
+        ".do(request",
         "http.client.do",
         "net.dial",
         "grpc.dial",

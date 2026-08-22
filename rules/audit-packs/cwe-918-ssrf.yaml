@@ -18,14 +18,18 @@ evidence_steps:
     purpose: "沿调用链搜内网防护：私网段校验（10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、169.254.0.0/16、127.0.0.0/8）、域名白名单、协议白名单（仅 http/https）、DNS rebinding 防护（解析后校验）。守卫缺席是 TP 关键证据。"
   - tool: search_code
     purpose: "搜 URL 解析方式：URL 解析库与请求库解析差异（@ 用户信息、# 片段、十进制/八进制 IP）可使前端校验失效；确认校验与发请求用的是同一解析结果。"
+  - tool: search_code
+    purpose: "查重+作用域：SSRF/重定向/URL 校验类候选深审前必查 issues+PR（revalidate|redirect|allowlist bypass|SSRF）并沿重定向链检查 CheckRedirect/Control/DialContext 是否逐跳复验；PR 关闭未合并也算已公开讨论，只有初始 URL 校验且内网可被绕过才是 TP。"
   - tool: get_graph_stats
     purpose: "确认触达路径是否需要认证、是否仅管理员可用，评估真实攻击面以校准严重度。"
 tp_criteria:
   - "外部用户可控制请求 URL 的 host 或可通过 @/协议/解析差异逃逸到任意 host"
+  - "host/scheme 校验仅覆盖初始 URL，且重定向链无逐跳 IP 校验，可被 302 重定向到私网/任意目标"
   - "无内网 IP/私网段校验、无域名白名单，或校验与请求使用的解析结果不一致"
   - "端点无需认证或低权限用户可达"
 fp_criteria:
   - "URL 来自管理员配置的 webhook/通知地址，属设计内功能（记录为降级而非 TP）"
+  - "逐跳 IP/端口校验在位（net.Dialer Control/DialContext），仅 host/scheme 不重验且只能访问公网 host——设计内/已公开讨论按 FP+披露窗口登记"
   - "存在完备的私网段 + 协议 + 域名白名单校验，且校验基于最终请求的解析结果"
   - "host 为服务端常量，用户输入仅影响查询参数且无法注入分隔符"
 confidence_guide: "外部可控 host + 守卫缺席两方确认 → 0.9+；URL 来源确认但防护逻辑未查完 → 0.7-0.9；来源是管理员配置但暴露面不明确 → <0.7，判 needs_review 并在推理中注明设计内降级理由。"
