@@ -15,13 +15,6 @@ path = "src/main.rs"
 # 默认不编译已搁置的 agent 模块（llm_mode=noop，结构变动时易断）。
 # 需要 `ctx-audit audit --agent` 时使用 `--features agent` 构建。
 default = []
-agent = []
-
-# agent 端到端测试依赖 --features agent 构建的二进制，默认构建跳过
-[[test]]
-name = "audit_agent_test"
-path = "tests/audit_agent_test.rs"
-required-features = ["agent"]
 
 [dependencies]
 # CLI 框架

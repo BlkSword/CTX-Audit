@@ -1,9 +1,6 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-// agent 模块已搁置（llm_mode=noop），默认构建不编译；--features agent 启用
-#[cfg(feature = "agent")]
-mod agent;
 mod commands;
 mod config;
 mod database;
@@ -120,82 +117,6 @@ enum Commands {
         query_mode: bool,
     },
 
-    /// 自动审计（Agent 模式）
-    ///
-    /// 启动本地审计 Agent，自动完成扫描→假设→验证→判定闭环
-    Audit {
-        /// 项目路径
-        #[arg(value_name = "PATH")]
-        path: String,
-
-        /// 启用 Agent 自动审计模式
-        #[arg(long)]
-        agent: bool,
-
-        /// 启用深度扫描（构建跨文件调用图，默认启用）
-        #[arg(long)]
-        deep: bool,
-
-        /// 最低严重程度阈值
-        #[arg(long)]
-        min_severity: Option<String>,
-
-        /// 最多调查的 finding 数量
-        #[arg(long)]
-        max_findings: Option<usize>,
-
-        /// 启用 Specialist Agent 进行 CWE 深度判定
-        #[arg(long)]
-        specialist: bool,
-
-        /// Review 模式：off / debate / single
-        #[arg(long, value_name = "MODE")]
-        review_mode: Option<String>,
-
-        /// 激进 LLM 模式：对高严重度 finding 强制调用 LLM，不跳过证据清晰的案件
-        #[arg(long)]
-        llm_aggressive: bool,
-
-        /// LLM 模式：noop / http / mcp_relay（覆盖配置文件，默认使用配置文件值）
-        #[arg(long, value_name = "MODE")]
-        llm_mode: Option<String>,
-
-        /// 启用 ReAct 调查器：让 LLM 动态选择工具迭代收集证据
-        #[arg(long)]
-        investigate: bool,
-
-        /// 启用污点步进调查器：从 sink 反向逐步追踪到 source
-        #[arg(long)]
-        taint_walk: bool,
-
-        /// 最大调查步数（默认 10）
-        #[arg(long, value_name = "N")]
-        max_investigation_steps: Option<usize>,
-
-        /// 禁用自动目标生成，回退到传统 Supervisor 行为
-        #[arg(long)]
-        no_auto_goal: bool,
-
-        /// 策略模式：auto / rule / llm（默认 auto）
-        #[arg(long, value_name = "MODE")]
-        strategy: Option<String>,
-
-        /// 最大审计目标数
-        #[arg(long, value_name = "N")]
-        max_goals: Option<usize>,
-
-        /// 每个目标最大探索行动数
-        #[arg(long, value_name = "N")]
-        max_exploration_actions: Option<usize>,
-
-        /// 输出文件路径
-        #[arg(short, long)]
-        output: Option<String>,
-    },
-
-    /// 深度分析单个文件
-    ///
-    /// 对单个文件进行详细的 AST 分析和污点追踪
     Analyze {
         /// 文件路径
         #[arg(value_name = "FILE")]
@@ -684,48 +605,6 @@ async fn main() -> Result<()> {
                 graph_output,
                 query_mode,
                 min_confidence,
-            )
-            .await
-        }
-
-        Commands::Audit {
-            path,
-            agent,
-            deep,
-            min_severity,
-            max_findings,
-            specialist,
-            review_mode,
-            llm_aggressive,
-            llm_mode,
-            investigate,
-            taint_walk,
-            max_investigation_steps,
-            no_auto_goal,
-            strategy,
-            max_goals,
-            max_exploration_actions,
-            output,
-        } => {
-            commands::audit::execute(
-                path,
-                agent,
-                deep,
-                min_severity,
-                max_findings,
-                specialist,
-                review_mode,
-                llm_aggressive,
-                llm_mode,
-                investigate,
-                taint_walk,
-                max_investigation_steps,
-                !no_auto_goal,
-                strategy,
-                max_goals,
-                max_exploration_actions,
-                cli.output.as_str(),
-                output,
             )
             .await
         }
