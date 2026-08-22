@@ -71,3 +71,6 @@ r68probe/
 harness/dsh-home/sessions/
 harness/dsh-home/profiles/*/node_modules/
 harness/dsh-home/profiles/node_modules/
+
+harness/
+.dsh/
