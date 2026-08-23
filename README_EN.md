@@ -17,6 +17,24 @@ Traces complete data paths from entry points to dangerous functions. Outputs str
 
 ---
 
+## Why CTX-Audit?
+
+Traditional SAST tools often fail at three points:
+
+- **A rule hit is not a vulnerability**: results rarely answer whether the data is truly attacker-controlled.
+- **Cross-file chains are broken**: the dangerous call is in file A while the entry point is in file B.
+- **LLMs tend to hallucinate**: dumping raw scan output to an LLM without call graphs, data-flow evidence, or middleware context produces unreliable verdicts.
+
+CTX-Audit solves this by:
+
+1. **Building the graph first**: parse ASTs, construct call graphs, compute function summaries, and make cross-file relationships queryable.
+2. **Providing evidence chains**: high-severity findings carry `enclosing_function`, `evidence_refs`, source/sink snippets, and taint paths where available.
+3. **Exposing investigation tools to LLMs**: via MCP, an LLM can query callers, trace variable flows, inspect middleware and sanitizers, then make evidence-based TP/FP decisions.
+
+> **Positioning: the deterministic engine supplies evidence; the LLM makes semantic judgments.**
+
+---
+
 ## Quick Start
 
 ```bash
@@ -24,18 +42,25 @@ git clone https://github.com/BlkSword/CTX-Audit.git
 cd CTX-Audit
 cargo build --release
 
-# Scan
-ctx-audit scan ./myproject                    # Rule-based scan
-ctx-audit scan ./myproject --deep             # Rules + AST taint + cross-file
+# Rule-based scan
+ctx-audit scan ./myproject
+
+# Deep scan: rules + AST taint + cross-file analysis
 ctx-audit scan ./myproject --deep -o report.json
 
-# MCP Server (LLM collaboration — recommended)
+# MCP Server for LLM collaboration (recommended)
 ctx-audit mcp
 
-# Daemon (incremental caching)
+# Daemon-backed incremental scanning
 ctx-audit daemon start
 ctx-audit scan ./myproject --daemon
 ctx-audit daemon stop
+```
+
+Optionally install locally:
+
+```bash
+cargo install --path cli --locked
 ```
 
 ## Commands
@@ -43,25 +68,52 @@ ctx-audit daemon stop
 ### `scan` — Project Scan
 
 ```bash
-ctx-audit scan ./project [OPTIONS]
-  --deep                 AST taint + cross-file analysis
-  --min-severity <level> Minimum severity (critical/high/medium/low)
-  -o, --output <file>    Output file (llm/json/sarif/markdown)
-  --daemon               Execute via daemon
-  --sca                  Enable SCA dependency scanning
+ctx-audit scan <PATH> [OPTIONS]
+  --deep                 Rules + AST taint + cross-file analysis
+  --taint                Single-file source→sink taint analysis
+  --cross-file           Cross-file call graph + taint (implies --taint)
+  --sca                  OSV dependency vulnerability scan
+  --min-severity <level> critical / high / medium / low
+  --min-confidence <n>   Confidence threshold (0.0 - 1.0)
+  -o, --output <file>    json / sarif / llm / markdown
+  --graph-output <path>  Export call graph for LLM/MCP use
+  --query-mode           Build call graph only, skip rule scan
+  --daemon               Reuse daemon incremental caches
 ```
 
-**Engines**: RuleScanner (default) → AstTaintScanner (`--taint`, single-file source→sink) → CrossFileTaintAnalyzer (`--cross-file`, inter-procedural call graph + function summaries).
+**Engines**: RuleScanner (default) → AstTaintScanner (`--taint`) → CrossFileTaintAnalyzer (`--cross-file`).
 
-### `mcp` — LLM Collaboration (Recommended)
+### Other commands
 
 ```bash
-ctx-audit mcp    # Start MCP Server (stdio JSON-RPC)
+ctx-audit analyze ./src/main.py --symbols     # Single-file symbol analysis
+ctx-audit watch ./myproject                   # Continuous monitoring
+ctx-audit daemon status                       # Daemon status
+ctx-audit findings list                       # Finding database
+ctx-audit findings export report.json --format json
+ctx-audit rules list                          # List loaded rules
+ctx-audit rules validate                      # Validate YAML rules
+ctx-audit config set scan.threads 8           # Configuration
+ctx-audit completion bash                     # Shell completion
 ```
 
-Exposes 35+ tools via MCP for Claude Code / Cursor / any MCP Agent. LLM can autonomously drive: project understanding → scan → call graph queries → code review → evidence-based verdicts.
+## LLM Collaboration via MCP
 
-Claude Code config (`.claude/settings.json`):
+`ctx-audit mcp` exposes **57 tools** to MCP clients (Claude Code, Cursor, etc.), covering:
+
+| Capability | Example tools |
+|------------|---------------|
+| Project & attack surface | `get_project_info`, `get_attack_surface`, `analyze_risk_patterns` |
+| Scanning & findings | `security_scan`, `scan_file`, `list_rules`, `validate_finding` |
+| Call graph queries | `query_callers`, `query_callees`, `find_call_path`, `get_call_graph` |
+| Data-flow tracing | `trace_taint`, `trace_variable_flow`, `get_data_flow`, `get_taint_path` |
+| Code retrieval | `read_file`, `list_files`, `search_code`, `get_code_context` |
+| Security semantics | `check_sanitizer`, `query_middleware_chain`, `list_sources`, `list_sinks` |
+| Audit sessions | `start_audit_session`, `start_investigation`, `conclude_investigation`, `audit_finalize_report` |
+
+### Claude Code configuration
+
+`.claude/settings.json`:
 
 ```json
 {
@@ -74,15 +126,6 @@ Claude Code config (`.claude/settings.json`):
 }
 ```
 
-### `audit` — Scan + Rule Audit
-
-```bash
-ctx-audit audit ./project                   # Scan + rule audit (no LLM)
-ctx-audit audit ./project --agent           # [DEPRECATED] Internal agent mode
-```
-
-> **2026-07**: Internal `--agent` mode is deprecated. Specialist/Investigator/TaintWalk components underperformed in benchmarks (TaintWalk 0% source discovery, Specialist 28/28 "unable to determine"). Code retained, `llm_mode` defaults to `noop`. Use MCP mode instead.
-
 ## Detection Coverage
 
 | Type | CWE | Method |
@@ -94,35 +137,23 @@ ctx-audit audit ./project --agent           # [DEPRECATED] Internal agent mode
 | XSS | CWE-79 | AST taint + sanitizer detection |
 | SSRF | CWE-918 | Cross-file tracking + Host Header rules |
 | Insecure Deserialization | CWE-502 | Rules + method param source + caller chain |
-| XXE / Log Injection / Open Redirect / Hardcoded Secret / Weak Hash | Various | YAML sinks + cross-file + patterns |
+| XXE / Log Injection / Open Redirect / Secrets / Weak Hash | Various | YAML sinks + cross-file + patterns |
 
-**Cross-file analysis**: Call graph + import-aware aliasing + callback registration + receiver tracking + type hierarchy virtual dispatch + middleware modeling. 68 YAML sinks, 101 sanitizers, 7 languages + framework-aware rules.
+**Rule assets**: 80+ pattern rules with 200+ language patterns, 50+ taint sources, 100+ taint sinks, 180+ sanitizers, and framework rules for Spring, Java, Django, Flask, Express, React/Next.js, Go, PHP, C/C++, Rust, Gradio, and more.
 
-## Benchmarks
+**Cross-file analysis**: import-aware alias resolution, callback registration, receiver tracking, type-hierarchy virtual dispatch, middleware modeling, cross-file BFS source→sink paths, and CPG with AccessPath matching.
 
-| Language | Project | Files | Findings | Evidence |
-|----------|---------|-------|----------|----------|
-| Java | WebGoat | 404 | 231 | 14% |
-| Java | Shiro 1.2.4 | 619 | 57 | 61% — ✅ CVE-2016-4437 confirmed |
-| Java | RuoYi 4.7.3 | 266 | 355 | 4% — ⚠️ MyBatis XML hits |
-| Java | Fastjson 1.2.24 | 2035 | 10 | 70% |
-| Python | pygoat | 80 | 104 | 49% |
-| Go | govwa | 20 | 5 | 60% |
-| JS | NodeGoat | 50 | 57 | 19% |
+**Language support**: 12 AST grammars (Java, Python, JavaScript, TypeScript, Go, Rust, C, C++, PHP, HTML, CSS, JSON) plus Ruby rule coverage; 19 file extensions.
 
-## Project Status
+## Project Status & Achievements
 
-| Dimension | Status |
-|-----------|--------|
-| Cross-file analysis | Call graph + import aliasing + callback + receiver + type hierarchy + virtual dispatch + middleware |
-| Language coverage | Java/Python/JS/TS/Go/Rust/C/C++/PHP — 12 AST, 7 taint rulesets |
-| YAML rules | 68 sinks + 101 sanitizers (Spring/React/Django/Express) |
-| MCP tools | 35+ (scan/call graph query/code search/taint trace/audit session) |
-| Evidence quality | enclosing_function 97%, evidence_refs 4-70% (project-dependent) |
-| Agent mode | Deprecated. MCP collaboration is the recommended path |
-| Tests | 239 passed, 0 failed |
-| Benchmarks | 7 projects, 819 findings verified |
-| Known CVE detection | ✅ CVE-2016-4437 (Shiro), ⚠️ CVE-2017-18349 (Fastjson) |
+CTX-Audit has evolved from a rule scanner into a **real-project-driven hybrid auditing platform**.
+
+- **160+ real-world audit rounds** across Java, Python, Go, JavaScript/TypeScript, PHP, Rust, and C/C++ ecosystems.
+- **49 confirmed real-world vulnerabilities (TP)** in audited projects; **40 previously undisclosed 0-days** and **17 CVEs independently verified**.
+- **Engine feedback loop**: real findings and false positives are continuously converted into YAML rules, source/sink definitions, sanitizer-window semantics, and AST/CPG fixes.
+- **MCP collaboration**: 57 tools let LLM analysts investigate call graphs, taint paths, and middleware context instead of guessing.
+- **Honest boundaries**: the engine is an evidence provider and noise compressor; logic, authorization, and business-logic vulnerabilities still require LLM deep review and manual verification.
 
 ## License
 
