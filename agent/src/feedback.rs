@@ -129,6 +129,8 @@ pub struct ReplayReport {
     pub verdict: Verdict,
     /// 回归统计
     pub regression: RegressionStats,
+    /// 修复 diff 涉及的文件（相对路径）
+    pub changed_files: Vec<String>,
 }
 
 /// 回放错误
@@ -171,11 +173,13 @@ pub async fn run_replay(
     } else {
         git(&["clone", &task.git_url, &repo_dir.to_string_lossy()], None).await?;
     }
+    // ── 1.5 修复 diff 涉及文件（用于预期命中与 fix 判定定位） ──
+    let changed_files = git_diff_name_only(&repo_dir, &task.vulnerable_ref, &task.fixed_ref).await?;
 
     // ── ② 漏洞版扫描 ──
     git(&["checkout", "--quiet", &task.vulnerable_ref], Some(&repo_dir)).await?;
     let vulnerable_findings = scan_repo(&repo_dir).await?;
-    let vulnerable = summarize(&task.vulnerable_ref, &vulnerable_findings, task);
+    let vulnerable = summarize(&task.vulnerable_ref, &vulnerable_findings, task, &repo_dir, &changed_files);
     tracing::info!(
         "CVE {} 漏洞版（{}）扫描完成: {} findings，预期命中 {} 组",
         task.cve_id,
@@ -187,7 +191,7 @@ pub async fn run_replay(
     // ── ③ 修复版扫描 ──
     git(&["checkout", "--quiet", &task.fixed_ref], Some(&repo_dir)).await?;
     let fixed_findings = scan_repo(&repo_dir).await?;
-    let fixed = summarize(&task.fixed_ref, &fixed_findings, task);
+    let fixed = summarize(&task.fixed_ref, &fixed_findings, task, &repo_dir, &changed_files);
     tracing::info!(
         "CVE {} 修复版（{}）扫描完成: {} findings，预期命中 {} 组",
         task.cve_id,
@@ -213,6 +217,7 @@ pub async fn run_replay(
         generated_at: Utc::now(),
         vulnerable,
         fixed,
+        changed_files: changed_files.clone(),
         verdict,
         regression,
     };
@@ -257,6 +262,26 @@ async fn git(args: &[&str], cwd: Option<&Path>) -> Result<(), FeedbackError> {
     }
     Ok(())
 }
+/// 获取 vulnerable_ref 与 fixed_ref 之间的变更文件（相对路径）
+async fn git_diff_name_only(repo_dir: &Path, from: &str, to: &str) -> Result<Vec<String>, FeedbackError> {
+    let output = tokio::process::Command::new("git")
+        .args(["diff", "--name-only", from, to])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .map_err(|e| FeedbackError::Git(format!("启动 git diff 失败: {}", e)))?;
+    if !output.status.success() {
+        return Err(FeedbackError::Git(format!(
+            "git diff {} {} 失败: {}",
+            from, to,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|s| s.to_string())
+        .collect())
+}
 
 /// 全量扫描（与 runner 扫描阶段同款 core API）
 async fn scan_repo(repo_dir: &Path) -> Result<Vec<Finding>, FeedbackError> {
@@ -290,9 +315,19 @@ fn is_expected_hit(f: &Finding, task: &FeedbackTask) -> Option<String> {
     }
     None
 }
+/// 判断 finding 是否位于修复 diff 涉及的文件中
+fn is_changed_file(file_path: &str, repo_dir: &Path, changed_files: &[String]) -> bool {
+    if changed_files.is_empty() {
+        return true;
+    }
+    let abs = Path::new(file_path);
+    let rel = abs.strip_prefix(repo_dir).unwrap_or(abs);
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    changed_files.iter().any(|c| *c == rel || rel.ends_with(&format!("/{}", c)))
+}
 
 /// 汇总单版扫描结果
-fn summarize(ref_name: &str, findings: &[Finding], task: &FeedbackTask) -> RefScanSummary {
+fn summarize(ref_name: &str, findings: &[Finding], task: &FeedbackTask, repo_dir: &Path, changed_files: &[String]) -> RefScanSummary {
     let mut by_severity: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_file_role: BTreeMap<String, usize> = BTreeMap::new();
     // matched_by → (hits, samples)
@@ -302,7 +337,7 @@ fn summarize(ref_name: &str, findings: &[Finding], task: &FeedbackTask) -> RefSc
         let role = classify_file_role(&f.file_path).to_string();
         *by_file_role.entry(role.clone()).or_insert(0) += 1;
         *by_severity.entry(f.severity.clone()).or_insert(0) += 1;
-        if role == "production" {
+        if role == "production" && is_changed_file(&f.file_path, repo_dir, changed_files) {
             if let Some(matched_by) = is_expected_hit(f, task) {
                 let entry = hits_map.entry(matched_by).or_insert((0, Vec::new()));
                 entry.0 += 1;
