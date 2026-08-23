@@ -1,0 +1,37 @@
+# 审计证据包：原型链污染（CWE-1321）
+kind: audit-pack
+id: "cwe-1321-prototype-pollution"
+name: "原型链污染取证包"
+vuln_types:
+  - "prototype-pollution"
+  - "prototype_pollution"
+  - "CWE-1321"
+  - "PrototypePollution"
+cwe:
+  - "CWE-1321"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认命中点是污染 sink 还是显式原型操作：读代码确认是否为 merge/assign/cloneDeep 等危险操作，或 __proto__/constructor.prototype 赋值。仅读取 __proto__/prototype 属性（如安全检测、防御代码）不是污染。"
+  - tool: query_callers
+    purpose: "反向追踪 sink 的参数来源：用户输入（req.body/req.query/body/query/params/ctx）是否真实可达；纯常量/内部配置 merge 通常不是漏洞。"
+  - tool: search_code
+    purpose: "搜索同文件/同函数是否对合并键做过滤：hasOwnProperty、Object.create(null)、JSON.parse(JSON.stringify(...))、键黑名单（__proto__/constructor/prototype）、Map 替代对象。存在有效过滤 → FP。"
+  - tool: search_code
+    purpose: "搜索项目内是否存在可利用 gadget：outputFunctionName、escapeFunction、ejs.compile、模板引擎 options 透传、document.cookie 写入等。Sink 可达 + gadget 可达 → 才升级到 critical。"
+  - tool: get_code_context
+    purpose: "确认库版本：lodash < 4.17.11、jQuery extend 深度模式、deepmerge 旧版等已知受影响版本；若依赖已升级或使用安全实现，则 sink 本身可能不可利用。"
+  - tool: query_callers
+    purpose: "若命中点是工具函数定义（如通用 merge），不要直接判 TP：继续追工具函数的所有调用点，确认是否有调用点传入外部可控对象。"
+tp_criteria:
+  - "用户可控对象直接进入危险 merge/assign（Object.assign({}, req.body)、_.merge({}, req.body)、$.extend(true, ...)）"
+  - "存在显式 __proto__ / constructor.prototype 赋值语句，且赋值键来自外部或可被覆盖"
+  - "污染链完整：Source → Sink → Gadget 可达，且无 hasOwnProperty / Object.create(null) / 键过滤"
+  - "使用已知受影响的高危 merge 库/API（如 lodash.merge 旧版、safeobj.expand）"
+fp_criteria:
+  - "循环内使用 hasOwnProperty / getOwnPropertyNames 过滤键后才赋值"
+  - "目标对象使用 Object.create(null) 创建，无 Object.prototype"
+  - "命中的是 __proto__/constructor.prototype 的读取、防御性检测或安全工具代码"
+  - "merge/clone 仅处理受信任的本地/内部数据，无外部输入路径"
+  - "仅命中 gadget（如 outputFunctionName 字符串/配置项）但不存在污染源与 sink，不能单独判定漏洞"
+  - "通用 cloneDeep / 库内置 deepClone 调用，未证明其实现存在原型污染缺陷"
+confidence_guide: "外部输入直达 merge sink + 无过滤 + gadget 可达 → 0.9+；显式 __proto__ 赋值但输入不可控或仅内部数据 → 0.7-0.8；仅 sink 或仅 gadget 命中、无完整污染链 → <0.7，判 needs_review。"

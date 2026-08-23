@@ -250,6 +250,46 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  - id: "node_prototype_pollution"
+    name: "Node.js Prototype Pollution Sink"
+    description: "Dangerous object merge/assign operations that can pollute Object.prototype when processing user-controlled input"
+    match_mode: "Substring"
+    patterns:
+      - "Object.assign("
+      - "_.merge("
+      - "_.mergeWith("
+      - "_.defaultsDeep("
+      - "lodash.merge("
+      - "lodash.mergeWith("
+      - "lodash.defaultsDeep("
+      - "deepmerge("
+      - "deepMerge("
+      - "$.extend("
+      - "safeobj.expand("
+      - ".assign"
+      - ".merge"
+      - ".mergeWith"
+      - ".defaultsDeep"
+      - ".extend"
+      - ".expand"
+    receiver_patterns:
+      - "_"
+      - "lodash"
+      - "Object"
+      - "$"
+      - "jQuery"
+      - "safeobj"
+    languages: ["javascript", "typescript"]
+    vulnerability_type: "PrototypePollution"
+    severity: "High"
+    cwe_id: "CWE-1321"
+    sensitive_params: [0, 1, 2]
+    sanitizers:
+      - "hasOwnProperty"
+      - "Object.create(null)"
+    ast_patterns: []
+
+
 sanitizers:
   - pattern: "encodeURIComponent"
     description: "URI component encoding"

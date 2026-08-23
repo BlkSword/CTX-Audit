@@ -4547,6 +4547,50 @@ function executeCommand(cmd) {
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
+    #[test]
+    fn test_js_cross_file_prototype_pollution_with_yaml_rules() {
+        let tmp_dir = std::env::temp_dir().join("ctx_audit_js_pp_cross_test");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let handler_code = r#"
+function handleRequest(req) {
+    const config = mergeConfig(req.body);
+    return config;
+}
+"#;
+        let helper_code = r#"
+function mergeConfig(input) {
+    return _.merge({}, input);
+}
+"#;
+        std::fs::write(tmp_dir.join("handler.js"), handler_code).unwrap();
+        std::fs::write(tmp_dir.join("helper.js"), helper_code).unwrap();
+
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let rules_dir = std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap()
+            .join("rules")
+            .join("taint");
+        let loaded = crate::rules::taint_loader::load_taint_rules_from_dir(&rules_dir)
+            .expect("load taint rules");
+        let mut analyzer = CrossFileTaintAnalyzer::with_rules(loaded.sources, loaded.sinks);
+        let result = analyzer.analyze_project(&tmp_dir);
+
+        let has_pp_flow = result.taint_flows.iter().any(|f| {
+            f.vulnerability_type
+                == crate::analysis::taint::VulnerabilityType::PrototypePollution
+                && f.source.file_path.ends_with("handler.js")
+                && f.sink.file_path.ends_with("helper.js")
+        });
+        assert!(
+            has_pp_flow,
+            "跨文件分析应发现 req.body -> helper _.merge 的原型污染流"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
 
     #[test]
     fn test_function_summaries() {

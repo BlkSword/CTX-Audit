@@ -1,37 +1,113 @@
-category: injection
-cwe: CWE-1321
-description: 检测原型链污染风险 — 不安全的对象合并或属性赋值可污染 Object.prototype，影响所有对象
-id: prototype-pollution
-language: all
 name: Prototype Pollution Detection
-owasp: "A08:2021-Software and Data Integrity Failures"
-remediation: "使用 Object.create(null) 创建无原型对象；在 merge 操作中过滤 __proto__/constructor/prototype 键；使用 Map 替代普通对象"
-references:
-  - "https://cwe.mitre.org/data/definitions/1321.html"
-  - "https://github.com/HoLyVieR/prototype-pollution-nsec18/blob/master/paper/JavaScript_prototype_pollution_attack_in_NodeJS.pdf"
-patterns:
-  - language: javascript
-    pattern: (?s)(?:function\s+\w*[Mm]erge|function\s+\w*[Ee]xtend|function\s+\w*[Cc]opy|const\s+\w+[Mm]erge|const\s+\w+[Ee]xtend).*for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*\w+\[\w+\]\s*=\s*\w+\[\w+\]
-  - language: javascript
-    pattern: for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+(?:options|opts|config|conf|settings|params|props)\s*\)\s*\{[^}]*\w+\[\w+\]\s*=\s*\w+\[\w+\]
-  - language: javascript
-    pattern: (?i)Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req\.|request\.|body|query|params|ctx\.)
-  - language: javascript
-    pattern: (?s)for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*__proto__
-  - language: javascript
-    pattern: (?i)\w+\[['"]__proto__['"]\]\s*=
-  - language: javascript
-    pattern: (?i)\w+\[['"]constructor['"]\]\[['"]prototype['"]\]
-  - language: typescript
-    pattern: (?s)(?:function\s+\w*[Mm]erge|function\s+\w*[Ee]xtend|function\s+\w*[Cc]opy|const\s+\w+[Mm]erge|const\s+\w+[Ee]xtend).*for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*\w+\[\w+\]\s*=\s*\w+\[\w+\]
-  - language: typescript
-    pattern: for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+(?:options|opts|config|conf|settings|params|props)\s*\)\s*\{[^}]*\w+\[\w+\]\s*=\s*\w+\[\w+\]
-  - language: typescript
-    pattern: (?i)Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req\.|request\.|body|query|params|ctx\.)
-  - language: typescript
-    pattern: (?i)\w+\[['"]__proto__['"]\]\s*=
-severity: high
-sanitizer_after_lines: 8
-sanitizers:
-  - "hasownproperty"
-  - "getownpropertynames"
+version: "1.0"
+rules:
+  - id: prototype-pollution
+    name: Prototype Pollution via Unsafe Merge/Assign
+    description: 检测原型链污染风险 — 不安全的对象合并或属性赋值可污染 Object.prototype，影响所有对象
+    severity: high
+    language: all
+    category: injection
+    cwe: CWE-1321
+    owasp: "A08:2021-Software and Data Integrity Failures"
+    remediation: "使用 Object.create(null) 创建无原型对象；在 merge 操作中过滤 __proto__/constructor/prototype 键；使用 Map 替代普通对象"
+    references:
+      - "https://cwe.mitre.org/data/definitions/1321.html"
+      - "https://github.com/HoLyVieR/prototype-pollution-nsec18/blob/master/paper/JavaScript_prototype_pollution_attack_in_NodeJS.pdf"
+    patterns:
+      - language: javascript
+        pattern: (?s)(?:function\s+\w*[Mm]erge|function\s+\w*[Ee]xtend|function\s+\w*[Cc]opy|const\s+\w+[Mm]erge|const\s+\w+[Ee]xtend).*for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*\w+\[\w+\]\s*=\s*\w+\[\w+\]
+      - language: javascript
+        pattern: for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+(?:options|opts|config|conf|settings|params|props)\s*\)\s*\{[^}]*\w+\[\w+\]\s*=\s*\w+\[\w+\]
+      - language: javascript
+        pattern: (?i)Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req\.|request\.|body|query|params|ctx\.)
+      - language: javascript
+        pattern: (?s)for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*__proto__
+      - language: javascript
+        pattern: (?i)\w+\[['"]__proto__['"]\]\s*=
+      - language: javascript
+        pattern: (?i)\w+\[['"]constructor['"]\]\[['"]prototype['"]\]
+      - language: javascript
+        pattern: (?i)(?:lodash\.merge|_\.merge|_\.mergeWith|lodash\.defaultsDeep|_\.defaultsDeep|deepmerge|deepMerge|deep[-_]merge)\s*\(
+      - language: javascript
+        pattern: (?i)\$\.(?:extend|fn\.extend)\s*\(\s*(?:true|deep)\s*,
+      - language: javascript
+        pattern: (?i)safeobj\.expand\s*\(
+      - language: typescript
+        pattern: (?s)(?:function\s+\w*[Mm]erge|function\s+\w*[Ee]xtend|function\s+\w*[Cc]opy|const\s+\w+[Mm]erge|const\s+\w+[Ee]xtend).*for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+.*\w+\[\w+\]\s*=\s*\w+\[\w+\]
+      - language: typescript
+        pattern: for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+(?:options|opts|config|conf|settings|params|props)\s*\)\s*\{[^}]*\w+\[\w+\]\s*=\s*\w+\[\w+\]
+      - language: typescript
+        pattern: (?i)Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:req\.|request\.|body|query|params|ctx\.)
+      - language: typescript
+        pattern: (?i)\w+\[['"]__proto__['"]\]\s*=
+      - language: typescript
+        pattern: (?i)(?:lodash\.merge|_\.merge|_\.mergeWith|lodash\.defaultsDeep|_\.defaultsDeep|deepmerge|deepMerge|deep[-_]merge)\s*\(
+      - language: typescript
+        pattern: (?i)\$\.(?:extend|fn\.extend)\s*\(\s*(?:true|deep)\s*,
+      - language: typescript
+        pattern: (?i)safeobj\.expand\s*\(
+    sanitizer_after_lines: 8
+    sanitizers:
+      - "hasownproperty"
+      - "getownpropertynames"
+    exclude_string_literals: true
+
+  - id: prototype-pollution-pollution
+    name: Explicit Prototype Pollution
+    description: 显式操作 __proto__ 或 constructor.prototype，直接污染原型链，影响所有对象
+    severity: critical
+    language: all
+    category: prototype-pollution
+    cwe: CWE-1321
+    owasp: "A08:2021-Software and Data Integrity Failures"
+    remediation: "禁止使用 __proto__/constructor.prototype 作为赋值目标；改用 Object.create(null) 或 Map；对用户输入的对象键做递归过滤"
+    references:
+      - "https://cwe.mitre.org/data/definitions/1321.html"
+    patterns:
+      - language: javascript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\s*\[\s*['"]__proto__['"]\s*\]\s*=
+      - language: javascript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\s*\[\s*['"]__proto__['"]\s*\]\s*\[\s*[^\[\]]+\]\s*=
+      - language: javascript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\.__proto__\s*\.\s*[A-Za-z_$][\w$]*\s*=
+      - language: javascript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\s*\[\s*['"]constructor['"]\s*\]\s*\[\s*['"]prototype['"]\s*\]\s*\[\s*[^\[\]]+\]\s*=
+      - language: javascript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\.constructor\s*\.\s*prototype\s*\.\s*[A-Za-z_$][\w$]*\s*=
+      - language: typescript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\s*\[\s*['"]__proto__['"]\s*\]\s*=
+      - language: typescript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\s*\[\s*['"]__proto__['"]\s*\]\s*\[\s*[^\[\]]+\]\s*=
+      - language: typescript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\.__proto__\s*\.\s*[A-Za-z_$][\w$]*\s*=
+      - language: typescript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\s*\[\s*['"]constructor['"]\s*\]\s*\[\s*['"]prototype['"]\s*\]\s*\[\s*[^\[\]]+\]\s*=
+      - language: typescript
+        pattern: (?i)(?:[A-Za-z_$][\w$]*)\.constructor\s*\.\s*prototype\s*\.\s*[A-Za-z_$][\w$]*\s*=
+    exclude_string_literals: true
+
+  - id: prototype-pollution-gadget
+    name: Prototype Pollution Gadget
+    description: 原型链被污染后可能被利用的模板引擎/运行时 gadget，用于 RCE 或状态劫持
+    severity: medium
+    language: all
+    category: prototype-pollution
+    cwe: CWE-1321
+    owasp: "A08:2021-Software and Data Integrity Failures"
+    remediation: "避免将用户可控的 options 直接传入模板引擎；固定模板引擎配置；不要使用 outputFunctionName/escapeFunction 等可由选项覆盖的属性"
+    references:
+      - "https://github.com/mde/ejs/issues/627"
+    patterns:
+      - language: javascript
+        pattern: (?i)outputFunctionName
+      - language: javascript
+        pattern: (?i)escape[-_]?function
+      - language: javascript
+        pattern: (?i)ejs\.compile\s*\(
+      - language: typescript
+        pattern: (?i)outputFunctionName
+      - language: typescript
+        pattern: (?i)escape[-_]?function
+      - language: typescript
+        pattern: (?i)ejs\.compile\s*\(
+    exclude_string_literals: true

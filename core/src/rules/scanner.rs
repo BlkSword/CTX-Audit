@@ -2475,6 +2475,66 @@ $upsql = Input::postStrVar('upsql', '');
         let f4 = scanner.scan_file_sync(&PathBuf::from("merge_fixed.js"), opts_guarded);
         assert!(f4.is_empty(), "带守卫的 options 合并应豁免: {:?}", f4.len());
     }
+    /// 原型污染扩展（能力移植自 Purifier 精华）：lodash/deepmerge 等 sink、
+    /// 多级 __proto__ / constructor.prototype 显式污染、EJS outputFunctionName gadget
+    #[test]
+    fn test_prototype_pollution_extended_patterns() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let sink_rule = rules
+            .iter()
+            .find(|r| r.id == "prototype-pollution")
+            .expect("prototype-pollution 规则应存在")
+            .clone();
+        let pollution_rule = rules
+            .iter()
+            .find(|r| r.id == "prototype-pollution-pollution")
+            .expect("prototype-pollution-pollution 规则应存在")
+            .clone();
+        let gadget_rule = rules
+            .iter()
+            .find(|r| r.id == "prototype-pollution-gadget")
+            .expect("prototype-pollution-gadget 规则应存在")
+            .clone();
+        let sink_scanner = RuleScanner::new(vec![sink_rule]);
+        let pollution_scanner = RuleScanner::new(vec![pollution_rule]);
+        let gadget_scanner = RuleScanner::new(vec![gadget_rule]);
+
+        // lodash/deepmerge 类危险 sink
+        let lodash_merge = "const merged = _.merge({}, req.body);";
+        assert!(!sink_scanner
+            .scan_file_sync(&PathBuf::from("lodash.js"), lodash_merge)
+            .is_empty());
+
+        // Object.assign 外部输入
+        let assign = "const other = Object.assign({}, req.query);";
+        assert!(!sink_scanner
+            .scan_file_sync(&PathBuf::from("assign.js"), assign)
+            .is_empty());
+
+        // 多级 __proto__ 括号写入（此前规则的盲区）
+        let proto_multi = "obj[\"__proto__\"][\"polluted\"] = true;";
+        assert!(!pollution_scanner
+            .scan_file_sync(&PathBuf::from("proto.js"), proto_multi)
+            .is_empty());
+
+        // constructor.prototype 多级写入
+        let ctor_proto = "obj.constructor.prototype.polluted = true;";
+        assert!(!pollution_scanner
+            .scan_file_sync(&PathBuf::from("ctor.js"), ctor_proto)
+            .is_empty());
+
+        // 高信号 gadget：EJS outputFunctionName
+        let gadget = "const opts = { outputFunctionName: 'x' };";
+        assert!(!gadget_scanner
+            .scan_file_sync(&PathBuf::from("gadget.js"), gadget)
+            .is_empty());
+
+        // 带 hasOwnProperty 守卫的 merge 仍应豁免
+        let guarded = "function merge(target, source) {\n  for (const k in source) {\n    if (Object.prototype.hasOwnProperty.call(source, k)) {\n      target[k] = source[k];\n    }\n  }\n}";
+        assert!(sink_scanner
+            .scan_file_sync(&PathBuf::from("guarded.js"), guarded)
+            .is_empty());
+    }
 
     /// yaml.load 危险/安全形态判别（unsafe-deserialization 规则，archivy SafeLoader 场景回归）
     #[test]

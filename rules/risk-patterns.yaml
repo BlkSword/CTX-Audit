@@ -77,11 +77,11 @@ patterns:
     severity: high
     cwe: "CWE-1321"
     source_conditions:
-      - pattern: '(?:Object\.assign|merge\s*\(|deepClone|deepMerge|lodash.*merge|_\.extend|_\.merge|structuredClone)'
+      - pattern: '(?:Object\.assign|merge\s*\(|deepClone|deepMerge|lodash.*merge|_\.merge|_\.mergeWith|_\.defaultsDeep|lodash\.defaultsDeep|_\.extend|jQuery\.extend|deepmerge|safeobj\.expand|structuredClone)'
         languages: ["*"]
         context: "function"
     sink_conditions:
-      - pattern: '(?:__proto__|constructor\s*\[\s*|constructor\.prototype|prototype\s*\[|Object\.defineProperty|Object\.setPrototypeOf)'
+      - pattern: '(?:__proto__|constructor\s*\[\s*|constructor\.prototype|prototype\s*\[|\[\s*['"'"']__proto__['"'"']\s*\]|\[\s*['"'"']constructor['"'"']\s*\]\s*\[\s*['"'"']prototype['"'"']\s*\]|Object\.defineProperty|Object\.setPrototypeOf)'
         languages: ["*"]
         context: "file"
     missing_patterns:

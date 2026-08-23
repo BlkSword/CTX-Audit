@@ -729,6 +729,8 @@ pub enum VulnerabilityType {
     FormatString,
     /// 硬编码凭据
     HardcodedCredentials,
+    /// 原型链污染
+    PrototypePollution,
     /// 存储写入点（非漏洞：二阶流闸门信号，不产出 finding）
     StorageWrite,
     /// 通用
@@ -759,6 +761,7 @@ impl std::fmt::Display for VulnerabilityType {
             VulnerabilityType::BufferOverflow => write!(f, "Buffer Overflow"),
             VulnerabilityType::FormatString => write!(f, "Format String"),
             VulnerabilityType::HardcodedCredentials => write!(f, "Hardcoded Credentials"),
+            VulnerabilityType::PrototypePollution => write!(f, "Prototype Pollution"),
             VulnerabilityType::StorageWrite => write!(f, "Storage Write"),
             VulnerabilityType::Generic => write!(f, "Potential Security Issue"),
         }
