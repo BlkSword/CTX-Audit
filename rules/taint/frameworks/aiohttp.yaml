@@ -1,0 +1,71 @@
+kind: taint-rules
+name: "Aiohttp Taint Rules"
+version: "1.0"
+
+sources:
+  - id: "aiohttp_request_input"
+    name: "Aiohttp Request Input"
+    description: "Aiohttp request query/path/body/header/cookie sources and middleware path fields"
+    patterns:
+      - "request.query"
+      - "request.match_info"
+      - "request.headers"
+      - "request.cookies"
+      - "request.form()"
+      - "request.json()"
+      - "request.text()"
+      - "request.raw_path"
+      - "request.path"
+      - "request.rel_url"
+      - "request.url"
+    languages: ["python"]
+    severity: "High"
+    category: "UserInput"
+    ast_patterns: []
+
+sinks:
+  - id: "aiohttp_open_redirect"
+    name: "Aiohttp Open Redirect Sink"
+    description: "HTTP redirect constructors and Location headers using tainted request path/query"
+    match_mode: "Substring"
+    patterns:
+      - "HTTPFound("
+      - "HTTPMovedPermanently("
+      - "HTTPTemporaryRedirect("
+      - "add_location("
+      - "Location="
+      - "Location:"
+    languages: ["python"]
+    vulnerability_type: "OpenRedirect"
+    severity: "High"
+    cwe_id: "CWE-601"
+    sensitive_params: [0, 1]
+    sanitizers:
+      - "urlsplit"
+      - "urlparse"
+      - "is_safe_url"
+      - "validate_url"
+      - "allowlist"
+    ast_patterns: []
+
+  - id: "python_regex_redos_sink"
+    name: "Python ReDoS Sink"
+    description: "Regex operations applied to potentially tainted input"
+    match_mode: "Substring"
+    patterns:
+      - "re.match("
+      - "re.search("
+      - "re.sub("
+      - "re.split("
+      - "re.findall("
+      - "re.finditer("
+    languages: ["python"]
+    vulnerability_type: "Generic"
+    severity: "Medium"
+    cwe_id: "CWE-1333"
+    sensitive_params: [0, 1]
+    sanitizers:
+      - "re2"
+      - "RE2"
+      - "regex.DEBUG"
+    ast_patterns: []

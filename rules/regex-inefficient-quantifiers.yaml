@@ -1,0 +1,33 @@
+category: denial-of-service
+cwe: CWE-1333
+description: 检测存在灾难性回溯风险的 RegExp/regex 构造（嵌套量词、重叠分支、重复字符类量词），并关注其是否应用于攻击者可控输入
+id: regex-inefficient-quantifiers
+language: all
+name: Inefficient Regex Quantifier Detection
+owasp: "A06:2021-Vulnerable and Outdated Components"
+remediation: "避免嵌套量词和重叠分支；使用原子组/占有量词；限制输入长度；使用无回溯的正则引擎"
+references:
+  - "https://cwe.mitre.org/data/definitions/1333.html"
+patterns:
+  - language: javascript
+    pattern: (?i)new\s+RegExp\s*\(\s*["'][^"'\n]{0,120}?\([^)\n]*[+*][^)\n]*\)[+*]
+  - language: javascript
+    pattern: (?i)new\s+RegExp\s*\(\s*["'][^"'\n]{0,120}?\([^)\n]*\|[^)\n]*\)[+*]
+  - language: typescript
+    pattern: (?i)new\s+RegExp\s*\(\s*["'][^"'\n]{0,120}?\([^)\n]*[+*][^)\n]*\)[+*]
+  - language: typescript
+    pattern: (?i)new\s+RegExp\s*\(\s*["'][^"'\n]{0,120}?\([^)\n]*\|[^)\n]*\)[+*]
+  - language: python
+    pattern: (?i)re\.(?:compile|match|search|sub|split|findall|finditer)\s*\(\s*["'][^"']*\([^)]*[+*][^)]*\)[+*]
+  - language: python
+    pattern: (?i)re\.(?:compile|match|search|sub|split|findall|finditer)\s*\(\s*["'][^"']*\([^)]*\|[^)]*\)[+*]
+  - language: go
+    pattern: (?i)regexp\.(?:MustCompile|Compile)\s*\(\s*["'][^"']*\([^)]*[+*][^)]*\)[+*]
+  - language: go
+    pattern: (?i)regexp\.(?:MustCompile|Compile)\s*\(\s*["'][^"']*\([^)]*\|[^)]*\)[+*]
+  - language: php
+    pattern: (?i)preg_(?:match|match_all|replace|split|grep)\s*\(\s*["'][^"']*\([^)]*[+*][^)]*\)[+*]
+  - language: php
+    pattern: (?i)preg_(?:match|match_all|replace|split|grep)\s*\(\s*["'][^"']*\([^)]*\|[^)]*\)[+*]
+severity: high
+exclude_string_literals: false

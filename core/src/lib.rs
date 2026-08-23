@@ -19,7 +19,7 @@ pub mod scanning {
     pub use crate::scanner::regex_scanner::RegexScanner;
     pub use crate::scanner::sca_scanner::{ScaScanOptions, ScaScanner, ScaSeverityMapping};
     pub use crate::scanner::{
-        scan_directory, scan_directory_deep, scan_directory_deep_with_rules,
+        classify_file_role, classify_file_role_with_content, scan_directory, scan_directory_deep, scan_directory_deep_with_rules,
         scan_directory_deep_with_rules_progress, scan_directory_with_attack_surface,
         scan_directory_with_opts, scan_directory_with_rules, scan_directory_with_rules_progress,
         EvidenceRefs, Finding, PathStepRef, ProgressCallback, SanitizerEvidence, ScanOptions,

@@ -1,0 +1,27 @@
+category: redirect
+cwe: CWE-601
+description: 检测用户可控输入进入动态重定向目标（Location/redirect），排除常量、相对路径和测试代码；生产路径上目标为污点表达式时才报告
+id: unsafe-redirect-dynamic-target
+language: all
+name: Unsafe Redirect Dynamic Target
+owasp: "A01:2021-Broken Access Control"
+remediation: "对重定向目标做白名单校验；优先使用相对路径或内部路由 ID；禁止直接拼接用户输入到 Location/redirect"
+references:
+  - "https://cwe.mitre.org/data/definitions/601.html"
+patterns:
+  - language: python
+    pattern: (?i)(?:HTTPFound|HTTPMovedPermanently|HTTPTemporaryRedirect|add_location|redirect)\s*\([^)]*(?:request\.(?:path|rel_url|url|raw_path|query|args|GET|POST|form|json|values|match_info)|await\s+request\.url)
+  - language: python
+    pattern: (?i)(?:Location|location)\s*[:=]\s*[^;\n]*(?:request\.(?:path|rel_url|url|raw_path|query|args|GET|POST|form|json|values|match_info)|await\s+request\.url)
+  - language: javascript
+    pattern: (?i)(?:redirect|permanentRedirect|res\.redirect|response\.redirect)\s*\([^)]*\b(?:req\.|request\.|query|params|searchParams|url)
+  - language: javascript
+    pattern: (?i)setHeader\s*\(\s*['"](?:Location|Refresh)['"]\s*,\s*[^)]*\b(?:req\.|request\.|query|params|searchParams|url)
+  - language: typescript
+    pattern: (?i)(?:redirect|permanentRedirect|res\.redirect|response\.redirect)\s*\([^)]*\b(?:req\.|request\.|query|params|searchParams|url)
+  - language: typescript
+    pattern: (?i)setHeader\s*\(\s*['"](?:Location|Refresh)['"]\s*,\s*[^)]*\b(?:req\.|request\.|query|params|searchParams|url)
+  - language: java
+    pattern: (?i)(?:sendRedirect|setHeader\s*\(\s*['"]Location['"])\s*\(?[^)]*\b(?:request|req\.|param|input)
+severity: high
+exclude_string_literals: true

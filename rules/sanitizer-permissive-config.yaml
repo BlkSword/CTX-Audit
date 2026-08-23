@@ -1,0 +1,29 @@
+category: xss
+cwe: CWE-79
+description: 检测净化器 allowlist/配置过于宽松，或使用正则黑名单式 HTML 清洗，可能无法阻止 XSS/mXSS
+id: sanitizer-permissive-config
+language: all
+name: Sanitizer Permissive Config Detection
+owasp: "A08:2021-Software and Data Integrity Failures"
+remediation: "使用白名单式净化器并收紧 allowed_tags/allowed_attributes；禁止允许 svg/math/style/on* 等危险标签属性；避免用正则黑名单清洗 HTML"
+references:
+  - "https://cwe.mitre.org/data/definitions/79.html"
+patterns:
+  - language: python
+    pattern: (?i)bleach\.(?:clean|linkify)\s*\([^)]*allowed_(?:tags|attributes)\s*=\s*\{?[^}]*?(?:svg|math|style|title|href|xlink:href|on\w+)
+  - language: python
+    pattern: (?i)(?:html_sanitize|sanitize_html|filter_html)\s*\([^)]*(?:svg|math|style|title|href|xlink:href|on\w+)
+  - language: python
+    pattern: (?i)re\.(?:sub|subn|replace)\s*\([^)]*<(?:script|style|iframe|svg|math)[^)]*>
+  - language: javascript
+    pattern: (?i)DOMPurify\.sanitize\s*\([^)]*(?:ADD_TAGS|ADD_ATTR|ALLOWED_TAGS|ALLOWED_ATTR)[^)]*(?:svg|math|style|href|on\w+)
+  - language: javascript
+    pattern: (?i)sanitizeHtml\s*\([^)]*(?:allowedTags|allowedAttributes)[^)]*(?:svg|math|style|href|on\w+)
+  - language: typescript
+    pattern: (?i)DOMPurify\.sanitize\s*\([^)]*(?:ADD_TAGS|ADD_ATTR|ALLOWED_TAGS|ALLOWED_ATTR)[^)]*(?:svg|math|style|href|on\w+)
+  - language: typescript
+    pattern: (?i)sanitizeHtml\s*\([^)]*(?:allowedTags|allowedAttributes)[^)]*(?:svg|math|style|href|on\w+)
+  - language: php
+    pattern: (?i)HTMLPurifier_Config::createDefault|set\s*\(\s*['"]HTML\.Allowed['"]\s*,\s*['"][^'"]*(?:img|a)[^'"]*(?:style|on\w+)
+severity: high
+exclude_string_literals: false

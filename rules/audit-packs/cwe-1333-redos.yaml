@@ -1,0 +1,30 @@
+# 审计证据包：ReDoS（CWE-1333）
+kind: audit-pack
+id: "cwe-1333-redos"
+name: "ReDoS 审计取证包"
+vuln_types:
+  - "ReDoS"
+  - "redos"
+  - "InefficientRegularExpressionComplexity"
+  - "CWE-1333"
+cwe:
+  - "CWE-1333"
+evidence_steps:
+  - tool: get_code_context
+    purpose: "确认正则是否包含嵌套量词/重叠分支/重复字符类量词，例如 (a+)+、(a|aa)+、([a-zA-Z]+)*"
+  - tool: query_callers
+    purpose: "确认该正则是否应用于攻击者可控输入（请求参数、body、header、文件内容），还是仅处理固定/内部数据"
+  - tool: search_code
+    purpose: "搜索是否有输入长度限制、超时机制、ReDoS 防护（如 safe-regex、re2、RE2），存在则 FP 或降级"
+  - tool: get_code_context
+    purpose: "确认使用正则的语言/引擎是否支持原子组/占有量词；若使用 RE2/无回溯引擎则通常不可利用"
+tp_criteria:
+  - "存在嵌套/重叠量词正则"
+  - "正则应用于攻击者可控输入"
+  - "无输入长度限制或无超时/无回溯防护"
+fp_criteria:
+  - "正则仅匹配固定字符串或内部生成数据"
+  - "输入长度严格受限，无法形成灾难性回溯"
+  - "使用 RE2/rust regex 等无回溯引擎"
+  - "存在全局超时或正则执行超时保护"
+confidence_guide: "可控输入 + 明显嵌套量词 + 无防护 → 0.85+；仅可疑正则但可达性未确认 → 0.6-0.8，needs_review。"

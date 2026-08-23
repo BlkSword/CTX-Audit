@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use deepaudit_core::scanning::classify_file_role;
 use deepaudit_core::scanning::{scan_directory_deep_with_rules_progress, Finding, ScanOptions};
 
 // ── 任务与报告模型 ──────────────────────────────────────
@@ -75,6 +76,8 @@ pub struct RefScanSummary {
     pub total: usize,
     /// 按严重度统计
     pub by_severity: BTreeMap<String, usize>,
+    /// 按文件角色统计
+    pub by_file_role: BTreeMap<String, usize>,
     /// 预期命中明细
     pub expected_hits: Vec<ExpectedHit>,
     /// 简化 findings（全量，供回归对比与人工复核）
@@ -291,17 +294,21 @@ fn is_expected_hit(f: &Finding, task: &FeedbackTask) -> Option<String> {
 /// 汇总单版扫描结果
 fn summarize(ref_name: &str, findings: &[Finding], task: &FeedbackTask) -> RefScanSummary {
     let mut by_severity: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_file_role: BTreeMap<String, usize> = BTreeMap::new();
     // matched_by → (hits, samples)
     let mut hits_map: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
     let mut simple = Vec::with_capacity(findings.len());
-
     for f in findings {
+        let role = classify_file_role(&f.file_path).to_string();
+        *by_file_role.entry(role.clone()).or_insert(0) += 1;
         *by_severity.entry(f.severity.clone()).or_insert(0) += 1;
-        if let Some(matched_by) = is_expected_hit(f, task) {
-            let entry = hits_map.entry(matched_by).or_insert((0, Vec::new()));
-            entry.0 += 1;
-            if entry.1.len() < 5 {
-                entry.1.push(format!("{}:{}", f.file_path, f.line_start));
+        if role == "production" {
+            if let Some(matched_by) = is_expected_hit(f, task) {
+                let entry = hits_map.entry(matched_by).or_insert((0, Vec::new()));
+                entry.0 += 1;
+                if entry.1.len() < 5 {
+                    entry.1.push(format!("{}:{}", f.file_path, f.line_start));
+                }
             }
         }
         simple.push(SimpleFinding {
@@ -318,6 +325,7 @@ fn summarize(ref_name: &str, findings: &[Finding], task: &FeedbackTask) -> RefSc
         ref_name: ref_name.to_string(),
         total: findings.len(),
         by_severity,
+        by_file_role,
         expected_hits: hits_map
             .into_iter()
             .map(|(matched_by, (hits, samples))| ExpectedHit {
