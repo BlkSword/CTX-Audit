@@ -131,6 +131,10 @@ pub struct ReplayReport {
     pub regression: RegressionStats,
     /// 修复 diff 涉及的文件（相对路径）
     pub changed_files: Vec<String>,
+    /// 任务声明的预期规则 ID（用于区分“未定义预期”和“定义了但未命中”）
+    pub expected_rule_ids: Vec<String>,
+    /// 任务声明的预期漏洞类型
+    pub expected_vuln_types: Vec<String>,
 }
 
 /// 回放错误
@@ -199,13 +203,15 @@ pub async fn run_replay(
         fixed.total,
         fixed.expected_hits.len()
     );
-
-    // ── ④ 对比与结论 ──
+    let has_expected = !task.expected_rule_ids.is_empty() || !task.expected_vuln_types.is_empty();
     let verdict = Verdict {
         vulnerable_hit_expected: !vulnerable.expected_hits.is_empty(),
         fixed_exempt: fixed.expected_hits.is_empty(),
-        conclusion: conclusion(!vulnerable.expected_hits.is_empty(), fixed.expected_hits.is_empty())
-            .to_string(),
+        conclusion: if has_expected {
+            conclusion(!vulnerable.expected_hits.is_empty(), fixed.expected_hits.is_empty()).to_string()
+        } else {
+            "unverifiable".to_string()
+        },
     };
     let regression = regression_stats(&vulnerable.findings, &fixed.findings);
 
@@ -218,6 +224,8 @@ pub async fn run_replay(
         vulnerable,
         fixed,
         changed_files: changed_files.clone(),
+        expected_rule_ids: task.expected_rule_ids.clone(),
+        expected_vuln_types: task.expected_vuln_types.clone(),
         verdict,
         regression,
     };
