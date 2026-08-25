@@ -179,10 +179,15 @@ pub async fn run_replay(
     }
     // ── 1.5 修复 diff 涉及文件（用于预期命中与 fix 判定定位） ──
     let changed_files = git_diff_name_only(&repo_dir, &task.vulnerable_ref, &task.fixed_ref).await?;
+    // 可选自定义规则目录（用于候选规则验证）
+    let rules_dir = std::env::var("CTX_AUDIT_RULES_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
 
     // ── ② 漏洞版扫描 ──
     git(&["checkout", "--quiet", &task.vulnerable_ref], Some(&repo_dir)).await?;
-    let vulnerable_findings = scan_repo(&repo_dir).await?;
+    let vulnerable_findings = scan_repo(&repo_dir, rules_dir.as_deref()).await?;
     let vulnerable = summarize(&task.vulnerable_ref, &vulnerable_findings, task, &repo_dir, &changed_files);
     tracing::info!(
         "CVE {} 漏洞版（{}）扫描完成: {} findings，预期命中 {} 组",
@@ -194,7 +199,7 @@ pub async fn run_replay(
 
     // ── ③ 修复版扫描 ──
     git(&["checkout", "--quiet", &task.fixed_ref], Some(&repo_dir)).await?;
-    let fixed_findings = scan_repo(&repo_dir).await?;
+    let fixed_findings = scan_repo(&repo_dir, rules_dir.as_deref()).await?;
     let fixed = summarize(&task.fixed_ref, &fixed_findings, task, &repo_dir, &changed_files);
     tracing::info!(
         "CVE {} 修复版（{}）扫描完成: {} findings，预期命中 {} 组",
@@ -292,13 +297,13 @@ async fn git_diff_name_only(repo_dir: &Path, from: &str, to: &str) -> Result<Vec
 }
 
 /// 全量扫描（与 runner 扫描阶段同款 core API）
-async fn scan_repo(repo_dir: &Path) -> Result<Vec<Finding>, FeedbackError> {
+async fn scan_repo(repo_dir: &Path, rules_dir: Option<&Path>) -> Result<Vec<Finding>, FeedbackError> {
     let mut opts = ScanOptions::default();
     opts.enable_taint = true;
     opts.enable_cross_file = true;
     let result = scan_directory_deep_with_rules_progress(
         &repo_dir.to_string_lossy(),
-        None,
+        rules_dir.and_then(|p| p.to_str()),
         None,
         None,
         Some(opts),
