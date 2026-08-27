@@ -1,0 +1,30 @@
+# CTX-Audit 默认审计流水线
+# 与内置默认行为保持一致；修改后通过 CTX_AUDIT_PIPELINE_FILE 或
+# `ctx-audit config set agent.native_pipeline.file <path>` 启用。
+name: ctx-audit-default
+description: CTX-Audit 默认六阶段审计流水线
+
+scan:
+  enable_taint: true
+  enable_cross_file: true
+  min_severity: null
+  rules_dir: null
+
+triage:
+  prompt_path: null
+  system_prompt: null
+  shard_threshold: null
+  enabled: true
+
+deep_review:
+  prompt_path: null
+  system_prompt: null
+  enabled: true
+
+output:
+  tp_candidates_path: ["tp_candidates"]
+  verdict_findings_path: ["findings"]
+  verdict_field: "verdict"
+  accepted_verdicts: ["TP", "TP_CANDIDATE"]
+
+gate_enabled: true

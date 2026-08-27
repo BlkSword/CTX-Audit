@@ -1,0 +1,17 @@
+# CTX-Audit DSH 通用 profile 模板
+# 使用前把 provider/model 替换成你自己的 DSH provider 配置。
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: ${DSH_PROVIDER:-opencode-go}
+    model: ${DSH_MODEL:-deepseek-v4-flash}
+    reasoningEffort: high
+- insert:
+    - id: mcp-ctx-audit
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ctxaudit
+        transport: stdio
+        command: !!js process.env.CTX_AUDIT_MCP_CMD || 'ctx-audit'
+        args: ['mcp']
+        failOnStartupError: false

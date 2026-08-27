@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# CTX-Audit DSH 通用 launcher 模板。
+# 用法：
+#   CTX_AUDIT_MCP_CMD=/path/to/ctx-audit DSH_PROFILE=audit ./ctx-audit-dsh "task..."
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+export DSH_PROFILE="${DSH_PROFILE:-audit}"
+
+# 私有密钥文件不提交，只从本地 DSH home 加载。
+if [[ -f "$DSH_HOME/secrets.env" ]]; then
+  set -a
+  source "$DSH_HOME/secrets.env"
+  set +a
+fi
+
+if [[ -z "${CTX_AUDIT_MCP_CMD:-}" ]]; then
+  if command -v ctx-audit >/dev/null 2>&1; then
+    CTX_AUDIT_MCP_CMD="$(command -v ctx-audit)"
+  else
+    echo "error: CTX_AUDIT_MCP_CMD not set and ctx-audit binary not found" >&2
+    exit 1
+  fi
+fi
+export CTX_AUDIT_MCP_CMD
+
+exec dsh --profile "$DSH_PROFILE" "$@"

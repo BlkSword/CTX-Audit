@@ -193,7 +193,7 @@ ctx-audit mcp
 
 启动 MCP Server（stdio JSON-RPC），由 Claude Code / Cursor / 任意 MCP 客户端管理生命周期。
 
-> 说明：仓库中的 `agent` 子命令为早期进程内 Agent 实验模块，当前推荐使用 `ctx-audit mcp` 配合外部 LLM 客户端完成协作审计。
+> 说明：仓库中的 `agent` 子命令是通用 LLM Agent / Pipeline 框架，可用 `agent.native_pipeline.file` 或 `CTX_AUDIT_PIPELINE_FILE` 定制审计流程；日常单轮审计仍推荐 `ctx-audit mcp` 配合外部 LLM 客户端完成协作审计。
 
 ---
 
@@ -275,6 +275,25 @@ severity_threshold = "high"
 ```
 
 SCA 支持 OSV 漏洞库查询、依赖忽略列表、缓存 TTL、离线失败策略等配置；所有配置键可通过 `ctx-audit config list` 查看。
+
+---
+
+## Agent / Pipeline 框架
+
+`agent/` 目录提供通用 LLM Agent 基础设施和可配置审计流水线：
+
+- 通用：LLM provider、消息驱动主循环、JSONL 会话、工具注册/白名单、子 Agent、预算/熔断、cron。
+- 可配置：通过 `agent.native_pipeline.file` 或 `CTX_AUDIT_PIPELINE_FILE` 指定 Pipeline YAML。
+- 输出契约可定制：TP 候选路径、verdict 字段、接受值均可配置。
+- 私有方法论可保留在本地，通过 `triage.prompt_path`、`deep_review.prompt_path` 或 `judge_prompt_path` 指向私有 prompt。
+
+```bash
+# 使用自定义 Pipeline
+export CTX_AUDIT_PIPELINE_FILE=templates/pipelines/custom-example.yaml
+ctx-audit agent round run --target ./project
+```
+
+公共模板见 `templates/`，DSH 脱敏模板见 `templates/dsh/`。
 
 ---
 
@@ -406,7 +425,7 @@ CTX-Audit
 │
 ├── rules/                        # YAML 模式规则 + taint 框架规则 + audit-packs
 │
-└── agent/                        # 早期进程内 Agent（实验性，已不推荐）
+└── agent/                        # 通用 Agent / Pipeline 框架（可配置定制审计流程）
 ```
 
 ---

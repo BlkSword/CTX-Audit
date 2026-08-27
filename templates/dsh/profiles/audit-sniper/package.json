@@ -1,0 +1,10 @@
+{
+  "name": "dsh-profile-ctx-audit-sniper",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"]
+    }
+  }
+}

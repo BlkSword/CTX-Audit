@@ -66,10 +66,16 @@ impl AgentHost {
                 as usize,
             max_minutes: read_global_config_int(&["agent", "native_budget", "max_minutes"], 30),
         };
+        let pipeline = pipeline_from_env_or_config();
         Self {
             config: RunnerConfig {
                 state_dir: PathBuf::from(".ctx-audit").join("runner"),
-                judge_prompt_path: None,
+                judge_prompt_path: read_global_config_str(&[
+                    "agent",
+                    "native_pipeline",
+                    "judge_prompt_path",
+                ])
+                .map(PathBuf::from),
                 budget,
                 approval: ApprovalMode::Gate,
                 webhook_url: webhook,
@@ -79,6 +85,7 @@ impl AgentHost {
                     50,
                 ) as usize,
                 feedback_tasks: Vec::new(),
+                pipeline,
             },
             provider: provider_from_env(),
             rounds: RwLock::new(HashMap::new()),
@@ -147,8 +154,8 @@ impl AgentHost {
     ) -> Result<serde_json::Value, String> {
         match round_id {
             Some(id) => {
-                let state = Runner::load_state(&self.config.state_dir, &id)
-                    .map_err(|e| e.to_string())?;
+                let state =
+                    Runner::load_state(&self.config.state_dir, &id).map_err(|e| e.to_string())?;
                 serde_json::to_value(&state).map_err(|e| e.to_string())
             }
             None => {
@@ -239,6 +246,32 @@ fn provider_from_env() -> Option<Arc<dyn LLMProvider>> {
         model,
         max_retries: 5,
     })))
+}
+
+/// 加载 Pipeline 配置：CTX_AUDIT_PIPELINE_FILE > agent.native_pipeline.file > 默认
+fn pipeline_from_env_or_config() -> ctx_audit_agent::PipelineConfig {
+    let path = std::env::var("CTX_AUDIT_PIPELINE_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            read_global_config_str(&["agent", "native_pipeline", "file"]).map(PathBuf::from)
+        });
+
+    match path {
+        Some(path) => match ctx_audit_agent::PipelineConfig::load(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    "加载流水线配置失败，回退到内置默认: {} ({})",
+                    path.display(),
+                    e
+                );
+                ctx_audit_agent::PipelineConfig::default()
+            }
+        },
+        None => ctx_audit_agent::PipelineConfig::default(),
+    }
 }
 
 /// 读全局 config.toml 字符串配置（agent.native_gate.webhook_url 等）
@@ -375,7 +408,9 @@ mod tests {
     }
 
     /// 收集事件流直到 Done
-    async fn collect_until_done(mut rx: mpsc::Receiver<HostEvent>) -> (Vec<serde_json::Value>, String) {
+    async fn collect_until_done(
+        mut rx: mpsc::Receiver<HostEvent>,
+    ) -> (Vec<serde_json::Value>, String) {
         let mut events = Vec::new();
         loop {
             match rx.recv().await {
@@ -410,7 +445,11 @@ mod tests {
             .iter()
             .filter(|e| e["type"] == "round_finish")
             .count();
-        assert_eq!(round_finishes, 2, "事件流应含两轮 round_finish: {:?}", events);
+        assert_eq!(
+            round_finishes, 2,
+            "事件流应含两轮 round_finish: {:?}",
+            events
+        );
 
         // 状态文件已完结
         let state = Runner::load_state(&env.state_dir, "DR1").unwrap();
@@ -467,7 +506,11 @@ mod tests {
             .await
             .unwrap();
         let (_ev, status) = collect_until_done(rx).await;
-        assert!(status.starts_with("failed"), "无 provider 应失败: {}", status);
+        assert!(
+            status.starts_with("failed"),
+            "无 provider 应失败: {}",
+            status
+        );
 
         let state = Runner::load_state(&env.state_dir, "DR3").unwrap();
         assert_eq!(state.current_phase, RoundPhase::Triage);

@@ -644,6 +644,10 @@ pub struct AgentConfig {
     /// 原生 Agent 人工闸门配置（M2）
     #[serde(default)]
     pub native_gate: NativeGateConfig,
+
+    /// 原生 Agent 可配置审计流水线（Pipeline）
+    #[serde(default)]
+    pub native_pipeline: NativePipelineConfig,
 }
 
 fn default_triage_concurrency() -> usize {
@@ -692,6 +696,7 @@ impl Default for AgentConfig {
             native_provider: NativeProviderConfig::default(),
             native_budget: NativeBudgetConfig::default(),
             native_gate: NativeGateConfig::default(),
+            native_pipeline: NativePipelineConfig::default(),
         }
     }
 }
@@ -844,6 +849,30 @@ pub struct NativeGateConfig {
 impl Default for NativeGateConfig {
     fn default() -> Self {
         Self { webhook_url: None }
+    }
+}
+
+/// 原生 Agent 流水线配置（框架化入口）
+///
+/// - `file`：外部 Pipeline YAML/JSON 路径；设置后替代内置默认流水线。
+/// - `judge_prompt_path`：兼容旧配置的判定层 prompt 路径（优先于 pipeline 内 triage/deep_review）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativePipelineConfig {
+    /// 流水线配置文件路径（YAML/JSON），None = 使用内置默认
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+
+    /// 判定层 prompt 文件路径（兼容旧配置；优先级最高）
+    #[serde(default)]
+    pub judge_prompt_path: Option<PathBuf>,
+}
+
+impl Default for NativePipelineConfig {
+    fn default() -> Self {
+        Self {
+            file: None,
+            judge_prompt_path: None,
+        }
     }
 }
 
@@ -1077,6 +1106,20 @@ impl ConfigManager {
                     .to_string(),
             ),
             "agent.native_gate.webhook_url" => self.config.agent.native_gate.webhook_url.clone(),
+            "agent.native_pipeline.file" => self
+                .config
+                .agent
+                .native_pipeline
+                .file
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            "agent.native_pipeline.judge_prompt_path" => self
+                .config
+                .agent
+                .native_pipeline
+                .judge_prompt_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
             _ => None,
         }
     }
@@ -1328,12 +1371,10 @@ impl ConfigManager {
                     if value.is_empty() { None } else { Some(value) };
             }
             "agent.native_budget.max_tokens" => {
-                self.config.agent.native_budget.max_tokens =
-                    value.parse().context("无效的数字")?;
+                self.config.agent.native_budget.max_tokens = value.parse().context("无效的数字")?;
             }
             "agent.native_budget.max_turns" => {
-                self.config.agent.native_budget.max_turns =
-                    value.parse().context("无效的数字")?;
+                self.config.agent.native_budget.max_turns = value.parse().context("无效的数字")?;
             }
             "agent.native_budget.max_minutes" => {
                 self.config.agent.native_budget.max_minutes =
@@ -1346,6 +1387,20 @@ impl ConfigManager {
             "agent.native_gate.webhook_url" => {
                 self.config.agent.native_gate.webhook_url =
                     if value.is_empty() { None } else { Some(value) };
+            }
+            "agent.native_pipeline.file" => {
+                self.config.agent.native_pipeline.file = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "agent.native_pipeline.judge_prompt_path" => {
+                self.config.agent.native_pipeline.judge_prompt_path = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
             }
             _ => anyhow::bail!("未知的配置键: {}", key),
         }
@@ -1433,8 +1488,7 @@ impl ConfigManager {
             // agent.native_provider.* / agent.native_budget.*（原生 Agent M1）
             "agent.native_provider.base_url" => self.config.agent.native_provider.base_url = None,
             "agent.native_provider.api_key_env" => {
-                self.config.agent.native_provider.api_key_env =
-                    "CTX_AUDIT_LLM_API_KEY".to_string()
+                self.config.agent.native_provider.api_key_env = "CTX_AUDIT_LLM_API_KEY".to_string()
             }
             "agent.native_provider.model" => self.config.agent.native_provider.model = None,
             "agent.native_budget.max_tokens" => self.config.agent.native_budget.max_tokens = 8192,
@@ -1444,6 +1498,10 @@ impl ConfigManager {
                 self.config.agent.native_budget.subagent_threshold = 50
             }
             "agent.native_gate.webhook_url" => self.config.agent.native_gate.webhook_url = None,
+            "agent.native_pipeline.file" => self.config.agent.native_pipeline.file = None,
+            "agent.native_pipeline.judge_prompt_path" => {
+                self.config.agent.native_pipeline.judge_prompt_path = None
+            }
             _ => anyhow::bail!("无法重置配置键: {}", key),
         }
         Ok(())

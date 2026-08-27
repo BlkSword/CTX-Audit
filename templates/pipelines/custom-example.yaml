@@ -1,0 +1,31 @@
+# 私人定制审计流水线示例
+# 把该文件复制到你的私有配置目录，修改为自己要的审计方法。
+name: my-custom-audit
+description: 自定义审计：跳过跨文件、改用个人判定 prompt、自定义输出契约
+
+scan:
+  enable_taint: true
+  enable_cross_file: false
+  min_severity: "high"
+  rules_dir: ./my-rules
+
+triage:
+  # 你的私有 prompt 可以放在 gitignore 的目录里
+  prompt_path: ./private/prompts/my-triage.md
+  system_prompt: null
+  enabled: true
+
+deep_review:
+  prompt_path: ./private/prompts/my-deep-review.md
+  system_prompt: null
+  enabled: true
+
+output:
+  # 假设你的 LLM 输出是这样：
+  # { "candidates": [{ ... }] }
+  tp_candidates_path: ["candidates"]
+  verdict_findings_path: ["results"]
+  verdict_field: "decision"
+  accepted_verdicts: ["CONFIRMED", "TP"]
+
+gate_enabled: true

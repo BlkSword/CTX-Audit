@@ -32,6 +32,7 @@ use crate::confirm::{ApprovalMode, ToolGate};
 use crate::event::AgentEvent;
 use crate::feedback::FeedbackTask;
 use crate::gate::{self, GateDecision, GateNotice, TpCandidate};
+use crate::pipeline::PipelineConfig;
 use crate::provider::LLMProvider;
 use crate::session::Session;
 use crate::subagent::{register_delegate_tool, SubAgentConfig, SubAgentSpawner};
@@ -168,7 +169,9 @@ pub enum RunnerError {
     PromptMissing(String),
 
     /// 未配置 provider（LLM 阶段无法执行）
-    #[error("未配置 LLM provider，无法执行判定阶段（请配置 agent.native_provider.* 与环境变量密钥）")]
+    #[error(
+        "未配置 LLM provider，无法执行判定阶段（请配置 agent.native_provider.* 与环境变量密钥）"
+    )]
     ProviderMissing,
 
     /// agent 层错误
@@ -222,6 +225,8 @@ pub struct RunnerConfig {
     pub subagent_threshold: usize,
     /// 反哺任务（M4）：0 TP 轮自动执行 CVE 回放机械层（默认空=跳过）
     pub feedback_tasks: Vec<FeedbackTask>,
+    /// 可配置审计流水线（默认等于 CTX-Audit 当前行为）
+    pub pipeline: PipelineConfig,
 }
 
 impl Default for RunnerConfig {
@@ -235,6 +240,7 @@ impl Default for RunnerConfig {
             llm_polish_draft: false,
             subagent_threshold: 50,
             feedback_tasks: Vec::new(),
+            pipeline: PipelineConfig::default(),
         }
     }
 }
@@ -567,16 +573,32 @@ impl Runner {
             .ok_or_else(|| RunnerError::InvalidState("目标本地路径未解析".into()))?;
         let path_str = path.to_string_lossy().to_string();
 
+        let scan = &self.config.pipeline.scan;
         let mut opts = ScanOptions::default();
-        opts.enable_taint = true;
-        opts.enable_cross_file = true;
+        opts.enable_taint = scan.enable_taint;
+        opts.enable_cross_file = scan.enable_cross_file;
 
-        let result =
-            scan_directory_deep_with_rules_progress(&path_str, None, None, None, Some(opts), None)
-                .await
-                .map_err(RunnerError::Scan)?;
+        let rules_dir = scan.rules_dir.as_deref().and_then(|r| r.to_str());
+        let result = scan_directory_deep_with_rules_progress(
+            &path_str,
+            rules_dir,
+            None,
+            None,
+            Some(opts),
+            None,
+        )
+        .await
+        .map_err(RunnerError::Scan)?;
 
-        let artifact_json = build_scan_artifact(&path_str, &result.findings);
+        let findings = result.findings;
+        let findings: Vec<Finding> = match scan.min_severity.as_deref() {
+            Some(min) => findings
+                .into_iter()
+                .filter(|f| severity_at_least(&f.severity, min))
+                .collect(),
+            None => findings,
+        };
+        let artifact_json = build_scan_artifact(&path_str, &findings);
         let artifact = self.write_artifact(state, "scan", &artifact_json)?;
         state
             .artifacts
@@ -584,7 +606,7 @@ impl Runner {
         tracing::info!(
             "轮次 {} 扫描完成：{} 个 findings",
             state.round_id,
-            result.findings.len()
+            findings.len()
         );
         Ok(())
     }
@@ -603,6 +625,31 @@ impl Runner {
             .clone()
             .ok_or_else(|| RunnerError::InvalidState("目标本地路径未解析".into()))?;
 
+        // Pipeline 可关闭某个 LLM 判定阶段：写一个空产物并直接返回
+        let stage_enabled = match stage {
+            JudgeStage::Triage => self.config.pipeline.triage.enabled,
+            JudgeStage::DeepReview => self.config.pipeline.deep_review.enabled,
+        };
+        if !stage_enabled {
+            let empty = serde_json::json!({
+                "phase": stage.name(),
+                "summary": {"tp_candidates": 0, "fp": 0, "hardening": 0},
+                "tp_candidates": [],
+                "fp_families": [],
+                "hardening": [],
+                "human_gate": false,
+                "skipped_by_pipeline": true,
+            });
+            let artifact = self.write_artifact(state, stage.name(), &empty)?;
+            state
+                .artifacts
+                .insert(stage.name().to_string(), artifact.display().to_string());
+            if stage == JudgeStage::DeepReview {
+                state.tp_candidates.clear();
+            }
+            return Ok(());
+        }
+
         // 组阶段输入并执行（初审支持 M4 阈值分片并行）
         let output = match stage {
             JudgeStage::Triage => self.run_triage(state, &target_path, event_tx).await?,
@@ -614,7 +661,14 @@ impl Runner {
                     target_path.display(),
                     triage_artifact
                 );
-                let agent = self.build_phase_agent_async(&target_path, None).await?;
+                let deep_cfg = self.config.pipeline.deep_review.clone();
+                let agent = self
+                    .build_phase_agent_async(
+                        &target_path,
+                        Some(JudgeStage::DeepReview),
+                        deep_cfg.system_prompt.clone(),
+                    )
+                    .await?;
                 let run = agent.run(&user_prompt, event_tx.clone()).await?;
                 extract_json(&run.final_text)?
             }
@@ -629,7 +683,79 @@ impl Runner {
 
         // 深审阶段提取 TP 候选（gate 触发依据）
         if stage == JudgeStage::DeepReview {
-            state.tp_candidates = gate::extract_tp_candidates(&output);
+            state.tp_candidates = self.config.pipeline.extract_tp_candidates(&output);
+            // 执行 Pipeline 配置的额外审计阶段（可产出更多 TP 候选）
+            self.run_extra_phases(state, &target_path, event_tx).await?;
+        }
+        Ok(())
+    }
+
+    /// 执行 Pipeline 配置的额外 LLM 审计阶段
+    ///
+    /// 每个额外阶段独立 prompt / 输出契约，产物写入 `extra_phase_<id>.json`，
+    /// TP 候选与深审候选合并后统一进入人工闸门。
+    async fn run_extra_phases(
+        &self,
+        state: &mut RunnerState,
+        target_path: &Path,
+        event_tx: &mpsc::Sender<AgentEvent>,
+    ) -> Result<(), RunnerError> {
+        for phase in self
+            .config
+            .pipeline
+            .extra_phases
+            .iter()
+            .filter(|p| p.enabled)
+        {
+            let previous = self.read_artifact(state, "deep_review")?;
+            let user_prompt = format!(
+                "【轮次 {} 额外审计阶段 {}】
+目标项目根路径: {}
+深审结果 JSON:
+{}
+
+请按输出契约给出结构化 JSON，phase={}。",
+                state.round_id,
+                phase.id,
+                target_path.display(),
+                previous,
+                phase.id
+            );
+            let system_prompt = if let Some(ref sp) = phase.system_prompt {
+                sp.clone()
+            } else if let Some(ref pp) = phase.prompt_path {
+                std::fs::read_to_string(pp).map_err(RunnerError::Io)?
+            } else {
+                self.load_judge_prompt(target_path, JudgeStage::DeepReview)?
+            };
+            let agent = self
+                .build_phase_agent_with_system_prompt(target_path, system_prompt)
+                .await?;
+            let run = agent.run(&user_prompt, event_tx.clone()).await?;
+            let extra_output = extract_json(&run.final_text)?;
+
+            let artifact_key = format!("extra_phase_{}", phase.id);
+            let artifact = self.write_artifact(state, &artifact_key, &extra_output)?;
+            state
+                .artifacts
+                .insert(artifact_key.clone(), artifact.display().to_string());
+
+            let contract = phase
+                .output
+                .clone()
+                .unwrap_or_else(|| self.config.pipeline.output.clone());
+            let candidates = self
+                .config
+                .pipeline
+                .extract_tp_candidates_with_contract(&extra_output, &contract);
+            if !candidates.is_empty() {
+                tracing::info!(
+                    "额外阶段 {} 产出 {} 个 TP 候选",
+                    phase.id,
+                    candidates.len()
+                );
+            }
+            state.tp_candidates.extend(candidates);
         }
         Ok(())
     }
@@ -651,18 +777,28 @@ impl Runner {
         // ── M4 分片判定：findings > subagent_threshold 时按 (漏洞类型, 文件) 分片 ──
         let scan_json: serde_json::Value = serde_json::from_str(&scan_artifact)
             .map_err(|e| RunnerError::Parse(format!("扫描产物 JSON 损坏: {}", e)))?;
-        let total = scan_json
-            .get("total")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let total = scan_json.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let findings = scan_json
             .get("findings")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        if should_shard(total, self.config.subagent_threshold) && !findings.is_empty() {
+        let triage_threshold = self
+            .config
+            .pipeline
+            .triage
+            .shard_threshold
+            .unwrap_or(self.config.subagent_threshold);
+        if should_shard(total, triage_threshold) && !findings.is_empty() {
             return self
-                .run_triage_sharded(state, target_path, &findings, total, &primary_lang, event_tx)
+                .run_triage_sharded(
+                    state,
+                    target_path,
+                    &findings,
+                    total,
+                    &primary_lang,
+                    event_tx,
+                )
                 .await;
         }
 
@@ -675,9 +811,15 @@ impl Runner {
             scan_artifact
         );
         let provider = self.provider.clone().ok_or(RunnerError::ProviderMissing)?;
-        let system_prompt = self.load_judge_prompt(target_path)?;
+        let system_prompt = self.load_judge_prompt(target_path, JudgeStage::Triage)?;
         let registry = Arc::new(ToolRegistry::new());
-        register_all_tools(&registry, target_path.to_string_lossy().to_string(), None, None).await;
+        register_all_tools(
+            &registry,
+            target_path.to_string_lossy().to_string(),
+            None,
+            None,
+        )
+        .await;
         // M4：delegate_triage 工具注册给初审主 agent（子 agent 输出仅作线索，关键判定主 agent 独立复核）
         let spawner = SubAgentSpawner::new(
             Arc::clone(&provider),
@@ -716,8 +858,14 @@ impl Runner {
         event_tx: &mpsc::Sender<AgentEvent>,
     ) -> Result<serde_json::Value, RunnerError> {
         let provider = self.provider.clone().ok_or(RunnerError::ProviderMissing)?;
-        let system_prompt = self.load_judge_prompt(target_path)?;
-        let shards = shard_findings(findings, self.config.subagent_threshold);
+        let system_prompt = self.load_judge_prompt(target_path, JudgeStage::Triage)?;
+        let triage_threshold = self
+            .config
+            .pipeline
+            .triage
+            .shard_threshold
+            .unwrap_or(self.config.subagent_threshold);
+        let shards = shard_findings(findings, triage_threshold);
         let shard_count = shards.len();
         tracing::info!(
             "轮次 {} 初审分片: {} findings → {} 片并行",
@@ -729,14 +877,20 @@ impl Runner {
             .send(AgentEvent::Text {
                 delta: format!(
                     "\n[初审分片] {} findings 超过阈值 {}，按 (漏洞类型, 文件) 分为 {} 片并行初审\n",
-                    total, self.config.subagent_threshold, shard_count
+                    total, triage_threshold, shard_count
                 ),
             })
             .await;
 
         // 子 agent 共享同一 registry（只读工具集），session 带轮次前缀
         let registry = Arc::new(ToolRegistry::new());
-        register_all_tools(&registry, target_path.to_string_lossy().to_string(), None, None).await;
+        register_all_tools(
+            &registry,
+            target_path.to_string_lossy().to_string(),
+            None,
+            None,
+        )
+        .await;
         let spawner = SubAgentSpawner::new(
             provider,
             registry,
@@ -791,20 +945,27 @@ impl Runner {
     ) -> Result<(), RunnerError> {
         let mut draft = self.render_draft_template(state)?;
 
-        // 可选 LLM 润色（默认关）
-        if self.config.llm_polish_draft {
+        // 可选 LLM 润色（Pipeline 配置优先；兼容旧 RunnerConfig 开关）
+        if self.config.pipeline.registration.polish_draft || self.config.llm_polish_draft {
             let target_path = state
                 .target
                 .local_path
                 .clone()
                 .ok_or_else(|| RunnerError::InvalidState("目标本地路径未解析".into()))?;
             let agent = self
-                .build_phase_agent_async(&target_path, Some(
-                    "你是安全审计报告编辑。只润色文字结构与措辞，不得改动事实、数字、文件路径与行号，输出 Markdown。"
-                        .to_string(),
-                ))
+                .build_phase_agent_async(
+                    &target_path,
+                    None,
+                    Some(
+                        "你是安全审计报告编辑。只润色文字结构与措辞，不得改动事实、数字、文件路径与行号，输出 Markdown。"
+                            .to_string(),
+                    ),
+                )
                 .await?;
-            let polish_prompt = format!("请润色以下轮次登记草稿并直接输出 Markdown 全文：\n\n{}", draft);
+            let polish_prompt = format!(
+                "请润色以下轮次登记草稿并直接输出 Markdown 全文：\n\n{}",
+                draft
+            );
             let run = agent.run(&polish_prompt, event_tx.clone()).await?;
             if !run.final_text.trim().is_empty() {
                 draft = run.final_text;
@@ -851,10 +1012,8 @@ impl Runner {
                     v.get("total").and_then(|t| t.as_u64()).unwrap_or(0)
                 ));
                 if let Some(by_sev) = v.get("by_severity").and_then(|s| s.as_object()) {
-                    let parts: Vec<String> = by_sev
-                        .iter()
-                        .map(|(k, v)| format!("{} {}", k, v))
-                        .collect();
+                    let parts: Vec<String> =
+                        by_sev.iter().map(|(k, v)| format!("{} {}", k, v)).collect();
                     out.push_str(&format!("- 按严重度: {}\n", parts.join(" / ")));
                 }
             }
@@ -908,11 +1067,7 @@ impl Runner {
                     out.push_str("\n- 人工闸门: 待决\n");
                 }
             }
-            if let Some(note) = state
-                .gate_decision
-                .as_ref()
-                .and_then(|d| d.note.as_deref())
-            {
+            if let Some(note) = state.gate_decision.as_ref().and_then(|d| d.note.as_deref()) {
                 out.push_str(&format!("- 备注: {}\n", note));
             }
         }
@@ -920,7 +1075,12 @@ impl Runner {
         out.push_str("\n## 下一步建议\n\n");
         if state.tp_candidates.is_empty() {
             out.push_str("- 登记本轮为 0 TP 轮，配置反哺任务时反哺阶段自动执行 CVE 回放\n");
-        } else if state.gate_decision.as_ref().map(|d| d.approve).unwrap_or(false) {
+        } else if state
+            .gate_decision
+            .as_ref()
+            .map(|d| d.approve)
+            .unwrap_or(false)
+        {
             out.push_str("- TP 已经人工认定：按 verify_plan 做实弹验证（M4 livefire），随后走披露流程（人工）\n");
         } else {
             out.push_str("- TP 候选已被人工驳回：归档候选与驳回理由，供 FP 家族附录回流\n");
@@ -988,16 +1148,22 @@ impl Runner {
                 }
                 Err(e) => {
                     // 单任务失败不阻断轮次：记录后继续
-                    tracing::warn!("轮次 {} 反哺任务 {} 失败: {}", state.round_id, task.cve_id, e);
+                    tracing::warn!(
+                        "轮次 {} 反哺任务 {} 失败: {}",
+                        state.round_id,
+                        task.cve_id,
+                        e
+                    );
                     errors.push(format!("{}: {}", task.cve_id, e));
                 }
             }
         }
         if !errors.is_empty() {
             let artifact = self.write_artifact(state, "feedback_errors", &errors)?;
-            state
-                .artifacts
-                .insert("feedback_errors".to_string(), artifact.display().to_string());
+            state.artifacts.insert(
+                "feedback_errors".to_string(),
+                artifact.display().to_string(),
+            );
         }
         Ok(())
     }
@@ -1042,12 +1208,40 @@ impl Runner {
 
     // ── 判定层 prompt 加载 ──────────────────────────────
 
-    /// 加载 round-agent.md：显式路径 > 目标项目内 > 当前工作目录
-    pub fn load_judge_prompt(&self, target_path: &Path) -> Result<String, RunnerError> {
+    /// 加载判定层 system prompt
+    ///
+    /// 优先级：
+    /// 1. `RunnerConfig.judge_prompt_path`（兼容旧配置/测试）
+    /// 2. `PipelineConfig.{triage,deep_review}.system_prompt`（纯文本覆盖）
+    /// 3. `PipelineConfig.{triage,deep_review}.prompt_path`（配置文件）
+    /// 4. 默认相对路径 `docs/audit-rounds/automation/round-agent.md`（目标项目内 > 当前工作目录）
+    pub(crate) fn load_judge_prompt(
+        &self,
+        target_path: &Path,
+        stage: JudgeStage,
+    ) -> Result<String, RunnerError> {
         const REL: &str = "docs/audit-rounds/automation/round-agent.md";
+        let cfg = match stage {
+            JudgeStage::Triage => &self.config.pipeline.triage,
+            JudgeStage::DeepReview => &self.config.pipeline.deep_review,
+        };
+
+        // 纯文本 system prompt 覆盖：最高优先（无需读文件）
+        if let Some(ref prompt) = cfg.system_prompt {
+            return Ok(prompt.clone());
+        }
+
         let mut searched = Vec::new();
 
+        // 兼容旧配置的显式 prompt 路径
         if let Some(ref explicit) = self.config.judge_prompt_path {
+            searched.push(explicit.clone());
+            if explicit.is_file() {
+                return Ok(std::fs::read_to_string(explicit)?);
+            }
+        }
+        // 流水线阶段的显式 prompt 路径
+        if let Some(ref explicit) = cfg.prompt_path {
             searched.push(explicit.clone());
             if explicit.is_file() {
                 return Ok(std::fs::read_to_string(explicit)?);
@@ -1067,7 +1261,7 @@ impl Runner {
         }
 
         Err(RunnerError::PromptMissing(format!(
-            "round-agent.md 未找到，已搜索: {}",
+            "判定层 prompt 未找到，已搜索: {}",
             searched
                 .iter()
                 .map(|p| p.display().to_string())
@@ -1080,16 +1274,37 @@ impl Runner {
     async fn build_phase_agent_async(
         &self,
         target_path: &Path,
+        stage: Option<JudgeStage>,
         system_prompt_override: Option<String>,
     ) -> Result<Agent, RunnerError> {
-        let provider = self.provider.clone().ok_or(RunnerError::ProviderMissing)?;
         let system_prompt = match system_prompt_override {
             Some(p) => p,
-            None => self.load_judge_prompt(target_path)?,
+            None => {
+                let stage = stage
+                    .ok_or_else(|| RunnerError::InvalidState("缺少判定阶段参数".to_string()))?;
+                self.load_judge_prompt(target_path, stage)?
+            }
         };
+        self.build_phase_agent_with_system_prompt(target_path, system_prompt)
+            .await
+    }
+
+    /// 使用指定 system prompt 构建 LLM 阶段 Agent（额外阶段复用）
+    async fn build_phase_agent_with_system_prompt(
+        &self,
+        target_path: &Path,
+        system_prompt: String,
+    ) -> Result<Agent, RunnerError> {
+        let provider = self.provider.clone().ok_or(RunnerError::ProviderMissing)?;
 
         let registry = Arc::new(ToolRegistry::new());
-        register_all_tools(&registry, target_path.to_string_lossy().to_string(), None, None).await;
+        register_all_tools(
+            &registry,
+            target_path.to_string_lossy().to_string(),
+            None,
+            None,
+        )
+        .await;
         let adapter = ToolAdapter::new(registry, ToolGate::new(self.config.approval));
         let session = Session::create(target_path)?;
         Ok(Agent::new(
@@ -1187,7 +1402,7 @@ impl Runner {
 
 /// 判定阶段（初审/深审）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JudgeStage {
+pub(crate) enum JudgeStage {
     Triage,
     DeepReview,
 }
@@ -1233,8 +1448,13 @@ pub fn extract_json(text: &str) -> Result<serde_json::Value, RunnerError> {
     let start = stripped.find('{');
     let end = stripped.rfind('}');
     match (start, end) {
-        (Some(s), Some(e)) if s < e => serde_json::from_str(&stripped[s..=e])
-            .map_err(|e| RunnerError::Parse(format!("{}（原文前 200 字符: {}）", e, &stripped.chars().take(200).collect::<String>()))),
+        (Some(s), Some(e)) if s < e => serde_json::from_str(&stripped[s..=e]).map_err(|e| {
+            RunnerError::Parse(format!(
+                "{}（原文前 200 字符: {}）",
+                e,
+                &stripped.chars().take(200).collect::<String>()
+            ))
+        }),
         _ => Err(RunnerError::Parse(format!(
             "输出中未找到 JSON 对象（原文前 200 字符: {}）",
             stripped.chars().take(200).collect::<String>()
@@ -1324,6 +1544,20 @@ fn shard_budget(base: &AgentBudget) -> AgentBudget {
 }
 
 /// 构建扫描产物 JSON（findings 简化版，上限 100 条，供初审输入）
+/// 严重度排序比较：actual 是否 >= min
+fn severity_at_least(actual: &str, min: &str) -> bool {
+    fn rank(s: &str) -> u8 {
+        match s.to_ascii_lowercase().as_str() {
+            "critical" => 4,
+            "high" => 3,
+            "medium" => 2,
+            "low" => 1,
+            _ => 0,
+        }
+    }
+    rank(actual) >= rank(min)
+}
+
 fn build_scan_artifact(target: &str, findings: &[Finding]) -> serde_json::Value {
     let mut by_severity: BTreeMap<String, usize> = BTreeMap::new();
     for f in findings {
@@ -1420,7 +1654,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use crate::provider::{ChatRequest, ChatResponse, ProviderError, ToolCall, Usage};
+    use crate::provider::{ChatRequest, ChatResponse, ProviderError, Usage};
 
     // ── MockProvider：脚本化响应队列（支持脚本化错误） ──
 
@@ -1649,10 +1883,9 @@ mod tests {
         assert!(state.artifacts.contains_key("scan"));
 
         // 扫描产物真实存在且有 findings（命令注入 JS）
-        let scan_json: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&state.artifacts["scan"]).unwrap(),
-        )
-        .unwrap();
+        let scan_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state.artifacts["scan"]).unwrap())
+                .unwrap();
         assert!(
             scan_json["total"].as_u64().unwrap() >= 1,
             "命令注入 JS 应被引擎扫出: {}",
@@ -1968,10 +2201,9 @@ mod tests {
         assert_eq!(mock_ref.request_count(), 4);
 
         // 汇总后的 triage 产物：分片标记 + summary 求和
-        let triage: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&state.artifacts["triage"]).unwrap(),
-        )
-        .unwrap();
+        let triage: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state.artifacts["triage"]).unwrap())
+                .unwrap();
         assert_eq!(triage["sharded"], true);
         assert_eq!(triage["shard_count"], 3);
         assert_eq!(triage["summary"]["fp"], 3, "3 片各 fp:1，求和应为 3");
@@ -1980,7 +2212,11 @@ mod tests {
         let requests = mock_ref.requests.lock().unwrap();
         for req in &requests[..3] {
             let user = req.messages[1].content.as_deref().unwrap();
-            assert!(user.contains("初审分片"), "应为分片初审 prompt: {}", &user[..80]);
+            assert!(
+                user.contains("初审分片"),
+                "应为分片初审 prompt: {}",
+                &user[..80]
+            );
         }
         let deep = requests[3].messages[1].content.as_deref().unwrap();
         assert!(deep.contains("深审输入"));
@@ -2014,11 +2250,29 @@ mod tests {
         )
         .unwrap();
         git(&["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"]);
-        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "vulnerable"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "vulnerable",
+        ]);
         let vulnerable_ref = git(&["rev-parse", "HEAD"]);
         std::fs::write(repo_src.join("app.py"), "print('fixed')\n").unwrap();
         git(&["-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"]);
-        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "fix"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "fix",
+        ]);
         let fixed_ref = git(&["rev-parse", "HEAD"]);
 
         crate::feedback::FeedbackTask {
@@ -2073,5 +2327,148 @@ mod tests {
         assert_eq!(report["verdict"]["conclusion"], "pass");
         assert_eq!(report["verdict"]["vulnerable_hit_expected"], true);
         assert_eq!(report["verdict"]["fixed_exempt"], true);
+    }
+
+    /// Pipeline 可完全关闭 LLM 判定阶段：无 provider 也能跑完整状态机
+    #[tokio::test]
+    async fn test_pipeline_disabled_llm_phases_skip_provider() {
+        let env = make_env("pipeline-disabled");
+        let pipeline = crate::pipeline::PipelineConfig {
+            triage: crate::pipeline::JudgeConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            deep_review: crate::pipeline::JudgeConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let runner = Runner::new(
+            RunnerConfig {
+                state_dir: env.state_dir.clone(),
+                judge_prompt_path: None,
+                pipeline,
+                ..RunnerConfig::default()
+            },
+            None, // 不需要 provider
+        );
+
+        let (tx, _rx) = mpsc::channel(256);
+        let state = runner
+            .run(env.target.to_str().unwrap(), Some("RD".to_string()), tx)
+            .await
+            .expect("跳过 LLM 阶段后应正常跑到 Done");
+
+        assert_eq!(state.current_phase, RoundPhase::Done);
+        let triage_path = state.artifacts.get("triage").expect("triage 应产出空产物");
+        let triage_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(triage_path).unwrap()).unwrap();
+        assert_eq!(triage_json["skipped_by_pipeline"], true);
+
+        let deep_review_path = state
+            .artifacts
+            .get("deep_review")
+            .expect("deep_review 应产出空产物");
+        let deep_review_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(deep_review_path).unwrap()).unwrap();
+        assert_eq!(deep_review_json["skipped_by_pipeline"], true);
+        assert!(state.tp_candidates.is_empty());
+    }
+
+    /// Pipeline 自定义输出契约：从 candidates 数组提取 TP 并触发人工闸门
+    #[tokio::test]
+    async fn test_pipeline_custom_output_contract_extracts_tp() {
+        let env = make_env("custom-contract");
+        let mock = MockProvider::new(vec![
+            Ok(MockProvider::json_text(triage_json_no_tp())),
+            Ok(MockProvider::json_text(serde_json::json!({
+                "phase": "deep_review",
+                "candidates": [{
+                    "title": "自定义输出 TP",
+                    "cwe": "CWE-79",
+                    "chain": ["source.js:1", "sink.js:2"]
+                }]
+            }))),
+        ]);
+        let pipeline = crate::pipeline::PipelineConfig {
+            output: crate::pipeline::OutputContract {
+                tp_candidates_path: vec!["candidates".to_string()],
+                verdict_findings_path: vec![],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let runner = Runner::new(
+            RunnerConfig {
+                state_dir: env.state_dir.clone(),
+                judge_prompt_path: Some(env.root.join("round-agent.md")),
+                pipeline,
+                ..RunnerConfig::default()
+            },
+            Some(mock),
+        );
+
+        let (tx, _rx) = mpsc::channel(256);
+        let state = runner
+            .run(env.target.to_str().unwrap(), Some("RC".to_string()), tx)
+            .await
+            .expect("自定义输出契约应正常提取 TP 候选");
+
+        assert_eq!(state.current_phase, RoundPhase::AwaitHuman);
+        assert_eq!(state.tp_candidates.len(), 1);
+        assert_eq!(state.tp_candidates[0].title, "自定义输出 TP");
+        assert_eq!(state.tp_candidates[0].cwe.as_deref(), Some("CWE-79"));
+    }
+
+    /// Pipeline 额外审计阶段：深审后按顺序执行，并可产出独立 TP 候选
+    #[tokio::test]
+    async fn test_pipeline_extra_phase_runs_after_deep_review() {
+        let env = make_env("extra-phase");
+        let mock = MockProvider::new(vec![
+            Ok(MockProvider::json_text(triage_json_no_tp())),
+            Ok(MockProvider::json_text(deep_review_json_no_tp())),
+            Ok(MockProvider::json_text(serde_json::json!({
+                "phase": "logic_audit",
+                "candidates": [{
+                    "title": "额外阶段 TP",
+                    "cwe": "CWE-352",
+                    "chain": ["a.js:1", "b.js:2"]
+                }]
+            }))),
+        ]);
+        let pipeline = crate::pipeline::PipelineConfig {
+            extra_phases: vec![crate::pipeline::ExtraJudgePhase {
+                id: "logic_audit".to_string(),
+                system_prompt: Some("你是额外逻辑审计员。".to_string()),
+                output: Some(crate::pipeline::OutputContract {
+                    tp_candidates_path: vec!["candidates".to_string()],
+                    verdict_findings_path: vec![],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let runner = Runner::new(
+            RunnerConfig {
+                state_dir: env.state_dir.clone(),
+                judge_prompt_path: Some(env.root.join("round-agent.md")),
+                pipeline,
+                ..RunnerConfig::default()
+            },
+            Some(mock),
+        );
+
+        let (tx, _rx) = mpsc::channel(256);
+        let state = runner
+            .run(env.target.to_str().unwrap(), Some("RE".to_string()), tx)
+            .await
+            .expect("额外阶段应正常执行");
+
+        assert_eq!(state.current_phase, RoundPhase::AwaitHuman);
+        assert_eq!(state.tp_candidates.len(), 1);
+        assert_eq!(state.tp_candidates[0].title, "额外阶段 TP");
+        assert!(state.artifacts.contains_key("extra_phase_logic_audit"));
     }
 }

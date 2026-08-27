@@ -112,7 +112,12 @@ pub async fn send_webhook(url: &str, notice: &GateNotice) -> Result<(), reqwest:
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()?;
-    client.post(url).json(notice).send().await?.error_for_status()?;
+    client
+        .post(url)
+        .json(notice)
+        .send()
+        .await?
+        .error_for_status()?;
     Ok(())
 }
 
@@ -146,7 +151,7 @@ pub fn extract_tp_candidates(output: &serde_json::Value) -> Vec<TpCandidate> {
 }
 
 /// 解析单条候选（字段缺失时给默认值，不拒绝）
-fn parse_candidate(item: &serde_json::Value) -> TpCandidate {
+pub(crate) fn parse_candidate(item: &serde_json::Value) -> TpCandidate {
     let get_str = |key: &str| {
         item.get(key)
             .and_then(|v| v.as_str())

@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ctx_audit_agent::{
-    session::list_sessions, Agent, AgentBudget, AgentError, AgentEvent, ApprovalMode,
-    LLMProvider, OpenAIProvider, OpenAIProviderConfig, RoundPhase, Runner, RunnerConfig,
-    Session, ToolAdapter, ToolGate,
+    session::list_sessions, Agent, AgentBudget, AgentError, AgentEvent, ApprovalMode, LLMProvider,
+    OpenAIProvider, OpenAIProviderConfig, RoundPhase, Runner, RunnerConfig, Session, ToolAdapter,
+    ToolGate,
 };
 use ctx_audit_daemon::{
     client::DaemonClient,
@@ -57,9 +57,15 @@ fn build_native_provider(manager: &ConfigManager) -> Result<Arc<OpenAIProvider>>
 fn build_runner_config(manager: &ConfigManager) -> Result<RunnerConfig> {
     let budget_cfg = &manager.config().agent.native_budget;
     let cwd = std::env::current_dir().map_err(|e| miette::miette!("{}", e))?;
+    let pipeline = load_pipeline_config(manager)?;
     Ok(RunnerConfig {
         state_dir: cwd.join(".ctx-audit").join("runner"),
-        judge_prompt_path: None,
+        judge_prompt_path: manager
+            .config()
+            .agent
+            .native_pipeline
+            .judge_prompt_path
+            .clone(),
         budget: AgentBudget {
             max_tokens: budget_cfg.max_tokens,
             max_turns: budget_cfg.max_turns,
@@ -71,7 +77,30 @@ fn build_runner_config(manager: &ConfigManager) -> Result<RunnerConfig> {
         subagent_threshold: budget_cfg.subagent_threshold,
         // 反哺任务经 `agent feedback run` 单独执行；轮内自动反哺预留（暂无配置面）
         feedback_tasks: Vec::new(),
+        pipeline,
     })
+}
+
+/// 加载 Pipeline 配置：显式配置文件 > CTX_AUDIT_PIPELINE_FILE 环境变量 > 内置默认
+fn load_pipeline_config(manager: &ConfigManager) -> Result<ctx_audit_agent::PipelineConfig> {
+    let from_config = manager
+        .config()
+        .agent
+        .native_pipeline
+        .file
+        .clone()
+        .filter(|p| !p.as_os_str().is_empty());
+    let from_env = std::env::var("CTX_AUDIT_PIPELINE_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+
+    let path = from_config.or(from_env);
+    match path {
+        Some(path) => ctx_audit_agent::PipelineConfig::load(&path)
+            .map_err(|e| miette::miette!("加载流水线配置失败: {}", e)),
+        None => Ok(ctx_audit_agent::PipelineConfig::default()),
+    }
 }
 
 /// 事件渲染 sink（人性化 / NDJSON），返回发送端与渲染任务句柄
@@ -105,7 +134,13 @@ pub async fn run(prompt: String, project: Option<String>, json: bool) -> Result<
 
     // ── 工具注册（M1 不起 AST 引擎，注册基础/搜索/污点/模式/调用图工具） ──
     let registry = Arc::new(ToolRegistry::new());
-    register_all_tools(&registry, project_dir.to_string_lossy().to_string(), None, None).await;
+    register_all_tools(
+        &registry,
+        project_dir.to_string_lossy().to_string(),
+        None,
+        None,
+    )
+    .await;
 
     // ── 组装 Agent ──
     // 非交互默认 Gate：写工具 deny，只读白名单短路
@@ -171,7 +206,10 @@ pub async fn sessions(project: Option<String>) -> Result<()> {
     let infos = list_sessions(&project_dir).map_err(|e| miette::miette!("{}", e))?;
 
     if infos.is_empty() {
-        println!("暂无会话（目录：{}）", Session::sessions_dir(&project_dir).display());
+        println!(
+            "暂无会话（目录：{}）",
+            Session::sessions_dir(&project_dir).display()
+        );
         return Ok(());
     }
 
@@ -306,8 +344,8 @@ pub async fn round_status(round_id: Option<String>, daemon: bool) -> Result<()> 
 
     match round_id {
         Some(id) => {
-            let state = Runner::load_state(&config.state_dir, &id)
-                .map_err(|e| miette::miette!("{}", e))?;
+            let state =
+                Runner::load_state(&config.state_dir, &id).map_err(|e| miette::miette!("{}", e))?;
             print_round_detail(&state);
         }
         None => {
@@ -390,8 +428,9 @@ pub async fn gate_decide(
 
     let manager = ConfigManager::new(None).map_err(|e| miette::miette!("{}", e))?;
     // 决策后续阶段默认模板草稿，无需 LLM；provider 配置齐全时也注入（预留润色能力）
-    let provider: Option<Arc<dyn LLMProvider>> =
-        build_native_provider(&manager).ok().map(|p| p as Arc<dyn LLMProvider>);
+    let provider: Option<Arc<dyn LLMProvider>> = build_native_provider(&manager)
+        .ok()
+        .map(|p| p as Arc<dyn LLMProvider>);
     let config = build_runner_config(&manager)?;
     let runner = Runner::new(config, provider);
 
@@ -462,7 +501,10 @@ pub async fn cron_list() -> Result<()> {
                 let schedule = job["schedule"].as_str().unwrap_or("?");
                 let target = job["target"].as_str().unwrap_or("?");
                 let last_fired = job["last_fired"].as_str().unwrap_or("从未触发");
-                println!("- {} | {} | 目标 {} | 上次触发 {}", id, schedule, target, last_fired);
+                println!(
+                    "- {} | {} | 目标 {} | 上次触发 {}",
+                    id, schedule, target, last_fired
+                );
             }
             Ok(())
         }
@@ -519,8 +561,8 @@ pub async fn feedback_run(task_path: String, daemon: bool) -> Result<()> {
 
     let content = std::fs::read_to_string(&task_path)
         .map_err(|e| miette::miette!("任务文件读取失败 {}: {}", task_path, e))?;
-    let task: ctx_audit_agent::FeedbackTask = serde_json::from_str(&content)
-        .map_err(|e| miette::miette!("任务 JSON 解析失败: {}", e))?;
+    let task: ctx_audit_agent::FeedbackTask =
+        serde_json::from_str(&content).map_err(|e| miette::miette!("任务 JSON 解析失败: {}", e))?;
     let feedback_root = std::env::current_dir()
         .map_err(|e| miette::miette!("{}", e))?
         .join(".ctx-audit")
@@ -638,14 +680,25 @@ fn print_round_summary(state: &ctx_audit_agent::RunnerState, json: bool) {
     );
     match state.current_phase {
         RoundPhase::AwaitHuman => {
-            println!("检出 {} 个 TP 候选，已进入人工闸门:", state.tp_candidates.len());
+            println!(
+                "检出 {} 个 TP 候选，已进入人工闸门:",
+                state.tp_candidates.len()
+            );
             for (i, c) in state.tp_candidates.iter().enumerate() {
-                println!("  {}. {}（{}）", i + 1, c.title, c.cwe.as_deref().unwrap_or("CWE 未标"));
+                println!(
+                    "  {}. {}（{}）",
+                    i + 1,
+                    c.title,
+                    c.cwe.as_deref().unwrap_or("CWE 未标")
+                );
             }
             if let Some(notice) = state.artifacts.get("gate_notice") {
                 println!("通知文件: {}", notice);
             }
-            println!("决策命令: ctx-audit agent gate approve/reject {}", state.round_id);
+            println!(
+                "决策命令: ctx-audit agent gate approve/reject {}",
+                state.round_id
+            );
         }
         RoundPhase::Done => {
             if let Some(draft) = state.artifacts.get("registration_draft") {
@@ -664,7 +717,11 @@ fn print_round_detail(state: &ctx_audit_agent::RunnerState) {
         println!("本地路径: {}", path.display());
     }
     println!("当前阶段: {}", state.current_phase.label());
-    let completed: Vec<String> = state.completed.iter().map(|p| p.label().to_string()).collect();
+    let completed: Vec<String> = state
+        .completed
+        .iter()
+        .map(|p| p.label().to_string())
+        .collect();
     println!("已完成: {}", completed.join(" → "));
     if let Some(ref e) = state.eligibility {
         println!(
@@ -681,7 +738,10 @@ fn print_round_detail(state: &ctx_audit_agent::RunnerState) {
         println!(
             "闸门决策: {}{}",
             if d.approve { "通过" } else { "驳回" },
-            d.note.as_deref().map(|n| format!("（{}）", n)).unwrap_or_default()
+            d.note
+                .as_deref()
+                .map(|n| format!("（{}）", n))
+                .unwrap_or_default()
         );
     }
     if let Some(ref err) = state.last_error {
@@ -748,7 +808,10 @@ fn render_event_human(event: &AgentEvent) {
             total_tokens,
             ..
         } => {
-            eprintln!("--- 第 {} 轮结束（累计 {} tokens） ---", round, total_tokens);
+            eprintln!(
+                "--- 第 {} 轮结束（累计 {} tokens） ---",
+                round, total_tokens
+            );
         }
         AgentEvent::Error { message } => {
             eprintln!("[错误] {}", message);

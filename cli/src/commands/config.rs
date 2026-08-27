@@ -67,6 +67,24 @@ pub async fn show(key: Option<String>, _reveal: bool) -> Result<()> {
         renderer.print(&format!("  最大 LLM 调用:    {}", cfg.agent.max_llm_calls));
         renderer.print(&format!("  LLM 提供商:       {}", cfg.agent.llm.provider));
         renderer.print(&format!("  LLM 模型:         {}", cfg.agent.llm.model));
+        renderer.print(&format!(
+            "  流水线文件:       {}",
+            cfg.agent
+                .native_pipeline
+                .file
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(默认)".to_string())
+        ));
+        renderer.print(&format!(
+            "  判定 Prompt:      {}",
+            cfg.agent
+                .native_pipeline
+                .judge_prompt_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(默认)".to_string())
+        ));
     }
 
     Ok(())
@@ -179,6 +197,10 @@ pub async fn list(_verbose: bool) -> Result<()> {
     println!("  agent.llm.endpoint            - 自定义 endpoint (可选)");
     println!("  agent.llm.timeout_sec         - LLM 请求超时秒数 (默认 60)");
     println!("  agent.llm.max_tokens          - 最大 token 数 (默认 2048)");
+    println!(
+        "  agent.native_pipeline.file    - Pipeline 配置文件 (YAML/JSON，默认内置 CTX-Audit 流程)"
+    );
+    println!("  agent.native_pipeline.judge_prompt_path - 判定层 prompt 文件路径 (可选覆盖)");
 
     Ok(())
 }

@@ -11,6 +11,7 @@ description = "Native LLM agent loop for CTX-Audit"
 # 序列化
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 
 # 异步运行时
 tokio = { workspace = true }

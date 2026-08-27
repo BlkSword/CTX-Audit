@@ -6,12 +6,14 @@
 //! 消息驱动主循环 + OpenAI-compatible provider + 工具适配 + JSONL 会话。
 //! 分层导出：按消费者角色分组，同时保留顶层 re-export 兼容。
 
+pub use pipeline::{ExtraJudgePhase, JudgeConfig, OutputContract, PipelineConfig, PipelineError, RegistrationConfig, ScanConfig};
 pub mod agent;
 pub mod confirm;
 pub mod cron;
 pub mod event;
 pub mod feedback;
 pub mod gate;
+pub mod pipeline;
 pub mod provider;
 pub mod runner;
 pub mod session;
@@ -45,9 +47,7 @@ pub mod sessions {
 
 /// 轮状态机层（M2）：runner 六阶段 + human gate
 pub mod rounds {
-    pub use crate::gate::{
-        extract_tp_candidates, GateDecision, GateNotice, TpCandidate,
-    };
+    pub use crate::gate::{extract_tp_candidates, GateDecision, GateNotice, TpCandidate};
     pub use crate::runner::{
         EligibilityReport, RoundPhase, Runner, RunnerConfig, RunnerError, RunnerState, TargetInfo,
     };
