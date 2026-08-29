@@ -23,4 +23,6 @@ TASK="$TASK
 
 开工前加载 ctx-audit-auditor skill。输出 JSON。"
 
+export DSH_PROFILE="${DSH_PROFILE:-audit-scout}"
+
 exec "$SCRIPT_DIR/ctx-audit-dsh" "$TASK"

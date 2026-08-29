@@ -25,4 +25,6 @@ TASK="$TASK
 
 开工前加载 ctx-audit-auditor skill。"
 
+export DSH_PROFILE="${DSH_PROFILE:-audit-sniper}"
+
 exec "$SCRIPT_DIR/ctx-audit-dsh" "$TASK"
