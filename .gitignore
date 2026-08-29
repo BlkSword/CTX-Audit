@@ -72,7 +72,11 @@ harness/dsh-home/sessions/
 harness/dsh-home/profiles/*/node_modules/
 harness/dsh-home/profiles/node_modules/
 
-harness/
+# 公开 harness（脱敏模板）入库；私有 harness 其余内容忽略
+harness/*
+!harness/public/
+!harness/public/**
+
 .dsh/
 
 # 私有 overlay（不入库）

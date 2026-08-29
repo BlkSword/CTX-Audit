@@ -1,0 +1,16 @@
+# CTX-Audit DSH 侦察兵 profile 模板（便宜模型广度扫描）
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: !!js process.env.DSH_SCOUT_PROVIDER || 'longcat'
+    model: !!js process.env.DSH_SCOUT_MODEL || 'LongCat-2.0'
+    reasoningEffort: high
+- insert:
+    - id: mcp-ctx-audit
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ctxaudit
+        transport: stdio
+        command: !!js process.env.CTX_AUDIT_MCP_CMD || 'ctx-audit'
+        args: ['mcp']
+        failOnStartupError: false
