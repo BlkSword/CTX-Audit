@@ -4,7 +4,7 @@
 
 ## 使用方式
 
-1. 运行 `./install.sh` 把公共 profile/skill 骨架安装到 `$DSH_HOME`（已有文件不会被覆盖）。
+1. 运行 `./install.sh` 把公共 profile/skill/无密钥 settings 安装到 `$DSH_HOME`（已有文件不会被覆盖）。
 2. 把 `profiles/*/cordis.patch.yml` 中 `${DSH_PROVIDER}` / `${DSH_MODEL}` 替换成你实际的 DSH provider。
 3. 通过 `AUDIT_METHODOLOGY_FILE` 指向你自己的私有方法论文件。
 4. 通过 `secrets.env` 注入 API key，绝不提交。

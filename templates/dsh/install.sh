@@ -27,5 +27,12 @@ else
   echo "skip skills/ctx-audit-auditor/SKILL.md (already exists)"
 fi
 
+if [[ ! -f "$HOME_DIR/settings.yaml" ]]; then
+  cp "$SCRIPT_DIR/settings.yaml" "$HOME_DIR/settings.yaml"
+  echo "installed settings.yaml (公共 provider 模板，无密钥)"
+else
+  echo "skip settings.yaml (already exists)"
+fi
+
 echo "DSH 公共模板安装完成：$HOME_DIR"
 echo "接下来把私有 provider 配置、secrets.env、方法论覆盖到对应目录。"
