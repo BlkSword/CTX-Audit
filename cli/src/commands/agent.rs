@@ -55,9 +55,16 @@ fn build_native_provider(manager: &ConfigManager) -> Result<Arc<OpenAIProvider>>
 
 /// 从配置组装 RunnerConfig（state_dir = <cwd>/.ctx-audit/runner）
 fn build_runner_config(manager: &ConfigManager) -> Result<RunnerConfig> {
+    build_runner_config_with_pipeline(manager, None)
+}
+
+fn build_runner_config_with_pipeline(
+    manager: &ConfigManager,
+    explicit_pipeline: Option<&str>,
+) -> Result<RunnerConfig> {
     let budget_cfg = &manager.config().agent.native_budget;
     let cwd = std::env::current_dir().map_err(|e| miette::miette!("{}", e))?;
-    let pipeline = load_pipeline_config(manager)?;
+    let pipeline = load_pipeline_config_opt(manager, explicit_pipeline)?;
     Ok(RunnerConfig {
         state_dir: cwd.join(".ctx-audit").join("runner"),
         judge_prompt_path: manager
@@ -83,6 +90,17 @@ fn build_runner_config(manager: &ConfigManager) -> Result<RunnerConfig> {
 
 /// 加载 Pipeline 配置：显式配置文件 > CTX_AUDIT_PIPELINE_FILE 环境变量 > 内置默认
 fn load_pipeline_config(manager: &ConfigManager) -> Result<ctx_audit_agent::PipelineConfig> {
+    load_pipeline_config_opt(manager, None)
+}
+
+/// 加载 Pipeline 配置，支持命令行显式覆盖
+fn load_pipeline_config_opt(
+    manager: &ConfigManager,
+    explicit: Option<&str>,
+) -> Result<ctx_audit_agent::PipelineConfig> {
+    let from_cli = explicit
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
     let from_config = manager
         .config()
         .agent
@@ -95,7 +113,7 @@ fn load_pipeline_config(manager: &ConfigManager) -> Result<ctx_audit_agent::Pipe
         .filter(|s| !s.is_empty())
         .map(PathBuf::from);
 
-    let path = from_config.or(from_env);
+    let path = from_cli.or(from_config).or(from_env);
     match path {
         Some(path) => ctx_audit_agent::PipelineConfig::load(&path)
             .map_err(|e| miette::miette!("加载流水线配置失败: {}", e)),
@@ -313,6 +331,7 @@ pub async fn sessions(project: Option<String>) -> Result<()> {
 pub async fn round_run(
     target: String,
     round_id: Option<String>,
+    pipeline: Option<String>,
     json: bool,
     daemon: bool,
 ) -> Result<()> {
@@ -325,7 +344,7 @@ pub async fn round_run(
     let provider: Option<Arc<dyn LLMProvider>> = build_native_provider(&manager)
         .ok()
         .map(|p| p as Arc<dyn LLMProvider>);
-    let config = build_runner_config(&manager)?;
+    let config = build_runner_config_with_pipeline(&manager, pipeline.as_deref())?;
     let runner = Runner::new(config, provider);
 
     let (tx, renderer) = spawn_renderer(json);

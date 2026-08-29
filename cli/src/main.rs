@@ -313,6 +313,10 @@ enum RoundAction {
         #[arg(long, value_name = "ID")]
         round_id: Option<String>,
 
+        /// Pipeline 配置文件（缺省读环境变量/全局配置）
+        #[arg(long, value_name = "FILE")]
+        pipeline: Option<String>,
+
         /// NDJSON 事件输出（默认人性化渲染）
         #[arg(long)]
         json: bool,
@@ -721,9 +725,10 @@ async fn main() -> Result<()> {
                 RoundAction::Run {
                     target,
                     round_id,
+                    pipeline,
                     json,
                     daemon,
-                } => commands::agent::round_run(target, round_id, json, daemon).await,
+                } => commands::agent::round_run(target, round_id, pipeline, json, daemon).await,
 
                 RoundAction::Status { round_id, daemon } => {
                     commands::agent::round_status(round_id, daemon).await
