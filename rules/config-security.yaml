@@ -42,7 +42,7 @@ rules:
       - language: python
         pattern: 'CORS_ORIGIN_ALLOW_ALL\s*=\s*True|allow_origins\s*=\s*\[[''"]\*[''"]\]|origins\s*=\s*\[[''"]\*[''"]\]'
       - language: javascript
-        pattern: "origin\s*:\s*['\"']\\*['\"']|credentials\s*:\s*true.*origin\s*:\s*['\"']\\*['\"']"
+        pattern: 'origin\s*:\s*[''"]\*[''"]|credentials\s*:\s*true.*origin\s*:\s*[''"]\*[''"]'
     remediation: "将 CORS 限制为仅需要的域名：CORS_ORIGINS = ['https://yourdomain.com']。切勿同时使用 credentials=True 和 origin='*'。"
 
   - id: config-plaintext-password
@@ -68,7 +68,7 @@ rules:
       - language: python
         pattern: 'SESSION_COOKIE_SECURE\s*=\s*False|SESSION_COOKIE_HTTPONLY\s*=\s*False|SESSION_COOKIE_SAMESITE\s*=\s*None'
       - language: javascript
-        pattern: "secure\s*:\s*false|cookie\s*:\s*\{.*secure\s*:\s*false|httpOnly\s*:\s*false"
+        pattern: 'secure\s*:\s*false|cookie\s*:\s*\{.*secure\s*:\s*false|httpOnly\s*:\s*false'
     remediation: "设置 SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax'。"
 
   - id: config-allowed-hosts-wildcard
