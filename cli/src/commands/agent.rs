@@ -322,9 +322,11 @@ pub async fn round_run(
     }
 
     let manager = ConfigManager::new(None).map_err(|e| miette::miette!("{}", e))?;
-    let provider = build_native_provider(&manager)?;
+    let provider: Option<Arc<dyn LLMProvider>> = build_native_provider(&manager)
+        .ok()
+        .map(|p| p as Arc<dyn LLMProvider>);
     let config = build_runner_config(&manager)?;
-    let runner = Runner::new(config, Some(provider));
+    let runner = Runner::new(config, provider);
 
     let (tx, renderer) = spawn_renderer(json);
     let result = runner.run(&target, round_id, tx).await;
@@ -350,9 +352,11 @@ pub async fn round_resume(round_id: String, json: bool, daemon: bool) -> Result<
     }
 
     let manager = ConfigManager::new(None).map_err(|e| miette::miette!("{}", e))?;
-    let provider = build_native_provider(&manager)?;
+    let provider: Option<Arc<dyn LLMProvider>> = build_native_provider(&manager)
+        .ok()
+        .map(|p| p as Arc<dyn LLMProvider>);
     let config = build_runner_config(&manager)?;
-    let runner = Runner::new(config, Some(provider));
+    let runner = Runner::new(config, provider);
 
     let (tx, renderer) = spawn_renderer(json);
     let result = runner.resume(&round_id, tx).await;
