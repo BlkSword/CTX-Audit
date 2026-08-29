@@ -31,5 +31,6 @@ CTX_AUDIT_MCP_CMD=ctx-audit ./bin/ctx-audit-dsh "对 ./project 做安全审计"
 ## 公共 / 私有边界
 
 - **公开**：本目录下所有文件。
-- **私有**：你的真实 `harness/dsh-home/`、`harness/bin/` 私有脚本、`secrets.env`、方法论、台账。
-- 私有内容通过 `AUDIT_METHODOLOGY_FILE`、`CTX_AUDIT_PIPELINE_FILE`、`DSH_HOME` overlay 注入，不进入公开仓库。
+- **私有**：本地 `harness-private/`、`~/.ctx-audit/private/`、`secrets.env`、方法论、台账。
+- 私有内容通过环境变量 / Pipeline 配置 / DSH_HOME overlay 注入，不进入公开仓库。
+- 详细接入方式见 [PRIVATE-USE.md](./PRIVATE-USE.md)。
