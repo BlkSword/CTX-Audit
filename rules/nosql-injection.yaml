@@ -9,11 +9,11 @@ patterns:
   - language: javascript
     pattern: '(?i)(\.findOne?\s*\(\s*req\.body|\.findOne?\s*\(\s*request\.body|\.findOne?\s*\(\s*\{\s*\.\.\.req|\.updateMany?\s*\(\s*.*req\.)'
   - language: python
-    pattern: '(?i)(\.find\(\s*\{\s*'\'\"\']?\$gt|\.find_one\(\s*\{\s*'\'\"\']?\$ne|collection\.find\(.*request\.|\.update_one\(.*request\.)'
+    pattern: '(?i)(\.find\(\s*\{\s*[''"]?\$gt|\.find_one\(\s*\{\s*[''"]?\$ne|collection\.find\(.*request\.|\.update_one\(.*request\.)'
   - language: javascript
-    pattern: '(?i)\{\s*'\'\"\']?\$(?:gt|ne|lt|gte|lte|in|nin|regex|where|expr)\b'
+    pattern: '(?i)\{\s*[''"]?\$(?:gt|ne|lt|gte|lte|in|nin|regex|where|expr)\b'
   - language: python
-    pattern: '(?i)\{\s*['\''\"]\$(?:gt|ne|lt|gte|lte|in|nin|regex|where|expr)\b'
+    pattern: '(?i)\{\s*[''"]\$(?:gt|ne|lt|gte|lte|in|nin|regex|where|expr)\b'
 severity: critical
 remediation: "不要在数据库查询中直接使用用户提供的 JSON 对象。使用 mongo-sanitize 或 express-mongo-sanitize 库过滤操作符；对来自用户的键名做白名单校验。"
 references:

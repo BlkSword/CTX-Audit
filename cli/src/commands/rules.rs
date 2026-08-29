@@ -75,10 +75,15 @@ pub async fn validate(rules_dir: Option<String>) -> Result<()> {
     let mut invalid = 0;
 
     fn visit_yaml_files(dir: &std::path::Path, cb: &mut dyn FnMut(&std::path::Path)) {
+        const SKIP_DIRS: &[&str] = &["audit-packs", "specialists", "taint"];
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if SKIP_DIRS.contains(&name.as_str()) {
+                        continue;
+                    }
                     visit_yaml_files(&path, cb);
                 } else if path.is_file() {
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");

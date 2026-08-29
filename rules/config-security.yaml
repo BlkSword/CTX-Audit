@@ -25,9 +25,9 @@ rules:
     language: all
     patterns:
       - language: python
-        pattern: '(?i)SECRET_KEY\s*=\s*['"'"'"](?:\w{1,10}|(?:dev|secret|key|test|password|changeme|\w{3,}secret|django-insecure|development key|thisismy))['"'"'"]'
+        pattern: '(?i)SECRET_KEY\s*=\s*[''"](?:\w{1,10}|(?:dev|secret|key|test|password|changeme|\w{3,}secret|django-insecure|development key|thisismy))[''"]'
       - language: javascript
-        pattern: '(?i)(?:secret|secretKey|JWT_SECRET)\s*[:=]\s*['"'"'"](?:\w{1,10}|dev|secret|test|password)['"'"'"]'
+        pattern: '(?i)(?:secret|secretKey|JWT_SECRET)\s*[:=]\s*[''"](?:\w{1,10}|dev|secret|test|password)[''"]'
       - language: go
         pattern: '(?i)(?:SecretKey|JWTSecret|SessionSecret)\s*=\s*"(?:\w{1,10}|dev|secret|test|password)"'
     remediation: "密钥应从环境变量读取：SECRET_KEY = os.environ.get('SECRET_KEY')。使用 python -c 'import secrets; print(secrets.token_hex(32))' 生成强随机密钥。"
@@ -40,7 +40,7 @@ rules:
     language: all
     patterns:
       - language: python
-        pattern: 'CORS_ORIGIN_ALLOW_ALL\s*=\s*True|allow_origins\s*=\s*\[['"'"'"]\*['"'"'"]\]|origins\s*=\s*\[['"'"'"]\*['"'"'"]\]'
+        pattern: 'CORS_ORIGIN_ALLOW_ALL\s*=\s*True|allow_origins\s*=\s*\[[''"]\*[''"]\]|origins\s*=\s*\[[''"]\*[''"]\]'
       - language: javascript
         pattern: "origin\s*:\s*['\"']\\*['\"']|credentials\s*:\s*true.*origin\s*:\s*['\"']\\*['\"']"
     remediation: "将 CORS 限制为仅需要的域名：CORS_ORIGINS = ['https://yourdomain.com']。切勿同时使用 credentials=True 和 origin='*'。"
@@ -53,9 +53,9 @@ rules:
     language: all
     patterns:
       - language: python
-        pattern: '(?i)(?:DATABASE_URL|SQLALCHEMY_DATABASE_URI|MONGO_URI|REDIS_URL)\s*=\s*['"'"'"](?:mysql|postgres|mongodb|redis)://[^@]+:[^@]+@'
+        pattern: '(?i)(?:DATABASE_URL|SQLALCHEMY_DATABASE_URI|MONGO_URI|REDIS_URL)\s*=\s*[''"](?:mysql|postgres|mongodb|redis)://[^@]+:[^@]+@'
       - language: javascript
-        pattern: '(?i)(?:DATABASE_URL|MONGO_URI|REDIS_URL)\s*[:=]\s*['"'"'"](?:mysql|postgres|mongodb|redis)://[^@]+:[^@]+@'
+        pattern: '(?i)(?:DATABASE_URL|MONGO_URI|REDIS_URL)\s*[:=]\s*[''"](?:mysql|postgres|mongodb|redis)://[^@]+:[^@]+@'
     remediation: "使用环境变量存储数据库凭据：DATABASE_URL = os.environ.get('DATABASE_URL')。使用 Secrets Manager 管理生产凭据。"
 
   - id: config-insecure-cookie
@@ -79,5 +79,5 @@ rules:
     language: all
     patterns:
       - language: python
-        pattern: 'ALLOWED_HOSTS\s*=\s*\[['"'"'"]\*['"'"'"]\]|allowed_hosts\s*=\s*\[['"'"'"]\*['"'"'"]\]'
+        pattern: 'ALLOWED_HOSTS\s*=\s*\[[''"]\*[''"]\]|allowed_hosts\s*=\s*\[[''"]\*[''"]\]'
     remediation: "将 ALLOWED_HOSTS 限制为实际域名：ALLOWED_HOSTS = ['yourdomain.com', 'www.yourdomain.com']。"
