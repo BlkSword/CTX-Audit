@@ -103,6 +103,74 @@ fn load_pipeline_config(manager: &ConfigManager) -> Result<ctx_audit_agent::Pipe
     }
 }
 
+/// 显示当前生效的 Pipeline 配置摘要
+pub async fn pipeline_show() -> Result<()> {
+    let manager = ConfigManager::new(None).map_err(|e| miette::miette!("{}", e))?;
+    let pipeline = load_pipeline_config(&manager)?;
+    let summary = serde_json::json!({
+        "name": pipeline.name,
+        "description": pipeline.description,
+        "scan": {
+            "enable_taint": pipeline.scan.enable_taint,
+            "enable_cross_file": pipeline.scan.enable_cross_file,
+            "min_severity": pipeline.scan.min_severity,
+            "rules_dir": pipeline.scan.rules_dir.map(|p| p.display().to_string()),
+        },
+        "triage_enabled": pipeline.triage.enabled,
+        "deep_review_enabled": pipeline.deep_review.enabled,
+        "gate_enabled": pipeline.gate_enabled,
+        "registration_polish_draft": pipeline.registration.polish_draft,
+        "extra_phases": pipeline.extra_phases.iter().map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "prompt_path": p.prompt_path.as_ref().map(|x| x.display().to_string()),
+                "enabled": p.enabled,
+            })
+        }).collect::<Vec<_>>(),
+        "output": {
+            "tp_candidates_path": pipeline.output.tp_candidates_path,
+            "verdict_findings_path": pipeline.output.verdict_findings_path,
+            "verdict_field": pipeline.output.verdict_field,
+            "accepted_verdicts": pipeline.output.accepted_verdicts,
+        },
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summary)
+            .map_err(|e| miette::miette!("序列化 Pipeline 摘要失败: {}", e))?
+    );
+    Ok(())
+}
+
+/// 校验 Pipeline 配置文件
+pub async fn pipeline_validate(file: Option<&str>) -> Result<()> {
+    let manager = ConfigManager::new(None).map_err(|e| miette::miette!("{}", e))?;
+
+    // 显式文件 > 环境变量 > 全局配置 > 内置默认
+    let path = file
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("CTX_AUDIT_PIPELINE_FILE")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(|| manager.config().agent.native_pipeline.file.clone());
+
+    match path {
+        Some(path) => {
+            ctx_audit_agent::PipelineConfig::load(&path)
+                .map_err(|e| miette::miette!("Pipeline 无效: {}", e))?;
+            println!("Pipeline 有效: {}", path.display());
+        }
+        None => {
+            let default = ctx_audit_agent::PipelineConfig::default();
+            println!("未配置 Pipeline 文件，当前使用内置默认: {}", default.name);
+        }
+    }
+    Ok(())
+}
+
 /// 事件渲染 sink（人性化 / NDJSON），返回发送端与渲染任务句柄
 fn spawn_renderer(
     json: bool,

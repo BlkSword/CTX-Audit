@@ -267,6 +267,12 @@ enum AgentAction {
         action: GateAction,
     },
 
+    /// 查看/校验当前审计流水线
+    Pipeline {
+        #[command(subcommand)]
+        action: PipelineAction,
+    },
+
     /// cron 定时轮（M3，需 daemon 运行）
     Cron {
         #[command(subcommand)]
@@ -277,6 +283,20 @@ enum AgentAction {
     Feedback {
         #[command(subcommand)]
         action: FeedbackAction,
+    },
+}
+
+/// Pipeline 子命令
+#[derive(Subcommand, Debug)]
+enum PipelineAction {
+    /// 显示当前生效的 Pipeline 配置摘要
+    Show,
+
+    /// 校验 Pipeline 配置文件
+    Validate {
+        /// Pipeline 文件路径（缺省从环境变量/全局配置解析）
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 }
 
@@ -730,6 +750,14 @@ async fn main() -> Result<()> {
                     note,
                     daemon,
                 } => commands::agent::gate_decide(round_id, false, note, daemon).await,
+            },
+
+            AgentAction::Pipeline { action } => match action {
+                PipelineAction::Show => commands::agent::pipeline_show().await,
+
+                PipelineAction::Validate { file } => {
+                    commands::agent::pipeline_validate(file.as_deref()).await
+                }
             },
 
             AgentAction::Cron { action } => match action {
