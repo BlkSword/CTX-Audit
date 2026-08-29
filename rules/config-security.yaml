@@ -1,6 +1,8 @@
 # Config Security Rules
 # 配置文件安全检测规则：检测 DEBUG 模式、弱密钥、CORS 配置等
 
+name: config-security
+version: 1
 rules:
   - id: config-debug-enabled
     name: "DEBUG Mode Enabled"
