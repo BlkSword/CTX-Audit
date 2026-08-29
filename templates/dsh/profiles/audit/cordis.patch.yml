@@ -3,8 +3,8 @@
 - id: agent-default-model
   name: '@deepseek-ai/dsh-agent-default-model'
   config:
-    provider: ${DSH_PROVIDER:-opencode-go}
-    model: ${DSH_MODEL:-deepseek-v4-flash}
+    provider: !!js process.env.DSH_PROVIDER || 'opencode-go'
+    model: !!js process.env.DSH_MODEL || 'deepseek-v4-flash'
     reasoningEffort: high
 - insert:
     - id: mcp-ctx-audit

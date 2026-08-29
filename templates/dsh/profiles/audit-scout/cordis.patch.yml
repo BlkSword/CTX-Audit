@@ -2,8 +2,8 @@
 - id: agent-default-model
   name: '@deepseek-ai/dsh-agent-default-model'
   config:
-    provider: ${DSH_SCOUT_PROVIDER:-longcat}
-    model: ${DSH_SCOUT_MODEL:-LongCat-2.0}
+    provider: !!js process.env.DSH_SCOUT_PROVIDER || 'longcat'
+    model: !!js process.env.DSH_SCOUT_MODEL || 'LongCat-2.0'
     reasoningEffort: high
 - insert:
     - id: mcp-ctx-audit
