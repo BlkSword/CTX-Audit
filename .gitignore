@@ -74,3 +74,9 @@ harness/dsh-home/profiles/node_modules/
 
 harness/
 .dsh/
+
+# 私有 overlay（不入库）
+/.ctx-audit-private/
+/private-overlay/
+/audit-logs/
+secrets.env
