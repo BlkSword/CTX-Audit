@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**SAST Engine + LLM Collaborative Audit**
+**Rust Code Security Audit Engine · LLM Collaboration · Evidence-Driven**
 
-**Data Flow Tracking · Cross-File Analysis · MCP Protocol · Evidence-Driven Verdicts**
+**Cross-File Data Flow Tracking · CPG Taint Analysis · MCP Toolchain · Verifiable Verdicts**
 
-Traces complete data paths from entry points to dangerous functions. Outputs structured evidence chains. Connects Claude/LLM via MCP to query call graphs, read code, and make evidence-based vulnerability assessments.
+No rule-stacking — CTX-Audit builds call graphs, traces complete data paths from entry points to dangerous functions, and outputs structured evidence chains. Through MCP, it gives LLMs queryable call graphs, taint paths, and middleware context so they can reach verifiable vulnerability verdicts.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)

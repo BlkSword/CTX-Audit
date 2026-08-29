@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**SAST 引擎 + LLM 协作审计**
+**Rust 代码安全审计引擎 · LLM 协作 · 证据驱动**
 
-**数据流追踪 · 跨文件分析 · MCP 协议 · 证据驱动判定**
+**跨文件数据流追踪 · CPG 污点分析 · MCP 工具链 · 可验证漏洞判定**
 
-不靠规则堆砌——追踪数据从入口到危险函数的完整路径，输出结构化证据链。通过 MCP 协议让 LLM 读取攻击面、查询调用图、基于确定性证据做漏洞判定。
+不做规则堆砌——先构建调用图并追踪数据从入口到危险函数的完整路径，输出结构化证据链；再通过 MCP 协议把分析能力交给 LLM，让它在调用图、污点路径和中间件上下文中完成可验证的漏洞判定。
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
