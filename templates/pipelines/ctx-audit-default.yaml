@@ -28,3 +28,11 @@ output:
   accepted_verdicts: ["TP", "TP_CANDIDATE"]
 
 gate_enabled: true
+
+registration:
+  polish_draft: false
+
+# 不配置 phases 时使用内置默认顺序
+phases: null
+
+extra_phases: []

@@ -13,6 +13,7 @@ triage:
   # 你的私有 prompt 可以放在 gitignore 的目录里
   prompt_path: ./private/prompts/my-triage.md
   system_prompt: null
+  shard_threshold: null
   enabled: true
 
 deep_review:
@@ -29,3 +30,28 @@ output:
   accepted_verdicts: ["CONFIRMED", "TP"]
 
 gate_enabled: true
+
+registration:
+  polish_draft: false
+
+# 可选：完全自定义阶段顺序（不写则用内置默认）
+# phases:
+#   - type: select_target
+#   - type: eligibility
+#   - type: scan
+#   - type: triage
+#   - type: extra
+#     id: logic_audit
+#   - type: registration
+#   - type: feedback
+
+extra_phases:
+  - id: logic_audit
+    prompt_path: ./private/prompts/logic-audit.md
+    system_prompt: null
+    enabled: true
+    output:
+      tp_candidates_path: ["candidates"]
+      verdict_findings_path: ["results"]
+      verdict_field: "decision"
+      accepted_verdicts: ["CONFIRMED", "TP"]

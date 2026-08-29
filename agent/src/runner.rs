@@ -32,7 +32,7 @@ use crate::confirm::{ApprovalMode, ToolGate};
 use crate::event::AgentEvent;
 use crate::feedback::FeedbackTask;
 use crate::gate::{self, GateDecision, GateNotice, TpCandidate};
-use crate::pipeline::PipelineConfig;
+use crate::pipeline::{PhaseStep, PipelineConfig};
 use crate::provider::LLMProvider;
 use crate::session::Session;
 use crate::subagent::{register_delegate_tool, SubAgentConfig, SubAgentSpawner};
@@ -42,7 +42,7 @@ use ctx_audit_tools::{register_all_tools, ToolRegistry};
 // ── 阶段定义 ────────────────────────────────────────────
 
 /// 轮阶段
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoundPhase {
     /// 选目标（路径校验 / git clone）
@@ -63,21 +63,24 @@ pub enum RoundPhase {
     Feedback,
     /// 完结
     Done,
+    /// 动态额外阶段（在 Pipeline.extra_phases 中按 id 查找）
+    Custom(String),
 }
 
 impl RoundPhase {
     /// 展示名
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            RoundPhase::SelectTarget => "选目标",
-            RoundPhase::Eligibility => "资格核实",
-            RoundPhase::Scan => "扫描",
-            RoundPhase::Triage => "初审",
-            RoundPhase::DeepReview => "深审",
-            RoundPhase::AwaitHuman => "等待人工闸门",
-            RoundPhase::RegistrationDraft => "登记草稿",
-            RoundPhase::Feedback => "反哺",
-            RoundPhase::Done => "完结",
+            RoundPhase::SelectTarget => "选目标".to_string(),
+            RoundPhase::Eligibility => "资格核实".to_string(),
+            RoundPhase::Scan => "扫描".to_string(),
+            RoundPhase::Triage => "初审".to_string(),
+            RoundPhase::DeepReview => "深审".to_string(),
+            RoundPhase::AwaitHuman => "等待人工闸门".to_string(),
+            RoundPhase::RegistrationDraft => "登记草稿".to_string(),
+            RoundPhase::Feedback => "反哺".to_string(),
+            RoundPhase::Done => "完结".to_string(),
+            RoundPhase::Custom(id) => format!("额外阶段:{}", id),
         }
     }
 }
@@ -383,7 +386,7 @@ impl Runner {
                 return Ok(state);
             }
 
-            let phase = state.current_phase;
+            let phase = state.current_phase.clone();
             tracing::info!("轮次 {} 进入阶段: {}", state.round_id, phase.label());
             if let Err(e) = self.execute_phase(&mut state, event_tx).await {
                 // 阶段失败：保留断点现场（current_phase 不变），可续跑重试
@@ -400,23 +403,24 @@ impl Runner {
         state: &mut RunnerState,
         event_tx: &mpsc::Sender<AgentEvent>,
     ) -> Result<(), RunnerError> {
-        match state.current_phase {
+        let phase = state.current_phase.clone();
+        match &phase {
             RoundPhase::SelectTarget => {
                 self.phase_select_target(state).await?;
-                self.advance(state, RoundPhase::Eligibility)
+                self.advance(state)
             }
             RoundPhase::Eligibility => {
                 self.phase_eligibility(state)?;
-                self.advance(state, RoundPhase::Scan)
+                self.advance(state)
             }
             RoundPhase::Scan => {
                 self.phase_scan(state).await?;
-                self.advance(state, RoundPhase::Triage)
+                self.advance(state)
             }
             RoundPhase::Triage => {
                 self.phase_judge(state, JudgeStage::Triage, event_tx)
                     .await?;
-                self.advance(state, RoundPhase::DeepReview)
+                self.advance(state)
             }
             RoundPhase::DeepReview => {
                 self.phase_judge(state, JudgeStage::DeepReview, event_tx)
@@ -427,24 +431,81 @@ impl Runner {
                     // 不 advance：current_phase 置为 AwaitHuman 后返回，循环在下一轮退出
                     Ok(())
                 } else {
-                    self.advance(state, RoundPhase::RegistrationDraft)
+                    self.advance(state)
                 }
             }
             RoundPhase::RegistrationDraft => {
                 self.phase_registration(state, event_tx).await?;
-                self.advance(state, RoundPhase::Feedback)
+                self.advance(state)
             }
             RoundPhase::Feedback => {
                 self.phase_feedback(state, event_tx).await?;
-                self.advance(state, RoundPhase::Done)
+                self.advance(state)
+            }
+            RoundPhase::Custom(id) => {
+                self.phase_custom(state, id.as_str(), event_tx).await?;
+                self.advance(state)
             }
             RoundPhase::AwaitHuman | RoundPhase::Done => Ok(()),
         }
     }
 
+    /// 内置默认阶段顺序
+    fn default_phase_sequence() -> Vec<RoundPhase> {
+        vec![
+            RoundPhase::SelectTarget,
+            RoundPhase::Eligibility,
+            RoundPhase::Scan,
+            RoundPhase::Triage,
+            RoundPhase::DeepReview,
+            RoundPhase::RegistrationDraft,
+            RoundPhase::Feedback,
+            RoundPhase::Done,
+        ]
+    }
+
+    /// 当前 Pipeline 的阶段顺序；未配置时使用内置默认
+    fn phase_sequence(&self) -> Vec<RoundPhase> {
+        let mut seq = match &self.config.pipeline.phases {
+            Some(steps) => steps
+                .iter()
+                .map(|step| match step {
+                    PhaseStep::SelectTarget => RoundPhase::SelectTarget,
+                    PhaseStep::Eligibility => RoundPhase::Eligibility,
+                    PhaseStep::Scan => RoundPhase::Scan,
+                    PhaseStep::Triage => RoundPhase::Triage,
+                    PhaseStep::DeepReview => RoundPhase::DeepReview,
+                    PhaseStep::Registration => RoundPhase::RegistrationDraft,
+                    PhaseStep::Feedback => RoundPhase::Feedback,
+                    PhaseStep::Extra(id) => RoundPhase::Custom(id.clone()),
+                })
+                .collect(),
+            None => Self::default_phase_sequence(),
+        };
+        if seq.last() != Some(&RoundPhase::Done) {
+            seq.push(RoundPhase::Done);
+        }
+        seq
+    }
+
+    /// 计算当前阶段的下一个阶段
+    fn next_phase(&self, current: &RoundPhase) -> Option<RoundPhase> {
+        let seq = self.phase_sequence();
+        let pos = seq.iter().position(|p| p == current)?;
+        seq.get(pos + 1).cloned()
+    }
+
     /// 推进到下一阶段并落盘
-    fn advance(&self, state: &mut RunnerState, next: RoundPhase) -> Result<(), RunnerError> {
-        state.completed.push(state.current_phase);
+    fn advance(&self, state: &mut RunnerState) -> Result<(), RunnerError> {
+        let next = self
+            .next_phase(&state.current_phase)
+            .ok_or_else(|| {
+                RunnerError::InvalidState(format!(
+                    "阶段 {} 不在流水线序列中，无法推进",
+                    state.current_phase.label()
+                ))
+            })?;
+        state.completed.push(state.current_phase.clone());
         state.current_phase = next;
         state.last_error = None;
         self.save_state(state)
@@ -757,6 +818,82 @@ impl Runner {
             }
             state.tp_candidates.extend(candidates);
         }
+        Ok(())
+    }
+
+    /// 执行 Pipeline 配置中的单个动态额外阶段（RoundPhase::Custom）
+    async fn phase_custom(
+        &self,
+        state: &mut RunnerState,
+        phase_id: &str,
+        event_tx: &mpsc::Sender<AgentEvent>,
+    ) -> Result<(), RunnerError> {
+        let target_path = state
+            .target
+            .local_path
+            .clone()
+            .ok_or_else(|| RunnerError::InvalidState("目标本地路径未解析".into()))?;
+        let phase = self
+            .config
+            .pipeline
+            .extra_phases
+            .iter()
+            .find(|p| p.id == phase_id && p.enabled)
+            .cloned()
+            .ok_or_else(|| {
+                RunnerError::InvalidState(format!(
+                    "动态阶段 {} 未在 pipeline.extra_phases 中配置或未启用",
+                    phase_id
+                ))
+            })?;
+
+        // 把已有产物拼成上下文，使自定义阶段可放在任意位置
+        let mut context = String::new();
+        for key in ["scan", "triage", "deep_review"] {
+            if let Ok(content) = self.read_artifact(state, key) {
+                context.push_str(&format!("### {}\n{}\n\n", key, content));
+            }
+        }
+        let user_prompt = format!(
+            "【轮次 {} 动态审计阶段 {}】\n目标项目根路径: {}\n已有审计产物:\n{}\n\n请按输出契约给出结构化 JSON，phase={}。",
+            state.round_id,
+            phase.id,
+            target_path.display(),
+            context,
+            phase.id
+        );
+
+        let system_prompt = if let Some(ref sp) = phase.system_prompt {
+            sp.clone()
+        } else if let Some(ref pp) = phase.prompt_path {
+            std::fs::read_to_string(pp).map_err(RunnerError::Io)?
+        } else {
+            self.load_judge_prompt(&target_path, JudgeStage::DeepReview)?
+        };
+        let agent = self
+            .build_phase_agent_with_system_prompt(&target_path, system_prompt)
+            .await?;
+        let run = agent.run(&user_prompt, event_tx.clone()).await?;
+        let extra_output = extract_json(&run.final_text)?;
+
+        let artifact_key = format!("extra_phase_{}", phase.id);
+        let artifact = self.write_artifact(state, &artifact_key, &extra_output)?;
+        state
+            .artifacts
+            .insert(artifact_key.clone(), artifact.display().to_string());
+
+        let contract = phase
+            .output
+            .clone()
+            .unwrap_or_else(|| self.config.pipeline.output.clone());
+        let candidates = self
+            .config
+            .pipeline
+            .extract_tp_candidates_with_contract(&extra_output, &contract);
+        if !candidates.is_empty() {
+            tracing::info!("动态阶段 {} 产出 {} 个 TP 候选", phase.id, candidates.len());
+        }
+        state.tp_candidates.extend(candidates);
         Ok(())
     }
 
@@ -1193,7 +1330,7 @@ impl Runner {
             }
         }
 
-        state.completed.push(state.current_phase);
+        state.completed.push(state.current_phase.clone());
         state.current_phase = RoundPhase::AwaitHuman;
         state.last_error = None;
         self.save_state(state)?;
@@ -2470,5 +2607,55 @@ mod tests {
         assert_eq!(state.tp_candidates.len(), 1);
         assert_eq!(state.tp_candidates[0].title, "额外阶段 TP");
         assert!(state.artifacts.contains_key("extra_phase_logic_audit"));
+    }
+
+    /// 动态阶段列表：可跳过 deep_review，用自定义阶段代替后进入登记/反哺
+    #[tokio::test]
+    async fn test_dynamic_phase_sequence_skips_deep_review() {
+        let env = make_env("dynamic-seq");
+        let mock = MockProvider::new(vec![
+            Ok(MockProvider::json_text(triage_json_no_tp())),
+            Ok(MockProvider::json_text(serde_json::json!({
+                "phase": "logic_audit",
+                "summary": {"tp_candidates": 0, "fp": 1, "hardening": 0}
+            }))),
+        ]);
+        let pipeline = crate::pipeline::PipelineConfig {
+            phases: Some(vec![
+                crate::pipeline::PhaseStep::SelectTarget,
+                crate::pipeline::PhaseStep::Eligibility,
+                crate::pipeline::PhaseStep::Scan,
+                crate::pipeline::PhaseStep::Triage,
+                crate::pipeline::PhaseStep::Extra("logic_audit".to_string()),
+                crate::pipeline::PhaseStep::Registration,
+                crate::pipeline::PhaseStep::Feedback,
+            ]),
+            extra_phases: vec![crate::pipeline::ExtraJudgePhase {
+                id: "logic_audit".to_string(),
+                system_prompt: Some("你是逻辑审计员。".to_string()),
+                output: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let runner = Runner::new(
+            RunnerConfig {
+                state_dir: env.state_dir.clone(),
+                judge_prompt_path: Some(env.root.join("round-agent.md")),
+                pipeline,
+                ..RunnerConfig::default()
+            },
+            Some(mock),
+        );
+
+        let (tx, _rx) = mpsc::channel(256);
+        let state = runner
+            .run(env.target.to_str().unwrap(), Some("DS".to_string()), tx)
+            .await
+            .expect("动态阶段列表应跳到自定义阶段并完成");
+
+        assert_eq!(state.current_phase, RoundPhase::Done);
+        assert!(state.artifacts.contains_key("extra_phase_logic_audit"));
+        assert!(!state.completed.contains(&RoundPhase::DeepReview));
     }
 }

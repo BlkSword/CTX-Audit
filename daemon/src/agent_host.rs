@@ -199,7 +199,7 @@ impl AgentHost {
             };
             // agent_tx 已被 run 消费并随其返回而 drop，转发任务随之结束
             let status = match &result {
-                Ok(state) => match state.current_phase {
+                Ok(state) => match &state.current_phase {
                     RoundPhase::Done => "done".to_string(),
                     RoundPhase::AwaitHuman => "await_human".to_string(),
                     other => format!("paused: {}", other.label()),

@@ -34,6 +34,17 @@ gate_enabled: true          # false 则 TP 候选不触发人工闸门
 registration:
   polish_draft: false       # true 则用 LLM 润色登记草稿
 
+# 可选：完全自定义阶段顺序；不写则使用内置默认
+# phases:
+#   - type: select_target
+#   - type: eligibility
+#   - type: scan
+#   - type: triage
+#   - type: extra
+#     id: logic_audit
+#   - type: registration
+#   - type: feedback
+
 extra_phases:               # 额外的 LLM 审计阶段，深审后按顺序执行
   - id: logic_audit
     prompt_path: ./private/prompts/logic-audit.md

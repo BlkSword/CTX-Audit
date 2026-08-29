@@ -120,6 +120,7 @@ pub async fn pipeline_show() -> Result<()> {
         "deep_review_enabled": pipeline.deep_review.enabled,
         "gate_enabled": pipeline.gate_enabled,
         "registration_polish_draft": pipeline.registration.polish_draft,
+        "phases": pipeline.phases.as_ref().map(|p| serde_json::to_value(p).unwrap_or(serde_json::Value::Null)),
         "extra_phases": pipeline.extra_phases.iter().map(|p| {
             serde_json::json!({
                 "id": p.id,

@@ -30,6 +30,30 @@ use std::path::{Path, PathBuf};
 
 use crate::gate::TpCandidate;
 
+/// 流水线阶段步骤
+///
+/// 用于完全数据驱动地控制轮状态机；`None` 则使用内置默认顺序。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "id", rename_all = "snake_case")]
+pub enum PhaseStep {
+    /// 选目标（路径校验 / git clone）
+    SelectTarget,
+    /// 资格核实
+    Eligibility,
+    /// 引擎扫描
+    Scan,
+    /// 初审（LLM）
+    Triage,
+    /// 深审（LLM）
+    DeepReview,
+    /// 登记草稿
+    Registration,
+    /// 反哺（CVE 回放等）
+    Feedback,
+    /// 额外阶段（在 extra_phases 中按 id 查找）
+    Extra(String),
+}
+
 /// 完整流水线配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -50,8 +74,10 @@ pub struct PipelineConfig {
     pub gate_enabled: bool,
     /// 登记草稿配置
     pub registration: RegistrationConfig,
-    /// 额外 LLM 审计阶段（在深审之后、进入闸门/登记之前按顺序执行）
+    /// 额外 LLM 审计阶段（在深审之后、进入闸门/登记之前按顺序执行；或供动态阶段引用）
     pub extra_phases: Vec<ExtraJudgePhase>,
+    /// 动态阶段列表；`None` = 使用内置默认顺序
+    pub phases: Option<Vec<PhaseStep>>,
 }
 
 /// 确定性扫描阶段配置
@@ -157,6 +183,7 @@ impl Default for PipelineConfig {
             gate_enabled: true,
             registration: RegistrationConfig::default(),
             extra_phases: Vec::new(),
+            phases: None,
         }
     }
 }
@@ -429,6 +456,39 @@ output:
             Some("你是自定义审计员")
         );
         assert_eq!(p.output.tp_candidates_path, vec!["candidates".to_string()]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_yaml_phases() {
+        let dir = std::env::temp_dir().join(format!(
+            "ctx-audit-pipeline-phases-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("phases.yaml");
+        std::fs::write(
+            &path,
+            r#"
+name: custom-phases
+phases:
+  - type: select_target
+  - type: eligibility
+  - type: scan
+  - type: triage
+  - type: extra
+    id: logic_audit
+  - type: registration
+  - type: feedback
+"#,
+        )
+        .unwrap();
+        let p = PipelineConfig::load(&path).unwrap();
+        let phases = p.phases.expect("应解析 phases");
+        assert_eq!(phases.len(), 7);
+        assert_eq!(phases[0], PhaseStep::SelectTarget);
+        assert_eq!(phases[4], PhaseStep::Extra("logic_audit".to_string()));
+        assert_eq!(phases[6], PhaseStep::Feedback);
         std::fs::remove_dir_all(&dir).ok();
     }
 

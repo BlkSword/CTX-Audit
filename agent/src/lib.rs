@@ -6,7 +6,7 @@
 //! 消息驱动主循环 + OpenAI-compatible provider + 工具适配 + JSONL 会话。
 //! 分层导出：按消费者角色分组，同时保留顶层 re-export 兼容。
 
-pub use pipeline::{ExtraJudgePhase, JudgeConfig, OutputContract, PipelineConfig, PipelineError, RegistrationConfig, ScanConfig};
+pub use pipeline::{ExtraJudgePhase, JudgeConfig, OutputContract, PhaseStep, PipelineConfig, PipelineError, RegistrationConfig, ScanConfig};
 pub mod agent;
 pub mod confirm;
 pub mod cron;
