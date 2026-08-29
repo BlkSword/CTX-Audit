@@ -1,9 +1,6 @@
 # CTX-Audit DSH 公共 provider 模板
 # 只定义 provider 结构与 API key 环境变量名，不包含任何密钥。
-# 按需复制到私有 overlay 再修改。
-agent-presets:
-  default: ctx-audit-auditor
-
+# 公共框架默认使用 DSH 默认/极简模式；如需 audit 专用 preset，请在私有 overlay 中提供。
 llm-pi-ai:
   providers:
     longcat:

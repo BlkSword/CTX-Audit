@@ -102,6 +102,38 @@ export DSH_SNIPER_PROMPT_FILE="$HOME/.ctx-audit/private/prompts/sniper-prompt.md
 
 大轮/反馈脚本不再硬编码 `/root/audit-logs`、`/root/CTX-Audit` 等路径，而是通过环境变量或私有 overlay 解析。
 
+## Agent Preset 说明
+
+公共 `harness/` 默认使用 DSH 自带默认/极简模式，不自带 `ctx-audit-auditor` preset。
+`run-*.sh` 会把“加载 ctx-audit-auditor skill”写进任务，因此即使没有自定义 preset，审计流程也会加载 skill。
+
+如果你希望用更完整的审计专用 preset（例如 103 旧的 `ctx-audit-auditor`），把它放到私有 overlay：
+
+```text
+~/.ctx-audit/private/dsh/.agent-presets/ctx-audit-auditor/
+├── preset.yml
+├── agent.cordis.yml
+└── (可选) gitbash-executor.mjs
+```
+
+然后安装/覆盖到 DSH_HOME：
+
+```bash
+cp -rn ~/.ctx-audit/private/dsh/.agent-presets/ "$HOME/.dsh/"
+```
+
+并把私有 settings 中的默认 preset 指回：
+
+```yaml
+agent-presets:
+  default: ctx-audit-auditor
+```
+
+结论：
+
+- 公共/通用场景：极简默认模式更稳、更小、更安全。
+- 私有/真实审计场景：可以叠加 `ctx-audit-auditor` preset，获得审计专用 persona 和完整 shell/filesystem 工具面。
+
 ## 边界红线
 
 - 公共仓库只提交 `harness/` 和 `templates/`。
