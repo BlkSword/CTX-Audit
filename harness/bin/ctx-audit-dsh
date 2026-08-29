@@ -22,7 +22,11 @@ if [[ ! -f "$DSH_HOME/profiles/audit/package.json" || ! -f "$DSH_HOME/profiles/a
 fi
 
 if [[ -z "${CTX_AUDIT_MCP_CMD:-}" ]]; then
-  if command -v ctx-audit >/dev/null 2>&1; then
+  if [[ -x "$SCRIPT_DIR/../target/release/ctx-audit.exe" ]]; then
+    CTX_AUDIT_MCP_CMD="$SCRIPT_DIR/../target/release/ctx-audit.exe"
+  elif [[ -x "$SCRIPT_DIR/../target/release/ctx-audit" ]]; then
+    CTX_AUDIT_MCP_CMD="$SCRIPT_DIR/../target/release/ctx-audit"
+  elif command -v ctx-audit >/dev/null 2>&1; then
     CTX_AUDIT_MCP_CMD="$(command -v ctx-audit)"
   else
     echo "error: CTX_AUDIT_MCP_CMD not set and ctx-audit binary not found" >&2
