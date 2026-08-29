@@ -1,6 +1,8 @@
 # CTX-Audit Public Harness
 
-这是 DSH 审计流水线的**公开脱敏版**。它包含可安装的 profile/skill、launcher、通用编排脚本，但不包含任何私有路径、密钥、测试机信息或审计方法论细节。
+`harness/` 是 DSH 审计流水线的**公共框架本体**。它包含可安装的 profile/skill、launcher、通用编排脚本，但不包含任何私有路径、密钥、测试机信息或审计方法论细节。
+
+私有用法=把个人配置/文件放到本地 overlay（例如 `~/.ctx-audit/private/`），再通过环境变量或 Pipeline 指向它们。
 
 ## 安装
 

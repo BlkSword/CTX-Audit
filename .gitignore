@@ -67,16 +67,8 @@ CHANGELOG.md
 .audit-targets/
 r68probe/
 
-# DSH harness runtime artifacts
-harness/dsh-home/sessions/
-harness/dsh-home/profiles/*/node_modules/
-harness/dsh-home/profiles/node_modules/
-
-# 公开 harness（脱敏模板）入库；私有 harness 其余内容忽略
-harness/*
-!harness/public/
-!harness/public/**
-
+# 本地私有 harness（不入库）
+harness-private/
 .dsh/
 
 # 私有 overlay（不入库）

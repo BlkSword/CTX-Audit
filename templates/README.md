@@ -8,7 +8,7 @@
 - `pipelines/`：Agent Runner 的 Pipeline 配置示例
   - `ctx-audit-default.yaml`：默认 CTX-Audit 流程等价配置
   - `custom-example.yaml`：私人定制审计示例
-- `dsh/`：DSH 公共模板（更完整的公开 harness 见 `harness/public/`）
+- `dsh/`：DSH 公共模板（公开 harness 本体在 `harness/`）
   - `profiles/`：audit / audit-scout / audit-sniper 的 profile 骨架
   - `skills/`：审计 skill 骨架（不含私有方法论）
   - `bin/`：通用 launcher 模板

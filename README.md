@@ -293,7 +293,7 @@ export CTX_AUDIT_PIPELINE_FILE=templates/pipelines/custom-example.yaml
 ctx-audit agent round run --target ./project
 ```
 
-公共模板见 `templates/`，公开 DSH harness 见 `harness/public/`（脱敏、可安装、可运行）。
+公共模板见 `templates/`，公开 DSH harness 即 `harness/`（脱敏、可安装、可运行；私有内容通过本地 overlay 注入）。
 
 ---
 
