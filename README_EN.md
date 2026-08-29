@@ -139,7 +139,7 @@ export CTX_AUDIT_PIPELINE_FILE=templates/pipelines/custom-example.yaml
 ctx-audit agent round run --target ./project
 ```
 
-The public DSH harness is `harness/` itself; pipeline templates and private-overlay examples are under `templates/`.
+The public DSH harness is `harness/` itself (minimal/default mode by default; the audit-specific `ctx-audit-auditor` preset is supplied through a private overlay); pipeline templates and private-overlay examples are under `templates/`.
 
 ## Detection Coverage
 

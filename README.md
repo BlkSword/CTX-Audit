@@ -286,6 +286,7 @@ SCA 支持 OSV 漏洞库查询、依赖忽略列表、缓存 TTL、离线失败�
 - 可配置：通过 `agent.native_pipeline.file` 或 `CTX_AUDIT_PIPELINE_FILE` 指定 Pipeline YAML。
 - 输出契约可定制：TP 候选路径、verdict 字段、接受值均可配置。
 - 私有方法论可保留在本地，通过 `triage.prompt_path`、`deep_review.prompt_path` 或 `judge_prompt_path` 指向私有 prompt。
+- DSH 公共 `harness/` 默认使用极简模式；审计专用 `ctx-audit-auditor` preset 通过私有 overlay 提供。
 
 ```bash
 # 使用自定义 Pipeline
@@ -293,7 +294,7 @@ export CTX_AUDIT_PIPELINE_FILE=templates/pipelines/custom-example.yaml
 ctx-audit agent round run --target ./project
 ```
 
-公共模板见 `templates/`，公开 DSH harness 即 `harness/`（脱敏、可安装、可运行；私有内容通过本地 overlay 注入）。
+公共模板见 `templates/`，公开 DSH harness 即 `harness/`（脱敏、可安装、可运行、默认极简模式；私有内容通过本地 overlay 注入）。
 
 ---
 

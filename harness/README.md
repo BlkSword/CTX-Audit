@@ -28,6 +28,19 @@ CTX_AUDIT_MCP_CMD=ctx-audit ./bin/ctx-audit-dsh "对 ./project 做安全审计"
 ./scripts/dsh-audit-run.sh ./project R001
 ```
 
+## Agent Preset / 默认模式
+
+- 公共 `harness/` **默认使用 DSH 自带极简/默认模式**，不默认加载自定义 agent preset。
+- `bin/run-*.sh` 会在任务中显式要求加载 `ctx-audit-auditor` skill，因此即使没有自定义 preset，审计流程仍会加载 skill。
+- 如果你需要审计专用 persona（`ctx-audit-auditor` preset），请通过私有 overlay 提供，不应放入公共框架。
+- 做法见 [PRIVATE-USE.md](./PRIVATE-USE.md)。
+
+## 已验证
+
+- LongCat scout 通路：公共 `harness/` + 全新 DSH_HOME + LongCat-2.0，成功调用 MCP 工具并输出 `human_gate` JSON。
+- 极简默认模式下仍会加载 `ctx-audit-auditor` skill。
+- 无 LLM 自定义 Pipeline 整轮可跑通。
+
 ## 公共 / 私有边界
 
 - **公开**：本目录下所有文件。
