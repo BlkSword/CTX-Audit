@@ -87,6 +87,10 @@ pub async fn validate(rules_dir: Option<String>) -> Result<()> {
                     visit_yaml_files(&path, cb);
                 } else if path.is_file() {
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name == "risk-patterns.yaml" {
+                        continue;
+                    }
                     if ext == "yaml" || ext == "yml" {
                         cb(&path);
                     }
