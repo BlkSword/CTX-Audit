@@ -126,6 +126,21 @@ ctx-audit completion bash                     # Shell completion
 }
 ```
 
+## Agent / Pipeline Framework
+
+`agent/` provides a generic LLM Agent infrastructure and a configurable audit pipeline:
+
+- LLM provider abstraction, message-driven loop, JSONL sessions, tool registry/whitelist, sub-agents, budgets, and cron.
+- Pipeline YAML customization for scan options, judge prompts, output contracts, gate behavior, and extra audit phases.
+- Load via `CTX_AUDIT_PIPELINE_FILE` or `agent.native_pipeline.file`.
+
+```bash
+export CTX_AUDIT_PIPELINE_FILE=templates/pipelines/custom-example.yaml
+ctx-audit agent round run --target ./project
+```
+
+Public DSH templates and private-overlay examples are under `templates/`.
+
 ## Detection Coverage
 
 | Type | CWE | Method |
