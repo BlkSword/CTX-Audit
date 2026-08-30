@@ -235,7 +235,8 @@ impl RuleScanner {
                                 // 且该语义下常量参数也不构成安全保证
                                 None
                             } else {
-                                evaluate_likely_fp_args(content, start_pos, end_pos)
+                                evaluate_likely_fp_assignment(matched_text)
+                                    .or_else(|| evaluate_likely_fp_args(content, start_pos, end_pos))
                                     .or_else(|| {
                                         // 条件编译块内（平台分支）的命中降 info：
                                         // 可能是非目标平台死代码（thttpd #ifdef MPE 场景）
@@ -809,6 +810,40 @@ fn ceil_char_boundary(s: &str, i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+/// 评估赋值语句右值是否为字符串字面量（innerHTML/outerHTML 常量右值误报抑制）。
+fn evaluate_likely_fp_assignment(matched: &str) -> Option<&'static str> {
+    let lower = matched.to_lowercase();
+    if !(lower.contains(".innerhtml") || lower.contains(".outerhtml") || lower.contains("document.write(")) {
+        return None;
+    }
+    let eq = matched.find('=')?;
+    let rhs = matched[eq + 1..].trim();
+    if is_string_literal_rhs(rhs) {
+        Some("innerHTML/outerHTML/document.write 右值为字符串字面量，非用户输入")
+    } else {
+        None
+    }
+}
+
+/// 判断 RHS 是否为完整字符串字面量（单引号/双引号/反引号，且无拼接/插值）。
+fn is_string_literal_rhs(rhs: &str) -> bool {
+    let rhs = rhs.trim();
+    if rhs.len() < 2 {
+        return false;
+    }
+    let (open, close) = match rhs.as_bytes()[0] {
+        b'"' => (b'"', b'"'),
+        b''' => (b''', b'''),
+        b'`' => (b'`', b'`'),
+        _ => return false,
+    };
+    if rhs.as_bytes()[rhs.len() - 1] != close {
+        return false;
+    }
+    let inner = &rhs[1..rhs.len() - 1];
+    !inner.contains('$') && !inner.contains('+') && !inner.contains('`')
 }
 
 /// 评估 sink 调用的参数是否攻击者不可控（likely_fp）。
@@ -1570,6 +1605,15 @@ mod tests {
         let start = content.find("os.popen(").unwrap();
         let end = start + "os.popen(".len();
         assert!(evaluate_likely_fp_args(content, start, end).is_some());
+    }
+
+    #[test]
+    fn test_likely_fp_innerhtml_const_rhs() {
+        assert!(evaluate_likely_fp_assignment(r#"document.getElementById("x").innerHTML = '<i class="bi"></i>'"#).is_some());
+        assert!(evaluate_likely_fp_assignment("el.outerHTML = `static`").is_some());
+        assert!(evaluate_likely_fp_assignment("el.innerHTML = ''").is_some());
+        assert!(evaluate_likely_fp_assignment("el.innerHTML = userData").is_none());
+        assert!(evaluate_likely_fp_assignment("el.innerHTML = '<i>' + userData").is_none());
     }
 
     #[test]
