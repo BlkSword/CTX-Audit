@@ -42,6 +42,11 @@ tp_criteria:
   - "模板 `{{ var|safe }}` 的 var 可追溯到模型 @property/方法中 f-string/format 拼接用户可控字段的 HTML 构造（`f'<a ...>'`、`f'<img ...'` 等标签起始模式）"
   - "该字段经模型字段/DB 存储（存储型），或经 URL 参数直接注入（反射型）"
   - "f-string 拼接点无 html 转义（format_map/format 无 escape 调用），|safe 无配套净化"
+  # 10.24 判据：inline 用户内容服务（Content-Disposition: inline + DB/上传内容）
+  - "数据端点为 `Content-Disposition: inline` 输出用户上传/DB 存储内容，且响应无 `nosniff`/CSP sandbox"
+  - "上传侧无扩展名/MIME 白名单（攻击者可控可执行 MIME 或 polyglot）"
+  - "输出内容未经转义/净化（原始 MIME 逐字节返回）"
+
 fp_criteria:
   - "sink 赋值为字面量 HTML 或编译期常量"
   - "赋值内容经过数值格式化（bytesToSize、toFixed、百分比计算），无法注入标签或属性"
@@ -55,4 +60,9 @@ fp_criteria:
   # 10.22 判据：模板裸插 FP——变量为静态文本/字面量、渲染前有转义管道
   - "模板裸插变量为静态文本/已净化值（渲染入口固定赋值、后端已 escape/DOMPurify 净化后才注入）"
   - "模板引擎自动转义未被关闭（如 EJS <%= %> 转义形态被误报）"
+  # 10.24 判据：inline 服务 FP
+  - "响应带 `Content-Disposition: attachment` 或 `X-Content-Type-Options: nosniff`/CSP sandbox"
+  - "上传侧有扩展名/MIME 白名单，且输出 MIME 被严格限制为图片/纯文本等不可执行类型"
+  - "输出内容来自管理员配置/内部静态资产，非用户上传或 DB 用户内容"
+
 confidence_guide: "调用链完整追到外部输入 + 确认无转义（多证据交叉）→ 0.9+；只看到 sink 与来源但未验证转义环节（一维未验证）→ 0.7-0.9；来源性质与转义证据矛盾（如部分路径有转义）→ <0.7，判 needs_review。"
