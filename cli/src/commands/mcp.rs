@@ -1343,6 +1343,21 @@ async fn tool_check_sanitizer(args: &Value) -> Value {
     text_response(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
+/// 根据文件扩展名推断 taint 工具使用的语言标签
+fn infer_taint_language(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+        "py" => "python",
+        "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "vue" => "javascript",
+        "rs" => "rust",
+        "go" => "go",
+        "java" => "java",
+        "c" | "h" => "c",
+        "cpp" | "hpp" | "cc" | "cxx" => "cpp",
+        "php" => "php",
+        _ => "",
+    }
+}
+
 async fn tool_list_sources(args: &Value) -> Value {
     let file_path = match args.get("file_path").and_then(|v| v.as_str()) {
         Some(p) => p,
@@ -1365,7 +1380,7 @@ async fn tool_list_sources(args: &Value) -> Value {
     for (line_idx, line) in code.lines().enumerate() {
         let line_num = line_idx + 1;
         for source in analyzer.sources() {
-            if source.matches(line, "") {
+            if source.matches(line, infer_taint_language(&path)) {
                 detected_sources.push(serde_json::json!({
                     "line": line_num,
                     "source_id": source.id,
@@ -1415,7 +1430,7 @@ async fn tool_list_sinks(args: &Value) -> Value {
     for (line_idx, line) in code.lines().enumerate() {
         let line_num = line_idx + 1;
         for sink in analyzer.sinks() {
-            if sink.matches(line, "") {
+            if sink.matches(line, infer_taint_language(&path)) {
                 detected_sinks.push(serde_json::json!({
                     "line": line_num,
                     "sink_id": sink.id,
