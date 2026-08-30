@@ -949,6 +949,31 @@ impl AttackSurfaceMapper {
     }
 
     /// 分析 PHP 文件中的入口点（Laravel/Symfony 路由 + 原生 PHP 脚本）
+    /// 判断 Laravel 路由行是否位于未闭合的 auth 路由组内（Route::group(['middleware' => 'auth']...）
+    fn laravel_prefix_group_auth(lines: &[&str], route_line_num: usize) -> bool {
+        let mut active_auth_groups = 0usize;
+        for (idx, line) in lines.iter().enumerate() {
+            if idx > route_line_num {
+                break;
+            }
+            let lower = line.to_lowercase();
+            if lower.contains("route::group(") {
+                let auth_group = (lower.contains("'middleware'") || lower.contains("\"middleware\""))
+                    && (lower.contains("auth") || lower.contains("sanctum") || lower.contains("jwt") || lower.contains("token"));
+                if auth_group {
+                    active_auth_groups += 1;
+                }
+            }
+            if lower.contains("});") && active_auth_groups > 0 {
+                active_auth_groups -= 1;
+            }
+            if idx == route_line_num {
+                break;
+            }
+        }
+        active_auth_groups > 0
+    }
+
     fn analyze_php_file(file_path: &str, content: &str) -> (Vec<EntryPoint>, Vec<TrustBoundary>) {
         let mut entry_points = Vec::new();
         let mut trust_boundaries = Vec::new();
@@ -972,12 +997,6 @@ impl AttackSurfaceMapper {
                 && (content_lower.contains("jwt")
                     || content_lower.contains("sanctum")
                     || content_lower.contains("token"))))
-            || (content_lower.contains("route::group(")
-                && (content_lower.contains("'middleware'") || content_lower.contains("\"middleware\""))
-                && (content_lower.contains("auth")
-                    || content_lower.contains("jwt")
-                    || content_lower.contains("sanctum")
-                    || content_lower.contains("token")))
             || content_lower.contains("route::collection(['before' => 'auth")
             || content_lower.contains("route::collection([\"before\" => \"auth");
 
@@ -1026,7 +1045,9 @@ impl AttackSurfaceMapper {
                         lines[start..=end].join("\n")
                     };
                     let ctx_lower = ctx.to_lowercase();
+                    let lines_all: Vec<&str> = content.lines().collect();
                     let auth_required = file_has_global_auth
+                        || Self::laravel_prefix_group_auth(&lines_all, line_num)
                         || ctx_lower.contains("middleware('auth")
                         || ctx_lower.contains("middleware(\"auth")
                         || ctx_lower.contains("middleware(['auth")
