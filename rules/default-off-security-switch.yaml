@@ -1,0 +1,26 @@
+category: configuration
+cwe: CWE-1188
+id: default-off-security-switch
+language: all
+name: Default-Off Security Switch
+description: "检测部署配置中把安全防护开关默认关闭/未启用，或把危险功能开关显式开启（如 BLOCK_SSRF=false、VERIFY_SSL=false、AUTO_RESOLVE_TITLES=true、DOWNLOAD_ON_ADD=true）。这类默认关防护开关是自托管应用安全事件的高发根因。"
+owasp: "A05:2021-Security Misconfiguration"
+remediation: "默认启用安全防护；开启危险功能时必须显式确认，并在生产环境强制要求安全开关为 true/已验证。"
+references:
+  - "https://cwe.mitre.org/data/definitions/1188.html"
+severity: medium
+patterns:
+  - language: python
+    pattern: '(?i)(?:BLOCK_SSRF|VERIFY_SSL|ALLOW_INSECURE|ALLOW_REMOTE|INSECURE_SSL)\s*[:=]\s*(?:False|false|off|0)'
+  - language: python
+    pattern: '(?i)(?:AUTO_RESOLVE_TITLES|DOWNLOAD_ON_ADD|ALLOW_REMOTE|ALLOW_INSECURE|INSECURE_MODE)\s*[:=]\s*(?:True|true|on|1)'
+  - language: go
+    pattern: '(?i)(?:BlockSSRF|VerifySSL|AllowInsecure|AllowRemote|InsecureSSL)\s*[:=]\s*(?:false|off|0)'
+  - language: go
+    pattern: '(?i)(?:AutoResolveTitles|DownloadOnAdd|AllowRemote|AllowInsecure|InsecureMode)\s*[:=]\s*(?:true|on|1)'
+  - language: javascript
+    pattern: '(?i)["'']?(?:blockSsrf|verifySsl|allowInsecure|allowRemote|insecureSsl)["'']?\s*[:=]\s*(?:false|"false"|off|0)'
+  - language: javascript
+    pattern: '(?i)["'']?(?:autoResolveTitles|downloadOnAdd|allowRemote|allowInsecure|insecureMode)["'']?\s*[:=]\s*(?:true|"true"|on|1)'
+sanitizer_after_lines: 3
+sanitizer_before_lines: 3
