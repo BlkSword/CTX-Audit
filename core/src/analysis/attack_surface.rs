@@ -972,6 +972,12 @@ impl AttackSurfaceMapper {
                 && (content_lower.contains("jwt")
                     || content_lower.contains("sanctum")
                     || content_lower.contains("token"))))
+            || (content_lower.contains("route::group(")
+                && (content_lower.contains("'middleware'") || content_lower.contains("\"middleware\""))
+                && (content_lower.contains("auth")
+                    || content_lower.contains("jwt")
+                    || content_lower.contains("sanctum")
+                    || content_lower.contains("token")))
             || content_lower.contains("route::collection(['before' => 'auth")
             || content_lower.contains("route::collection([\"before\" => \"auth");
 
@@ -1856,6 +1862,28 @@ Route::delete('/api/users/{id}', [UserController::class, 'destroy']);
             .unwrap();
         // middleware('auth:sanctum') 在上下文块内
         assert!(post_ep.auth_required);
+    }
+
+    #[test]
+    fn test_analyze_php_laravel_route_group_middleware() {
+        // 10.23：Route::group(['middleware' => 'auth'], ...) 组级声明应覆盖组内全部路由
+        let code = r#"<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::group(['middleware' => ['auth:sanctum']], function () {
+    Route::get('/api/internal', [InternalController::class, 'show']);
+    Route::post('/api/internal', [InternalController::class, 'store']);
+});
+Route::get('/api/public', [PublicController::class, 'show']);
+"#;
+        let (eps, _) = AttackSurfaceMapper::analyze_php_file("routes/api.php", code);
+        let internal_get = eps.iter().find(|e| e.route.as_deref() == Some("/api/internal")).unwrap();
+        let internal_post = eps.iter().find(|e| e.route.as_deref() == Some("/api/internal")).unwrap();
+        let public_ep = eps.iter().find(|e| e.route.as_deref() == Some("/api/public")).unwrap();
+        assert!(internal_get.auth_required);
+        assert!(internal_post.auth_required);
+        assert!(!public_ep.auth_required);
     }
 
     #[test]
