@@ -1707,11 +1707,19 @@ fn build_scan_artifact(target: &str, findings: &[Finding]) -> serde_json::Value 
             serde_json::json!({
                 "file_path": f.file_path,
                 "line_start": f.line_start,
+                "line_end": f.line_end,
                 "vuln_type": f.vuln_type,
                 "severity": f.severity,
                 "confidence": f.confidence,
                 "code_snippet": f.code_snippet.as_ref().map(|s| s.chars().take(300).collect::<String>()),
+                "source_snippet": f.source_snippet.as_ref().map(|s| s.chars().take(300).collect::<String>()),
+                "sink_snippet": f.sink_snippet.as_ref().map(|s| s.chars().take(300).collect::<String>()),
+                "file_role": f.file_role,
+                "barriers": f.barriers,
+                "evidence_refs": f.evidence_refs,
                 "enclosing_function": f.enclosing_function,
+                "enclosing_function_line": f.enclosing_function_line,
+                "reasoning_hint": f.reasoning_hint,
             })
         })
         .collect();
