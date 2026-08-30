@@ -1,0 +1,25 @@
+category: xss
+cwe: CWE-79
+id: inline-service-xss
+language: all
+name: Inline User Content Service
+description: "检测以 Content-Disposition: inline 输出用户上传/DB 内容的数据端点。若无 nosniff/CSP/sandbox 且上传侧无类型白名单，构成存储型 XSS 高发组合（kkFileView/dufs/Teedy 三连家族）。"
+owasp: "A03:2021-Injection"
+remediation: "输出用户内容时使用 Content-Disposition: attachment；设置 X-Content-Type-Options: nosniff；对可执行 MIME 加 CSP sandbox；上传侧做扩展名/MIME 白名单。"
+severity: medium
+patterns:
+  - language: java
+    pattern: '(?i)(?:CONTENT_DISPOSITION|Content-Disposition)\s*,\s*"inline"'
+  - language: go
+    pattern: '(?i)(?:Content-Disposition|"Content-Disposition")\s*,\s*"inline"'
+  - language: javascript
+    pattern: '(?i)(?:setHeader|set|headers)\s*\(?\s*["'"']Content-Disposition["'"']\s*,\s*["'"']inline["'"']'
+sanitizers:
+  - "attachment"
+  - "nosniff"
+  - "X-Content-Type-Options"
+  - "sandbox"
+  - "Content-Security-Policy"
+  - "CSP"
+sanitizer_before_lines: 5
+sanitizer_after_lines: 5
