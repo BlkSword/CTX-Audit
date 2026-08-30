@@ -1083,7 +1083,11 @@ impl AstTaintAnalyzer {
                 continue;
             }
             let expr = assign.source_expr.trim();
-            if self.sources.iter().any(|s| s.matches(expr, language)) {
+            let lower = expr.to_lowercase();
+            let looks_like_request_data = ["request.", "request[", "data.", "data[", "body.", "input.", "params.", "query."]
+                .iter()
+                .any(|p| lower.contains(p));
+            if self.sources.iter().any(|s| s.matches(expr, language)) || looks_like_request_data {
                 let dotted = path.as_dotted();
                 if !out.contains(&dotted) {
                     out.push(dotted);
@@ -6039,6 +6043,42 @@ open(path)
                 .map(|f| format!("{:?}", f.vulnerability_type))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_collect_instance_attribute_sources_heuristic() {
+        use crate::ast::symbol::NodeInfo;
+        let mut analyzer = AstTaintAnalyzer::new();
+        let assignments = vec![
+            Assignment {
+                target: "self.uuid".to_string(),
+                target_node: NodeInfo { line: 1, column: 0, byte_start: 0, byte_end: 0 },
+                source_expr: "data.get('qquuid')".to_string(),
+                source_vars: vec!["data".to_string()],
+                line: 1,
+                column: 0,
+            },
+            Assignment {
+                target: "self.name".to_string(),
+                target_node: NodeInfo { line: 2, column: 0, byte_start: 0, byte_end: 0 },
+                source_expr: "request.POST.get('name')".to_string(),
+                source_vars: vec!["request".to_string()],
+                line: 2,
+                column: 0,
+            },
+            Assignment {
+                target: "self.internal".to_string(),
+                target_node: NodeInfo { line: 3, column: 0, byte_start: 0, byte_end: 0 },
+                source_expr: "os.urandom(16)".to_string(),
+                source_vars: vec!["os".to_string()],
+                line: 3,
+                column: 0,
+            },
+        ];
+        let sources = analyzer.collect_instance_attribute_sources(&assignments, "python");
+        assert!(sources.contains(&"self.uuid".to_string()), "data.get(...) should be heuristic instance source: {:?}", sources);
+        assert!(sources.contains(&"self.name".to_string()), "request.POST.get(...) should be instance source: {:?}", sources);
+        assert!(!sources.contains(&"self.internal".to_string()), "os.urandom should not be instance source: {:?}", sources);
     }
 
     #[test]
