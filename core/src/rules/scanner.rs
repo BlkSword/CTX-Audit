@@ -835,7 +835,7 @@ fn is_string_literal_rhs(rhs: &str) -> bool {
     }
     let (open, close) = match rhs.as_bytes()[0] {
         b'"' => (b'"', b'"'),
-        b''' => (b''', b'''),
+        b'\'' => (b'\'', b'\''),
         b'`' => (b'`', b'`'),
         _ => return false,
     };
