@@ -84,5 +84,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: CTX-Audit 3.0.0
+          body_path: RELEASE_NOTES_3.0.0.md
           files: artifacts/**/*
           generate_release_notes: true

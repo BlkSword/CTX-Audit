@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-audit"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-audit-agent"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-audit-daemon"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-audit-tools"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
