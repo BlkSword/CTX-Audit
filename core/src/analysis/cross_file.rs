@@ -625,6 +625,49 @@ pub struct CrossFileTaintAnalyzer {
     file_lines_cache: HashMap<String, Vec<String>>,
 }
 
+/// C 回调注册惯用法的预编译正则（进程内只编译一次）。
+///
+/// 覆盖 `websDefineHandler("path", handler)`、`signal(SIG, handler)`、
+/// `pthread_create(&t, NULL, fn, ...)` 三类注册-回调模式，捕获组 1 为 handler 名。
+fn c_callback_regexes() -> &'static Vec<regex::Regex> {
+    static COMPILED: OnceLock<Vec<regex::Regex>> = OnceLock::new();
+    COMPILED.get_or_init(|| {
+        [
+            // websDefineHandler("...", handler)
+            r#"websDefineHandler\s*\(\s*"[^"]*"\s*,\s*([A-Za-z_]\w*)"#,
+            // websDefineHandler(any, handler)
+            r#"websDefineHandler\s*\(\s*[^,]+,\s*([A-Za-z_]\w*)"#,
+            // signal(SIGALRM, handler)
+            r#"signal\s*\(\s*[^,]+,\s*([A-Za-z_]\w*)"#,
+            // pthread_create(&tid, NULL, thread_fn, ...)
+            r#"pthread_create\s*\([^;]*?,\s*([A-Za-z_]\w*)\s*[),]"#,
+        ]
+        .iter()
+        .filter_map(|p| regex::Regex::new(p).ok())
+        .collect()
+    })
+}
+
+/// 变量类型解析用的预编译正则（进程内只编译一次，避免每文件重复编译）。
+fn var_type_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:new\s+)?(\w+)\s*\(")
+            .expect("var type regex")
+    })
+}
+
+/// Java/C# 字段声明解析用的预编译正则（进程内只编译一次）。
+fn field_type_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?:\b(?:private|public|protected|static|final)\b\s+)*\b([A-Z]\w+)\s+(\w+)\s*(?:=|;)",
+        )
+        .expect("field type regex")
+    })
+}
+
 impl CrossFileTaintAnalyzer {
     /// 创建新的跨文件污点分析器
     pub fn new() -> Self {
@@ -1076,9 +1119,7 @@ impl CrossFileTaintAnalyzer {
 
         // 模式 1: const/let/var varName = new TypeName(...)
         // 也匹配: const/let/var varName = TypeName(...)  (无 new 的构造函数)
-        let re =
-            regex::Regex::new(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:new\s+)?(\w+)\s*\(").unwrap();
-
+        let re = var_type_regex();
         for cap in re.captures_iter(content) {
             let var_name = cap[1].to_string();
             let type_name = cap[2].to_string();
@@ -1096,10 +1137,7 @@ impl CrossFileTaintAnalyzer {
         // 模式 2: Java/C# 等语言的字段声明
         // private final UserDao userDao = new UserDao();
         // UserDao userDao;
-        let field_re = regex::Regex::new(
-            r"(?:\b(?:private|public|protected|static|final)\b\s+)*\b([A-Z]\w+)\s+(\w+)\s*(?:=|;)",
-        )
-        .unwrap();
+        let field_re = field_type_regex();
 
         for cap in field_re.captures_iter(content) {
             let type_name = cap[1].to_string();
@@ -1250,30 +1288,22 @@ impl CrossFileTaintAnalyzer {
     /// 把“包含注册调用的函数”与“被注册 handler”连成调用边，
     /// 使跨文件污点能追到 handler 内部，而不在注册点断链。
     fn add_c_callback_edges(&mut self) {
-        let patterns: [&str; 4] = [
-            // websDefineHandler("...", handler)
-            r#"websDefineHandler\s*\(\s*"[^"]*"\s*,\s*([A-Za-z_]\w*)"#,
-            // websDefineHandler(any, handler)
-            r#"websDefineHandler\s*\(\s*[^,]+,\s*([A-Za-z_]\w*)"#,
-            // signal(SIGALRM, handler)
-            r#"signal\s*\(\s*[^,]+,\s*([A-Za-z_]\w*)"#,
-            // pthread_create(&tid, NULL, thread_fn, ...)
-            r#"pthread_create\s*\([^;]*?,\s*([A-Za-z_]\w*)\s*[),]"#,
-        ];
+        // 正则只在进程内编译一次：原实现对"每行 × 每模式"都 Regex::new()，
+        // 万行级项目 = 数万次 NFA 编译，是跨文件阶段最大的 CPU 热点
+        // （perf：regex_automata 编译占 ~50% 采样）。编译结果与逐次编译等价。
+        let patterns: &Vec<regex::Regex> = c_callback_regexes();
 
         let mut registrations: Vec<(String, usize, String)> = Vec::new();
         for (file_path, content) in &self.file_content_cache {
             for (idx, line) in content.lines().enumerate() {
-                for pat in &patterns {
-                    if let Ok(re) = regex::Regex::new(pat) {
-                        if let Some(caps) = re.captures(line) {
-                            if let Some(handler) = caps.get(1) {
-                                registrations.push((
-                                    file_path.clone(),
-                                    idx + 1,
-                                    handler.as_str().to_string(),
-                                ));
-                            }
+                for re in patterns {
+                    if let Some(caps) = re.captures(line) {
+                        if let Some(handler) = caps.get(1) {
+                            registrations.push((
+                                file_path.clone(),
+                                idx + 1,
+                                handler.as_str().to_string(),
+                            ));
                         }
                     }
                 }
@@ -2979,11 +3009,12 @@ impl CrossFileTaintAnalyzer {
                     continue;
                 };
 
-                // 预读当前函数源码，用于返回值污点 LHS 提取
-                let current_lines: Vec<String> = self
+                // 当前函数源码（只借用行切片，不做克隆）——仅在需要提取返回值
+                // 污点 LHS 时按需读取；原实现每次 BFS 出队都 to_vec() 克隆整个文件的行，
+                // 是跨文件传播阶段的最高频分配热点（引擎提速修复）。
+                let current_lines: &[String] = self
                     .get_file_lines(&node.file_path)
-                    .map(|lines| lines.to_vec())
-                    .unwrap_or_default();
+                    .unwrap_or(&[]);
 
                 for ct in &node.calls {
                     let callee_id = &ct.callee;
@@ -3072,7 +3103,7 @@ impl CrossFileTaintAnalyzer {
                                 && callee_tainted.contains(&callee_node.parameters[*param_idx].name)
                             {
                                 if let Some(lhs) = Self::extract_call_assignment_lhs(
-                                    &current_lines,
+                                    current_lines,
                                     ct.line,
                                     &ct.callee,
                                 ) {

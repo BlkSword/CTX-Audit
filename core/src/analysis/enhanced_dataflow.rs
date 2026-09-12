@@ -6,7 +6,7 @@
 //! 提供基于 AST 的控制流图构建和精确的数据流分析
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use tree_sitter::Node;
 
 /// 增强流图节点
@@ -108,10 +108,6 @@ pub struct EnhancedFlowGraph {
     pub file_path: String,
     /// 函数/方法名
     pub function_name: String,
-    /// 支配者树（用于快速判断控制流）
-    dominators: HashMap<usize, HashSet<usize>>,
-    /// 后支配者树
-    post_dominators: HashMap<usize, HashSet<usize>>,
 }
 
 impl EnhancedFlowGraph {
@@ -152,8 +148,6 @@ impl EnhancedFlowGraph {
             exit: 1,
             file_path: file_path.to_string(),
             function_name: function_name.to_string(),
-            dominators: HashMap::new(),
-            post_dominators: HashMap::new(),
         }
     }
 
@@ -164,9 +158,6 @@ impl EnhancedFlowGraph {
 
         let mut builder = CFGBuilder::new(&mut graph);
         builder.build(&lines);
-
-        // 计算支配者关系
-        graph.compute_dominators();
 
         graph
     }
@@ -197,7 +188,6 @@ impl EnhancedFlowGraph {
         let mut builder = AstCFGBuilder::new(&mut graph);
         builder.line_base = line_base;
         builder.build_from_node(func_body_node, content);
-        graph.compute_dominators();
         graph
     }
 
@@ -263,51 +253,48 @@ impl EnhancedFlowGraph {
             .unwrap_or_default()
     }
 
-    /// 计算支配者关系
-    fn compute_dominators(&mut self) {
-        // 简化的支配者计算
-        // 对于每个节点，找到所有必须经过的节点
-        let n = self.nodes.len();
+    /// 检查节点 A 是否支配节点 B（entry→B 的所有路径都经过 A）
+    ///
+    /// 性能说明（引擎提速）：此处原先在每个 CFG 构造时预计算全量支配集，
+    /// 算法为 `节点数 × 节点数 × 全量 HashSet 交集克隆` ≈ **O(n³)**，且结果
+    /// 全仓库无任何调用方——巨型函数（千行级 switch/handler）单函数即耗时
+    /// 数十秒（实测 800 节点 ≈ 29s，2 倍节点 ≈ 8 倍耗时）。
+    /// 现改为按需判定：移除 A 后 B 若仍可从 entry 到达，则 A 不支配 B，
+    /// 单次判定 O(V+E)，不再为未使用的信息付出构建期代价。
+    pub fn dominates(&self, a: usize, b: usize) -> bool {
+        if a == b {
+            return true;
+        }
+        if a >= self.nodes.len() || b >= self.nodes.len() {
+            return false;
+        }
+        // 移除 a 后 b 仍可达 ⇒ a 不是 b 的必经点
+        !self.reachable_avoiding(self.entry, b, a)
+    }
 
-        for node_id in 0..n {
-            let mut doms = HashSet::new();
-
-            if node_id == self.entry {
-                doms.insert(self.entry);
-            } else {
-                // 初始化为所有节点
-                for i in 0..n {
-                    doms.insert(i);
-                }
-                doms.insert(node_id);
-
-                // 迭代直到收敛
-                for _ in 0..n {
-                    let preds: Vec<usize> = self.predecessors(node_id);
-                    if !preds.is_empty() {
-                        let mut intersection: HashSet<usize> = (0..n).collect();
-                        for pred in &preds {
-                            if let Some(pred_doms) = self.dominators.get(pred) {
-                                intersection =
-                                    intersection.intersection(pred_doms).cloned().collect();
-                            }
-                        }
-                        intersection.insert(node_id);
-                        doms = intersection;
+    /// 在跳过 `blocked` 节点的前提下，判断 `target` 是否从 `from` 可达（BFS）
+    fn reachable_avoiding(&self, from: usize, target: usize, blocked: usize) -> bool {
+        if from == blocked {
+            return false;
+        }
+        let mut visited: HashSet<usize> = HashSet::new();
+        let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+        visited.insert(from);
+        queue.push_back(from);
+        while let Some(current) = queue.pop_front() {
+            if current == target {
+                return true;
+            }
+            if let Some(node) = self.nodes.get(current) {
+                for edge in &node.successors {
+                    let next = edge.target;
+                    if next != blocked && visited.insert(next) {
+                        queue.push_back(next);
                     }
                 }
             }
-
-            self.dominators.insert(node_id, doms);
         }
-    }
-
-    /// 检查节点 A 是否支配节点 B
-    pub fn dominates(&self, a: usize, b: usize) -> bool {
-        self.dominators
-            .get(&b)
-            .map(|doms| doms.contains(&a))
-            .unwrap_or(false)
+        false
     }
 
     /// 查找从节点 A 到节点 B 的路径
@@ -1471,6 +1458,61 @@ for i in range(10):
         // 应该能找到从入口到出口的路径
         let path = graph.find_path(graph.entry, graph.exit);
         assert!(path.is_some());
+    }
+
+    /// 回归：`dominates` 由 O(n³) 预计算改为按需可达性判定后，语义必须保持
+    /// ——入口支配所有可达节点；分支节点支配其子节点但不支配汇合点。
+    #[test]
+    fn test_dominates_semantics_after_lazy_rewrite() {
+        // 手工构造菱形图：entry(0) → cond(2) → {then(3), else(4)} → join(5) → exit(1)
+        let mut graph = EnhancedFlowGraph::new("test.py", "diamond");
+        let make_node = |id: usize, code: &str| EnhancedFlowNode {
+            id,
+            node_type: EnhancedNodeType::Statement,
+            code: code.to_string(),
+            start_line: id,
+            end_line: id,
+            predecessors: vec![],
+            successors: vec![],
+            defs: vec![],
+            uses: vec![],
+            scope_depth: 0,
+        };
+        let cond = graph.add_node(make_node(2, "if x"));
+        let then_branch = graph.add_node(make_node(3, "then"));
+        let else_branch = graph.add_node(make_node(4, "else"));
+        let join = graph.add_node(make_node(5, "join"));
+        // new() 预置的 entry→exit 直连需移除，改为菱形路径
+        graph.nodes[0].successors.clear();
+        graph.add_edge(0, cond, EdgeType::Sequential);
+        graph.add_edge(cond, then_branch, EdgeType::TrueBranch);
+        graph.add_edge(cond, else_branch, EdgeType::FalseBranch);
+        graph.add_edge(then_branch, join, EdgeType::Sequential);
+        graph.add_edge(else_branch, join, EdgeType::Sequential);
+        graph.add_edge(join, 1, EdgeType::Sequential);
+
+        assert!(graph.dominates(graph.entry, graph.exit), "入口应支配出口");
+        assert!(graph.dominates(graph.entry, join), "入口应支配汇合点");
+        assert!(graph.dominates(cond, join), "分支节点应支配汇合点（必经）");
+        assert!(
+            !graph.dominates(then_branch, join),
+            "单侧分支不应支配汇合点（存在 else 路径）"
+        );
+        assert!(
+            !graph.dominates(else_branch, join),
+            "单侧分支不应支配汇合点（存在 then 路径）"
+        );
+        assert!(graph.dominates(cond, then_branch), "分支节点支配其子节点");
+        assert!(
+            !graph.dominates(then_branch, cond),
+            "子节点不反向支配父节点"
+        );
+        assert!(!graph.dominates(join, then_branch), "汇合点不支配上游节点");
+        assert!(graph.dominates(graph.entry, graph.entry), "节点支配自身");
+        assert!(
+            !graph.dominates(usize::MAX, graph.exit),
+            "越界节点不支配任何节点"
+        );
     }
 
     #[test]
