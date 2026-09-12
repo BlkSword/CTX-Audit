@@ -1022,7 +1022,7 @@ async fn scan_directory_with_rules_inner(
     sca_options: Option<ScaScanOptions>,
     scan_opts: Option<ScanOptions>,
     progress: Option<ProgressCallback>,
-) -> Result<(Vec<Finding>, HashMap<String, String>, Vec<String>), String> {
+) -> Result<(Vec<Finding>, HashMap<String, Arc<str>>, Vec<String>), String> {
     use ignore::Walk;
 
     // 非 UTF-8 降级文件清单（backlog 10.6）
@@ -1041,7 +1041,7 @@ async fn scan_directory_with_rules_inner(
     }
 
     let mut findings = Vec::new();
-    let mut content_cache: HashMap<String, String> = HashMap::new();
+    let mut content_cache: HashMap<String, Arc<str>> = HashMap::new();
 
     let rules = match resolve_rules_dir(path, rules_dir) {
         Some(rules_path) => {
@@ -1328,7 +1328,7 @@ async fn scan_directory_with_rules_inner(
 
         for (mut batch, mut as_batch, cached, _, encoding_fallback_path) in code_results {
             if let Some((path, content)) = cached {
-                content_cache.insert(path, content);
+                content_cache.insert(path, Arc::from(content));
             }
             findings.append(&mut batch);
             findings.append(&mut as_batch);
@@ -1602,7 +1602,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                     },
                 };
                 if content.len() <= max_taint_file_kb * 1024 {
-                    content_cache.insert(p_str, content);
+                    content_cache.insert(p_str, Arc::from(content));
                     extra_cached += 1;
                 }
             }
@@ -1714,17 +1714,17 @@ pub async fn scan_directory_deep_with_rules_progress(
     }
 
     // 一次性准备所有候选文件内容，然后整体并行分析，避免 batch 间串行等待
-    let all_file_data: Vec<(String, String)> = candidate_files
+    let all_file_data: Vec<(String, Arc<str>)> = candidate_files
         .iter()
         .filter_map(|file_path_str| {
             let file_path = std::path::Path::new(file_path_str);
             if !is_ast_supported_file(file_path) {
                 return None;
             }
-            let content = if let Some(cached) = content_cache.get(file_path_str) {
+            let content: Arc<str> = if let Some(cached) = content_cache.get(file_path_str) {
                 cached.clone()
             } else if let Ok(c) = std::fs::read_to_string(file_path) {
-                c
+                Arc::from(c)
             } else {
                 return None;
             };
@@ -2734,7 +2734,7 @@ fn normalize_vuln_type_to_cwe(vuln: &str) -> Option<String> {
 /// 一条轻量 source→sink 结构化证据，并把置信度提升到 0.85。
 fn enrich_rule_findings_with_local_source_sink(
     findings: &mut [Finding],
-    content_cache: &HashMap<String, String>,
+    content_cache: &HashMap<String, Arc<str>>,
 ) {
     for finding in findings {
         if finding.evidence_refs.is_some() {
@@ -3607,8 +3607,8 @@ mod tests {
             ..Default::default()
         };
         let content = "from flask import render_template_string\n\n@app.route(\"/\")\ndef home():\n    name = request.args.get(\"name\")\n    return render_template_string(\"<h1>{{ name }}</h1>\", name=name)\n";
-        let mut cache = HashMap::new();
-        cache.insert("app.py".to_string(), content.to_string());
+        let mut cache: HashMap<String, Arc<str>> = HashMap::new();
+        cache.insert("app.py".to_string(), Arc::from(content));
         let mut findings = vec![finding];
         enrich_rule_findings_with_local_source_sink(&mut findings, &cache);
         let f = &findings[0];

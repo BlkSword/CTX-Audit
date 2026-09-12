@@ -598,6 +598,10 @@ pub struct CrossFileTaintAnalyzer {
     sink_patterns: Arc<Vec<TaintSink>>,
     /// CPG 缓存（从 scan pipeline Stage B 传入）
     cpg_cache: HashMap<String, super::cpg::FunctionCPG>,
+    /// 函数参数表（cpg_key → 形参列表）。并行建图时只需参数信息，
+    /// 旧实现为每个文件浅拷贝整个文件的 FunctionCPG（cfg/node_meta/alias_map）
+    /// ——大仓实测让 Stage C 峰值 RSS 多出 ~400MB。改为只传参数表。
+    function_param_cache: HashMap<String, Vec<FunctionParameter>>,
     /// CPG taint flow 缓存
     cpg_taint_flows: HashMap<String, Vec<super::taint::TaintFlow>>,
     /// Stage B 已解析 AST 产物缓存：file_path -> (symbols, calls)
@@ -619,12 +623,59 @@ pub struct CrossFileTaintAnalyzer {
     /// 模块路径解析缓存：(source_module, importing_file) -> 解析出的文件路径
     /// 避免 resolve_cross_file_calls / inject_middleware_edges 中重复 IO/路径归一化
     module_resolution_cache: std::sync::Mutex<HashMap<(String, String), Option<String>>>,
-    /// 文件原始内容缓存（用于避免传播阶段反复读盘）
-    file_content_cache: HashMap<String, String>,
-    /// 文件按行切分后的缓存（与 file_content_cache 配套，避免重复 split）
-    file_lines_cache: HashMap<String, Vec<String>>,
+    /// 文件原始内容缓存（用于避免传播阶段反复读盘）。
+    /// 用 `Arc<str>` 与扫描管线共享同一份内容，避免跨文件阶段整仓内容二次克隆。
+    file_content_cache: HashMap<String, Arc<str>>,
+    /// 文件每行起始字节偏移（与 file_content_cache 配套）。
+    /// 旧实现缓存 `Vec<String>`（每行一个堆分配字符串），大仓实测 177 万行
+    /// 约占 145MB；改为偏移表后同规模约 7MB（4B/行），切片按需生成 &str。
+    file_line_offsets: HashMap<String, Vec<u32>>,
 }
 
+
+/// 计算每行起始字节偏移（行数与 `str::lines()` 一致；不产生逐行字符串）。
+fn line_start_offsets(content: &str) -> Vec<u32> {
+    let mut offsets: Vec<u32> = Vec::with_capacity(content.len() / 32 + 1);
+    let bytes = content.as_bytes();
+    let mut pos = 0usize;
+    for line in content.lines() {
+        offsets.push(pos as u32);
+        pos += line.len();
+        if bytes.get(pos) == Some(&b'\r') {
+            pos += 1;
+        }
+        if bytes.get(pos) == Some(&b'\n') {
+            pos += 1;
+        }
+    }
+    offsets
+}
+
+/// 按偏移表切出第 `line` 行（1-based；与 `str::lines()` 语义一致，剥离行尾）
+fn slice_line<'a>(content: &'a str, offsets: &[u32], line: usize) -> Option<&'a str> {
+    let idx = line.checked_sub(1)?;
+    let start = *offsets.get(idx)? as usize;
+    let end = offsets
+        .get(idx + 1)
+        .map(|o| *o as usize)
+        .unwrap_or(content.len());
+    let raw = content.get(start..end.min(content.len()))?;
+    let trimmed = raw.strip_suffix('\n').unwrap_or(raw);
+    Some(trimmed.strip_suffix('\r').unwrap_or(trimmed))
+}
+
+/// 诊断用：当前进程 RSS（MB）
+fn rss_mb() -> usize {
+    let mut buf = String::new();
+    if std::fs::read_to_string("/proc/self/statm").map(|s| { buf = s; }).is_ok() {
+        if let Some(pages) = buf.split_whitespace().nth(1) {
+            if let Ok(p) = pages.parse::<usize>() {
+                return p * 4 / 1024;
+            }
+        }
+    }
+    0
+}
 
 /// C 回调注册惯用法的预编译正则（进程内只编译一次）。
 ///
@@ -678,6 +729,7 @@ impl CrossFileTaintAnalyzer {
             source_patterns: Arc::new(Self::default_source_patterns()),
             sink_patterns: Arc::new(Self::default_sink_patterns()),
             cpg_cache: HashMap::new(),
+            function_param_cache: HashMap::new(),
             cpg_taint_flows: HashMap::new(),
             parsed_ast_cache: HashMap::new(),
             file_import_aliases: HashMap::new(),
@@ -687,7 +739,7 @@ impl CrossFileTaintAnalyzer {
             call_site_args: HashMap::new(),
             module_resolution_cache: std::sync::Mutex::new(HashMap::new()),
             file_content_cache: HashMap::new(),
-            file_lines_cache: HashMap::new(),
+            file_line_offsets: HashMap::new(),
         }
     }
 
@@ -711,6 +763,24 @@ impl CrossFileTaintAnalyzer {
         cpg_cache: HashMap<String, super::cpg::FunctionCPG>,
         taint_flows: HashMap<String, Vec<super::taint::TaintFlow>>,
     ) {
+        // 参数表与 CPG 同步构建：建图阶段只消费参数，避免克隆整个 CPG
+        self.function_param_cache = cpg_cache
+            .iter()
+            .map(|(key, cpg)| {
+                (
+                    key.clone(),
+                    cpg.signature
+                        .params
+                        .iter()
+                        .map(|p| FunctionParameter {
+                            name: p.name.clone(),
+                            param_type: p.type_annotation.clone(),
+                            may_be_tainted: false,
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
         self.cpg_cache = cpg_cache;
         self.cpg_taint_flows = taint_flows;
     }
@@ -731,6 +801,7 @@ impl CrossFileTaintAnalyzer {
         self.call_site_args.extend(other.call_site_args);
         // cpg_cache / cpg_taint_flows / parsed_ast_cache 由主分析器持有，不覆盖
         self.cpg_cache.extend(other.cpg_cache);
+        self.function_param_cache.extend(other.function_param_cache);
         self.cpg_taint_flows.extend(other.cpg_taint_flows);
         self.parsed_ast_cache.extend(other.parsed_ast_cache);
     }
@@ -758,6 +829,7 @@ impl CrossFileTaintAnalyzer {
 
         self.preload_file_contents(files);
 
+        let diag_rss = std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some();
         for file_path in files {
             self.build_call_graph_for_file(file_path);
         }
@@ -768,6 +840,9 @@ impl CrossFileTaintAnalyzer {
         self.inject_middleware_edges();
         // 确定性：与 analyze_files_with_content 一致，规范化顺序敏感结构
         self.canonicalize_graph_order();
+        if diag_rss {
+            tracing::info!("[XFileStats] rss_after_canonicalize={}MB", rss_mb());
+        }
 
         stats.total_functions = self.call_graph.nodes.len();
         stats.taint_sources = self.call_graph.taint_sources.len();
@@ -797,7 +872,7 @@ impl CrossFileTaintAnalyzer {
         &mut self,
         project_path: &Path,
         files: &[PathBuf],
-        content_cache: &HashMap<String, String>,
+        content_cache: &HashMap<String, Arc<str>>,
     ) -> CrossFileTaintResult {
         let mut stats = CrossFileAnalysisStats::default();
         stats.files_analyzed = files.len();
@@ -808,8 +883,8 @@ impl CrossFileTaintAnalyzer {
             if let Some(content) = content_cache.get(&file_str) {
                 self.file_content_cache
                     .insert(file_str.clone(), content.clone());
-                self.file_lines_cache
-                    .insert(file_str, content.lines().map(|s| s.to_string()).collect());
+                self.file_line_offsets
+                    .insert(file_str, line_start_offsets(content));
             }
         }
         self.preload_file_contents(files);
@@ -832,26 +907,45 @@ impl CrossFileTaintAnalyzer {
                     subset.insert(file_str.clone(), (symbols.clone(), calls.clone()));
                     local.set_parsed_ast_cache(subset);
                 }
-                // 只传递当前文件相关的 Stage B CPG 缓存，用于填充函数参数信息
-                let local_cpg_cache: HashMap<String, super::cpg::FunctionCPG> = self
-                    .cpg_cache
+                // 只传递当前文件相关的参数表（不再克隆整个 FunctionCPG；
+                // 大仓实测这一步的 CPG 克隆会让 Stage C 峰值 RSS 多出 ~400MB）
+                local.function_param_cache = self
+                    .function_param_cache
                     .iter()
                     .filter(|(k, _)| k.starts_with(file_str.as_str()))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                local.set_cpg_cache(local_cpg_cache, HashMap::new());
                 local.build_call_graph_for_file_with_content(file_path, &content);
                 Some(local)
             })
             .collect();
 
+        let diag_rss = std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some();
+        if diag_rss {
+            tracing::info!("[XFileStats] rss_after_partials={}MB", rss_mb());
+        }
         for mut partial in partials {
             self.merge_from(partial);
+        }
+        if diag_rss {
+            tracing::info!("[XFileStats] rss_after_merge={}MB", rss_mb());
         }
 
         self.add_c_callback_edges();
         self.filter_constructor_fps();
+        if diag_rss {
+            tracing::info!("[XFileStats] rss_after_filter={}MB", rss_mb());
+        }
         self.resolve_cross_file_calls();
+        if diag_rss {
+            let edges: usize = self.call_graph.nodes.values().map(|n| n.calls.len()).sum();
+            tracing::info!(
+                "[XFileStats] rss_after_resolve={}MB total_call_edges={} nodes={}",
+                rss_mb(),
+                edges,
+                self.call_graph.nodes.len()
+            );
+        }
         self.inject_middleware_edges();
         // 确定性：把图内所有顺序敏感结构规范化，使结果不依赖 HashMap 迭代序
         // （否则同一二进制多次 --deep 的 findings 集合会抖动，见 backlog 确定性修复）
@@ -976,18 +1070,21 @@ impl CrossFileTaintAnalyzer {
                 // 优先复用 Stage B CPG 中的参数信息，使跨文件/跨函数传播能正确映射形参。
                 let cpg_key = format!("{}:{}:{}", file_path_str, func_name, symbol.start_line);
                 let parameters = self
-                    .cpg_cache
+                    .function_param_cache
                     .get(&cpg_key)
-                    .map(|cpg| {
-                        cpg.signature
-                            .params
-                            .iter()
-                            .map(|p| FunctionParameter {
-                                name: p.name.clone(),
-                                param_type: p.type_annotation.clone(),
-                                may_be_tainted: false,
-                            })
-                            .collect()
+                    .cloned()
+                    .or_else(|| {
+                        self.cpg_cache.get(&cpg_key).map(|cpg| {
+                            cpg.signature
+                                .params
+                                .iter()
+                                .map(|p| FunctionParameter {
+                                    name: p.name.clone(),
+                                    param_type: p.type_annotation.clone(),
+                                    may_be_tainted: false,
+                                })
+                                .collect()
+                        })
                     })
                     .unwrap_or_default();
 
@@ -1477,13 +1574,14 @@ impl CrossFileTaintAnalyzer {
         // 显式按节点 id 排序：`all_nodes` 是 HashMap，迭代序随机，会让后续
         // `calls`/`called_by` 的插入顺序随机 → 传播阶段的 BFS"先到先得"
         // 路径不同 → 结果不可复现（确定性修复）。
-        let mut node_vec: Vec<(String, CallGraphNode)> = all_nodes
-            .iter()
-            .map(|(id, node)| (id.clone(), node.clone()))
-            .collect();
-        node_vec.sort_by(|a, b| a.0.cmp(&b.0));
+        //
+        // 注意：这里只收集 **引用** 而不是 clone 整张图——旧实现为并行闭包
+        // 克隆全部节点（大仓数万节点 × 每个节点的 String 字段），实测让
+        // next.js 阶段 RSS 从 309MB 冲到 813MB（分配器高水位，不会归还）。
+        let mut node_refs: Vec<(&String, &CallGraphNode)> = all_nodes.iter().collect();
+        node_refs.sort_by(|a, b| a.0.cmp(b.0));
 
-        let cross_call_batches: Vec<Vec<(String, String)>> = node_vec
+        let cross_call_batches: Vec<Vec<(String, String)>> = node_refs
             .into_par_iter()
             .map(|(caller_id, node)| {
                 let caller_file_normalized = normalize_path(&node.file_path);
@@ -1517,7 +1615,7 @@ impl CrossFileTaintAnalyzer {
 
                                     if let Some(callee_ids) = file_funcs.get(lookup_name) {
                                         for callee_id in callee_ids {
-                                            if callee_id != &caller_id {
+                                            if callee_id != caller_id {
                                                 local_edges
                                                     .push((caller_id.clone(), callee_id.clone()));
                                                 resolved = true;
@@ -1528,7 +1626,7 @@ impl CrossFileTaintAnalyzer {
                                     if !resolved && resolution.is_default {
                                         for (_, callee_ids) in file_funcs {
                                             for callee_id in callee_ids {
-                                                if callee_id != &caller_id {
+                                                if callee_id != caller_id {
                                                     local_edges.push((
                                                         caller_id.clone(),
                                                         callee_id.clone(),
@@ -1578,7 +1676,7 @@ impl CrossFileTaintAnalyzer {
                                 continue;
                             }
                             for callee_id in callee_ids {
-                                if callee_id == &caller_id {
+                                if callee_id == caller_id {
                                     continue;
                                 }
                                 let callee_file = all_nodes
@@ -1630,7 +1728,7 @@ impl CrossFileTaintAnalyzer {
                             {
                                 if let Some(callee_ids) = file_funcs.get(&ct.callee) {
                                     for callee_id in callee_ids {
-                                        if callee_id != &caller_id {
+                                        if callee_id != caller_id {
                                             local_edges
                                                 .push((caller_id.clone(), callee_id.clone()));
                                             resolved = true;
@@ -1668,19 +1766,36 @@ impl CrossFileTaintAnalyzer {
                 continue;
             }
             if let Ok(content) = std::fs::read_to_string(path) {
-                let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-                self.file_content_cache.insert(path_str.clone(), content);
-                self.file_lines_cache.insert(path_str, lines);
+                let offsets = line_start_offsets(&content);
+                self.file_content_cache.insert(path_str.clone(), Arc::from(content));
+                self.file_line_offsets.insert(path_str, offsets);
             }
         }
     }
 
     fn get_file_content(&self, file_path: &str) -> Option<&str> {
-        self.file_content_cache.get(file_path).map(|s| s.as_str())
+        self.file_content_cache.get(file_path).map(|s| s.as_ref())
     }
 
-    fn get_file_lines(&self, file_path: &str) -> Option<&[String]> {
-        self.file_lines_cache.get(file_path).map(|v| v.as_slice())
+    /// 取文件第 `line` 行（1-based，语义与 `str::lines()` 一致：不含行尾）
+    fn get_line(&self, file_path: &str, line: usize) -> Option<&str> {
+        let content = self.file_content_cache.get(file_path)?;
+        let offsets = self.file_line_offsets.get(file_path)?;
+        slice_line(content, offsets, line)
+    }
+
+    /// 取文件 [start_line, end_line] 行区间（1-based，闭区间；按需切片不克隆）
+    fn get_body_lines(&self, file_path: &str, start_line: usize, end_line: usize) -> Vec<&str> {
+        let (Some(content), Some(offsets)) = (
+            self.file_content_cache.get(file_path),
+            self.file_line_offsets.get(file_path),
+        ) else {
+            return Vec::new();
+        };
+        (start_line..=end_line)
+            .filter(|line| *line > 0)
+            .filter_map(|line| slice_line(content, offsets, line))
+            .collect()
     }
 
     fn collect_files_recursive(&self, dir: &Path, files: &mut Vec<PathBuf>) {
@@ -2891,9 +3006,12 @@ impl CrossFileTaintAnalyzer {
             if let Some(node) = self.call_graph.nodes.get(func_id) {
                 if node.is_taint_source {
                     let file_language = Self::detect_language(&node.file_path);
-                    if let Some(lines) = self.get_file_lines(&node.file_path) {
-                        let body =
-                            Self::extract_body_from_lines(lines, node.start_line, node.end_line);
+                    let body = self.get_body_lines(
+                        &node.file_path,
+                        node.start_line,
+                        node.end_line,
+                    );
+                    {
                         for line in body.iter() {
                             for source in self.source_patterns.iter() {
                                 if source.matches(line, &file_language) {
@@ -3035,13 +3153,6 @@ impl CrossFileTaintAnalyzer {
                     continue;
                 };
 
-                // 当前函数源码（只借用行切片，不做克隆）——仅在需要提取返回值
-                // 污点 LHS 时按需读取；原实现每次 BFS 出队都 to_vec() 克隆整个文件的行，
-                // 是跨文件传播阶段的最高频分配热点（引擎提速修复）。
-                let current_lines: &[String] = self
-                    .get_file_lines(&node.file_path)
-                    .unwrap_or(&[]);
-
                 for ct in &node.calls {
                     let callee_id = &ct.callee;
                     if callee_id == &current_id {
@@ -3128,12 +3239,12 @@ impl CrossFileTaintAnalyzer {
                                 && *param_idx < callee_node.parameters.len()
                                 && callee_tainted.contains(&callee_node.parameters[*param_idx].name)
                             {
-                                if let Some(lhs) = Self::extract_call_assignment_lhs(
-                                    current_lines,
-                                    ct.line,
-                                    &ct.callee,
-                                ) {
-                                    current_tainted.insert(lhs);
+                                if let Some(line) = self.get_line(&node.file_path, ct.line) {
+                                    if let Some(lhs) =
+                                        Self::extract_call_assignment_lhs(line, &ct.callee)
+                                    {
+                                        current_tainted.insert(lhs);
+                                    }
                                 }
                             }
                         }
@@ -3240,28 +3351,9 @@ impl CrossFileTaintAnalyzer {
             .join("\n")
     }
 
-    fn extract_body_from_lines(
-        lines: &[String],
-        start_line: usize,
-        end_line: usize,
-    ) -> Vec<String> {
-        lines
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| (*i + 1) >= start_line && (*i + 1) <= end_line)
-            .map(|(_, l)| l.clone())
-            .collect()
-    }
-
     /// 从函数调用所在行提取赋值左值变量名。
     /// 用于返回值污点传播：若 `x = callee(...)` 且 callee 的返回值被污染，则 x 也被污染。
-    fn extract_call_assignment_lhs(
-        lines: &[String],
-        call_line: usize,
-        callee: &str,
-    ) -> Option<String> {
-        let idx = call_line.saturating_sub(1);
-        let line = lines.get(idx)?;
+    fn extract_call_assignment_lhs(line: &str, callee: &str) -> Option<String> {
 
         // 要求行内包含 callee(
         if !line.contains(&format!("{}(", callee)) {
@@ -3313,12 +3405,53 @@ impl CrossFileTaintAnalyzer {
     /// 优先使用基于函数摘要的参数级传播；若摘要传播未产生结果，
     /// 回退到纯调用图 BFS。
     fn find_interprocedural_taint_flows(&self, max_flows: usize) -> Vec<InterproceduralTaintFlow> {
+        let diag = std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some();
+        if diag {
+            tracing::info!("[XFileStats] rss_before_summary={}MB", rss_mb());
+        }
         let mut summary_flows = self.propagate_taint_with_summaries(max_flows);
+        if diag {
+            let uniq = Self::unique_pair_count(&summary_flows);
+            tracing::info!(
+                "[XFileStats] summary_flows={} unique_pairs={} rss_after_summary={}MB",
+                summary_flows.len(),
+                uniq,
+                rss_mb()
+            );
+        }
         if !summary_flows.is_empty() {
-            return Self::dedup_flows_by_source(summary_flows, max_flows);
+            let out = Self::dedup_flows_by_source(summary_flows, max_flows);
+            if diag {
+                tracing::info!("[XFileStats] after_dedup={}", out.len());
+            }
+            return out;
         }
         let fallback = self.find_interprocedural_taint_flows_fallback(max_flows);
-        Self::dedup_flows_by_source(fallback, max_flows)
+        if diag {
+            tracing::info!(
+                "[XFileStats] FALLBACK used: flows={} unique_pairs={} rss_after_fallback={}MB",
+                fallback.len(),
+                Self::unique_pair_count(&fallback),
+                rss_mb()
+            );
+        }
+        let out = Self::dedup_flows_by_source(fallback, max_flows);
+        if diag {
+            tracing::info!("[XFileStats] after_dedup={}", out.len());
+        }
+        out
+    }
+
+    /// 诊断辅助：统计 (source 文件:行, sink 文件:行, 类型) 三元组数量
+    fn unique_pair_count(flows: &[InterproceduralTaintFlow]) -> usize {
+        let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for f in flows {
+            keys.insert(format!(
+                "{}:{}|{}:{}|{:?}",
+                f.source.file_path, f.source.line, f.sink.file_path, f.sink.line, f.vulnerability_type
+            ));
+        }
+        keys.len()
     }
 
     /// 同 source 流收敛：同一 source 节点衍生的多条跨文件链按置信度降序保留 Top-N，
@@ -3397,113 +3530,173 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 纯调用图 BFS 兜底：从 source 函数出发，沿调用图找到所有可达 sink 函数
-    fn find_interprocedural_taint_flows_fallback(&self, max_flows: usize) -> Vec<InterproceduralTaintFlow> {
-        let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
-        let mut flows = Vec::with_capacity(max_flows);
+    fn find_interprocedural_taint_flows_fallback(
+        &self,
+        max_flows: usize,
+    ) -> Vec<InterproceduralTaintFlow> {
+        /// 每个 source 保留的最短 sink 数（去重阶段每 source 只留 Top-3，
+        /// 这里留 8 倍余量，让去重在"按跳数排序"的候选池里挑选）
+        const MAX_SINKS_PER_SOURCE: usize = 8;
+        /// BFS 深度上限：置信度随跳数按 0.85^hops 衰减，非 YAML sink 再 ×0.5，
+        /// 去重阶段的 MIN_CONFIDENCE=0.35 会把 2 跳以上的 name-based 链全部丢弃
+        /// （YAML sink 上限约 5 跳）。限制深度既不影响最终保留集，又避免对
+        /// 每个 source 做全图 BFS（大仓实测会让 deep 扫描慢 4 倍）。
+        const MAX_HOPS: usize = 5;
 
-        // 预计算 sink 可达集，正向搜索只扩展这些节点。
+        let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let sink_reachable = self.compute_sink_reachable_set();
 
-        // 对每个 source 做 BFS，一次遍历找到所有可达的 sink
+        // 单次遍历：每个 source 一遍 BFS（借用键，零字符串克隆），BFS 保证首次
+        // 到达即最短跳数；按 (跳数, sink id) 取最短 K 个 sink 并就地用前驱表
+        // 重建路径。旧实现"边遍历边发射 + 达到 max_flows 即 return"让截断依赖
+        // 遍历序（实测 rauthy 5000 条全撞上限、候选集跨运行抖动 20%+）。
+        let mut candidates: Vec<(String, String, usize, Vec<String>)> = Vec::new();
+        // 跨 source 复用 BFS 缓冲：每个 source 都新建 HashSet/HashMap 会让
+        // 分配器反复扩张（大仓实测 flow 搜索阶段 RSS 高水位 +500MB），
+        // clear() 保留容量、只在需要时增长一次。
+        let mut predecessors: HashMap<&String, &String> = HashMap::new();
+        let mut visited: HashSet<&String> = HashSet::new();
+        let mut queue: VecDeque<(&String, usize)> = VecDeque::new();
+        let mut found: Vec<(&String, usize)> = Vec::new();
         for source_id in &self.call_graph.taint_sources {
-            // source 本身就到不了任何 sink，跳过
             if !sink_reachable.contains(source_id) {
                 continue;
             }
-
-            // BFS: source_id → (path_from_source)
-            let mut visited: HashSet<&String> = HashSet::new();
-            // queue: (current_node, path_from_source)
-            let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::new();
-            queue.push_back((source_id.clone(), vec![source_id.clone()]));
+            predecessors.clear();
+            visited.clear();
+            queue.clear();
+            found.clear();
             visited.insert(source_id);
-
-            while let Some((current_id, path)) = queue.pop_front() {
-                // 检查当前节点是否是 sink
-                if sink_set.contains(&current_id) && current_id != *source_id {
-                    if let (Some(source), Some(sink)) = (
-                        self.call_graph.nodes.get(source_id),
-                        self.call_graph.nodes.get(&current_id),
-                    ) {
-                        let mut interprocedural_path = Vec::new();
-                        for func_id in &path {
-                            if let Some(func) = self.call_graph.nodes.get(func_id) {
-                                interprocedural_path.push(InterproceduralStep {
-                                    step_type: if func_id == source_id {
-                                        InterproceduralStepType::Source
-                                    } else if func_id == &current_id {
-                                        InterproceduralStepType::Sink
-                                    } else {
-                                        InterproceduralStepType::ReturnValue
-                                    },
-                                    file_path: func.file_path.clone(),
-                                    function_name: func.name.clone(),
-                                    line: func.start_line,
-                                    variable: String::new(),
-                                    code: None,
-                                });
-                            }
-                        }
-
-                        let (mut confidence, mut confidence_factors) =
-                            self.calculate_flow_confidence(&path);
-
-                        // 使用 sink 节点匹配到的漏洞类型（从 taint rule pattern 提取）
-                        // 如果 sink 没有匹配到具体类型（name-based fallback），回退为 Generic 并降权
-                        let vuln_type = sink.sink_type.unwrap_or(VulnerabilityType::Generic);
-                        if sink.sink_match_source != Some(SinkMatchSource::YamlRule) {
-                            confidence *= 0.5;
-                            let factor_name = match sink.sink_match_source {
-                                Some(SinkMatchSource::BodyKeyword) => "sink:body_keyword",
-                                Some(SinkMatchSource::NameHeuristic) => "sink:name_heuristic",
-                                _ => "sink:non_yaml",
-                            };
-                            confidence_factors.push(factor_name.to_string());
-                        }
-
-                        flows.push(InterproceduralTaintFlow {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            source: FlowLocation {
-                                file_path: source.file_path.clone(),
-                                line: source.start_line,
-                                column: None,
-                                symbol: source.name.clone(),
-                                node_id: None,
-                                code_snippet: None,
-                            },
-                            sink: FlowLocation {
-                                file_path: sink.file_path.clone(),
-                                line: sink.start_line,
-                                column: None,
-                                symbol: sink.name.clone(),
-                                node_id: None,
-                                code_snippet: None,
-                            },
-                            interprocedural_path,
-                            vulnerability_type: vuln_type,
-                            severity: Severity::High,
-                            confidence,
-                            confidence_factors,
-                        });
-                    if flows.len() >= max_flows {
-                        return flows;
-                    }
-                    }
-                    // 继续探索（sink 可能转发到另一个 sink）
+            queue.push_back((source_id, 0));
+            while let Some((current_id, hops)) = queue.pop_front() {
+                if hops > 0 && sink_set.contains(current_id) {
+                    found.push((current_id, hops));
                 }
-
-                // 扩展邻居（只扩展可能到达 sink 的节点）
-                if let Some(node) = self.call_graph.nodes.get(&current_id) {
-                    for ct in &node.calls {
-                        if sink_reachable.contains(&ct.callee) && !visited.contains(&ct.callee) {
-                            visited.insert(&ct.callee);
-                            let mut new_path = path.clone();
-                            new_path.push(ct.callee.clone());
-                            queue.push_back((ct.callee.clone(), new_path));
-                        }
+                let Some(node) = self.call_graph.nodes.get(current_id.as_str()) else {
+                    continue;
+                };
+                if hops >= MAX_HOPS {
+                    continue;
+                }
+                for ct in &node.calls {
+                    if !sink_reachable.contains(&ct.callee) {
+                        continue;
+                    }
+                    // 借用图中的节点 key（避免为每个访问节点克隆 String）
+                    let Some((callee_key, _)) = self.call_graph.nodes.get_key_value(&ct.callee)
+                    else {
+                        continue;
+                    };
+                    if visited.insert(callee_key) {
+                        predecessors.insert(callee_key, current_id);
+                        queue.push_back((callee_key, hops + 1));
                     }
                 }
             }
+
+            found.sort_by(|a, b| (a.1, a.0.as_str()).cmp(&(b.1, b.0.as_str())));
+            found.truncate(MAX_SINKS_PER_SOURCE);
+            for (sink_id, hops) in found.drain(..) {
+                let mut path: Vec<String> = vec![sink_id.clone()];
+                let mut current = sink_id;
+                loop {
+                    if current.as_str() == source_id.as_str() {
+                        break;
+                    }
+                    let Some(prev) = predecessors.get(current) else {
+                        break;
+                    };
+                    current = prev;
+                    path.push(current.clone());
+                }
+                if current.as_str() != source_id.as_str() {
+                    continue; // 前驱链断裂（理论不可达），跳过该 pair
+                }
+                path.reverse();
+                candidates.push((source_id.clone(), sink_id.clone(), hops, path));
+            }
+            // 确定性提前退出：source 顺序已排序、每 source 结果已按跳数排序，
+            // 因此"攒够 max_flows 个候选就停"不依赖遍历序（旧的"边发射边截断"
+            // 才是顺序相关的根源）；截断随后按 (跳数, source, sink) 全局排序进行。
+            if candidates.len() >= max_flows {
+                break;
+            }
+        }
+
+        // 全局确定性排序 + 截断：跳数少（置信度高）者优先保留，
+        // 与遍历顺序无关
+        candidates.sort_by(|a, b| {
+            (a.2, a.0.as_str(), a.1.as_str()).cmp(&(b.2, b.0.as_str(), b.1.as_str()))
+        });
+        candidates.truncate(max_flows);
+
+        let mut flows = Vec::with_capacity(candidates.len());
+        for (source_id, sink_id, _hops, path) in candidates {
+            let (Some(source), Some(sink)) = (
+                self.call_graph.nodes.get(&source_id),
+                self.call_graph.nodes.get(&sink_id),
+            ) else {
+                continue;
+            };
+            let mut interprocedural_path = Vec::new();
+            for func_id in &path {
+                if let Some(func) = self.call_graph.nodes.get(func_id) {
+                    interprocedural_path.push(InterproceduralStep {
+                        step_type: if func_id == &source_id {
+                            InterproceduralStepType::Source
+                        } else if func_id == &sink_id {
+                            InterproceduralStepType::Sink
+                        } else {
+                            InterproceduralStepType::ReturnValue
+                        },
+                        file_path: func.file_path.clone(),
+                        function_name: func.name.clone(),
+                        line: func.start_line,
+                        variable: String::new(),
+                        code: None,
+                    });
+                }
+            }
+
+            let (mut confidence, mut confidence_factors) = self.calculate_flow_confidence(&path);
+
+            // 使用 sink 节点匹配到的漏洞类型（从 taint rule pattern 提取）
+            // 如果 sink 没有匹配到具体类型（name-based fallback），回退为 Generic 并降权
+            let vuln_type = sink.sink_type.unwrap_or(VulnerabilityType::Generic);
+            if sink.sink_match_source != Some(SinkMatchSource::YamlRule) {
+                confidence *= 0.5;
+                let factor_name = match sink.sink_match_source {
+                    Some(SinkMatchSource::BodyKeyword) => "sink:body_keyword",
+                    Some(SinkMatchSource::NameHeuristic) => "sink:name_heuristic",
+                    _ => "sink:non_yaml",
+                };
+                confidence_factors.push(factor_name.to_string());
+            }
+
+            flows.push(InterproceduralTaintFlow {
+                id: uuid::Uuid::new_v4().to_string(),
+                source: FlowLocation {
+                    file_path: source.file_path.clone(),
+                    line: source.start_line,
+                    column: None,
+                    symbol: source.name.clone(),
+                    node_id: None,
+                    code_snippet: None,
+                },
+                sink: FlowLocation {
+                    file_path: sink.file_path.clone(),
+                    line: sink.start_line,
+                    column: None,
+                    symbol: sink.name.clone(),
+                    node_id: None,
+                    code_snippet: None,
+                },
+                interprocedural_path,
+                vulnerability_type: vuln_type,
+                severity: Severity::High,
+                confidence,
+                confidence_factors,
+            });
         }
 
         flows
