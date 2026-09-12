@@ -204,27 +204,50 @@ impl PathSensitiveState {
 
         // 前缀匹配: 查找是否有更短的路径是 query 的前缀
         // 例: 查 req.body.name → 找到 req.body 上有污点
-        let mut best_match: Option<&VarTaintState> = None;
-        let mut best_depth = usize::MAX;
+        // 确定性：`access_taint` 是 HashMap，迭代序随进程随机，原实现
+        // "取首个命中"会让同一文件多次扫描报出不同的 source（Stage B 抖动
+        // 根因之一）。改为全序选择：深度最小者优先，同深度按路径字典序。
+        let mut best: Option<(&AccessPath, &VarTaintState)> = None;
         for (stored_path, vt) in &self.access_taint {
-            if stored_path.is_prefix_of(path) && stored_path.depth() < best_depth {
-                best_depth = stored_path.depth();
-                best_match = Some(vt);
+            if !stored_path.is_prefix_of(path) {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((best_path, _)) => {
+                    (stored_path.depth(), stored_path.as_dotted())
+                        < (best_path.depth(), best_path.as_dotted())
+                }
+            };
+            if better {
+                best = Some((stored_path, vt));
             }
         }
-        if best_match.is_some() {
-            return best_match;
+        if let Some((_, vt)) = best {
+            return Some(vt);
         }
 
         // 反向前缀: 查找是否有更长的路径以 query 为前缀
         // 例: 查 req.body → 找到 req.body.name 上有污点
+        // 同样按"深度最小 + 路径字典序"确定性选择
+        let mut reverse_best: Option<(&AccessPath, &VarTaintState)> = None;
         for (stored_path, vt) in &self.access_taint {
-            if path.is_prefix_of(stored_path) && !vt.sanitized {
-                return Some(vt);
+            if !path.is_prefix_of(stored_path) || vt.sanitized {
+                continue;
+            }
+            let better = match reverse_best {
+                None => true,
+                Some((best_path, _)) => {
+                    (stored_path.depth(), stored_path.as_dotted())
+                        < (best_path.depth(), best_path.as_dotted())
+                }
+            };
+            if better {
+                reverse_best = Some((stored_path, vt));
             }
         }
 
-        None
+        reverse_best.map(|(_, vt)| vt)
     }
 
     /// 精确获取 AccessPath 的污点状态（不做前缀匹配）

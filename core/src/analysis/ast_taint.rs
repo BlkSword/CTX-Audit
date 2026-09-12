@@ -458,9 +458,19 @@ impl AstTaintAnalyzer {
         );
 
         // 汇总各节点状态：变量首次被标记的来源（含未达 sink 的中间污染）
+        // 确定性：`taint_state` 是 HashMap，直接遍历 values() 会让"首个代表"
+        // 随进程变化。改为按节点 id 升序 + 路径字典序遍历（同序必得同结果）。
         let mut tainted_vars: HashMap<String, (String, usize)> = HashMap::new();
-        for state in taint_state.values() {
-            for (path, vt) in state.all_entries() {
+        let mut node_ids: Vec<usize> = taint_state.keys().copied().collect();
+        node_ids.sort_unstable();
+        for node_id in node_ids {
+            let Some(state) = taint_state.get(&node_id) else {
+                continue;
+            };
+            let mut entries: Vec<(&AccessPath, &super::cpg::VarTaintState)> =
+                state.all_entries().collect();
+            entries.sort_by(|a, b| a.0.as_dotted().cmp(&b.0.as_dotted()));
+            for (path, vt) in entries {
                 tainted_vars
                     .entry(path.as_dotted())
                     .or_insert_with(|| (vt.source_var.clone(), vt.source_line));
@@ -1692,16 +1702,19 @@ impl AstTaintAnalyzer {
         if state.get_exact(&path).is_some() {
             return Some(var.to_string());
         }
-        // 别名解析
-        for alias_path in alias_map.resolve(var) {
-            if state.get_exact(&alias_path).is_some() {
+        // 别名解析（确定性：resolve 返回 HashSet，迭代序随机；多个别名同时
+        // 命中时"取首个"不可复现 → 先按路径字典序排序再遍历）
+        let mut alias_paths: Vec<AccessPath> = alias_map.resolve(var).into_iter().collect();
+        alias_paths.sort_by(|a, b| a.as_dotted().cmp(&b.as_dotted()));
+        for alias_path in &alias_paths {
+            if state.get_exact(alias_path).is_some() {
                 return Some(alias_path.as_dotted());
             }
         }
         // 别名前缀匹配 — 与 is_var_tainted_cpg 的判定保持一致，
         // 避免"判定污染但解析不出路径"导致上游 unwrap panic
-        for alias_path in alias_map.resolve(var) {
-            if state.find_taint_for_path(&alias_path).is_some() {
+        for alias_path in &alias_paths {
+            if state.find_taint_for_path(alias_path).is_some() {
                 return Some(alias_path.as_dotted());
             }
         }

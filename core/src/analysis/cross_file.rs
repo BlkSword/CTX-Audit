@@ -625,6 +625,7 @@ pub struct CrossFileTaintAnalyzer {
     file_lines_cache: HashMap<String, Vec<String>>,
 }
 
+
 /// C 回调注册惯用法的预编译正则（进程内只编译一次）。
 ///
 /// 覆盖 `websDefineHandler("path", handler)`、`signal(SIG, handler)`、
@@ -765,6 +766,8 @@ impl CrossFileTaintAnalyzer {
         self.filter_constructor_fps();
         self.resolve_cross_file_calls();
         self.inject_middleware_edges();
+        // 确定性：与 analyze_files_with_content 一致，规范化顺序敏感结构
+        self.canonicalize_graph_order();
 
         stats.total_functions = self.call_graph.nodes.len();
         stats.taint_sources = self.call_graph.taint_sources.len();
@@ -850,6 +853,9 @@ impl CrossFileTaintAnalyzer {
         self.filter_constructor_fps();
         self.resolve_cross_file_calls();
         self.inject_middleware_edges();
+        // 确定性：把图内所有顺序敏感结构规范化，使结果不依赖 HashMap 迭代序
+        // （否则同一二进制多次 --deep 的 findings 集合会抖动，见 backlog 确定性修复）
+        self.canonicalize_graph_order();
 
         stats.total_functions = self.call_graph.nodes.len();
         stats.taint_sources = self.call_graph.taint_sources.len();
@@ -1310,29 +1316,45 @@ impl CrossFileTaintAnalyzer {
             }
         }
 
-        for (file_path, line, handler_name) in registrations {
-            // 注册点所在的函数（行号落在函数区间内）
-            let caller_id = self
-                .call_graph
-                .nodes
-                .iter()
-                .filter(|(_, n)| n.file_path == file_path && n.start_line <= line && line <= n.end_line)
-                .min_by_key(|(_, n)| n.end_line - n.start_line)
-                .map(|(id, _)| id.clone());
+        // 确定性：扫描顺序来自 HashMap 的 file_content_cache，显式排序后再应用
+        registrations.sort();
 
-            // 被注册的 handler（同文件优先，跨文件回退）
-            let callee_id = self
+        for (file_path, line, handler_name) in registrations {
+            // 注册点所在的函数（行号落在函数区间内）。
+            // 取"区间最小"者；并列时按节点 id 决胜（HashMap 迭代序不可依赖）
+            let mut caller_candidates: Vec<(&String, usize)> = self
                 .call_graph
                 .nodes
                 .iter()
-                .find(|(_, n)| n.name == handler_name && n.file_path == file_path)
-                .or_else(|| {
-                    self.call_graph
-                        .nodes
-                        .iter()
-                        .find(|(_, n)| n.name == handler_name)
+                .filter(|(_, n)| {
+                    n.file_path == file_path && n.start_line <= line && line <= n.end_line
                 })
-                .map(|(id, _)| id.clone());
+                .map(|(id, n)| (id, n.end_line.saturating_sub(n.start_line)))
+                .collect();
+            caller_candidates.sort();
+            let caller_id = caller_candidates.first().map(|(id, _)| (*id).clone());
+
+            // 被注册的 handler（同文件优先，跨文件回退；并列按 id 决胜）
+            let mut same_file: Vec<&String> = self
+                .call_graph
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.name == handler_name && n.file_path == file_path)
+                .map(|(id, _)| id)
+                .collect();
+            same_file.sort();
+            let mut any_file: Vec<&String> = self
+                .call_graph
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.name == handler_name)
+                .map(|(id, _)| id)
+                .collect();
+            any_file.sort();
+            let callee_id = same_file
+                .first()
+                .or_else(|| any_file.first())
+                .map(|id| (*id).clone());
 
             if let (Some(caller_id), Some(callee_id)) = (caller_id, callee_id) {
                 if caller_id != callee_id {
@@ -1451,11 +1473,15 @@ impl CrossFileTaintAnalyzer {
         let name_to_ids_ref = &name_to_ids;
         let file_name_to_ids_ref = &file_name_to_ids;
 
-        // 并行处理每个 caller，收集跨文件调用边
-        let node_vec: Vec<(String, CallGraphNode)> = all_nodes
+        // 并行处理每个 caller，收集跨文件调用边。
+        // 显式按节点 id 排序：`all_nodes` 是 HashMap，迭代序随机，会让后续
+        // `calls`/`called_by` 的插入顺序随机 → 传播阶段的 BFS"先到先得"
+        // 路径不同 → 结果不可复现（确定性修复）。
+        let mut node_vec: Vec<(String, CallGraphNode)> = all_nodes
             .iter()
             .map(|(id, node)| (id.clone(), node.clone()))
             .collect();
+        node_vec.sort_by(|a, b| a.0.cmp(&b.0));
 
         let cross_call_batches: Vec<Vec<(String, String)>> = node_vec
             .into_par_iter()
@@ -3308,20 +3334,31 @@ impl CrossFileTaintAnalyzer {
 
         let mut by_source: HashMap<String, Vec<InterproceduralTaintFlow>> = HashMap::new();
         for flow in flows {
-            let key = format!(
-                "{}:{}",
-                flow.source.file_path, flow.source.line
-            );
+            let key = format!("{}:{}", flow.source.file_path, flow.source.line);
             by_source.entry(key).or_default().push(flow);
         }
 
-        let mut out = Vec::with_capacity(max_flows.min(by_source.len() * MAX_FLOWS_PER_SOURCE));
-        for mut group in by_source.into_values() {
-            // 置信度降序，保留高置信链
+        // 确定性：HashMap 的 into_values() 迭代序随机，会让"置信度并列"时的
+        // Top-N 选择随运行变化 → findings 集合抖动。先按 source key 排序，
+        // 组内用 (置信度降序, sink 位置, 源/汇符号) 全序比较后再取 Top-N。
+        // 注：未改为"按 source→sink 全域去重"的覆盖保持型方案——实测该方案
+        // 会让部分项目候选量翻倍（commafeed 49→107）而只多挽回个别候选，
+        // 召回/成本的取舍需专门引擎轮评估（见 backlog）。
+        let mut groups: Vec<(String, Vec<InterproceduralTaintFlow>)> =
+            by_source.into_iter().collect();
+        groups.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut out = Vec::with_capacity(max_flows.min(groups.len() * MAX_FLOWS_PER_SOURCE));
+        for (_, mut group) in groups {
+            // 置信度降序，保留高置信链；并列时按稳定字段决胜（不用随机 flow.id）
             group.sort_by(|a, b| {
                 b.confidence
                     .partial_cmp(&a.confidence)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.sink.file_path.cmp(&b.sink.file_path))
+                    .then_with(|| a.sink.line.cmp(&b.sink.line))
+                    .then_with(|| a.sink.symbol.cmp(&b.sink.symbol))
+                    .then_with(|| a.source.symbol.cmp(&b.source.symbol))
             });
             let mut kept = 0;
             for flow in group {
@@ -3695,16 +3732,23 @@ impl CrossFileTaintAnalyzer {
 
     /// 注入中间件虚拟边：将 Express app.use() 中间件连接到同文件的路由 handler
     fn inject_middleware_edges(&mut self) {
-        for mw in &self.middleware_model.express_middleware.clone() {
+        let mut middleware_list = self.middleware_model.express_middleware.clone();
+        // 确定性：中间件顺序来自模型内部集合，显式排序后再注入
+        middleware_list.sort_by(|a, b| {
+            (a.handler_file.as_str(), a.handler_name.as_str())
+                .cmp(&(b.handler_file.as_str(), b.handler_name.as_str()))
+        });
+        for mw in &middleware_list {
             let mw_func_id = self
                 .call_graph
                 .nodes
                 .iter()
-                .find(|(_, node)| {
+                .filter(|(_, node)| {
                     node.name == mw.handler_name
                         && normalize_path(&node.file_path) == normalize_path(&mw.handler_file)
                 })
-                .map(|(id, _)| id.clone());
+                .map(|(id, _)| id.clone())
+                .min();
 
             let mw_id = match mw_func_id {
                 Some(id) => id,
@@ -3716,16 +3760,17 @@ impl CrossFileTaintAnalyzer {
                                 .resolve_module_to_file(&resolution.source_module, &mw.handler_file)
                             {
                                 let target_norm = normalize_path(&target_file);
-                                if let Some(id) = self
+                                let found = self
                                     .call_graph
                                     .nodes
                                     .iter()
-                                    .find(|(_, n)| {
+                                    .filter(|(_, n)| {
                                         n.name == resolution.original_export_name
                                             && normalize_path(&n.file_path) == target_norm
                                     })
                                     .map(|(id, _)| id.clone())
-                                {
+                                    .min();
+                                if let Some(id) = found {
                                     id
                                 } else {
                                     continue;
@@ -3746,13 +3791,23 @@ impl CrossFileTaintAnalyzer {
                 .middleware_model
                 .get_express_route_lines(&mw.handler_file);
             for &line in route_lines {
-                for (route_id, route_node) in &self.call_graph.nodes.clone() {
-                    if normalize_path(&route_node.file_path) == normalize_path(&mw.handler_file)
-                        && !route_node.is_callback
-                        && (route_node.start_line <= line && route_node.end_line >= line)
-                    {
-                        self.call_graph.add_call(&mw_id, route_id);
-                    }
+                // 先收集命中节点（只读借用），再统一建边——原实现每个 route line
+                // 都 clone() 整张调用图，且迭代序随机导致边顺序不稳定
+                let mut route_ids: Vec<String> = self
+                    .call_graph
+                    .nodes
+                    .iter()
+                    .filter(|(_, route_node)| {
+                        normalize_path(&route_node.file_path) == normalize_path(&mw.handler_file)
+                            && !route_node.is_callback
+                            && (route_node.start_line <= line && route_node.end_line >= line)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                route_ids.sort();
+                route_ids.dedup();
+                for route_id in route_ids {
+                    self.call_graph.add_call(&mw_id, &route_id);
                 }
             }
         }
@@ -3766,6 +3821,46 @@ impl Default for CrossFileTaintAnalyzer {
 }
 
 impl CrossFileTaintAnalyzer {
+    /// 规范化调用图内所有"顺序敏感"结构的顺序，使跨文件分析结果与
+    /// `HashMap` 的随机迭代序解耦（确定性修复）。
+    ///
+    /// 背景：调用图节点存在 `HashMap<String, CallGraphNode>`，而
+    /// `taint_sources`/`taint_sinks`/`calls`/`called_by` 等 Vec 的填充顺序
+    /// 取决于建图时的遍历顺序。跨文件传播按这些 Vec 顺序搜索 sink，
+    /// "先到先得"的路径与 Top-N 收敛结果因此随运行而变——同一二进制
+    /// 多次 `--deep` 会得到不同的 findings 集合（实测 147/161/150 条）。
+    /// 统一排序后，同一输入必然得到同一输出。
+    fn canonicalize_graph_order(&mut self) {
+        self.call_graph.taint_sources.sort();
+        self.call_graph.taint_sources.dedup();
+        self.call_graph.taint_sinks.sort();
+        self.call_graph.taint_sinks.dedup();
+        self.call_graph.entry_points.sort();
+        self.call_graph.entry_points.dedup();
+        for funcs in self.call_graph.file_functions.values_mut() {
+            funcs.sort();
+            funcs.dedup();
+        }
+        for node in self.call_graph.nodes.values_mut() {
+            // 调用边按 (callee, receiver, line) 排序；不 dedup（同一 callee 的
+            // 不同调用点/接收者都应保留）
+            node.calls.sort_by(|a, b| {
+                (
+                    a.callee.as_str(),
+                    a.receiver.as_deref().unwrap_or(""),
+                    a.line,
+                )
+                    .cmp(&(
+                        b.callee.as_str(),
+                        b.receiver.as_deref().unwrap_or(""),
+                        b.line,
+                    ))
+            });
+            node.called_by.sort();
+            node.called_by.dedup();
+        }
+    }
+
     /// 计算项目中所有函数的摘要（自底向上）
     ///
     /// 返回 HashMap: func_id → FunctionSummary
@@ -3804,32 +3899,53 @@ impl CrossFileTaintAnalyzer {
             in_degree.insert(id, node.calls.len());
         }
 
-        let mut queue: VecDeque<&String> = in_degree
+        // 确定性：初始入度为 0 的节点按 id 排序后再入队（HashMap 迭代序随机），
+        // 否则摘要计算顺序与环内节点兜底顺序都会随运行变化
+        let mut zero_degree: Vec<&String> = in_degree
             .iter()
             .filter(|(_, &deg)| deg == 0)
             .map(|(&id, _)| id)
             .collect();
+        zero_degree.sort();
+        let mut queue: VecDeque<&String> = zero_degree.into();
 
         let mut result = Vec::new();
+        let mut emitted: HashSet<String> = HashSet::new();
+        let mut enqueued: HashSet<String> = queue.iter().map(|id| (*id).clone()).collect();
         while let Some(func_id) = queue.pop_front() {
             result.push(func_id.clone());
+            emitted.insert(func_id.clone());
             if let Some(node) = self.call_graph.nodes.get(func_id) {
+                // 同批入队顺序也按 id 稳定化
+                let mut newly_zero: Vec<&String> = Vec::new();
                 for caller in &node.called_by {
                     if let Some(deg) = in_degree.get_mut(caller) {
                         *deg = deg.saturating_sub(1);
                         if *deg == 0 {
-                            queue.push_back(caller);
+                            newly_zero.push(caller);
                         }
+                    }
+                }
+                newly_zero.sort();
+                for caller in newly_zero {
+                    // 入度可能被多次减到 0，已入队的不重复入队
+                    if enqueued.insert(caller.clone()) {
+                        queue.push_back(caller);
                     }
                 }
             }
         }
 
-        // 加上可能有环的剩余节点
-        for id in self.call_graph.nodes.keys() {
-            if !result.contains(id) {
-                result.push(id.clone());
-            }
+        // 加上可能有环的剩余节点（按 id 排序，保证确定性）
+        let mut remaining: Vec<&String> = self
+            .call_graph
+            .nodes
+            .keys()
+            .filter(|id| !emitted.contains(*id))
+            .collect();
+        remaining.sort();
+        for id in remaining {
+            result.push(id.clone());
         }
 
         result
