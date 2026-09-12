@@ -297,10 +297,16 @@ async fn git_diff_name_only(repo_dir: &Path, from: &str, to: &str) -> Result<Vec
 }
 
 /// 全量扫描（与 runner 扫描阶段同款 core API）
+///
+/// `CTX_AUDIT_FEEDBACK_CROSS_FILE=0` 时关闭跨文件阶段：cross-file 在真实仓库上
+/// 可能长时间不收敛（大仓性能已知问题），回放任务若只需要单文件规则/污点召回，
+/// 关掉它才能让整个回放库在可接受时间内跑完。默认 1（保持原有语义）。
 async fn scan_repo(repo_dir: &Path, rules_dir: Option<&Path>) -> Result<Vec<Finding>, FeedbackError> {
     let mut opts = ScanOptions::default();
     opts.enable_taint = true;
-    opts.enable_cross_file = true;
+    opts.enable_cross_file = std::env::var("CTX_AUDIT_FEEDBACK_CROSS_FILE")
+        .map(|v| v != "0")
+        .unwrap_or(true);
     let result = scan_directory_deep_with_rules_progress(
         &repo_dir.to_string_lossy(),
         rules_dir.and_then(|p| p.to_str()),

@@ -244,8 +244,16 @@ impl FileWatcher {
 
                 // 转换为 Finding 格式
                 for flow in &flows {
+                    let vuln_label = format!("{:?}", flow.vulnerability_type);
                     all_findings.push(Finding {
-                        finding_id: flow.id.clone(),
+                        // E-6 补全：不继承随机 flow.id（同 scanner 侧改动）
+                        finding_id: crate::scanner::stable_finding_id(
+                            &file_str,
+                            flow.source.line,
+                            0,
+                            &vuln_label,
+                            &format!("{}:{}", flow.sink.symbol, flow.sink.line),
+                        ),
                         file_path: file_str.clone(),
                         line_start: flow.source.line,
                         line_end: flow.sink.line,

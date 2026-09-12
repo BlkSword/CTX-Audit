@@ -602,7 +602,15 @@ impl ScaScanner {
         ];
 
         Finding {
-            finding_id: uuid::Uuid::new_v4().to_string(),
+            // E-6 补全：SCA finding 的 id 由 manifest 路径 + 漏洞 id 稳定派生
+            // （此前随机 UUID，导致 A/B 扫描 id 集合不一致）
+            finding_id: crate::scanner::stable_finding_id(
+                file_path,
+                1,
+                0,
+                &format!("SCA:{}", vuln.id),
+                &vuln.id,
+            ),
             file_path: file_path.to_string(),
             line_start: 1,
             line_end: 1,

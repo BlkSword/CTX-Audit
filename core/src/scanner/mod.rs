@@ -2056,7 +2056,16 @@ pub async fn scan_directory_deep_with_rules_progress(
                     };
 
                     Finding {
-                        finding_id: flow.id.clone(),
+                        // E-6 补全：污点类 finding 此前直接继承 flow.id（随机 UUID），
+                        // 导致 A/B 扫描候选集相同但 finding_id 全变（EQM 实测 id 稳定性 2/5）。
+                        // finding_id 是 finding 级身份，应由自身位置/类型决定，而非继承 flow。
+                        finding_id: stable_finding_id(
+                            &file_str,
+                            flow.source.line,
+                            0,
+                            &vuln_name,
+                            &format!("{}:{}", flow.sink.symbol, flow.sink.line),
+                        ),
                         file_path: file_str.clone(),
                         line_start: flow.source.line,
                         line_end: flow.sink.line,
@@ -2363,7 +2372,15 @@ pub async fn scan_directory_deep_with_rules_progress(
                 });
 
                 findings.push(Finding {
-                    finding_id: flow.id.clone(),
+                    // E-6 补全：跨文件 finding 同样不再继承随机 flow.id，
+                    // 由 source 位置 + sink 位置 + 漏洞类型稳定派生。
+                    finding_id: stable_finding_id(
+                        &flow.source.file_path,
+                        flow.source.line,
+                        0,
+                        &vuln_name,
+                        &format!("{}:{}", flow.sink.file_path, flow.sink.line),
+                    ),
                     file_path: flow.source.file_path.clone(),
                     line_start: flow.source.line,
                     line_end: flow.sink.line,
@@ -2583,7 +2600,7 @@ fn process_mapper_xml(
             let snippet = &trimmed[pos..=end.min(pos + 60)];
             let stmt_id = extract_mybatis_statement_id(&content, line_no);
             findings.push(Finding {
-                finding_id: uuid::Uuid::new_v4().to_string(),
+                finding_id: stable_finding_id(&rel_str, line_no + 1, 0, "CWE-89", snippet),
                 file_path: rel_str.clone(),
                 line_start: line_no + 1,
                 line_end: line_no + 1,
@@ -3553,6 +3570,19 @@ mod tests {
     }
 
     // ── enclosing_function 符号填充 ─────────────────────────
+
+    #[test]
+    fn test_stable_finding_id_deterministic_and_distinct() {
+        // E-6：同一 (路径, 行, 类型, 摘要) 必得同一 id（跨轮次可追踪）；
+        // 摘要不同（如 sink 位置不同）必须得到不同 id。
+        let a = stable_finding_id("src/app.py", 42, 0, "CWE-79", "sink:10");
+        let b = stable_finding_id("src/app.py", 42, 0, "CWE-79", "sink:10");
+        assert_eq!(a, b, "同一输入必须产生同一 finding_id");
+        let c = stable_finding_id("src/app.py", 42, 0, "CWE-79", "sink:11");
+        assert_ne!(a, c, "sink 位置不同必须产生不同 finding_id");
+        let d = stable_finding_id("src/other.py", 42, 0, "CWE-79", "sink:10");
+        assert_ne!(a, d, "文件不同必须产生不同 finding_id");
+    }
 
     #[test]
     fn test_rule_single_hop_enrichment_fills_snippets() {
