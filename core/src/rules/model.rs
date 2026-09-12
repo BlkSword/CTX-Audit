@@ -78,6 +78,13 @@ pub struct Rule {
     /// 仅对 .php 文件生效；链解析有界（深度≤3、文件≤16）。
     #[serde(default)]
     pub sanitizer_include_chain: bool,
+
+    /// Tree-sitter 查询规则的廉价前置过滤（子串列表）。
+    /// 任一子串出现在文件内容中才执行解析与查询；空列表 = 不过滤（默认，
+    /// 行为不变）。用于避免"查询只可能命中含特定字面量的文件"时对大仓里
+    /// 绝大多数无关文件做 tree-sitter 解析（实测大仓规则扫描 parse 占 ~30%）。
+    #[serde(default)]
+    pub prefilter: Vec<String>,
     /// true 时丢弃命中点位于 PHP 非裸调用形态内的 finding——方法调用（->）、
     /// 静态调用（::）、构造调用（new）与函数/方法定义点的同名文本不是内建函数
     /// 调用（如 `$pdo->exec(`、`Foo::exec(`、`new System()`、`function exec(`）。

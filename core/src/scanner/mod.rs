@@ -336,6 +336,13 @@ pub fn line_snippet(content: &str, line: usize) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// 净化函数名提取的预编译正则（进程内只编译一次；原实现每次调用编译一次）。
+fn sanitizer_func_regex() -> Option<&'static regex::Regex> {
+    static RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"^([A-Za-z_][A-Za-z0-9_:\.]*)\s*\(").ok())
+        .as_ref()
+}
+
 /// 从赋值/调用代码片段中提取净化函数名（取第一个 `name(...)` 形式）
 fn extract_sanitizer_function(code: &str) -> Option<String> {
     // 去掉常见的赋值前缀，如 "String safe = " 或 "safe = "
@@ -347,7 +354,7 @@ fn extract_sanitizer_function(code: &str) -> Option<String> {
         .trim_start_matches("new ")
         .trim();
     // 匹配 identifier(...)
-    let re = regex::Regex::new(r"^([A-Za-z_][A-Za-z0-9_:\.]*)\s*\(").ok()?;
+    let re = sanitizer_func_regex()?;
     re.captures(code)
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
 }

@@ -13,4 +13,6 @@ rules:
           property: (property_identifier) @prop)
         (#eq? @obj "console")
         (#eq? @prop "log"))
+    # 查询必须含字面量 "console" 才可能命中：不含则跳过该文件的 tree-sitter 解析
+    prefilter: ["console"]
     cwe: "CWE-489"

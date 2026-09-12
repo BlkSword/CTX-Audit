@@ -289,6 +289,17 @@ impl RuleScanner {
                 }
                 RuleMatcher::TreeSitter(query) => {
                     if let Some(lang) = &compiled.language {
+                        // 廉价前置过滤：查询只可能命中含特定字面量的文件时，
+                        // 跳过对整个文件的 tree-sitter 解析（大仓 parse 占 ~30%）
+                        if !compiled.rule.prefilter.is_empty()
+                            && !compiled
+                                .rule
+                                .prefilter
+                                .iter()
+                                .any(|p| content.contains(p.as_str()))
+                        {
+                            continue;
+                        }
                         thread_local! {
                             static PARSER_CACHE: std::cell::RefCell<HashMap<String, Parser>> =
                                 std::cell::RefCell::new(HashMap::new());
@@ -481,11 +492,25 @@ fn collect_php_guard_recursive(
     }
 }
 
+/// PHP include 语句预编译正则（进程内只编译一次；原实现每次调用重编译）。
+fn php_include_stmt_regex() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"(?i)(?:require|include)(?:_once)?\s*\(?\s*([^;\n]{1,200})")
+            .expect("include stmt regex")
+    })
+}
+
+/// PHP 字符串字面量预编译正则（进程内只编译一次）。
+fn php_string_lit_regex() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"['"]([^'"]{1,200})['"]"#).expect("string lit regex"))
+}
+
 /// 提取 include/require 语句中的字符串字面量路径。
 fn extract_php_include_literals(content: &str) -> Vec<String> {
-    let stmt_re = regex::Regex::new(r"(?i)(?:require|include)(?:_once)?\s*\(?\s*([^;\n]{1,200})")
-        .expect("include stmt regex");
-    let str_re = regex::Regex::new(r#"['"]([^'"]{1,200})['"]"#).expect("string lit regex");
+    let stmt_re = php_include_stmt_regex();
+    let str_re = php_string_lit_regex();
     let mut lits = Vec::new();
     for cap in stmt_re.captures_iter(content) {
         let expr = &cap[1];
@@ -523,15 +548,34 @@ fn resolve_php_include(dir: &PathBuf, lit: &str) -> Option<PathBuf> {
 /// 全文件任一处出现即豁免（"缺失检查"类规则：校验在文件任意位置都算已接入防护）。
 /// `sanitizer_match: all` 时要求全部 sanitizer 都出现才豁免（防护完整性检查）。
 /// `guard` 为 include 链守卫内容（10.13），命中即豁免——全局校验无"位置"语义。
+/// 死过滤模式的进程内编译缓存（pattern → 可选正则）。
+///
+/// 原实现每次调用 `Regex::new(pattern)`；这里用全局 memo（Regex 克隆共享内部
+/// 结构，代价极低），非法模式也缓存为 None 避免反复失败重编译。
+fn dead_pattern_matches(pattern: &str, content_lower: &str) -> bool {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Option<Regex>>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let compiled = {
+        let mut guard = cache.lock().unwrap();
+        guard
+            .entry(pattern.to_string())
+            .or_insert_with(|| Regex::new(pattern).ok())
+            .clone()
+    };
+    match compiled {
+        Some(re) => re.is_match(content_lower),
+        None => false,
+    }
+}
+
 fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>) -> bool {
     // 10.5：死过滤模式命中时 sanitizer 豁免不成立（文本存在但恒不生效）
     if !rule.dead_sanitizer_patterns.is_empty() {
         let lower = content.to_lowercase();
         for pattern in &rule.dead_sanitizer_patterns {
-            if let Ok(re) = Regex::new(pattern) {
-                if re.is_match(&lower) {
-                    return false;
-                }
+            if dead_pattern_matches(pattern, &lower) {
+                return false;
             }
         }
     }
@@ -1717,6 +1761,7 @@ mod tests {
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1764,6 +1809,7 @@ mod tests {
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec!["http.".into(), "gin.".into(), "echo.".into()],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1809,6 +1855,7 @@ mod tests {
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1855,6 +1902,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1901,6 +1949,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -1948,6 +1997,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2005,6 +2055,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2067,6 +2118,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2124,6 +2176,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2169,6 +2222,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2212,6 +2266,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2298,6 +2353,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2345,6 +2401,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2401,6 +2458,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2473,6 +2531,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2519,6 +2578,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2558,6 +2618,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2763,6 +2824,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2814,6 +2876,7 @@ $upsql = Input::postStrVar('upsql', '');
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             remediation: None,
@@ -2990,6 +3053,7 @@ func (s *Server) UpdateAccount(w http.ResponseWriter, r *http.Request) {
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             references: None,
@@ -3035,6 +3099,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
             skip_likely_fp: false,
             dead_sanitizer_patterns: vec![],
             require_sig_tokens: vec![],
+            prefilter: vec![],
             category: None,
             owasp: None,
             references: None,
