@@ -1058,8 +1058,14 @@ async fn scan_directory_with_rules_inner(
             }
         }
         None => {
-            // 文件系统查找失败（如仓库外运行），回退到二进制内置嵌入规则
-            let r = crate::rules::embedded::load_embedded_pattern_rules();
+            // 文件系统查找失败（如仓库外运行），回退到二进制内置嵌入规则；
+            // 仍合并项目专属规则（CTX_AUDIT_RULES_EXTRA），否则任务级规则提示会丢失。
+            let mut r = crate::rules::embedded::load_embedded_pattern_rules();
+            let extra = crate::rules::loader::load_extra_rules();
+            if !extra.is_empty() {
+                tracing::info!("内置规则基础上合并项目专属规则 {} 条", extra.len());
+                r.extend(extra);
+            }
             tracing::info!("未找到规则目录，使用内置嵌入规则 ({} 条)", r.len());
             r
         }
