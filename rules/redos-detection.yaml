@@ -16,4 +16,19 @@ patterns:
     pattern: '(?:\((?:[^)]*\+|\*)\)\+|\((?:[^)]*\+|\*)\)\*|\(\?:[^)]*[+*][^)]*[+*]\))'
   - language: java
     pattern: '(?:\((?:[^)]*\+|\*)\)\+|\((?:[^)]*\+|\*)\)\*)'
+  # 末尾锚定无限量词家族：换行符 + 量词 + 字符串尾锚点，匹配到串尾的回溯瓶颈。
+  # 真实案例 turndown CVE-2025-9670（replace 里用该类正则裁剪换行，修复版改为字符串裁剪）。
+  # 已核对：命中漏洞版 v7.2.1，不命中修复版 v7.2.2。
+  - language: javascript
+    pattern: '\\n\+\$'
+  - language: javascript
+    pattern: '\^\\n\+\|'
+  - language: typescript
+    pattern: '\\n\+\$'
+  - language: typescript
+    pattern: '\^\\n\+\|'
+  - language: python
+    pattern: '\\n\+\$'
+  - language: java
+    pattern: '\\n\+\$'
 severity: medium
