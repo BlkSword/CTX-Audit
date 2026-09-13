@@ -45,12 +45,23 @@ struct Cli {
     command: Commands,
 }
 
+const XFILE_ENV_HELP: &str = "跨文件（--deep / --cross-file）上限可用环境变量按 run 覆盖（默认值即历史行为）：
+  CTX_AUDIT_XFILE_MAX_FLOWS                  跨文件流总数上限（默认 5000）
+  CTX_AUDIT_XFILE_MAX_FLOWS_PER_SOURCE       单 source 保留流数（默认 3）
+  CTX_AUDIT_XFILE_MAX_STRUCTURAL_PER_SOURCE  单 source 结构可达链上限（默认 1；0=只留数据流证据链）
+  CTX_AUDIT_XFILE_MIN_CONFIDENCE             保留流的最低置信度（默认 0.35）
+  CTX_AUDIT_XFILE_MAX_SINKS_PER_SOURCE       每 source 收集的最短 sink 数（默认 8）
+  CTX_AUDIT_XFILE_MAX_HOPS                   调用图 BFS 深度上限（默认 5）
+大仓提速建议：先降 CTX_AUDIT_XFILE_MAX_HOPS（如 3）与 CTX_AUDIT_XFILE_MAX_SINKS_PER_SOURCE（如 4），
+再用 CTX_AUDIT_XFILE_MAX_STRUCTURAL_PER_SOURCE=0 去掉结构可达噪声。";
+
 /// CLI 子命令
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// 快速规则扫描（批处理）
     ///
     /// 使用预定义规则快速扫描代码
+    #[command(after_help = XFILE_ENV_HELP)]
     Scan {
         /// 项目路径
         #[arg(value_name = "PATH")]

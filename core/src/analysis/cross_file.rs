@@ -591,6 +591,80 @@ pub struct ImportResolution {
     pub is_default: bool,
 }
 
+/// 跨文件分析的性能/召回可调上限。
+///
+/// 默认值与历史行为完全一致（参数化本身不改变基线）；可用环境变量按 run 覆盖，
+/// 便于同一二进制做 A/B，也便于大仓把跨文件成本压进预算：
+///
+/// - `CTX_AUDIT_XFILE_MAX_FLOWS`（默认 5000）：跨文件流总数上限
+/// - `CTX_AUDIT_XFILE_MAX_FLOWS_PER_SOURCE`（默认 3）：单 source 保留流数
+/// - `CTX_AUDIT_XFILE_MAX_STRUCTURAL_PER_SOURCE`（默认 1）：单 source 无数据流
+///   证据的"结构可达"链上限（0 = 只保留有数据流证据的链）
+/// - `CTX_AUDIT_XFILE_MIN_CONFIDENCE`（默认 0.35）：保留流的最低置信度
+/// - `CTX_AUDIT_XFILE_MAX_SINKS_PER_SOURCE`（默认 8）：每 source BFS 收集的最短 sink 数
+/// - `CTX_AUDIT_XFILE_MAX_HOPS`（默认 5）：调用图 BFS 深度上限（直接决定最坏耗时）
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrossFileLimits {
+    pub max_flows: usize,
+    pub max_flows_per_source: usize,
+    pub max_structural_per_source: usize,
+    pub min_confidence: f32,
+    pub max_sinks_per_source: usize,
+    pub max_hops: usize,
+}
+
+impl Default for CrossFileLimits {
+    fn default() -> Self {
+        Self {
+            max_flows: 5000,
+            max_flows_per_source: 3,
+            max_structural_per_source: 1,
+            min_confidence: 0.35,
+            max_sinks_per_source: 8,
+            max_hops: 5,
+        }
+    }
+}
+
+fn limit_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+}
+
+fn limit_f32(name: &str) -> Option<f32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| (0.0..=1.0).contains(v))
+}
+
+impl CrossFileLimits {
+    /// 读环境变量覆盖默认值；非法值忽略并保留默认（不 panic）。
+    pub fn from_env() -> Self {
+        let mut limits = Self::default();
+        if let Some(v) = limit_usize("CTX_AUDIT_XFILE_MAX_FLOWS") {
+            limits.max_flows = v.max(1);
+        }
+        if let Some(v) = limit_usize("CTX_AUDIT_XFILE_MAX_FLOWS_PER_SOURCE") {
+            limits.max_flows_per_source = v.max(1);
+        }
+        if let Some(v) = limit_usize("CTX_AUDIT_XFILE_MAX_STRUCTURAL_PER_SOURCE") {
+            limits.max_structural_per_source = v;
+        }
+        if let Some(v) = limit_f32("CTX_AUDIT_XFILE_MIN_CONFIDENCE") {
+            limits.min_confidence = v;
+        }
+        if let Some(v) = limit_usize("CTX_AUDIT_XFILE_MAX_SINKS_PER_SOURCE") {
+            limits.max_sinks_per_source = v.max(1);
+        }
+        if let Some(v) = limit_usize("CTX_AUDIT_XFILE_MAX_HOPS") {
+            limits.max_hops = v.max(1);
+        }
+        limits
+    }
+}
+
 /// 跨文件污点分析器
 pub struct CrossFileTaintAnalyzer {
     /// 调用图
@@ -635,6 +709,8 @@ pub struct CrossFileTaintAnalyzer {
     /// 旧实现缓存 `Vec<String>`（每行一个堆分配字符串），大仓实测 177 万行
     /// 约占 145MB；改为偏移表后同规模约 7MB（4B/行），切片按需生成 &str。
     file_line_offsets: HashMap<String, Vec<u32>>,
+    /// 跨文件上限（默认值 + 环境变量覆盖），见 [`CrossFileLimits`]。
+    limits: CrossFileLimits,
 }
 
 /// 文本是否引用了某个标识符（按标识符边界判断）。
@@ -775,6 +851,7 @@ impl CrossFileTaintAnalyzer {
             module_resolution_cache: std::sync::Mutex::new(HashMap::new()),
             file_content_cache: HashMap::new(),
             file_line_offsets: HashMap::new(),
+            limits: CrossFileLimits::from_env(),
         }
     }
 
@@ -790,6 +867,16 @@ impl CrossFileTaintAnalyzer {
         analyzer.source_patterns = Arc::new(sources);
         analyzer.sink_patterns = Arc::new(sinks);
         analyzer
+    }
+
+    /// 当前跨文件上限（构造时读环境变量，见 [`CrossFileLimits`]）
+    pub fn limits(&self) -> CrossFileLimits {
+        self.limits
+    }
+
+    /// 覆盖跨文件上限（库调用方使用；CLI 走环境变量）
+    pub fn set_limits(&mut self, limits: CrossFileLimits) {
+        self.limits = limits;
     }
 
     /// 注入 CPG 缓存（从 scan pipeline Stage B 传入）
@@ -883,7 +970,7 @@ impl CrossFileTaintAnalyzer {
         stats.taint_sources = self.call_graph.taint_sources.len();
         stats.taint_sinks = self.call_graph.taint_sinks.len();
 
-        let taint_flows = self.find_interprocedural_taint_flows(5000);
+        let taint_flows = self.find_interprocedural_taint_flows();
         stats.taint_flows = taint_flows.len();
         stats.cross_file_flows = taint_flows
             .iter()
@@ -990,7 +1077,7 @@ impl CrossFileTaintAnalyzer {
         stats.taint_sources = self.call_graph.taint_sources.len();
         stats.taint_sinks = self.call_graph.taint_sinks.len();
 
-        let taint_flows = self.find_interprocedural_taint_flows(5000);
+        let taint_flows = self.find_interprocedural_taint_flows();
         stats.taint_flows = taint_flows.len();
         stats.cross_file_flows = taint_flows
             .iter()
@@ -3668,10 +3755,15 @@ impl CrossFileTaintAnalyzer {
     ///
     /// 优先使用基于函数摘要的参数级传播；若摘要传播未产生结果，
     /// 回退到纯调用图 BFS。
-    fn find_interprocedural_taint_flows(&self, max_flows: usize) -> Vec<InterproceduralTaintFlow> {
+    fn find_interprocedural_taint_flows(&self) -> Vec<InterproceduralTaintFlow> {
+        let max_flows = self.limits.max_flows;
         let diag = std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some();
         if diag {
-            tracing::info!("[XFileStats] rss_before_summary={}MB", rss_mb());
+            tracing::info!(
+                "[XFileStats] limits={:?} rss_before_summary={}MB",
+                self.limits,
+                rss_mb()
+            );
         }
         let mut summary_flows = self.propagate_taint_with_summaries(max_flows);
         if diag {
@@ -3700,7 +3792,7 @@ impl CrossFileTaintAnalyzer {
             .iter()
             .filter(|f| f.confidence_factors.iter().any(|x| x == "path:dataflow"))
             .count();
-        let out = Self::dedup_flows_by_source(merged, max_flows);
+        let out = self.dedup_flows_by_source(merged, max_flows);
         if diag {
             // 流集合指纹：跨运行比较用（若指纹不一致 ⇒ 流生成不确定；
             // 一致而 findings 仍抖动 ⇒ 下游富化/去重环节）
@@ -3794,11 +3886,12 @@ impl CrossFileTaintAnalyzer {
     /// 9+ 条不同类型链——query/get/fetch 等普通方法被裸子串 sink 误标，跳数衰减后
     /// 置信度可区分真假，按置信度收敛避免噪声淹没真实链）。
     fn dedup_flows_by_source(
+        &self,
         flows: Vec<InterproceduralTaintFlow>,
         max_flows: usize,
     ) -> Vec<InterproceduralTaintFlow> {
-        const MAX_FLOWS_PER_SOURCE: usize = 3;
-        const MIN_CONFIDENCE: f32 = 0.35;
+        let max_flows_per_source = self.limits.max_flows_per_source;
+        let min_confidence = self.limits.min_confidence;
 
         let mut by_source: HashMap<String, Vec<InterproceduralTaintFlow>> = HashMap::new();
         for flow in flows {
@@ -3816,11 +3909,12 @@ impl CrossFileTaintAnalyzer {
             by_source.into_iter().collect();
         groups.sort_by(|a, b| a.0.cmp(&b.0));
 
-        /// 无数据流证据的结构可达链：每 source 只保留最佳一条（召回下限），
-        /// 避免"通用名 sink 结构可达"刷屏（json/find/delete 家族）
-        const MAX_STRUCTURAL_PER_SOURCE: usize = 1;
+        // 无数据流证据的结构可达链：每 source 默认只保留最佳一条（召回下限），
+        // 避免"通用名 sink 结构可达"刷屏（json/find/delete 家族）；
+        // 可用 CTX_AUDIT_XFILE_MAX_STRUCTURAL_PER_SOURCE 调整（0 = 全部丢弃）。
+        let max_structural_per_source = self.limits.max_structural_per_source;
 
-        let mut out = Vec::with_capacity(max_flows.min(groups.len() * MAX_FLOWS_PER_SOURCE));
+        let mut out = Vec::with_capacity(max_flows.min(groups.len() * max_flows_per_source));
         // 证据分级：数据流链（param→sink 有实参映射证据）优先于结构可达链，
         // 组内先按证据等级、再按置信度降序；并列用稳定字段决胜（不用随机 flow.id）
         let evidence_rank = |flow: &InterproceduralTaintFlow| -> u8 {
@@ -3851,17 +3945,17 @@ impl CrossFileTaintAnalyzer {
             let mut kept = 0;
             let mut kept_structural = 0;
             for flow in group {
-                if flow.confidence < MIN_CONFIDENCE {
+                if flow.confidence < min_confidence {
                     break; // 已排序，后续更低
                 }
-                if kept >= MAX_FLOWS_PER_SOURCE {
+                if kept >= max_flows_per_source {
                     break;
                 }
                 let is_structural = flow
                     .confidence_factors
                     .iter()
                     .any(|f| f == "path:structural");
-                if is_structural && kept_structural >= MAX_STRUCTURAL_PER_SOURCE {
+                if is_structural && kept_structural >= max_structural_per_source {
                     continue;
                 }
                 if is_structural {
@@ -3900,14 +3994,14 @@ impl CrossFileTaintAnalyzer {
         &self,
         max_flows: usize,
     ) -> Vec<InterproceduralTaintFlow> {
-        /// 每个 source 保留的最短 sink 数（去重阶段每 source 只留 Top-3，
-        /// 这里留 8 倍余量，让去重在"按跳数排序"的候选池里挑选）
-        const MAX_SINKS_PER_SOURCE: usize = 8;
+        // 每个 source 保留的最短 sink 数（去重阶段每 source 只留 Top-N，
+        // 这里默认留 8 倍余量，让去重在"按跳数排序"的候选池里挑选）。
+        let max_sinks_per_source = self.limits.max_sinks_per_source;
         /// BFS 深度上限：置信度随跳数按 0.85^hops 衰减，非 YAML sink 再 ×0.5，
         /// 去重阶段的 MIN_CONFIDENCE=0.35 会把 2 跳以上的 name-based 链全部丢弃
         /// （YAML sink 上限约 5 跳）。限制深度既不影响最终保留集，又避免对
         /// 每个 source 做全图 BFS（大仓实测会让 deep 扫描慢 4 倍）。
-        const MAX_HOPS: usize = 5;
+        let max_hops = self.limits.max_hops;
 
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let sink_reachable = self.compute_sink_reachable_set();
@@ -3941,7 +4035,7 @@ impl CrossFileTaintAnalyzer {
                 let Some(node) = self.call_graph.nodes.get(current_id.as_str()) else {
                     continue;
                 };
-                if hops >= MAX_HOPS {
+                if hops >= max_hops {
                     continue;
                 }
                 for ct in &node.calls {
@@ -3961,7 +4055,7 @@ impl CrossFileTaintAnalyzer {
             }
 
             found.sort_by(|a, b| (a.1, a.0.as_str()).cmp(&(b.1, b.0.as_str())));
-            found.truncate(MAX_SINKS_PER_SOURCE);
+            found.truncate(max_sinks_per_source);
             for (sink_id, hops) in found.drain(..) {
                 let mut path: Vec<String> = vec![sink_id.clone()];
                 let mut current = sink_id;
@@ -4896,6 +4990,33 @@ pub fn normalize_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cross_file_limits_defaults_match_baseline() {
+        // 参数化不得改变默认基线：默认值即历史硬编码值
+        let l = CrossFileLimits::default();
+        assert_eq!(l.max_flows, 5000);
+        assert_eq!(l.max_flows_per_source, 3);
+        assert_eq!(l.max_structural_per_source, 1);
+        assert_eq!(l.max_sinks_per_source, 8);
+        assert_eq!(l.max_hops, 5);
+        assert!((l.min_confidence - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cross_file_limits_can_be_overridden_per_analyzer() {
+        let mut analyzer = CrossFileTaintAnalyzer::new();
+        let mut limits = analyzer.limits();
+        assert_eq!(limits, CrossFileLimits::default());
+        limits.max_hops = 2;
+        limits.max_sinks_per_source = 1;
+        limits.max_structural_per_source = 0;
+        analyzer.set_limits(limits);
+        let got = analyzer.limits();
+        assert_eq!(got.max_hops, 2);
+        assert_eq!(got.max_sinks_per_source, 1);
+        assert_eq!(got.max_structural_per_source, 0);
+    }
 
     #[test]
     fn test_call_graph_creation() {
