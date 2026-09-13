@@ -256,6 +256,12 @@ pub struct CallGraph {
     pub taint_sources: Vec<String>,
     /// 污点汇函数
     pub taint_sinks: Vec<String>,
+    /// 诊断计数：节点 id（`file:name`）撞键次数——同名函数/方法（重载、不同类里的
+    /// 同名方法）会合并为同一节点，摘要也会合并。开启 `CTX_AUDIT_XFILE_STATS=1`
+    /// 时输出，用于评估"id 是否该带行号"。
+    pub node_id_collisions: usize,
+    /// 撞键样本（最多 5 条：`id@line`），便于定位是哪类同名函数。
+    pub node_id_collision_samples: Vec<String>,
 }
 
 impl CallGraph {
@@ -267,6 +273,8 @@ impl CallGraph {
             entry_points: Vec::new(),
             taint_sources: Vec::new(),
             taint_sinks: Vec::new(),
+            node_id_collisions: 0,
+            node_id_collision_samples: Vec::new(),
         }
     }
 
@@ -287,7 +295,17 @@ impl CallGraph {
             .or_insert_with(Vec::new)
             .push(id.clone());
 
-        self.nodes.insert(id, node);
+        let new_start_line = node.start_line;
+        match self.nodes.insert(id.clone(), node) {
+            Some(previous) if previous.start_line != new_start_line => {
+                self.node_id_collisions += 1;
+                if self.node_id_collision_samples.len() < 5 {
+                    self.node_id_collision_samples
+                        .push(format!("{}@{}|{}", id, previous.start_line, new_start_line));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// 添加调用关系。
@@ -1062,10 +1080,12 @@ impl CrossFileTaintAnalyzer {
         if diag_rss {
             let edges: usize = self.call_graph.nodes.values().map(|n| n.calls.len()).sum();
             tracing::info!(
-                "[XFileStats] rss_after_resolve={}MB total_call_edges={} nodes={}",
+                "[XFileStats] rss_after_resolve={}MB total_call_edges={} nodes={} node_id_collisions={} samples={:?}",
                 rss_mb(),
                 edges,
-                self.call_graph.nodes.len()
+                self.call_graph.nodes.len(),
+                self.call_graph.node_id_collisions,
+                self.call_graph.node_id_collision_samples
             );
         }
         self.inject_middleware_edges();
