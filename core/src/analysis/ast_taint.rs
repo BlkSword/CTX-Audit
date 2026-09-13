@@ -435,11 +435,16 @@ impl AstTaintAnalyzer {
             .values()
             .filter_map(|m| m.assignment.clone())
             .collect();
-        let calls: Vec<CallInfo> = cpg
-            .node_meta
-            .values()
-            .filter_map(|m| m.call_info.clone())
-            .collect();
+        // 收集该函数的全部调用：优先 calls_on_line（含链式内层），
+        // 旧数据/空值时回退 call_info（仅最外层）。
+        let mut calls: Vec<CallInfo> = Vec::new();
+        for meta in cpg.node_meta.values() {
+            if !meta.calls_on_line.is_empty() {
+                calls.extend(meta.calls_on_line.iter().cloned());
+            } else if let Some(c) = meta.call_info.as_ref() {
+                calls.push(c.clone());
+            }
+        }
         let language = Self::detect_language(&cpg.signature.file_path);
 
         let line_offset = cpg.line_offset;
@@ -620,6 +625,25 @@ impl AstTaintAnalyzer {
     ///
     /// `line_offset` 用于将函数体内部相对行号转换为文件绝对行号，
     /// 避免入口源被错误地标记为函数体起始行导致后续去重丢失。
+    /// 同一行上的全部调用（按列号/被调名确定性排序）。
+    ///
+    /// 每行只保留"最外层调用"会漏掉链式调用里的内层 sink：例如
+    /// `Command::new("sh").arg(user_input).output()` 的最外层是 `.output()`，
+    /// 而真正接收污点的是内层 `.arg(...)`。sink 匹配必须遍历整行调用。
+    fn calls_grouped_by_line(calls: &[CallInfo]) -> HashMap<usize, Vec<&CallInfo>> {
+        let mut map: HashMap<usize, Vec<&CallInfo>> = HashMap::new();
+        for c in calls {
+            map.entry(c.line).or_default().push(c);
+        }
+        for list in map.values_mut() {
+            list.sort_by(|a, b| {
+                (a.column, a.callee.as_str(), a.receiver.as_deref().unwrap_or(""))
+                    .cmp(&(b.column, b.callee.as_str(), b.receiver.as_deref().unwrap_or("")))
+            });
+        }
+        map
+    }
+
     fn forward_taint_analysis(
         &self,
         cfg: &EnhancedFlowGraph,
@@ -657,6 +681,8 @@ impl AstTaintAnalyzer {
                 call_by_line.insert(c.line, c);
             }
         }
+        // 同一行的全部调用（含链式内层）；sink 匹配逐个尝试
+        let calls_by_line = Self::calls_grouped_by_line(calls);
 
         // 从赋值中构建别名映射
         let alias_map = self.build_alias_map(assignments);
@@ -709,8 +735,9 @@ impl AstTaintAnalyzer {
                 }
 
                 EnhancedNodeType::Call => {
-                    if let Some(flow) = self.transfer_call(
+                    if let Some(flow) = self.transfer_call_all(
                         node,
+                        &calls_by_line,
                         &call_by_line,
                         &mut new_state,
                         file_path,
@@ -724,8 +751,9 @@ impl AstTaintAnalyzer {
 
                 EnhancedNodeType::Return => {
                     // Return 节点可能包含 sink 调用（如 return needle.get(url, ...)）
-                    if let Some(flow) = self.transfer_call(
+                    if let Some(flow) = self.transfer_call_all(
                         node,
+                        &calls_by_line,
                         &call_by_line,
                         &mut new_state,
                         file_path,
@@ -815,6 +843,8 @@ impl AstTaintAnalyzer {
                 call_by_line.insert(c.line, c);
             }
         }
+        // 同一行的全部调用（含链式内层）；sink 匹配逐个尝试
+        let calls_by_line = Self::calls_grouped_by_line(calls);
 
         let alias_map = self.build_alias_map(assignments);
 
@@ -877,8 +907,9 @@ impl AstTaintAnalyzer {
                 }
 
                 EnhancedNodeType::Call => {
-                    if let Some(flow) = self.transfer_call_cpg(
+                    if let Some(flow) = self.transfer_call_cpg_all(
                         node,
+                        &calls_by_line,
                         &call_by_line,
                         &mut new_state,
                         file_path,
@@ -908,8 +939,9 @@ impl AstTaintAnalyzer {
                     // Return 节点可能包含 sink 调用（如 return needle.get(url, ...)）
                     // 需要检查是否包含污点流向的 sink
                     if node.node_type == EnhancedNodeType::Return {
-                        if let Some(flow) = self.transfer_call_cpg(
+                        if let Some(flow) = self.transfer_call_cpg_all(
                             node,
+                            &calls_by_line,
                             &call_by_line,
                             &mut new_state,
                             file_path,
@@ -1533,6 +1565,43 @@ impl AstTaintAnalyzer {
     }
 
     /// 调用传播（PathSensitiveState 版本）
+    /// 逐个尝试同一行上的所有调用（CPG 路径版本）。
+    fn transfer_call_cpg_all(
+        &self,
+        node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
+        calls_by_line: &HashMap<usize, Vec<&CallInfo>>,
+        call_by_line: &HashMap<usize, &CallInfo>,
+        state: &mut super::cpg::PathSensitiveState,
+        file_path: &str,
+        language: &str,
+        alias_map: &AliasMap,
+        line_offset: usize,
+    ) -> Option<TaintFlow> {
+        let line = node.start_line + line_offset;
+        let mut line_calls: Vec<&CallInfo> = calls_by_line.get(&line).cloned().unwrap_or_default();
+        if line_calls.is_empty() {
+            if let Some(c) = call_by_line.get(&line) {
+                line_calls.push(*c);
+            }
+        }
+        for call in line_calls {
+            let mut single: HashMap<usize, &CallInfo> = HashMap::new();
+            single.insert(line, call);
+            if let Some(flow) = self.transfer_call_cpg(
+                node,
+                &single,
+                state,
+                file_path,
+                language,
+                alias_map,
+                line_offset,
+            ) {
+                return Some(flow);
+            }
+        }
+        None
+    }
+
     fn transfer_call_cpg(
         &self,
         node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
@@ -2326,6 +2395,37 @@ impl AstTaintAnalyzer {
     }
 
     /// 调用转移函数：检查 sink 和 sanitizer
+    /// 逐个尝试同一行上的所有调用，返回首个命中的流（链式内层 sink 修复）。
+    fn transfer_call_all(
+        &self,
+        node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
+        calls_by_line: &HashMap<usize, Vec<&CallInfo>>,
+        call_by_line: &HashMap<usize, &CallInfo>,
+        state: &mut HashMap<String, TaintInfo>,
+        file_path: &str,
+        language: &str,
+        alias_map: &AliasMap,
+        line_offset: usize,
+    ) -> Option<TaintFlow> {
+        let line = node.start_line + line_offset;
+        let mut line_calls: Vec<&CallInfo> = calls_by_line.get(&line).cloned().unwrap_or_default();
+        if line_calls.is_empty() {
+            if let Some(c) = call_by_line.get(&line) {
+                line_calls.push(*c);
+            }
+        }
+        for call in line_calls {
+            let mut single: HashMap<usize, &CallInfo> = HashMap::new();
+            single.insert(line, call);
+            if let Some(flow) =
+                self.transfer_call(node, &single, state, file_path, language, alias_map, line_offset)
+            {
+                return Some(flow);
+            }
+        }
+        None
+    }
+
     fn transfer_call(
         &self,
         node: &crate::analysis::enhanced_dataflow::EnhancedFlowNode,
@@ -5103,6 +5203,38 @@ eval(user_input)"#;
             !flows.is_empty(),
             "Should detect Rust command injection via Command::new, got {} flows",
             flows.len()
+        );
+    }
+
+    #[test]
+    fn test_rust_chained_command_sink_is_detected() {
+        // 回归：每行只取"最外层调用"会漏掉链式调用里的内层 sink——
+        // `Command::new("sh").arg(v).output()` 的最外层是 `.output()`，
+        // 真正接收污点的是内层 `.arg(v)`。
+        // 两条生产路径都要覆盖：analyze_file（CFG）与 analyze_file_cpg（CPG，扫描实际走这条）。
+        let tmp = std::env::temp_dir().join("ctx_audit_rust_chain_test");
+        let _ = std::fs::create_dir_all(&tmp);
+        let code = r#"use std::process::Command;
+
+fn handler() {
+    let v = std::env::var("CMD").unwrap();
+    Command::new("sh").arg(v).output();
+}
+"#;
+        let path = tmp.join("chain.rs");
+        std::fs::write(&path, code).unwrap();
+        let mut analyzer = analyzer_with_yaml_rules();
+        let cfg_flows = analyzer.analyze_file(&path, code);
+        assert!(
+            !cfg_flows.is_empty(),
+            "CFG 路径应检出链式内层 sink，got {} flows",
+            cfg_flows.len()
+        );
+        let cpg_report = analyzer.analyze_file_cpg(&path, code);
+        assert!(
+            !cpg_report.flows.is_empty(),
+            "CPG 路径应检出链式内层 sink，got {} flows",
+            cpg_report.flows.len()
         );
     }
 

@@ -51,8 +51,13 @@ pub struct CPGNodeMeta {
     pub ast_kind: String,
     /// 若节点对应赋值语句，保存赋值信息
     pub assignment: Option<Assignment>,
-    /// 若节点对应函数调用，保存调用信息
+    /// 若节点对应函数调用，保存调用信息（**仅最外层**，供摘要/参数映射使用）
     pub call_info: Option<CallInfo>,
+    /// 同一行上的**全部**调用（含链式调用的内层，按列号/被调名确定性排序）。
+    /// 链式调用里的 sink（如 `Command::new("sh").arg(user).output()` 的 `.arg`）
+    /// 只在 `call_info` 里会被漏掉，污点分析需要这一列逐个尝试匹配。
+    #[serde(default)]
+    pub calls_on_line: Vec<CallInfo>,
     /// 若节点是条件分支头，保存条件表达式分析结果
     pub condition: Option<ConditionInfo>,
 }
