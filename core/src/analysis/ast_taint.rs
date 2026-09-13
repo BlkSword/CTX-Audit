@@ -1182,6 +1182,11 @@ impl AstTaintAnalyzer {
                 continue;
             }
 
+            let source_by_type = tp
+                .type_annotation
+                .as_deref()
+                .and_then(|type_ann| self.param_type_matches_source(type_ann, language));
+
             let is_request_type = tp
                 .type_annotation
                 .as_ref()
@@ -1191,7 +1196,8 @@ impl AstTaintAnalyzer {
                         .iter()
                         .any(|pattern| type_lower.contains(&pattern.to_lowercase()))
                 })
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || source_by_type.is_some();
 
             let is_http_param_annotation = tp.annotations.iter().any(|ann| {
                 Self::HTTP_PARAM_ANNOTATIONS
@@ -1223,31 +1229,41 @@ impl AstTaintAnalyzer {
                     )
                 };
 
-                let line_num = code
-                    .lines()
-                    .enumerate()
-                    .find(|(_, l)| l.contains(&tp.name))
-                    .map(|(i, _)| i + 1 + line_offset)
-                    .unwrap_or(1);
-                state.insert_var(
-                    var_name,
-                    VarTaintState::from_taint(
-                        line_num,
-                        source_desc,
-                        vec![PropagationStep {
-                            step_type: PropagationStepType::DirectAssignment,
-                            from_var: None,
-                            to_var: Some(tp.name.clone()),
-                            line: line_num,
-                            code_snippet: Some(format!(
-                                "param: {} {}",
-                                tp.annotations.join(" "),
-                                tp.type_annotation.clone().unwrap_or_default()
-                            )),
-                            function_name: None,
-                        }],
-                    ),
-                );
+                let seed_names = if tp.name.contains('(') {
+                    Self::destructured_binding_names(&tp.name)
+                } else {
+                    vec![tp.name.clone()]
+                };
+                for seed_name in seed_names {
+                    if state.get_var(&seed_name).is_some() {
+                        continue;
+                    }
+                    let line_num = code
+                        .lines()
+                        .enumerate()
+                        .find(|(_, l)| l.contains(&seed_name))
+                        .map(|(i, _)| i + 1 + line_offset)
+                        .unwrap_or(1);
+                    state.insert_var(
+                        seed_name.clone(),
+                        VarTaintState::from_taint(
+                            line_num,
+                            source_desc.clone(),
+                            vec![PropagationStep {
+                                step_type: PropagationStepType::DirectAssignment,
+                                from_var: None,
+                                to_var: Some(seed_name.clone()),
+                                line: line_num,
+                                code_snippet: Some(format!(
+                                    "param: {} {}",
+                                    tp.annotations.join(" "),
+                                    tp.type_annotation.clone().unwrap_or_default()
+                                )),
+                                function_name: None,
+                            }],
+                        ),
+                    );
+                }
             }
         }
 
@@ -1993,6 +2009,94 @@ impl AstTaintAnalyzer {
     }
 
     /// 已知的请求类型模式 — TypeScript 类型注解匹配
+    /// 从解构式参数名中取出绑定标识符。
+    ///
+    /// Rust actix 常见 `Json(payload): Json<T>` / `Path(id): Path<u32>`：
+    /// 参数抽取得到的 `name` 是整个模式 `Json(payload)`，而函数体里出现的是
+    /// 绑定名 `payload`——只播种模式名等于没有播种（实测 rauthy 大量入口如此）。
+    fn destructured_binding_names(name: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(open) = name.find('(') else {
+            return out;
+        };
+        let Some(close) = name.rfind(')') else {
+            return out;
+        };
+        if close <= open {
+            return out;
+        }
+        for part in name[open + 1..close].split(',') {
+            let mut ident = part.trim();
+            for kw in ["ref ", "mut "] {
+                if let Some(rest) = ident.strip_prefix(kw) {
+                    ident = rest.trim();
+                }
+            }
+            let candidate: String = ident
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !candidate.is_empty() && candidate != "_" && !out.contains(&candidate) {
+                out.push(candidate);
+            }
+        }
+        out
+    }
+
+    /// 参数类型是否命中"已加载的 taint source 规则"。
+    ///
+    /// 硬编码的 REQUEST_TYPE_PATTERNS 只覆盖 Spring/Node 等少数形态；Rust 提取器
+    /// （`Query<Q>` / `Json<T>` / `Form<T>` / `Path<T>`）、Go 框架上下文等只在
+    /// **taint 规则**里声明，导致"参数入口"永远不被播种（实测 Rust 目标整仓 CPG
+    /// 流仅 1 条）。这里让参数类型也参与 source 规则匹配。
+    ///
+    /// 精度：纯标识符模式（如 `Query`）要求整词匹配，避免 `Path` 命中 `PathBuf`、
+    /// `Form` 命中 `FormData` 这类子串误播种；含 `::`/`.`/`(` 的模式按子串匹配。
+    fn param_type_matches_source(&self, type_text: &str, language: &str) -> Option<String> {
+        if type_text.trim().is_empty() {
+            return None;
+        }
+        let text = type_text.to_lowercase();
+        for source in self.sources.iter() {
+            if !source.languages.is_empty()
+                && !source
+                    .languages
+                    .iter()
+                    .any(|l: &String| l == "*" || l.eq_ignore_ascii_case(language))
+            {
+                continue;
+            }
+            for pattern in &source.patterns {
+                let pat = pattern.trim();
+                if pat.is_empty() {
+                    continue;
+                }
+                if pat.contains("::") || pat.contains('.') || pat.contains('(') {
+                    if text.contains(&pat.to_lowercase()) {
+                        return Some(source.id.clone());
+                    }
+                    continue;
+                }
+                let pat_lower = pat.to_lowercase();
+                let bytes = text.as_bytes();
+                let mut start = 0usize;
+                while let Some(pos) = text[start..].find(&pat_lower) {
+                    let idx = start + pos;
+                    let end = idx + pat_lower.len();
+                    let before_ok = idx == 0
+                        || !(bytes[idx - 1].is_ascii_alphanumeric() || bytes[idx - 1] == b'_');
+                    let after_ok = end >= bytes.len()
+                        || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+                    if before_ok && after_ok {
+                        return Some(source.id.clone());
+                    }
+                    start = idx + 1;
+                }
+            }
+        }
+        None
+    }
+
     const REQUEST_TYPE_PATTERNS: &'static [&'static str] = &[
         "HttpRequest",
         "Request",
@@ -2042,6 +2146,11 @@ impl AstTaintAnalyzer {
                 continue;
             }
 
+            let source_by_type = tp
+                .type_annotation
+                .as_deref()
+                .and_then(|type_ann| self.param_type_matches_source(type_ann, language));
+
             let is_request_type = tp
                 .type_annotation
                 .as_ref()
@@ -2051,7 +2160,8 @@ impl AstTaintAnalyzer {
                         .iter()
                         .any(|pattern| type_lower.contains(&pattern.to_lowercase()))
                 })
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || source_by_type.is_some();
 
             let is_http_param_annotation = tp.annotations.iter().any(|ann| {
                 Self::HTTP_PARAM_ANNOTATIONS
@@ -2083,33 +2193,43 @@ impl AstTaintAnalyzer {
                     )
                 };
 
-                let line_num = code
-                    .lines()
-                    .enumerate()
-                    .find(|(_, l)| l.contains(&tp.name))
-                    .map(|(i, _)| i + 1 + line_offset)
-                    .unwrap_or(1);
-                state.insert(
-                    tp.name.clone(),
-                    TaintInfo {
-                        source_line: line_num,
-                        source_var: source_desc,
-                        sanitized: false,
-                        sanitizer: None,
-                        propagation_steps: vec![PropagationStep {
-                            step_type: PropagationStepType::DirectAssignment,
-                            from_var: None,
-                            to_var: Some(tp.name.clone()),
-                            line: line_num,
-                            code_snippet: Some(format!(
-                                "param: {} {}",
-                                tp.annotations.join(" "),
-                                tp.type_annotation.clone().unwrap_or_default()
-                            )),
-                            function_name: None,
-                        }],
-                    },
-                );
+                let seed_names = if tp.name.contains('(') {
+                    Self::destructured_binding_names(&tp.name)
+                } else {
+                    vec![tp.name.clone()]
+                };
+                for seed_name in seed_names {
+                    if state.contains_key(&seed_name) {
+                        continue;
+                    }
+                    let line_num = code
+                        .lines()
+                        .enumerate()
+                        .find(|(_, l)| l.contains(&seed_name))
+                        .map(|(i, _)| i + 1 + line_offset)
+                        .unwrap_or(1);
+                    state.insert(
+                        seed_name.clone(),
+                        TaintInfo {
+                            source_line: line_num,
+                            source_var: source_desc.clone(),
+                            sanitized: false,
+                            sanitizer: None,
+                            propagation_steps: vec![PropagationStep {
+                                step_type: PropagationStepType::DirectAssignment,
+                                from_var: None,
+                                to_var: Some(seed_name.clone()),
+                                line: line_num,
+                                code_snippet: Some(format!(
+                                    "param: {} {}",
+                                    tp.annotations.join(" "),
+                                    tp.type_annotation.clone().unwrap_or_default()
+                                )),
+                                function_name: None,
+                            }],
+                        },
+                    );
+                }
             }
         }
 
@@ -5236,6 +5356,27 @@ fn handler() {
             "CPG 路径应检出链式内层 sink，got {} flows",
             cpg_report.flows.len()
         );
+    }
+
+    #[test]
+    fn test_rust_extractor_param_cpg_vs_cfg() {
+        // 对比两条路径对"提取器参数 → 下游 sink"的检出：
+        // CFG 路径用于产出 findings，CPG 路径用于跨文件摘要（direct_sinks/ptc）。
+        let code = r#"use actix_web::web;
+
+pub async fn handler(q: web::Query<P>) -> i32 {
+    let v = q.value.clone();
+    db.query(v);
+    0
+}
+"#;
+        let mut analyzer = analyzer_with_yaml_rules();
+        let path = std::path::PathBuf::from("handler.rs");
+        let cfg = analyzer.analyze_file(&path, code);
+        let cpg = analyzer.analyze_file_cpg(&path, code);
+        eprintln!("DEBUG cfg flows={} cpg flows={}", cfg.len(), cpg.flows.len());
+        assert!(!cfg.is_empty(), "CFG 路径应有检出，got {}", cfg.len());
+        assert!(!cpg.flows.is_empty(), "CPG 路径应有检出，got {}", cpg.flows.len());
     }
 
     #[test]
