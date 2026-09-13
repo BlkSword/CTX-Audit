@@ -3377,13 +3377,37 @@ impl CrossFileTaintAnalyzer {
                 .values()
                 .filter(|s| !s.direct_sinks.is_empty() || !s.taint_propagation.is_empty())
                 .count();
+            // 覆盖率缺口的"真实暴露"：缺 CPG 的节点本身不值钱，值钱的是
+            // **可达 sink 的 taint source** 里有多少缺 CPG —— 它们本该走精确
+            // 摘要，实际只能退回结构可达链。
+            let missing_cpg = |id: &String| {
+                self.cpg_cache_key(id)
+                    .map(|k| !self.cpg_cache.contains_key(&k))
+                    .unwrap_or(true)
+            };
+            let source_total = self.call_graph.taint_sources.len();
+            let source_missing = self
+                .call_graph
+                .taint_sources
+                .iter()
+                .filter(|id| missing_cpg(id))
+                .count();
+            let source_reachable_missing = self
+                .call_graph
+                .taint_sources
+                .iter()
+                .filter(|id| sink_reachable.contains(*id) && missing_cpg(id))
+                .count();
             tracing::info!(
-                "[XFileStats] summary_path: nodes={} cpg_key_hits={} flow_key_hits={} summaries_total={} summaries_with_signal={}",
+                "[XFileStats] summary_path: nodes={} cpg_key_hits={} flow_key_hits={} summaries_total={} summaries_with_signal={} sources_total={} sources_missing_cpg={} sources_reachable_missing_cpg={}",
                 total_nodes,
                 cpg_hits,
                 flow_hits,
                 summaries.len(),
-                summary_hits
+                summary_hits,
+                source_total,
+                source_missing,
+                source_reachable_missing
             );
         }
         // 预分配精确容量：避免 Vec 增长时反复重新分配和复制。
