@@ -1772,7 +1772,11 @@ pub async fn scan_directory_deep_with_rules_progress(
 
             // 快速过滤：文件内容不含任何 source/sink 关键词时，跳过 Stage B 的
             // CPG/污点分析（调用图仍由 Stage C 按需构建）。
-            if let Some(ref set) = taint_keyword_set {
+            // 诊断开关 CTX_AUDIT_NO_FILE_PREFILTER=1 关闭该过滤（量化其影响）。
+            if let Some(ref set) = taint_keyword_set
+                .as_ref()
+                .filter(|_| std::env::var_os("CTX_AUDIT_NO_FILE_PREFILTER").is_none())
+            {
                 if !set.is_match(content) {
                     return (
                         file_path_str.clone(),
@@ -1868,10 +1872,16 @@ pub async fn scan_directory_deep_with_rules_progress(
                     let func_tasks: Vec<_> = functions
                         .iter()
                         .filter_map(|func| {
-                            // 函数级快速过滤：函数体不含 source/sink 关键词时跳过 CPG 构建
-                            if let Some(ref set) = taint_keyword_set {
-                                if !set.is_match(&func.body_text) {
-                                    return None;
+                            // 函数级快速过滤：函数体不含 source/sink 关键词时跳过 CPG 构建。
+                            // 诊断开关 CTX_AUDIT_NO_FUNC_PREFILTER=1 可全量建 CPG，用于量化
+                            // "预过滤漏掉的中间跳板函数"对跨文件流供给的影响。
+                            let prefilter_disabled =
+                                std::env::var_os("CTX_AUDIT_NO_FUNC_PREFILTER").is_some();
+                            if !prefilter_disabled {
+                                if let Some(ref set) = taint_keyword_set {
+                                    if !set.is_match(&func.body_text) {
+                                        return None;
+                                    }
                                 }
                             }
 
