@@ -4041,6 +4041,27 @@ impl CrossFileTaintAnalyzer {
         // 每个 source 保留的最短 sink 数（去重阶段每 source 只留 Top-N，
         // 这里默认留 8 倍余量，让去重在"按跳数排序"的候选池里挑选）。
         let max_sinks_per_source = self.limits.max_sinks_per_source;
+        let diag = std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some();
+        // 结构可达链在去重阶段每 source 最多留 `max_structural_per_source` 条
+        // （默认 1）。旧实现每 source 发 8 条"让去重挑"，代价是全局上限被前几个
+        // source 吃满 → 后续 source 一条不发（实测把单 source 预算调小，候选总数
+        // 反而上升，因为更多 source 挤进了上限）。发射量按"去重真正可能保留的
+        // 条数"封顶后，预算按 source 均摊，覆盖与单 source 预算解耦。
+        let structural_keep = self.limits.max_structural_per_source;
+        let min_confidence = self.limits.min_confidence;
+        if structural_keep == 0 {
+            // 去重会把结构链全部丢弃：直接跳过回退（省一次全图 BFS）
+            if diag {
+                tracing::info!(
+                    "[XFileStats] fallback skipped: max_structural_per_source=0（结构链会被去重全部丢弃）"
+                );
+            }
+            return Vec::new();
+        }
+        let emit_per_source = max_sinks_per_source
+            .min(structural_keep)
+            .min(self.limits.max_flows_per_source)
+            .max(1);
         /// BFS 深度上限：置信度随跳数按 0.85^hops 衰减，非 YAML sink 再 ×0.5，
         /// 去重阶段的 MIN_CONFIDENCE=0.35 会把 2 跳以上的 name-based 链全部丢弃
         /// （YAML sink 上限约 5 跳）。限制深度既不影响最终保留集，又避免对
@@ -4062,10 +4083,13 @@ impl CrossFileTaintAnalyzer {
         let mut visited: HashSet<&String> = HashSet::new();
         let mut queue: VecDeque<(&String, usize)> = VecDeque::new();
         let mut found: Vec<(&String, usize)> = Vec::new();
+        let mut reachable_sources = 0usize;
+        let mut processed_sources = 0usize;
         for source_id in &self.call_graph.taint_sources {
             if !sink_reachable.contains(source_id) {
                 continue;
             }
+            reachable_sources += 1;
             predecessors.clear();
             visited.clear();
             queue.clear();
@@ -4100,6 +4124,21 @@ impl CrossFileTaintAnalyzer {
 
             found.sort_by(|a, b| (a.1, a.0.as_str()).cmp(&(b.1, b.0.as_str())));
             found.truncate(max_sinks_per_source);
+            processed_sources += 1;
+            // 按"去重阶段真正会保留哪条"挑，而不是按跳数挑：结构链的保留顺序是
+            // (置信度降序 → sink 位置)，置信度 = 基础分 × 跳数衰减 × (非 YAML sink ×0.5)。
+            // 只按跳数截断会挑错（实测：1 跳 body-keyword sink 置信度 0.40 挤掉了
+            // 2 跳 YAML sink 的 0.61），所以这里复算置信度 + 镜像去重排序 + 同款
+            // min_confidence 过滤，使"每 source 只发 structural_keep 条"与
+            // "发满 max_sinks_per_source 条让去重挑"等价。
+            let sink_sort_key = |id: &String| -> (String, usize, String) {
+                self.call_graph
+                    .nodes
+                    .get(id.as_str())
+                    .map(|n| (n.file_path.clone(), n.start_line, n.name.clone()))
+                    .unwrap_or_else(|| (id.clone(), 0, String::new()))
+            };
+            let mut picked: Vec<(f32, &String, usize, Vec<String>)> = Vec::new();
             for (sink_id, hops) in found.drain(..) {
                 let mut path: Vec<String> = vec![sink_id.clone()];
                 let mut current = sink_id;
@@ -4117,6 +4156,31 @@ impl CrossFileTaintAnalyzer {
                     continue; // 前驱链断裂（理论不可达），跳过该 pair
                 }
                 path.reverse();
+                let (base_confidence, _) = self.calculate_flow_confidence(&path);
+                let is_yaml_sink = self
+                    .call_graph
+                    .nodes
+                    .get(sink_id.as_str())
+                    .map(|n| n.sink_match_source == Some(SinkMatchSource::YamlRule))
+                    .unwrap_or(false);
+                let confidence = if is_yaml_sink {
+                    base_confidence
+                } else {
+                    base_confidence * 0.5
+                };
+                if confidence < min_confidence {
+                    continue; // 去重阶段同样会丢弃，不必占全局预算
+                }
+                picked.push((confidence, sink_id, hops, path));
+            }
+            picked.sort_by(|a, b| {
+                b.0
+                    .partial_cmp(&a.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| sink_sort_key(a.1).cmp(&sink_sort_key(b.1)))
+            });
+            picked.truncate(emit_per_source);
+            for (_confidence, sink_id, hops, path) in picked {
                 candidates.push((source_id.clone(), sink_id.clone(), hops, path));
             }
             // 确定性提前退出：source 顺序已排序、每 source 结果已按跳数排序，
@@ -4133,6 +4197,16 @@ impl CrossFileTaintAnalyzer {
             (a.2, a.0.as_str(), a.1.as_str()).cmp(&(b.2, b.0.as_str(), b.1.as_str()))
         });
         candidates.truncate(max_flows);
+        if diag {
+            tracing::info!(
+                "[XFileStats] fallback: reachable_sources={} processed_sources={} emitted={} emit_per_source={} max_hops={}",
+                reachable_sources,
+                processed_sources,
+                candidates.len(),
+                emit_per_source,
+                max_hops
+            );
+        }
 
         let mut flows = Vec::with_capacity(candidates.len());
         for (source_id, sink_id, _hops, path) in candidates {
@@ -4186,7 +4260,8 @@ impl CrossFileTaintAnalyzer {
                     line: source.start_line,
                     column: None,
                     symbol: source.name.clone(),
-                    node_id: None,
+                    // 与数据流链保持一致：带上调用图节点 id，下游可精确反查
+                    node_id: Some(source.id.clone()),
                     code_snippet: None,
                 },
                 sink: FlowLocation {
@@ -4194,7 +4269,7 @@ impl CrossFileTaintAnalyzer {
                     line: sink.start_line,
                     column: None,
                     symbol: sink.name.clone(),
-                    node_id: None,
+                    node_id: Some(sink.id.clone()),
                     code_snippet: None,
                 },
                 interprocedural_path,
@@ -5034,6 +5109,74 @@ pub fn normalize_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mk_test_node(id: &str, is_source: bool, is_sink: bool) -> CallGraphNode {
+        CallGraphNode {
+            id: id.to_string(),
+            name: id.rsplit(':').next().unwrap_or(id).to_string(),
+            file_path: "t.py".to_string(),
+            start_line: 1,
+            end_line: 2,
+            parameters: vec![],
+            return_type: None,
+            calls: vec![],
+            called_by: vec![],
+            is_external: false,
+            is_taint_source: is_source,
+            is_taint_sink: is_sink,
+            sink_type: None,
+            sink_match_source: None,
+            is_callback: false,
+            parent_call_site: None,
+        }
+    }
+
+    #[test]
+    fn test_fallback_budget_is_shared_across_sources() {
+        // 回归：旧实现每 source 发 8 条候选，小预算下被第一个 source 吃满并提前
+        // 退出 → 后续 source 一条都发不出，覆盖取决于单 source 预算。
+        let mut analyzer = CrossFileTaintAnalyzer::new();
+        analyzer
+            .call_graph
+            .add_node(mk_test_node("t.py:source_a", true, false));
+        analyzer
+            .call_graph
+            .add_node(mk_test_node("t.py:source_b", true, false));
+        for i in 0..8 {
+            let sink = format!("t.py:sink_{}", i);
+            analyzer.call_graph.add_node(mk_test_node(&sink, false, true));
+            analyzer.call_graph.add_call("t.py:source_a", &sink, 1);
+        }
+        analyzer
+            .call_graph
+            .add_node(mk_test_node("t.py:sink_b", false, true));
+        analyzer.call_graph.add_call("t.py:source_b", "t.py:sink_b", 1);
+
+        let flows = analyzer.find_interprocedural_taint_flows_fallback(2);
+        let sources: std::collections::HashSet<String> = flows
+            .iter()
+            .filter_map(|f| f.source.node_id.clone())
+            .collect();
+        assert!(sources.contains("t.py:source_a"), "sources={:?}", sources);
+        assert!(sources.contains("t.py:source_b"), "sources={:?}", sources);
+    }
+
+    #[test]
+    fn test_fallback_skipped_when_structural_chains_disabled() {
+        let mut analyzer = CrossFileTaintAnalyzer::new();
+        analyzer
+            .call_graph
+            .add_node(mk_test_node("t.py:source_a", true, false));
+        analyzer
+            .call_graph
+            .add_node(mk_test_node("t.py:sink_a", false, true));
+        analyzer.call_graph.add_call("t.py:source_a", "t.py:sink_a", 1);
+        let mut limits = analyzer.limits();
+        limits.max_structural_per_source = 0;
+        analyzer.set_limits(limits);
+        let flows = analyzer.find_interprocedural_taint_flows_fallback(2);
+        assert!(flows.is_empty(), "expected no structural flows, got {}", flows.len());
+    }
 
     #[test]
     fn cross_file_limits_defaults_match_baseline() {
