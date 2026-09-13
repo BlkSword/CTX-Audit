@@ -42,22 +42,30 @@ pub fn load_taint_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<LoadedTaintR
         });
     }
 
+    // 确定性：WalkDir 枚举顺序取决于文件系统。规则文件的加载顺序决定
+    // sources/sinks 在 Vec 中的次序，而"多规则匹配同一调用"时首个匹配者胜
+    // （例如 `insert` 同时匹配 StorageWrite 与 SqlInjection）→ 跨机 vuln_type
+    // 不同。这里先排序再加载（另有按 id 的二级排序兜底）。
+    let mut rule_files: Vec<std::path::PathBuf> = Vec::new();
     for entry in WalkDir::new(path) {
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
         };
-
         if !entry.file_type().is_file() {
             continue;
         }
-
         let file_path = entry.path();
         let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if ext != "yaml" && ext != "yml" {
             continue;
         }
+        rule_files.push(file_path.to_path_buf());
+    }
+    rule_files.sort();
 
+    for file_path in &rule_files {
+        let file_path = file_path.as_path();
         let content = match std::fs::read_to_string(file_path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -95,6 +103,10 @@ pub fn load_taint_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<LoadedTaintR
             }
         }
     }
+
+    // 二级确定性保障：即使文件枚举顺序变化，最终规则顺序也固定（按 id 排序）。
+    sources.sort_by(|a, b| a.id.cmp(&b.id));
+    sinks.sort_by(|a, b| a.id.cmp(&b.id));
 
     Ok(LoadedTaintRules {
         sources,

@@ -3879,6 +3879,29 @@ impl CrossFileTaintAnalyzer {
                 hasher.finish()
             );
         }
+        // 诊断：把最终流集合（含路径与置信度）导出为排序文本，供跨机/跨版本 diff。
+        // 用途：跨机结果不一致时定位"哪些 pair 被替换"，而不是只看计数。
+        if let Some(path) = std::env::var_os("CTX_AUDIT_XFILE_DUMP") {
+            let mut lines: Vec<String> = out
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{}:{}|{}:{}|{:?}|{}|{:.3}|{}",
+                        f.source.file_path,
+                        f.source.line,
+                        f.sink.file_path,
+                        f.sink.line,
+                        f.vulnerability_type,
+                        f.sink.symbol,
+                        f.confidence,
+                        f.confidence_factors.join(",")
+                    )
+                })
+                .collect();
+            lines.sort();
+            let _ = std::fs::write(std::path::PathBuf::from(path), lines.join("
+"));
+        }
         out
     }
 
