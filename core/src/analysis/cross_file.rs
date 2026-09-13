@@ -637,6 +637,36 @@ pub struct CrossFileTaintAnalyzer {
     file_line_offsets: HashMap<String, Vec<u32>>,
 }
 
+/// 文本是否引用了某个标识符（按标识符边界判断）。
+///
+/// `params.x` / `&params` / `(params,` 视为引用；`foo.params`（字段访问）与
+/// `params_extra`（前缀相同）不算。用于把"源行/流路径里出现的函数形参"
+/// 提升为污点种子与 param→call 映射依据。
+pub(crate) fn line_references_var(text: &str, name: &str) -> bool {
+    if name.is_empty() || text.is_empty() {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let mut start = 0usize;
+    while let Some(pos) = text[start..].find(name) {
+        let idx = start + pos;
+        let end = idx + name.len();
+        let before_ok = idx == 0
+            || !(bytes[idx - 1].is_ascii_alphanumeric()
+                || bytes[idx - 1] == b'_'
+                || bytes[idx - 1] == b'.');
+        let after_ok = end >= bytes.len()
+            || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+        if before_ok && after_ok {
+            return true;
+        }
+        start = idx + 1;
+        if start >= text.len() {
+            break;
+        }
+    }
+    false
+}
 
 /// 计算每行起始字节偏移（行数与 `str::lines()` 一致；不产生逐行字符串）。
 fn line_start_offsets(content: &str) -> Vec<u32> {
@@ -3011,6 +3041,48 @@ impl CrossFileTaintAnalyzer {
         summaries
     }
 
+    /// 文本是否引用了某个标识符（按标识符边界判断）。
+    ///
+    /// `params.x` / `&params` / `(params,` 视为引用；`foo.params`（字段访问）与
+    /// `params_extra`（前缀相同）不算。用于把"源行/流路径里出现的函数形参"
+    /// 提升为污点种子。
+
+
+    /// 污点变量名匹配（点/下标前缀语义）。
+    ///
+    /// `payload` 与 `payload.foo`、`payload["x"]`、`payload.a.b` 视为同一污点族：
+    /// 一方是另一方的点/下标前缀即命中。此前各处用 `HashSet::contains` 精确相等，
+    /// "参数名 `payload`，调用实参引用 `payload.req`" 这类常见形态全部漏配——
+    /// 实测 rauthy：args_hit=398 但 callee_tainted=1（summary 只出 1 条流）。
+    fn var_path_matches(a: &str, b: &str) -> bool {
+        let a = a.trim();
+        let b = b.trim();
+        if a.is_empty() || b.is_empty() {
+            return false;
+        }
+        if a == b {
+            return true;
+        }
+        if let Some(rest) = a.strip_prefix(b) {
+            if rest.starts_with('.') || rest.starts_with('[') {
+                return true;
+            }
+        }
+        if let Some(rest) = b.strip_prefix(a) {
+            if rest.starts_with('.') || rest.starts_with('[') {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 候选变量是否命中任一已污染变量（前缀语义）
+    fn var_taint_matches(candidate: &str, tainted: &HashSet<String>) -> bool {
+        tainted
+            .iter()
+            .any(|t| Self::var_path_matches(candidate, t))
+    }
+
     /// 由调用图节点 id 构造与 Stage B 对齐的 CPG 缓存键。
     ///
     /// Stage B 写入 `cpg_cache` / `cpg_taint_flows` 时用的是
@@ -3036,8 +3108,34 @@ impl CrossFileTaintAnalyzer {
         // 1. 优先使用 Stage B 传来的精确污点流（键为三段式，需与节点 id 对齐）
         if let Some(key) = self.cpg_cache_key(func_id) {
             if let Some(flows) = self.cpg_taint_flows.get(&key) {
+                let params: Vec<String> = self
+                    .call_graph
+                    .nodes
+                    .get(func_id)
+                    .map(|n| n.parameters.iter().map(|p| p.name.clone()).collect())
+                    .unwrap_or_default();
                 for flow in flows {
                     vars.insert(flow.source.symbol.clone());
+                    // 关键补种：Stage B 流的 source.symbol 常是"赋值左侧局部变量"
+                    // （`let ts = params.get(k)` → 种子 ts），而跨函数传播的入口名字
+                    // 是函数形参 `params`（param_to_calls / call_site_args 都按形参名）。
+                    // 把源符号与流路径中出现的形参一并作为种子。
+                    for param in &params {
+                        if line_references_var(&flow.source.symbol, param) {
+                            vars.insert(param.clone());
+                        }
+                        for step in &flow.path {
+                            let hit = line_references_var(&step.symbol, param)
+                                || step
+                                    .code_snippet
+                                    .as_deref()
+                                    .map(|code| line_references_var(code, param))
+                                    .unwrap_or(false);
+                            if hit {
+                                vars.insert(param.clone());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -3058,6 +3156,13 @@ impl CrossFileTaintAnalyzer {
                                 if source.matches(line, &file_language) {
                                     if let Some(var) = Self::extract_var_from_source_line(line) {
                                         vars.insert(var);
+                                    }
+                                    // 同一行出现的函数形参也是污点入口
+                                    // （`let ts = params.get(k)` → 种 params）
+                                    for param in &node.parameters {
+                                        if line_references_var(line, &param.name) {
+                                            vars.insert(param.name.clone());
+                                        }
                                     }
                                 }
                             }
@@ -3189,6 +3294,9 @@ impl CrossFileTaintAnalyzer {
         let mut c_callee_tainted = 0usize;
         let mut c_emit_sink_node = 0usize;
         let mut c_emit_callee_sink = 0usize;
+        let mut c_seed_matches_param = 0usize;
+        let mut c_summary_ptc_entries = 0usize;
+        let mut c_ptc_hits = 0usize;
 
         for source_id in &self.call_graph.taint_sources {
             c_total += 1;
@@ -3203,6 +3311,25 @@ impl CrossFileTaintAnalyzer {
                 continue;
             }
             c_seeded += 1;
+            if diag && c_seeded <= 4 {
+                if let Some(node) = self.call_graph.nodes.get(source_id) {
+                    tracing::info!(
+                        "[XFileStats] SEED node={} params={:?} seeds={:?}",
+                        node.name,
+                        node.parameters.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+                        initial_vars.iter().take(6).cloned().collect::<Vec<_>>()
+                    );
+                }
+            }
+            if let Some(node) = self.call_graph.nodes.get(source_id) {
+                if initial_vars.iter().any(|v| {
+                    node.parameters
+                        .iter()
+                        .any(|p| Self::var_path_matches(v, &p.name))
+                }) {
+                    c_seed_matches_param += 1;
+                }
+            }
 
             // visited[func_id] = 该函数已出现过的污点变量集合
             let mut visited: HashMap<String, HashSet<String>> = HashMap::new();
@@ -3292,7 +3419,7 @@ impl CrossFileTaintAnalyzer {
                             if arg
                                 .referenced_vars
                                 .iter()
-                                .any(|v| current_tainted.contains(v))
+                                .any(|v| Self::var_taint_matches(v, &current_tainted))
                             {
                                 callee_tainted
                                     .insert(callee_node.parameters[param_idx].name.clone());
@@ -3302,20 +3429,26 @@ impl CrossFileTaintAnalyzer {
 
                     // 利用函数摘要的 param_to_calls 补充重命名/字段访问等数据流
                     if let Some(current_summary) = summaries.get(&current_id) {
+                        c_summary_ptc_entries += current_summary.param_to_calls.len();
                         let tainted_param_indices: Vec<(usize, &str)> = node
                             .parameters
                             .iter()
                             .enumerate()
-                            .filter(|(_, p)| current_tainted.contains(&p.name))
+                            .filter(|(_, p)| Self::var_taint_matches(&p.name, &current_tainted))
                             .map(|(i, p)| (i, p.name.as_str()))
                             .collect();
                         for (param_idx, _) in tainted_param_indices {
                             for ptc in current_summary.param_to_calls.iter().filter(|ptc| {
+                                // ptc.callee 是摘要构建时的"原始被调函数名"（如 exec），
+                                // 而 ct.callee 是解析后的节点 id（如 file.ts:exec）——
+                                // 两者都要接受，否则过滤恒不命中（ptc_hits 恒 0）。
                                 ptc.param_idx == param_idx
-                                    && ptc.callee == ct.callee
+                                    && (ptc.callee == ct.callee
+                                        || ptc.callee == callee_node.name)
                                     && ptc.call_line == ct.line
                             }) {
                                 if ptc.arg_idx < callee_node.parameters.len() {
+                                    c_ptc_hits += 1;
                                     callee_tainted
                                         .insert(callee_node.parameters[ptc.arg_idx].name.clone());
                                 }
@@ -3396,9 +3529,10 @@ impl CrossFileTaintAnalyzer {
 
         if diag {
             tracing::info!(
-                "[XFileStats] propagate: sources={} reachable={} seeded={} pops={} edges={} args_hit={} callee_tainted={} emit_sink_node={} emit_callee_sink={} flows={}",
-                c_total, c_reachable, c_seeded, c_pops, c_edges, c_args_hit,
-                c_callee_tainted, c_emit_sink_node, c_emit_callee_sink, flows.len()
+                "[XFileStats] propagate: sources={} reachable={} seeded={} seed_matches_param={} pops={} edges={} args_hit={} callee_tainted={} ptc_entries={} ptc_hits={} emit_sink_node={} emit_callee_sink={} flows={}",
+                c_total, c_reachable, c_seeded, c_seed_matches_param, c_pops, c_edges, c_args_hit,
+                c_callee_tainted, c_summary_ptc_entries, c_ptc_hits,
+                c_emit_sink_node, c_emit_callee_sink, flows.len()
             );
         }
 
@@ -3562,6 +3696,10 @@ impl CrossFileTaintAnalyzer {
         }
         let merged = Self::merge_flow_sources(summary_flows, fallback);
         let merged_len = merged.len();
+        let df_before = merged
+            .iter()
+            .filter(|f| f.confidence_factors.iter().any(|x| x == "path:dataflow"))
+            .count();
         let out = Self::dedup_flows_by_source(merged, max_flows);
         if diag {
             // 流集合指纹：跨运行比较用（若指纹不一致 ⇒ 流生成不确定；
@@ -3571,10 +3709,16 @@ impl CrossFileTaintAnalyzer {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             use std::hash::{Hash, Hasher};
             keys.hash(&mut hasher);
+            let df_after = out
+                .iter()
+                .filter(|f| f.confidence_factors.iter().any(|x| x == "path:dataflow"))
+                .count();
             tracing::info!(
-                "[XFileStats] merged={} after_dedup={} flow_set_hash={:x}",
+                "[XFileStats] merged={} (dataflow {}) after_dedup={} (dataflow {}) flow_set_hash={:x}",
                 merged_len,
+                df_before,
                 out.len(),
+                df_after,
                 hasher.finish()
             );
         }
@@ -3587,16 +3731,35 @@ impl CrossFileTaintAnalyzer {
         summary: Vec<InterproceduralTaintFlow>,
         fallback: Vec<InterproceduralTaintFlow>,
     ) -> Vec<InterproceduralTaintFlow> {
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut merged = Vec::with_capacity(summary.len() + fallback.len());
+        // 数据流链先按 (source, sink, 类型) 去重：同一 pair 往往有多条路径，
+        // 若原样保留会挤占每 source 的 Top-N 名额（实测 rauthy 67 条数据流链
+        // 有 56 条在去重阶段因同 pair 重复而被丢掉）。保留置信度最高、
+        // 并列时路径最短的那条。
+        let mut best: HashMap<String, InterproceduralTaintFlow> = HashMap::new();
         for flow in summary {
-            seen.insert(Self::flow_pair_key(&flow));
-            merged.push(flow);
+            let key = Self::flow_pair_key(&flow);
+            let replace = match best.get(&key) {
+                None => true,
+                Some(existing) => {
+                    flow.confidence > existing.confidence
+                        || ((flow.confidence - existing.confidence).abs() <= f32::EPSILON
+                            && flow.interprocedural_path.len() < existing.interprocedural_path.len())
+                }
+            };
+            if replace {
+                best.insert(key, flow);
+            }
         }
+        let mut merged: Vec<InterproceduralTaintFlow> = best.into_values().collect();
+        // 确定性输出顺序（按 pair key）
+        merged.sort_by(|a, b| Self::flow_pair_key(a).cmp(&Self::flow_pair_key(b)));
+
+        let mut seen: HashSet<String> = merged.iter().map(Self::flow_pair_key).collect();
         for flow in fallback {
             if seen.contains(&Self::flow_pair_key(&flow)) {
                 continue;
             }
+            seen.insert(Self::flow_pair_key(&flow));
             merged.push(flow);
         }
         merged
@@ -3658,12 +3821,28 @@ impl CrossFileTaintAnalyzer {
         const MAX_STRUCTURAL_PER_SOURCE: usize = 1;
 
         let mut out = Vec::with_capacity(max_flows.min(groups.len() * MAX_FLOWS_PER_SOURCE));
+        // 证据分级：数据流链（param→sink 有实参映射证据）优先于结构可达链，
+        // 组内先按证据等级、再按置信度降序；并列用稳定字段决胜（不用随机 flow.id）
+        let evidence_rank = |flow: &InterproceduralTaintFlow| -> u8 {
+            if flow
+                .confidence_factors
+                .iter()
+                .any(|f| f == "path:dataflow")
+            {
+                0
+            } else {
+                1
+            }
+        };
         for (_, mut group) in groups {
-            // 置信度降序，保留高置信链；并列时按稳定字段决胜（不用随机 flow.id）
             group.sort_by(|a, b| {
-                b.confidence
-                    .partial_cmp(&a.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                evidence_rank(a)
+                    .cmp(&evidence_rank(b))
+                    .then_with(|| {
+                        b.confidence
+                            .partial_cmp(&a.confidence)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
                     .then_with(|| a.sink.file_path.cmp(&b.sink.file_path))
                     .then_with(|| a.sink.line.cmp(&b.sink.line))
                     .then_with(|| a.sink.symbol.cmp(&b.sink.symbol))
@@ -4442,7 +4621,11 @@ impl CrossFileTaintAnalyzer {
                 let site_key = format!("{}:{}", func_id, ct.line);
                 if let Some(args) = self.call_site_args.get(&site_key) {
                     for (arg_idx, arg) in args.iter().enumerate() {
-                        if arg.referenced_vars.iter().any(|v| v == &param.name) {
+                        if arg
+                            .referenced_vars
+                            .iter()
+                            .any(|v| Self::var_path_matches(v, &param.name))
+                        {
                             param_to_calls.push(ParamToCall {
                                 param_idx,
                                 callee: ct.callee.clone(),

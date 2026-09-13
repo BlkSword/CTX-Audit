@@ -105,19 +105,62 @@ pub fn compute_summary_from_cpg(
         let param_name = &param.name;
         for flow in taint_flows.iter().filter(|f| {
             let src = f.source.symbol.trim();
-            src == param_name
+            if src == param_name
                 || src.starts_with(&format!("{}.", param_name))
                 || src.starts_with(&format!("{}[", param_name))
+            {
+                return true;
+            }
+            // Stage B 的 flow.source.symbol 常是"赋值左侧局部变量"
+            // （`let ts = params.get(k)` → source 是 ts）。若源符号或流路径中
+            // 出现该形参，则该流同样源自此形参 —— 这是 param_to_calls 能命中的关键。
+            if crate::analysis::cross_file::line_references_var(&f.source.symbol, param_name) {
+                return true;
+            }
+            f.path.iter().any(|step| {
+                crate::analysis::cross_file::line_references_var(&step.symbol, param_name)
+                    || step
+                        .code_snippet
+                        .as_deref()
+                        .map(|code| {
+                            crate::analysis::cross_file::line_references_var(code, param_name)
+                        })
+                        .unwrap_or(false)
+            })
         }) {
-            let sink_var = flow.sink.symbol.trim();
-            if let Some(calls) = var_to_calls.get(sink_var) {
-                for (callee, arg_idx, call_line) in calls {
-                    param_to_calls.push(crate::analysis::cross_file::ParamToCall {
-                        param_idx,
-                        callee: callee.clone(),
-                        arg_idx: *arg_idx,
-                        call_line: *call_line,
-                    });
+            // `flow.sink.symbol` 是"被调用的 sink 函数名"（如 exec），而
+            // `var_to_calls` 按实参变量名建索引 —— 直接拿 sink 名查恒为空。
+            // 正确做法：用该流路径上的"值承载变量"（PropagationStep.to_var /
+            // 步骤符号 / 源符号）去查，找出"哪个实参携带了该污染值"。
+            let mut value_vars: Vec<String> = Vec::new();
+            let src = flow.source.symbol.trim();
+            if !src.is_empty() {
+                value_vars.push(src.to_string());
+            }
+            for step in &flow.path {
+                let sym = step.symbol.trim();
+                if !sym.is_empty() {
+                    value_vars.push(sym.to_string());
+                }
+                // 代码片段里出现、且确实是某次调用的实参变量名 ⇒ 该值可能被传入该调用
+                if let Some(code) = step.code_snippet.as_deref() {
+                    for key in var_to_calls.keys() {
+                        if crate::analysis::cross_file::line_references_var(code, key) {
+                            value_vars.push(key.clone());
+                        }
+                    }
+                }
+            }
+            for var in value_vars {
+                if let Some(calls) = var_to_calls.get(var.as_str()) {
+                    for (callee, arg_idx, call_line) in calls {
+                        param_to_calls.push(crate::analysis::cross_file::ParamToCall {
+                            param_idx,
+                            callee: callee.clone(),
+                            arg_idx: *arg_idx,
+                            call_line: *call_line,
+                        });
+                    }
                 }
             }
         }
