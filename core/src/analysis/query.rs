@@ -1478,8 +1478,8 @@ mod tests {
         });
 
         // Add calls (also populates calls/called_by fields)
-        cg.add_call("handler.js:handleRequest", "db.js:executeQuery");
-        cg.add_call("db.js:executeQuery", "db.js:exec");
+        cg.add_call("handler.js:handleRequest", "db.js:executeQuery", 0);
+        cg.add_call("db.js:executeQuery", "db.js:exec", 0);
 
         // Set up file_functions
         cg.file_functions
@@ -1618,7 +1618,7 @@ mod tests {
             "app.js".into(),
             vec!["app.js:setup".into(), "app.js:setup:5:cb0".into()],
         );
-        cg.add_call("app.js:setup", "app.js:setup:5:cb0");
+        cg.add_call("app.js:setup", "app.js:setup:5:cb0", 0);
 
         let engine = CallGraphQueryEngine::new(
             Arc::new(cg),

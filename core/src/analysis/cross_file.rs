@@ -290,11 +290,16 @@ impl CallGraph {
         self.nodes.insert(id, node);
     }
 
-    /// 添加调用关系
-    pub fn add_call(&mut self, caller_id: &str, callee_id: &str) {
+    /// 添加调用关系。
+    ///
+    /// `line` 为调用点所在行（文件绝对行号）：摘要传播要靠
+    /// `caller_id:line` 去 `call_site_args` 查实参，进而判断"哪些污点变量传入了
+    /// callee 的形参"。旧实现用 `CallTarget::new()` 建边（line=0），跨文件边
+    /// 的 site_key 恒为 `caller:0` → 查不到实参 → summary 路径恒产出 0 条流。
+    pub fn add_call(&mut self, caller_id: &str, callee_id: &str, line: usize) {
         if let Some(caller) = self.nodes.get_mut(caller_id) {
             if !caller.calls.iter().any(|c| c.callee == callee_id) {
-                caller.calls.push(CallTarget::new(callee_id));
+                caller.calls.push(CallTarget::new(callee_id).with_line(line));
             }
         }
         if let Some(callee) = self.nodes.get_mut(callee_id) {
@@ -1036,6 +1041,15 @@ impl CrossFileTaintAnalyzer {
                     .map(|c| CallTarget::from((*c).clone()))
                     .collect();
 
+                // 缓存每个调用点的实参，供摘要传播判断"哪些污点变量进入 callee 形参"。
+                // 该逻辑此前只存在于 build_call_graph_for_file_ast，而实际分析走的是
+                // 本函数（复用 Stage B AST 产物）→ call_site_args 恒为空 → 参数映射
+                // 全断 → summary 路径恒产出 0 条流（跨文件退化为纯名字可达性）。
+                for c in &calls_in_range {
+                    let site_key = format!("{}:{}", func_id, c.line);
+                    self.call_site_args.insert(site_key, c.arguments.clone());
+                }
+
                 let body_text = Self::extract_body(
                     content,
                     symbol.start_line as usize,
@@ -1155,7 +1169,7 @@ impl CrossFileTaintAnalyzer {
                         };
 
                         self.call_graph.add_node(cb_node);
-                        self.call_graph.add_call(&func_id, &cb_id);
+                        self.call_graph.add_call(&func_id, &cb_id, call.line);
                         cb_idx += 1;
                     }
                 }
@@ -1455,7 +1469,7 @@ impl CrossFileTaintAnalyzer {
 
             if let (Some(caller_id), Some(callee_id)) = (caller_id, callee_id) {
                 if caller_id != callee_id {
-                    self.call_graph.add_call(&caller_id, &callee_id);
+                    self.call_graph.add_call(&caller_id, &callee_id, line);
                 }
             }
         }
@@ -1581,7 +1595,7 @@ impl CrossFileTaintAnalyzer {
         let mut node_refs: Vec<(&String, &CallGraphNode)> = all_nodes.iter().collect();
         node_refs.sort_by(|a, b| a.0.cmp(b.0));
 
-        let cross_call_batches: Vec<Vec<(String, String)>> = node_refs
+        let cross_call_batches: Vec<Vec<(String, String, usize)>> = node_refs
             .into_par_iter()
             .map(|(caller_id, node)| {
                 let caller_file_normalized = normalize_path(&node.file_path);
@@ -1617,7 +1631,11 @@ impl CrossFileTaintAnalyzer {
                                         for callee_id in callee_ids {
                                             if callee_id != caller_id {
                                                 local_edges
-                                                    .push((caller_id.clone(), callee_id.clone()));
+                                                    .push((
+                                                        caller_id.clone(),
+                                                        callee_id.clone(),
+                                                        ct.line,
+                                                    ));
                                                 resolved = true;
                                             }
                                         }
@@ -1630,6 +1648,7 @@ impl CrossFileTaintAnalyzer {
                                                     local_edges.push((
                                                         caller_id.clone(),
                                                         callee_id.clone(),
+                                                        ct.line,
                                                     ));
                                                     resolved = true;
                                                 }
@@ -1685,14 +1704,14 @@ impl CrossFileTaintAnalyzer {
                                     .unwrap_or_default();
                                 if callee_file == caller_file_normalized {
                                     // 同文件内调用：直接建立边（caller/callee 已在同一文件）
-                                    local_edges.push((caller_id.clone(), callee_id.clone()));
+                                    local_edges.push((caller_id.clone(), callee_id.clone(), ct.line));
                                     resolved = true;
                                     continue;
                                 }
                                 if let Some(ref target_file) = receiver_target_file {
                                     let target_normalized = normalize_path(target_file);
                                     if callee_file == target_normalized {
-                                        local_edges.push((caller_id.clone(), callee_id.clone()));
+                                        local_edges.push((caller_id.clone(), callee_id.clone(), ct.line));
                                         resolved = true;
                                     }
                                 } else {
@@ -1704,7 +1723,7 @@ impl CrossFileTaintAnalyzer {
                                     if !same_language_domain(&node.file_path, &callee_file) {
                                         continue;
                                     }
-                                    local_edges.push((caller_id.clone(), callee_id.clone()));
+                                    local_edges.push((caller_id.clone(), callee_id.clone(), ct.line));
                                 }
                             }
                         }
@@ -1730,7 +1749,11 @@ impl CrossFileTaintAnalyzer {
                                     for callee_id in callee_ids {
                                         if callee_id != caller_id {
                                             local_edges
-                                                .push((caller_id.clone(), callee_id.clone()));
+                                                .push((
+                                                caller_id.clone(),
+                                                callee_id.clone(),
+                                                ct.line,
+                                            ));
                                             resolved = true;
                                         }
                                     }
@@ -1745,8 +1768,8 @@ impl CrossFileTaintAnalyzer {
             .collect();
 
         for batch in cross_call_batches {
-            for (caller_id, callee_id) in batch {
-                self.call_graph.add_call(&caller_id, &callee_id);
+            for (caller_id, callee_id, line) in batch {
+                self.call_graph.add_call(&caller_id, &callee_id, line);
             }
         }
     }
@@ -2067,7 +2090,7 @@ impl CrossFileTaintAnalyzer {
                     };
 
                     self.call_graph.add_node(cb_node);
-                    self.call_graph.add_call(&func_id, &cb_id);
+                    self.call_graph.add_call(&func_id, &cb_id, call.line);
                     cb_idx += 1;
                 }
             }
@@ -2988,16 +3011,34 @@ impl CrossFileTaintAnalyzer {
         summaries
     }
 
+    /// 由调用图节点 id 构造与 Stage B 对齐的 CPG 缓存键。
+    ///
+    /// Stage B 写入 `cpg_cache` / `cpg_taint_flows` 时用的是
+    /// `FunctionSignature::id()` = `file:name:start_line`（三段，行号用于区分
+    /// 同名函数/重载）；而调用图节点 id 是 `file:name`（两段）。
+    /// 之前两处查询直接用节点 id → **恒未命中**：`initial_tainted_variables`
+    /// 拿不到种子、`compute_single_summary` 拿不到精确 CPG，导致 summary 路径
+    /// 在所有项目上恒产出 0 条流（跨文件退化为纯名字可达性）。
+    fn cpg_cache_key(&self, func_id: &str) -> Option<String> {
+        let node = self.call_graph.nodes.get(func_id)?;
+        Some(format!(
+            "{}:{}:{}",
+            node.file_path, node.name, node.start_line
+        ))
+    }
+
     /// 获取函数入口处的初始污点变量集合
     ///
     /// 优先从 CPG taint flows 的 source.symbol 提取；若无 CPG，对 source 函数做简单行扫描兜底。
     fn initial_tainted_variables(&self, func_id: &str) -> HashSet<String> {
         let mut vars = HashSet::new();
 
-        // 1. 优先使用 Stage B 传来的精确污点流
-        if let Some(flows) = self.cpg_taint_flows.get(func_id) {
-            for flow in flows {
-                vars.insert(flow.source.symbol.clone());
+        // 1. 优先使用 Stage B 传来的精确污点流（键为三段式，需与节点 id 对齐）
+        if let Some(key) = self.cpg_cache_key(func_id) {
+            if let Some(flows) = self.cpg_taint_flows.get(&key) {
+                for flow in flows {
+                    vars.insert(flow.source.symbol.clone());
+                }
             }
         }
 
@@ -3098,20 +3139,70 @@ impl CrossFileTaintAnalyzer {
         let summaries = self.compute_function_summaries_from_current_graph();
         let sink_set: HashSet<&String> = self.call_graph.taint_sinks.iter().collect();
         let sink_reachable = self.compute_sink_reachable_set();
+        if std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some() {
+            let total_nodes = self.call_graph.nodes.len();
+            let cpg_hits = self
+                .call_graph
+                .nodes
+                .keys()
+                .filter(|id| {
+                    self.cpg_cache_key(id)
+                        .map(|k| self.cpg_cache.contains_key(&k))
+                        .unwrap_or(false)
+                })
+                .count();
+            let flow_hits = self
+                .call_graph
+                .nodes
+                .keys()
+                .filter(|id| {
+                    self.cpg_cache_key(id)
+                        .map(|k| self.cpg_taint_flows.contains_key(&k))
+                        .unwrap_or(false)
+                })
+                .count();
+            let summary_hits = summaries
+                .values()
+                .filter(|s| !s.direct_sinks.is_empty() || !s.taint_propagation.is_empty())
+                .count();
+            tracing::info!(
+                "[XFileStats] summary_path: nodes={} cpg_key_hits={} flow_key_hits={} summaries_total={} summaries_with_signal={}",
+                total_nodes,
+                cpg_hits,
+                flow_hits,
+                summaries.len(),
+                summary_hits
+            );
+        }
         // 预分配精确容量：避免 Vec 增长时反复重新分配和复制。
         // 37K+ 流的大项目上一次重新分配即可 OOM——这里保证分配只发生一次。
         let mut flows = Vec::with_capacity(max_flows);
 
+        let diag = std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some();
+        let mut c_total = 0usize;
+        let mut c_reachable = 0usize;
+        let mut c_seeded = 0usize;
+        let mut c_pops = 0usize;
+        let mut c_edges = 0usize;
+        let mut c_popped_with_calls = 0usize;
+        let mut c_args_hit = 0usize;
+        let mut c_callee_tainted = 0usize;
+        let mut c_emit_sink_node = 0usize;
+        let mut c_emit_callee_sink = 0usize;
+
         for source_id in &self.call_graph.taint_sources {
+            c_total += 1;
             // source 到不了任何 sink，跳过整个 source
             if !sink_reachable.contains(source_id) {
                 continue;
             }
+            c_reachable += 1;
 
             let initial_vars = self.initial_tainted_variables(source_id);
             if initial_vars.is_empty() {
                 continue;
             }
+            c_seeded += 1;
 
             // visited[func_id] = 该函数已出现过的污点变量集合
             let mut visited: HashMap<String, HashSet<String>> = HashMap::new();
@@ -3128,6 +3219,7 @@ impl CrossFileTaintAnalyzer {
             ));
 
             while let Some((current_id, mut current_tainted, path)) = queue.pop_front() {
+                c_pops += 1;
                 // 当前函数本身是 sink，且内部污点能命中 sink（已有 CPG 单文件结果兜底）
                 if sink_set.contains(&current_id) && current_id != *source_id {
                     if let (Some(source_node), Some(sink_node)) = (
@@ -3153,7 +3245,33 @@ impl CrossFileTaintAnalyzer {
                     continue;
                 };
 
+                if !node.calls.is_empty() {
+                    c_popped_with_calls += 1;
+                }
+                if diag && c_seeded == 1 && c_pops == 1 {
+                    let prefix = format!("{}:", current_id);
+                    let matching: Vec<String> = self
+                        .call_site_args
+                        .keys()
+                        .filter(|k| k.starts_with(&prefix))
+                        .cloned()
+                        .collect();
+                    tracing::info!(
+                        "[XFileStats] SNAP caller={} calls={} first_calls={:?} site_args_total={} site_args_with_prefix={} prefix_example={:?}",
+                        current_id,
+                        node.calls.len(),
+                        node.calls
+                            .iter()
+                            .take(3)
+                            .map(|c| (c.callee.clone(), c.line))
+                            .collect::<Vec<_>>(),
+                        self.call_site_args.len(),
+                        matching.len(),
+                        matching.first()
+                    );
+                }
                 for ct in &node.calls {
+                    c_edges += 1;
                     let callee_id = &ct.callee;
                     if callee_id == &current_id {
                         continue;
@@ -3166,6 +3284,7 @@ impl CrossFileTaintAnalyzer {
                     let site_key = format!("{}:{}", current_id, ct.line);
                     let mut callee_tainted: HashSet<String> = HashSet::new();
                     if let Some(args) = self.call_site_args.get(&site_key) {
+                        c_args_hit += 1;
                         for (param_idx, arg) in args.iter().enumerate() {
                             if param_idx >= callee_node.parameters.len() {
                                 break;
@@ -3207,6 +3326,7 @@ impl CrossFileTaintAnalyzer {
                     if callee_tainted.is_empty() {
                         continue;
                     }
+                    c_callee_tainted += 1;
 
                     // 查询 callee 摘要：污染参数是否到达 sink
                     if let Some(summary) = summaries.get(callee_id) {
@@ -3274,6 +3394,14 @@ impl CrossFileTaintAnalyzer {
             }
         }
 
+        if diag {
+            tracing::info!(
+                "[XFileStats] propagate: sources={} reachable={} seeded={} pops={} edges={} args_hit={} callee_tainted={} emit_sink_node={} emit_callee_sink={} flows={}",
+                c_total, c_reachable, c_seeded, c_pops, c_edges, c_args_hit,
+                c_callee_tainted, c_emit_sink_node, c_emit_callee_sink, flows.len()
+            );
+        }
+
         flows
     }
 
@@ -3313,6 +3441,8 @@ impl CrossFileTaintAnalyzer {
             confidence_factors.push("sink:non_yaml".to_string());
         }
         confidence_factors.push(format!("summary:{}", factor));
+        // 数据流证据标记：去重阶段优先于结构可达链
+        confidence_factors.push("path:dataflow".to_string());
 
         InterproceduralTaintFlow {
             id: uuid::Uuid::new_v4().to_string(),
@@ -3419,13 +3549,8 @@ impl CrossFileTaintAnalyzer {
                 rss_mb()
             );
         }
-        if !summary_flows.is_empty() {
-            let out = Self::dedup_flows_by_source(summary_flows, max_flows);
-            if diag {
-                tracing::info!("[XFileStats] after_dedup={}", out.len());
-            }
-            return out;
-        }
+        // 不再"summary 非空即丢弃 fallback"：数据流链优先，结构链补充召回
+        // （同一 pair 只保留数据流链）
         let fallback = self.find_interprocedural_taint_flows_fallback(max_flows);
         if diag {
             tracing::info!(
@@ -3435,11 +3560,58 @@ impl CrossFileTaintAnalyzer {
                 rss_mb()
             );
         }
-        let out = Self::dedup_flows_by_source(fallback, max_flows);
+        let merged = Self::merge_flow_sources(summary_flows, fallback);
+        let merged_len = merged.len();
+        let out = Self::dedup_flows_by_source(merged, max_flows);
         if diag {
-            tracing::info!("[XFileStats] after_dedup={}", out.len());
+            // 流集合指纹：跨运行比较用（若指纹不一致 ⇒ 流生成不确定；
+            // 一致而 findings 仍抖动 ⇒ 下游富化/去重环节）
+            let mut keys: Vec<String> = out.iter().map(Self::flow_pair_key).collect();
+            keys.sort();
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{Hash, Hasher};
+            keys.hash(&mut hasher);
+            tracing::info!(
+                "[XFileStats] merged={} after_dedup={} flow_set_hash={:x}",
+                merged_len,
+                out.len(),
+                hasher.finish()
+            );
         }
         out
+    }
+
+    /// 合并"数据流链（summary）"与"结构可达链（fallback）"：
+    /// 同一 (source, sink, 类型) 三元组只保留数据流链，结构链补充其余候选。
+    fn merge_flow_sources(
+        summary: Vec<InterproceduralTaintFlow>,
+        fallback: Vec<InterproceduralTaintFlow>,
+    ) -> Vec<InterproceduralTaintFlow> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut merged = Vec::with_capacity(summary.len() + fallback.len());
+        for flow in summary {
+            seen.insert(Self::flow_pair_key(&flow));
+            merged.push(flow);
+        }
+        for flow in fallback {
+            if seen.contains(&Self::flow_pair_key(&flow)) {
+                continue;
+            }
+            merged.push(flow);
+        }
+        merged
+    }
+
+    /// (source 文件:行, sink 文件:行, 漏洞类型) 三元组键
+    fn flow_pair_key(flow: &InterproceduralTaintFlow) -> String {
+        format!(
+            "{}:{}|{}:{}|{:?}",
+            flow.source.file_path,
+            flow.source.line,
+            flow.sink.file_path,
+            flow.sink.line,
+            flow.vulnerability_type
+        )
     }
 
     /// 诊断辅助：统计 (source 文件:行, sink 文件:行, 类型) 三元组数量
@@ -3481,6 +3653,10 @@ impl CrossFileTaintAnalyzer {
             by_source.into_iter().collect();
         groups.sort_by(|a, b| a.0.cmp(&b.0));
 
+        /// 无数据流证据的结构可达链：每 source 只保留最佳一条（召回下限），
+        /// 避免"通用名 sink 结构可达"刷屏（json/find/delete 家族）
+        const MAX_STRUCTURAL_PER_SOURCE: usize = 1;
+
         let mut out = Vec::with_capacity(max_flows.min(groups.len() * MAX_FLOWS_PER_SOURCE));
         for (_, mut group) in groups {
             // 置信度降序，保留高置信链；并列时按稳定字段决胜（不用随机 flow.id）
@@ -3494,12 +3670,23 @@ impl CrossFileTaintAnalyzer {
                     .then_with(|| a.source.symbol.cmp(&b.source.symbol))
             });
             let mut kept = 0;
+            let mut kept_structural = 0;
             for flow in group {
                 if flow.confidence < MIN_CONFIDENCE {
                     break; // 已排序，后续更低
                 }
                 if kept >= MAX_FLOWS_PER_SOURCE {
                     break;
+                }
+                let is_structural = flow
+                    .confidence_factors
+                    .iter()
+                    .any(|f| f == "path:structural");
+                if is_structural && kept_structural >= MAX_STRUCTURAL_PER_SOURCE {
+                    continue;
+                }
+                if is_structural {
+                    kept_structural += 1;
                 }
                 kept += 1;
                 out.push(flow);
@@ -3672,6 +3859,8 @@ impl CrossFileTaintAnalyzer {
                 };
                 confidence_factors.push(factor_name.to_string());
             }
+            // 结构可达链标记（无数据流证据）：去重阶段据此限制每 source 条数
+            confidence_factors.push("path:structural".to_string());
 
             flows.push(InterproceduralTaintFlow {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -4000,7 +4189,7 @@ impl CrossFileTaintAnalyzer {
                 route_ids.sort();
                 route_ids.dedup();
                 for route_id in route_ids {
-                    self.call_graph.add_call(&mw_id, &route_id);
+                    self.call_graph.add_call(&mw_id, &route_id, line);
                 }
             }
         }
@@ -4146,11 +4335,15 @@ impl CrossFileTaintAnalyzer {
 
     /// 计算单个函数的摘要（优先使用 CPG 精确摘要）
     fn compute_single_summary(&self, func_id: &str) -> Option<FunctionSummary> {
-        // 优先使用 CPG 摘要
-        if let Some(func_cpg) = self.cpg_cache.get(func_id) {
-            let taint_flows = self
-                .cpg_taint_flows
-                .get(func_id)
+        // 优先使用 CPG 摘要（键为三段式，需与节点 id 对齐）
+        let cpg_key = self.cpg_cache_key(func_id);
+        if let Some(func_cpg) = cpg_key
+            .as_deref()
+            .and_then(|key| self.cpg_cache.get(key))
+        {
+            let taint_flows = cpg_key
+                .as_deref()
+                .and_then(|key| self.cpg_taint_flows.get(key))
                 .cloned()
                 .unwrap_or_default();
 
@@ -4612,7 +4805,7 @@ mod tests {
 
         graph.add_node(caller);
         graph.add_node(callee);
-        graph.add_call("test.py:main", "test.py:helper");
+        graph.add_call("test.py:main", "test.py:helper", 0);
 
         assert!(graph
             .nodes

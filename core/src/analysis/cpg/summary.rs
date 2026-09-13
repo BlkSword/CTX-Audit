@@ -75,8 +75,18 @@ pub fn compute_summary_from_cpg(
     }
 
     // 构建“变量 -> 下游调用参数”映射，用于 param_to_calls
+    // 确定性：node_meta 是 HashMap，直接 values() 迭代顺序随进程随机。
+    // 下面两处收集都受顺序影响（尤其 direct_sinks 的"同名 sink 只记第一个"
+    // 去重：哪个调用点被记录取决于迭代序 → sink 行号/from_param 随机 →
+    // 跨文件流集合跨运行抖动）。统一按节点 id 升序遍历。
+    let mut meta_ids: Vec<usize> = func_cpg.node_meta.keys().copied().collect();
+    meta_ids.sort_unstable();
+
     let mut var_to_calls: HashMap<String, Vec<(String, usize, usize)>> = HashMap::new();
-    for node_meta in func_cpg.node_meta.values() {
+    for node_id in &meta_ids {
+        let Some(node_meta) = func_cpg.node_meta.get(node_id) else {
+            continue;
+        };
         if let Some(ref call) = node_meta.call_info {
             for (arg_idx, arg) in call.arguments.iter().enumerate() {
                 for var in &arg.referenced_vars {
@@ -114,7 +124,11 @@ pub fn compute_summary_from_cpg(
     }
 
     // 也从调用图中提取 sink 信息（补充 CPG 未覆盖的）
-    for node_meta in func_cpg.node_meta.values() {
+    // 同一 meta_ids 顺序遍历（确定性）
+    for node_id in &meta_ids {
+        let Some(node_meta) = func_cpg.node_meta.get(node_id) else {
+            continue;
+        };
         if let Some(ref call) = node_meta.call_info {
             if sink_rules.iter().any(|rule| {
                 rule.patterns
