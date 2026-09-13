@@ -47,6 +47,50 @@ pub struct ASTParser {
     parsers: HashMap<String, Parser>,
 }
 
+/// 判断节点是否为"函数体块"节点（各语言 kind 不同）。
+fn is_body_block_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "block" | "statement_block" | "body" | "suite" | "block_stmt"
+    )
+}
+
+/// 在 fragment 解析树中定位函数体节点。
+///
+/// 各语言对"函数体片段"的解析结果层级不同：
+/// - JS/Python/Java/PHP：根的直接子节点就是 block/statement_block/body/suite/block_stmt；
+/// - Rust：`{ ... }` 片段解析为 `source_file -> expression_statement -> block`，
+///   只看直接子节点会找不到 → 退回 text-CFG（CPG 无 call_info → param_to_calls 恒空）。
+///
+/// 先扫直接子节点（保持既有行为），再做深度 ≤3 的 BFS 兜底，取第一个块节点。
+pub fn find_fragment_body_node<'a>(root: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if is_body_block_kind(child.kind()) {
+            return Some(child);
+        }
+    }
+    let mut queue: std::collections::VecDeque<(Node<'a>, usize)> =
+        std::collections::VecDeque::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        queue.push_back((child, 1));
+    }
+    while let Some((node, depth)) = queue.pop_front() {
+        if is_body_block_kind(node.kind()) {
+            return Some(node);
+        }
+        if depth >= 3 {
+            continue;
+        }
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            queue.push_back((child, depth + 1));
+        }
+    }
+    None
+}
+
 impl ASTParser {
     pub fn new() -> Self {
         let mut parsers = HashMap::new();

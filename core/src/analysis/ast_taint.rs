@@ -546,17 +546,8 @@ impl AstTaintAnalyzer {
                         let fragment = crate::ast::parser::dedent_fragment(&func.body_text);
                         if let Some(tree) = ast_parser.parse_fragment(&fragment, ext) {
                             let root = tree.root_node();
-                            let mut cursor = root.walk();
-                            let body_node = root.children(&mut cursor).find(|n| {
-                                matches!(
-                                    n.kind(),
-                                    "block"
-                                        | "statement_block"
-                                        | "body"
-                                        | "suite"
-                                        | "block_stmt"
-                                )
-                            });
+                            let body_node =
+                                crate::ast::parser::find_fragment_body_node(root);
                             if let Some(body_node) = body_node {
                                 return super::cpg::CPGBuilder::build_function_cpg_from_fragment(
                                     &body_node,
@@ -565,6 +556,36 @@ impl AstTaintAnalyzer {
                                     func,
                                     &func_assignments,
                                     &func_calls,
+                                );
+                            }
+                            // 诊断：fragment 能 parse 但找不到函数体节点 → 退回 text-CFG。
+                            // 这会让 call_info/assignment 匹配变弱（Rust 等语言曾整体走此路径）。
+                            if std::env::var_os("CTX_AUDIT_CPG_TRACE").is_some() {
+                                use std::sync::atomic::{AtomicUsize, Ordering};
+                                static LOGGED: AtomicUsize = AtomicUsize::new(0);
+                                if LOGGED.fetch_add(1, Ordering::Relaxed) < 5 {
+                                    let root = tree.root_node();
+                                    let mut kc = root.walk();
+                                    tracing::info!(
+                                        "[CPGTrace] fallback frag-parse func={} ext={} root={} children={:?} has_error={} frag_head={:?}",
+                                        func.name,
+                                        ext,
+                                        root.kind(),
+                                        root.children(&mut kc).map(|n| n.kind()).collect::<Vec<_>>(),
+                                        root.has_error(),
+                                        fragment.chars().take(60).collect::<String>()
+                                    );
+                                }
+                            }
+                        } else if std::env::var_os("CTX_AUDIT_CPG_TRACE").is_some() {
+                            use std::sync::atomic::{AtomicUsize, Ordering};
+                            static LOGGED_NONE: AtomicUsize = AtomicUsize::new(0);
+                            if LOGGED_NONE.fetch_add(1, Ordering::Relaxed) < 5 {
+                                tracing::info!(
+                                    "[CPGTrace] parse_fragment=None func={} ext={} frag_head={:?}",
+                                    func.name,
+                                    ext,
+                                    fragment.chars().take(60).collect::<String>()
                                 );
                             }
                         }

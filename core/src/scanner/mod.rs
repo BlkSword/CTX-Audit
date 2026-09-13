@@ -1922,22 +1922,38 @@ pub async fn scan_directory_deep_with_rules_progress(
                                             ast_parser.parse_fragment(&fragment, ext)
                                         {
                                             let root = tree.root_node();
-                                            let mut cursor = root.walk();
-                                            let body_node = root.children(&mut cursor).find(|n| {
-                                                matches!(
-                                                    n.kind(),
-                                                    "block"
-                                                        | "statement_block"
-                                                        | "body"
-                                                        | "suite"
-                                                        | "block_stmt"
-                                                )
-                                            });
+                                            let body_node =
+                                                crate::ast::parser::find_fragment_body_node(root);
                                             if let Some(body_node) = body_node {
                                                 return CPGBuilder::build_function_cpg_from_fragment(
                                                 &body_node, &fragment, file_path_str,
                                                 &func, &func_assignments, &func_calls,
                                             );
+                                            }
+                                            if std::env::var_os("CTX_AUDIT_CPG_TRACE").is_some() {
+                                                use std::sync::atomic::{AtomicUsize, Ordering};
+                                                static LOGGED_NOBODY: AtomicUsize = AtomicUsize::new(0);
+                                                if LOGGED_NOBODY.fetch_add(1, Ordering::Relaxed) < 5 {
+                                                    let root = tree.root_node();
+                                                    let mut kc = root.walk();
+                                                    tracing::info!(
+                                                        "[CPGTrace] sb-nobody func={} ext={} root={} children={:?} has_error={} frag_head={:?}",
+                                                        func.name, ext, root.kind(),
+                                                        root.children(&mut kc).map(|n| n.kind()).collect::<Vec<_>>(),
+                                                        root.has_error(),
+                                                        fragment.chars().take(60).collect::<String>()
+                                                    );
+                                                }
+                                            }
+                                        } else if std::env::var_os("CTX_AUDIT_CPG_TRACE").is_some() {
+                                            use std::sync::atomic::{AtomicUsize, Ordering};
+                                            static LOGGED_NONE: AtomicUsize = AtomicUsize::new(0);
+                                            if LOGGED_NONE.fetch_add(1, Ordering::Relaxed) < 5 {
+                                                tracing::info!(
+                                                    "[CPGTrace] sb-parse-none func={} ext={} frag_head={:?}",
+                                                    func.name, ext,
+                                                    fragment.chars().take(60).collect::<String>()
+                                                );
                                             }
                                         }
                                         // 回退到 text-based CPG

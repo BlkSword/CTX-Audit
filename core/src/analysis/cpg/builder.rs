@@ -60,6 +60,41 @@ const SANITIZER_CALL_PATTERNS: &[&str] = &[
     "bleach",
 ];
 
+
+/// 诊断（`CTX_AUDIT_CPG_TRACE=1`，最多 5 条）：CPG 节点行号与调用/赋值行号是否对齐。
+/// 用于定位"某语言的 CPG 摘要恒定缺少 call_info（如 Rust）"这类坐标系问题。
+fn trace_cpg_layout(
+    builder: &str,
+    func: &FunctionBody,
+    cfg: &EnhancedFlowGraph,
+    calls: &[CallInfo],
+    meta: (usize, usize),
+    line_offset: usize,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static LOGGED: AtomicUsize = AtomicUsize::new(0);
+    if std::env::var_os("CTX_AUDIT_CPG_TRACE").is_none() {
+        return;
+    }
+    if LOGGED.fetch_add(1, Ordering::Relaxed) >= 5 {
+        return;
+    }
+    tracing::info!(
+        "[CPGTrace] builder={} func={} body_start={} start={} offset={} cfg_nodes={} calls={} meta_with_call={} meta_with_args={} cfg_lines={:?} call_lines={:?}",
+        builder,
+        func.name,
+        func.body_start_line,
+        func.start_line,
+        line_offset,
+        cfg.nodes.len(),
+        calls.len(),
+        meta.0,
+        meta.1,
+        cfg.nodes.iter().take(6).map(|n| n.start_line).collect::<Vec<_>>(),
+        calls.iter().take(6).map(|c| c.line).collect::<Vec<_>>()
+    );
+}
+
 impl CPGBuilder {
     /// 从 AST 节点 + 解析器元数据构建单函数 CPG
     ///
@@ -213,6 +248,19 @@ impl CPGBuilder {
             params: func.typed_params.clone(),
         };
 
+        let meta = (
+            node_meta.values().filter(|m| m.call_info.is_some()).count(),
+            node_meta
+                .values()
+                .filter(|m| {
+                    m.call_info
+                        .as_ref()
+                        .map(|c| !c.arguments.is_empty())
+                        .unwrap_or(false)
+                })
+                .count(),
+        );
+        trace_cpg_layout("fragment", func, &cfg, calls, meta, line_offset);
         FunctionCPG {
             cfg,
             node_meta,
@@ -288,6 +336,19 @@ impl CPGBuilder {
             params: func.typed_params.clone(),
         };
 
+        let meta = (
+            node_meta.values().filter(|m| m.call_info.is_some()).count(),
+            node_meta
+                .values()
+                .filter(|m| {
+                    m.call_info
+                        .as_ref()
+                        .map(|c| !c.arguments.is_empty())
+                        .unwrap_or(false)
+                })
+                .count(),
+        );
+        trace_cpg_layout("text", func, &cfg, calls, meta, line_offset);
         FunctionCPG {
             cfg,
             node_meta,

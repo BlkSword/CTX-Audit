@@ -3398,13 +3398,34 @@ impl CrossFileTaintAnalyzer {
                 .iter()
                 .filter(|id| sink_reachable.contains(*id) && missing_cpg(id))
                 .count();
+            let summaries_with_ptc = summaries
+                .values()
+                .filter(|s| !s.param_to_calls.is_empty())
+                .count();
+            let total_ptc = summaries.values().map(|s| s.param_to_calls.len()).sum::<usize>();
+            // Stage B 单文件 CPG 污点流总量：param_to_calls 的上游供给。
+            // 若该值在目标语言上很小，说明缺口在"单文件流"而非"实参→形参映射"。
+            let total_cpg_flows: usize = self
+                .cpg_taint_flows
+                .values()
+                .map(|v| v.len())
+                .sum();
+            let cpg_flows_nonempty = self
+                .cpg_taint_flows
+                .values()
+                .filter(|v| !v.is_empty())
+                .count();
             tracing::info!(
-                "[XFileStats] summary_path: nodes={} cpg_key_hits={} flow_key_hits={} summaries_total={} summaries_with_signal={} sources_total={} sources_missing_cpg={} sources_reachable_missing_cpg={}",
+                "[XFileStats] summary_path: nodes={} cpg_key_hits={} flow_key_hits={} summaries_total={} summaries_with_signal={} summaries_with_ptc={} total_ptc={} cpg_flows_total={} cpg_flows_nonempty={} sources_total={} sources_missing_cpg={} sources_reachable_missing_cpg={}",
                 total_nodes,
                 cpg_hits,
                 flow_hits,
                 summaries.len(),
                 summary_hits,
+                summaries_with_ptc,
+                total_ptc,
+                total_cpg_flows,
+                cpg_flows_nonempty,
                 source_total,
                 source_missing,
                 source_reachable_missing
@@ -4756,6 +4777,57 @@ impl CrossFileTaintAnalyzer {
                 &body_text,
                 &self.sink_patterns,
             );
+            // 诊断（CTX_AUDIT_XFILE_STATS=1，最多 5 条）：CPG 摘要为何 param_to_calls 恒空。
+            // 分辨两种可能：① Stage B 的 taint flow 源/路径不含形参引用；
+            // ② flow 引用了形参但实参映射（node_meta.call_info.arguments）为空。
+            if std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some()
+                && summary.param_to_calls.is_empty()
+                && !summary.taint_propagation.is_empty()
+            {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static LOGGED: AtomicUsize = AtomicUsize::new(0);
+                if LOGGED.fetch_add(1, Ordering::Relaxed) < 5 {
+                    let calls_with_args = func_cpg
+                        .node_meta
+                        .values()
+                        .filter(|m| {
+                            m.call_info
+                                .as_ref()
+                                .map(|c| !c.arguments.is_empty())
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    tracing::info!(
+                        "[XFileStats] PTC-EMPTY func={} params={:?} tp={} ds={} flows={} calls_with_args={} flow_sources={:?} flow_path_syms={:?}",
+                        func_cpg.signature.name,
+                        func_cpg
+                            .signature
+                            .params
+                            .iter()
+                            .map(|p| p.name.clone())
+                            .collect::<Vec<_>>(),
+                        summary.taint_propagation.len(),
+                        summary.direct_sinks.len(),
+                        taint_flows.len(),
+                        calls_with_args,
+                        taint_flows
+                            .iter()
+                            .take(3)
+                            .map(|f| f.source.symbol.clone())
+                            .collect::<Vec<_>>(),
+                        taint_flows
+                            .iter()
+                            .take(2)
+                            .map(|f| f
+                                .path
+                                .iter()
+                                .take(3)
+                                .map(|st| st.symbol.clone())
+                                .collect::<Vec<_>>())
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
             if !summary.taint_propagation.is_empty() || !summary.direct_sinks.is_empty() {
                 return Some(summary);
             }
