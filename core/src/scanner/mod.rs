@@ -1922,11 +1922,11 @@ pub async fn scan_directory_deep_with_rules_progress(
                                             ast_parser.parse_fragment(&fragment, ext)
                                         {
                                             let root = tree.root_node();
-                                            let body_node =
-                                                crate::ast::parser::find_fragment_body_node(root);
-                                            if let Some(body_node) = body_node {
-                                                return CPGBuilder::build_function_cpg_from_fragment(
-                                                &body_node, &fragment, file_path_str,
+                                            let body_nodes =
+                                                crate::ast::parser::find_fragment_body_nodes(root);
+                                            if !body_nodes.is_empty() {
+                                                return CPGBuilder::build_function_cpg_from_fragment_children(
+                                                &body_nodes, &fragment, file_path_str,
                                                 &func, &func_assignments, &func_calls,
                                             );
                                             }

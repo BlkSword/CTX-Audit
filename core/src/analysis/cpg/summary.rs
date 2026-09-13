@@ -166,6 +166,46 @@ pub fn compute_summary_from_cpg(
         }
     }
 
+    // 补充：形参**直接**作为实参传入下游调用（不依赖单文件污点流）。
+    // 这是最基础的数据流事实：`fn f(p) { g(p); }` 中 p → g 的第 0 个实参。
+    // 单文件 CPG 污点流在各语言上都很少（实测某 Rust 目标整仓仅 1 条、某 Java
+    // 目标 111 条、某 TS 目标 20 条），只靠流推导会让 param_to_calls 几乎恒空，
+    // 而"形参被直接传出"不需要流即可确定，且正是跨文件传播所需的信息。
+    for (param_idx, param) in sig.params.iter().enumerate() {
+        let param_name = param.name.trim();
+        if param_name.is_empty() {
+            continue;
+        }
+        if let Some(calls) = var_to_calls.get(param_name) {
+            for (callee, arg_idx, call_line) in calls {
+                let already = param_to_calls.iter().any(|p| {
+                    p.param_idx == param_idx
+                        && p.callee == *callee
+                        && p.arg_idx == *arg_idx
+                        && p.call_line == *call_line
+                });
+                if !already {
+                    param_to_calls.push(crate::analysis::cross_file::ParamToCall {
+                        param_idx,
+                        callee: callee.clone(),
+                        arg_idx: *arg_idx,
+                        call_line: *call_line,
+                    });
+                }
+            }
+        }
+    }
+    // 确定性：上面的补充按 sig.params/Vec 顺序追加，但仍统一排序，
+    // 使摘要内容不依赖任何 HashMap 迭代序（跨运行比较流集合指纹时更稳）。
+    param_to_calls.sort_by(|a, b| {
+        (a.param_idx, a.call_line, a.callee.as_str(), a.arg_idx).cmp(&(
+            b.param_idx,
+            b.call_line,
+            b.callee.as_str(),
+            b.arg_idx,
+        ))
+    });
+
     // 也从调用图中提取 sink 信息（补充 CPG 未覆盖的）
     // 同一 meta_ids 顺序遍历（确定性）
     for node_id in &meta_ids {

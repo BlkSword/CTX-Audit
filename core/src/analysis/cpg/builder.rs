@@ -197,7 +197,34 @@ impl CPGBuilder {
         assignments: &[Assignment],
         calls: &[CallInfo],
     ) -> FunctionCPG {
-        let cfg = EnhancedFlowGraph::from_ast_node(func_body_node, content, file_path, &func.name);
+        Self::build_function_cpg_from_fragment_children(
+            std::slice::from_ref(func_body_node),
+            content,
+            file_path,
+            func,
+            assignments,
+            calls,
+        )
+    }
+
+    /// 与 `build_function_cpg_from_fragment` 相同，但接受"语句节点列表"：
+    /// 片段本身是语句列表时（Python suite / JS/TS 语句）按顺序构建 CFG，
+    /// 避免把 `if`/`for` 的内层 block 误当函数体。
+    pub fn build_function_cpg_from_fragment_children(
+        func_body_nodes: &[tree_sitter::Node],
+        content: &str,
+        file_path: &str,
+        func: &FunctionBody,
+        assignments: &[Assignment],
+        calls: &[CallInfo],
+    ) -> FunctionCPG {
+        let cfg = EnhancedFlowGraph::from_ast_nodes(
+            func_body_nodes,
+            content,
+            file_path,
+            &func.name,
+            0,
+        );
 
         // CFG 节点行号相对于函数体文本（1 起），assignments/calls 为文件绝对行号。
         // 元数据统一存绝对行号（供污点分析直接产出文件级行号），

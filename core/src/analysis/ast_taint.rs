@@ -546,11 +546,11 @@ impl AstTaintAnalyzer {
                         let fragment = crate::ast::parser::dedent_fragment(&func.body_text);
                         if let Some(tree) = ast_parser.parse_fragment(&fragment, ext) {
                             let root = tree.root_node();
-                            let body_node =
-                                crate::ast::parser::find_fragment_body_node(root);
-                            if let Some(body_node) = body_node {
-                                return super::cpg::CPGBuilder::build_function_cpg_from_fragment(
-                                    &body_node,
+                            let body_nodes =
+                                crate::ast::parser::find_fragment_body_nodes(root);
+                            if !body_nodes.is_empty() {
+                                return super::cpg::CPGBuilder::build_function_cpg_from_fragment_children(
+                                    &body_nodes,
                                     &fragment,
                                     &file_path_str,
                                     func,

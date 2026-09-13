@@ -174,6 +174,22 @@ impl EnhancedFlowGraph {
         Self::from_ast_node_with_base(func_body_node, content, file_path, function_name, 0)
     }
 
+    /// 从一组语句节点（按序）构建 CFG：用于片段本身是语句列表的语言
+    /// （Python suite / JS/TS 语句），避免把 `if`/`for` 的内层 block 当函数体。
+    pub fn from_ast_nodes(
+        body_nodes: &[Node],
+        content: &str,
+        file_path: &str,
+        function_name: &str,
+        line_base: usize,
+    ) -> Self {
+        let mut graph = Self::new(file_path, function_name);
+        let mut builder = AstCFGBuilder::new(&mut graph);
+        builder.line_base = line_base;
+        builder.build_from_nodes(body_nodes, content);
+        graph
+    }
+
     /// 从 tree-sitter AST 节点构建 CFG，节点行号减去 `line_base`
     /// 转为相对行号（analyze_file 按函数分析时传 body_start_line - 1，
     /// 与 from_code 的文本 CFG 坐标系一致，backlog 10.10）
@@ -916,13 +932,17 @@ impl<'a> AstCFGBuilder<'a> {
 
     /// 从函数体 AST 节点构建 CFG
     fn build_from_node(&mut self, body_node: &Node, content: &str) {
-        let mut current_id = self.graph.entry;
-
         let mut cursor = body_node.walk();
-        for child in body_node.children(&mut cursor) {
-            current_id = self.process_node(&child, content, current_id, 0);
-        }
+        let children: Vec<Node> = body_node.children(&mut cursor).collect();
+        self.build_from_nodes(&children, content);
+    }
 
+    /// 按序处理一组语句节点并接到出口（供语句列表片段使用）。
+    fn build_from_nodes(&mut self, body_nodes: &[Node], content: &str) {
+        let mut current_id = self.graph.entry;
+        for child in body_nodes {
+            current_id = self.process_node(child, content, current_id, 0);
+        }
         // 连接最后一个节点到出口
         if current_id != self.graph.entry && current_id != self.graph.exit {
             self.graph

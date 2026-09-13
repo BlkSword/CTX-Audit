@@ -55,40 +55,47 @@ fn is_body_block_kind(kind: &str) -> bool {
     )
 }
 
-/// 在 fragment 解析树中定位函数体节点。
+/// 在 fragment 解析树中定位函数体节点（块节点）。
 ///
 /// 各语言对"函数体片段"的解析结果层级不同：
-/// - JS/Python/Java/PHP：根的直接子节点就是 block/statement_block/body/suite/block_stmt；
-/// - Rust：`{ ... }` 片段解析为 `source_file -> expression_statement -> block`，
-///   只看直接子节点会找不到 → 退回 text-CFG（CPG 无 call_info → param_to_calls 恒空）。
+/// 1. 整段就是一个块节点（JS 函数表达式体 / Java 方法体 / PHP 体）：直接用它；
+/// 2. 单层表达式包裹的块（Rust `{ ... }` → `source_file -> expression_statement -> block`）：
+///    解包一层 —— 旧实现只看直接子节点，导致 **所有 Rust 函数退回 text-CFG、
+///    CPG 无 call_info、param_to_calls 恒空**。
 ///
-/// 先扫直接子节点（保持既有行为），再做深度 ≤3 的 BFS 兜底，取第一个块节点。
-pub fn find_fragment_body_node<'a>(root: Node<'a>) -> Option<Node<'a>> {
+/// 片段本身就是语句列表（Python suite / JS 语句）时返回 `None`，继续走既有的
+/// text-CFG 回退：实测语句列表的 AST-CFG 会丢流（Python 相关单测回归），
+/// 该路径的 def/use 抽取需要单独一轮评估，不能在这里顺手切换。
+pub fn find_fragment_body_nodes<'a>(root: Node<'a>) -> Vec<Node<'a>> {
     let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
-        if is_body_block_kind(child.kind()) {
-            return Some(child);
+    let children: Vec<Node<'a>> = root.children(&mut cursor).collect();
+
+    // 形态 1
+    if let Some(block) = children
+        .iter()
+        .copied()
+        .find(|n| is_body_block_kind(n.kind()))
+    {
+        return vec![block];
+    }
+    // 形态 2：唯一子节点是表达式包裹，且其内部就是块
+    if children.len() == 1 {
+        let wrapper = children[0].clone();
+        if matches!(
+            wrapper.kind(),
+            "expression_statement" | "parenthesized_expression"
+        ) {
+            let mut c = wrapper.walk();
+            let wrapper_children: Vec<Node<'a>> = wrapper.children(&mut c).collect();
+            if let Some(block) = wrapper_children
+                .into_iter()
+                .find(|n| is_body_block_kind(n.kind()))
+            {
+                return vec![block];
+            }
         }
     }
-    let mut queue: std::collections::VecDeque<(Node<'a>, usize)> =
-        std::collections::VecDeque::new();
-    let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
-        queue.push_back((child, 1));
-    }
-    while let Some((node, depth)) = queue.pop_front() {
-        if is_body_block_kind(node.kind()) {
-            return Some(node);
-        }
-        if depth >= 3 {
-            continue;
-        }
-        let mut c = node.walk();
-        for child in node.children(&mut c) {
-            queue.push_back((child, depth + 1));
-        }
-    }
-    None
+    Vec::new()
 }
 
 impl ASTParser {
