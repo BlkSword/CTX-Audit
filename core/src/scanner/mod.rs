@@ -1162,6 +1162,12 @@ async fn scan_directory_with_rules_inner(
     let public_route_patterns = opts.public_route_patterns.clone();
     let non_production_path_patterns = opts.non_production_path_patterns.clone();
     let mut total_bytes_read: usize = 0;
+    // 确定性：walkdir 的枚举顺序取决于文件系统（同一机器稳定、跨机器不同）。
+    // 不排序会让并行切分/合并顺序跨机不同，进而让跨文件流集合出现机器相关差异
+    // （实测同一 pin 的 Rust 目标：8 核机 224 vs 12 核机 229 findings）。
+    code_files.sort();
+    dep_files.sort();
+
     let total_code_files = code_files.len();
     tracing::debug!(
         "[ScanInner] {} code files, {} dep files",
@@ -2256,13 +2262,16 @@ pub async fn scan_directory_deep_with_rules_progress(
         // session.js handleLoginRequest → user-dao.js validateLogin → findOne）。
         // 之前只分析 AstTaintScanner 报过的文件——循环依赖：L3 靠 L2 选文件，
         // 而 L3 的价值恰恰是发现 L2 漏的。改为分析所有 AST 支持的源文件。
-        let taint_files: Vec<std::path::PathBuf> = content_cache
+        let mut taint_files: Vec<std::path::PathBuf> = content_cache
             .iter()
             .filter(|(fp, _)| is_ast_supported_file(std::path::Path::new(fp)))
             // vendor / minified 第三方库不进入跨文件分析（只产生噪声边）
             .filter(|(fp, content)| classify_file_role_with_content(fp, content) != "vendor")
             .map(|(fp, _)| std::path::PathBuf::from(fp))
             .collect();
+        // 确定性：content_cache 是 HashMap，迭代序随进程随机 → 跨文件阶段的
+        // 并行输入顺序必须显式排序，否则同一输入在不同运行/机器上产出不同流集合。
+        taint_files.sort();
 
         // 加载与 Stage B 一致的 YAML 污点规则，注入跨文件分析器
         let rules_dir = std::path::PathBuf::from("rules/taint");
