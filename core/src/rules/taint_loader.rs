@@ -33,13 +33,70 @@ pub fn load_taint_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<LoadedTaintR
     let mut sinks = Vec::new();
     let mut sanitizer_patterns = Vec::new();
 
-    let path = path.as_ref();
+    append_taint_rules_from_path(
+        path.as_ref(),
+        &mut sources,
+        &mut sinks,
+        &mut sanitizer_patterns,
+    );
+
+    // 项目/任务级补充规则：`CTX_AUDIT_TAINT_RULES_EXTRA` 指向额外 YAML 文件或目录，
+    // 与主规则合并。用于给回放任务/特定仓库注入专属 source/sink（不必重新编译）。
+    if let Some(extra) = std::env::var_os("CTX_AUDIT_TAINT_RULES_EXTRA") {
+        let extra_path = std::path::PathBuf::from(&extra);
+        if extra_path.exists() {
+            let before = (sources.len(), sinks.len());
+            append_taint_rules_from_path(
+                &extra_path,
+                &mut sources,
+                &mut sinks,
+                &mut sanitizer_patterns,
+            );
+            tracing::info!(
+                "已合并额外污点规则 {:?}：+{} sources / +{} sinks（合计 {} / {}）",
+                extra_path,
+                sources.len().saturating_sub(before.0),
+                sinks.len().saturating_sub(before.1),
+                sources.len(),
+                sinks.len()
+            );
+        } else {
+            tracing::warn!("CTX_AUDIT_TAINT_RULES_EXTRA 指向的路径不存在：{:?}", extra_path);
+        }
+    }
+
+    // 二级确定性保障：即使文件枚举顺序变化，最终规则顺序也固定（按 id 排序）。
+    sources.sort_by(|a, b| a.id.cmp(&b.id));
+    sinks.sort_by(|a, b| a.id.cmp(&b.id));
+
+    Ok(LoadedTaintRules {
+        sources,
+        sinks,
+        sanitizer_patterns,
+    })
+}
+
+/// 从路径（文件或目录）读取 taint-rules YAML 并追加到给定容器。
+fn append_taint_rules_from_path(
+    path: &std::path::Path,
+    sources: &mut Vec<crate::analysis::taint::TaintSource>,
+    sinks: &mut Vec<crate::analysis::taint::TaintSink>,
+    sanitizer_patterns: &mut Vec<String>,
+) {
     if !path.exists() {
-        return Ok(LoadedTaintRules {
-            sources,
-            sinks,
-            sanitizer_patterns,
-        });
+        return;
+    }
+    if path.is_file() {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(rule_set) = serde_yaml::from_str::<TaintRuleSet>(&content) {
+                sources.extend(rule_set.sources);
+                sinks.extend(rule_set.sinks);
+                for san in rule_set.sanitizers {
+                    sanitizer_patterns.push(san.pattern);
+                }
+            }
+        }
+        return;
     }
 
     // 确定性：WalkDir 枚举顺序取决于文件系统。规则文件的加载顺序决定
@@ -104,15 +161,6 @@ pub fn load_taint_rules_from_dir<P: AsRef<Path>>(path: P) -> Result<LoadedTaintR
         }
     }
 
-    // 二级确定性保障：即使文件枚举顺序变化，最终规则顺序也固定（按 id 排序）。
-    sources.sort_by(|a, b| a.id.cmp(&b.id));
-    sinks.sort_by(|a, b| a.id.cmp(&b.id));
-
-    Ok(LoadedTaintRules {
-        sources,
-        sinks,
-        sanitizer_patterns,
-    })
 }
 
 /// 从目录加载污点规则，目录缺失或内容为空时回退到内置嵌入规则
