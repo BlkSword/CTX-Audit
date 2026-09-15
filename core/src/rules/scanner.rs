@@ -1094,6 +1094,55 @@ fn create_finding(
         adjusted
     };
 
+    // 证据补全（R-缺陷 A）：规则类 finding 此前 source/sink_snippet、enclosing_function、
+    // evidence_refs 全为空，EQM 证据轴实测规则型目标 0.00~0.30。这里补齐：
+    // - snippets：命中行本身（regex/tree-sitter 规则没有 source→sink 路径，命中行即证据）；
+    // - enclosing_function：向上找最近函数签名，便于 LLM 直接查调用图；
+    // - evidence_refs.matched_pattern：命中的规则与模式（可追溯）。
+    let matched_line = Some(crate::scanner::extract_code_context(
+        content,
+        line_start,
+        line_end,
+        0,
+    ));
+    let language_for_fn = if rule.language.eq_ignore_ascii_case("all") {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| {
+                match e.to_lowercase().as_str() {
+                    "rs" => "rust",
+                    "py" => "python",
+                    "js" | "jsx" | "mjs" | "cjs" => "javascript",
+                    "ts" | "tsx" => "typescript",
+                    "java" => "java",
+                    "go" => "go",
+                    "php" => "php",
+                    "c" | "h" => "c",
+                    "cpp" | "cc" | "hpp" => "cpp",
+                    _ => "",
+                }
+                .to_string()
+            })
+            .unwrap_or_default()
+    } else {
+        rule.language.to_lowercase()
+    };
+    let enclosing_function =
+        crate::scanner::find_enclosing_function_name(content, line_start, &language_for_fn);
+    let pattern_desc = rule
+        .pattern
+        .clone()
+        .or_else(|| {
+            rule.patterns
+                .as_ref()
+                .and_then(|ps| ps.first().map(|p| p.pattern.clone()))
+        })
+        .unwrap_or_default();
+    let evidence_refs = Some(crate::scanner::EvidenceRefs {
+        matched_pattern: Some(format!("{}::{}", rule.id, pattern_desc)),
+        ..Default::default()
+    });
+
     // 生成标记原因
     let reasoning_hint = Some(match likely_fp {
         Some(reason) => format!(
@@ -1129,12 +1178,13 @@ fn create_finding(
         confidence: None,
         corroboration_count: None,
         code_snippet,
-        source_snippet: None,
-        sink_snippet: None,
+        source_snippet: matched_line.clone(),
+        sink_snippet: matched_line,
+        enclosing_function,
         file_role,
         barriers,
         reasoning_hint,
-        evidence_refs: None,
+        evidence_refs,
         ..Default::default()
     }
 }

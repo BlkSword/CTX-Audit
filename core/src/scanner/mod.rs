@@ -178,8 +178,13 @@ pub struct Finding {
 
 /// 证据引用 — 指向调用图中的具体节点和路径
 /// 为 LLM 提供可追踪、可查询的确定性证据入口
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EvidenceRefs {
+    /// 规则类 finding 的直接证据：命中的规则与模式（regex/tree-sitter 规则没有
+    /// source→sink 路径，此前 evidence_refs 恒为 None，导致规则型目标的证据
+    /// 完整率接近 0——EQM 证据轴实测 simplepie/gatus 0.00、shlink 0.14）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_pattern: Option<String>,
     /// source→sink 的调用路径证据
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_sink_path: Option<SourceSinkEvidence>,
@@ -279,6 +284,88 @@ pub struct GraphSnapshot {
 }
 
 /// 提取匹配行周围的代码上下文
+/// 从命中行向上查找最近的函数/方法签名，返回函数名。
+///
+/// 规则类 finding 此前不带 `enclosing_function`，LLM 无法直接用函数名查
+/// query_callers/query_callees（EQM 证据轴实测 gatus 0.00）。这里有界向上扫描
+/// （最多 200 行）并匹配各语言常见的函数签名形态。
+pub fn find_enclosing_function_name(content: &str, line: usize, language: &str) -> Option<String> {
+    use std::sync::OnceLock;
+    static RUST_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static PY_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static JS_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static JAVA_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static GO_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static PHP_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static C_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+    let (re, group) = match language.to_lowercase().as_str() {
+        "rust" => (
+            RUST_RE.get_or_init(|| {
+                regex::Regex::new(r"(?m)^\s*(?:pub\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+            }),
+            1,
+        ),
+        "python" => (
+            PY_RE.get_or_init(|| {
+                regex::Regex::new(r"(?m)^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+            }),
+            1,
+        ),
+        "javascript" | "typescript" => (
+            JS_RE.get_or_init(|| {
+                regex::Regex::new(
+                    r"(?m)^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][A-Za-z0-9_$]*)|(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:function|\())",
+                )
+                .unwrap()
+            }),
+            0,
+        ),
+        "java" => (
+            JAVA_RE.get_or_init(|| {
+                regex::Regex::new(r"(?m)^\s*(?:public|private|protected|static|final|synchronized|abstract|native|\s)*[A-Za-z_][A-Za-z0-9_<>,?\[\]\.\s]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap()
+            }),
+            1,
+        ),
+        "go" => (
+            GO_RE.get_or_init(|| {
+                regex::Regex::new(r"(?m)^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+            }),
+            1,
+        ),
+        "php" => (
+            PHP_RE.get_or_init(|| {
+                regex::Regex::new(r"(?m)^\s*(?:public|private|protected|static|final|abstract|\s)*function\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+            }),
+            1,
+        ),
+        _ => (
+            C_RE.get_or_init(|| {
+                regex::Regex::new(r"(?m)^[A-Za-z_][A-Za-z0-9_<>:,\*&\s]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap()
+            }),
+            1,
+        ),
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    if line == 0 || line > lines.len() {
+        return None;
+    }
+    let start = line.saturating_sub(200);
+    for idx in (start..line).rev() {
+        let text = lines.get(idx)?;
+        if let Some(caps) = re.captures(text) {
+            if let Some(m) = caps.get(group).or_else(|| caps.get(1)) {
+                let name = m.as_str().trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn extract_code_context(
     content: &str,
     line_start: usize,
@@ -2072,6 +2159,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                         .collect();
 
                     let evidence = EvidenceRefs {
+                        matched_pattern: None,
                         source_sink_path: Some(SourceSinkEvidence {
                             source_function: flow.source.symbol.clone(),
                             source_file: flow.source.file_path.clone(),
@@ -2555,6 +2643,7 @@ fn build_evidence_refs_from_flow(
     let path_length = path_steps.len();
 
     EvidenceRefs {
+        matched_pattern: None,
         source_sink_path: Some(SourceSinkEvidence {
             source_function: flow.source.symbol.clone(),
             source_file: flow.source.file_path.clone(),
@@ -2820,6 +2909,7 @@ fn enrich_rule_findings_with_local_source_sink(
         ];
 
         finding.evidence_refs = Some(EvidenceRefs {
+            matched_pattern: None,
             source_sink_path: Some(SourceSinkEvidence {
                 source_function: matched.source_pattern,
                 source_file: finding.file_path.clone(),
