@@ -1071,16 +1071,89 @@ impl ASTParser {
 
     fn extract_generic_symbols(
         &self,
-        _file_path: &Path,
-        _content: &str,
+        file_path: &Path,
+        content: &str,
         _ext: &str,
-        _root_node: Node,
+        root_node: Node,
     ) -> Result<Vec<Symbol>, String> {
-        // Fallback for unsupported languages - just extract basic structure
-        let symbols = Vec::new();
+        // 通用符号抽取（tree-sitter 节点类型驱动），覆盖此前直接落到"空实现"的
+        // 语言：**Go（function_declaration/method_declaration/type_declaration）**
+        // 与 **C/C++（function_definition + declarator）**。
+        // 此前这两类语言的 extract_symbols 恒返回空 → 跨文件调用图退化为行级
+        // 启发式（实测 Go 目标 135 个文件只有 5 个带符号、symbols_total=40）。
+        let mut symbols = Vec::new();
 
-        // This is a simplified implementation
-        // In a real scenario, you'd want to implement language-specific parsers
+        fn first_identifier<'a>(node: Node<'a>, content: &str, depth: usize) -> Option<String> {
+            if depth > 3 {
+                return None;
+            }
+            if matches!(node.kind(), "identifier" | "field_identifier" | "type_identifier") {
+                let name = content[node.byte_range()].to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(found) = first_identifier(child, content, depth + 1) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        fn visit(
+            node: Node,
+            content: &str,
+            file_path: &Path,
+            symbols: &mut Vec<Symbol>,
+        ) {
+            let kind = node.kind();
+            let symbol_kind = match kind {
+                "function_declaration" | "function_definition" | "function_item" => {
+                    Some(SymbolKind::Function)
+                }
+                "method_declaration" | "method_definition" => Some(SymbolKind::Method),
+                "type_declaration" | "type_spec" | "struct_specifier" | "class_specifier"
+                | "enum_specifier" | "interface_type" => Some(SymbolKind::Class),
+                _ => None,
+            };
+            if let Some(symbol_kind) = symbol_kind {
+                let name = node
+                    .child_by_field_name("name")
+                    .map(|n| content[n.byte_range()].to_string())
+                    .filter(|n| !n.is_empty())
+                    .or_else(|| {
+                        // C/C++：函数名在 declarator 链里（function_definition → declarator）
+                        node.child_by_field_name("declarator")
+                            .and_then(|d| first_identifier(d, content, 0))
+                    })
+                    .filter(|n| !n.is_empty() && n != "(");
+                if let Some(name) = name {
+                    let start_line = node.start_position().row + 1;
+                    let end_line = node.end_position().row + 1;
+                    let mut code = content[node.byte_range()].to_string();
+                    if code.len() > 200 {
+                        code = truncate_string_safe(&code, 197);
+                    }
+                    let symbol = Symbol::new(
+                        name,
+                        symbol_kind,
+                        file_path.to_string_lossy().to_string(),
+                        start_line as u32,
+                        code,
+                    )
+                    .with_end_line(end_line as u32);
+                    symbols.push(symbol);
+                }
+            }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                visit(child, content, file_path, symbols);
+            }
+        }
+
+        visit(root_node, content, file_path, &mut symbols);
         Ok(symbols)
     }
 
@@ -2568,6 +2641,60 @@ class Cache
             "PHP 类方法符号缺失：{:?}",
             symbols.iter().map(|s| (&s.name, &s.kind)).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_go_symbols_extracted() {
+        // Go 此前落到空实现 → 135 个文件仅 5 个有符号（跨文件图退化为行级启发式）
+        let code = r#"package main
+
+import "net/http"
+
+type Server struct{ port int }
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    _ = r.URL.Query().Get("q")
+}
+
+func (s *Server) Start() error { return nil }
+"#;
+        let path = std::path::PathBuf::from("main.go");
+        let (symbols, _calls) = crate::ast::parser::with_thread_local_parser(|p| {
+            p.parse_and_extract_calls(&path, code)
+        });
+        let symbols = symbols.expect("go symbols should parse");
+        let names: Vec<(String, String)> = symbols
+            .iter()
+            .map(|s| (s.name.clone(), format!("{:?}", s.kind)))
+            .collect();
+        eprintln!("DEBUG go symbols={:?}", names);
+        assert!(
+            symbols.iter().any(|s| s.name == "handler"),
+            "Go 函数符号缺失：{:?}",
+            names
+        );
+        assert!(
+            symbols.iter().any(|s| s.name == "Start"),
+            "Go 方法符号缺失：{:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_c_symbols_extracted() {
+        let code = r#"#include <stdio.h>
+int helper(int x) { return x + 1; }
+void handler(char *p) { printf("%s", p); }
+"#;
+        let path = std::path::PathBuf::from("probe.c");
+        let (symbols, _calls) = crate::ast::parser::with_thread_local_parser(|p| {
+            p.parse_and_extract_calls(&path, code)
+        });
+        let symbols = symbols.expect("c symbols should parse");
+        let names: Vec<String> = symbols.iter().map(|s| s.name.clone()).collect();
+        eprintln!("DEBUG c symbols={:?}", names);
+        assert!(names.contains(&"helper".to_string()), "C 函数符号缺失：{:?}", names);
+        assert!(names.contains(&"handler".to_string()), "C 函数符号缺失：{:?}", names);
     }
 
     #[test]
