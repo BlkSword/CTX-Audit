@@ -2065,7 +2065,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                                         {
                                             let root = tree.root_node();
                                             let body_nodes =
-                                                crate::ast::parser::find_fragment_body_nodes(root);
+                                                crate::ast::parser::find_fragment_body_nodes_with_statements(root);
                                             if !body_nodes.is_empty() {
                                                 return CPGBuilder::build_function_cpg_from_fragment_children(
                                                 &body_nodes, &fragment, file_path_str,
@@ -2107,12 +2107,36 @@ pub async fn scan_directory_deep_with_rules_progress(
                                             &func_calls,
                                         )
                                     });
-                                let sig_id = func_cpg.signature.id();
-                                let func_flows = analyzer.analyze_function_cpg(
+                                let mut func_cpg = func_cpg;
+                                let mut sig_id = func_cpg.signature.id();
+                                let mut func_flows = analyzer.analyze_function_cpg(
                                     &func_cpg,
                                     &func.body_text,
                                     &func_hints,
                                 );
+                                // 混合回退（backlog ②）：AST-CFG（含语句列表）在部分
+                                // 语言/形态上比文本 CFG 不敏感（3 个 Python 流测试曾因
+                                // 直接切换而回归）。AST 路径无流时再跑一次文本 CFG，
+                                // 二者取有流者：既启用 AST 语句级 def/use，又不丢既有召回。
+                                if func_flows.is_empty() {
+                                    let text_cpg = CPGBuilder::build_function_cpg_from_text(
+                                        &func.body_text,
+                                        file_path_str,
+                                        &func,
+                                        &func_assignments,
+                                        &func_calls,
+                                    );
+                                    let text_flows = analyzer.analyze_function_cpg(
+                                        &text_cpg,
+                                        &func.body_text,
+                                        &func_hints,
+                                    );
+                                    if !text_flows.is_empty() {
+                                        func_cpg = text_cpg;
+                                        sig_id = func_cpg.signature.id();
+                                        func_flows = text_flows;
+                                    }
+                                }
                                 (sig_id, func_cpg, func_flows)
                             })
                             .collect();

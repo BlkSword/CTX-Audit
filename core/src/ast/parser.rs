@@ -98,6 +98,30 @@ pub fn find_fragment_body_nodes<'a>(root: Node<'a>) -> Vec<Node<'a>> {
     Vec::new()
 }
 
+/// 与 `find_fragment_body_nodes` 相同，但当 fragment 解析结果本身就是
+/// **语句列表**（无外层块包裹，如去缩进后的 Python/JS 函数体）时，返回
+/// 顶层语句节点，而不是空 vec。
+///
+/// 背景（backlog ②）：`find_fragment_body_nodes` 对语句列表返回空，调用方
+/// 因此退回文本 CFG——AST 语句级 def/use 不参与分析。语句列表在语法树上
+/// 与 `block` 等价，可直接交给 `build_from_nodes` 构 CFG。
+pub fn find_fragment_body_nodes_with_statements<'a>(root: Node<'a>) -> Vec<Node<'a>> {
+    let nodes = find_fragment_body_nodes(root);
+    if !nodes.is_empty() {
+        return nodes;
+    }
+    let mut cursor = root.walk();
+    let children: Vec<Node<'a>> = root.children(&mut cursor).collect();
+    if children.is_empty() {
+        return Vec::new();
+    }
+    // 解析残缺/错误时不冒险：错误节点会让 CFG 构建出错误边。
+    if children.iter().any(|n| n.is_error()) {
+        return Vec::new();
+    }
+    children
+}
+
 impl ASTParser {
     pub fn new() -> Self {
         let mut parsers = HashMap::new();
