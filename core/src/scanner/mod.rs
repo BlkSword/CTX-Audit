@@ -1363,6 +1363,20 @@ async fn scan_directory_with_rules_inner(
                                     &ep.file_path,
                                     &non_production_path_patterns,
                                 );
+                                // PHP 过程式入口/framework 路由常常没有 method 与 route，
+                                // 此时用 function_name 或 file:line 兜底，保证证据可定位。
+                                let ep_method =
+                                    ep.http_method.as_deref().unwrap_or("HTTP").to_string();
+                                let ep_file_label = std::path::Path::new(&ep.file_path)
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(ep.file_path.as_str())
+                                    .to_string();
+                                let ep_label = ep
+                                    .route
+                                    .clone()
+                                    .or_else(|| ep.function_name.clone())
+                                    .unwrap_or_else(|| format!("{}:{}", ep_file_label, ep.line));
                                 attack_surface_findings.push(Finding {
                                     finding_id: format!("attack-surface-unauth-{}", ep.line),
                                     file_path: ep.file_path.clone(),
@@ -1373,8 +1387,7 @@ async fn scan_directory_with_rules_inner(
                                     severity: "high".to_string(),
                                     description: format!(
                                         "{} {} 端点未配置认证保护",
-                                        ep.http_method.as_deref().unwrap_or("?"),
-                                        ep.route.as_deref().unwrap_or("?")
+                                        ep_method, ep_label
                                     ),
                                     analysis_trail: None,
                                     llm_output: None,
@@ -1383,16 +1396,27 @@ async fn scan_directory_with_rules_inner(
                                     code_snippet: Some(extract_code_context(
                                         &content, ep.line, ep.line, 3,
                                     )),
-                                    source_snippet: None,
-                                    sink_snippet: None,
+                                    // 单行入口点：source/sink 都是同一行（路由注册处），
+                                    // 证据轴要求该列非空，否则攻击面检测器整类 finding 不可复核。
+                                    source_snippet: line_snippet(&content, ep.line),
+                                    sink_snippet: line_snippet(&content, ep.line),
                                     file_role: if is_non_production {
                                         Some("non-production".to_string())
                                     } else {
                                         None
                                     },
                                     barriers: None,
-                                    reasoning_hint: None,
-                                    evidence_refs: None,
+                                    reasoning_hint: Some(format!(
+                                        "攻击面入口：{} {} 未配置认证保护（公开可访问，risk={:.2}）",
+                                        ep_method, ep_label, ep.risk_score
+                                    )),
+                                    evidence_refs: Some(EvidenceRefs {
+                                        matched_pattern: Some(format!(
+                                            "attack-surface::{} {}",
+                                            ep_method, ep_label
+                                        )),
+                                        ..Default::default()
+                                    }),
                                     ..Default::default()
                                 });
                             }
