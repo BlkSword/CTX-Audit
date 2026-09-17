@@ -5380,6 +5380,87 @@ pub async fn handler(q: web::Query<P>) -> i32 {
     }
 
     #[test]
+    fn test_rust_pipeline_cpg_matches_file_cpg() {
+        // 管线模拟：scanner 走 "fragment 解析 → build_function_cpg_from_fragment_children
+        // → analyze_function_cpg(content=body_text)"，与 analyze_file_cpg（整文件构 CPG）
+        // 不是同一条路径。合成样例上前者正常、真实仓库里 CPG 流恒 1 —— 本测试把两条
+        // 路径摆在一起对比，定位管线侧的差异。
+        let code = r#"use actix_web::web;
+
+pub async fn handler(q: web::Query<P>) -> i32 {
+    let v = q.value.clone();
+    db.query(v);
+    0
+}
+"#;
+        let path = std::path::PathBuf::from("handler.rs");
+        let mut analyzer = analyzer_with_yaml_rules();
+
+        let file_flows = analyzer.analyze_file_cpg(&path, code).flows.len();
+
+        // --- 管线模拟 ---
+        let extracted = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            ast_parser.extract_all_for_taint_with_tree(&path, code)
+        });
+        let Some((_tree, _symbols, functions, file_assignments, file_calls)) = extracted else {
+            panic!("extract failed");
+        };
+        let func = functions.first().expect("one function").clone();
+        let func_assignments: Vec<_> = file_assignments
+            .iter()
+            .filter(|a| a.line >= func.start_line && a.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = file_calls
+            .iter()
+            .filter(|c| c.line >= func.start_line && c.line <= func.end_line)
+            .cloned()
+            .collect();
+        let func_cpg = crate::ast::parser::with_thread_local_parser(|ast_parser| {
+            let fragment = crate::ast::parser::dedent_fragment(&func.body_text);
+            if let Some(tree) = ast_parser.parse_fragment(&fragment, "rs") {
+                let root = tree.root_node();
+                let body_nodes = crate::ast::parser::find_fragment_body_nodes(root);
+                if !body_nodes.is_empty() {
+                    return crate::analysis::cpg::CPGBuilder::build_function_cpg_from_fragment_children(
+                        &body_nodes,
+                        &fragment,
+                        "handler.rs",
+                        &func,
+                        &func_assignments,
+                        &func_calls,
+                    );
+                }
+            }
+            crate::analysis::cpg::CPGBuilder::build_function_cpg_from_text(
+                &func.body_text,
+                "handler.rs",
+                &func,
+                &func_assignments,
+                &func_calls,
+            )
+        });
+        let pipeline_flows = analyzer
+            .analyze_function_cpg(&func_cpg, &func.body_text, &[])
+            .len();
+        eprintln!(
+            "DEBUG rust: file_flows={} pipeline_flows={} body_start={} start={} offset={} cfg_nodes={}",
+            file_flows,
+            pipeline_flows,
+            func.body_start_line,
+            func.start_line,
+            func_cpg.line_offset,
+            func_cpg.cfg.nodes.len()
+        );
+        assert!(file_flows > 0, "整文件 CPG 路径应检出，got {}", file_flows);
+        assert!(
+            pipeline_flows > 0,
+            "管线 CPG 路径应检出，got {}",
+            pipeline_flows
+        );
+    }
+
+    #[test]
     fn test_c_command_injection_system() {
         let code = r#"int main(int argc, char *argv[]) {
     char *user = argv[1];
