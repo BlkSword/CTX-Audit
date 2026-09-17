@@ -86,6 +86,9 @@ enum Commands {
         /// 最低置信度阈值（0.0-1.0，过滤低置信度发现。CrossFileTaintAnalyzer 的 name/body based 发现默认被降权）
         #[arg(long)]
         min_confidence: Option<f32>,
+        /// 是否保留跨文件“结构可达链”的原始严重度（默认降为 info 并被默认阈值过滤）
+        #[arg(long)]
+        include_structural: bool,
 
         /// 文件模式过滤（如 *.rs）
         #[arg(short, long)]
@@ -625,6 +628,7 @@ async fn main() -> Result<()> {
             graph_output,
             query_mode,
             min_confidence,
+            include_structural,
         } => {
             commands::scan::execute(
                 path,
@@ -644,6 +648,7 @@ async fn main() -> Result<()> {
                 graph_output,
                 query_mode,
                 min_confidence,
+                include_structural,
             )
             .await
         }

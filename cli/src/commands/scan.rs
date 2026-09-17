@@ -74,6 +74,7 @@ pub async fn execute(
     graph_output: Option<String>,
     query_mode: bool,
     min_confidence: Option<f32>,
+    include_structural: bool,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -123,6 +124,7 @@ pub async fn execute(
                 sca_options,
                 graph_output,
                 query_mode,
+                include_structural,
             )
             .await;
         }
@@ -156,6 +158,7 @@ pub async fn execute(
         sca_options,
         graph_output,
         query_mode,
+        include_structural,
     )
     .await
 }
@@ -230,6 +233,7 @@ fn build_scan_options() -> ScanOptions {
             batch_size: batch,
             line_tolerance: tol,
             include_tests,
+            include_structural: false,
             enable_taint: false,
             enable_cross_file: false,
             taint_max_candidate_files: max_cand,
@@ -339,6 +343,7 @@ async fn scan_local(
     sca_options: ScaScanOptions,
     graph_output: Option<String>,
     query_mode: bool,
+    include_structural: bool,
 ) -> Result<()> {
     let mode = match (enable_taint, enable_cross_file) {
         (true, true) => "深度扫描 (规则 + 污点 + 跨文件)",
@@ -355,6 +360,7 @@ async fn scan_local(
     let mut scan_opts = build_scan_options();
     scan_opts.enable_taint = enable_taint;
     scan_opts.enable_cross_file = enable_cross_file;
+    scan_opts.include_structural = include_structural;
 
     // 合并排除列表：CLI + 配置文件 exclude_extra
     let all_excludes = build_exclude_dirs(exclude_dirs);
@@ -895,6 +901,7 @@ async fn scan_via_daemon(
                 ScaScanOptions::default(),
                 None,
                 false,
+                false,
             )
             .await;
         }
@@ -936,6 +943,7 @@ async fn scan_via_daemon(
                 renderer,
                 ScaScanOptions::default(),
                 None,
+                false,
                 false,
             )
             .await;

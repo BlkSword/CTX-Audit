@@ -66,6 +66,13 @@ pub struct ScanOptions {
     pub line_tolerance: usize,
     /// 是否包含测试文件（默认 false，测试目录中文件降低置信度但不排除）
     pub include_tests: bool,
+    /// 是否保留跨文件“结构可达链”的原始严重度。
+    ///
+    /// 无数据流证据的结构链在真实大仓里占绝对多数（某头部 C 项目实测 139/142 = 97.9%），
+    /// 默认将其降为 info（默认 min-severity=medium 即被过滤，不再当噪声展示）；
+    /// 需要看全量调用图可达性时置 true（CLI: --include-structural）。
+    #[serde(default)]
+    pub include_structural: bool,
     /// 启用 AST 污点分析（单文件 source→sink 追踪）
     pub enable_taint: bool,
     /// 启用跨文件污点追踪（需要 enable_taint）
@@ -91,6 +98,7 @@ impl Default for ScanOptions {
             batch_size: 100,
             line_tolerance: 3,
             include_tests: false,
+            include_structural: false,
             enable_taint: false,
             enable_cross_file: false,
             taint_max_candidate_files: 5000,
@@ -188,6 +196,10 @@ pub struct EvidenceRefs {
     /// source→sink 的调用路径证据
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_sink_path: Option<SourceSinkEvidence>,
+    /// 路径证据类型：`dataflow`（有实参映射/摘要证据）或 `structural`（纯调用图可达）。
+    /// 供消费端区分“可复核的数据流结论”与“结构提示”，也是 EQM 噪声比的统计口径。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_kind: Option<String>,
     /// 同一 source 行被折叠掉的其它 source→sink 路径。
     ///
     /// finding 级去重按 (file_path, line_start) 分组，而跨文件 finding 的
@@ -1638,6 +1650,10 @@ pub async fn scan_directory_deep_with_rules_progress(
     // 先执行基础扫描（收集文件内容缓存）
     let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);
     let include_tests = scan_opts.as_ref().map(|o| o.include_tests).unwrap_or(false);
+    let include_structural = scan_opts
+        .as_ref()
+        .map(|o| o.include_structural)
+        .unwrap_or(false);
     let max_candidate_files = scan_opts
         .as_ref()
         .map(|o| o.taint_max_candidate_files)
@@ -2229,6 +2245,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                             path_length: path_steps.len(),
                             path_steps,
                         }),
+                        path_kind: None,
                         additional_source_sink_paths: Vec::new(),
                         sanitizer_chain,
                         middleware_coverage: Vec::new(),
@@ -2565,6 +2582,22 @@ pub async fn scan_directory_deep_with_rules_progress(
                     }
                 });
 
+                // 结构可达链（无数据流证据）默认降为 info：真实大仓中这类候选占绝对多数，
+                // 默认 min-severity=medium 时不再进入默认输出；--include-structural 保留原严重度。
+                let is_structural_only = flow
+                    .confidence_factors
+                    .iter()
+                    .any(|f| f == "path:structural")
+                    && !flow
+                        .confidence_factors
+                        .iter()
+                        .any(|f| f == "path:dataflow");
+                let finding_severity = if is_structural_only && !include_structural {
+                    "info".to_string()
+                } else {
+                    format!("{:?}", flow.severity).to_lowercase()
+                };
+
                 findings.push(Finding {
                     // E-6 补全：跨文件 finding 同样不再继承随机 flow.id，
                     // 由 source 位置 + sink 位置 + 漏洞类型稳定派生。
@@ -2580,7 +2613,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                     line_end: flow.sink.line,
                     detector: "CrossFileTaintAnalyzer".to_string(),
                     vuln_type: vuln_name.clone(),
-                    severity: format!("{:?}", flow.severity).to_lowercase(),
+                    severity: finding_severity,
                     description: format!(
                         "{}: {}:{} → {}:{} (via {})",
                         vuln_name,
@@ -2700,6 +2733,22 @@ fn build_evidence_refs_from_flow(
 
     let path_length = path_steps.len();
 
+    let path_kind = if flow
+        .confidence_factors
+        .iter()
+        .any(|f| f == "path:dataflow")
+    {
+        Some("dataflow".to_string())
+    } else if flow
+        .confidence_factors
+        .iter()
+        .any(|f| f == "path:structural")
+    {
+        Some("structural".to_string())
+    } else {
+        None
+    };
+
     EvidenceRefs {
         matched_pattern: None,
         source_sink_path: Some(SourceSinkEvidence {
@@ -2714,6 +2763,7 @@ fn build_evidence_refs_from_flow(
             path_length,
             path_steps,
         }),
+        path_kind,
         additional_source_sink_paths: Vec::new(),
         sanitizer_chain: Vec::new(),
         middleware_coverage: shared_middleware_coverage.to_vec(),
@@ -2981,6 +3031,7 @@ fn enrich_rule_findings_with_local_source_sink(
                 path_length: 1,
                 path_steps,
             }),
+            path_kind: None,
             additional_source_sink_paths: Vec::new(),
             sanitizer_chain: Vec::new(),
             middleware_coverage: Vec::new(),

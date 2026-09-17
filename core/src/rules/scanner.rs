@@ -921,6 +921,37 @@ fn is_string_literal_rhs(rhs: &str) -> bool {
     !inner.contains('$') && !inner.contains('+') && !inner.contains('`')
 }
 
+/// 分配器族：长度为“变量 × 数字常量”时，溢出需长度超过 SIZE_MAX/常量，
+/// 真实边界（如路径长度、报文长度）不可达 —— 实测 C 项目该形态为纯 FP。
+const ALLOC_FAMILY: &[&str] = &[
+    "malloc", "realloc", "calloc", "alloca", "xmalloc", "zmalloc", "ngx_alloc",
+    "ngx_palloc", "ngx_pnalloc",
+];
+
+/// 参数是否为 `变量 * 数字常量`（允许常数在左；取最后一个逗号后的实参，
+/// 以覆盖 `realloc(p, len * 2)` 形态）。两个变量相乘（`n * m`）返回 false。
+fn scaled_by_numeric_constant(args: &str) -> bool {
+    let arg = args.rsplit(',').next().unwrap_or(args).trim();
+    let arg = arg.trim_end_matches(';').trim();
+    let is_num = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    let is_var = |s: &str| {
+        !s.is_empty()
+            && s.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+            && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-')
+    };
+    let mut parts = arg.split('*');
+    let Some(lhs) = parts.next().map(str::trim) else {
+        return false;
+    };
+    let Some(rhs) = parts.next().map(str::trim) else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    (is_var(lhs) && is_num(rhs)) || (is_num(lhs) && is_var(rhs))
+}
+
 /// 评估 sink 调用的参数是否攻击者不可控（likely_fp）。
 /// 返回 Some(原因) 表示可降级为 info：
 /// - 参数全部为字面量（如 os.popen("netstat ...")）
@@ -946,6 +977,11 @@ fn evaluate_likely_fp_args(content: &str, match_start: usize, match_end: usize) 
         return Some("参数全部为字面量，攻击者不可控");
     }
     let short_name = func_name.rsplit(|c| c == ':' || c == '.').next().unwrap_or(&func_name);
+    // 长度×数字常量的分配：溢出需要长度量级超过 SIZE_MAX/常量，普通长度不可达。
+    // 保留 `n * m`（变量×变量）为高风险形态，只有攻击者能放大长度时才可能命中。
+    if ALLOC_FAMILY.contains(&short_name) && scaled_by_numeric_constant(&args) {
+        return Some("分配长度为变量×数字常量，溢出需长度超过 SIZE_MAX/常量，普通边界不可达");
+    }
     if PRINTF_FAMILY.contains(&short_name) {
         let lits = extract_string_literals(&args);
         // printf 族：第一个字符串字面量即格式串（可能跳过 dst/stream 参数，取首个字面量近似）
@@ -1812,6 +1848,21 @@ mod tests {
         let start = content.find("os.popen(").unwrap();
         let end = start + "os.popen(".len();
         assert!(evaluate_likely_fp_args(content, start, end).is_some());
+    }
+
+    #[test]
+    fn test_likely_fp_alloc_scaled_by_numeric_constant() {
+        // malloc(len * 2)/realloc(p, len * 2)：常量缩放，普通长度不可达 → likely_fp
+        let content = r#"buf = malloc(len * 2);"#;
+        let start = content.find("malloc(").unwrap();
+        assert!(evaluate_likely_fp_args(content, start, start + "malloc(".len()).is_some());
+        let content = r#"buf = realloc(p, len * 4);"#;
+        let start = content.find("realloc(").unwrap();
+        assert!(evaluate_likely_fp_args(content, start, start + "realloc(".len()).is_some());
+        // 变量×变量仍是真实溢出形态，不降权
+        let content = r#"buf = malloc(n * m);"#;
+        let start = content.find("malloc(").unwrap();
+        assert!(evaluate_likely_fp_args(content, start, start + "malloc(".len()).is_none());
     }
 
     #[test]
