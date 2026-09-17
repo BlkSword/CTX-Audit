@@ -211,6 +211,15 @@ impl RuleScanner {
                             // 缺失检查类规则（missing/unprotected）同样除外——问题在
                             // "没有调用某校验"，与命中点参数是否字面量无关。
                             let matched_text = &content[start_pos..end_pos];
+                            // 同行文本：规则可能只命中标识符后缀（如 DB_PASSWORD 命中 PASSWORD），
+                            // 判断“值就是键名”必须用整行的赋值目标，见 is_config_key_value。
+                            let line_begin =
+                                content[..start_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                            let line_end = content[start_pos..]
+                                .find('\n')
+                                .map(|p| start_pos + p)
+                                .unwrap_or(content.len());
+                            let matched_line = &content[line_begin..line_end];
                             // `io.Copy(` 共现检查（backlog 10.19）：io.Copy 的参数是
                             // io.Reader/io.Writer 接口，流拷贝目标（HTTP 响应/管道/
                             // zip writer/临时文件）不是文件路径写入。仅当同一函数内
@@ -234,7 +243,16 @@ impl RuleScanner {
                             {
                                 if is_placeholder_secret(&compiled.rule, matched_text) {
                                     Some("值为占位符/示例，非真实凭证")
-                                } else if is_config_key_value(matched_text) {
+                                } else if is_config_key_value(matched_text, matched_line) {
+                                    // 诊断：定位被本启发式判为 FP 的具体行（跨项目核对降误报范围）。
+                                    if std::env::var_os("CTX_AUDIT_FP_TRACE").is_some() {
+                                        tracing::info!(
+                                            "[FpTrace] config-key-fp {}:{} {}",
+                                            path.display(),
+                                            line_start,
+                                            matched_line.trim()
+                                        );
+                                    }
                                     Some("引号内值为配置 key 名称，非真实凭证")
                                 } else {
                                     None
@@ -991,32 +1009,28 @@ fn is_placeholder_secret(rule: &Rule, matched_text: &str) -> bool {
 
 /// 判断引号内的值是否为配置 key 名称（仅含标识符字符），而非真实凭证
 /// 例如 Go const: const SSOClientSecret = "sso_client_secret" 中的值是 key 名称
-fn is_config_key_value(matched_text: &str) -> bool {
-    // 提取引号内的值
-    let extract_quoted = |quote: char| -> Option<&str> {
-        let start = matched_text.rfind(quote)?;
-        if start > 0 && matched_text.as_bytes().get(start - 1) == Some(&(b'\\')) {
-            return None;
-        }
-        let before = &matched_text[..start];
-        let eq_pos = before.rfind('=')?;
-        // 确保等号后在引号前没有其他内容（除了空白）
-        let between = before[eq_pos + 1..].trim();
-        if !between.is_empty() && between != ":" {
-            return None;
-        }
-        // 找到结束引号
-        let after = &matched_text[start + 1..];
-        let end = after.find(quote)?;
-        Some(&after[..end])
+fn is_config_key_value(matched_text: &str, line: &str) -> bool {
+    // 提取引号内的值：锚定第一个 '='。此前用 rfind(quote) 定位，当命中文本
+    // 包含收尾引号时（如 sensitive-info-leak 的 [^'"]{10,} 形态）会取到收尾
+    // 引号，导致 PHP 枚举 case `case DB_PASSWORD = 'DB_PASSWORD';` 被当成
+    // 高 severity 硬编码凭证。
+    let Some(eq_pos) = matched_text.find('=') else {
+        return false;
     };
-
-    let value = match extract_quoted('"') {
-        Some(v) => v,
-        None => match extract_quoted('\'') {
-            Some(v) => v,
-            None => return false,
-        },
+    let rhs = matched_text[eq_pos + 1..].trim_start();
+    let quote = match rhs.chars().next() {
+        Some(q @ ('"' | '\'')) => q,
+        _ => return false,
+    };
+    let rest = &rhs[1..];
+    let value = match rest.find(quote) {
+        // 命中文本含收尾引号：取引号之间的值
+        Some(end) => &rest[..end],
+        // 模式在收尾引号前截断（Go const 场景）：取到空白/分隔符为止
+        None => rest
+            .split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == ')')
+            .next()
+            .unwrap_or(""),
     };
     if value.len() < 4 {
         return false;
@@ -1027,6 +1041,31 @@ fn is_config_key_value(matched_text: &str) -> bool {
         .chars()
         .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-');
     if !is_identifier {
+        return false;
+    }
+
+    // 赋值目标取“整行”而非命中文本：规则可能只命中标识符后缀
+    // （`DB_PASSWORD` 命中 `PASSWORD`），只看命中文本会把键名误当成 `PASSWORD`。
+    let lhs_src = match line.rfind('=') {
+        Some(p) => &line[..p],
+        None => &matched_text[..eq_pos],
+    };
+    let lhs_name = lhs_src
+        .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .find(|s| !s.is_empty())
+        .unwrap_or("");
+
+    // 收窄到“值就是键名本身”（大小写/分隔符不敏感）：
+    // `DB_PASSWORD = 'DB_PASSWORD'`、`SSOClientSecret = "sso_client_secret"`
+    // 是配置键名而非凭证；而 `API_TOKEN = 'supersecrettoken'` 这类真实硬编码
+    // 凭证的值与键名不同，不应降权。
+    let normalize = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    };
+    if lhs_name.is_empty() || normalize(lhs_name) != normalize(value) {
         return false;
     }
 
@@ -1735,6 +1774,35 @@ mod tests {
     fn test_comment_ranges_unsupported_language() {
         let ranges = collect_comment_ranges("eval(x) // eval(y)", "txt");
         assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn test_config_key_value_self_referential_only() {
+        // 值等于键名本身（大小写/分隔符不敏感）→ 配置 key 名称，非凭证。
+        // 收尾引号可能被模式包含（sensitive-info-leak 的 [^'"]{10,} 形态），
+        // 此前 rfind(quote) 会取到收尾引号，使该判定整体失效。
+        // 规则只命中后缀 PASSWORD，键名要从整行取。
+        assert!(is_config_key_value(
+            "PASSWORD = 'DB_PASSWORD'",
+            "    case DB_PASSWORD = 'DB_PASSWORD';"
+        ));
+        assert!(is_config_key_value(
+            "PASSWORD = 'DB_PASSWORD'",
+            "DB_PASSWORD = 'DB_PASSWORD'"
+        ));
+        assert!(is_config_key_value(
+            "Secret = \"sso_client_secret\"",
+            "const SSOClientSecret = \"sso_client_secret\""
+        ));
+        // 真实硬编码凭证：值与键名不同 → 不降权。
+        assert!(!is_config_key_value(
+            "TOKEN = 'supersecrettoken'",
+            "API_TOKEN = 'supersecrettoken'"
+        ));
+        assert!(!is_config_key_value(
+            "password = 'correct-horse-battery'",
+            "password = 'correct-horse-battery'"
+        ));
     }
 
     #[test]
