@@ -1888,6 +1888,31 @@ impl ASTParser {
         }
     }
 
+    /// 取节点子树中第一个标识符（C/C++ declarator 链：function_definition →
+    /// declarator → function_declarator → identifier）。与 extract_generic_symbols
+    /// 的函数名抽取保持一致，保证 CPG signature id 与调用图节点 id 对齐。
+    fn first_identifier_text(node: Node, content: &str) -> Option<String> {
+        fn walk(n: Node, content: &str, depth: usize) -> Option<String> {
+            if depth > 3 {
+                return None;
+            }
+            if matches!(n.kind(), "identifier" | "field_identifier" | "type_identifier") {
+                let name = content[n.byte_range()].to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                if let Some(found) = walk(child, content, depth + 1) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(node, content, 0)
+    }
+
     fn collect_function_bodies_recursive(
         node: &Node,
         content: &str,
@@ -1999,9 +2024,36 @@ impl ASTParser {
             let name = node
                 .child_by_field_name("name")
                 .map(|n| content[n.byte_range()].to_string())
+                .filter(|n| !n.is_empty())
+                .or_else(|| {
+                    // C/C++：函数名在 declarator 链里，没有 name 字段。此前落到
+                    // `<anonymous@N>`，导致 CPG signature id 与调用图节点 id 不匹配
+                    // （实测 redis cpg_key_hits=70/8898，跨文件数据流为 0）。
+                    node.child_by_field_name("declarator")
+                        .and_then(|d| Self::first_identifier_text(d, content))
+                })
                 .unwrap_or_else(|| format!("<anonymous@{}>", node.start_position().row + 1));
 
-            let typed_params = if let Some(params_node) = node.child_by_field_name("parameters") {
+            // C/C++ 参数列表挂在 declarator → function_declarator 上。
+            fn find_params(node: Node) -> Option<Node> {
+                if node.kind() == "function_declarator" {
+                    if let Some(p) = node.child_by_field_name("parameters") {
+                        return Some(p);
+                    }
+                }
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if let Some(p) = find_params(child) {
+                        return Some(p);
+                    }
+                }
+                None
+            }
+            let params_node = node.child_by_field_name("parameters").or_else(|| {
+                node.child_by_field_name("declarator")
+                    .and_then(find_params)
+            });
+            let typed_params = if let Some(params_node) = params_node {
                 Self::extract_typed_params(&params_node, content)
             } else {
                 Vec::new()
@@ -2071,10 +2123,18 @@ impl ASTParser {
                     | "pattern"
                     | "formal_parameter"
                     | "spread_parameter"
+                    | "parameter_declaration"
             ) {
                 let name = child
                     .child_by_field_name("name")
                     .map(|n| content[n.byte_range()].to_string())
+                    .or_else(|| {
+                        // C/C++：parameter_declaration 的变量名在其 declarator 上
+                        // （如 `size_t size` → size）。
+                        child
+                            .child_by_field_name("declarator")
+                            .and_then(|d| Self::first_identifier_text(d, content))
+                    })
                     .unwrap_or_else(|| {
                         let text = content[child.byte_range()].to_string();
                         text.split(':').next().unwrap_or(&text).trim().to_string()
