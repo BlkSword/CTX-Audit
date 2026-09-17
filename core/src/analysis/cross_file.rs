@@ -970,6 +970,7 @@ impl CrossFileTaintAnalyzer {
         self.preload_file_contents(files);
 
         let diag_rss = std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some();
+
         for file_path in files {
             self.build_call_graph_for_file(file_path);
         }
@@ -1029,6 +1030,35 @@ impl CrossFileTaintAnalyzer {
         }
         self.preload_file_contents(files);
 
+
+        if std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some() {
+            let files_with_symbols = files
+                .iter()
+                .filter(|f| {
+                    self.parsed_ast_cache
+                        .get(&f.to_string_lossy().to_string())
+                        .map(|(s, _)| !s.is_empty())
+                        .unwrap_or(false)
+                })
+                .count();
+            let symbols_total: usize = files
+                .iter()
+                .filter_map(|f| self.parsed_ast_cache.get(&f.to_string_lossy().to_string()))
+                .map(|(s, _)| s.len())
+                .sum();
+            let supported = files
+                .iter()
+                .filter(|f| crate::scanner::is_ast_supported_file(f))
+                .count();
+            tracing::info!(
+                "[XFileStats] cross_file inputs: files={} ast_supported={} files_with_symbols={} symbols_total={} parsed_ast_cache_entries={}",
+                files.len(),
+                supported,
+                files_with_symbols,
+                symbols_total,
+                self.parsed_ast_cache.len()
+            );
+        }
         // 并行构建每个文件的调用图子图，再归并到主分析器
         let partials: Vec<CrossFileTaintAnalyzer> = files
             .par_iter()
@@ -2023,23 +2053,15 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 判断文件是否支持 AST 解析
+    /// 该文件是否按 AST 构建调用图。
+    ///
+    /// 必须与扫描器的 `is_ast_supported_file` 完全一致：这里曾单独维护一份
+    /// 扩展名清单且**漏了 php**，导致 PHP 文件（scanner 判定支持、Stage C 文件表
+    /// 里也有、符号缓存里也有 22 个符号）在跨文件图里恒 0 节点——simplepie 全库
+    /// 调用图仅 1 个节点、rss-bridge 31 个，PHP 的跨文件分析实际失效。
+    /// 现在直接复用扫描器的清单，避免两处清单再次漂移。
     fn is_ast_supported(&self, path: &Path) -> bool {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        matches!(
-            ext,
-            "js" | "jsx"
-                | "ts"
-                | "tsx"
-                | "py"
-                | "java"
-                | "rs"
-                | "go"
-                | "c"
-                | "h"
-                | "cpp"
-                | "hpp"
-                | "cc"
-        )
+        crate::scanner::is_ast_supported_file(path)
     }
 
     /// 使用 AST 解析构建调用图（更精确的函数提取和调用关系）

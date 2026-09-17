@@ -3245,7 +3245,7 @@ fn is_compatible_vuln_type_str(a: &str, b: &str) -> bool {
 }
 
 /// 判断文件是否支持 AST 分析
-fn is_ast_supported_file(path: &std::path::Path) -> bool {
+pub(crate) fn is_ast_supported_file(path: &std::path::Path) -> bool {
     if let Some(ext) = path.extension() {
         let ext = ext.to_str().unwrap_or("");
         matches!(

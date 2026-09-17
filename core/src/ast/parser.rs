@@ -2538,6 +2538,39 @@ function helper_escape($value)
     }
 
     #[test]
+    fn test_php_class_method_symbols_extracted() {
+        // 缺陷 B 回归：PHP 类方法必须产出 Symbol（跨文件调用图节点依赖它）
+        let code = r#"<?php
+declare(strict_types=1);
+namespace SimplePie;
+
+class Cache
+{
+    public function get(string $key)
+    {
+        return $this->handler->get($key);
+    }
+}
+"#;
+        let path = std::path::PathBuf::from("Cache.php");
+        let (symbols, calls) = crate::ast::parser::with_thread_local_parser(|p| {
+            p.parse_and_extract_calls(&path, code)
+        });
+        let symbols = symbols.expect("php symbols should parse");
+        eprintln!(
+            "DEBUG php symbols={} names={:?} calls={}",
+            symbols.len(),
+            symbols.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+            calls.len()
+        );
+        assert!(
+            symbols.iter().any(|s| s.name == "get"),
+            "PHP 类方法符号缺失：{:?}",
+            symbols.iter().map(|s| (&s.name, &s.kind)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn test_php_echo_print_synthetic_call_info() {
         // backlog 10.8：echo/print 是语言构造，原不产生 CallInfo——存储型/反射型
         // XSS 主输出构造的污点链在最后一跳断掉。合成后 callee 应可被
