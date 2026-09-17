@@ -188,6 +188,15 @@ pub struct EvidenceRefs {
     /// source→sink 的调用路径证据
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_sink_path: Option<SourceSinkEvidence>,
+    /// 同一 source 行被折叠掉的其它 source→sink 路径。
+    ///
+    /// finding 级去重按 (file_path, line_start) 分组，而跨文件 finding 的
+    /// line_start 是 source 行，因此“同一 source 行污染多个 sink”的流会被
+    /// 合并进一个 finding（实测某分层 Rust 项目 195 条流 → 184 个 finding，
+    /// 其中 2 条数据流 pair 仅因同源行被折叠）。这里保留被折叠的 pair，
+    /// 避免证据静默丢失。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_source_sink_paths: Vec<SourceSinkEvidence>,
     /// 沿途经过的 sanitizer（及有效性判定）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sanitizer_chain: Vec<SanitizerEvidence>,
@@ -2172,6 +2181,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                             path_length: path_steps.len(),
                             path_steps,
                         }),
+                        additional_source_sink_paths: Vec::new(),
                         sanitizer_chain,
                         middleware_coverage: Vec::new(),
                         graph_snapshot: None,
@@ -2656,6 +2666,7 @@ fn build_evidence_refs_from_flow(
             path_length,
             path_steps,
         }),
+        additional_source_sink_paths: Vec::new(),
         sanitizer_chain: Vec::new(),
         middleware_coverage: shared_middleware_coverage.to_vec(),
         graph_snapshot: Some(*graph_snapshot),
@@ -2922,6 +2933,7 @@ fn enrich_rule_findings_with_local_source_sink(
                 path_length: 1,
                 path_steps,
             }),
+            additional_source_sink_paths: Vec::new(),
             sanitizer_chain: Vec::new(),
             middleware_coverage: Vec::new(),
             graph_snapshot: None,
@@ -3449,6 +3461,46 @@ fn merge_findings_at_indices(findings: &[Finding], indices: &[usize]) -> Finding
                 }
             }
         }
+
+        // 合并被 finding 级去重折叠掉的其它 source→sink 路径。
+        // 跨文件 finding 的 (file_path, line_start) 是 source 位置：同一 source
+        // 行污染多个 sink 时 Round 1 只留一个代表，其它 pair 在此保留，避免证据静默丢失。
+        let mut candidates: Vec<SourceSinkEvidence> = Vec::new();
+        for &idx in indices {
+            if let Some(ref other) = findings[idx].evidence_refs {
+                if let Some(ref p) = other.source_sink_path {
+                    candidates.push(p.clone());
+                }
+                candidates.extend(other.additional_source_sink_paths.iter().cloned());
+            }
+        }
+        for p in candidates {
+            let is_own = evidence
+                .source_sink_path
+                .as_ref()
+                .map(|a| {
+                    a.source_file == p.source_file
+                        && a.source_line == p.source_line
+                        && a.sink_file == p.sink_file
+                        && a.sink_line == p.sink_line
+                })
+                .unwrap_or(false);
+            if !is_own
+                && !evidence.additional_source_sink_paths.iter().any(|a| {
+                    a.source_file == p.source_file
+                        && a.source_line == p.source_line
+                        && a.sink_file == p.sink_file
+                        && a.sink_line == p.sink_line
+                })
+            {
+                evidence.additional_source_sink_paths.push(p);
+            }
+        }
+        // 确定性：Round 1 分组来自 HashMap，合并顺序随机；排序后再输出。
+        evidence.additional_source_sink_paths.sort_by(|a, b| {
+            (&a.source_file, a.source_line, &a.sink_file, a.sink_line)
+                .cmp(&(&b.source_file, b.source_line, &b.sink_file, b.sink_line))
+        });
     }
 
     best
@@ -3859,6 +3911,48 @@ mod tests {
         assert_eq!(deduped.len(), 2, "不同类型同点 finding 应都保留");
     }
 
+    #[test]
+    fn test_merge_keeps_folded_cross_file_paths() {
+        // 跨文件 finding 的 (file_path, line_start) 是 source 位置：同一 source 行
+        // 污染多个 sink 时 finding 级去重只留一个代表，被折叠的 pair 必须保留在
+        // 证据里（additional_source_sink_paths），否则 pair 覆盖静默丢失。
+        let mk = |sink_file: &str, sink_line: usize, conf: f32| -> Finding {
+            let mut f = make_finding("src/handler.rs", 42);
+            f.vuln_type = "Generic".to_string();
+            f.detector = "CrossFileTaintAnalyzer".to_string();
+            f.line_end = sink_line;
+            f.confidence = Some(conf);
+            f.evidence_refs = Some(EvidenceRefs {
+                source_sink_path: Some(SourceSinkEvidence {
+                    source_function: "handler".to_string(),
+                    source_file: "src/handler.rs".to_string(),
+                    source_line: 42,
+                    source_node_id: None,
+                    sink_function: "sink".to_string(),
+                    sink_file: sink_file.to_string(),
+                    sink_line,
+                    sink_node_id: None,
+                    path_length: 2,
+                    path_steps: Vec::new(),
+                }),
+                ..Default::default()
+            });
+            f
+        };
+        let deduped = deduplicate_findings(
+            vec![mk("src/a.rs", 10, 0.5), mk("src/b.rs", 20, 0.4)],
+            3,
+        );
+        assert_eq!(deduped.len(), 1, "同点同类型应合并为一个 finding");
+        let ev = deduped[0]
+            .evidence_refs
+            .as_ref()
+            .expect("合并后应保留证据");
+        let own = ev.source_sink_path.as_ref().expect("代表 pair 证据");
+        assert_eq!(own.sink_file, "src/a.rs", "代表应取置信度最高的 pair");
+        assert_eq!(ev.additional_source_sink_paths.len(), 1);
+        assert_eq!(ev.additional_source_sink_paths[0].sink_file, "src/b.rs");
+    }
     #[test]
     fn test_non_utf8_file_encoding_fallback() {
         // backlog 10.6：非 UTF-8（ISO-8859/GBK）源文件此前读取失败被静默跳过
