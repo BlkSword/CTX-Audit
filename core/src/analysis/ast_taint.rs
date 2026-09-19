@@ -2572,6 +2572,20 @@ impl AstTaintAnalyzer {
             let mut tainted_used_var: Option<String> = None;
             let mut tainted_arg_text: Option<String> = None;
             for (arg_idx, arg) in call.arguments.iter().enumerate() {
+                if Self::sink_trace_enabled() {
+                    tracing::info!(
+                        "[SinkTrace] callee={} arg_idx={} sensitive={:?} text={:?} vars={:?} tainted={:?}",
+                        call.callee,
+                        arg_idx,
+                        sink.sensitive_params,
+                        arg.text,
+                        arg.referenced_vars,
+                        arg.referenced_vars
+                            .iter()
+                            .map(|v| self.is_var_tainted(v, state, alias_map))
+                            .collect::<Vec<_>>()
+                    );
+                }
                 if !sink.sensitive_params.is_empty() && !sink.sensitive_params.contains(&arg_idx) {
                     continue;
                 }
@@ -2894,10 +2908,47 @@ impl AstTaintAnalyzer {
         call: &crate::ast::CallInfo,
     ) -> Option<&TaintSink> {
         let arg_texts: Vec<String> = call.arguments.iter().map(|a| a.text.clone()).collect();
-        self.sinks.iter().find(|sink| {
-            sink.matches_with_context(callee, receiver, language)
-                && !sink.is_class_literal_exempt(&arg_texts)
-        })
+        // 具体度优先：多个 sink 都能匹配时取“命中 pattern 最长”的那个。
+        // 反例（实测）：`ngx_sprintf(...)` 同时命中 printf( 与 sprintf(，
+        // 按 id 排序取首个会把格式串位置判成 arg0（printf 家族），
+        // 导致把目标缓冲指针当格式串而大量误报。
+        let mut best: Option<(&TaintSink, usize)> = None;
+        for sink in self.sinks.iter() {
+            if !sink.matches_with_context(callee, receiver, language) {
+                continue;
+            }
+            if sink.is_class_literal_exempt(&arg_texts) {
+                continue;
+            }
+            let score = Self::sink_match_specificity(sink, callee);
+            let better = match best {
+                None => true,
+                Some((prev, prev_score)) => {
+                    score > prev_score || (score == prev_score && sink.id < prev.id)
+                }
+            };
+            if better {
+                best = Some((sink, score));
+            }
+        }
+        best.map(|(sink, _)| sink)
+    }
+
+    /// sink 与 callee 的匹配具体度：语义匹配（namespaces/receiver/exact_matches）
+    /// 视为最具体；Substring 匹配按命中的最长 pattern 计分，因此
+    /// `sprintf(` 胜过 `printf(`、`snprintf(` 胜过 `printf(`。
+    fn sink_match_specificity(sink: &TaintSink, callee: &str) -> usize {
+        if sink.match_mode != super::taint::MatchMode::Substring {
+            return usize::MAX;
+        }
+        sink.patterns
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .filter(|p| callee.contains(p.trim_end_matches('(')))
+            .map(|p| p.len())
+            .max()
+            .unwrap_or(0)
     }
 
     /// 匹配 sink，对方法调用优先用 receiver.callee（如 needle.get）匹配。
@@ -2980,6 +3031,13 @@ impl AstTaintAnalyzer {
 
     /// 按标识符字符切词后判断表达式中是否出现指定变量（边界安全，避免
     /// `q` 误配 `query`；PHP `$row` 含 `$` 前缀仍可匹配）。
+    /// 诊断开关缓存：CTX_AUDIT_SINK_TRACE=1 时打印 sink 匹配的实参/敏感位决策。
+    fn sink_trace_enabled() -> bool {
+        use std::sync::OnceLock;
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("CTX_AUDIT_SINK_TRACE").is_some())
+    }
+
     fn expr_mentions_var(expr: &str, var: &str) -> bool {
         let last_segment = var.rsplit('.').next().unwrap_or(var);
         expr.split(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '$')))
@@ -3049,6 +3107,21 @@ impl AstTaintAnalyzer {
         }
         let Some(end) = end else { return true };
         let args = Self::split_top_level_args(&expr[start + 1..end]);
+        if Self::sink_trace_enabled() {
+            tracing::info!(
+                "[SinkTrace] expr={:?} var={:?} sensitive={:?} args={:?} match={:?}",
+                expr,
+                var,
+                sink.sensitive_params,
+                args,
+                sink.sensitive_params
+                    .iter()
+                    .map(|&idx| args
+                        .get(idx)
+                        .map(|a| Self::expr_mentions_var(a, var)))
+                    .collect::<Vec<_>>()
+            );
+        }
         sink.sensitive_params
             .iter()
             .any(|&idx| args.get(idx).is_some_and(|a| Self::expr_mentions_var(a, var)))
@@ -3078,27 +3151,45 @@ impl AstTaintAnalyzer {
         // 类字面量豁免：表达式含 `Type.class` 时跳过声明了豁免的 sink
         // （`client.get(Policy.class, name)` 是存储查找而非 SQL/SSRF）
         let class_literal_exempt = Self::expr_has_class_literal(expr);
+        // 与 match_sink_for_call 一致：多个 sink 命中时取最具体者，
+        // 否则 `ngx_sprintf(...)` 会按 id 顺序命中 printf(（格式串在 arg0），
+        // 而正确匹配是 sprintf(（格式串在 arg1）。
+        let mut best: Option<(TaintSink, usize)> = None;
         for sink in self.sinks.iter() {
             if class_literal_exempt && sink.class_literal_exempt {
                 continue;
             }
-            if sink.has_semantic_constraints() {
+            let semantic = sink.has_semantic_constraints();
+            let matched = if semantic {
                 // 语义路径：qualified 优先（支持 exact_matches / namespaces），
                 // 再用裸 callee + receiver 语义
-                if let Some(recv) = receiver {
+                let qualified_match = receiver.is_some_and(|recv| {
                     let qualified = format!("{}.{}", recv, callee);
-                    if sink.matches_with_context(&qualified, Some(recv), language) {
-                        return Some(sink.clone());
-                    }
+                    sink.matches_with_context(&qualified, Some(recv), language)
+                });
+                qualified_match || sink.matches_with_context(callee, receiver, language)
+            } else {
+                sink.matches_with_context(expr, receiver, language)
+            };
+            if !matched {
+                continue;
+            }
+            let score = if semantic {
+                usize::MAX
+            } else {
+                Self::sink_match_specificity(sink, callee)
+            };
+            let better = match &best {
+                None => true,
+                Some((prev, prev_score)) => {
+                    score > *prev_score || (score == *prev_score && sink.id < prev.id)
                 }
-                if sink.matches_with_context(callee, receiver, language) {
-                    return Some(sink.clone());
-                }
-            } else if sink.matches_with_context(expr, receiver, language) {
-                return Some(sink.clone());
+            };
+            if better {
+                best = Some((sink.clone(), score));
             }
         }
-        None
+        best.map(|(sink, _)| sink)
     }
 
     /// 赋值目标（左值）的 sink 匹配

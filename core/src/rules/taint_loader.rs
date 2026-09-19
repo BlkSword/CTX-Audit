@@ -440,19 +440,37 @@ version: "1.0"
             .iter()
             .find(|s| s.id == "c_buffer_overflow")
             .expect("c_buffer_overflow sink should exist");
+        // 有界拷贝（wcsncpy 等）已按实参语义拆到 c_buffer_overflow_bounded：
+        // 溢出由长度参数驱动，只看第 3 个实参；无界拷贝保留 strcpy/strcat/gets。
         assert!(
-            c_buffer.patterns.iter().any(|p| p.contains("wcsncpy")),
-            "c_buffer_overflow should cover wcsncpy"
+            c_buffer.patterns.iter().any(|p| p.contains("strcpy")),
+            "c_buffer_overflow should cover unbounded strcpy"
         );
-
-        let c_format = loaded
+        assert!(
+            !c_buffer.patterns.iter().any(|p| p.contains("memcpy")),
+            "c_buffer_overflow must not cover length-bounded memcpy"
+        );
+        let c_bounded = loaded
             .sinks
             .iter()
-            .find(|s| s.id == "c_format_string")
-            .expect("c_format_string sink should exist");
+            .find(|s| s.id == "c_buffer_overflow_bounded")
+            .expect("c_buffer_overflow_bounded sink should exist");
         assert!(
-            c_format.patterns.iter().any(|p| p.contains("fwprintf")),
-            "c_format_string should cover fwprintf"
+            c_bounded.patterns.iter().any(|p| p.contains("wcsncpy"))
+                && c_bounded.sensitive_params == vec![2],
+            "length-bounded copies should be covered and only sensitive to the length arg"
+        );
+
+        // 格式串族按真实位置拆分：sprintf 在 arg1、snprintf 在 arg2。
+        let c_format1 = loaded
+            .sinks
+            .iter()
+            .find(|s| s.id == "c_format_string_arg1")
+            .expect("c_format_string_arg1 sink should exist");
+        assert!(
+            c_format1.patterns.iter().any(|p| p.contains("fwprintf"))
+                && c_format1.sensitive_params == vec![1],
+            "format-string sinks must carry the real format argument position"
         );
 
         let c_path = loaded
