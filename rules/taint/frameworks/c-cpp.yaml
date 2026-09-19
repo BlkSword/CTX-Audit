@@ -140,8 +140,6 @@ sinks:
     patterns:
       - "strcpy("
       - "strcat("
-      - "sprintf("
-      - "vsprintf("
       - "gets("
       - "wcscpy("
       - "wcscat("
@@ -178,31 +176,59 @@ sinks:
     sensitive_params: [2]
     ast_patterns: []
 
-  - id: "c_format_string"
-    name: "C/C++ Format String"
-    description: "Format string functions with user-controlled format"
+  # 格式串类的敏感实参是“格式串”本身，位置随函数族不同：printf(fmt) / sprintf(dst, fmt)
+  # / snprintf(dst, n, fmt) / syslog(prio, fmt)。此前统一用 [0]，导致 sprintf 系
+  # 在“目标缓冲指针被污染（如分配长度污点传播到指针）”时大量误报。
+  - id: "c_format_string_arg0"
+    name: "C/C++ Format String (format is arg0)"
+    description: "Format string (first argument) reaches the sink while attacker-controlled"
     match_mode: "Substring"
     patterns:
       - "printf("
-      - "fprintf("
-      - "sprintf("
-      - "snprintf("
       - "vprintf("
-      - "vfprintf("
-      - "vsprintf("
-      - "vsnprintf("
-      - "fwprintf("
-      - "swprintf("
-      - "vswprintf("
       - "wprintf("
-      - "syslog("
+      - "vwprintf("
       - "std::printf"
-      - "std::fprintf"
     languages: ["c", "cpp"]
     vulnerability_type: "FormatString"
     severity: "Critical"
     cwe_id: "CWE-134"
     sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "c_format_string_arg1"
+    name: "C/C++ Format String (format is arg1)"
+    description: "Format string (second argument) reaches the sink while attacker-controlled"
+    match_mode: "Substring"
+    patterns:
+      - "fprintf("
+      - "sprintf("
+      - "vfprintf("
+      - "vsprintf("
+      - "fwprintf("
+      - "swprintf("
+      - "vswprintf("
+      - "syslog("
+      - "std::fprintf"
+    languages: ["c", "cpp"]
+    vulnerability_type: "FormatString"
+    severity: "Critical"
+    cwe_id: "CWE-134"
+    sensitive_params: [1]
+    ast_patterns: []
+
+  - id: "c_format_string_arg2"
+    name: "C/C++ Format String (format is arg2)"
+    description: "Format string (third argument) reaches the sink while attacker-controlled"
+    match_mode: "Substring"
+    patterns:
+      - "snprintf("
+      - "vsnprintf("
+    languages: ["c", "cpp"]
+    vulnerability_type: "FormatString"
+    severity: "Critical"
+    cwe_id: "CWE-134"
+    sensitive_params: [2]
     ast_patterns: []
 
   - id: "c_file_path"
@@ -252,22 +278,38 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  # 分配类：污点落在“长度/数量”上属于资源耗尽（DoS）线索，不是缓冲区溢出；
+  # 且项目包装器的实参顺序与 libc 不同（ngx_pcalloc(pool, size) 的 arg0 是 pool），
+  # 统一降为 Low/Generic，默认阈值（medium）不再展示；尺寸算术溢出由 cpp-integer-overflow 负责。
   - id: "c_memory_alloc"
-    name: "C/C++ Memory Allocation"
-    description: "Memory allocation with user-controlled size"
+    name: "C/C++ Uncontrolled Allocation Size"
+    description: "Allocation size reaches the sink while attacker-controlled (DoS lead; size arithmetic overflow is covered by cpp-integer-overflow)"
     match_mode: "Substring"
     patterns:
       - "malloc("
-      - "calloc("
-      - "realloc("
       - "new char["
       - "new unsigned char["
       - "alloca("
     languages: ["c", "cpp"]
-    vulnerability_type: "BufferOverflow"
-    severity: "High"
-    cwe_id: "CWE-131"
+    vulnerability_type: "Generic"
+    severity: "Low"
+    cwe_id: "CWE-400"
     sensitive_params: [0]
+    ast_patterns: []
+
+  # realloc(ptr, size)：长度在第 2 个实参（libc 顺序），此前与 malloc 共用 [0]，
+  # 污点落在 ptr 上即误报；独立成 sink 并只看 size。
+  - id: "c_realloc_uncontrolled_size"
+    name: "C/C++ Uncontrolled Reallocation Size"
+    description: "realloc size reaches the sink while attacker-controlled"
+    match_mode: "Substring"
+    patterns:
+      - "realloc("
+    languages: ["c", "cpp"]
+    vulnerability_type: "Generic"
+    severity: "Low"
+    cwe_id: "CWE-400"
+    sensitive_params: [1]
     ast_patterns: []
 
 sanitizers:
