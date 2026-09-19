@@ -3519,7 +3519,19 @@ impl CrossFileTaintAnalyzer {
                 vec![source_id.clone()],
             ));
 
+        // 全局污点（1b）：源函数的输出缓冲常是项目级全局（如 pppd 的 inpacket_buf），
+        // 在某一函数里被 1a 种污点后，需要在其它函数里也能参与匹配。这里用
+        // "出现在源调用实参中、且不是任何函数形参" 的名字近似识别全局，并在每次
+        // 分析函数前并入 current_tainted。
+        let param_names: HashSet<String> = self
+            .call_graph
+            .nodes
+            .values()
+            .flat_map(|n| n.parameters.iter().map(|p| p.name.clone()))
+            .collect();
+        let mut global_tainted: HashSet<String> = HashSet::new();
             while let Some((current_id, mut current_tainted, path)) = queue.pop_front() {
+            current_tainted.extend(global_tainted.iter().cloned());
                 c_pops += 1;
                 // 当前函数本身是 sink，且内部污点能命中 sink（已有 CPG 单文件结果兜底）
                 if sink_set.contains(&current_id) && current_id != *source_id {
@@ -3623,6 +3635,10 @@ impl CrossFileTaintAnalyzer {
                                 }
                                 for v in &arg.referenced_vars {
                                     current_tainted.insert(v.clone());
+                                    // 1b：非形参名字视为项目级全局，记入全局污点集合
+                                    if !param_names.contains(v) {
+                                        global_tainted.insert(v.clone());
+                                    }
                                 }
                             }
                         }
