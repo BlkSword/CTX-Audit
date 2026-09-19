@@ -4886,6 +4886,22 @@ impl CrossFileTaintAnalyzer {
         let mut taint_propagation = Vec::new();
         let mut direct_sinks = Vec::new();
 
+        // sink 实参归因：形参必须真的出现在该 sink 调用的实参里才归因。
+        // 旧实现“保守认为每个形参都可能到达函数内任意 sink”，对 ngx_open_cached_file(r, of, path, pool)
+        // 这类多参辅助函数会把 param0(r) 归因到 open(of->file->name) —— 实测 nginx 13 条 PathTraversal FP。
+        // 只有拿不到该调用实参信息时才回退保守归因。
+        let sink_arg_mentions = |ct: &crate::analysis::cross_file::CallTarget, param_name: &str| -> Option<bool> {
+            self.call_site_args
+                .get(&format!("{}:{}", func_id, ct.line))
+                .map(|args| {
+                    args.iter().any(|a| {
+                        a.referenced_vars
+                            .iter()
+                            .any(|v| Self::var_path_matches(v, param_name))
+                    })
+                })
+        };
+
         // 分析每个参数是否可能到达 sink
         for (param_idx, param) in node.parameters.iter().enumerate() {
             if param.may_be_tainted {
@@ -4895,7 +4911,9 @@ impl CrossFileTaintAnalyzer {
 
                 // 检查函数体内是否有直接调用 sink
                 for ct in &node.calls {
-                    if self.is_sink_by_name(&ct.callee, &file_language) {
+                    if self.is_sink_by_name(&ct.callee, &file_language)
+                        && sink_arg_mentions(ct, &param.name) != Some(false)
+                    {
                         direct_sinks.push(SinkReachability {
                             sink_name: ct.callee.clone(),
                             from_param: param_idx,
@@ -4924,7 +4942,26 @@ impl CrossFileTaintAnalyzer {
         if node.is_taint_sink {
             for ct in &node.calls {
                 if self.is_sink_by_name(&ct.callee, &file_language) {
-                    for (param_idx, _param) in node.parameters.iter().enumerate() {
+                    let mentioned: Vec<usize> = node
+                        .parameters
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| sink_arg_mentions(ct, &p.name) == Some(true))
+                        .map(|(i, _)| i)
+                        .collect();
+                    // 有实参信息且没有任何形参命中时，该 sink 与形参无关，跳过；
+                    // 拿不到实参信息（None）时保持旧的保守归因。
+                    let has_arg_info = self
+                        .call_site_args
+                        .contains_key(&format!("{}:{}", func_id, ct.line));
+                    let param_indices: Vec<usize> = if !mentioned.is_empty() {
+                        mentioned
+                    } else if has_arg_info {
+                        Vec::new()
+                    } else {
+                        (0..node.parameters.len()).collect()
+                    };
+                    for param_idx in param_indices {
                         // 避免重复记录同一 param + sink
                         let already = direct_sinks.iter().any(|ds: &SinkReachability| {
                             ds.from_param == param_idx && ds.sink_name == ct.callee
