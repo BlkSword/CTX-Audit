@@ -3645,6 +3645,20 @@ impl CrossFileTaintAnalyzer {
                                 && callee_tainted
                                     .contains(&callee_node.parameters[ds.from_param].name)
                             {
+                                // 诊断（CTX_AUDIT_XFILE_TRACE_FLOW=1）：打印该 flow 的
+                                // callee 污点形参集合与 direct_sink 归因，用于定位
+                                // "字段访问把形参误标污点 → 命中保守归因 sink" 的链路。
+                                if std::env::var_os("CTX_AUDIT_XFILE_TRACE_FLOW").is_some() {
+                                    tracing::info!(
+                                        "[FlowTrace] src={} callee={} tainted_params={:?} ds_from_param={} ds_sink={} ds_vuln={:?}",
+                                        source_id,
+                                        callee_id,
+                                        callee_tainted,
+                                        ds.from_param,
+                                        ds.sink_name,
+                                        ds.vuln_type
+                                    );
+                                }
                                 if let Some(source_node) = self.call_graph.nodes.get(source_id) {
                                     let mut sink_path = path.clone();
                                     sink_path.push(callee_id.clone());

@@ -2914,6 +2914,9 @@ impl AstTaintAnalyzer {
         // 导致把目标缓冲指针当格式串而大量误报。
         let mut best: Option<(&TaintSink, usize)> = None;
         for sink in self.sinks.iter() {
+            if !Self::sink_language_allows(sink, language) {
+                continue;
+            }
             if !sink.matches_with_context(callee, receiver, language) {
                 continue;
             }
@@ -2937,6 +2940,19 @@ impl AstTaintAnalyzer {
     /// sink 与 callee 的匹配具体度：语义匹配（namespaces/receiver/exact_matches）
     /// 视为最具体；Substring 匹配按命中的最长 pattern 计分，因此
     /// `sprintf(` 胜过 `printf(`、`snprintf(` 胜过 `printf(`。
+    /// sink 的 languages 字段必须与文件语言匹配（`*`/空语言表示不限）。
+    /// Substring 模式的 matches_with_context 不做语言过滤，必须在所有匹配入口显式守卫——
+    /// 否则 JS/Java 专用模式会命中 C 等其它语言（实测 Windows API `ReadFile(` 命中
+    /// JS 的 `readFile`/`File(` 被标成 PathTraversal）。
+    fn sink_language_allows(sink: &TaintSink, language: &str) -> bool {
+        if language == "*" || language.is_empty() {
+            return true;
+        }
+        sink.languages
+            .iter()
+            .any(|l| l == "*" || l.eq_ignore_ascii_case(language))
+    }
+
     fn sink_match_specificity(sink: &TaintSink, callee: &str) -> usize {
         if sink.match_mode != super::taint::MatchMode::Substring {
             return usize::MAX;
@@ -3157,6 +3173,9 @@ impl AstTaintAnalyzer {
         let mut best: Option<(TaintSink, usize)> = None;
         for sink in self.sinks.iter() {
             if class_literal_exempt && sink.class_literal_exempt {
+                continue;
+            }
+            if !Self::sink_language_allows(sink, language) {
                 continue;
             }
             let semantic = sink.has_semantic_constraints();

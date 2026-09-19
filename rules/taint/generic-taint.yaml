@@ -221,6 +221,10 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  # 语言无关的路径打开 API（C `open(`/`fopen`、Python `open(` 等）。
+  # 原先本 sink 用 languages:["*"] 携带全部语言模式，导致 C 的 Windows API
+  # `ReadFile(` 命中 `readFile`（大小写不敏感）/`File(`，把"读偏移/长度"误报成
+  # PathTraversal（某 C 服务器项目实测 8 条）。现按语言拆分。
   - id: "file_path"
     name: "File Path"
     description: "File system operations with user-controlled paths"
@@ -228,23 +232,56 @@ sinks:
     patterns:
       - "open("
       - "fopen"
-      - "file_get_contents"
-      - "file_put_contents"
+    languages: ["*"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "file_path_js"
+    name: "File Path (JS/TS)"
+    description: "Node/browser file APIs with user-controlled paths"
+    match_mode: "Substring"
+    patterns:
       - "readFile"
       - "writeFile"
       - "fs.open"
       - "fs.readFile"
       - "fs.writeFile"
       - "sendFile"
-      - "File("
       - "FileReader"
       - "FileWriter"
+      - "File("
+    languages: ["javascript", "typescript", "jsx", "tsx"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "file_path_php"
+    name: "File Path (PHP)"
+    description: "PHP file APIs with user-controlled paths"
+    match_mode: "Substring"
+    patterns:
+      - "file_get_contents"
+      - "file_put_contents"
+    languages: ["php"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "file_path_python"
+    name: "File Path (Python)"
+    description: "Python pathlib/shutil/os path APIs with user-controlled paths"
+    match_mode: "Substring"
+    patterns:
       # 10.16 扩展（R51）：Python pathlib `Path(x)` 构造即路径操作
       # （GHSA-28cf 链：template.render → Path(rendered_path)）
       - "Path("
-      - "std::fs::File"
-      - "std::fs::read"
-      - "std::fs::write"
       # 08.01 补充（R61 CVE-2024-52004 回放）：Python 文件删除/移动/复制
       # 操作同样是路径遍历 sink——该 CVE 正是 shutil.rmtree(用户可控路径)
       # 导致任意目录删除。不含 `.save(`（会误命中全部 ORM save）。
@@ -254,7 +291,35 @@ sinks:
       - "os.remove("
       - "os.unlink("
       - "os.rename("
-    languages: ["*"]
+    languages: ["python"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "file_path_java"
+    name: "File Path (Java)"
+    description: "Java File constructor with user-controlled paths"
+    match_mode: "Substring"
+    patterns:
+      - "File("
+    languages: ["java"]
+    vulnerability_type: "PathTraversal"
+    severity: "High"
+    cwe_id: "CWE-22"
+    sensitive_params: [0]
+    ast_patterns: []
+
+  - id: "file_path_rust"
+    name: "File Path (Rust)"
+    description: "Rust std::fs APIs with user-controlled paths"
+    match_mode: "Substring"
+    patterns:
+      - "std::fs::File"
+      - "std::fs::read"
+      - "std::fs::write"
+    languages: ["rust"]
     vulnerability_type: "PathTraversal"
     severity: "High"
     cwe_id: "CWE-22"
