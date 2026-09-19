@@ -3600,6 +3600,33 @@ impl CrossFileTaintAnalyzer {
                             }
                         }
                     }
+                    // 源推断（输出参数语义）：callee 若是源函数（函数体含 read/recv/fread 等
+                    // 源模式），调用方传入的缓冲参数会被其写出内容污染；不建模这一步，
+                    // 报文数据永远进不了调用方污点集合（实测 pppd read_packet 包装层：
+                    // CVE 所在 eap.c 两版均 0 条数据流 finding）。
+                    // 仅对形参名像缓冲/输出的参数生效，避免把 fd/len 等误标。
+                    if callee_node.is_taint_source {
+                        if let Some(args) = self.call_site_args.get(&site_key) {
+                            for (param_idx, arg) in args.iter().enumerate() {
+                                if param_idx >= callee_node.parameters.len() {
+                                    break;
+                                }
+                                let pname = callee_node.parameters[param_idx].name.to_lowercase();
+                                let is_buf = [
+                                    "buf", "buffer", "data", "pkt", "packet", "dst", "out",
+                                    "line", "ptr", "mem", "str", "msg",
+                                ]
+                                .iter()
+                                .any(|k| pname.contains(k));
+                                if !is_buf {
+                                    continue;
+                                }
+                                for v in &arg.referenced_vars {
+                                    current_tainted.insert(v.clone());
+                                }
+                            }
+                        }
+                    }
 
                     // 利用函数摘要的 param_to_calls 补充重命名/字段访问等数据流
                     if let Some(current_summary) = summaries.get(&current_id) {
