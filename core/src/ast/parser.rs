@@ -51,7 +51,10 @@ pub struct ASTParser {
 fn is_body_block_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "block" | "statement_block" | "body" | "suite" | "block_stmt"
+        // C/C++ 的函数体是 compound_statement；此前不在列表里，导致 C 片段
+        // 走 with_statements 回退或退回 text-CFG，CFG 退化（calls 元数据为空、
+        // param_to_calls 近乎为空、跨文件数据流只能靠结构链/错误归因）。
+        "block" | "statement_block" | "body" | "suite" | "block_stmt" | "compound_statement"
     )
 }
 

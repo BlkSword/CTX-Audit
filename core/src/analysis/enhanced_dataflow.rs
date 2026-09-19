@@ -1014,7 +1014,7 @@ impl<'a> AstCFGBuilder<'a> {
         // 块语句（递归处理子节点）
         if matches!(
             kind,
-            "block" | "statement_block" | "body" | "suite" | "block_stmt"
+            "block" | "statement_block" | "body" | "suite" | "block_stmt" | "compound_statement"
         ) {
             let mut current = prev_id;
             let mut cursor = node.walk();
