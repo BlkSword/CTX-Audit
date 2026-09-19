@@ -29,6 +29,25 @@ pub fn compute_summary_from_cpg(
     let mut taint_propagation = Vec::new();
     let mut direct_sinks = Vec::new();
 
+    // 每个被调用函数的实参变量名（按 callee 聚合，避免行号空间差异）。
+    // 用于校验形参到 sink 的归因：形参污点经其它变量/结构体字段扩散出来的流，
+    // 不应归因给该形参（实测某多参辅助函数 f(r, of, path, pool) 的 param0(r)
+    // 被归因到 open(of->file->name)，产生 13 条路径遍历误报）。
+    let mut callee_arg_vars: HashMap<String, Vec<String>> = HashMap::new();
+    let mut meta_ids_for_args: Vec<usize> = func_cpg.node_meta.keys().copied().collect();
+    meta_ids_for_args.sort_unstable();
+    for node_id in &meta_ids_for_args {
+        let Some(node_meta) = func_cpg.node_meta.get(node_id) else {
+            continue;
+        };
+        if let Some(ref call) = node_meta.call_info {
+            let entry = callee_arg_vars.entry(call.callee.clone()).or_default();
+            for arg in &call.arguments {
+                entry.extend(arg.referenced_vars.iter().cloned());
+            }
+        }
+    }
+
     for (param_idx, param) in sig.params.iter().enumerate() {
         let param_name = &param.name;
 
@@ -53,6 +72,32 @@ pub fn compute_summary_from_cpg(
         for flow in &param_flows {
             let sink_symbol = &flow.sink.symbol;
             let vuln_type = flow.vulnerability_type.clone();
+
+            // 归因校验（有实参信息时）：sink 调用的实参必须真的引用该形参，
+            // 或流路径中存在实参变量与形参的赋值证据；否则该流是形参污点
+            // 扩散到其它变量/字段后的产物，不归因给本形参。
+            if let Some(arg_vars) = callee_arg_vars.get(sink_symbol) {
+                let direct = arg_vars.iter().any(|v| {
+                    v == param_name
+                        || v.starts_with(&format!("{}.", param_name))
+                        || v.starts_with(&format!("{}->", param_name))
+                        || v.starts_with(&format!("{}[", param_name))
+                });
+                let alias_backed = !direct
+                    && arg_vars.iter().any(|a| {
+                        flow.path.iter().any(|st| {
+                            let text = st.code_snippet.as_deref().unwrap_or("");
+                            (st.symbol == *a
+                                || crate::analysis::cross_file::line_references_var(text, a))
+                                && crate::analysis::cross_file::line_references_var(
+                                    text, param_name,
+                                )
+                        })
+                    });
+                if !direct && !alias_backed {
+                    continue;
+                }
+            }
 
             // 检查是否已有同 param + sink 的记录
             let already_recorded = direct_sinks.iter().any(|ds: &SinkReachability| {
