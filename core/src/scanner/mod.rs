@@ -2136,11 +2136,60 @@ pub async fn scan_directory_deep_with_rules_progress(
                                     });
                                 let mut func_cpg = func_cpg;
                                 let mut sig_id = func_cpg.signature.id();
+                                // 诊断（CTX_AUDIT_FUNC_TIME=1）：打印每个函数的分析耗时；
+                                // 挂起时最后一条 start 无 done 即为问题函数（单文件成本爆炸定位）。
+                                // 函数级预算：路径敏感分析在“多分支+多循环”的大函数上会组合爆炸
+                                // （实测 pppd tty.c::charshunt：198 CFG 节点、1265 行文件单次扫描 >180s 不收敛）。
+                                // 超过预算直接跳过该函数的 CPG 污点分析（保留其它函数与规则扫描），
+                                // 并用 CTX_AUDIT_FUNC_TIME=1 打印跳过原因；阈值可用环境变量调整：
+                                // CTX_AUDIT_MAX_FUNC_NODES（默认 180）、CTX_AUDIT_MAX_FUNC_BRANCHES（默认 60），0=关闭预算。
+                                let nodes = func_cpg.cfg.nodes.len();
+                                let branches = func_cpg
+                                    .cfg
+                                    .nodes
+                                    .iter()
+                                    .filter(|n| n.successors.len() >= 2)
+                                    .count();
+                                let max_nodes = std::env::var("CTX_AUDIT_MAX_FUNC_NODES")
+                                    .ok()
+                                    .and_then(|v| v.parse::<usize>().ok())
+                                    .unwrap_or(180);
+                                let max_branches = std::env::var("CTX_AUDIT_MAX_FUNC_BRANCHES")
+                                    .ok()
+                                    .and_then(|v| v.parse::<usize>().ok())
+                                    .unwrap_or(60);
+                                let over_budget = (max_nodes > 0 && nodes > max_nodes)
+                                    || (max_branches > 0 && branches > max_branches);
+                                let func_t0 = std::time::Instant::now();
+                                if std::env::var_os("CTX_AUDIT_FUNC_TIME").is_some() {
+                                    tracing::info!(
+                                        "[FuncTime] start func={} cfg_nodes={} branches={} body_lines={} over_budget={}",
+                                        func.name, nodes, branches,
+                                        func.body_text.lines().count(), over_budget
+                                    );
+                                }
+                                if over_budget {
+                                    tracing::debug!(
+                                        "[FuncTime] skip-large func={} nodes={} branches={} (budget {} / {})",
+                                        func.name, nodes, branches, max_nodes, max_branches
+                                    );
+                                    let sig_id = func_cpg.signature.id();
+                                    return (sig_id, func_cpg, Vec::new());
+                                }
                                 let mut func_flows = analyzer.analyze_function_cpg(
                                     &func_cpg,
                                     &func.body_text,
                                     &func_hints,
                                 );
+                                if std::env::var_os("CTX_AUDIT_FUNC_TIME").is_some() {
+                                    tracing::info!(
+                                        "[FuncTime] done func={} flows={} ms={}",
+                                        func.name,
+                                        func_flows.len(),
+                                        func_t0.elapsed().as_millis()
+                                    );
+                                }
+
                                 // 混合回退（backlog ②）：AST-CFG（含语句列表）在部分
                                 // 语言/形态上比文本 CFG 不敏感（3 个 Python 流测试曾因
                                 // 直接切换而回归）。AST 路径无流时再跑一次文本 CFG，
