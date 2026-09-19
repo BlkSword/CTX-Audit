@@ -829,6 +829,17 @@ pub fn detect_barriers(
 }
 
 /// 根据 file_role 和 barriers 调整严重程度
+/// `Generic`（未分类潜在问题）不参与严重度竞争：只作为线索，
+/// 统一压到 low（默认 min-severity=medium 即过滤，--min-severity low 可见）。
+/// 否则分配长度等低置信线索会以 high 混入默认输出（实测某 C 项目 5 条）。
+fn cap_generic_severity(is_generic: bool, severity: String) -> String {
+    if is_generic && matches!(severity.as_str(), "critical" | "high" | "medium") {
+        "low".to_string()
+    } else {
+        severity
+    }
+}
+
 pub fn adjust_severity(severity: &str, file_role: &str, barriers: &[String]) -> String {
     // 有安全屏障时降级
     if !barriers.is_empty() {
@@ -2280,10 +2291,16 @@ pub async fn scan_directory_deep_with_rules_progress(
                         detector: "AstTaintScanner".to_string(),
                         vuln_type: vuln_name.clone(),
                         // 与规则扫描一致：按文件角色与屏障调整严重度
-                        severity: adjust_severity(
-                            &format!("{:?}", flow.severity).to_lowercase(),
-                            role,
-                            &flow_barriers,
+                        severity: cap_generic_severity(
+                            matches!(
+                                flow.vulnerability_type,
+                                crate::analysis::taint::VulnerabilityType::Generic
+                            ),
+                            adjust_severity(
+                                &format!("{:?}", flow.severity).to_lowercase(),
+                                role,
+                                &flow_barriers,
+                            ),
                         ),
                         description: format!(
                             "{}: {} → {} ({}→{})",
@@ -2592,11 +2609,17 @@ pub async fn scan_directory_deep_with_rules_progress(
                         .confidence_factors
                         .iter()
                         .any(|f| f == "path:dataflow");
-                let finding_severity = if is_structural_only && !include_structural {
-                    "info".to_string()
-                } else {
-                    format!("{:?}", flow.severity).to_lowercase()
-                };
+                let finding_severity = cap_generic_severity(
+                    matches!(
+                        flow.vulnerability_type,
+                        crate::analysis::taint::VulnerabilityType::Generic
+                    ),
+                    if is_structural_only && !include_structural {
+                        "info".to_string()
+                    } else {
+                        format!("{:?}", flow.severity).to_lowercase()
+                    },
+                );
 
                 findings.push(Finding {
                     // E-6 补全：跨文件 finding 同样不再继承随机 flow.id，

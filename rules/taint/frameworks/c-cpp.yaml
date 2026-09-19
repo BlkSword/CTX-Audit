@@ -112,6 +112,7 @@ sinks:
     sensitive_params: [0]
     ast_patterns: []
 
+  # 高层 HTTP/URL API：URL/主机参数在 arg0。
   - id: "c_ssrf"
     name: "C/C++ SSRF"
     description: "Outbound network requests with user-controlled URLs"
@@ -119,9 +120,6 @@ sinks:
     patterns:
       - "curl_easy_setopt"
       - "curl_easy_perform"
-      - "socket("
-      - "connect("
-      - "sendto("
       - "URLDownloadToFile"
       - "WinHttpOpenRequest"
       - "WinHttpSendRequest"
@@ -130,6 +128,35 @@ sinks:
     severity: "High"
     cwe_id: "CWE-918"
     sensitive_params: [0]
+    ast_patterns: []
+
+  # 原始套接字：SSRF 语义在“地址”实参，而非 fd/缓冲。
+  # 旧规则把 socket(/connect(/sendto( 一律按 arg0 处理，导致 ioctlsocket(fd, …)、
+  # connect(fd, addr, …) 等内部管道调用只要 fd 被污染就报 SSRF（nginx 实测 7 条误报）。
+  - id: "c_ssrf_connect"
+    name: "C/C++ SSRF (connect address)"
+    description: "connect() destination address reaches the sink while attacker-controlled"
+    match_mode: "Substring"
+    patterns:
+      - "connect("
+    languages: ["c", "cpp"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [1]
+    ast_patterns: []
+
+  - id: "c_ssrf_sendto"
+    name: "C/C++ SSRF (sendto destination)"
+    description: "sendto() destination address reaches the sink while attacker-controlled"
+    match_mode: "Substring"
+    patterns:
+      - "sendto("
+    languages: ["c", "cpp"]
+    vulnerability_type: "ServerSideRequestForgery"
+    severity: "High"
+    cwe_id: "CWE-918"
+    sensitive_params: [4]
     ast_patterns: []
 
   # 无界拷贝：内容本身写满目标缓冲，污点落在源/目标指针即构成溢出。
