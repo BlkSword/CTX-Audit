@@ -7,20 +7,23 @@
 //! 差分 oracle 的实测也证实引擎对 5 个已知正例 0 命中（期望行 ±20 内 0 条）。
 //! 因此单列一个按函数体行序判定的分析器，接在 Stage B（enable_taint）里。
 //!
-//! 判定（v1.1，两段式收紧）：
-//!   1. handler 判定分强/弱：函数名命中 inbox/webhook/signature/federation/activitypub/verify
-//!      为强信号；命中 handle/handler/receive/callback/controller/endpoint 或文件路径命中
+//! 判定（v1.2，两段式收紧 + 抓取包装器降级）：
+//!   1. handler 判定分强/弱：函数名命中 inbox/webhook/signature/verify 为强信号；
+//!      命中 handle/handler/receive/callback/controller/endpoint 或文件路径命中
 //!      views/handlers/routes/controllers/api/functions/inbox 为弱信号，弱信号必须同时满足
 //!      "文件内存在验签调用"且"函数体出现请求对象"（req/request/ctx/event/...）；
-//!   2. 函数体内存在出站抓取调用行，且该行含强输入标识（keyId/actor/signature/remote_id/...）；
+//!   2. 以 get/fetch/resolve/load/read 开头但含强 marker 的名字（get_actor_inbox 等）
+//!      视为"被调用的取数工具"，降级为弱信号——时序违例应报在调用方 handler；
+//!      出站抓取行必须含强输入标识（keyId/actor/signature/remote_id/...），
 //!      弱输入标识（url/uri/instance/object/...）仅在文件内有验签代码时接受；
 //!   3. 最早的抓取行早于最早的验签行（或无验签行）。
 //! 产物：`detector=VerificationOrderAnalyzer`，`vuln_type=SSRF`，`severity=medium`。
 //!
 //! 明确局限（v1）：只做同函数行序，不做跨函数调用序；marker 表是人工维护的
 //! 常见形态（与 pilot 的 ordering oracle 同源），通过不同的语言/框架可继续扩展。
-//! v1.1 的收紧用于压低"项目根本不用 HTTP 签名"时的误报（如内部监控抓取、
-//! Express 元数据代理、单例 getInstance 等），代价是可能漏掉弱命名但真实的 handler。
+//! v1.1/v1.2 的收紧用于压低"项目根本不用 HTTP 签名"时的误报（如内部监控抓取、
+//! Express 元数据代理、单例 getInstance、出站 ActivityPub 包装器等），
+//! 代价是可能漏掉弱命名但真实的 handler。
 
 use crate::ast::symbol::FunctionBody;
 use crate::scanner::{stable_finding_id, EvidenceRefs, Finding};
@@ -114,16 +117,19 @@ const VERIFY_MARKERS: &[&str] = &[
     "ldsignature.verify",
 ];
 
-/// handler 强形态：函数名本身表明这是入站联邦/签名处理面（直接成立）
+/// handler 强形态：函数名本身表明这是入站签名/inbox 处理面（直接成立）。
+/// 不收录 federation/fediverse/activitypub：这些是**模块/领域名**，出站抓取包装器
+/// （如 activitypub_request）也会命中，属噪声；真正的入站面由 inbox/signature 覆盖。
 const STRONG_HANDLER_MARKERS: &[&str] = &[
     "inbox",
     "webhook",
     "signature",
-    "federation",
-    "fediverse",
-    "activitypub",
     "verify",
 ];
+
+/// 抓取包装器前缀：名字命中强 marker 但以这些前缀开头（get_actor_inbox 等）时降级为弱，
+/// 因为它们是"被调用的取数工具"，时序违例应报在调用方（入站 handler）。
+const FETCH_WRAPPER_PREFIXES: &[&str] = &["get", "fetch", "resolve", "load", "read"];
 
 /// handler 弱形态：必须同时满足"文件内有验签调用 + 函数体出现请求对象"才成立
 const WEAK_HANDLER_MARKERS: &[&str] = &[
@@ -347,10 +353,14 @@ fn analyze_function(
 ) -> Option<Finding> {
     let name_lower = body.name.to_ascii_lowercase();
     let path_lower = file_path.to_ascii_lowercase();
-    let strong_handler = STRONG_HANDLER_MARKERS.iter().any(|m| name_lower.contains(m));
     let helper_name = PATH_ONLY_HELPER_PREFIXES
         .iter()
         .any(|p| name_lower.starts_with(p));
+    let fetch_wrapper = FETCH_WRAPPER_PREFIXES
+        .iter()
+        .any(|p| name_lower.starts_with(p));
+    let strong_handler = !fetch_wrapper
+        && STRONG_HANDLER_MARKERS.iter().any(|m| name_lower.contains(m));
     let weak_handler = !helper_name
         && (WEAK_HANDLER_MARKERS.iter().any(|m| name_lower.contains(m))
             || HANDLER_PATH_MARKERS.iter().any(|m| path_lower.contains(m)));
