@@ -1902,6 +1902,9 @@ pub async fn scan_directory_deep_with_rules_progress(
     // 卡死文件定位手段：CTX_AUDIT_TRACE_FILES=1 时逐文件记录"开始分析"，
     // 日志里最后一个有开始无完成的文件即病态文件（慢文件告警只在完成后触发，抓不到卡死）
     let taint_trace_files = std::env::var_os("CTX_AUDIT_TRACE_FILES").is_some();
+    // Stage B2（验签顺序分析 verify-before-dereference）已并入下面的 Stage B 闭包：
+    // 复用同一次 AST 解析拿到的 FunctionBody，避免二次解析成本；结果随每文件结果返回。
+    // 诊断开关 CTX_AUDIT_NO_VERIFICATION_ORDER=1 可关闭（用于 A/B 量化其成本）。
     type FileAst = (Vec<crate::ast::Symbol>, Vec<crate::ast::CallInfo>);
     let all_results: Vec<(
         String,
@@ -1909,6 +1912,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         HashMap<String, crate::analysis::cpg::FunctionCPG>,
         HashMap<String, Vec<crate::analysis::taint::TaintFlow>>,
         FileAst,
+        Vec<Finding>,
     )> = all_file_data
         .into_par_iter()
         .map(|(ref file_path_str, ref content)| {
@@ -1929,6 +1933,12 @@ pub async fn scan_directory_deep_with_rules_progress(
             let mut parsed_symbols: Vec<crate::ast::Symbol> = Vec::new();
             let mut parsed_calls: Vec<crate::ast::CallInfo> = Vec::new();
 
+            // Stage B2 候选（验签顺序分析）：仅 enable_taint 且未显式关闭时启用。
+            // 先做廉价预过滤；命中则即使文件未过污点关键词预过滤，也要解析出函数体。
+            let vo_candidate = enable_taint
+                && std::env::var_os("CTX_AUDIT_NO_VERIFICATION_ORDER").is_none()
+                && crate::analysis::verification_order::is_candidate_file(file_path_str, content);
+
             // 快速过滤：文件内容不含任何 source/sink 关键词时，跳过 Stage B 的
             // CPG/污点分析（调用图仍由 Stage C 按需构建）。
             // 诊断开关 CTX_AUDIT_NO_FILE_PREFILTER=1 关闭该过滤（量化其影响）。
@@ -1937,12 +1947,18 @@ pub async fn scan_directory_deep_with_rules_progress(
                 .filter(|_| std::env::var_os("CTX_AUDIT_NO_FILE_PREFILTER").is_none())
             {
                 if !set.is_match(content) {
+                    let vo_findings = if vo_candidate {
+                        crate::analysis::verification_order::analyze_file(file_path_str, content)
+                    } else {
+                        Vec::new()
+                    };
                     return (
                         file_path_str.clone(),
                         Vec::new(),
                         HashMap::new(),
                         HashMap::new(),
                         (parsed_symbols, parsed_calls),
+                        vo_findings,
                     );
                 }
             }
@@ -1959,6 +1975,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                     HashMap::new(),
                     HashMap::new(),
                     (parsed_symbols, parsed_calls),
+                    Vec::new(),
                 );
             }
 
@@ -1980,6 +1997,7 @@ pub async fn scan_directory_deep_with_rules_progress(
             );
 
             // 构建函数级 CPG，再运行污点分析（复用线程本地 parser）
+            let mut vo_findings: Vec<Finding> = Vec::new();
             let flows = if let Some((_tree, symbols, functions, file_assignments, file_calls)) =
                 crate::ast::parser::with_thread_local_parser(|ast_parser| {
                     ast_parser.extract_all_for_taint_with_tree(
@@ -1989,6 +2007,14 @@ pub async fn scan_directory_deep_with_rules_progress(
                 }) {
                 parsed_symbols = symbols;
                 parsed_calls = file_calls.clone();
+                // 复用 Stage B 已解析的函数体做验签顺序判定（无二次解析）。
+                if vo_candidate {
+                    vo_findings = crate::analysis::verification_order::analyze_bodies(
+                        file_path_str,
+                        content,
+                        &functions,
+                    );
+                }
 
                 // 加载回调提示
                 let callback_hints = crate::analysis::async_flow::detect_callback_hints(content);
@@ -2009,6 +2035,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                         cpg_cache,
                         cpg_flows,
                         (parsed_symbols, parsed_calls),
+                        vo_findings,
                     );
                 }
 
@@ -2227,6 +2254,10 @@ pub async fn scan_directory_deep_with_rules_progress(
                 }
             } else {
                 // AST 解析失败，回退到原有路径
+                if vo_candidate {
+                    vo_findings =
+                        crate::analysis::verification_order::analyze_file(file_path_str, content);
+                }
                 analyzer.analyze_file(file_path, content)
             };
 
@@ -2424,6 +2455,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                 cpg_cache,
                 cpg_flows,
                 (parsed_symbols, parsed_calls),
+                vo_findings,
             )
         })
         .collect();
@@ -2432,11 +2464,12 @@ pub async fn scan_directory_deep_with_rules_progress(
         "[TaintAnalysis] Stage B 完成：{} 文件，耗时 {:.1}s，产出 {} findings",
         taint_total_files,
         taint_scan_start.elapsed().as_secs_f64(),
-        all_results.iter().map(|(_, f, _, _, _)| f.len()).sum::<usize>()
+        all_results.iter().map(|(_, f, _, _, _, _)| f.len()).sum::<usize>()
     );
 
     // 收集 findings + CPG 缓存 + Stage B 已解析 AST 产物
-    for (fp, mut file_findings, file_cpgs, file_flows, file_ast) in all_results {
+    for (fp, mut file_findings, file_cpgs, file_flows, file_ast, vo_findings) in all_results {
+        file_findings.extend(vo_findings);
         taint_findings.append(&mut file_findings);
         accumulated_cpg.extend(file_cpgs);
         accumulated_flows.extend(file_flows);
