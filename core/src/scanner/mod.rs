@@ -310,7 +310,11 @@ pub struct GraphSnapshot {
 /// 规则类 finding 此前不带 `enclosing_function`，LLM 无法直接用函数名查
 /// query_callers/query_callees（EQM 证据轴实测 gatus 0.00）。这里有界向上扫描
 /// （最多 200 行）并匹配各语言常见的函数签名形态。
-pub fn find_enclosing_function_name(content: &str, line: usize, language: &str) -> Option<String> {
+pub fn find_enclosing_function_name_and_line(
+    content: &str,
+    line: usize,
+    language: &str,
+) -> Option<(String, usize)> {
     use std::sync::OnceLock;
     static RUST_RE: OnceLock<regex::Regex> = OnceLock::new();
     static PY_RE: OnceLock<regex::Regex> = OnceLock::new();
@@ -379,12 +383,17 @@ pub fn find_enclosing_function_name(content: &str, line: usize, language: &str) 
             if let Some(m) = caps.get(group).or_else(|| caps.get(1)) {
                 let name = m.as_str().trim();
                 if !name.is_empty() {
-                    return Some(name.to_string());
+                    return Some((name.to_string(), idx + 1));
                 }
             }
         }
     }
     None
+}
+
+/// 兼容包装：只要函数名（调用方不需要行号时使用）。
+pub fn find_enclosing_function_name(content: &str, line: usize, language: &str) -> Option<String> {
+    find_enclosing_function_name_and_line(content, line, language).map(|(name, _)| name)
 }
 
 pub fn extract_code_context(
@@ -2780,6 +2789,7 @@ pub async fn scan_directory_deep_with_rules_progress(
     // 跨文件模式已由调用图引擎填充的 finding 在此处被跳过，行为保持不变；
     // 纯规则扫描（无 Stage B 数据）时该表为空，调用为 no-op。
     enrich_findings_with_enclosing_function_from_symbols(&mut findings, &file_function_ranges);
+    enrich_findings_with_enclosing_function_from_content(&mut findings, &content_cache);
 
     // 二阶流闸门：项目内未检测到"污点写入存储点"（storage_write sink 命中）时，
     // 二阶 source（存储点读出）的 finding 降级为 info 参考——降权不丢弃。
@@ -3477,6 +3487,62 @@ fn enrich_findings_with_enclosing_function_from_symbols(
                 && f.enclosing_function_line.is_none()
             {
                 f.enclosing_function_line = Some(best.start_line);
+            }
+        }
+    }
+}
+
+/// 按扩展名映射到 `find_enclosing_function_name_and_line` 使用的语言名。
+fn language_for_enclosing_scan(file_path: &str) -> &'static str {
+    match std::path::Path::new(file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "py" => "python",
+        "js" | "jsx" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "java" => "java",
+        "go" => "go",
+        "php" => "php",
+        "rs" => "rust",
+        _ => "c",
+    }
+}
+
+/// 最后兜底：Stage B 区间表没有覆盖的文件（被 taint 预过滤跳过），
+/// 用轻量函数签名扫描补 `enclosing_function` / `enclosing_function_line`。
+fn enrich_findings_with_enclosing_function_from_content(
+    findings: &mut [Finding],
+    content_cache: &HashMap<String, Arc<str>>,
+) {
+    for f in findings.iter_mut() {
+        if f.enclosing_function.is_some() && f.enclosing_function_line.is_some() {
+            continue;
+        }
+        let Some(content) = content_cache.get(&f.file_path) else {
+            continue;
+        };
+        let language = language_for_enclosing_scan(&f.file_path);
+        if let Some((name, line)) =
+            find_enclosing_function_name_and_line(content, f.line_start, language)
+        {
+            match f.enclosing_function.as_deref() {
+                None => {
+                    f.enclosing_function = Some(name);
+                    if f.enclosing_function_line.is_none() {
+                        f.enclosing_function_line = Some(line);
+                    }
+                }
+                // 名字已存在时只在同名时补行号，避免把行号填到别的函数上。
+                Some(existing) if existing == name => {
+                    if f.enclosing_function_line.is_none() {
+                        f.enclosing_function_line = Some(line);
+                    }
+                }
+                _ => {}
             }
         }
     }
