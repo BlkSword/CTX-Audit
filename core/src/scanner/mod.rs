@@ -3365,12 +3365,17 @@ fn enrich_findings_with_enclosing_function(
     engine: &crate::analysis::query::CallGraphQueryEngine,
 ) {
     for f in findings.iter_mut() {
-        if f.enclosing_function.is_some() {
+        // 名字已存在但行号缺失（规则扫描器只填了名字）时仍需补齐行号。
+        if f.enclosing_function.is_some() && f.enclosing_function_line.is_some() {
             continue;
         }
         if let Some(func) = engine.query_enclosing_function(&f.file_path, f.line_start) {
-            f.enclosing_function = Some(func.name);
-            f.enclosing_function_line = Some(func.line);
+            if f.enclosing_function.is_none() {
+                f.enclosing_function = Some(func.name);
+            }
+            if f.enclosing_function_line.is_none() {
+                f.enclosing_function_line = Some(func.line);
+            }
         }
     }
 }
@@ -3429,7 +3434,8 @@ fn enrich_findings_with_enclosing_function_from_symbols(
         return;
     }
     for f in findings.iter_mut() {
-        if f.enclosing_function.is_some() {
+        // 名字已存在但行号缺失（规则扫描器只填了名字）时仍需补齐行号。
+        if f.enclosing_function.is_some() && f.enclosing_function_line.is_some() {
             continue;
         }
         let Some(ranges) = file_function_ranges.get(&f.file_path) else {
@@ -3439,13 +3445,39 @@ fn enrich_findings_with_enclosing_function_from_symbols(
         // 即最内层包围函数（与 CallGraphQueryEngine::query_enclosing_function 语义一致）。
         // 候选前缀内的线性扫描以嵌套深度为上界，整体为 O(log n + 嵌套深度)。
         let idx = ranges.partition_point(|r| r.start_line <= f.line_start);
-        if let Some(best) = ranges[..idx]
+        let candidates: Vec<&FunctionRange> = ranges[..idx]
             .iter()
             .filter(|r| r.end_line >= f.line_start)
-            .min_by_key(|r| r.end_line - r.start_line)
-        {
-            f.enclosing_function = Some(best.name.clone());
-            f.enclosing_function_line = Some(best.start_line);
+            .collect();
+        // 名字已存在时优先选同名函数，避免把行号填到别的函数上。
+        let best = match f.enclosing_function.as_deref() {
+            Some(name) => candidates
+                .iter()
+                .copied()
+                .filter(|r| r.name == name)
+                .min_by_key(|r| r.end_line - r.start_line)
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .copied()
+                        .min_by_key(|r| r.end_line - r.start_line)
+                }),
+            None => candidates
+                .iter()
+                .copied()
+                .min_by_key(|r| r.end_line - r.start_line),
+        };
+        if let Some(best) = best {
+            if f.enclosing_function.is_none() {
+                f.enclosing_function = Some(best.name.clone());
+                if f.enclosing_function_line.is_none() {
+                    f.enclosing_function_line = Some(best.start_line);
+                }
+            } else if f.enclosing_function.as_deref() == Some(best.name.as_str())
+                && f.enclosing_function_line.is_none()
+            {
+                f.enclosing_function_line = Some(best.start_line);
+            }
         }
     }
 }
