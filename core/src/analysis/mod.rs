@@ -21,6 +21,7 @@ pub mod middleware;
 pub mod query;
 pub mod risk_patterns;
 pub mod taint;
+pub mod ordering_template;
 pub mod verification_order;
 pub mod type_hierarchy;
 

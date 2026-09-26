@@ -1,11 +1,7 @@
-//! 验签顺序分析器（VerificationOrderAnalyzer）
+//! 验签顺序分析器（VerificationOrderAnalyzer）与机制模板接入。
 //!
 //! 机制类：**入站 handler 在完成签名验证之前，就对"请求可控 URL"发起出站抓取**
 //! （verify-before-dereference 违例，CWE-918 + CWE-306）。
-//!
-//! 这是控制流时序问题：规则/污点的 source→sink 模型表达不了"抓取早于验签"，
-//! 差分 oracle 的实测也证实引擎对 5 个已知正例 0 命中（期望行 ±20 内 0 条）。
-//! 因此单列一个按函数体行序判定的分析器，接在 Stage B（enable_taint）里。
 //!
 //! 判定（v1.2，两段式收紧 + 抓取包装器降级）：
 //!   1. handler 判定分强/弱：函数名命中 inbox/webhook/signature/verify 为强信号；
@@ -17,17 +13,13 @@
 //!      出站抓取行必须含强输入标识（keyId/actor/signature/remote_id/...），
 //!      弱输入标识（url/uri/instance/object/...）仅在文件内有验签代码时接受；
 //!   3. 最早的抓取行早于最早的验签行（或无验签行）。
-//! 产物：`detector=VerificationOrderAnalyzer`，`vuln_type=SSRF`，`severity=medium`。
 //!
-//! 明确局限（v1）：只做同函数行序，不做跨函数调用序；marker 表是人工维护的
-//! 常见形态（与 pilot 的 ordering oracle 同源），通过不同的语言/框架可继续扩展。
-//! v1.1/v1.2 的收紧用于压低"项目根本不用 HTTP 签名"时的误报（如内部监控抓取、
-//! Express 元数据代理、单例 getInstance、出站 ActivityPub 包装器等），
-//! 代价是可能漏掉弱命名但真实的 handler。
+//! 通用逻辑在 `crate::analysis::ordering_template`；本文件只维护 VO 机制的 marker 与元信息，
+//! 新机制 = 一份 `OrderingMechanismConfig` + 单测。
 
+use crate::analysis::ordering_template::{OrderingMechanism, OrderingMechanismConfig};
 use crate::ast::symbol::FunctionBody;
-use crate::scanner::{stable_finding_id, EvidenceRefs, Finding};
-use regex::RegexSet;
+use crate::scanner::Finding;
 use std::sync::OnceLock;
 
 /// 出站抓取调用形态（小写子串匹配）
@@ -239,233 +231,50 @@ const REQUEST_EVIDENCE: &[&str] = &[
     "requestbody",
 ];
 
-fn has_request_evidence_lower(lower: &str) -> bool {
-    REQUEST_EVIDENCE.iter().any(|m| lower.contains(m))
+/// VO 机制配置（默认机制；新机制可复制此结构换成自己的 marker/元信息）。
+pub const VERIFICATION_ORDER_CONFIG: OrderingMechanismConfig<'static> =
+    OrderingMechanismConfig {
+        name: "VerificationOrderAnalyzer",
+        vuln_type: "SSRF",
+        severity: "medium",
+        confidence: 0.6,
+        description_subject: "Signature verification",
+        verify_label: "signature verification",
+        strong_handler_markers: STRONG_HANDLER_MARKERS,
+        weak_handler_markers: WEAK_HANDLER_MARKERS,
+        handler_path_markers: HANDLER_PATH_MARKERS,
+        helper_prefixes: PATH_ONLY_HELPER_PREFIXES,
+        fetch_wrapper_prefixes: FETCH_WRAPPER_PREFIXES,
+        fetch_markers: FETCH_MARKERS,
+        verify_markers: VERIFY_MARKERS,
+        strong_input_markers: STRONG_INPUT_MARKERS,
+        weak_input_markers: WEAK_INPUT_MARKERS,
+        request_evidence: REQUEST_EVIDENCE,
+    };
+
+/// 默认机制编译一次（RegexSet 构建成本只付一次）。
+pub fn default_mechanism() -> &'static OrderingMechanism {
+    static MECHANISM: OnceLock<OrderingMechanism> = OnceLock::new();
+    MECHANISM.get_or_init(|| OrderingMechanism::compile(VERIFICATION_ORDER_CONFIG))
 }
 
-/// 标记表 → 大小写不敏感的 RegexSet：预过滤一次扫描替代逐 marker 的 contains，
-/// 且无需为整文件分配小写副本（RegexSet 只构建一次）。
-fn marker_set(patterns: &[&str]) -> RegexSet {
-    let pats: Vec<String> = patterns
-        .iter()
-        .map(|p| format!("(?i){}", regex::escape(p)))
-        .collect();
-    RegexSet::new(pats).expect("verification_order marker set")
-}
-
-fn fetch_marker_set() -> &'static RegexSet {
-    static SET: OnceLock<RegexSet> = OnceLock::new();
-    SET.get_or_init(|| marker_set(FETCH_MARKERS))
-}
-
-fn verify_marker_set() -> &'static RegexSet {
-    static SET: OnceLock<RegexSet> = OnceLock::new();
-    SET.get_or_init(|| marker_set(VERIFY_MARKERS))
-}
-
-fn strong_handler_set() -> &'static RegexSet {
-    static SET: OnceLock<RegexSet> = OnceLock::new();
-    SET.get_or_init(|| marker_set(STRONG_HANDLER_MARKERS))
-}
-
-fn weak_handler_set() -> &'static RegexSet {
-    static SET: OnceLock<RegexSet> = OnceLock::new();
-    SET.get_or_init(|| marker_set(WEAK_HANDLER_MARKERS))
-}
-
-fn request_evidence_set() -> &'static RegexSet {
-    static SET: OnceLock<RegexSet> = OnceLock::new();
-    SET.get_or_init(|| marker_set(REQUEST_EVIDENCE))
-}
-
-fn is_test_path(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.contains("/test")
-        || lower.contains("/spec")
-        || lower.contains(".spec.")
-        || lower.contains(".test.")
-        || lower.ends_with("_test.py")
-        || lower.ends_with("_test.go")
-        || lower.ends_with("_test.rs")
-}
-
-/// 预过滤：文件是否具备命中本机制的"必要条件"。
-///
-/// 都是 finding 的必要条件，供调用方决定是否值得为它付出解析成本：
-///   1) 路径命中 handler 目录；或内容含强 handler 标记（inbox/signature/...）；
-///   2) 弱 handler（handle/handler/controller/...）+ 文件内有验签代码 + 内容有请求对象；
-///   3) 内容含抓取标记。
+/// 预过滤：文件是否具备命中本机制的必要条件（供 scanner 决定是否解析）。
 pub fn is_candidate_file(file_path: &str, content: &str) -> bool {
-    let path = std::path::Path::new(file_path);
-    if !crate::scanner::is_ast_supported_file(path) {
-        return false;
-    }
-    if is_test_path(file_path) {
-        return false;
-    }
-    let path_lower = file_path.to_ascii_lowercase();
-    let file_has_verify = verify_marker_set().is_match(content);
-    let path_handler_possible = HANDLER_PATH_MARKERS.iter().any(|m| path_lower.contains(m));
-    let strong_handler_possible = strong_handler_set().is_match(content);
-    let weak_handler_possible = weak_handler_set().is_match(content)
-        && file_has_verify
-        && request_evidence_set().is_match(content);
-    (path_handler_possible || strong_handler_possible || weak_handler_possible)
-        && fetch_marker_set().is_match(content)
+    default_mechanism().is_candidate_file(file_path, content)
 }
 
-/// 对**已解析**的函数体做判定（Stage B 复用它同一次 AST 解析的结果，避免二次解析）。
+/// 对已解析的函数体做判定（复用 Stage B 解析结果，避免二次解析）。
 pub fn analyze_bodies(
     file_path: &str,
     content: &str,
     bodies: &[FunctionBody],
 ) -> Vec<Finding> {
-    if !is_candidate_file(file_path, content) {
-        return Vec::new();
-    }
-    let file_has_verify = verify_marker_set().is_match(content);
-    let mut out = Vec::new();
-    for body in bodies {
-        if let Some(finding) = analyze_function(file_path, body, file_has_verify) {
-            out.push(finding);
-        }
-    }
-    out
+    default_mechanism().analyze_bodies(file_path, content, bodies)
 }
 
-/// 分析单个文件：自行解析后返回 verify-before-dereference 违例 findings。
-/// 已有函数体时优先用 [`analyze_bodies`] 复用解析结果。
+/// 自行解析后判定（无 Stage B 函数体时使用）。
 pub fn analyze_file(file_path: &str, content: &str) -> Vec<Finding> {
-    if !is_candidate_file(file_path, content) {
-        return Vec::new();
-    }
-    let path = std::path::Path::new(file_path);
-    let bodies = crate::ast::parser::with_thread_local_parser(|parser| {
-        parser.extract_function_bodies(path, content)
-    });
-    analyze_bodies(file_path, content, &bodies)
-}
-
-fn analyze_function(
-    file_path: &str,
-    body: &FunctionBody,
-    file_has_verify: bool,
-) -> Option<Finding> {
-    let name_lower = body.name.to_ascii_lowercase();
-    let path_lower = file_path.to_ascii_lowercase();
-    let helper_name = PATH_ONLY_HELPER_PREFIXES
-        .iter()
-        .any(|p| name_lower.starts_with(p));
-    let fetch_wrapper = FETCH_WRAPPER_PREFIXES
-        .iter()
-        .any(|p| name_lower.starts_with(p));
-    let strong_handler = !fetch_wrapper
-        && STRONG_HANDLER_MARKERS.iter().any(|m| name_lower.contains(m));
-    let weak_handler = !helper_name
-        && (WEAK_HANDLER_MARKERS.iter().any(|m| name_lower.contains(m))
-            || HANDLER_PATH_MARKERS.iter().any(|m| path_lower.contains(m)));
-    let handler_like = strong_handler
-        || (weak_handler
-            && file_has_verify
-            && has_request_evidence_lower(&body.body_text.to_ascii_lowercase()));
-    if !handler_like {
-        return None;
-    }
-
-    let mut first_fetch: Option<(usize, String)> = None;
-    let mut first_verify: Option<(usize, String)> = None;
-    for (idx, raw_line) in body.body_text.lines().enumerate() {
-        let line_no = body.body_start_line + idx;
-        let line_lower = raw_line.to_ascii_lowercase();
-        if first_verify.is_none() && VERIFY_MARKERS.iter().any(|m| line_lower.contains(m)) {
-            first_verify = Some((line_no, raw_line.trim().to_string()));
-        }
-        if first_fetch.is_none()
-            && FETCH_MARKERS.iter().any(|m| line_lower.contains(m))
-            && (STRONG_INPUT_MARKERS.iter().any(|m| line_lower.contains(m))
-                || (file_has_verify
-                    && WEAK_INPUT_MARKERS.iter().any(|m| line_lower.contains(m))))
-        {
-            first_fetch = Some((line_no, raw_line.trim().to_string()));
-        }
-    }
-
-    let (fetch_line, fetch_text) = first_fetch?;
-    let verify_line = first_verify.as_ref().map(|(l, _)| *l);
-    let order_violation = match verify_line {
-        Some(v) => fetch_line < v,
-        None => true,
-    };
-    if !order_violation {
-        return None;
-    }
-
-    let line_end = match verify_line {
-        Some(v) if v >= fetch_line => v,
-        _ => fetch_line,
-    };
-    let description = match verify_line {
-        Some(v) => format!(
-            "Signature verification ordering: outbound fetch at line {} precedes signature \
-             verification at line {} in function '{}' — an unauthenticated request can trigger \
-             an attacker-controlled outbound request (SSRF) before the signature is verified.",
-            fetch_line, v, body.name
-        ),
-        None => format!(
-            "Signature verification missing: outbound fetch at line {} in function '{}' has no \
-             signature verification in the same function — an unauthenticated request can trigger \
-             an attacker-controlled outbound request (SSRF).",
-            fetch_line, body.name
-        ),
-    };
-
-    let snippet_key = format!(
-        "VerificationOrderAnalyzer:{}:{}:{}",
-        body.name,
-        fetch_line,
-        verify_line.unwrap_or(0)
-    );
-    Some(Finding {
-        finding_id: stable_finding_id(file_path, fetch_line, 0, "SSRF", &snippet_key),
-        file_path: file_path.to_string(),
-        line_start: fetch_line,
-        line_end,
-        detector: "VerificationOrderAnalyzer".to_string(),
-        vuln_type: "SSRF".to_string(),
-        severity: "medium".to_string(),
-        description,
-        analysis_trail: Some(vec![
-            format!("fetch@{}: {}", fetch_line, fetch_text),
-            match verify_line {
-                Some(v) => format!("verify@{} (after fetch)", v),
-                None => "verify: missing in function".to_string(),
-            },
-        ]),
-        llm_output: None,
-        confidence: Some(0.6),
-        corroboration_count: None,
-        code_snippet: None,
-        source_snippet: Some(fetch_text),
-        sink_snippet: first_verify.as_ref().map(|(_, t)| t.clone()),
-        file_role: None,
-        barriers: None,
-        reasoning_hint: Some(
-            "fetch-before-verify ordering (CWE-918/CWE-306); 由 VerificationOrderAnalyzer \
-             按函数体行序判定（同函数，v1 不做跨函数调用序）"
-                .to_string(),
-        ),
-        evidence_refs: Some(EvidenceRefs {
-            matched_pattern: Some(format!(
-                "verification-order: fetch@{} {} verify@{}",
-                fetch_line,
-                if verify_line.is_some() { "<" } else { "missing" },
-                verify_line.unwrap_or(0)
-            )),
-            ..Default::default()
-        }),
-        enclosing_function: Some(body.name.clone()),
-        enclosing_function_line: Some(body.start_line),
-    })
+    default_mechanism().analyze_file(file_path, content)
 }
 
 #[cfg(test)]
@@ -578,5 +387,39 @@ def handle_callback(req):
             findings[0].enclosing_function.as_deref(),
             Some("handle_callback")
         );
+    }
+
+    #[test]
+    fn template_supports_second_mechanism() {
+        const CFG: OrderingMechanismConfig<'static> = OrderingMechanismConfig {
+            name: "TestOrderingMechanism",
+            vuln_type: "SSRF",
+            severity: "low",
+            confidence: 0.5,
+            description_subject: "Token check",
+            verify_label: "token check",
+            strong_handler_markers: &["process_upload"],
+            weak_handler_markers: &[],
+            handler_path_markers: &[],
+            helper_prefixes: &[],
+            fetch_wrapper_prefixes: &[],
+            fetch_markers: &["http.get("],
+            verify_markers: &["check_token"],
+            strong_input_markers: &["url"],
+            weak_input_markers: &[],
+            request_evidence: &[],
+        };
+        let m = OrderingMechanism::compile(CFG);
+        const SRC: &str = r#"
+def process_upload(payload):
+    url = payload.get("url")
+    http.get(url)
+    check_token(payload)
+"#;
+        let findings = m.analyze_file("app/handlers/upload.py", SRC);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].detector, "TestOrderingMechanism");
+        assert_eq!(findings[0].severity, "low");
+        assert!(findings[0].description.contains("precedes token check"));
     }
 }
