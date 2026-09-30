@@ -226,6 +226,8 @@ pub async fn run(prompt: String, project: Option<String>, json: bool) -> Result<
         project_dir.to_string_lossy().to_string(),
         None,
         None,
+        // 原生 agent 暂用遗留细粒度工具面（Phase 2 迁移到高阶能力）
+        true,
     )
     .await;
 

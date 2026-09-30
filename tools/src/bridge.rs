@@ -917,15 +917,47 @@ pub async fn register_built_in_tools(registry: &Arc<ToolRegistry>, project_path:
     }
 }
 
-/// 注册所有内置工具（包括 AST 工具、搜索工具、污点分析工具和模式检测工具）
+/// 遗留细粒度工具面是否启用（ADR-001 Phase 1）。
+///
+/// 默认关闭：面向 LLM 的接口只暴露高阶代码智能能力，避免细粒度工具造成的
+/// 决策震荡与 token 浪费。打开方式：CLI `--legacy-tools`，或环境变量
+/// `CTX_AUDIT_LEGACY_TOOLS=1`。
+pub fn legacy_tools_enabled() -> bool {
+    legacy_flag_truthy(&std::env::var("CTX_AUDIT_LEGACY_TOOLS").unwrap_or_default())
+}
+
+/// 解析 `CTX_AUDIT_LEGACY_TOOLS` 的取值（纯函数，便于测试）。
+fn legacy_flag_truthy(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// 注册工具面（ADR-001 Phase 1）。
+///
+/// - `legacy_tools = false`（默认新工具面）：基础工具 + 高阶代码智能能力；
+/// - `legacy_tools = true`：额外注册遗留的搜索/污点/模式/调用图/AST 细粒度工具。
+///
+/// AST 工具依赖 `ast_engine`，并且会先对项目建索引，因此只在遗留面下注册。
 pub async fn register_all_tools(
     registry: &Arc<ToolRegistry>,
     project_path: String,
     ast_engine: Option<std::sync::Arc<deepaudit_core::ASTEngine>>,
     query_engine: Option<std::sync::Arc<deepaudit_core::CallGraphQueryEngine>>,
+    legacy_tools: bool,
 ) {
-    // 先注册基础工具
+    // 基础工具（read_file / list_files / report_finding / finish_analysis）两个工具面都需要
     register_built_in_tools(registry, project_path.clone()).await;
+
+    // 高阶代码智能工具（ADR-001 Phase 1：9 个高阶语义能力 + provenance/uncertainty）
+    crate::code_intel_tools::register_code_intel_tools(registry, project_path.clone()).await;
+
+    if !legacy_tools {
+        return;
+    }
+
+    // ── 以下为遗留细粒度工具面，默认不注册 ──
 
     // 注册搜索工具
     crate::search_tools::register_search_tools(registry, project_path.clone()).await;
@@ -959,6 +991,48 @@ pub async fn register_all_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_legacy_flag_truthy() {
+        for raw in ["1", "true", "TRUE", "true ", "yes", "On"] {
+            assert!(legacy_flag_truthy(raw), "{raw} 应视为开启");
+        }
+        for raw in ["", "0", "false", "no", "off", "2", "legacy"] {
+            assert!(!legacy_flag_truthy(raw), "{raw} 应视为关闭");
+        }
+    }
+
+    /// 默认工具面 = 基础工具 + 高阶代码智能能力；legacy gate 打开后严格变多。
+    #[tokio::test]
+    async fn test_legacy_gate_controls_surface() {
+        let base = Arc::new(ToolRegistry::new());
+        register_all_tools(&base, ".".to_string(), None, None, false).await;
+        let mut base_names = base.list_tool_names().await;
+        base_names.sort();
+
+        let full = Arc::new(ToolRegistry::new());
+        register_all_tools(&full, ".".to_string(), None, None, true).await;
+        let full_names = full.list_tool_names().await;
+
+        for name in &base_names {
+            assert!(
+                crate::code_intel_tools::is_code_intel_tool(name)
+                    || matches!(name.as_str(), "read_file" | "list_files" | "finish_analysis"),
+                "默认工具面出现了非预期工具: {name}"
+            );
+            assert!(
+                full_names.contains(name),
+                "遗留工具面缺少默认面的工具: {name}"
+            );
+        }
+
+        assert!(
+            full_names.len() > base_names.len(),
+            "legacy gate 未生效: 默认 {} 个 / 遗留 {} 个",
+            base_names.len(),
+            full_names.len()
+        );
+    }
 
     #[test]
     fn test_extract_relative_path_already_relative() {

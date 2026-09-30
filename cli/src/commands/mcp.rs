@@ -3690,6 +3690,8 @@ struct McpServerState {
     tool_registry: std::sync::Arc<ctx_audit_tools::ToolRegistry>,
     /// 审计会话状态（内存存储，进程生命周期内有效）
     audit: McpAuditState,
+    /// 是否暴露遗留细粒度工具面（ADR-001 Phase 1，默认关闭）
+    legacy_tools: bool,
 }
 
 /// 审计会话管理（纯内存，无数据库依赖）
@@ -3947,26 +3949,38 @@ fn evidence_step_params(
     }
 }
 
+/// 默认工具面名单（ADR-001 Phase 1）。
+///
+/// 10 个高阶 code-intel 能力 + 3 个基础读写工具；其余（遗留细粒度工具、
+/// MCP 审计脚手架）只有 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1` 时才暴露。
+fn is_default_surface_tool(name: &str) -> bool {
+    ctx_audit_tools::is_code_intel_tool(name)
+        || matches!(name, "read_file" | "list_files" | "finish_analysis")
+}
+
 impl McpServerState {
-    async fn new() -> Self {
+    async fn new(legacy_tools: bool) -> Self {
+        // legacy gate：默认只注册高阶 code-intel 工具面（ADR-001 Phase 1）
+        let legacy = legacy_tools || ctx_audit_tools::legacy_tools_enabled();
         let registry = std::sync::Arc::new(ctx_audit_tools::ToolRegistry::new());
-        // 注册所有内置工具（搜索、污点、模式、调用图）
-        ctx_audit_tools::register_all_tools(&registry, ".".to_string(), None, None).await;
+        // 注册内置工具（基础工具 + 高阶 code-intel；legacy 打开时含搜索、污点、模式、调用图）
+        ctx_audit_tools::register_all_tools(&registry, ".".to_string(), None, None, legacy).await;
         Self {
             tool_registry: registry,
             audit: McpAuditState::new(),
+            legacy_tools: legacy,
         }
     }
 }
 
 // ── MCP Server Main Loop ────────────────────────────────
 
-pub async fn run_mcp_server() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_mcp_server(legacy_tools: bool) -> Result<(), Box<dyn std::error::Error>> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let reader = stdin.lock();
 
-    let state = McpServerState::new().await;
+    let state = McpServerState::new(legacy_tools).await;
 
     for line in reader.lines() {
         let line = line?;
@@ -4422,6 +4436,10 @@ async fn handle_request_with_state(
 
             // 1. 来自 tools/ crate 的工具（通过 ToolRegistry）
             for def in state.tool_registry.get_definitions().await {
+                // 默认工具面只暴露高阶能力 + 基础工具（ADR-001 Phase 1）
+                if !state.legacy_tools && !is_default_surface_tool(&def.name) {
+                    continue;
+                }
                 tools.push(serde_json::json!({
                     "name": def.name,
                     "description": def.description,
@@ -4431,6 +4449,10 @@ async fn handle_request_with_state(
 
             // 2. MCP 独有的工具（security_scan, scan_file, get_attack_surface 等）
             for t in tool_definitions() {
+                // 默认工具面下，审计脚手架等细粒度工具不对外暴露
+                if !state.legacy_tools && !is_default_surface_tool(t.name) {
+                    continue;
+                }
                 // 避免与 ToolRegistry 中的同名工具重复
                 let name = t.name;
                 if tools
@@ -4455,6 +4477,20 @@ async fn handle_request_with_state(
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
             let tool_name_owned = tool_name.to_string();
+
+            // 默认工具面：未暴露的工具直接拒绝，避免 LLM 误用遗留接口（ADR-001 Phase 1）
+            if !state.legacy_tools && !is_default_surface_tool(&tool_name_owned) {
+                return serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Tool `{}` is outside the default tool surface (ADR-001 Phase 1). Restart the server with --legacy-tools or CTX_AUDIT_LEGACY_TOOLS=1 to expose it.",
+                            tool_name_owned
+                        )
+                    }],
+                    "isError": true
+                });
+            }
 
             let start = std::time::Instant::now();
             let response = tokio::time::timeout(

@@ -229,7 +229,11 @@ enum Commands {
     /// MCP Server 模式（AI agent 集成）
     ///
     /// 启动 MCP 协议服务器，通过 stdio 暴露安全分析能力给 AI agent（如 Claude Code）
-    Mcp,
+    Mcp {
+        /// 注册遗留细粒度工具面（默认只暴露 ADR-001 的高阶能力与基础工具）
+        #[arg(long)]
+        legacy_tools: bool,
+    },
 
     /// 规则管理
     ///
@@ -723,7 +727,7 @@ async fn main() -> Result<()> {
             daemon,
         } => commands::watch::execute(path, severity, "sarif", output_path, ignore, daemon).await,
 
-        Commands::Mcp => commands::mcp::run_mcp_server()
+        Commands::Mcp { legacy_tools } => commands::mcp::run_mcp_server(legacy_tools)
             .await
             .map_err(|e| miette::miette!("MCP server error: {}", e)),
 

@@ -955,6 +955,8 @@ impl Runner {
             target_path.to_string_lossy().to_string(),
             None,
             None,
+            // 内部 triage/审计流水线暂用遗留细粒度工具面（Phase 2 迁移到高阶能力）
+            true,
         )
         .await;
         // M4：delegate_triage 工具注册给初审主 agent（子 agent 输出仅作线索，关键判定主 agent 独立复核）
@@ -1026,6 +1028,8 @@ impl Runner {
             target_path.to_string_lossy().to_string(),
             None,
             None,
+            // 内部 triage/审计流水线暂用遗留细粒度工具面（Phase 2 迁移到高阶能力）
+            true,
         )
         .await;
         let spawner = SubAgentSpawner::new(
@@ -1440,6 +1444,8 @@ impl Runner {
             target_path.to_string_lossy().to_string(),
             None,
             None,
+            // 内部 triage/审计流水线暂用遗留细粒度工具面（Phase 2 迁移到高阶能力）
+            true,
         )
         .await;
         let adapter = ToolAdapter::new(registry, ToolGate::new(self.config.approval));
