@@ -3690,7 +3690,7 @@ struct McpServerState {
     tool_registry: std::sync::Arc<ctx_audit_tools::ToolRegistry>,
     /// 审计会话状态（内存存储，进程生命周期内有效）
     audit: McpAuditState,
-    /// 是否暴露遗留细粒度工具面（ADR-001 Phase 1，默认关闭）
+    /// 是否暴露遗留细粒度工具面（默认关闭）
     legacy_tools: bool,
 }
 
@@ -3949,7 +3949,7 @@ fn evidence_step_params(
     }
 }
 
-/// 默认工具面名单（ADR-001 Phase 1）。
+/// 默认工具面名单。
 ///
 /// 10 个高阶 code-intel 能力 + 3 个基础读写工具；其余（遗留细粒度工具、
 /// MCP 审计脚手架）只有 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1` 时才暴露。
@@ -3960,7 +3960,7 @@ fn is_default_surface_tool(name: &str) -> bool {
 
 impl McpServerState {
     async fn new(legacy_tools: bool) -> Self {
-        // legacy gate：默认只注册高阶 code-intel 工具面（ADR-001 Phase 1）
+        // legacy gate：默认只注册高阶 code-intel 工具面
         let legacy = legacy_tools || ctx_audit_tools::legacy_tools_enabled();
         let registry = std::sync::Arc::new(ctx_audit_tools::ToolRegistry::new());
         // 注册内置工具（基础工具 + 高阶 code-intel；legacy 打开时含搜索、污点、模式、调用图）
@@ -4436,7 +4436,7 @@ async fn handle_request_with_state(
 
             // 1. 来自 tools/ crate 的工具（通过 ToolRegistry）
             for def in state.tool_registry.get_definitions().await {
-                // 默认工具面只暴露高阶能力 + 基础工具（ADR-001 Phase 1）
+                // 默认工具面只暴露高阶能力 + 基础工具
                 if !state.legacy_tools && !is_default_surface_tool(&def.name) {
                     continue;
                 }
@@ -4478,13 +4478,13 @@ async fn handle_request_with_state(
                 .unwrap_or(serde_json::json!({}));
             let tool_name_owned = tool_name.to_string();
 
-            // 默认工具面：未暴露的工具直接拒绝，避免 LLM 误用遗留接口（ADR-001 Phase 1）
+            // 默认工具面：未暴露的工具直接拒绝，避免 LLM 误用遗留接口
             if !state.legacy_tools && !is_default_surface_tool(&tool_name_owned) {
                 return serde_json::json!({
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Tool `{}` is outside the default tool surface (ADR-001 Phase 1). Restart the server with --legacy-tools or CTX_AUDIT_LEGACY_TOOLS=1 to expose it.",
+                            "Tool `{}` is outside the default tool surface. Restart the server with --legacy-tools or CTX_AUDIT_LEGACY_TOOLS=1 to expose it.",
                             tool_name_owned
                         )
                     }],
@@ -4758,5 +4758,61 @@ mod tests {
         // start_investigation 接受可选 vuln_type
         let inv = defs.iter().find(|t| t.name == "start_investigation").unwrap();
         assert!(inv.input_schema["properties"]["vuln_type"].is_object());
+    }
+
+    /// 默认工具面 = 10 个高阶能力 + 3 个基础读写工具。
+    #[test]
+    fn test_default_surface_membership() {
+        for name in ctx_audit_tools::CODE_INTEL_TOOL_SURFACE {
+            assert!(is_default_surface_tool(name), "{name} 应属于默认工具面");
+        }
+        for name in ["read_file", "list_files", "finish_analysis"] {
+            assert!(is_default_surface_tool(name), "{name} 应属于默认工具面");
+        }
+        for name in [
+            "search_code",
+            "check_sanitizer",
+            "query_callers",
+            "get_code_context",
+            "security_scan",
+            "scan_file",
+            "start_audit_session",
+            "audit_plan",
+        ] {
+            assert!(!is_default_surface_tool(name), "{name} 不应出现在默认工具面");
+        }
+    }
+
+    /// 默认工具面名单无重复，且为 10 + 3。
+    #[test]
+    fn test_default_surface_shape() {
+        let mut names: Vec<&str> = ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.to_vec();
+        names.extend_from_slice(&["read_file", "list_files", "finish_analysis"]);
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "默认工具面名单存在重复项");
+        assert_eq!(before, 13, "默认工具面应为 10 高阶 + 3 基础");
+    }
+
+    /// legacy gate：默认 state 的 registry 只含默认面工具；legacy 打开后严格更多。
+    #[tokio::test]
+    async fn test_mcp_state_respects_legacy_gate() {
+        let default_state = McpServerState::new(false).await;
+        let mut default_names = default_state.tool_registry.list_tool_names().await;
+        default_names.sort();
+        for name in &default_names {
+            assert!(is_default_surface_tool(name), "{name} 不该出现在默认工具面");
+        }
+
+        let legacy_state = McpServerState::new(true).await;
+        let legacy_names = legacy_state.tool_registry.list_tool_names().await;
+        assert!(
+            legacy_names.len() > default_names.len(),
+            "legacy gate 未生效: 默认 {} / 遗留 {}",
+            default_names.len(),
+            legacy_names.len()
+        );
+        assert!(legacy_state.legacy_tools && !default_state.legacy_tools);
     }
 }

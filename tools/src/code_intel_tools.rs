@@ -1,13 +1,13 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! 高阶代码智能工具面（ADR-001 Phase 1）
+//! 高阶代码智能工具面
 //!
 //! 目标：把面向 LLM 的工具从细粒度几十个收敛到 9+1 个高阶语义能力，
 //! 每个响应携带 `provenance`（来源）与 `uncertainty`（不确定度）。
 //!
-//! Phase 1 说明：本实现是**文件级确定性 fallback**（不依赖引擎内部 API），
-//! 后续 Phase 2 在 `resolver` 字段接入 LSP/SCIP 与引擎调用图/污点能力，
+//! 本实现是**文件级确定性 fallback**（不依赖引擎内部 API）：
+//! `resolver` 字段预留了接入 LSP/SCIP 或引擎调用图/污点的位置，
 //! 调用方接口（工具名/参数/响应 envelope）保持不变。
 
 use async_trait::async_trait;
@@ -117,14 +117,14 @@ impl IntelKind {
     pub fn description(&self) -> &'static str {
         match self {
             IntelKind::ProjectIndex => "项目索引状态：文件数/语言分布/索引指纹",
-            IntelKind::SymbolDefinition => "跨文件符号定义（Phase 1 启发式；Phase 2 接 LSP/SCIP）",
+            IntelKind::SymbolDefinition => "跨文件符号定义（启发式；未接 LSP/SCIP）",
             IntelKind::SymbolReferences => "跨文件符号引用（含 import alias 未解析提示）",
             IntelKind::CallHierarchy => "函数上下游调用拓扑（callers/callees，未解析边入 uncertainty）",
             IntelKind::SliceBackward => "从 file:line 向前切出相关代码片段",
-            IntelKind::DataflowPath => "source→sink 路径（Phase 1 行区间启发式）",
+            IntelKind::DataflowPath => "source→sink 路径（行区间启发式）",
             IntelKind::SanitizerGuards => "变量路径上的条件分支/校验逻辑",
             IntelKind::FrameworkContext => "路由 handler 的前置中间件/拦截器链",
-            IntelKind::IncrementalStatus => "增量索引状态与 SLO 指标（Phase 1 stat 基线）",
+            IntelKind::IncrementalStatus => "增量索引状态与 SLO 指标（stat 基线）",
         }
     }
 }
@@ -163,11 +163,15 @@ pub fn language_of(path: &str) -> &'static str {
     }
 }
 
-fn load_files(root: &Path) -> Vec<(String, String)> {
+/// 遍历项目文件，返回 `(文件列表, 因大小上限跳过的文件数, 是否因文件数上限截断)`。
+fn load_files(root: &Path) -> (Vec<(String, String)>, usize, bool) {
     let mut out: Vec<(String, String)> = Vec::new();
+    let mut skipped_large = 0usize;
+    let mut truncated_at_limit = false;
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if out.len() >= MAX_FILES {
+            truncated_at_limit = true;
             break;
         }
         let entries = match std::fs::read_dir(&dir) {
@@ -184,6 +188,7 @@ fn load_files(root: &Path) -> Vec<(String, String)> {
                 continue;
             }
             if out.len() >= MAX_FILES {
+                truncated_at_limit = true;
                 break;
             }
             let meta = match entry.metadata() {
@@ -191,6 +196,7 @@ fn load_files(root: &Path) -> Vec<(String, String)> {
                 Err(_) => continue,
             };
             if meta.len() as usize > MAX_FILE_BYTES {
+                skipped_large += 1;
                 continue;
             }
             let rel = path
@@ -202,7 +208,7 @@ fn load_files(root: &Path) -> Vec<(String, String)> {
             }
         }
     }
-    out
+    (out, skipped_large, truncated_at_limit)
 }
 
 fn build_id(files: &[(String, String)]) -> String {
@@ -339,6 +345,20 @@ fn int_param(name: &str, desc: &str, default: i64) -> ToolParameter {
     }
 }
 
+fn bool_param(name: &str, desc: &str) -> ToolParameter {
+    ToolParameter {
+        name: name.to_string(),
+        param_type: ToolParameterType::Boolean,
+        description: desc.to_string(),
+        required: false,
+        default: Some(json!(false)),
+        enum_values: None,
+        format: None,
+        items: None,
+        properties: None,
+    }
+}
+
 /// 通用的高阶代码智能工具（按 kind 分派）。
 pub struct CodeIntelTool {
     project_path: String,
@@ -351,7 +371,7 @@ impl CodeIntelTool {
     }
 
     fn params(&self) -> Vec<ToolParameter> {
-        match self.kind {
+        let mut params = match self.kind {
             IntelKind::ProjectIndex | IntelKind::IncrementalStatus => vec![],
             IntelKind::SymbolDefinition | IntelKind::SymbolReferences => {
                 vec![str_param("symbol", "符号名", true)]
@@ -379,7 +399,13 @@ impl CodeIntelTool {
                 str_param("file", "相对路径", true),
                 str_param("handler", "handler 名（可选）", false),
             ],
-        }
+        };
+        // 索引缓存开关：所有能力都允许强制重建（索引底座）
+        params.push(bool_param(
+            "refresh",
+            "强制重建索引缓存（默认 false；TTL 由 CTX_AUDIT_INDEX_TTL_MS 控制）",
+        ));
+        params
     }
 }
 
@@ -407,13 +433,31 @@ impl Tool for CodeIntelTool {
 
     async fn execute(&self, input: Value) -> Result<ToolResult, ToolError> {
         let root = Path::new(&self.project_path);
-        let files = load_files(root);
-        let id = build_id(&files);
+        let refresh = input
+            .get("refresh")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let ttl = crate::index_cache::default_ttl();
+        // 索引缓存：TTL 内复用同一份索引，避免每次调用重新遍历项目
+        let (index, cache_hit) = crate::index_cache::get_or_build(root, refresh, ttl, || {
+            let (files, skipped_large, truncated_at_limit) = load_files(root);
+            let build_id = build_id(&files);
+            crate::index_cache::ProjectIndex {
+                root: root.to_string_lossy().to_string(),
+                files,
+                build_id,
+                skipped_large,
+                truncated_at_limit,
+                built_at: std::time::Instant::now(),
+            }
+        });
+        let files: &[(String, String)] = &index.files;
+        let id = index.build_id.clone();
         let env: IntelEnvelope = match self.kind {
             IntelKind::ProjectIndex => {
                 let mut langs: std::collections::BTreeMap<&'static str, usize> =
                     std::collections::BTreeMap::new();
-                for (path, _) in &files {
+                for (path, _) in files {
                     *langs.entry(language_of(path)).or_insert(0) += 1;
                 }
                 IntelEnvelope {
@@ -421,7 +465,19 @@ impl Tool for CodeIntelTool {
                         "files": files.len(),
                         "languages": langs,
                         "build_id": id,
-                        "index_freshness": "stat-based (daemon incremental index pending)",
+                        "index_freshness": "stat-based + in-process TTL cache (daemon incremental index pending)",
+                        "limits": {
+                            "max_files": MAX_FILES,
+                            "max_file_bytes": MAX_FILE_BYTES,
+                            "skipped_large_files": index.skipped_large,
+                            "truncated_at_limit": index.truncated_at_limit,
+                        },
+                        "cache": {
+                            "hit": cache_hit,
+                            "age_ms": index.age().as_millis() as u64,
+                            "ttl_ms": ttl.as_millis() as u64,
+                            "refresh": refresh,
+                        },
                     }),
                     provenance: vec![prov(".", 0, &id)],
                     uncertainty: Uncertainty::new("low", &["index_is_stat_based"], 0),
@@ -433,7 +489,7 @@ impl Tool for CodeIntelTool {
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 symbol 参数".to_string()))?;
                 let mut defs: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
-                for (path, content) in &files {
+                for (path, content) in files {
                     for (line, text) in find_definitions(content, symbol) {
                         provenance.push(prov(path, line, &id));
                         defs.push(json!({"file": path, "line": line, "text": text}));
@@ -462,7 +518,7 @@ impl Tool for CodeIntelTool {
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 symbol 参数".to_string()))?;
                 let mut refs: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
-                for (path, content) in &files {
+                for (path, content) in files {
                     for (line, text) in find_references(content, symbol) {
                         provenance.push(prov(path, line, &id));
                         refs.push(json!({"file": path, "line": line, "text": text}));
@@ -495,7 +551,7 @@ impl Tool for CodeIntelTool {
                 let mut unresolved = 0u32;
                 let dynamic_markers =
                     ["getattr", "eval(", "apply(", "invoke(", "call_user_func", "Reflect."];
-                for (path, content) in &files {
+                for (path, content) in files {
                     if direction != "callees" {
                         for (line, text) in find_call_sites(content, function) {
                             provenance.push(prov(path, line, &id));
@@ -576,7 +632,7 @@ impl Tool for CodeIntelTool {
                 let only_file = input["file"].as_str();
                 let mut steps: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
-                for (path, content) in &files {
+                for (path, content) in files {
                     if let Some(f) = only_file {
                         if path.as_str() != f {
                             continue;
@@ -695,20 +751,29 @@ impl Tool for CodeIntelTool {
                 }
             }
             IntelKind::IncrementalStatus => {
-                let bytes: usize = files.iter().map(|(_, c)| c.len()).sum();
+                let bytes = index.total_bytes();
                 IntelEnvelope {
                     data: json!({
                         "build_id": id,
                         "files_indexed": files.len(),
                         "bytes_indexed": bytes,
-                        "mode": "stat-baseline",
+                        "mode": "stat-baseline+ttl-cache",
                         "pending_recompile": 0,
+                        "skipped_large_files": index.skipped_large,
+                        "truncated_at_limit": index.truncated_at_limit,
+                        "cache": {
+                            "hit": cache_hit,
+                            "age_ms": index.age().as_millis() as u64,
+                            "ttl_ms": ttl.as_millis() as u64,
+                            "refresh": refresh,
+                            "entries": crate::index_cache::stats().0,
+                        },
                         "slo": {"symbol_jump_ms": null, "slice_ms": null, "refresh_ms": null},
                     }),
                     provenance: vec![prov(".", 0, &id)],
                     uncertainty: Uncertainty::new(
                         "medium",
-                        &["daemon_incremental_index_not_wired"],
+                        &["daemon_incremental_index_not_wired", "ttl_cache_not_mtime_exact"],
                         0,
                     ),
                 }
@@ -722,7 +787,7 @@ impl Tool for CodeIntelTool {
     }
 }
 
-/// 注册 Phase 1 高阶代码智能工具（9 个；report_finding 由 built-in 提供）。
+/// 注册高阶代码智能工具（9 个；report_finding 由 built-in 提供）。
 pub async fn register_code_intel_tools(registry: &Arc<ToolRegistry>, project_path: String) {
     for kind in IntelKind::all() {
         let tool: Arc<dyn Tool> = Arc::new(CodeIntelTool::new(project_path.clone(), kind));
@@ -732,12 +797,12 @@ pub async fn register_code_intel_tools(registry: &Arc<ToolRegistry>, project_pat
     }
 }
 
-/// Phase 1 工具面判定：MCP server 可据此只暴露高阶能力（legacy 工具另行 gate）。
+/// 工具面判定：MCP server 可据此只暴露高阶能力（legacy 工具另行 gate）。
 pub fn is_code_intel_tool(name: &str) -> bool {
     CODE_INTEL_TOOL_SURFACE.contains(&name)
 }
 
-/// 目标工具面名单（Phase 1：9 + report_finding）。
+/// 目标工具面名单（9 + report_finding）。
 pub const CODE_INTEL_TOOL_SURFACE: [&str; 10] = [
     "get_project_index",
     "get_symbol_definition",
@@ -785,6 +850,27 @@ mod tests {
         let names = callee_names("let x = foo.bar(1) + baz(2);");
         assert!(names.contains(&"bar".to_string()));
         assert!(names.contains(&"baz".to_string()));
+    }
+
+    #[test]
+    fn test_load_files_reports_limits() {
+        let root = std::env::temp_dir().join("ctx-audit-code-intel-load-limits");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        // 超过单文件上限的文件应计入 skipped_large
+        std::fs::write(root.join("big.bin"), "x".repeat(MAX_FILE_BYTES + 1)).unwrap();
+        // 跳过目录不应被索引
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("node_modules/skip.js"), "var x = 1;").unwrap();
+
+        let (files, skipped_large, truncated_at_limit) = load_files(&root);
+        assert_eq!(files.len(), 1, "只应索引 src/main.rs");
+        assert_eq!(files[0].0, "src/main.rs");
+        assert_eq!(skipped_large, 1, "超大文件应被计数");
+        assert!(!truncated_at_limit, "未达文件数上限不应标记截断");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

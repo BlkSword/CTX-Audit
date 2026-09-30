@@ -11,6 +11,7 @@ pub mod call_graph_tools;
 pub mod code_intel_tools;
 pub mod executor;
 pub mod external;
+pub mod index_cache;
 pub mod pattern_tools;
 pub mod registry;
 pub mod search_tools;
