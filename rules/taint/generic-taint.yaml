@@ -528,4 +528,4 @@ sanitizers:
   - pattern: "ValidateNameComponent"
     description: "Filename validation (strips path traversal)"
   - pattern: "[^\\w-]"
-    description: "JS 字符集白名单清洗（replace(/[^\\w-]/g, '') 形态， GHSA-mc6w-69r3-62h8 修复形态：ETag 清洗仅留 word/dash 字符，路径穿越序列被剥除）"
+    description: "JS 字符集白名单清洗（replace(/[^\\w-]/g, '') 形态，GHSA-mc6w-69r3-62h8 修复形态：ETag 清洗仅留 word/dash 字符，路径穿越序列被剥除）"

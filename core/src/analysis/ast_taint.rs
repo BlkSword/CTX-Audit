@@ -3433,7 +3433,7 @@ impl AstTaintAnalyzer {
         steps.iter().rev().find_map(|s| s.code_snippet.as_deref())
     }
 
-    /// ：URL host 字面量判定。只认 `"scheme://literal"` 直接形态，
+    /// URL host 字面量判定。只认 `"scheme://literal"` 直接形态，
     /// host 段取 `://` 后到 `/ ? # " ' 空白 ;` 的第一个分隔符。
     fn expr_ssrf_literal_host(expr: &str, tainted_var: &str) -> bool {
         let Some(pos) = expr.find("://") else {
@@ -3448,7 +3448,7 @@ impl AstTaintAnalyzer {
     }
 
 
-    /// R55（扩展）：SSRF 同源相对 URL 豁免（浏览器端 XHR FP 家族， 实测沉淀）。
+ /// SSRF 同源相对 URL 豁免（浏览器端 XHR FP 家族）。
     /// 污点参数为以 `/` 开头的字符串/模板字面量（`` `/api/${id}` ``）时是同源
     /// 相对 URL——路径段如何被污染 host 都不可控，不构成 SSRF（浏览器 XHR 与
     /// 服务端代码同理）。`//` 开头是协议相对 URL（host 可控），不豁免。
@@ -3474,7 +3474,7 @@ impl AstTaintAnalyzer {
         bytes[1] == b'/' && bytes.get(2) != Some(&b'/')
     }
 
-    /// ：污点变量所有出现是否都处于数值强制转换调用参数区间内。
+    /// 污点变量所有出现是否都处于数值强制转换调用参数区间内。
     /// 复用 is_inline_sanitized 的平衡括号配对语义，但转换函数列表固定
     /// （不依赖 sanitizer_patterns——"int(" 子串会误中 print( 等，不能进全局净化器）。
     fn expr_var_numeric_coerced(expr: &str, tainted_var: &str) -> bool {

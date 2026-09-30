@@ -295,7 +295,7 @@ enum AgentAction {
         action: PipelineAction,
     },
 
-    /// cron 定时轮（M3，需 daemon 运行）
+ /// cron 定时轮（需 daemon 运行）
     Cron {
         #[command(subcommand)]
         action: CronAction,

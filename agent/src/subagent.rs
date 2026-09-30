@@ -1,7 +1,7 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! 子 agent（M4，qwen-code 模式）
+//! 子 agent（qwen-code 模式）
 //!
 //! 同引擎新实例：独立 history/session + 工具白名单（schema/执行双层过滤）+
 //! 独立预算，只回传 final text，不回传中间消息。

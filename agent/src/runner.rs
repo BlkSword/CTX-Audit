@@ -1,7 +1,7 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! runner：轮状态机（M2）
+//! runner：轮状态机
 //!
 //! 六阶段：选目标 → 资格核实 → 扫描 → 初审 → 深审 → 登记草稿 → 反哺
 //!
@@ -9,13 +9,13 @@
 //! - 初审/深审调 `Agent::run`，system prompt 从 round-agent.md 加载；
 //! - 初审分片：findings 数 > `subagent_threshold`（默认 50）时按 (漏洞类型, 文件)
 //!   分片，每片 spawn 一个子 agent 并行初审（JoinSet），汇总后写同一 triage 产物；
-//! - 反哺阶段：0 TP 轮且配置 `feedback_tasks` 时自动执行 CVE 回放机械层，
+//! - 反哺阶段：0 TP 轮且配置 `feedback_tasks` 时自动执行 CVE 回放，
 //!   产出 replay-report JSON；无任务或有 TP 候选则跳过；
 //! - 每阶段完成即写状态文件，崩溃后按轮次 ID 从断点续跑；
 //! - 深审产出 TP 候选 → 写 gate 通知（文件+可选 webhook）→ 轮暂停在 AwaitHuman，
 //!   人工 approve/reject 后才进入登记草稿。
 //!
-//! 注：§3.1 撞号四步协议针对"写 docs registry"场景， 登记产物仅为
+//! 注：§3.1 撞号四步协议针对"写 docs registry"场景，登记产物仅为
 //! state_dir 内的草稿 Markdown（人工合入 registry 时走人工撞号约定），故未实现。
 
 use chrono::{DateTime, Utc};
@@ -226,7 +226,7 @@ pub struct RunnerConfig {
     /// 初审分片阈值：findings 数 > 该值时按 (漏洞类型, 文件) 分片并行初审，
     /// 0 = 禁用分片（默认 50）
     pub subagent_threshold: usize,
-    /// 反哺任务：0 TP 轮自动执行 CVE 回放机械层（默认空=跳过）
+ /// 反哺任务：0 TP 轮自动执行 CVE 回放（默认空=跳过）
     pub feedback_tasks: Vec<FeedbackTask>,
     /// 可配置审计流水线（默认等于 CTX-Audit 当前行为）
     pub pipeline: PipelineConfig,
@@ -1232,7 +1232,7 @@ impl Runner {
 
     // ── 阶段七：反哺（确定性回放层） ───────────────────────
 
-    /// 反哺阶段：0 TP 轮且配置 feedback_tasks 时自动执行 CVE 回放机械层
+ /// 反哺阶段：0 TP 轮且配置 feedback_tasks 时自动执行 CVE 回放
     ///
     /// 有 TP 候选的轮次反哺走人工流程（跳过）；单任务失败只记录不阻断轮次。
     async fn phase_feedback(
@@ -1242,7 +1242,7 @@ impl Runner {
     ) -> Result<(), RunnerError> {
         if !state.tp_candidates.is_empty() {
             tracing::info!(
-                "轮次 {} 含 {} 个 TP 候选，反哺走人工流程，机械层跳过",
+ "轮次 {} 含 {} 个 TP 候选，反哺走人工流程，跳过",
                 state.round_id,
                 state.tp_candidates.len()
             );

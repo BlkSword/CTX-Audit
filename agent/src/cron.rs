@@ -1,7 +1,7 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! cron：daemon 内轻量定时器（M3）
+//! cron：daemon 内轻量定时器
 //!
 //! - 5 字段 cron 最小解析器（分 时 日 月 周），支持 `*`、`*/n`、逗号、范围 `a-b`、`a-b/n`；
 //!   workspace 锁内无 cron crate，故手写，不引新依赖。

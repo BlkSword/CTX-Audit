@@ -641,7 +641,7 @@ pub struct AgentConfig {
     #[serde(default)]
     pub native_budget: NativeBudgetConfig,
 
-    /// 原生 Agent 人工闸门配置（M2）
+ /// 原生 Agent 人工闸门配置
     #[serde(default)]
     pub native_gate: NativeGateConfig,
 
@@ -759,7 +759,7 @@ impl Default for LlmConfig {
     }
 }
 
-// ── 原生 Agent 配置（native agent M1） ───────────────────
+// ── 原生 Agent 配置（native agent） ───────────────────
 
 /// 原生 Agent LLM provider 配置
 ///
@@ -808,7 +808,7 @@ pub struct NativeBudgetConfig {
     #[serde(default = "default_native_max_minutes")]
     pub max_minutes: u64,
 
-    /// 初审分片阈值（M4）：findings 数 > 该值时按 (漏洞类型, 文件) 分片并行初审，
+ /// 初审分片阈值：findings 数 > 该值时按 (漏洞类型, 文件) 分片并行初审，
     /// 0 = 禁用分片（默认 50）
     #[serde(default = "default_native_subagent_threshold")]
     pub subagent_threshold: usize,
@@ -1083,7 +1083,7 @@ impl ConfigManager {
             "agent.llm.endpoint" => self.config.agent.llm.endpoint.clone(),
             "agent.llm.timeout_sec" => Some(self.config.agent.llm.timeout_sec.to_string()),
             "agent.llm.max_tokens" => Some(self.config.agent.llm.max_tokens.to_string()),
-            // agent.native_provider.* / agent.native_budget.*（原生 Agent M1）
+ // agent.native_provider.* / agent.native_budget.*（原生 Agent）
             "agent.native_provider.base_url" => self.config.agent.native_provider.base_url.clone(),
             "agent.native_provider.api_key_env" => {
                 Some(self.config.agent.native_provider.api_key_env.clone())
@@ -1355,7 +1355,7 @@ impl ConfigManager {
             "agent.llm.max_tokens" => {
                 self.config.agent.llm.max_tokens = value.parse().context("无效的数字")?;
             }
-            // agent.native_provider.* / agent.native_budget.*（原生 Agent M1）
+ // agent.native_provider.* / agent.native_budget.*（原生 Agent）
             "agent.native_provider.base_url" => {
                 self.config.agent.native_provider.base_url =
                     if value.is_empty() { None } else { Some(value) };
@@ -1485,7 +1485,7 @@ impl ConfigManager {
             "agent.llm.endpoint" => self.config.agent.llm.endpoint = None,
             "agent.llm.timeout_sec" => self.config.agent.llm.timeout_sec = 60,
             "agent.llm.max_tokens" => self.config.agent.llm.max_tokens = 2048,
-            // agent.native_provider.* / agent.native_budget.*（原生 Agent M1）
+ // agent.native_provider.* / agent.native_budget.*（原生 Agent）
             "agent.native_provider.base_url" => self.config.agent.native_provider.base_url = None,
             "agent.native_provider.api_key_env" => {
                 self.config.agent.native_provider.api_key_env = "CTX_AUDIT_LLM_API_KEY".to_string()

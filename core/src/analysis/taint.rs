@@ -680,7 +680,7 @@ pub enum TaintCategory {
     /// 命令行参数（非远程攻击面）
     CliInput,
     /// 模板渲染输出（Jinja2 `template.render`/`from_string` 等，内容可含用户数据；
-    /// 用作文件路径等 sink 时构成路径遍历——10.16， GHSA-28cf 回放登记）
+ /// 用作文件路径等 sink 时构成路径遍历（GHSA-28cf 回放登记）
     TemplateRender,
 }
 

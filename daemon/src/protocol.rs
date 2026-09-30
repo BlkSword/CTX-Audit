@@ -118,7 +118,7 @@ pub enum RequestCommand {
         function_name: String,
     },
 
-    // ── 原生 Agent / 轮次 runner（M3） ──────────────────
+ // ── 原生 Agent / 轮次 runner ──────────────────
 
     /// 启动一轮审计 runner（流式：AgentRoundStarted → AgentEvent* → AgentRoundDone）
     AgentRoundRun {
@@ -206,7 +206,7 @@ pub enum Response {
     /// 调用图查询结果
     GraphQueryResult { result: serde_json::Value },
 
-    // ── 原生 Agent / 轮次 runner（M3） ──────────────────
+ // ── 原生 Agent / 轮次 runner ──────────────────
 
     /// 轮次已启动（流式序列开始）
     AgentRoundStarted { round_id: String },
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(parsed["taint_cache_entries"], 10);
     }
 
-    // ── M3：agent / cron 协议 roundtrip ──
+ // ──：agent / cron 协议 roundtrip ──
 
     #[test]
     fn test_agent_round_commands_roundtrip() {

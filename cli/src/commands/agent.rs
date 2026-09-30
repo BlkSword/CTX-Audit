@@ -327,7 +327,7 @@ pub async fn sessions(project: Option<String>) -> Result<()> {
     Ok(())
 }
 
-// ── 轮次 runner（M2） ─────────────────────────────────
+// ── 轮次 runner ─────────────────────────────────
 
 /// 启动或续跑一轮
 pub async fn round_run(
@@ -545,7 +545,7 @@ pub async fn gate_decide(
     Ok(())
 }
 
-// ── cron 定时轮（M3，仅 daemon 路径） ──────────────────
+// ── cron 定时轮（仅 daemon 路径） ──────────────────
 
 /// 注册 cron 定时轮
 pub async fn cron_add(schedule: String, target: String) -> Result<()> {
@@ -690,7 +690,7 @@ fn print_feedback_report(report: &serde_json::Value) {
     );
 }
 
-// ── daemon IPC 辅助（M3） ─────────────────────────────
+// ── daemon IPC 辅助 ─────────────────────────────
 
 /// 连接 daemon（失败时给出可操作指引）
 async fn daemon_client() -> Result<DaemonClient> {

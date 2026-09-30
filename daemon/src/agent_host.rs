@@ -1,7 +1,7 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! daemon 内 agent 宿主（M3）
+//! daemon 内 agent 宿主
 //!
 //! 在 daemon 进程内托管 ctx-audit-agent 的轮次 runner：
 //! - AgentRoundRun/Resume → tokio task 起跑 runner，事件经 mpsc 转发回客户端连接；

@@ -45,7 +45,7 @@ pub mod sessions {
     pub use crate::session::{Session, SessionInfo, SessionRecord};
 }
 
-/// 轮状态机层（M2）：runner 六阶段 + human gate
+/// 轮状态机层：runner 六阶段 + human gate
 pub mod rounds {
     pub use crate::gate::{extract_tp_candidates, GateDecision, GateNotice, TpCandidate};
     pub use crate::runner::{
@@ -53,21 +53,21 @@ pub mod rounds {
     };
 }
 
-/// 定时调度层（M3）：cron 表达式、任务存储、调度器
+/// 定时调度层：cron 表达式、任务存储、调度器
 pub mod scheduling {
     pub use crate::cron::{
         CronJob, CronParseError, CronSchedule, CronScheduler, CronStore, RoundLauncher,
     };
 }
 
-/// 子 agent 层（M4）：spawn 工厂、delegate 工具
+/// 子 agent 层：spawn 工厂、delegate 工具
 pub mod delegation {
     pub use crate::subagent::{
         register_delegate_tool, DelegateTool, SubAgentConfig, SubAgentSpawner, DELEGATE_TOOL_NAME,
     };
 }
 
-/// 反哺机械层（M4）：CVE 回放任务与报告
+/// 反哺：CVE 回放任务与报告
 pub mod replay {
     pub use crate::feedback::{
         report_path, run_replay, ExpectedHit, FeedbackError, FeedbackTask, RefScanSummary,

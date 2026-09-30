@@ -82,7 +82,7 @@ impl Server {
             self.shutdown.clone(),
         );
 
-        // 启动 cron 调度器（M3：每分钟对齐 tick，任务存 .ctx-audit/cron.json）
+ // 启动 cron 调度器（每分钟对齐 tick，任务存 .ctx-audit/cron.json）
         let cron_store = CronStore::open(cron_store_path());
         let cron_scheduler = CronScheduler::new(cron_store, self.agent_host.clone());
         let cron_handle = tokio::spawn(cron_scheduler.run(self.shutdown.clone()));
@@ -687,7 +687,7 @@ async fn handle_request(
             },
         },
 
-        // ── 原生 Agent / 轮次 runner（M3） ──────────────
+ // ── 原生 Agent / 轮次 runner ──────────────
         // AgentRoundRun / AgentRoundResume 为流式命令，已在 handle_client 特判
         RequestCommand::AgentRoundRun { .. } | RequestCommand::AgentRoundResume { .. } => {
             Response::Error {
@@ -753,7 +753,7 @@ async fn handle_request(
             }
         }
 
-        // CVE 回放机械层（确定性，无 LLM）
+ // CVE 回放（确定性，无 LLM）
         RequestCommand::AgentFeedbackRun { task_path } => {
             let task_result = std::fs::read_to_string(&task_path)
                 .map_err(|e| format!("任务文件读取失败 {}: {}", task_path, e))

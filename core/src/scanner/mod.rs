@@ -1784,7 +1784,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         .filter(|(_, content)| content.len() <= max_taint_file_kb * 1024)
         // vendor / minified 第三方库不进入污点分析（只产生噪声）
         .filter(|(fp, content)| classify_file_role_with_content(fp, content) != "vendor")
-        // 测试文件不进入污点分析（：约占分析量两成，纯浪费且只产噪；
+        // 测试文件不进入污点分析（约占分析量两成，纯浪费且只产噪；
         // Stage A 规则扫描对它们的行为不变）
         .filter(|(fp, _)| !is_test_path(fp) && !is_test_file_name(fp))
         .map(|(fp, _)| fp.clone())

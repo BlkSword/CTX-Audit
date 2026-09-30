@@ -139,7 +139,7 @@ impl Agent {
         &self.system_prompt
     }
 
-    /// 派生子 agent（M4，qwen-code 模式：同引擎新实例）
+ /// 派生子 agent（qwen-code 模式：同引擎新实例）
     ///
     /// 独立 history/session（文件名带 `session_prefix` 前缀便于审计隔离）、
     /// 工具白名单、独立预算；只回传 final text。实现见 `crate::subagent`。
