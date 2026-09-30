@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**Rust 代码安全审计引擎 · LLM 协作 · 证据驱动**
+**面向 LLM 的代码智能与取证基础设施 · 验证层驱动**
 
-**跨文件数据流追踪 · CPG 污点分析 · MCP 工具链 · 可验证漏洞判定**
+**符号跳转 · 调用层级 · 反向切片 · 框架上下文 · 高阶 MCP 工具面**
 
-不做规则堆砌——先构建调用图并追踪数据从入口到危险函数的完整路径，输出结构化证据链；再通过 MCP 协议把分析能力交给 LLM，让它在调用图、污点路径和中间件上下文中完成可验证的漏洞判定。
+不与工业级 SAST 比拼健全性，也不做规则堆砌：引擎输出**确定性的代码拓扑事实**（谁调用谁、参数如何传递、路径上有哪些守卫），并把"没解析出来/靠猜"的部分用 `uncertainty` 显式标注；漏洞语义判定交给 LLM 与验证层（差分 oracle + 实弹）。规则语料退回为**候选种子与回归网**，不再充当真值判定路径。
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -30,9 +30,11 @@ CTX-Audit 的解法：
 
 1. **先建图，再扫描**：解析 AST、构建调用图、计算函数摘要，把跨文件调用关系变成可查询的结构化数据。
 2. **用证据链说话**：每个高危 finding 携带 `enclosing_function`、`evidence_refs`、source/sink 代码片段，必要时附带污点传播路径。
-3. **把分析能力交给 LLM**：通过 MCP 暴露 57 个工具，LLM 可以像安全工程师一样查询调用者、追踪变量、检查中间件和 sanitizer，最后基于确定性证据给出 TP / FP / Needs Review 判定。
+3. **把分析能力交给 LLM**：MCP 默认只暴露 **9 个高阶语义能力**（符号定义/引用、调用层级、反向切片、数据流路径、sanitizer 守卫、框架上下文、项目索引、增量状态等）+ 3 个基础读写工具，每个响应都携带 `provenance`（文件/行/解析方式/索引版本）与 `uncertainty`（不确定度与原因）。LLM 不必在几十个细粒度工具之间做选择；遗留的细粒度工具面保留实现，用 `--legacy-tools` 显式打开。
 
-> **核心定位：确定性引擎负责“证据供给”，LLM 负责“语义判定”。**
+> **核心定位：引擎负责“确定性证据供给”，LLM 负责“语义判定”，验证层负责“坐实”。**
+>
+> 分层：**基础设施**（本 README 描述的高阶工具面）→ **发现**（机制 × 子系统 + 差分 oracle + 实弹验证）→ **判定与固化**（LLM triage + 人工 gate；被验证过的机制固化为引擎 detector 并纳入回归矩阵）。
 
 ---
 
@@ -188,10 +190,12 @@ ctx-audit completion powershell
 ### `mcp` — LLM 协作服务
 
 ```bash
-ctx-audit mcp
+ctx-audit mcp                 # 默认：高阶工具面（9 高阶能力 + read_file/list_files/finish_analysis）
+ctx-audit mcp --legacy-tools  # 兼容：额外注册遗留的细粒度工具面
 ```
 
 启动 MCP Server（stdio JSON-RPC），由 Claude Code / Cursor / 任意 MCP 客户端管理生命周期。
+默认工具面之外的调用会返回迁移提示而不是静默执行；也可用环境变量 `CTX_AUDIT_LEGACY_TOOLS=1` 打开遗留面。
 
 > 说明：仓库中的 `agent` 子命令是通用 LLM Agent / Pipeline 框架，可用 `agent.native_pipeline.file` 或 `CTX_AUDIT_PIPELINE_FILE` 定制审计流程；日常单轮审计仍推荐 `ctx-audit mcp` 配合外部 LLM 客户端完成协作审计。
 
@@ -199,32 +203,38 @@ ctx-audit mcp
 
 ## LLM 协作审计（推荐）
 
-CTX-Audit 不是“把扫描报告丢给 LLM 猜”，而是通过 MCP 协议为 LLM 提供一整套 **代码安全取证工具**：
+CTX-Audit 不是“把扫描报告丢给 LLM 猜”，而是通过 MCP 协议为 LLM 提供**外科手术式的代码切片**：模型不必读完整仓库，也不必自己拼调用关系。
 
-| 能力 | 代表工具 |
-|------|---------|
-| 项目与攻击面 | `get_project_info`、`get_attack_surface`、`analyze_risk_patterns` |
-| 扫描与发现 | `security_scan`、`scan_file`、`list_rules`、`validate_finding` |
-| 调用图查询 | `query_callers`、`query_callees`、`find_call_path`、`get_call_graph` |
-| 数据流追踪 | `trace_taint`、`trace_variable_flow`、`get_data_flow`、`get_taint_path` |
-| 代码检索 | `read_file`、`list_files`、`search_code`、`get_code_context` |
-| 安全语义 | `check_sanitizer`、`query_middleware_chain`、`list_sources`、`list_sinks` |
-| 审计会话 | `start_audit_session`、`start_investigation`、`conclude_investigation`、`audit_finalize_report` |
+默认工具面（13 个 = 9 高阶能力 + 3 基础工具 + `report_finding`）：
 
-当前 MCP Server 默认合并暴露 **57 个工具**，覆盖扫描、代码理解、调用链、污点路径、中间件、规则管理和审计会话。
+| 高阶能力 | 语义 | 主要返回 |
+|---------|------|---------|
+| `get_project_index` | 项目索引状态与语言分布 | 文件/语言统计、`build_id`、缓存命中与限额 |
+| `get_symbol_definition` | 符号定义（跨文件跳转，混合精度） | 位置 + `resolver` + 置信度 |
+| `get_symbol_references` | 符号引用（含 import 别名解析） | 位置列表 + 解析方式 |
+| `get_call_hierarchy` | 函数上下游调用拓扑 | 结构化调用树 + 未解析边计数 |
+| `slice_backward` | 从 sink/变量向前切片 | ≤ N 行相关代码 + 路径 |
+| `get_dataflow_path` | source→sink 路径与经过的守卫 | 路径步骤 + barriers |
+| `get_sanitizer_guards` | 变量路径上的条件分支/校验逻辑 | guard 列表 |
+| `get_framework_context` | 路由 handler 的前置中间件/拦截器链 | 中间件链 + 未识别部分 |
+| `get_incremental_status` | 索引状态、缓存新鲜度与 SLO 位 | 状态 + 缓存指标 |
+
+> 每个响应都是 `{data, provenance, uncertainty}`：`provenance` 说明这条结论从哪个文件、哪一行、用哪种解析方式得出（`tree-sitter` / `file-heuristic` / 未来的 `lsp`/`engine`），`uncertainty` 说明哪里没解析出来（例如 `dynamic_dispatch_not_resolved`、`name_based_edges`）。**不假装健全**——动态派发、DI、隐式接口、同符号名歧义都会如实标注。
 
 ### 典型工作流
 
 ```
-1. security_scan → 获取 findings（含 enclosing_function + evidence_refs）
-2. 对每个 high/critical finding:
-   a. get_code_context → 理解代码
-   b. query_callers / find_call_path → 追踪数据来源
-   c. search_code → 搜索相关模式
-   d. check_sanitizer / query_middleware_chain → 排除误报
-   e. 判定 → TP / FP / Needs Review
-3. 输出报告（证据链完整、可追溯）
+1. ctx-audit scan --deep → 规则 + AST 污点 + 跨文件候选（候选，不是结论）
+2. 对每个 high/critical 候选:
+   a. get_symbol_definition / get_symbol_references → 定位真实定义与消费点
+   b. get_call_hierarchy / get_dataflow_path → 追数据来源与路径
+   c. get_sanitizer_guards / get_framework_context → 找守卫与中间件拦截
+   d. slice_backward → 只取判定需要的几十行（含 provenance/uncertainty）
+   e. 判定 → TP / FP / Needs Review（证据链可追溯）
+3. 候选被坐实/证伪后回写：report_finding + 回归任务（差分 oracle / 实弹配方）
 ```
+
+> 规则/污点语料的定位是**候选种子 + 回归网 + 自发现度量**：`scan` 的输出是"值得看的候选"，不是"漏洞结论"。真值路径是"规则候选 → LLM/人 → 实弹或单元验证"。
 
 ### Claude Code 集成
 
@@ -327,6 +337,8 @@ ctx-audit agent round run --target ./project
 - **180+ sanitizer 定义**
 - 框架规则覆盖 Spring / Java / Django / Flask / Express / React-Next.js / Go / PHP / C-C++ / Gradio / LLM-App / Rust 等
 - 14 个审计包（audit-packs）沉淀 CWE 家族判定判据
+- **定位说明**：以上规则/污点语料是**候选种子与回归网**，用于召回可疑点、度量自发现能力与防回归；
+  真值判定不在引擎内完成，而是由 LLM/人 + 差分 oracle + 实弹验证给出。
 
 ### 跨文件追踪
 

@@ -141,6 +141,23 @@ C5 结论回写（见下）
 
 ## MCP 工具参考
 
+> **工具面变更（ADR-001 Phase 1）**：MCP Server 默认只暴露 **9 个高阶代码智能能力**
+> （`get_project_index`、`get_symbol_definition`、`get_symbol_references`、`get_call_hierarchy`、
+> `slice_backward`、`get_dataflow_path`、`get_sanitizer_guards`、`get_framework_context`、
+> `get_incremental_status`）+ `read_file`/`list_files`/`report_finding`/`finish_analysis`。
+> 每个响应是 `{data, provenance, uncertainty}`：**先读 `uncertainty`，再决定要不要信 `data`**
+> （`dynamic_dispatch_not_resolved`、`name_based_edges`、`same_name_not_disambiguated`
+> 等提示意味着这一跳可能不准）。
+>
+> 下面各节列出的细粒度工具（`security_scan`、`query_callers`、`trace_variable_flow`、
+> `get_attack_surface`、审计会话工具等）**仍然可用但默认不注册**：
+> 启动时加 `--legacy-tools`（或设 `CTX_AUDIT_LEGACY_TOOLS=1`）。
+> 新工作流建议优先用高阶能力：定位用 `get_symbol_definition`/`get_symbol_references`，
+> 追链用 `get_call_hierarchy`/`get_dataflow_path`，取证用 `slice_backward`/`get_sanitizer_guards`。
+> 默认面之外的工具调用会返回迁移提示，而不是静默执行。
+>
+> 下列小节内容保持为**遗留工具面**参考。
+
 ### 扫描
 
 | 工具 | 用途 | 关键参数 |

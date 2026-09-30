@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**Rust Code Security Audit Engine · LLM Collaboration · Evidence-Driven**
+**Code Intelligence & Forensic Infrastructure for LLMs · Verification-Layer Driven**
 
-**Cross-File Data Flow Tracking · CPG Taint Analysis · MCP Toolchain · Verifiable Verdicts**
+**Symbol Jump · Call Hierarchy · Backward Slicing · Framework Context · High-Level MCP Surface**
 
-No rule-stacking — CTX-Audit builds call graphs, traces complete data paths from entry points to dangerous functions, and outputs structured evidence chains. Through MCP, it gives LLMs queryable call graphs, taint paths, and middleware context so they can reach verifiable vulnerability verdicts.
+CTX-Audit does not compete with industrial SAST on soundness, and it is not another rule stack: the engine emits **deterministic code-topology facts** (who calls whom, how arguments flow, which guards sit on the path) and marks everything it could not resolve with an explicit `uncertainty` section. Vulnerability semantics are decided by the LLM and the verification layer (differential oracles + live-fire). The rule corpus is demoted to **candidate seeds and a regression net**, no longer a truth path.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -99,17 +99,23 @@ ctx-audit completion bash                     # Shell completion
 
 ## LLM Collaboration via MCP
 
-`ctx-audit mcp` exposes **57 tools** to MCP clients (Claude Code, Cursor, etc.), covering:
+`ctx-audit mcp` exposes **9 high-level capabilities** plus 3 basic read tools by default, so the model does not have to pick between dozens of fine-grained node operations:
 
-| Capability | Example tools |
-|------------|---------------|
-| Project & attack surface | `get_project_info`, `get_attack_surface`, `analyze_risk_patterns` |
-| Scanning & findings | `security_scan`, `scan_file`, `list_rules`, `validate_finding` |
-| Call graph queries | `query_callers`, `query_callees`, `find_call_path`, `get_call_graph` |
-| Data-flow tracing | `trace_taint`, `trace_variable_flow`, `get_data_flow`, `get_taint_path` |
-| Code retrieval | `read_file`, `list_files`, `search_code`, `get_code_context` |
-| Security semantics | `check_sanitizer`, `query_middleware_chain`, `list_sources`, `list_sinks` |
-| Audit sessions | `start_audit_session`, `start_investigation`, `conclude_investigation`, `audit_finalize_report` |
+| High-level capability | Semantics | Main payload |
+|-----------------------|-----------|--------------|
+| `get_project_index` | Index status and language distribution | file/language stats, `build_id`, cache hit & limits |
+| `get_symbol_definition` | Cross-file symbol definition (hybrid precision) | location + `resolver` + confidence |
+| `get_symbol_references` | Symbol references (import aliases resolved) | location list + resolution kind |
+| `get_call_hierarchy` | Upstream/downstream call topology | structured call tree + unresolved edge count |
+| `slice_backward` | Slice backwards from a sink or variable | ≤ N relevant lines + path |
+| `get_dataflow_path` | source→sink path and the guards on it | path steps + barriers |
+| `get_sanitizer_guards` | Conditional branches / checks on the path | guard list |
+| `get_framework_context` | Middleware/interceptor chain before a route handler | chain + unrecognised parts |
+| `get_incremental_status` | Index state, cache freshness, SLO slots | status + cache metrics |
+
+Every response is `{data, provenance, uncertainty}`: `provenance` records which file, line, and resolver produced a conclusion (`tree-sitter` / `file-heuristic` / later `lsp`/`engine`), and `uncertainty` records what could not be resolved (`dynamic_dispatch_not_resolved`, `name_based_edges`, …). Dynamic dispatch, dependency injection, implicit interfaces, and same-name collisions are reported honestly instead of being papered over.
+
+Legacy fine-grained tools are still implemented but off by default: start the server with `--legacy-tools` (or `CTX_AUDIT_LEGACY_TOOLS=1`) to expose them. Calls outside the default surface return a migration hint rather than silently executing.
 
 ### Claude Code configuration
 
@@ -167,7 +173,8 @@ CTX-Audit has evolved from a rule scanner into a **real-project-driven hybrid au
 - **160+ real-world audit rounds** across Java, Python, Go, JavaScript/TypeScript, PHP, Rust, and C/C++ ecosystems.
 - **49 confirmed real-world vulnerabilities (TP)** in audited projects; **40 previously undisclosed 0-days** and **17 CVEs independently verified**.
 - **Engine feedback loop**: real findings and false positives are continuously converted into YAML rules, source/sink definitions, sanitizer-window semantics, and AST/CPG fixes.
-- **MCP collaboration**: 57 tools let LLM analysts investigate call graphs, taint paths, and middleware context instead of guessing.
+- **MCP collaboration**: a high-level tool surface (9 capabilities + 3 basic tools) returns code slices with `provenance` and `uncertainty`, so LLM analysts investigate call graphs, taint paths, and middleware context instead of guessing.
+- **Rule corpus role**: rules and taint definitions are candidate seeds, a regression net, and a self-discovery metric — not the truth path; verdicts come from LLM/human review plus differential oracles and live-fire validation.
 - **Honest boundaries**: the engine is an evidence provider and noise compressor; logic, authorization, and business-logic vulnerabilities still require LLM deep review and manual verification.
 
 ## License
