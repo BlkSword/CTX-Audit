@@ -10,7 +10,7 @@
 //! - 防重入：同一 job 上一轮未结束则跳过本次 fire 并记日志。
 //!
 //! 简化语义：day-of-month 与 day-of-week 同时限定时取 AND（标准 cron 为 OR），
-//! M3 场景（每天/每 N 分钟一轮）不受影响，注释明示。
+//! 场景（每天/每 N 分钟一轮）不受影响，注释明示。
 
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Timelike, Utc};

@@ -375,7 +375,7 @@ pub fn detect_all_aliases(assign: &Assignment) -> AliasDetection {
         result.new_aliases.extend(simple.new_aliases);
     }
 
-    // C 指针简单别名（10.3 近似）：`char *p = &x` / `int *p = q`。
+ // C 指针简单别名（近似）：`char *p = &x` / `int *p = q`。
     // 只处理“取地址 + 裸变量”与“同变量赋值”，遇指针算术保守不处理。
     if result.new_aliases.is_empty() {
         let c_alias = detect_c_pointer_assignment(assign);
@@ -385,7 +385,7 @@ pub fn detect_all_aliases(assign: &Assignment) -> AliasDetection {
     result
 }
 
-/// 10.3 最低成本近似：C 指针简单别名。
+/// 最低成本近似：C 指针简单别名。
 ///
 /// 目标形如 `char *p = ...`、`FILE *fp = ...` 时提取最后一个标识符作为别名目标；
 /// 右值形如 `&x` 或裸标识符时建立 target → x/q 的别名边。

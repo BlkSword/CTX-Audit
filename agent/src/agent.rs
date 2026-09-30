@@ -87,7 +87,7 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "你是 CTX-Audit 的安全审计 Agent�
 工具结果不足以判定时明确说明缺什么证据，再决定下一步。\
 完成后直接输出结构化结论，不要再调用工具。";
 
-/// Agent（M1 最小闭环）
+/// Agent（最小闭环）
 pub struct Agent {
     provider: Arc<dyn LLMProvider>,
     adapter: ToolAdapter,

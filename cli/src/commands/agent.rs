@@ -219,7 +219,7 @@ pub async fn run(prompt: String, project: Option<String>, json: bool) -> Result<
     let provider = build_native_provider(&manager)?;
     let budget_cfg = &manager.config().agent.native_budget;
 
-    // ── 工具注册（M1 不起 AST 引擎，注册基础/搜索/污点/模式/调用图工具） ──
+ // ── 工具注册（不起 AST 引擎，注册基础/搜索/污点/模式/调用图工具） ──
     let registry = Arc::new(ToolRegistry::new());
     register_all_tools(
         &registry,

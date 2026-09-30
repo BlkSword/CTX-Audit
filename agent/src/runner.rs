@@ -6,7 +6,7 @@
 //! 六阶段：选目标 → 资格核实 → 扫描 → 初审 → 深审 → 登记草稿 → 反哺
 //!
 //! - 确定性阶段（选目标/资格核实/扫描）直接调 deepaudit-core 扫描 API，不经 LLM；
-//! - 初审/深审调 M1 `Agent::run`，system prompt 从 round-agent.md 加载；
+//! - 初审/深审调 `Agent::run`，system prompt 从 round-agent.md 加载；
 //! - 初审分片：findings 数 > `subagent_threshold`（默认 50）时按 (漏洞类型, 文件)
 //!   分片，每片 spawn 一个子 agent 并行初审（JoinSet），汇总后写同一 triage 产物；
 //! - 反哺阶段：0 TP 轮且配置 `feedback_tasks` 时自动执行 CVE 回放机械层，
@@ -15,7 +15,7 @@
 //! - 深审产出 TP 候选 → 写 gate 通知（文件+可选 webhook）→ 轮暂停在 AwaitHuman，
 //!   人工 approve/reject 后才进入登记草稿。
 //!
-//! 注：§3.1 撞号四步协议针对"写 docs registry"场景，M2 登记产物仅为
+//! 注：§3.1 撞号四步协议针对"写 docs registry"场景， 登记产物仅为
 //! state_dir 内的草稿 Markdown（人工合入 registry 时走人工撞号约定），故未实现。
 
 use chrono::{DateTime, Utc};

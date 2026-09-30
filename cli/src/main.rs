@@ -243,7 +243,7 @@ enum Commands {
         action: RulesAction,
     },
 
-    /// 原生 Agent（M1 最小闭环）
+ /// 原生 Agent（最小闭环）
     ///
     /// 进程内直接运行 LLM 审计 Agent（消息驱动主循环 + 工具调用）
     Agent {
@@ -277,7 +277,7 @@ enum AgentAction {
         project: Option<String>,
     },
 
-    /// 轮次 runner（M2 状态机）
+ /// 轮次 runner（状态机）
     Round {
         #[command(subcommand)]
         action: RoundAction,

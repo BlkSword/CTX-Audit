@@ -1,7 +1,7 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! CTX-Audit 原生 Agent（M1 最小闭环）
+//! CTX-Audit 原生 Agent（最小闭环）
 //!
 //! 消息驱动主循环 + OpenAI-compatible provider + 工具适配 + JSONL 会话。
 //! 分层导出：按消费者角色分组，同时保留顶层 re-export 兼容。

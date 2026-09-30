@@ -3,10 +3,10 @@
 
 //! 工具调用审批
 //!
-//! M1 从简：工具只分只读/写两类。
+//! 从简：工具只分只读/写两类。
 //! - Auto：全部放行；
 //! - Gate：只读白名单短路放行，写工具一律 deny（非交互场景的安全默认）。
-//! 交互式确认回调留待 M2+ 实现。
+//! 交互式确认回调留待后续实现。
 
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub enum ApprovalMode {
     /// 全部自动放行
     Auto,
-    /// 闸门模式：写工具需审批（M1 非交互实现为直接 deny）
+ /// 闸门模式：写工具需审批（非交互实现为直接 deny）
     Gate,
 }
 
