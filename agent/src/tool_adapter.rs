@@ -51,7 +51,7 @@ pub struct ToolOutput {
 pub struct ToolAdapter {
     registry: Arc<ToolRegistry>,
     gate: ToolGate,
-    /// 工具白名单（M4 子 agent）：None = 全部工具；
+    /// 工具白名单（子 agent）：None = 全部工具；
     /// Some 时 schema 层只暴露白名单内工具，执行层拦截白名单外调用
     whitelist: Option<std::collections::HashSet<String>>,
 }
@@ -327,7 +327,7 @@ mod tests {
         assert!(out.content.contains("已拒绝执行"));
     }
 
-    /// 白名单（M4 子 agent）：schema 层只暴露白名单内工具
+    /// 白名单（子 agent）：schema 层只暴露白名单内工具
     #[tokio::test]
     async fn test_whitelist_filters_schemas() {
         let adapter = make_adapter(crate::confirm::ApprovalMode::Auto).await;

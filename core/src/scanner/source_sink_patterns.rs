@@ -283,7 +283,7 @@ const GO_PATTERNS: PatternSet = PatternSet {
     sql_sinks: &["db.query", "db.exec", "db.queryrow", "sql.db", "stmt.exec"],
     // 数据专用反序列化器（encoding/json、gopkg.in/yaml、encoding/gob）无 gadget 链，
     // 非 CWE-502——置空（误标修复，与 Rust 侧 serde 同判据；gob.Register 属类型注册
-    // 而非运行时类型实例化入口，10.21 登记同属数据专用家族）
+    // 而非运行时类型实例化入口，登记同属数据专用家族）
     deser_sinks: &[],
     code_sinks: &["plugin.open"],
     path_sinks: &[
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn test_find_local_source_sink_go_deserialization_excluded() {
         // Go 数据专用反序列化器（encoding/json、yaml、gob）无 gadget 链，非 CWE-502
-        // （10.21 登记，与 Rust 侧 serde 同判据）——json.Unmarshal 不再产出 source→sink 共现
+        // （登记，与 Rust 侧 serde 同判据）——json.Unmarshal 不再产出 source→sink 共现
         let content = r#"package main
 
 import "encoding/json"

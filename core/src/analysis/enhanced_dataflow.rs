@@ -192,7 +192,7 @@ impl EnhancedFlowGraph {
 
     /// 从 tree-sitter AST 节点构建 CFG，节点行号减去 `line_base`
     /// 转为相对行号（analyze_file 按函数分析时传 body_start_line - 1，
-    /// 与 from_code 的文本 CFG 坐标系一致，backlog 10.10）
+    /// 与 from_code 的文本 CFG 坐标系一致，已知缺口
     pub fn from_ast_node_with_base(
         func_body_node: &Node,
         content: &str,
@@ -798,7 +798,7 @@ impl<'a> CFGBuilder<'a> {
             return (EnhancedNodeType::Return, defs, uses);
         }
 
-        // PHP echo/print 语言构造（backlog 10.8）：无括号形态
+        // PHP echo/print 语言构造（已知缺口：无括号形态
         // （echo $v; / print $v; / <?= $v ?>）不满足下方函数调用的
         // contains("(") 条件，会被归为 Statement 而不检查 sink——
         // XSS 污点链在最后一跳断掉。归为 Call 节点使 transfer_call_cpg
@@ -887,7 +887,7 @@ struct AstCFGBuilder<'a> {
     next_id: usize,
     /// 行号基准：节点绝对行号减去该值，得到相对行号。
     /// 0 = 保持文件绝对行号（默认，兼容既有调用方）；
-    /// analyze_file 按函数分析时传 body_start_line - 1（backlog 10.10）
+    /// analyze_file 按函数分析时传 body_start_line - 1（已知缺口
     line_base: usize,
 }
 
@@ -1088,7 +1088,7 @@ impl<'a> AstCFGBuilder<'a> {
             return call_id;
         }
 
-        // PHP echo/print 语言构造（backlog 10.8）：AST 侧无括号形态同样不在
+        // PHP echo/print 语言构造（已知缺口：AST 侧无括号形态同样不在
         // 函数调用分类（echo_statement 此前落到"其他：跳过"被静默丢弃），
         // 归为 Call 节点使 transfer_call_cpg 匹配 php_xss_output sink
         if matches!(kind, "echo_statement" | "print_intrinsic") {

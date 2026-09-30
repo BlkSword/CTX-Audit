@@ -15,7 +15,7 @@ patterns:
     pattern: '(?i)elementpath\.select\s*\('
   - language: python
     pattern: '(?i)from\s+elementpath\.xpath3\s+import\s+XPath3Parser'
-# CVE-2026-29039 回放反哺：修复形态为 SafeXPath3Parser（从 symbol_table 移除危险函数），
+# CVE-2026-29039 回放：修复形态为 SafeXPath3Parser（从 symbol_table 移除危险函数），
 # 文件级豁免：文件中出现 SafeXPath3Parser 或 symbol_table.pop 说明已构建受限解析器。
 sanitizers:
   - "SafeXPath3Parser"

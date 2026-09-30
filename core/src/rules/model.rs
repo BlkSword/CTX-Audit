@@ -73,7 +73,7 @@ pub struct Rule {
     #[serde(default)]
     pub exclude_string_literals: bool,
     /// true 时 sanitizer 检查扩展到 PHP include/require 链解析出的守卫文件
-    /// （backlog 10.13）：校验常放在 bootstrap include 的全局安全文件中
+    /// （已知缺口：校验常放在 bootstrap include 的全局安全文件中
     /// （如 csrf.php 对所有 POST 统一校验），单文件检查会把全局防护误判为缺失。
     /// 仅对 .php 文件生效；链解析有界（深度≤3、文件≤16）。
     #[serde(default)]
@@ -94,15 +94,15 @@ pub struct Rule {
     pub php_bare_call_only: bool,
     /// true 时对 Go 的 `io.Copy(` 命中要求"同一函数内存在文件打开调用"
     /// （os.Create / os.OpenFile 及其 `*Os*Create/OpenFile` 包装）才保留
-    /// （backlog 10.19）。io.Copy 的参数是 io.Reader/io.Writer 接口——
+    /// （已知缺口。io.Copy 的参数是 io.Reader/io.Writer 接口——
     /// HTTP 响应、管道、zip writer、临时文件等流拷贝目标均非文件路径写入，
     /// 直接把 io.Copy 当文件写入 sink 误标率近 100%（transfer.sh/miniflux/
-    /// filestash 三连）。真正的危险形态是"用户可控路径创建文件后 Copy"，
+    /// 三连）。真正的危险形态是"用户可控路径创建文件后 Copy"，
     /// 共现式近似即此语义；os.CreateTemp 属良性临时文件，不计入。
     /// 仅对 .go 文件生效。
     #[serde(default)]
     pub go_io_copy_requires_open_file: bool,
-    /// 授权检查语义（missing-authorization 家族，backlog 10.27）：
+    /// 授权检查语义（missing-authorization 家族，已知缺口：
     /// 命中点所在函数/方法体内必须出现任一授权关键字才豁免。
     /// 资源操作（按 id/name 的 get/delete/update/remove 等）的函数体内
     /// 没有身份/属主校验（currentUser/owner/isAdmin/hasRole 等）即为
@@ -119,7 +119,7 @@ pub struct Rule {
     /// 且该 API 语义上即反模式，常量参数也不构成安全保证。
     #[serde(default)]
     pub skip_likely_fp: bool,
-    /// 死过滤模式（10.5 最低成本近似）：任一条正则命中内容时，判定该规则的
+    /// 死过滤模式（最低成本近似）：任一条正则命中内容时，判定该规则的
     /// sanitizer 防护"文本存在但恒不生效"，跳过 sanitizer 豁免继续报告。
     /// 用于 strim(name, 0, ...) 恒 NULL 这类常量陷阱 API。
     #[serde(default)]

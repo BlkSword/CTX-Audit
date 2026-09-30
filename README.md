@@ -6,7 +6,7 @@
 
 **符号跳转 · 调用层级 · 反向切片 · 框架上下文 · 高阶 MCP 工具面**
 
-不与工业级 SAST 比拼健全性，也不做规则堆砌：引擎输出**确定性的代码拓扑事实**（谁调用谁、参数如何传递、路径上有哪些守卫），并把"没解析出来/靠猜"的部分用 `uncertainty` 显式标注；漏洞语义判定交给 LLM 与验证层（差分 oracle + 实弹）。规则语料退回为**候选种子与回归网**，不再充当真值判定路径。
+不与工业级 SAST 比拼健全性，也不做规则堆砌：引擎输出**确定性的代码拓扑事实**（谁调用谁、参数如何传递、路径上有哪些守卫），并把"没解析出来/靠猜"的部分用 `uncertainty` 显式标注；漏洞语义判定交给 LLM 与人工复核。规则语料只作为**候选种子与回归基线**，不承担真值判定。
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -32,9 +32,9 @@ CTX-Audit 的解法：
 2. **用证据链说话**：每个高危 finding 携带 `enclosing_function`、`evidence_refs`、source/sink 代码片段，必要时附带污点传播路径。
 3. **把分析能力交给 LLM**：MCP 默认只暴露 **9 个高阶语义能力**（符号定义/引用、调用层级、反向切片、数据流路径、sanitizer 守卫、框架上下文、项目索引、增量状态等）+ 3 个基础读写工具，每个响应都携带 `provenance`（文件/行/解析方式/索引版本）与 `uncertainty`（不确定度与原因）。LLM 不必在几十个细粒度工具之间做选择；遗留的细粒度工具面保留实现，用 `--legacy-tools` 显式打开。
 
-> **核心定位：引擎负责“确定性证据供给”，LLM 负责“语义判定”，验证层负责“坐实”。**
->
-> 分层：**基础设施**（本 README 描述的高阶工具面）→ **发现**（机制 × 子系统 + 差分 oracle + 实弹验证）→ **判定与固化**（LLM triage + 人工 gate；被验证过的机制固化为引擎 detector 并纳入回归矩阵）。
+> **核心定位：引擎负责“确定性证据供给”，LLM 负责“语义判定”，可复现验证负责“坐实”。**
+
+
 
 ---
 
@@ -231,10 +231,10 @@ CTX-Audit 不是“把扫描报告丢给 LLM 猜”，而是通过 MCP 协议为
    c. get_sanitizer_guards / get_framework_context → 找守卫与中间件拦截
    d. slice_backward → 只取判定需要的几十行（含 provenance/uncertainty）
    e. 判定 → TP / FP / Needs Review（证据链可追溯）
-3. 候选被坐实/证伪后回写：report_finding + 回归任务（差分 oracle / 实弹配方）
+3. 候选被坐实/证伪后回写：report_finding（供后续回归使用）
 ```
 
-> 规则/污点语料的定位是**候选种子 + 回归网 + 自发现度量**：`scan` 的输出是"值得看的候选"，不是"漏洞结论"。真值路径是"规则候选 → LLM/人 → 实弹或单元验证"。
+> 规则/污点语料是**候选种子 + 回归基线**：`scan` 的输出是"值得看的候选"，不是"漏洞结论"；认定由 LLM/人 + 可复现验证给出。
 
 ### Claude Code 集成
 
@@ -337,8 +337,8 @@ ctx-audit agent round run --target ./project
 - **180+ sanitizer 定义**
 - 框架规则覆盖 Spring / Java / Django / Flask / Express / React-Next.js / Go / PHP / C-C++ / Gradio / LLM-App / Rust 等
 - 14 个审计包（audit-packs）沉淀 CWE 家族判定判据
-- **定位说明**：以上规则/污点语料是**候选种子与回归网**，用于召回可疑点、度量自发现能力与防回归；
-  真值判定不在引擎内完成，而是由 LLM/人 + 差分 oracle + 实弹验证给出。
+- **定位说明**：以上规则/污点语料是**候选种子与回归基线**，用于召回可疑点与防止回归；
+  漏洞认定不在引擎内完成，而是由 LLM/人 + 可复现验证给出。
 
 ### 跨文件追踪
 

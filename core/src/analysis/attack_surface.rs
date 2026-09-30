@@ -1889,7 +1889,7 @@ Route::delete('/api/users/{id}', [UserController::class, 'destroy']);
 
     #[test]
     fn test_analyze_php_laravel_route_group_middleware() {
-        // 10.23：Route::group(['middleware' => 'auth'], ...) 组级声明应覆盖组内全部路由
+        // ：Route::group(['middleware' => 'auth'], ...) 组级声明应覆盖组内全部路由
         let code = r#"<?php
 
 use Illuminate\Support\Facades\Route;

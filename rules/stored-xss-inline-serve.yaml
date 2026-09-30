@@ -1,5 +1,5 @@
 # 存储 XSS 服务侧提示：上传内容以原始 MIME + Content-Disposition: inline 同源服务
-# （10.24 服务侧草案）：无类型限制上传 → MIME 探测入库 → inline 同源输出 = 存储 XSS 高发组合。
+# （服务侧草案）：无类型限制上传 → MIME 探测入库 → inline 同源输出 = 存储 XSS 高发组合。
 # 单点 pattern 无数据流上下文，定位为 low/medium 提示 + LLM 判定层（audit-pack 追上传类型白名单、
 # 是否同源、Cookie HttpOnly/CSP）。
 # sanitizer：attachment / nosniff / sandbox / 显式 MIME 白名单。

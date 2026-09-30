@@ -37,7 +37,7 @@ sanitizers:
   - "can_delete"
   - "verify_permission"
   - "require_role"
-  # R76 Taiga 反哺：Django REST framework 类级/方法级授权形态
+  # 实测补入：Django REST framework 类级/方法级授权形态
   - "permission_classes"
   - "get_queryset"
   - "filter_backends"

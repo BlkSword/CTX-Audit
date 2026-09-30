@@ -29,7 +29,7 @@ tp_criteria:
   - "端点无需认证或低权限用户可达"
 fp_criteria:
   - "URL 来自管理员配置的 webhook/通知地址，属设计内功能（记录为降级而非 TP）"
-  - "逐跳 IP/端口校验在位（net.Dialer Control/DialContext），仅 host/scheme 不重验且只能访问公网 host——设计内/已公开讨论按 FP+披露窗口登记"
+  - "逐跳 IP/端口校验在位（net.Dialer Control/DialContext），仅 host/scheme 不重验且只能访问公网 host——设计内/已公开讨论按 FP 登记"
   - "存在完备的私网段 + 协议 + 域名白名单校验，且校验基于最终请求的解析结果"
   - "host 为服务端常量，用户输入仅影响查询参数且无法注入分隔符"
 confidence_guide: "外部可控 host + 守卫缺席两方确认 → 0.9+；URL 来源确认但防护逻辑未查完 → 0.7-0.9；来源是管理员配置但暴露面不明确 → <0.7，判 needs_review 并在推理中注明设计内降级理由。"

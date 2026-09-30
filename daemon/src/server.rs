@@ -753,7 +753,7 @@ async fn handle_request(
             }
         }
 
-        // M4：CVE 回放反哺机械层（确定性，无 LLM）
+        // CVE 回放机械层（确定性，无 LLM）
         RequestCommand::AgentFeedbackRun { task_path } => {
             let task_result = std::fs::read_to_string(&task_path)
                 .map_err(|e| format!("任务文件读取失败 {}: {}", task_path, e))

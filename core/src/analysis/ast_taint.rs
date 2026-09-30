@@ -284,7 +284,7 @@ impl AstTaintAnalyzer {
                         .collect();
 
                     // 优先使用 AST-based CFG，fallback 到 text-based。
-                    // 两个分支统一为"相对 body_text 行号"坐标系（10.10）：
+                    // 两个分支统一为"相对 body_text 行号"坐标系：
                     // AST 分支用 from_ast_node_with_base 把绝对行号减为相对，
                     // 与 from_code 一致；下方 line_offset 统一换算回绝对行号。
                     let line_base = func.body_start_line.saturating_sub(1);
@@ -303,7 +303,7 @@ impl AstTaintAnalyzer {
                     };
 
                     // body_text 的首行是 body_start_line（Python/Ruby 与签名行不同行），
-                    // 此前误用 start_line 导致 Python 系偏移一行（backlog 10.10）
+                    // 此前误用 start_line 导致 Python 系偏移一行（已知缺口
                     let line_offset = func.body_start_line.saturating_sub(1);
                     let flows = self.forward_taint_analysis(
                         &cfg,
@@ -400,7 +400,7 @@ impl AstTaintAnalyzer {
     /// 返回 (flows, tainted_vars)：
     /// - flows：到达 sink 的污点流（含 StorageWrite 闸门流，不过滤）
     /// - tainted_vars：分析过程中曾被污染的变量全集（含未到达 sink 的），
-    ///   var -> (source_var, source_line)。供探索向查询（"这个变量被污染了吗"）
+    /// var -> (source_var, source_line)。供探索向查询（"这个变量被污染了吗"）
     pub fn analyze_function_cpg_with_state(
         &self,
         cpg: &super::cpg::FunctionCPG,
@@ -408,7 +408,7 @@ impl AstTaintAnalyzer {
         callback_hints: &[crate::analysis::async_flow::CallbackTaintHint],
         instance_sources: &[String],
     ) -> (Vec<TaintFlow>, HashMap<String, (String, usize)>) {
-        // 分支预算（10.12）：路径敏感污点状态随分支点数指数增长
+        // 分支预算：路径敏感污点状态随分支点数指数增长
         // （合成用例实测每 +50 个 if 耗时翻倍，250 if ≈ 31s，300+ if 卡死），
         // 超预算函数跳过污点传播，防止单个巨型函数拖死整轮扫描；
         // 规则层扫描不受影响，仍覆盖该文件。
@@ -546,7 +546,7 @@ impl AstTaintAnalyzer {
 
                     // 与 Stage B 一致：fragment 重解析优先，失败回退 text-based CPG
                     let func_cpg = crate::ast::parser::with_thread_local_parser(|ast_parser| {
-                        // backlog 10.7：Python/Ruby suite body_text 带缩进而无外层
+                        // 已知缺口：Python/Ruby suite body_text 带缩进而无外层
                         // def 包装，直接重解析恒失败——统一去缩进后再解析与切片
                         let fragment = crate::ast::parser::dedent_fragment(&func.body_text);
                         if let Some(tree) = ast_parser.parse_fragment(&fragment, ext) {
@@ -877,7 +877,7 @@ impl AstTaintAnalyzer {
                         language,
                         line_offset,
                     );
-                    // 10.26：文件级收集的实例属性污点源（构造器 self.attr = source）
+                    // ：文件级收集的实例属性污点源（构造器 self.attr = source）
                     // 在函数入口注入，解决跨方法 self.attr 读写的污点保持。
                     for attr_path in instance_sources {
                         new_state.insert_path(
@@ -1126,7 +1126,7 @@ impl AstTaintAnalyzer {
     }
 
     /// 检查入口源（PathSensitiveState 版本）
-    /// 10.26 近似：收集“构造器参数/请求数据 → self.attr”的文件级实例属性污点源。
+    /// 近似：收集“构造器参数/请求数据 → self.attr”的文件级实例属性污点源。
     ///
     /// 只收集 assignment 目标为 `self.<attr>` 且右值命中任一 taint source
     /// pattern 的条目。返回 AccessPath 列表，供每个函数入口统一注入。
@@ -1633,10 +1633,10 @@ impl AstTaintAnalyzer {
             // 检查 sink（方法调用考虑 receiver，如 needle.get）
             if let Some(sink) = self.match_sink_for_call(call, language) {
                 // 1. 检查参数是否被污染；污点变量仅在净化器调用内部出现的参数
-                //    （内联净化，如 HtmlUtils.htmlEscape(keyword)）跳过。
-                //    sensitive_params 非空时只看敏感下标的参数——
-                //    cur.execute(query, (q,)) 中 q 在 arg1（参数绑定元组），
-                //    属于参数化查询，不应判定为注入。
+                // （内联净化，如 HtmlUtils.htmlEscape(keyword)）跳过。
+                // sensitive_params 非空时只看敏感下标的参数——
+                // cur.execute(query, (q,)) 中 q 在 arg1（参数绑定元组），
+                // 属于参数化查询，不应判定为注入。
                 let mut tainted_var: Option<String> = None;
                 let mut tainted_used_var: Option<String> = None;
                 let mut tainted_arg_text: Option<String> = None;
@@ -1693,7 +1693,7 @@ impl AstTaintAnalyzer {
                     let src_path = AccessPath::from_dotted(&tainted_var);
                     let src_vt = state.find_taint_for_path(&src_path).unwrap().clone();
 
-                    // 10.15①/② sink 级豁免：sink 调用处的参数文本只是变量名时，
+                    // sink 级豁免：sink 调用处的参数文本只是变量名时，
                     // 取传播链最近一个赋值步骤的右值表达式来判定
                     // （`path = "/uploads/" + str(int(user_id))` → open(path) 形态）。
                     // 注意步骤链在 used_var（如 path）的状态里，源头变量（user_id）无此步骤。
@@ -1710,7 +1710,7 @@ impl AstTaintAnalyzer {
                     let exempt = match sink.vulnerability_type {
                         VulnerabilityType::ServerSideRequestForgery => {
                             Self::sink_exempt(&sink, &exempt_expr, &tainted_var)
-                                // R55：污点所在参数为同源相对 URL（`/api/${id}`）时豁免
+                                // ：污点所在参数为同源相对 URL（`/api/${id}`）时豁免
                                 || tainted_arg_text
                                     .as_deref()
                                     .map(Self::expr_ssrf_relative_url)
@@ -1891,7 +1891,7 @@ impl AstTaintAnalyzer {
         // 保留严重度（存储型 XSS 等本身即高危），只降置信度
         let is_second_order = taint_state.source_var.contains("(second-order)");
         // 跨 HTTP 边界（resp.data/response.data 等）：服务端渲染转义不可见，
-        // 置信度应降权（10.23③ BookStack 同族）
+        // 置信度应降权（同族实现）
         let is_http_response_boundary = taint_state.source_var.contains("resp.data")
             || taint_state.source_var.contains("response.data")
             || taint_state.source_var.contains("res.data");
@@ -2013,7 +2013,7 @@ impl AstTaintAnalyzer {
     ///
     /// Rust actix 常见 `Json(payload): Json<T>` / `Path(id): Path<u32>`：
     /// 参数抽取得到的 `name` 是整个模式 `Json(payload)`，而函数体里出现的是
-    /// 绑定名 `payload`——只播种模式名等于没有播种（实测 rauthy 大量入口如此）。
+    /// 绑定名 `payload`——只播种模式名等于没有播种（实测大量入口如此）。
     fn destructured_binding_names(name: &str) -> Vec<String> {
         let mut out = Vec::new();
         let Some(open) = name.find('(') else {
@@ -2379,7 +2379,7 @@ impl AstTaintAnalyzer {
         line_offset: usize,
     ) -> Option<TaintFlow> {
         // CFG 节点为函数体相对行号，assign_by_line 键为文件绝对行号，
-        // 用 line_offset 换算（backlog 10.10）
+        // 用 line_offset 换算（已知缺口
         if let Some(assign) = assign_by_line.get(&(node.start_line + line_offset)) {
             // 检查右值是否包含 sanitizer 调用
             let is_sanitized = call_by_line
@@ -2439,7 +2439,7 @@ impl AstTaintAnalyzer {
                 // 即使是赋值节点，也检查右值是否直接包含 sink 调用
                 // 例如: result = exec(userInput) 中的 exec(
                 // （sensitive_params 位置感知：污点仅在非敏感参数如
-                //   cur.execute(query, (q,)) 的绑定元组中时不产出 flow）
+                // cur.execute(query, (q,)) 的绑定元组中时不产出 flow）
                 if !is_sanitized {
                     if let Some(sink) =
                         self.find_matching_sink_in_expr(&assign.source_expr, language)
@@ -2557,7 +2557,7 @@ impl AstTaintAnalyzer {
         line_offset: usize,
     ) -> Option<TaintFlow> {
         // CFG 节点为函数体相对行号，call_by_line 键为文件绝对行号，
-        // 用 line_offset 换算（backlog 10.10）
+        // 用 line_offset 换算（已知缺口
         let call = call_by_line.get(&(node.start_line + line_offset))?;
 
         // 1. 检查是否匹配 sink（方法调用考虑 receiver，如 needle.get）
@@ -2631,7 +2631,7 @@ impl AstTaintAnalyzer {
             if let Some(tainted_var) = tainted_var {
                 let taint_info = state.get(&tainted_var)?;
 
-                // 10.15①/② sink 级豁免：sink 调用处参数只是变量名时回溯最近
+                // sink 级豁免：sink 调用处参数只是变量名时回溯最近
                 // 赋值步骤的右值表达式（`path = ".../" + str(int(uid))` → open(path)）
                 let steps_expr = tainted_used_var
                     .as_deref()
@@ -2643,7 +2643,7 @@ impl AstTaintAnalyzer {
                 let exempt = match sink.vulnerability_type {
                     VulnerabilityType::ServerSideRequestForgery => {
                         Self::sink_exempt(&sink, &exempt_expr, &tainted_var)
-                            // R55：污点所在参数为同源相对 URL（`/api/${id}`）时豁免
+                            // ：污点所在参数为同源相对 URL（`/api/${id}`）时豁免
                             || tainted_arg_text
                                 .as_deref()
                                 .map(Self::expr_ssrf_relative_url)
@@ -2769,7 +2769,7 @@ impl AstTaintAnalyzer {
         // 二阶 source（存储点读出）：保留严重度，降置信度
         let is_second_order = taint_info.source_var.contains("(second-order)");
         // 跨 HTTP 边界（resp.data/response.data 等）：服务端渲染转义不可见，
-        // 置信度应降权（10.23③ BookStack 同族）
+        // 置信度应降权（同族实现）
         let is_http_response_boundary = taint_info.source_var.contains("resp.data")
             || taint_info.source_var.contains("response.data")
             || taint_info.source_var.contains("res.data");
@@ -3002,7 +3002,7 @@ impl AstTaintAnalyzer {
         // storage_write 闸门 sink 补充匹配：SQL 写往往包在字符串参数里
         // （$this->db->query("INSERT INTO ...")、cursor.execute("UPDATE ...")），
         // callee/receiver 匹配不到。闸门只发事件不产 finding，
-        // 容许对参数文本做子串匹配（backlog 10.9 的闸门侧修复）
+        // 容许对参数文本做子串匹配（已知缺口的闸门侧修复）
         self.sinks.iter().find(|sink| {
             sink.storage_write
                 && sink.match_mode == super::taint::MatchMode::Substring
@@ -3158,7 +3158,7 @@ impl AstTaintAnalyzer {
     /// 语义 sink（namespaces / receiver_patterns / exact_matches）只对解析出的
     /// callee / receiver.callee 匹配——完整表达式文本中的属性访问片段
     /// （如 `request.raw` 里的 `.raw`、`this.fetchClientConfig` 里的 `.fetch`）
-    /// 不得触发语义 sink（backlog 10.11 误标根因）。
+    /// 不得触发语义 sink（已知缺口误标根因）。
     ///
     /// Substring sink 保持对完整表达式的宽松匹配，兼容旧规则中形如
     /// `exec(` 的模式（可匹配 `exec(user_input)`）。
@@ -3256,7 +3256,7 @@ impl AstTaintAnalyzer {
                 continue;
             }
             // 与 find_matching_sink_in_expr 同款语义：语义 sink 只看
-            // callee/qualified，Substring sink 才看完整表达式（10.11）
+            // callee/qualified，Substring sink 才看完整表达式
             let matched = if sink.has_semantic_constraints() {
                 let qualified_hit = receiver.map(|recv| {
                     let qualified = format!("{}.{}", recv, callee);
@@ -3314,9 +3314,9 @@ impl AstTaintAnalyzer {
     ///
     /// 判定逻辑：
     /// 1. 按标识符边界收集表达式中所有净化器调用的参数区间（平衡括号），
-    ///    复用 expr_mentions_sanitizer 的边界语义，避免 encode/encodeBase64 误命中；
+    /// 复用 expr_mentions_sanitizer 的边界语义，避免 encode/encodeBase64 误命中；
     /// 2. 污点变量的每次完整出现（标识符边界）都必须落在某个净化器调用的
-    ///    参数区间内，否则视为未净化（如 `sink(escape(x), x)` 中第二个 x）。
+    /// 参数区间内，否则视为未净化（如 `sink(escape(x), x)` 中第二个 x）。
     fn is_inline_sanitized(&self, expr: &str, tainted_var: &str) -> bool {
         if tainted_var.is_empty() {
             return false;
@@ -3403,14 +3403,14 @@ impl AstTaintAnalyzer {
         found_any
     }
 
-    /// 10.15①/② sink 级豁免（判定层沉淀的去误报方向，R51 扩展）。
+    /// sink 级豁免（判定层沉淀的去误报方向，扩展）。
     ///
-    /// - SSRF（10.15①）：sink 表达式中 URL host 为字面量常量时目标固定，
-    ///   污点仅影响路径/查询段，不构成 SSRF（`"https://api.com" + path`）；
-    ///   host 来自变量（`"https://" + host`）时表达式无完整字面量 `://`，保守不豁免。
-    /// - PathTraversal（10.15②）：污点变量的所有出现都处于数值强制转换调用内
-    ///   （int()/Number()/parseInt()/parseFloat() 等），插值数字化（DB 自增 id、
-    ///   数字主键）拼接进路径不构成路径遍历。
+    /// - SSRF：sink 表达式中 URL host 为字面量常量时目标固定，
+    /// 污点仅影响路径/查询段，不构成 SSRF（`"https://api.com" + path`）；
+    /// host 来自变量（`"https://" + host`）时表达式无完整字面量 `://`，保守不豁免。
+    /// - PathTraversal：污点变量的所有出现都处于数值强制转换调用内
+    /// （int()/Number()/parseInt()/parseFloat() 等），插值数字化（DB 自增 id、
+    /// 数字主键）拼接进路径不构成路径遍历。
     fn sink_exempt(sink: &TaintSink, expr: &str, tainted_var: &str) -> bool {
         if tainted_var.is_empty() {
             return false;
@@ -3433,7 +3433,7 @@ impl AstTaintAnalyzer {
         steps.iter().rev().find_map(|s| s.code_snippet.as_deref())
     }
 
-    /// 10.15①：URL host 字面量判定。只认 `"scheme://literal"` 直接形态，
+    /// ：URL host 字面量判定。只认 `"scheme://literal"` 直接形态，
     /// host 段取 `://` 后到 `/ ? # " ' 空白 ;` 的第一个分隔符。
     fn expr_ssrf_literal_host(expr: &str, tainted_var: &str) -> bool {
         let Some(pos) = expr.find("://") else {
@@ -3448,7 +3448,7 @@ impl AstTaintAnalyzer {
     }
 
 
-    /// R55（10.15① 扩展）：SSRF 同源相对 URL 豁免（浏览器端 XHR FP 家族，R55 实扫沉淀）。
+    /// R55（扩展）：SSRF 同源相对 URL 豁免（浏览器端 XHR FP 家族， 实测沉淀）。
     /// 污点参数为以 `/` 开头的字符串/模板字面量（`` `/api/${id}` ``）时是同源
     /// 相对 URL——路径段如何被污染 host 都不可控，不构成 SSRF（浏览器 XHR 与
     /// 服务端代码同理）。`//` 开头是协议相对 URL（host 可控），不豁免。
@@ -3474,7 +3474,7 @@ impl AstTaintAnalyzer {
         bytes[1] == b'/' && bytes.get(2) != Some(&b'/')
     }
 
-    /// 10.15②：污点变量所有出现是否都处于数值强制转换调用参数区间内。
+    /// ：污点变量所有出现是否都处于数值强制转换调用参数区间内。
     /// 复用 is_inline_sanitized 的平衡括号配对语义，但转换函数列表固定
     /// （不依赖 sanitizer_patterns——"int(" 子串会误中 print( 等，不能进全局净化器）。
     fn expr_var_numeric_coerced(expr: &str, tainted_var: &str) -> bool {
@@ -3576,7 +3576,7 @@ impl AstTaintAnalyzer {
         coercion_spans
     }
 
-    /// 10.15② 表达式级判定：表达式中**所有污点标识符**是否都落在数值转换
+    /// 表达式级判定：表达式中**所有污点标识符**是否都落在数值转换
     /// 区间内（含源头变量被包裹、sink 调用处只有变量名的回溯场景）。
     /// 任一污点标识符出现在转换区间外 → 不豁免（`str(int(a)) + b` 形态）。
     /// 泛型 state：t 判断单个标识符是否为污点。
@@ -4003,7 +4003,7 @@ impl AstTaintAnalyzer {
                     "x-forwarded-proto",
                 ],
             ),
-            // R89 GHSA-mc6w-69r3-62h8 回放：上游响应头（axios/fetch/requests 的
+            // GHSA-mc6w-69r3-62h8 回放：上游响应头（axios/fetch/requests 的
             // response.headers / res.headers / resp.headers）受上游/中间人控制，
             // 用作文件名/路径 sink 时构成路径穿越（ETag → 缓存文件名 → RCE）
             TaintSource::new(
@@ -4093,7 +4093,7 @@ impl AstTaintAnalyzer {
                     "readFile",
                     "writeFile",
                     "fs.open",
-                    // 10.16 扩展（R51）：Python pathlib Path(x) 构造即路径操作
+                    // 扩展：Python pathlib Path(x) 构造即路径操作
                     "Path(",
                 ],
                 VulnerabilityType::PathTraversal,
@@ -4135,7 +4135,7 @@ impl AstTaintAnalyzer {
             TaintSink::new(
                 "eval",
                 "Code Evaluation",
-                // compile( 已于 10.15④ 移除：JS 侧 Handlebars/WebAssembly/RegExp
+                // compile( 已于 移除：JS 侧 Handlebars/WebAssembly/RegExp
                 // compile 为静态模板/正则编译非动态执行；Python 侧 re.compile 高频无害，
                 // 真动态执行面由 eval(/exec(/Function( 覆盖
                 vec!["eval(", "Function(", "__import__"],
@@ -4232,7 +4232,7 @@ impl AstTaintAnalyzer {
             "bindParam".into(),
             "real_escape_string".into(),
             "escape_string".into(),
-            // R89 GHSA-mc6w-69r3-62h8 修复形态：JS 字符集白名单清洗
+            // GHSA-mc6w-69r3-62h8 修复形态：JS 字符集白名单清洗
             // replace(/[^\w-]/g, '')——非 word/dash 字符全剥（路径穿越序列消除）
             "[^\\w-]".into(),
         ]
@@ -4295,7 +4295,7 @@ result = exec(userInput)"#;
 
     #[test]
     fn test_response_headers_path_write_vulnerable() {
-        // R89 GHSA-mc6w-69r3-62h8 漏洞形态（单函数扁平切片）：
+        // GHSA-mc6w-69r3-62h8 漏洞形态（单函数扁平切片）：
         // 上游响应头 ETag（仅剥双引号）→ 缓存文件名 → writeFile
         // → 路径穿越写盘（3.4.0 前 seerr ImageProxy 真实形态）
         let code = r#"
@@ -4470,7 +4470,7 @@ content = f.read()"#;
         assert!(!flows.is_empty(), "Should detect Python path traversal");
     }
 
-    /// 10.16 回归（R42 GHSA-28cf 回放）：Jinja2 模板渲染输出用作文件路径
+    /// 回归（GHSA-28cf 回放）：Jinja2 模板渲染输出用作文件路径
     /// 必须被识别为路径遍历 source（漏洞版：render 输出直接拼路径，无净化）
     #[test]
     fn test_python_template_render_as_path_source() {
@@ -4487,7 +4487,7 @@ content = f.read()"#;
         assert!(!flows.is_empty(), "模板渲染输出用作路径应命中路径遍历");
     }
 
-    /// 10.16 补充（R51）：render 输出直接经 pathlib Path() 构造（GHSA-28cf 真实链
+    /// 补充：render 输出直接经 pathlib Path() 构造（GHSA-28cf 真实链
     /// 形态：filepath.py render → file_handling.py `base_path = Path(rendered_path)`）
     #[test]
     fn test_python_template_render_into_pathlib() {
@@ -4505,7 +4505,7 @@ print(base_path)"#;
         assert!(!flows.is_empty(), "render 输出经 Path() 构造应命中路径遍历");
     }
 
-    /// 10.16 负例：渲染输出经 basename 净化后不应命中（修复形态）
+    /// 负例：渲染输出经 basename 净化后不应命中（修复形态）
     #[test]
     fn test_python_template_render_sanitized_no_flow() {
         let code = r#"from jinja2 import Environment
@@ -4723,7 +4723,7 @@ function handler() {
         );
     }
 
-    /// backlog 10.8：echo/print 合成 CallInfo 后，PHP 反射型/存储型 XSS 的
+    /// 已知缺口：echo/print 合成 CallInfo 后，PHP 反射型/存储型 XSS 的
     /// 主输出构造应闭合污点链（此前 echo 不产生 CallInfo，最后一跳断掉）
     #[test]
     fn test_production_cpg_path_php_echo_xss() {
@@ -4795,7 +4795,7 @@ function handler() {
         )
     }
 
-    /// 属性路径不得命中 SSRF sink（10.11 第二波）：
+    /// 属性路径不得命中 SSRF sink（第二波）：
     /// "request.session.loginAuthProviderIdentifier" 中 "request" 是属性
     /// 路径段而非方法调用，不得命中 ".request" pattern + "request" namespace
     #[test]
@@ -4821,7 +4821,7 @@ function handler() {
         );
     }
 
-    /// backlog 10.11 回归：真实 YAML 规则下，表达式级 sink 检测不得把
+    /// 已知缺口回归：真实 YAML 规则下，表达式级 sink 检测不得把
     /// 非 SQL/非 HTTP 调用误标为语义 sink——
     /// `client.callbackParams(request.raw)` 曾命中 ".raw"（参数片段子串）、
     /// `this.clientConfigs.get(...)` 曾命中 receiver "client" 子串 + ".get"、
@@ -5015,7 +5015,7 @@ response = requests.get(url)"#;
         assert!(flows.is_empty());
     }
 
-    /// backlog 10.10 回归：analyze_file 对多函数 Python 文件，
+    /// 已知缺口回归：analyze_file 对多函数 Python 文件，
     /// 非首函数内的污点链必须闭合并报告正确的文件绝对行号——
     /// 此前 line_offset 误用 start_line（签名行），Python 体首行在下一行，
     /// CFG 节点与 assign/call 元数据错位导致查表失败、0 flow。
@@ -5045,7 +5045,7 @@ def handler():
         );
     }
 
-    /// backlog 10.12 回归：分支点超过预算（80）的函数跳过污点传播——
+    /// 已知缺口回归：分支点超过预算（80）的函数跳过污点传播——
     /// 路径敏感状态随分支数指数增长（合成用例每 +50 if 耗时翻倍，
     /// 300+ if 卡死整轮扫描，nocodb columns.service.ts columnUpdate 案例）。
     /// 必须用 JS/TS 验证：fragment CPG 才构建真实分支边（Python 走
@@ -6306,7 +6306,7 @@ public class Test extends HttpServlet {
     #[test]
     fn test_js_getjson_second_order_xss() {
         // ServerStatus 形态：jQuery getJSON 回调参数（服务端存储 JSON，二阶场景）
-        // → innerHTML 输出。R24 前 HTTP 回调提示不覆盖 $.getJSON + function 表达式，
+        // → innerHTML 输出。早期 HTTP 回调提示不覆盖 $.getJSON + function 表达式，
         // 该形态 AstTaint 产出为 0。
         let code = r##"
 function loadServers() {
@@ -6366,8 +6366,8 @@ def save(cur):
 
     #[test]
     fn test_python_cur_execute_abbreviated_receiver() {
-        // backlog 10.9：缩写 receiver（cur vs cursor）此前导致 SQL sink 失配。
-        // R21 合成验证 save.py 的 cur.execute(sql) 一阶 SQLi 未检出即此缺口。
+        // 已知缺口：缩写 receiver（cur vs cursor）此前导致 SQL sink 失配。
+        // 合成验证 save.py 的 cur.execute(sql) 一阶 SQLi 未检出即此缺口。
         let code = r#"from flask import request
 
 def save():
@@ -6424,11 +6424,11 @@ class Repo {
         );
     }
 
-    // ── 10.15 判定层 sink/source 去误报（R51 扩展）───────────────────────
+    // ── 判定层 sink/source 去误报（扩展）───────────────────────
 
     #[test]
     fn test_handlebars_compile_not_code_injection() {
-        // 10.15④：Handlebars.compile 是模板编译（默认转义），非动态代码执行。
+        // ：Handlebars.compile 是模板编译（默认转义），非动态代码执行。
         // compile( 已从 code-injection sink 移除；eval(/Function( 仍覆盖真动态执行。
         let code = r#"
 const Handlebars = require('handlebars');
@@ -6454,7 +6454,7 @@ res.send(html);
 
     #[test]
     fn test_python_re_compile_not_code_injection() {
-        // 10.15④ 移除 compile( 后，re.compile（正则编译）不再误报
+        // 移除 compile( 后，re.compile（正则编译）不再误报
         let code = r#"
 pattern = request.GET['p']
 rx = re.compile(pattern)
@@ -6477,7 +6477,7 @@ m = rx.search(data)
 
     #[test]
     fn test_eval_still_reported_after_compile_removal() {
-        // ④ 回归：真动态执行 eval( 必须仍命中
+        // 回归：真动态执行 eval( 必须仍命中
         let code = r#"
 src = request.GET['src']
 result = eval(src)
@@ -6499,7 +6499,7 @@ result = eval(src)
 
     #[test]
     fn test_numeric_coerced_path_exempt() {
-        // 10.15②：污点经 int() 数值强制转换后拼接路径，非路径遍历
+        // ：污点经 int() 数值强制转换后拼接路径，非路径遍历
         let code = r#"
 user_id = request.GET['id']
 path = "/uploads/" + str(int(user_id))
@@ -6522,7 +6522,7 @@ open(path)
 
     #[test]
     fn test_tainted_path_still_reported() {
-        // ② 回归：未数值化的污点路径拼接必须仍命中
+        // 回归：未数值化的污点路径拼接必须仍命中
         let code = r#"
 name = request.GET['name']
 path = "/uploads/" + name
@@ -6581,7 +6581,7 @@ open(path)
 
     #[test]
     fn test_ssrf_literal_host_exempt() {
-        // 10.15①：host 为字面量常量（污点仅影响路径段），目标固定非 SSRF
+        // ：host 为字面量常量（污点仅影响路径段），目标固定非 SSRF
         let code = r#"
 path = request.GET['path']
 r = requests.get("https://api.internal.example.com/" + path)
@@ -6603,7 +6603,7 @@ r = requests.get("https://api.internal.example.com/" + path)
 
     #[test]
     fn test_ssrf_tainted_host_still_reported() {
-        // ① 回归：host 来自污点变量时（表达式无完整字面量 host），必须仍命中
+        // 回归：host 来自污点变量时（表达式无完整字面量 host），必须仍命中
         let code = r#"
 host = request.GET['host']
 r = requests.get("https://" + host + "/api")
@@ -6625,7 +6625,7 @@ r = requests.get("https://" + host + "/api")
 
     #[test]
     fn test_ssrf_relative_url_exempt() {
-        // R55：同源相对 URL（`/path/${id}`）host 不可控，不构成 SSRF
+        // ：同源相对 URL（`/path/${id}`）host 不可控，不构成 SSRF
         // （浏览器端 XHR FP 家族，window.$http.get）
         let code = r#"const id = req.query.id;
 window.$http.get(`/attachments/get/page/${id}`);"#;
@@ -6646,7 +6646,7 @@ window.$http.get(`/attachments/get/page/${id}`);"#;
 
     #[test]
     fn test_ssrf_relative_url_in_assignment_rvalue_exempt() {
-        // R55：sink 在赋值右值内的检出路径（`const r = window.$http.get(`/x/${id}`)`）
+        // ：sink 在赋值右值内的检出路径（`const r = window.$http.get(`/x/${id}`)`）
         // 同样豁免同源相对 URL——赋值右值内 sink 实际形态
         let code = r#"const id = req.query.id;
 const resp = await window.$http.get(`/attachments/get/page/${id}`);"#;
@@ -6667,7 +6667,7 @@ const resp = await window.$http.get(`/attachments/get/page/${id}`);"#;
 
     #[test]
     fn test_ssrf_protocol_relative_url_not_exempt() {
-        // R55 回归：`//` 开头是协议相对 URL（host 可控），仍应报 SSRF
+        // 回归：`//` 开头是协议相对 URL（host 可控），仍应报 SSRF
         let code = r#"const host = req.query.host;
 window.$http.get(`//${host}/api`);"#;
         let mut analyzer = AstTaintAnalyzer::new();

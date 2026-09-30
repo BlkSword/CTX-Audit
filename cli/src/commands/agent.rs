@@ -226,7 +226,7 @@ pub async fn run(prompt: String, project: Option<String>, json: bool) -> Result<
         project_dir.to_string_lossy().to_string(),
         None,
         None,
-        // 原生 agent 暂用遗留细粒度工具面（Phase 2 迁移到高阶能力）
+        // 原生 agent 使用遗留细粒度工具面
         true,
     )
     .await;
@@ -628,7 +628,7 @@ pub async fn cron_delete(id: String) -> Result<()> {
     }
 }
 
-// ── CVE 回放反哺（M4 机械层） ──────────────────────────
+// ── CVE 回放（确定性） ──────────────────────────
 
 /// 单独执行一个 CVE 回放任务（确定性，无 LLM）
 pub async fn feedback_run(task_path: String, daemon: bool) -> Result<()> {

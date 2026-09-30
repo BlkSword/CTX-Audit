@@ -1,6 +1,6 @@
 category: injection
 cwe: CWE-79
-description: "客户端模板裸插标记（10.22，R54 calibre-web 0day 漏检盲区）：mustache/handlebars 三重大括号 {{{ }}}（无转义语义）、EJS <%- %> 裸插、Vue v-html 绑定为无转义输出提示。低置信提示——模板变量可能是静态文本/已净化值，判定归 LLM 层（audit-pack 取证：追模板渲染入口的数据来源是否为服务端 API/用户可控）。注意 EJS 语义与 underscore 相反（<%= %> 在 EJS 是转义、在 underscore 是裸插），故只列语义无歧义形态。"
+description: "客户端模板裸插标记（历史漏检盲区：客户端模板拼接）：mustache/handlebars 三重大括号 {{{ }}}（无转义语义）、EJS <%- %> 裸插、Vue v-html 绑定为无转义输出提示。低置信提示——模板变量可能是静态文本/已净化值，判定归 LLM 层（audit-pack 取证：追模板渲染入口的数据来源是否为服务端 API/用户可控）。注意 EJS 语义与 underscore 相反（<%= %> 在 EJS 是转义、在 underscore 是裸插），故只列语义无歧义形态。"
 id: client-template-bare-insert
 language: all
 name: "Client-Side Template Bare Insertion (XSS hint)"

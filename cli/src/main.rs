@@ -230,7 +230,7 @@ enum Commands {
     ///
     /// 启动 MCP 协议服务器，通过 stdio 暴露安全分析能力给 AI agent（如 Claude Code）
     Mcp {
-        /// 注册遗留细粒度工具面（默认只暴露 ADR-001 的高阶能力与基础工具）
+        /// 注册遗留细粒度工具面（默认只暴露高阶能力与基础工具）
         #[arg(long)]
         legacy_tools: bool,
     },
@@ -301,7 +301,7 @@ enum AgentAction {
         action: CronAction,
     },
 
-    /// CVE 回放反哺（M4 机械层，确定性无 LLM）
+    /// CVE 回放（确定性，无 LLM）
     Feedback {
         #[command(subcommand)]
         action: FeedbackAction,
@@ -437,7 +437,7 @@ enum CronAction {
     },
 }
 
-/// CVE 回放反哺子命令（M4 机械层）
+/// CVE 回放子命令（确定性）
 #[derive(Subcommand, Debug)]
 enum FeedbackAction {
     /// 单独执行一个回放任务（clone→双版本扫描→对比→报告 JSON）

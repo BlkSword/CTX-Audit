@@ -1,7 +1,7 @@
 // Copyright 2026 CTX-Audit
 // SPDX-License-Identifier: Apache-2.0
 
-//! CVE 回放反哺机械层（M4）
+//! CVE 回放（确定性层）
 //!
 //! 确定性流程，无 LLM 决策：
 //! ① clone 仓库到 `<feedback_root>/<cve_id>/repo`（已存在则复用）；

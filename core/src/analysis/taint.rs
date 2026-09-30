@@ -258,7 +258,7 @@ impl TaintSink {
             // exact_matches 面向非限定调用名（如解构用法的 "exec"）。
             // 方法调用（带 receiver）传入的裸 callee 不得命中——
             // 否则 `myModule.exec` 会被为 `const { exec } = require(...)`
-            // 声明的精确名误伤（backlog 10.11 回归）
+            // 声明的精确名误伤（已知缺口回归）
             let bare_callee_with_receiver = receiver.is_some()
                 && !func_name.contains('.')
                 && !func_name.contains("::")
@@ -297,9 +297,9 @@ impl TaintSink {
                     let rp = receiver_pattern.to_lowercase();
                     // 短 pattern（≤3 字符）用边界感知匹配：全等，或以后缀出现且
                     // 前置字符非字母数字。避免缩写 pattern 误伤——
-                    // 如 "cur" 子串命中 "security"（backlog 10.9）
+                    // 如 "cur" 子串命中 "security"（已知缺口
                     // 长 pattern 同样边界感知：全等 / 后缀 / 双侧边界包含，
-                    // 避免 "client" 子串命中 "clientConfigs"（backlog 10.11）
+                    // 避免 "client" 子串命中 "clientConfigs"（已知缺口
                     let hit = if rp.len() <= 3 {
                         recv_lower == rp
                             || (recv_lower.ends_with(&rp)
@@ -366,7 +366,7 @@ impl TaintSink {
         false
     }
 
-    /// 语义路径专用的边界感知方法匹配（backlog 10.11）。
+    /// 语义路径专用的边界感知方法匹配（已知缺口。
     ///
     /// pub(crate)：cross_file 的函数体 sink 匹配复用同一边界语义。
     ///
@@ -384,7 +384,7 @@ impl TaintSink {
         // ".exec(" 形态），按带点 pattern 搜索，右侧必须是调用/结尾边界
         // （非标识符字符）。避免 ".request" 命中
         // "request.session.loginAuthProviderIdentifier"（request 是属性
-        // 路径段而非方法调用）、".fetch" 命中 "this.fetchClientConfig"（10.11）
+        // 路径段而非方法调用）、".fetch" 命中 "this.fetchClientConfig"
         let trimmed = pattern.trim_end_matches('(').trim_end();
         if let Some(dot_pattern) = trimmed.strip_prefix('.') {
             if dot_pattern.is_empty() {
@@ -403,7 +403,7 @@ impl TaintSink {
                     .next()
                     .map(|c| !c.is_alphanumeric() && c != '_' && c != '$')
                     .unwrap_or(true);
-                // R55：链式调用接收者误绑修复——pattern 命中的方法必须是链上
+                // ：链式调用接收者误绑修复——pattern 命中的方法必须是链上
                 // 最后一个调用。`window.$http.get(url).then(cb)` 中 ".get" 之后
                 // 还有 ").then" 链式延续，真正的 callee 是 then，其参数（回调）
                 // 不是 .get 的 URL 参数，不得绑定（SSRF/SQLi 同族 FP）。
@@ -439,7 +439,7 @@ impl TaintSink {
 
     /// 边界感知子串匹配：pattern 出现处的左右字符均不得为标识符字符
     /// （字母数字、`_`、`$`）。用于避免 "client" 误伤 "clientConfigs"、
-    /// "fetch" 误伤 "fetchClientConfig"（backlog 10.11）
+    /// "fetch" 误伤 "fetchClientConfig"（已知缺口
     fn contains_with_ident_boundaries(haystack: &str, needle: &str) -> bool {
         if needle.is_empty() {
             return false;
@@ -680,7 +680,7 @@ pub enum TaintCategory {
     /// 命令行参数（非远程攻击面）
     CliInput,
     /// 模板渲染输出（Jinja2 `template.render`/`from_string` 等，内容可含用户数据；
-    /// 用作文件路径等 sink 时构成路径遍历——10.16，R42 GHSA-28cf 回放登记）
+    /// 用作文件路径等 sink 时构成路径遍历——10.16， GHSA-28cf 回放登记）
     TemplateRender,
 }
 
@@ -1031,7 +1031,7 @@ impl TaintAnalyzer {
                     "sys.argv".to_string(),
                     "os.Args".to_string(),
                     "env::args".to_string(),
-                    // R136 回放反哺：Remix/React-Router loader/action 的 request 对象
+                    // 真实形态补入：Remix/React-Router loader/action 的 request 对象
                     // （与 ast_taint 内置字典、express-node.yaml 三处同步）
                     "request.formData".to_string(),
                     "request.text".to_string(),
@@ -1068,7 +1068,7 @@ impl TaintAnalyzer {
             TaintSource {
                 id: "env_input".to_string(),
                 name: "Environment Variable".to_string(),
-                description: "环境变量（部署者配置，威胁模型外——10.15③ R36 降级为 Low 参考级）".to_string(),
+                description: "环境变量（部署者配置，威胁模型外——降级为 Low 参考级）".to_string(),
                 patterns: vec![
                     "process.env".to_string(),
                     "os.environ".to_string(),
@@ -1082,7 +1082,7 @@ impl TaintAnalyzer {
                 ast_patterns: vec![],
                 second_order: false,
             },
-            // 模板渲染输出（10.16 R42 GHSA-28cf 回放：Jinja2 render 输出用作文件路径）
+            // 模板渲染输出（GHSA-28cf 回放：Jinja2 render 输出用作文件路径）
             TaintSource {
                 id: "template_render_output".to_string(),
                 name: "Template Render Output".to_string(),
@@ -1209,7 +1209,7 @@ impl TaintAnalyzer {
                     "FileReader".to_string(),
                     "FileWriter".to_string(),
                     "std::fs::File".to_string(),
-                    // 10.16 扩展（R51）：Python pathlib `Path(x)` 构造即路径操作
+                    // 扩展：Python pathlib `Path(x)` 构造即路径操作
                     // （GHSA-28cf 链：template.render → Path(rendered_path)）
                     "Path(".to_string(),
                 ],
@@ -1286,7 +1286,7 @@ impl TaintAnalyzer {
                 class_literal_exempt: false,
             },
             // eval
-            // 残留说明（R76/R103）：taint 层 sink 匹配是子串语义，`$$eval(`/`$eval(`
+            // 残留说明：taint 层 sink 匹配是子串语义，`$$eval(`/`$eval(`
             // （AngularJS 框架 API）仍会命中内置 "eval(" pattern——与既有
             // `safe_eval(` 命中同属已知子串放宽（见本文件 matches 测试注释）。
             // YAML regex 层（code-injection.yaml/risk-patterns.yaml）已按边界排除；
@@ -1988,7 +1988,7 @@ mod tests {
     #[test]
     fn test_receiver_pattern_short_boundary() {
         // 短 receiver pattern（≤3 字符）边界感知匹配：
-        // "cur" 全等/边界后缀命中，但不得子串误伤 "security"（backlog 10.9）
+        // "cur" 全等/边界后缀命中，但不得子串误伤 "security"（已知缺口
         let sink = TaintSink {
             id: "sql".to_string(),
             name: "SQL".to_string(),
@@ -2019,7 +2019,7 @@ mod tests {
 
     #[test]
     fn test_receiver_pattern_long_boundary() {
-        // 长 receiver pattern 边界感知匹配（backlog 10.11）：
+        // 长 receiver pattern 边界感知匹配（已知缺口：
         // "client" 不得子串误伤 "clientConfigs"
         let sink = TaintSink {
             id: "sql".to_string(),
@@ -2064,7 +2064,7 @@ mod tests {
 
     #[test]
     fn test_method_pattern_boundary() {
-        // 语义路径的 method pattern 边界感知匹配（backlog 10.11）：
+        // 语义路径的 method pattern 边界感知匹配（已知缺口：
         // ".fetch" 不得命中 "fetchClientConfig"，".raw" 不得命中表达式参数片段
         let ssrf_sink = TaintSink {
             id: "http".to_string(),
@@ -2251,7 +2251,7 @@ cursor.execute(query)
 
     #[test]
     fn test_chain_receiver_misbinding_r55() {
-        // R55：链式调用接收者误绑——`.get`/`.query` 命中必须位于调用链尾部，
+        // ：链式调用接收者误绑——`.get`/`.query` 命中必须位于调用链尾部，
         // `X.get(url).then(cb)` 的 then 参数（回调）不得绑定 .get sink（SSRF/SQLi FP 家族）
         assert!(!super::TaintSink::pattern_matches_method_call(
             ".get",

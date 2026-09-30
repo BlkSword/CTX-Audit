@@ -15,7 +15,7 @@ sources:
       - "req.get("
       - "req.header("
       - "req.param("
-      # R136 swetrix 回放反哺：Remix/React-Router loader/action 的 request 对象
+      # 真实形态补入：Remix/React-Router loader/action 的 request 对象
       # （request.formData()/request.text()/request.json()/request.url）——
       # 此前 JS taint 源只覆盖 Express req.*，裸 fetch(userVar) 0 命中
       - "request.formData()"

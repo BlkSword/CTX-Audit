@@ -6,7 +6,7 @@
 
 **Symbol Jump · Call Hierarchy · Backward Slicing · Framework Context · High-Level MCP Surface**
 
-CTX-Audit does not compete with industrial SAST on soundness, and it is not another rule stack: the engine emits **deterministic code-topology facts** (who calls whom, how arguments flow, which guards sit on the path) and marks everything it could not resolve with an explicit `uncertainty` section. Vulnerability semantics are decided by the LLM and the verification layer (differential oracles + live-fire). The rule corpus is demoted to **candidate seeds and a regression net**, no longer a truth path.
+CTX-Audit does not compete with industrial SAST on soundness, and it is not another rule stack: the engine emits **deterministic code-topology facts** (who calls whom, how arguments flow, which guards sit on the path) and marks everything it could not resolve with an explicit `uncertainty` section. Vulnerability semantics are decided by the LLM and human review; the rule corpus only serves as **candidate seeds and a regression baseline**, not a truth path.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -174,7 +174,7 @@ CTX-Audit has evolved from a rule scanner into a **real-project-driven hybrid au
 - **49 confirmed real-world vulnerabilities (TP)** in audited projects; **40 previously undisclosed 0-days** and **17 CVEs independently verified**.
 - **Engine feedback loop**: real findings and false positives are continuously converted into YAML rules, source/sink definitions, sanitizer-window semantics, and AST/CPG fixes.
 - **MCP collaboration**: a high-level tool surface (9 capabilities + 3 basic tools) returns code slices with `provenance` and `uncertainty`, so LLM analysts investigate call graphs, taint paths, and middleware context instead of guessing.
-- **Rule corpus role**: rules and taint definitions are candidate seeds, a regression net, and a self-discovery metric — not the truth path; verdicts come from LLM/human review plus differential oracles and live-fire validation.
+- **Rule corpus role**: rules and taint definitions are candidate seeds and a regression baseline — not a truth path; verdicts come from LLM/human review plus reproducible validation.
 - **Honest boundaries**: the engine is an evidence provider and noise compressor; logic, authorization, and business-logic vulnerabilities still require LLM deep review and manual verification.
 
 ## License

@@ -108,14 +108,14 @@ impl RuleScanner {
         // 条件编译块范围（仅 C 家族）：块内命中降 info——如 #ifdef MPE 平台分支
         // 的死代码（thttpd gets() 场景），不丢弃交由判定层
         let mut preproc_ranges_cache: Option<Vec<(usize, usize)>> = None;
-        // PHP include 链守卫内容（10.13）：仅在带 sanitizer_include_chain 的
+        // PHP include 链守卫内容：仅在带 sanitizer_include_chain 的
         // 规则首次做 sanitizer 检查时解析一次
         let mut guard_content_cache: Option<Option<String>> = None;
         // PHP 非裸调用形态的名字范围（php_bare_call_only 规则）：->method(、
         // ::method(、new Foo(、function foo( 的命中不是内建函数裸调用
         let mut php_bare_call_ranges_cache: Option<Vec<(usize, usize)>> = None;
 
-        // 10.2：C 系 regex 匹配使用展开后的内容，行号保持不变；代码片段仍取自原文
+        // ：C 系 regex 匹配使用展开后的内容，行号保持不变；代码片段仍取自原文
         let expanded_content = maybe_expand_c_object_macros(content, &extension);
 
         for compiled in &self.compiled_rules {
@@ -148,7 +148,7 @@ impl RuleScanner {
                             if is_rule_sanitized(content, start_pos, &compiled.rule, guard) {
                                 continue;
                             }
-                            // 函数级授权检查（backlog 10.27）：资源操作函数体内
+                            // 函数级授权检查（已知缺口：资源操作函数体内
                             // 无身份/属主校验即"缺失授权"候选。函数级语义——
                             // 同文件远处 import 的 auth 模块不豁免本函数。
                             if compiled.rule.auth_check_in_func
@@ -220,7 +220,7 @@ impl RuleScanner {
                                 .map(|p| start_pos + p)
                                 .unwrap_or(content.len());
                             let matched_line = &content[line_begin..line_end];
-                            // `io.Copy(` 共现检查（backlog 10.19）：io.Copy 的参数是
+                            // `io.Copy(` 共现检查（已知缺口：io.Copy 的参数是
                             // io.Reader/io.Writer 接口，流拷贝目标（HTTP 响应/管道/
                             // zip writer/临时文件）不是文件路径写入。仅当同一函数内
                             // 存在文件打开调用（os.Create/os.OpenFile）才保留——
@@ -394,9 +394,9 @@ impl Scanner for RuleScanner {
 /// 编译规则正则。Rust regex crate 不支持 `(?m)`/`(?s)`/`(?i)` 等 inline flag
 /// （`Regex::new("(?m)...")` 直接报错导致规则静默跳过——规则作者常踩的坑）。
 /// 这里把行首 inline flag 组（(?m)(?s)(?i)(?im)... 形态）转换为等价语义：
-///   `(?m)` -> RegexBuilder::multi_line(true)（^/$ 按行匹配）
-///   `(?s)` -> RegexBuilder::dot_matches_new_line(true)
-///   `(?i)` -> RegexBuilder::case_insensitive(true)
+/// `(?m)` -> RegexBuilder::multi_line(true)（^/$ 按行匹配）
+/// `(?s)` -> RegexBuilder::dot_matches_new_line(true)
+/// `(?i)` -> RegexBuilder::case_insensitive(true)
 /// 组合（如 `(?im)`）按字符逐个解析。非 flag 前缀（命名组 `(?P<name>`、
 /// `(?<name>`）不匹配"全 m/s/i 字符"条件，原样保留由 RegexBuilder 处理。
 fn compile_rule_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
@@ -449,7 +449,7 @@ fn guard_for_rule<'a>(
         .as_deref()
 }
 
-/// PHP include/require 链解析（backlog 10.13）：从被扫描文件出发，提取
+/// PHP include/require 链解析（已知缺口：从被扫描文件出发，提取
 /// include/require 语句中的路径字面量，best-effort 解析为磁盘文件并递归，
 /// 收集守卫文件内容（深度≤3、文件≤16、仅 .php，环路去重）。
 ///
@@ -565,7 +565,7 @@ fn resolve_php_include(dir: &PathBuf, lit: &str) -> Option<PathBuf> {
 /// 默认前缀语义（命中点之前出现即豁免）；规则声明 `sanitizer_file_scope: true` 时
 /// 全文件任一处出现即豁免（"缺失检查"类规则：校验在文件任意位置都算已接入防护）。
 /// `sanitizer_match: all` 时要求全部 sanitizer 都出现才豁免（防护完整性检查）。
-/// `guard` 为 include 链守卫内容（10.13），命中即豁免——全局校验无"位置"语义。
+/// `guard` 为 include 链守卫内容，命中即豁免——全局校验无"位置"语义。
 /// 死过滤模式的进程内编译缓存（pattern → 可选正则）。
 ///
 /// 原实现每次调用 `Regex::new(pattern)`；这里用全局 memo（Regex 克隆共享内部
@@ -588,7 +588,7 @@ fn dead_pattern_matches(pattern: &str, content_lower: &str) -> bool {
 }
 
 fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>) -> bool {
-    // 10.5：死过滤模式命中时 sanitizer 豁免不成立（文本存在但恒不生效）
+    // ：死过滤模式命中时 sanitizer 豁免不成立（文本存在但恒不生效）
     if !rule.dead_sanitizer_patterns.is_empty() {
         let lower = content.to_lowercase();
         for pattern in &rule.dead_sanitizer_patterns {
@@ -605,7 +605,7 @@ fn is_rule_sanitized(content: &str, pos: usize, rule: &Rule, guard: Option<&str>
         if is_sanitized_within_lines_after(content, pos, &rule.sanitizers, match_all, rule.sanitizer_after_lines) {
             return true;
         }
-        // 前向窗口语义（有界，10.25）：仅看命中点之前 N 行，
+        // 前向窗口语义（有界，）：仅看命中点之前 N 行，
         // 覆盖"先净化后使用"形态（sanitize 在 sink 上一两行），远处 import/守卫不吃
         if rule.sanitizer_before_lines > 0
             && is_sanitized_within_lines_before(content, pos, &rule.sanitizers, match_all, rule.sanitizer_before_lines)
@@ -661,7 +661,7 @@ fn is_sanitized_within_lines_after(
     }
 }
 
-/// 检查匹配位置之前 N 行内是否出现 sanitizer（前向窗口语义，10.25）。
+/// 检查匹配位置之前 N 行内是否出现 sanitizer（前向窗口语义，）。
 /// 用于"先净化后使用"形态（`const safe = sanitize(x); sink(dir, safe)`），
 /// 窗口有界以避免同文件远处 import/无关守卫误豁免。
 fn is_sanitized_within_lines_before(
@@ -1170,7 +1170,7 @@ fn create_finding(
     };
 
     // 证据补全（R-缺陷 A）：规则类 finding 此前 source/sink_snippet、enclosing_function、
-    // evidence_refs 全为空，EQM 证据轴实测规则型目标 0.00~0.30。这里补齐：
+    // evidence_refs 全为空（规则型命中的证据完整率极低）。这里补齐：
     // - snippets：命中行本身（regex/tree-sitter 规则没有 source→sink 路径，命中行即证据）；
     // - enclosing_function：向上找最近函数签名，便于 LLM 直接查调用图；
     // - evidence_refs.matched_pattern：命中的规则与模式（可追溯）。
@@ -1301,7 +1301,7 @@ fn get_language_for_extension(extension: &str) -> Option<Language> {
 
 /// 收集内容中所有注释节点的字节范围（按扩展名选语言）。
 /// 不支持的语言返回空表（即不做注释过滤，行为与旧版一致）。
-/// 10.2 最低成本近似：C/C++ 对象宏展开（行保持）。
+/// 最低成本近似：C/C++ 对象宏展开（行保持）。
 ///
 /// 仅处理单行、无续行符、无参数的对象宏（`#define NAME body`），
 /// 正文去重替换 `NAME` 标识符为 body，不新增/删除换行，因此行号不变。
@@ -1511,7 +1511,7 @@ fn range_overlaps_ranges(ranges: &[(usize, usize)], start: usize, end: usize) ->
     }
 }
 
-/// 文件打开调用正则（io.Copy 共现检查用，backlog 10.19）：
+/// 文件打开调用正则（io.Copy 共现检查用，已知缺口：
 /// `os.Create(`/`os.OpenFile(`（排除 `os.CreateTemp(`——临时文件良性）以及
 /// `*Os*Create/OpenFile` 命名包装（如 `SafeOsOpenFile(`——打开语义同 os.OpenFile，
 /// 清洗与否属判定层职责）。编译失败时返回 None（不豁免，保守保留）。
@@ -1525,7 +1525,7 @@ fn go_file_open_call_regex() -> Option<&'static Regex> {
     .as_ref()
 }
 
-/// Go：`io.Copy(` 命中点的共现检查（backlog 10.19）——查找命中点所在的最深
+/// Go：`io.Copy(` 命中点的共现检查（已知缺口——查找命中点所在的最深
 /// 函数/方法/函数字面量节点，判断其函数体是否包含文件打开调用
 /// （os.Create / os.OpenFile 及包装）。无函数包裹（顶层裸调用）保守返回 false
 /// （不豁免）；无法解析时不豁免。已知限制：注释/字符串内的打开调用也会计数。
@@ -1576,7 +1576,7 @@ fn go_enclosing_func_has_file_open(content: &str, pos: usize) -> bool {
         .unwrap_or(false)
 }
 
-/// 授权检查语义（missing-authorization 家族，backlog 10.27）：
+/// 授权检查语义（missing-authorization 家族，已知缺口：
 /// 命中点所在函数/方法体内是否出现任一授权关键字。
 /// 资源操作（按 id/name 的 get/delete/update/remove 等）的函数体内
 /// 没有身份/属主校验（currentUser/owner/isAdmin/hasRole 等）即为
@@ -1608,14 +1608,14 @@ fn enclosing_func_has_auth_check(
     };
     // 递归查找包含 pos 的最深函数类节点——函数/方法定义体是授权检查的
     // 作用域边界。按语言映射函数节点类型：
-    //   go:    function_declaration / method_declaration / func_literal
-    //   java:  method_declaration / constructor_declaration
-    //   python:function_definition
-    //   js/ts: function_declaration / method_definition / arrow_function /
-    //          function_expression / generator_function_declaration
-    //   php:   function_definition / method_declaration
-    //   rust:  function_item / closure_expression
-    //   c/cpp: function_definition
+    // go: function_declaration / method_declaration / func_literal
+    // java: method_declaration / constructor_declaration
+    // python:function_definition
+    // js/ts: function_declaration / method_definition / arrow_function /
+    // function_expression / generator_function_declaration
+    // php: function_definition / method_declaration
+    // rust: function_item / closure_expression
+    // c/cpp: function_definition
     fn find_func<'a>(node: tree_sitter::Node<'a>, pos: usize) -> Option<tree_sitter::Node<'a>> {
         if node.start_byte() > pos || node.end_byte() <= pos {
             return None;
@@ -2249,7 +2249,7 @@ $upsql = Input::postStrVar('upsql', '');
 
     #[test]
     fn test_java_xxe_factory_hardening_setfeature_exempt() {
-        // CVE-2021-23901（NUTCH-2841）回放反哺：DmozParser 修复形态——
+        // CVE-2021-23901 回放：修复形态——
         // SAXParserFactory.newInstance() 后紧跟 setFeature(disallow-doctype-decl,
         // true) + external-general-entities=false 即视为已加固，豁免；
         // 漏洞版（仅工厂创建+解析，无加固）保留命中。
@@ -2947,7 +2947,7 @@ $upsql = Input::postStrVar('upsql', '');
         assert!(!re.is_match("yaml.load(text, Loader=BaseLoader)"));
     }
 
-    /// backlog 10.13：sanitizer_include_chain=true 时，bootstrap include 链中的
+    /// 已知缺口：sanitizer_include_chain=true 时，bootstrap include 链中的
     /// 全局守卫文件（如统一校验 CSRF 的 security/csrf.php）参与豁免判定——
     /// projectsend 形态：页面 → bootstrap.php → includes/security/csrf.php。
     #[test]
@@ -3098,7 +3098,7 @@ func store(path string, r io.Reader) error {
 
     #[test]
     fn test_go_io_copy_exempted_for_stream_copy() {
-        // 负例：HTTP 响应流拷贝（无文件打开）——R46 filestash 误标主形态
+        // 负例：HTTP 响应流拷贝（无文件打开）——实测误标主形态
         let content = r#"package main
 
 func handler(w http.ResponseWriter, f *os.File) {
@@ -3281,7 +3281,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
 
     #[test]
     fn test_eval_pattern_excludes_angular_dollar_eval() {
-        // R76 登记：AngularJS 的 $$eval(/$eval( 是框架作用域求值 API，
+        // 登记：AngularJS 的 $$eval(/$eval( 是框架作用域求值 API，
         // 不得命中 JS eval 代码注入规则；原生 eval( 仍须命中
         let rules = crate::rules::embedded::load_embedded_pattern_rules();
         let scanner = RuleScanner::new(rules);
@@ -3300,7 +3300,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
         assert_eq!(eval_hits[0].line_start, 3);
     }
 
-    /// Bun/Deno 运行时文件 sink（10.25②）：上传接口 Bun.write(dir + filename)
+    /// Bun/Deno 运行时文件 sink：上传接口 Bun.write(dir + filename)
     /// 路径穿越任意写家族；紧锚点（req./filename 等）防宽松词回归
     #[test]
     fn test_path_traversal_bun_deno_sinks() {
@@ -3333,7 +3333,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
         assert!(f4.is_empty(), "静态字面量路径不应命中: {:?}", f4.len());
     }
 
-    /// 文件移动/复制 sink（10.30，R123 MeshCentral 0day 漏检根因）：
+    /// 文件移动/复制 sink（历史漏检根因：文件移动/复制未建模）：
     /// fs.rename/fs.copyFile 的 dst（第二参数）为用户路径形态；
     /// src（第一参数）参数序约束防 multiparty 临时文件误报
     #[test]
@@ -3346,7 +3346,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
             .clone();
         let scanner = RuleScanner::new(vec![rule]);
 
-        // 正例 1：R123 真实形态——dst = path.join(serverpath, 未清洗文件名)
+        // 正例 1：真实形态——dst = path.join(serverpath, 未清洗文件名)
         let mesh_vuln = "function handleUploadFileBatch(req, res) {\n  const ftarget = getRandomPassword() + '-' + file.originalFilename;\n  fs.rename(tmpPath, path.join(serverpath, ftarget), cb);\n}";
         let f1 = scanner.scan_file_sync(&PathBuf::from("webserver.js"), mesh_vuln);
         assert!(
@@ -3389,7 +3389,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
         assert!(f6.is_empty(), "静态字面量 dst 不应命中: {:?}", f6.len());
     }
 
-    /// Prisma $queryRawUnsafe 原始 SQL 直插（R154 ghostfolio 回放反哺）：
+    /// Prisma $queryRawUnsafe 原始 SQL 直插（真实形态补入）：
     /// 模板字面量/拼接形态命中；$queryRaw tagged-template 参数化豁免
     #[test]
     fn test_prisma_queryraw_injection() {
@@ -3401,7 +3401,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
             .clone();
         let scanner = RuleScanner::new(vec![rule]);
 
-        // 正例 1：R154 真实形态——symbols.join 直插（CVE-2026-28785 漏洞版）
+        // 正例 1：真实形态——symbols.join 直插（漏洞版本）
         let vuln = "const rows = await prisma.$queryRawUnsafe(`SELECT * FROM \"AssetProfile\" WHERE symbol IN (${symbols.join(',')})`);";
         let f1 = scanner.scan_file_sync(&PathBuf::from("data-provider.service.ts"), vuln);
         assert!(!f1.is_empty(), "$queryRawUnsafe 模板插值应命中");
@@ -3428,7 +3428,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
         assert!(f4.is_empty(), "常量查询不应命中: {:?}", f4.len());
     }
 
-    /// 客户端模板裸插提示（10.22，R54 calibre-web 0day 漏检盲区）：
+    /// 客户端模板裸插提示（历史漏检盲区：客户端模板拼接）：
     /// mustache 三花 / EJS <%- / Vue v-html 低置信 XSS 提示
     #[test]
     fn test_client_template_bare_insert() {
@@ -3440,7 +3440,7 @@ func (s *Server) UpdateAccountFixed(w http.ResponseWriter, r *http.Request) {
             .clone();
         let scanner = RuleScanner::new(vec![rule]);
 
-        // 正例 1：mustache 三花裸插（R54 同族——template-book-result 全字段裸插）
+        // 正例 1：mustache 三花裸插（同族——template-book-result 全字段裸插）
         let hbs = "<script type=\"text/template\">\n<a href=\"{{url}}\">{{{title}}}</a>\n</script>";
         let f1 = scanner.scan_file_sync(&PathBuf::from("book_edit.html"), hbs);
         assert!(!f1.is_empty(), "三花裸插应命中");

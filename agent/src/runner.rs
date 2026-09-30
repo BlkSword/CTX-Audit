@@ -3,13 +3,13 @@
 
 //! runner：轮状态机（M2）
 //!
-//! 六阶段：选目标 → 资格核实 → 扫描 → 初审 → 深审 → 登记草稿 → 反哺（M4）
+//! 六阶段：选目标 → 资格核实 → 扫描 → 初审 → 深审 → 登记草稿 → 反哺
 //!
 //! - 确定性阶段（选目标/资格核实/扫描）直接调 deepaudit-core 扫描 API，不经 LLM；
 //! - 初审/深审调 M1 `Agent::run`，system prompt 从 round-agent.md 加载；
-//! - 初审分片（M4）：findings 数 > `subagent_threshold`（默认 50）时按 (漏洞类型, 文件)
+//! - 初审分片：findings 数 > `subagent_threshold`（默认 50）时按 (漏洞类型, 文件)
 //!   分片，每片 spawn 一个子 agent 并行初审（JoinSet），汇总后写同一 triage 产物；
-//! - 反哺阶段（M4）：0 TP 轮且配置 `feedback_tasks` 时自动执行 CVE 回放机械层，
+//! - 反哺阶段：0 TP 轮且配置 `feedback_tasks` 时自动执行 CVE 回放机械层，
 //!   产出 replay-report JSON；无任务或有 TP 候选则跳过；
 //! - 每阶段完成即写状态文件，崩溃后按轮次 ID 从断点续跑；
 //! - 深审产出 TP 候选 → 写 gate 通知（文件+可选 webhook）→ 轮暂停在 AwaitHuman，
@@ -59,7 +59,7 @@ pub enum RoundPhase {
     AwaitHuman,
     /// 登记草稿
     RegistrationDraft,
-    /// 反哺（M4 占位，当前直接跳过）
+    /// 反哺（占位，当前直接跳过）
     Feedback,
     /// 完结
     Done,
@@ -201,7 +201,7 @@ pub enum RunnerError {
     #[error("目标无审计资格: {0}")]
     Ineligible(String),
 
-    /// 初审分片子 agent 失败（M4）
+    /// 初审分片子 agent 失败
     #[error("初审分片失败: {0}")]
     Shard(String),
 }
@@ -223,10 +223,10 @@ pub struct RunnerConfig {
     pub webhook_url: Option<String>,
     /// 登记草稿是否用 LLM 润色（默认 false=纯模板）
     pub llm_polish_draft: bool,
-    /// 初审分片阈值（M4）：findings 数 > 该值时按 (漏洞类型, 文件) 分片并行初审，
+    /// 初审分片阈值：findings 数 > 该值时按 (漏洞类型, 文件) 分片并行初审，
     /// 0 = 禁用分片（默认 50）
     pub subagent_threshold: usize,
-    /// 反哺任务（M4）：0 TP 轮自动执行 CVE 回放机械层（默认空=跳过）
+    /// 反哺任务：0 TP 轮自动执行 CVE 回放机械层（默认空=跳过）
     pub feedback_tasks: Vec<FeedbackTask>,
     /// 可配置审计流水线（默认等于 CTX-Audit 当前行为）
     pub pipeline: PipelineConfig,
@@ -711,7 +711,7 @@ impl Runner {
             return Ok(());
         }
 
-        // 组阶段输入并执行（初审支持 M4 阈值分片并行）
+        // 组阶段输入并执行（初审支持阈值分片并行）
         let output = match stage {
             JudgeStage::Triage => self.run_triage(state, &target_path, event_tx).await?,
             JudgeStage::DeepReview => {
@@ -897,7 +897,7 @@ impl Runner {
         Ok(())
     }
 
-    /// 初审：findings 超阈值走子 agent 分片并行（M4），否则单 agent
+    /// 初审：findings 超阈值走子 agent 分片并行，否则单 agent
     async fn run_triage(
         &self,
         state: &mut RunnerState,
@@ -911,7 +911,7 @@ impl Runner {
             .and_then(|e| e.primary_language.clone())
             .unwrap_or_else(|| "未知".to_string());
 
-        // ── M4 分片判定：findings > subagent_threshold 时按 (漏洞类型, 文件) 分片 ──
+        // ── 分片判定：findings > subagent_threshold 时按 (漏洞类型, 文件) 分片 ──
         let scan_json: serde_json::Value = serde_json::from_str(&scan_artifact)
             .map_err(|e| RunnerError::Parse(format!("扫描产物 JSON 损坏: {}", e)))?;
         let total = scan_json.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -955,11 +955,11 @@ impl Runner {
             target_path.to_string_lossy().to_string(),
             None,
             None,
-            // 内部 triage/审计流水线暂用遗留细粒度工具面（Phase 2 迁移到高阶能力）
+            // 内部 triage/审计流水线使用遗留细粒度工具面
             true,
         )
         .await;
-        // M4：delegate_triage 工具注册给初审主 agent（子 agent 输出仅作线索，关键判定主 agent 独立复核）
+        // delegate_triage 工具注册给初审主 agent（子 agent 输出仅作线索，关键判定主 agent 独立复核）
         let spawner = SubAgentSpawner::new(
             Arc::clone(&provider),
             Arc::clone(&registry),
@@ -986,7 +986,7 @@ impl Runner {
         extract_json(&run.final_text)
     }
 
-    /// 初审分片并行（M4）：每片一个子 agent（JoinSet），汇总各片判定进同一 triage 产物
+    /// 初审分片并行：每片一个子 agent（JoinSet），汇总各片判定进同一 triage 产物
     async fn run_triage_sharded(
         &self,
         state: &RunnerState,
@@ -1028,7 +1028,7 @@ impl Runner {
             target_path.to_string_lossy().to_string(),
             None,
             None,
-            // 内部 triage/审计流水线暂用遗留细粒度工具面（Phase 2 迁移到高阶能力）
+            // 内部 triage/审计流水线使用遗留细粒度工具面
             true,
         )
         .await;
@@ -1222,7 +1222,7 @@ impl Runner {
             .map(|d| d.approve)
             .unwrap_or(false)
         {
-            out.push_str("- TP 已经人工认定：按 verify_plan 做实弹验证（M4 livefire），随后走披露流程（人工）\n");
+            out.push_str("- TP 已经人工认定：按 verify_plan 做可复现验证，是否对外沟通由人工决定\n");
         } else {
             out.push_str("- TP 候选已被人工驳回：归档候选与驳回理由，供 FP 家族附录回流\n");
         }
@@ -1230,7 +1230,7 @@ impl Runner {
         Ok(out)
     }
 
-    // ── 阶段七：反哺（M4 机械层） ───────────────────────
+    // ── 阶段七：反哺（确定性回放层） ───────────────────────
 
     /// 反哺阶段：0 TP 轮且配置 feedback_tasks 时自动执行 CVE 回放机械层
     ///
@@ -1444,7 +1444,7 @@ impl Runner {
             target_path.to_string_lossy().to_string(),
             None,
             None,
-            // 内部 triage/审计流水线暂用遗留细粒度工具面（Phase 2 迁移到高阶能力）
+            // 内部 triage/审计流水线使用遗留细粒度工具面
             true,
         )
         .await;
@@ -1605,7 +1605,7 @@ pub fn extract_json(text: &str) -> Result<serde_json::Value, RunnerError> {
     }
 }
 
-/// 初审分片判定（M4）：findings 总数 > 阈值时启用分片（0 = 禁用）
+/// 初审分片判定：findings 总数 > 阈值时启用分片（0 = 禁用）
 pub fn should_shard(total: usize, threshold: usize) -> bool {
     threshold > 0 && total > threshold
 }
@@ -2227,7 +2227,7 @@ mod tests {
         assert_eq!(states[0].current_phase, RoundPhase::Done);
     }
 
-    // ── M4：初审分片阈值判定 ──
+    // ── 初审分片阈值判定 ──
 
     #[test]
     fn test_shard_threshold_decision() {
@@ -2263,7 +2263,7 @@ mod tests {
         }
     }
 
-    // ── M4：初审分片并行（预置 51 findings 扫描产物 → 3 片子 agent） ──
+    // ── 初审分片并行（预置 51 findings 扫描产物 → 3 片子 agent） ──
 
     #[tokio::test]
     async fn test_triage_sharded_parallel() {
@@ -2373,7 +2373,7 @@ mod tests {
         assert!(deep.contains("深审输入"));
     }
 
-    // ── M4：0 TP 轮自动执行反哺阶段 ──
+    // ── 0 TP 轮自动执行反哺阶段 ──
 
     /// 造本地 CVE 仓库（漏洞 commit 含 python 命令注入，修复 commit 移除）
     fn make_cve_repo(root: &Path, cve_id: &str) -> crate::feedback::FeedbackTask {

@@ -150,7 +150,7 @@ pub enum RequestCommand {
     /// 删除 cron 任务
     CronDelete { id: String },
 
-    /// 执行 CVE 回放反哺任务（M4 机械层；task_path 为任务 JSON 文件路径）
+    /// 执行 CVE 回放任务（确定性回放层；task_path 为任务 JSON 文件路径）
     AgentFeedbackRun { task_path: String },
 }
 
@@ -226,7 +226,7 @@ pub enum Response {
     /// cron 任务列表
     CronJobList { jobs: serde_json::Value },
 
-    /// CVE 回放报告（M4 机械层结果，report 为 ReplayReport 的 JSON）
+    /// CVE 回放报告（确定性回放层结果，report 为 ReplayReport 的 JSON）
     AgentFeedbackReport { report: serde_json::Value },
 }
 
@@ -517,7 +517,7 @@ mod tests {
             _ => panic!("Expected CronJobList"),
         }
 
-        // AgentFeedbackReport（M4）
+        // AgentFeedbackReport
         let resp = Response::AgentFeedbackReport {
             report: serde_json::json!({"cve_id":"CVE-TEST","verdict":{"conclusion":"pass"}}),
         };

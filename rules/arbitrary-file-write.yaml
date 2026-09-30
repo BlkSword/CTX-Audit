@@ -11,7 +11,7 @@ references:
   - "https://cwe.mitre.org/data/definitions/22.html"
 severity: high
 # io.Copy 的目标是 io.Writer 接口——HTTP 响应/管道/zip writer/临时文件等
-# 流拷贝不是文件路径写入（transfer.sh/miniflux/filestash 三连误标）。
+# 流拷贝不是文件路径写入（transfer.sh/miniflux/三连误标）。
 # 开启后要求同一函数内存在文件打开调用（os.Create/os.OpenFile）才保留。
 go_io_copy_requires_open_file: true
 patterns:

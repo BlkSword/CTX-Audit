@@ -144,7 +144,7 @@ fn append_taint_rules_from_path(
                 }
             }
             Err(e) => {
-                // 形似 taint-rules 但解析失败时必须告警——R12 教训：
+                // 形似 taint-rules 但解析失败时必须告警——教训：
                 // TaintCategory 等枚举漏加变体会导致整个 taint 文件静默失败，
                 // 表现为 0 flows 而非加载错误。启动时让错误可见。
                 if content.contains("kind: taint-rules") {

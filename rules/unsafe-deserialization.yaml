@@ -14,7 +14,7 @@ patterns:
   - language: java
     # ObjectInputStream/XMLDecoder/XStream 为运行时类型实例化 gadget 链（真 CWE-502）；
     # 裸 readObject( 已收窄为 ObjectInputStream 形态——jakarta.json JsonReader.readObject()
-    # 等数据专用反序列化器无 gadget 链（10.21 判据 Java 侧，R57 误标 ×3 家族）
+    # 等数据专用反序列化器无 gadget 链（判据 Java 侧， 误标 ×3 家族）
     pattern: (?i)(ObjectInputStream\s*\(|ObjectInputStream\.readObject\s*\(|readUnshared\s*\(|XMLDecoder\s*\(|XStream\s*\()
   # Python：yaml.load 两种危险形态——单变量参数（默认 Loader 不安全）、
   # 显式指定 Loader/CLoader/UnsafeLoader（SafeLoader/CSafeLoader/BaseLoader 名称中的

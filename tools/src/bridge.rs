@@ -917,7 +917,7 @@ pub async fn register_built_in_tools(registry: &Arc<ToolRegistry>, project_path:
     }
 }
 
-/// 遗留细粒度工具面是否启用（ADR-001 Phase 1）。
+/// 遗留细粒度工具面是否启用。
 ///
 /// 默认关闭：面向 LLM 的接口只暴露高阶代码智能能力，避免细粒度工具造成的
 /// 决策震荡与 token 浪费。打开方式：CLI `--legacy-tools`，或环境变量
@@ -934,7 +934,7 @@ fn legacy_flag_truthy(raw: &str) -> bool {
     )
 }
 
-/// 注册工具面（ADR-001 Phase 1）。
+/// 注册工具面。
 ///
 /// - `legacy_tools = false`（默认新工具面）：基础工具 + 高阶代码智能能力；
 /// - `legacy_tools = true`：额外注册遗留的搜索/污点/模式/调用图/AST 细粒度工具。
@@ -950,7 +950,7 @@ pub async fn register_all_tools(
     // 基础工具（read_file / list_files / report_finding / finish_analysis）两个工具面都需要
     register_built_in_tools(registry, project_path.clone()).await;
 
-    // 高阶代码智能工具（ADR-001 Phase 1：9 个高阶语义能力 + provenance/uncertainty）
+    // 高阶代码智能工具（9 个高阶语义能力 + provenance/uncertainty）
     crate::code_intel_tools::register_code_intel_tools(registry, project_path.clone()).await;
 
     if !legacy_tools {

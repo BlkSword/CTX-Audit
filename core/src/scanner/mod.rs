@@ -190,14 +190,14 @@ pub struct Finding {
 pub struct EvidenceRefs {
     /// 规则类 finding 的直接证据：命中的规则与模式（regex/tree-sitter 规则没有
     /// source→sink 路径，此前 evidence_refs 恒为 None，导致规则型目标的证据
-    /// 完整率接近 0——EQM 证据轴实测 simplepie/gatus 0.00、shlink 0.14）。
+    /// 完整率接近 0——规则型命中长期缺失证据）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_pattern: Option<String>,
     /// source→sink 的调用路径证据
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_sink_path: Option<SourceSinkEvidence>,
     /// 路径证据类型：`dataflow`（有实参映射/摘要证据）或 `structural`（纯调用图可达）。
-    /// 供消费端区分“可复核的数据流结论”与“结构提示”，也是 EQM 噪声比的统计口径。
+    /// 供消费端区分“可复核的数据流结论”与“结构提示”，也是结构提示噪声比的统计口径。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_kind: Option<String>,
     /// 同一 source 行被折叠掉的其它 source→sink 路径。
@@ -308,7 +308,7 @@ pub struct GraphSnapshot {
 /// 从命中行向上查找最近的函数/方法签名，返回函数名。
 ///
 /// 规则类 finding 此前不带 `enclosing_function`，LLM 无法直接用函数名查
-/// query_callers/query_callees（EQM 证据轴实测 gatus 0.00）。这里有界向上扫描
+/// query_callers/query_callees（规则型命中的证据完整率长期为 0）。这里有界向上扫描
 /// （最多 200 行）并匹配各语言常见的函数签名形态。
 pub fn find_enclosing_function_name_and_line(
     content: &str,
@@ -478,7 +478,7 @@ fn extract_sanitizer_function(code: &str) -> Option<String> {
 
 /// 文件角色分类
 /// 生成稳定的 finding_id：同一文件/规则/行/代码片段应得到同一 ID，
-/// 避免随机 UUID 导致跨轮次无法追踪（EQM E-6）。
+/// 避免随机 UUID 导致跨轮次无法追踪。
 pub fn stable_finding_id(
     path: &str,
     line: usize,
@@ -596,7 +596,7 @@ pub fn classify_file_role(path: &str) -> &'static str {
         "/plugins/",
         "/libs/",
         "/webjars/",
-        // R51: 捆绑随附组件与虚拟环境（R50 kkFileView LibreOfficePortable 全仓扫描噪声源）
+        // : 捆绑随附组件与虚拟环境（捆绑随附组件的全仓扫描噪声源）
         "/libreofficeportable/",
         "/libreoffice/",
         "/site-packages/",
@@ -606,7 +606,7 @@ pub fn classify_file_role(path: &str) -> &'static str {
         "/virtualenv/",
         "/bundle/",
         "/dependencies/",
-        // 10.24⑤（R57 kkFileView 后第三次）：Java Web 项目 webapp 目录下的
+        // （第三次）：Java Web 项目 webapp 目录下的
         // 第三方 JS/库存放模式（webapp/lib、webapp/src/lib）——不裸加 /src/lib/
         // （Python src/lib 是业务代码，误伤面大），只认 webapp 组合形态
         "/webapp/lib/",
@@ -1010,7 +1010,7 @@ fn is_test_path(path: &str) -> bool {
 }
 
 /// 判断文件名是否为测试文件（Stage B 污点分析跳过——测试文件不承载
-/// 生产攻击面，只消耗分析量并产噪，方法论 10.12；规则层 Stage A 行为不变）
+/// 生产攻击面，只消耗分析量并产噪；规则层 Stage A 行为不变）
 fn is_test_file_name(path: &str) -> bool {
     let name = path
         .rsplit(['/', '\\'])
@@ -1024,17 +1024,17 @@ fn is_test_file_name(path: &str) -> bool {
         || (name.starts_with("test_") && name.ends_with(".py"))
 }
 
-/// 判断文件名是否为 TypeScript 声明文件（*.d.ts，backlog 10.14 扩展，R49）：
+/// 判断文件名是否为 TypeScript 声明文件（*.d.ts，已知缺口扩展，）：
 /// 纯类型声明（declare 语句/接口/联合类型），零可执行逻辑、零实现体，
 /// 不存在可达 sink；巨型声明文件（openapi 生成的 API 类型）在 CPG 构建/
-/// 污点分析中病态耗时（实测 karakeep-api.d.ts 单文件 1892s），Stage B
+/// 污点分析中病态耗时（实测单个 .d.ts 声明文件 1892s），Stage B
 /// 在 extract 之前直接跳过无损。
 fn is_ts_declaration_file(path: &str) -> bool {
     path.ends_with(".d.ts")
 }
 
 /// Stage B 进度与慢文件日志 guard：map 闭包内声明一次，
-/// drop 时计数并按需输出（10.12 性能缺口的定位手段）
+/// drop 时计数并按需输出（性能缺口的定位手段）
 struct TaintProgressGuard<'a> {
     file: &'a str,
     start: std::time::Instant,
@@ -1153,7 +1153,7 @@ async fn scan_directory_with_rules_inner(
 ) -> Result<(Vec<Finding>, HashMap<String, Arc<str>>, Vec<String>), String> {
     use ignore::Walk;
 
-    // 非 UTF-8 降级文件清单（backlog 10.6）
+    // 非 UTF-8 降级文件清单（已知缺口
     let mut encoding_fallback_files: Vec<String> = Vec::new();
 
     // 排除列表完全由调用方（CLI 配置）提供，core 不硬编码任何排除项
@@ -1262,7 +1262,7 @@ async fn scan_directory_with_rules_inner(
             });
         }
         for (i, path_buf) in dep_files.iter().enumerate() {
-            // backlog 10.6：依赖清单文件同样可能非 UTF-8，lossy 降级避免静默跳过
+            // 已知缺口：依赖清单文件同样可能非 UTF-8，lossy 降级避免静默跳过
             let content = match std::fs::read_to_string(path_buf) {
                 Ok(c) => c,
                 Err(_) => match std::fs::read(path_buf) {
@@ -1336,7 +1336,7 @@ async fn scan_directory_with_rules_inner(
             .map(|path_buf| {
                 let rel_path = path_buf.strip_prefix(scan_root).unwrap_or(path_buf.as_path());
 
-                // backlog 10.6：非 UTF-8 源文件（ISO-8859/GBK 等）此前读取失败被
+                // 已知缺口：非 UTF-8 源文件（ISO-8859/GBK 等）此前读取失败被
                 // 静默跳过（整文件 0 命中且无告警）。降级 lossy 转换继续扫描，
                 // 并把文件路径上报到结果（encoding_fallback_files）。
                 let (content, encoding_fallback) =
@@ -1595,7 +1595,7 @@ pub struct ScanResult {
     pub cross_file_result: Option<crate::analysis::cross_file::CrossFileTaintResult>,
     /// 项目安全框架配置（从 pom.xml / build.gradle 中检测）
     pub project_profile: crate::analysis::ProjectProfile,
-    /// backlog 10.6：非 UTF-8（ISO-8859/GBK 等）源文件清单——已降级 lossy 转换，
+    /// 已知缺口：非 UTF-8（ISO-8859/GBK 等）源文件清单——已降级 lossy 转换，
     /// 结果可能缺失字符，调用方可据此提示用户
     #[serde(default)]
     pub encoding_fallback_files: Vec<String>,
@@ -1746,7 +1746,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                 if is_excluded(rel, &excludes) {
                     continue;
                 }
-                // 测试文件不进污点分析（10.12）
+                // 测试文件不进污点分析
                 if is_test_path(&p_str) || is_test_file_name(&p_str) {
                     continue;
                 }
@@ -1755,7 +1755,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                         continue;
                     }
                 }
-                // backlog 10.6：二次收集同样 lossy 降级非 UTF-8 文件（防 AST 文件静默缺失）
+                // 已知缺口：二次收集同样 lossy 降级非 UTF-8 文件（防 AST 文件静默缺失）
                 let content = match std::fs::read_to_string(p) {
                     Ok(c) => c,
                     Err(_) => match std::fs::read(p) {
@@ -1784,7 +1784,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         .filter(|(_, content)| content.len() <= max_taint_file_kb * 1024)
         // vendor / minified 第三方库不进入污点分析（只产生噪声）
         .filter(|(fp, content)| classify_file_role_with_content(fp, content) != "vendor")
-        // 测试文件不进入污点分析（10.12：约占分析量两成，纯浪费且只产噪；
+        // 测试文件不进入污点分析（：约占分析量两成，纯浪费且只产噪；
         // Stage A 规则扫描对它们的行为不变）
         .filter(|(fp, _)| !is_test_path(fp) && !is_test_file_name(fp))
         .map(|(fp, _)| fp.clone())
@@ -1972,10 +1972,10 @@ pub async fn scan_directory_deep_with_rules_progress(
                 }
             }
 
-            // 10.14 扩展（R49）：TypeScript 声明文件快路径——*.d.ts 是纯类型
+            // 扩展：TypeScript 声明文件快路径——*.d.ts 是纯类型
             // 声明（declare 语句/接口/联合类型，零可执行逻辑、零实现体），
             // 不存在可达 sink，且巨型声明文件（openapi 生成的 API 类型）在
-            // CPG 构建/污点分析中病态耗时（实测 karakeep-api.d.ts 单文件
+            // CPG 构建/污点分析中病态耗时（实测单个 .d.ts 声明文件
             // 1892s），在 extract 之前直接跳过无损。
             if is_ts_declaration_file(file_path_str) {
                 return (
@@ -2028,8 +2028,8 @@ pub async fn scan_directory_deep_with_rules_progress(
                 // 加载回调提示
                 let callback_hints = crate::analysis::async_flow::detect_callback_hints(content);
 
-                // 10.14：纯数据文件快路径——无函数且无调用的 PHP 文件不存在可达 sink
-                // （sink 均为函数调用；echo/print 本就不进 CallInfo，见 backlog 10.8），
+                // ：纯数据文件快路径——无函数且无调用的 PHP 文件不存在可达 sink
+                // （sink 均为函数调用；echo/print 本就不进 CallInfo，见 已知缺口，
                 // 跳过整文件 CPG，避免巨型数组字面量（语言包/配置类）在路径敏感
                 // 分析中的病态耗时（kanboard Locale 实测 ~240s/文件 → 0）
                 let is_php_file = std::path::Path::new(file_path_str)
@@ -2118,7 +2118,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                             .map(|(func, func_assignments, func_calls, func_hints)| {
                                 let func_cpg =
                                     crate::ast::parser::with_thread_local_parser(|ast_parser| {
-                                        // backlog 10.7：Python/Ruby suite body_text 带缩进
+                                        // 已知缺口：Python/Ruby suite body_text 带缩进
                                         // 而无外层 def 包装，直接重解析恒失败——统一去
                                         // 缩进后再解析与切片
                                         let fragment =
@@ -2226,7 +2226,7 @@ pub async fn scan_directory_deep_with_rules_progress(
                                     );
                                 }
 
-                                // 混合回退（backlog ②）：AST-CFG（含语句列表）在部分
+                                // 混合回退（已知缺口）：AST-CFG（含语句列表）在部分
                                 // 语言/形态上比文本 CFG 不敏感（3 个 Python 流测试曾因
                                 // 直接切换而回归）。AST 路径无流时再跑一次文本 CFG，
                                 // 二者取有流者：既启用 AST 语句级 def/use，又不丢既有召回。
@@ -2365,7 +2365,7 @@ pub async fn scan_directory_deep_with_rules_progress(
 
                     Finding {
                         // E-6 补全：污点类 finding 此前直接继承 flow.id（随机 UUID），
-                        // 导致 A/B 扫描候选集相同但 finding_id 全变（EQM 实测 id 稳定性 2/5）。
+                        // 导致 A/B 扫描候选集相同但 finding_id 全变。
                         // finding_id 是 finding 级身份，应由自身位置/类型决定，而非继承 flow。
                         finding_id: stable_finding_id(
                             &file_str,
@@ -3154,7 +3154,7 @@ fn enrich_rule_findings_with_local_source_sink(
         });
 
         // E-2：单跳证据补齐 source/sink 代码片段，让 LLM 直接看到源/汇聚点行文本，
-        // 而不必再经 evidence_refs 反查文件（EQM evidence 完整率按此列统计）。
+        // 而不必再经 evidence_refs 反查文件（证据完整率按此列统计）。
         if finding.source_snippet.is_none() {
             finding.source_snippet = line_snippet(content, matched.source_line);
         }
@@ -3604,7 +3604,7 @@ fn deduplicate_findings(mut findings: Vec<Finding>, line_tolerance: usize) -> Ve
     for (_key, indices) in groups {
         // 同点多 finding：若漏洞类型各不相同（多引擎独立发现不同问题），
         // 不合并——保留全部（missing-auth 与 UnauthenticatedEndpoint 同点
-        // 是互补发现而非重复，backlog 10.27）；仅类型相同的合并。
+        // 是互补发现而非重复，已知缺口；仅类型相同的合并。
         let types: std::collections::HashSet<&str> =
             indices.iter().map(|&i| findings[i].vuln_type.as_str()).collect();
         if types.len() > 1 {
@@ -3944,7 +3944,7 @@ mod tests {
         // 知名第三方库文件名前缀
         assert_eq!(classify_file_role("web/js/jquery.js"), "vendor");
         assert_eq!(classify_file_role("web/js/bootstrap.js"), "vendor");
-        // R51: 捆绑随附组件/虚拟环境（R50 kkFileView LibreOfficePortable 噪声源）
+        // : 捆绑随附组件/虚拟环境（捆绑随附组件的噪声源）
         assert_eq!(
             classify_file_role("server/LibreOfficePortable/python-core/lib/python/site-packages/yaml.py"),
             "vendor"
@@ -3971,8 +3971,8 @@ mod tests {
 
     #[test]
     fn test_is_ts_declaration_file() {
-        // d.ts 声明文件 → 跳过（10.14 扩展，R49：karakeep-api.d.ts 单文件 1892s）
-        assert!(is_ts_declaration_file("packages/sdk/src/karakeep-api.d.ts"));
+        // d.ts 声明文件 → 跳过（扩展，：单个 .d.ts 文件 1892s）
+        assert!(is_ts_declaration_file("packages/sdk/src/api.d.ts"));
         assert!(is_ts_declaration_file("types/index.d.ts"));
         // 普通 TS 源文件 → 正常分析
         assert!(!is_ts_declaration_file("packages/sdk/src/index.ts"));
@@ -4203,7 +4203,7 @@ mod tests {
 
     #[test]
     fn test_dedup_keeps_different_vuln_types_at_same_point() {
-        // backlog 10.27：同点不同漏洞类型（missing-auth + UnauthenticatedEndpoint）
+        // 已知缺口：同点不同漏洞类型（missing-auth + UnauthenticatedEndpoint）
         // 是互补发现而非重复，去重不应合并吞掉
         let f1 = make_finding("a.go", 4);
         let mut f2 = make_finding("a.go", 4);
@@ -4257,7 +4257,7 @@ mod tests {
     }
     #[test]
     fn test_non_utf8_file_encoding_fallback() {
-        // backlog 10.6：非 UTF-8（ISO-8859/GBK）源文件此前读取失败被静默跳过
+        // 已知缺口：非 UTF-8（ISO-8859/GBK）源文件此前读取失败被静默跳过
         // （整文件 0 命中且无告警）。lossy 降级后应继续产出 findings，
         // 并在结果 encoding_fallback_files 中记录文件路径。
         let dir = std::env::temp_dir().join(format!("ctxa-enc-{}", std::process::id()));

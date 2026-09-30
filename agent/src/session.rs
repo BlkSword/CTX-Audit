@@ -91,7 +91,7 @@ impl Session {
         Ok(Self { id, path })
     }
 
-    /// 创建带前缀的会话（M4 子 agent：文件名 `<prefix>-<uuid8>.jsonl`，
+    /// 创建带前缀的会话（子 agent：文件名 `<prefix>-<uuid8>.jsonl`，
     /// 带父轮次/父会话标识便于审计隔离与追溯）
     pub fn create_with_prefix(project_dir: &Path, prefix: &str) -> std::io::Result<Self> {
         let dir = Self::sessions_dir(project_dir);

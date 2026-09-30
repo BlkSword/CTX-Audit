@@ -63,8 +63,8 @@ fn is_body_block_kind(kind: &str) -> bool {
 /// 各语言对"函数体片段"的解析结果层级不同：
 /// 1. 整段就是一个块节点（JS 函数表达式体 / Java 方法体 / PHP 体）：直接用它；
 /// 2. 单层表达式包裹的块（Rust `{ ... }` → `source_file -> expression_statement -> block`）：
-///    解包一层 —— 旧实现只看直接子节点，导致 **所有 Rust 函数退回 text-CFG、
-///    CPG 无 call_info、param_to_calls 恒空**。
+/// 解包一层 —— 旧实现只看直接子节点，导致 **所有 Rust 函数退回 text-CFG、
+/// CPG 无 call_info、param_to_calls 恒空**。
 ///
 /// 片段本身就是语句列表（Python suite / JS 语句）时返回 `None`，继续走既有的
 /// text-CFG 回退：实测语句列表的 AST-CFG 会丢流（Python 相关单测回归），
@@ -105,7 +105,7 @@ pub fn find_fragment_body_nodes<'a>(root: Node<'a>) -> Vec<Node<'a>> {
 /// **语句列表**（无外层块包裹，如去缩进后的 Python/JS 函数体）时，返回
 /// 顶层语句节点，而不是空 vec。
 ///
-/// 背景（backlog ②）：`find_fragment_body_nodes` 对语句列表返回空，调用方
+/// 背景（已知缺口）：`find_fragment_body_nodes` 对语句列表返回空，调用方
 /// 因此退回文本 CFG——AST 语句级 def/use 不参与分析。语句列表在语法树上
 /// 与 `block` 等价，可直接交给 `build_from_nodes` 构 CFG。
 pub fn find_fragment_body_nodes_with_statements<'a>(root: Node<'a>) -> Vec<Node<'a>> {
@@ -1572,7 +1572,7 @@ impl ASTParser {
     fn collect_calls_recursive(node: &Node, content: &str, results: &mut Vec<CallInfo>) {
         let kind = node.kind();
 
-        // PHP echo/print 是语言构造而非函数调用（backlog 10.8）：tree-sitter 不产生
+        // PHP echo/print 是语言构造而非函数调用（已知缺口：tree-sitter 不产生
         // call_expression，`echo $row['name']` 这类存储型/反射型 XSS 的主输出构造
         // 永不命中 sink，污点链在最后一跳断掉。合成 callee="echo"/"print" 的
         // CallInfo，使 php_xss_output 的 "echo "/"print(" pattern 接到参数污点。
@@ -2386,7 +2386,7 @@ fn extract_java_field(node: &Node, content: &str) -> Result<Field, String> {
     }
 }
 
-/// 对代码片段做统一去缩进（backlog 10.7）。
+/// 对代码片段做统一去缩进（已知缺口。
 ///
 /// 函数体 body_text 提取自 AST body 节点：Python/Ruby 的 suite 首行带缩进
 /// （4 空格）而无外层 def 包装，fragment 重解析恒失败，静默回退 text-based
@@ -2786,7 +2786,7 @@ void handler(char *p) { printf("%s", p); }
 
     #[test]
     fn test_php_echo_print_synthetic_call_info() {
-        // backlog 10.8：echo/print 是语言构造，原不产生 CallInfo——存储型/反射型
+        // 已知缺口：echo/print 是语言构造，原不产生 CallInfo——存储型/反射型
         // XSS 主输出构造的污点链在最后一跳断掉。合成后 callee 应可被
         // php_xss_output 的 "echo "/"print(" pattern 匹配到参数污点。
         let code = r#"<?php

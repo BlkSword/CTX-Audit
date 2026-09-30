@@ -141,7 +141,7 @@ C5 结论回写（见下）
 
 ## MCP 工具参考
 
-> **工具面变更（ADR-001 Phase 1）**：MCP Server 默认只暴露 **9 个高阶代码智能能力**
+> **工具面变更**：MCP Server 默认只暴露 **9 个高阶代码智能能力**
 > （`get_project_index`、`get_symbol_definition`、`get_symbol_references`、`get_call_hierarchy`、
 > `slice_backward`、`get_dataflow_path`、`get_sanitizer_guards`、`get_framework_context`、
 > `get_incremental_status`）+ `read_file`/`list_files`/`report_finding`/`finish_analysis`。

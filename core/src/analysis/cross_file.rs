@@ -617,7 +617,7 @@ pub struct ImportResolution {
 /// - `CTX_AUDIT_XFILE_MAX_FLOWS`（默认 5000）：跨文件流总数上限
 /// - `CTX_AUDIT_XFILE_MAX_FLOWS_PER_SOURCE`（默认 3）：单 source 保留流数
 /// - `CTX_AUDIT_XFILE_MAX_STRUCTURAL_PER_SOURCE`（默认 1）：单 source 无数据流
-///   证据的"结构可达"链上限（0 = 只保留有数据流证据的链）
+/// 证据的"结构可达"链上限（0 = 只保留有数据流证据的链）
 /// - `CTX_AUDIT_XFILE_MIN_CONFIDENCE`（默认 0.35）：保留流的最低置信度
 /// - `CTX_AUDIT_XFILE_MAX_SINKS_PER_SOURCE`（默认 8）：每 source BFS 收集的最短 sink 数
 /// - `CTX_AUDIT_XFILE_MAX_HOPS`（默认 5）：调用图 BFS 深度上限（直接决定最坏耗时）
@@ -1120,7 +1120,7 @@ impl CrossFileTaintAnalyzer {
         }
         self.inject_middleware_edges();
         // 确定性：把图内所有顺序敏感结构规范化，使结果不依赖 HashMap 迭代序
-        // （否则同一二进制多次 --deep 的 findings 集合会抖动，见 backlog 确定性修复）
+        // （否则同一二进制多次 --deep 的 findings 集合会抖动，见 已知缺口确定性修复）
         self.canonicalize_graph_order();
 
         stats.total_functions = self.call_graph.nodes.len();
@@ -1402,7 +1402,7 @@ impl CrossFileTaintAnalyzer {
         let mut var_types: HashMap<String, String> = HashMap::new();
 
         // 模式 1: const/let/var varName = new TypeName(...)
-        // 也匹配: const/let/var varName = TypeName(...)  (无 new 的构造函数)
+        // 也匹配: const/let/var varName = TypeName(...) (无 new 的构造函数)
         let re = var_type_regex();
         for cap in re.captures_iter(content) {
             let var_name = cap[1].to_string();
@@ -1565,7 +1565,7 @@ impl CrossFileTaintAnalyzer {
     /// 背景：`SessionHandler(db)` 等构造函数 body 覆盖整个文件（包含所有 `this.method =`
     /// 定义），函数体文本匹配到 req.body/res.redirect 等 pattern 后会被误标为 source+sink，
     /// 产生大量 FP 跨文件流。实际 source/sink 是内层 Method 节点。
-    /// 10.1 最低成本近似：C 函数指针/回调注册惯用法显式建边。
+    /// 最低成本近似：C 函数指针/回调注册惯用法显式建边。
     ///
     /// 识别 `websDefineHandler("path", handler)`、`signal(SIG, handler)`、
     /// `pthread_create(&t, NULL, thread_fn, ...)` 等注册-回调模式，
@@ -1720,9 +1720,9 @@ impl CrossFileTaintAnalyzer {
     ///
     /// 两阶段匹配：
     /// 1. **Import alias 精确匹配**：利用 import 语句将局部名称解析为
-    ///    (目标文件, 原始导出名)，精确匹配跨文件调用。
+    /// (目标文件, 原始导出名)，精确匹配跨文件调用。
     /// 2. **全局名称回退**：对无法通过 import 解析的裸名称，
-    ///    退回到全局名称匹配。
+    /// 退回到全局名称匹配。
     fn resolve_cross_file_calls(&mut self) {
         // 构建 name → Vec<func_id> 索引
         let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();
@@ -2057,7 +2057,7 @@ impl CrossFileTaintAnalyzer {
     ///
     /// 必须与扫描器的 `is_ast_supported_file` 完全一致：这里曾单独维护一份
     /// 扩展名清单且**漏了 php**，导致 PHP 文件（scanner 判定支持、Stage C 文件表
-    /// 里也有、符号缓存里也有 22 个符号）在跨文件图里恒 0 节点——simplepie 全库
+    /// 里也有、符号缓存里也有 22 个符号）在跨文件图里恒 0 节点——实测全库
     /// 调用图仅 1 个节点、rss-bridge 31 个，PHP 的跨文件分析实际失效。
     /// 现在直接复用扫描器的清单，避免两处清单再次漂移。
     fn is_ast_supported(&self, path: &Path) -> bool {
@@ -3182,7 +3182,7 @@ impl CrossFileTaintAnalyzer {
     /// `payload` 与 `payload.foo`、`payload["x"]`、`payload.a.b` 视为同一污点族：
     /// 一方是另一方的点/下标前缀即命中。此前各处用 `HashSet::contains` 精确相等，
     /// "参数名 `payload`，调用实参引用 `payload.req`" 这类常见形态全部漏配——
-    /// 实测 rauthy：args_hit=398 但 callee_tainted=1（summary 只出 1 条流）。
+    /// 实测：args_hit=398 但 callee_tainted=1（summary 只出 1 条流）。
     fn var_path_matches(a: &str, b: &str) -> bool {
         let a = a.trim();
         let b = b.trim();
@@ -3991,7 +3991,7 @@ impl CrossFileTaintAnalyzer {
         fallback: Vec<InterproceduralTaintFlow>,
     ) -> Vec<InterproceduralTaintFlow> {
         // 数据流链先按 (source, sink, 类型) 去重：同一 pair 往往有多条路径，
-        // 若原样保留会挤占每 source 的 Top-N 名额（实测 rauthy 67 条数据流链
+        // 若原样保留会挤占每 source 的 Top-N 名额（实测 67 条数据流链
         // 有 56 条在去重阶段因同 pair 重复而被丢掉）。保留置信度最高、
         // 并列时路径最短的那条。
         let mut best: HashMap<String, InterproceduralTaintFlow> = HashMap::new();
@@ -4049,7 +4049,7 @@ impl CrossFileTaintAnalyzer {
     }
 
     /// 同 source 流收敛：同一 source 节点衍生的多条跨文件链按置信度降序保留 Top-N，
-    /// 并过滤低置信度深层假链（R103 追加：summary 传播过深导致单 source 喷射
+    /// 并过滤低置信度深层假链（summary 传播过深导致单 source 喷射
     /// 9+ 条不同类型链——query/get/fetch 等普通方法被裸子串 sink 误标，跳数衰减后
     /// 置信度可区分真假，按置信度收敛避免噪声淹没真实链）。
     fn dedup_flows_by_source(
@@ -4071,7 +4071,7 @@ impl CrossFileTaintAnalyzer {
         // 组内用 (置信度降序, sink 位置, 源/汇符号) 全序比较后再取 Top-N。
         // 注：未改为"按 source→sink 全域去重"的覆盖保持型方案——实测该方案
         // 会让部分项目候选量翻倍（commafeed 49→107）而只多挽回个别候选，
-        // 召回/成本的取舍需专门引擎轮评估（见 backlog）。
+        // 召回/成本的取舍需专门引擎轮评估（见 已知缺口）。
         let mut groups: Vec<(String, Vec<InterproceduralTaintFlow>)> =
             by_source.into_iter().collect();
         groups.sort_by(|a, b| a.0.cmp(&b.0));
@@ -4197,7 +4197,7 @@ impl CrossFileTaintAnalyzer {
         // 单次遍历：每个 source 一遍 BFS（借用键，零字符串克隆），BFS 保证首次
         // 到达即最短跳数；按 (跳数, sink id) 取最短 K 个 sink 并就地用前驱表
         // 重建路径。旧实现"边遍历边发射 + 达到 max_flows 即 return"让截断依赖
-        // 遍历序（实测 rauthy 5000 条全撞上限、候选集跨运行抖动 20%+）。
+        // 遍历序（实测 5000 条全撞上限、候选集跨运行抖动 20%+）。
         let mut candidates: Vec<(String, String, usize, Vec<String>)> = Vec::new();
         // 跨 source 复用 BFS 缓冲：每个 source 都新建 HashSet/HashMap 会让
         // 分配器反复扩张（大仓实测 flow 搜索阶段 RSS 高水位 +500MB），
@@ -4880,8 +4880,8 @@ impl CrossFileTaintAnalyzer {
                 &self.sink_patterns,
             );
             // 诊断（CTX_AUDIT_XFILE_STATS=1，最多 5 条）：CPG 摘要为何 param_to_calls 恒空。
-            // 分辨两种可能：① Stage B 的 taint flow 源/路径不含形参引用；
-            // ② flow 引用了形参但实参映射（node_meta.call_info.arguments）为空。
+            // 分辨两种可能： Stage B 的 taint flow 源/路径不含形参引用；
+            // flow 引用了形参但实参映射（node_meta.call_info.arguments）为空。
             if std::env::var_os("CTX_AUDIT_XFILE_STATS").is_some()
                 && summary.param_to_calls.is_empty()
                 && !summary.taint_propagation.is_empty()

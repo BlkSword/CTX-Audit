@@ -47,7 +47,7 @@ sanitizers:
   - "belongsto"
   - "canedit"
   - "candelete"
-  # R77 Owncast 反哺：Go middleware/router 层认证形态
+  # 实测补入：Go middleware/router 层认证形态
   - "middleware"
   - "requireauth"
   - "authenticate"

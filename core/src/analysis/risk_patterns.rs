@@ -477,7 +477,7 @@ export async function createUser(formData: FormData) {
 
     #[test]
     fn test_eval_sink_excludes_angular_dollar_eval() {
-        // R76 登记：AngularJS 的 $$eval(/$eval( 不得命中 eval sink 条件；
+        // 登记：AngularJS 的 $$eval(/$eval( 不得命中 eval sink 条件；
         // 同时守护含 eval 的条件正则必须真实编译进扫描器
         // （compile 失败会被 filter_map 静默丢弃）
         let scanner = RiskPatternScanner::new(Path::new("."));
