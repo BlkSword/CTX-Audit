@@ -130,7 +130,9 @@ impl IntelKind {
 }
 
 fn should_skip(dir_name: &str) -> bool {
-    SKIP_DIRS.contains(&dir_name)
+    // 跳过清单 + 一切点号目录：`.ctx-audit` 是工具自己的状态目录
+    // （mcp_metrics.jsonl 每次工具调用都会追加），索引它会让缓存指纹永远失效。
+    SKIP_DIRS.contains(&dir_name) || dir_name.starts_with('.')
 }
 
 pub fn language_of(path: &str) -> &'static str {
@@ -263,6 +265,35 @@ fn prov(file: &str, line: u32, id: &str) -> Provenance {
         resolver: "file-heuristic".to_string(),
         build_id: id.to_string(),
     }
+}
+
+/// 指定 resolver 的 provenance（如 `symbol-index`）
+fn prov_with(file: &str, line: u32, id: &str, resolver: &str) -> Provenance {
+    Provenance {
+        file: Some(file.to_string()),
+        line: Some(line),
+        resolver: resolver.to_string(),
+        build_id: id.to_string(),
+    }
+}
+
+/// 符号索引的可观测状态（供响应体如实上报）
+fn symbol_index_stats(
+    index: &crate::symbol_index::SymbolIndex,
+    hit: crate::symbol_index::HitSource,
+    build_ms: u64,
+) -> Value {
+    json!({
+        "files_indexed": index.file_count(),
+        "symbols": index.symbol_count(),
+        "parsed_files": index.parsed_files(),
+        "hit_source": hit.as_str(),
+        "build_ms": build_ms,
+        "age_ms": index.build_age().as_millis() as u64,
+        "skipped_large_files": index.skipped_large(),
+        "truncated_at_limit": index.truncated(),
+        "match": "identifier_exact",
+    })
 }
 
 /// 纯函数：定义行启发式。
@@ -536,41 +567,66 @@ impl Tool for CodeIntelTool {
                 let symbol = input["symbol"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 symbol 参数".to_string()))?;
-                let mut defs: Vec<Value> = Vec::new();
-                let mut provenance: Vec<Provenance> = Vec::new();
-                for (path, content) in files {
-                    for (line, text) in find_definitions(content, symbol) {
-                        provenance.push(prov(path, line, &id));
-                        defs.push(json!({"file": path, "line": line, "text": text}));
-                        if defs.len() >= MAX_HITS {
-                            break;
-                        }
-                    }
-                    if defs.len() >= MAX_HITS {
-                        break;
-                    }
+                // 走符号索引（反向表哈希查找），不再逐文件读盘 + 全量扫描
+                let (sindex, s_hit, s_build_ms) =
+                    crate::symbol_index::get_or_build(root, refresh, None);
+                let hits = sindex.definitions(symbol, MAX_HITS);
+                let provenance: Vec<Provenance> = hits
+                    .iter()
+                    .map(|h| prov_with(sindex.file_path(h.file), h.line, &id, "symbol-index"))
+                    .collect();
+                let defs: Vec<Value> = hits
+                    .iter()
+                    .map(|h| {
+                        json!({
+                            "file": sindex.file_path(h.file),
+                            "line": h.line,
+                            "text": h.text,
+                        })
+                    })
+                    .collect();
+                let level = if defs.is_empty() { "high" } else { "low" };
+                let mut reasons: Vec<&str> = vec![
+                    "definitions_are_identifier_exact",
+                    "import_alias_not_resolved",
+                    "not_lsp_resolved",
+                ];
+                if defs.is_empty() {
+                    reasons.push("no_definition_in_index");
                 }
-                let level = if defs.is_empty() { "high" } else { "medium" };
                 IntelEnvelope {
-                    data: json!({"symbol": symbol, "definitions": defs}),
+                    data: json!({
+                        "symbol": symbol,
+                        "definitions": defs,
+                        "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
+                    }),
                     provenance,
-                    uncertainty: Uncertainty::new(
-                        level,
-                        &["keyword_heuristic", "import_alias_not_resolved"],
-                        0,
-                    ),
+                    uncertainty: Uncertainty::new(level, &reasons, 0),
                 }
             }
             IntelKind::SymbolReferences => {
                 let symbol = input["symbol"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 symbol 参数".to_string()))?;
+                // 引用沿用逐行启发式语义，但先用布隆过滤器把"不可能含该子串"的文件剪掉，
+                // 因此只需读取候选文件（布隆无假阴性 ⇒ 结果与全量扫描一致）
+                let (sindex, s_hit, s_build_ms) =
+                    crate::symbol_index::get_or_build(root, refresh, None);
+                let candidates = sindex.reference_candidates(symbol);
+                let candidate_count = candidates.len();
                 let mut refs: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
-                for (path, content) in files {
-                    for (line, text) in find_references(content, symbol) {
-                        provenance.push(prov(path, line, &id));
-                        refs.push(json!({"file": path, "line": line, "text": text}));
+                let mut scanned_files = 0usize;
+                for idx in candidates {
+                    let rel = sindex.file_path(idx);
+                    let content = match std::fs::read_to_string(root.join(rel)) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    scanned_files += 1;
+                    for (line, text) in find_references(&content, symbol) {
+                        provenance.push(prov_with(rel, line, &id, "symbol-index+line-heuristic"));
+                        refs.push(json!({"file": rel, "line": line, "text": text}));
                         if refs.len() >= MAX_HITS {
                             break;
                         }
@@ -580,11 +636,17 @@ impl Tool for CodeIntelTool {
                     }
                 }
                 IntelEnvelope {
-                    data: json!({"symbol": symbol, "references": refs}),
+                    data: json!({
+                        "symbol": symbol,
+                        "references": refs,
+                        "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
+                        "candidate_files": candidate_count,
+                        "scanned_files": scanned_files,
+                    }),
                     provenance,
                     uncertainty: Uncertainty::new(
                         "medium",
-                        &["same_name_not_disambiguated"],
+                        &["same_name_not_disambiguated", "not_lsp_resolved"],
                         0,
                     ),
                 }

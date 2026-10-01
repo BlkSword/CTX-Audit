@@ -15,6 +15,7 @@ pub mod index_cache;
 pub mod pattern_tools;
 pub mod registry;
 pub mod search_tools;
+pub mod symbol_index;
 pub mod taint_tools;
 
 // 重新导出常用类型
