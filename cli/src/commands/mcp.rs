@@ -772,6 +772,8 @@ async fn run_configured_scan(
                 cross_file_max_flows: 50000,
                 public_route_patterns: scan.public_route_patterns.clone(),
                 non_production_path_patterns: scan.non_production_path_patterns.clone(),
+                cross_file_structural_per_source: None,
+                cross_file_min_confidence: None,
             }
         })
         .unwrap_or_else(|| {

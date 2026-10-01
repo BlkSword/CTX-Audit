@@ -87,6 +87,16 @@ pub struct ScanOptions {
     pub public_route_patterns: Vec<String>,
     /// 非生产代码路径模式（命中时标记 finding 为 non-production）
     pub non_production_path_patterns: Vec<String>,
+    /// 跨文件"结构可达链"每 source 上限的**显式覆盖**（None = 用环境变量/默认）。
+    ///
+    /// 与 `include_structural` 一起构成两种一等公民模式：
+    /// `precision-first`（切片/取证面）= 0，只留数据流链；
+    /// `recall-first`（候选面）= 放宽。替代只有环境变量才能调的历史形态。
+    #[serde(default)]
+    pub cross_file_structural_per_source: Option<usize>,
+    /// 跨文件流最低置信度的**显式覆盖**（None = 用环境变量/默认）
+    #[serde(default)]
+    pub cross_file_min_confidence: Option<f32>,
 }
 
 impl Default for ScanOptions {
@@ -107,7 +117,26 @@ impl Default for ScanOptions {
             public_route_patterns: crate::analysis::attack_surface::default_public_route_patterns(),
             non_production_path_patterns:
                 crate::analysis::attack_surface::default_non_production_path_patterns(),
+            cross_file_structural_per_source: None,
+            cross_file_min_confidence: None,
         }
+    }
+}
+
+/// 双模式覆盖的落地函数：只改显式给出的字段（`None` 表示沿用环境变量/默认）。
+///
+/// 与 `ScanOptions::cross_file_structural_per_source` / `cross_file_min_confidence`
+/// 配套，构成 precision-first / recall-first 两种一等公民模式。
+pub fn apply_cross_file_override(
+    limits: &mut crate::analysis::cross_file::CrossFileLimits,
+    structural_per_source: Option<usize>,
+    min_confidence: Option<f32>,
+) {
+    if let Some(v) = structural_per_source {
+        limits.max_structural_per_source = v;
+    }
+    if let Some(v) = min_confidence {
+        limits.min_confidence = v;
     }
 }
 
@@ -1708,6 +1737,14 @@ pub async fn scan_directory_deep_with_rules_progress(
         .as_ref()
         .map(|o| o.cross_file_max_flows)
         .unwrap_or(5000);
+    // 双模式（precision-first / recall-first）的显式覆盖：必须在下面把 scan_opts 移交给
+    // 基础扫描之前取出，否则跨文件阶段拿不到。
+    let cross_file_structural_per_source = scan_opts
+        .as_ref()
+        .and_then(|o| o.cross_file_structural_per_source);
+    let cross_file_min_confidence = scan_opts
+        .as_ref()
+        .and_then(|o| o.cross_file_min_confidence);
 
     // 先执行基础扫描（收集文件内容缓存）
     let line_tol = scan_opts.as_ref().map(|o| o.line_tolerance).unwrap_or(3);
@@ -2608,6 +2645,16 @@ pub async fn scan_directory_deep_with_rules_progress(
             } else {
                 crate::analysis::cross_file::CrossFileTaintAnalyzer::new()
             };
+            // 双模式覆盖：显式字段优先于环境变量/默认（切片/取证面要精度，候选面要召回）
+            if cross_file_structural_per_source.is_some() || cross_file_min_confidence.is_some() {
+                let mut limits = analyzer.limits();
+                apply_cross_file_override(
+                    &mut limits,
+                    cross_file_structural_per_source,
+                    cross_file_min_confidence,
+                );
+                analyzer.set_limits(limits);
+            }
             // 注入 Stage B 的 CPG 缓存，使 compute_single_summary 使用精确摘要
             if !accumulated_cpg.is_empty() {
                 analyzer.set_cpg_cache(accumulated_cpg, accumulated_flows);
@@ -4382,5 +4429,30 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 双模式覆盖只改显式字段；默认（None）不得影响既有行为
+    #[test]
+    fn test_cross_file_mode_override_is_explicit_only() {
+        let mut limits = crate::analysis::cross_file::CrossFileLimits::from_env();
+        let base = limits;
+
+        apply_cross_file_override(&mut limits, None, None);
+        assert_eq!(
+            limits.max_structural_per_source,
+            base.max_structural_per_source,
+            "None 不应改变默认上限"
+        );
+        assert_eq!(limits.min_confidence, base.min_confidence);
+
+        apply_cross_file_override(&mut limits, Some(0), Some(0.5));
+        assert_eq!(limits.max_structural_per_source, 0, "precision-first 应关闭结构链");
+        assert_eq!(limits.min_confidence, 0.5);
+        assert_eq!(limits.max_flows, base.max_flows, "其余字段不应被牵连");
+
+        // ScanOptions 默认值 = 不覆盖（保持历史行为）
+        let opts = ScanOptions::default();
+        assert!(opts.cross_file_structural_per_source.is_none());
+        assert!(opts.cross_file_min_confidence.is_none());
     }
 }

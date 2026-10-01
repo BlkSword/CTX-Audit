@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::text_scan::{code_lines, hash_comment_language, identifiers_in_line};
+
 /// 单文件大小上限（与内容索引保持一致）
 const MAX_FILE_BYTES: u64 = 512 * 1024;
 /// 索引文件数上限（仅用于兜底，避免异常目录把内存吃光；远超内容索引的 2000）
@@ -105,8 +107,12 @@ pub struct SymbolIndex {
     dirs: Vec<DirEntry>,
     /// files 下标 → 该文件的声明（symbol, line, text）
     file_defs: Vec<Vec<(String, u32, String)>>,
+    /// files 下标 → 该文件的标识符倒排（identifier → 行号）
+    file_idents: Vec<HashMap<String, Vec<u32>>>,
     /// symbol → 定义位置（由 file_defs 派生）
     defs: HashMap<String, Vec<DefHit>>,
+    /// identifier → 引用位置 `(文件下标, 行号)`（由 file_idents 派生）
+    idents: HashMap<String, Vec<(u32, u32)>>,
     built_at: Instant,
     /// 累计解析过的文件数（增量时只解析变化的）
     parsed_files: u64,
@@ -187,6 +193,34 @@ impl SymbolIndex {
         hits
     }
 
+    /// 标识符引用位置 `(文件下标, 行号)`，按 路径 → 行号 稳定排序。
+    ///
+    /// 与定义同源：都来自**代码段**（注释/字符串已剥离），因此"字符串里的同名 token"
+    /// 不会被当成引用（真实仓库 oracle 上这正是剩余误报的来源）。
+    pub fn identifier_hits(&self, symbol: &str) -> Vec<(usize, u32)> {
+        let Some(raw) = self.idents.get(symbol) else {
+            return Vec::new();
+        };
+        let mut hits: Vec<(usize, u32)> = raw.iter().map(|(f, l)| (*f as usize, *l)).collect();
+        hits.sort_by(|a, b| {
+            self.files[a.0]
+                .path
+                .cmp(&self.files[b.0].path)
+                .then(a.1.cmp(&b.1))
+        });
+        hits
+    }
+
+    /// 倒排表覆盖的标识符出现次数（可观测性）
+    pub fn identifier_count(&self) -> usize {
+        self.idents.values().map(|v| v.len()).sum()
+    }
+
+    /// 倒排表里的不同标识符数
+    pub fn identifier_symbols(&self) -> usize {
+        self.idents.len()
+    }
+
     /// 引用候选文件下标（布隆过滤器无假阴性 ⇒ 候选集是"内容包含该子串"的超集）
     pub fn reference_candidates(&self, symbol: &str) -> Vec<usize> {
         self.files
@@ -244,6 +278,7 @@ impl SymbolIndex {
 
         let mut files: Vec<FileEntry> = Vec::with_capacity(paths.len());
         let mut file_defs: Vec<Vec<(String, u32, String)>> = Vec::with_capacity(paths.len());
+        let mut file_idents: Vec<HashMap<String, Vec<u32>>> = Vec::with_capacity(paths.len());
         let mut parsed_files = self.parsed_files;
 
         for (rel, full, meta) in paths {
@@ -255,12 +290,13 @@ impl SymbolIndex {
                     // 未变：直接复用
                     files.push(old.clone());
                     file_defs.push(self.file_defs[old_idx].clone());
+                    file_idents.push(self.file_idents[old_idx].clone());
                     continue;
                 }
             }
             // 新增或变化：解析
             if let Ok(content) = std::fs::read_to_string(&full) {
-                let (defs, bloom) = index_content(&content);
+                let (defs, bloom, idents) = index_content(&rel, &content);
                 parsed_files += 1;
                 files.push(FileEntry {
                     path: rel,
@@ -269,16 +305,20 @@ impl SymbolIndex {
                     bloom,
                 });
                 file_defs.push(defs);
+                file_idents.push(idents);
             }
         }
 
         let defs = build_def_map(&file_defs);
+        let idents = build_ident_map(&file_idents);
         SymbolIndex {
             root: self.root.clone(),
             files,
             dirs,
             file_defs,
+            file_idents,
             defs,
+            idents,
             built_at: Instant::now(),
             parsed_files,
             skipped_large,
@@ -294,7 +334,9 @@ impl SymbolIndex {
             files: Vec::new(),
             dirs: Vec::new(),
             file_defs: Vec::new(),
+            file_idents: Vec::new(),
             defs: HashMap::new(),
+            idents: HashMap::new(),
             built_at: Instant::now(),
             parsed_files: 0,
             skipped_large: 0,
@@ -536,26 +578,52 @@ fn collect_paths(
     (files, dirs, skipped_large, skipped_non_code, truncated)
 }
 
-/// 解析一个文件：返回 `(声明列表, trigram 布隆位图)`
-fn index_content(content: &str) -> (Vec<(String, u32, String)>, Vec<u64>) {
+/// 解析一个文件：返回 `(声明列表, trigram 布隆位图, 标识符倒排)`
+fn index_content(
+    path: &str,
+    content: &str,
+) -> (
+    Vec<(String, u32, String)>,
+    Vec<u64>,
+    HashMap<String, Vec<u32>>,
+) {
+    /// 单文件标识符条目上限（防御异常大文件把内存吃光）
+    const MAX_IDENTS_PER_FILE: usize = 20_000;
+
     let mut bloom = vec![0u64; BLOOM_WORDS];
     add_trigrams(&mut bloom, content);
 
+    let hash_comment = hash_comment_language(path);
+    let code = code_lines(content, hash_comment);
+
     let mut defs: Vec<(String, u32, String)> = Vec::new();
-    for (idx, line) in content.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+    let mut idents: HashMap<String, Vec<u32>> = HashMap::new();
+
+    for (idx, raw) in content.lines().enumerate() {
+        let lineno = (idx + 1) as u32;
+        let code_line = code.get(idx).map(|s| s.as_str()).unwrap_or("");
+
+        // 标识符倒排：只在**代码段**里取（字符串/注释里的同名 token 不算引用）
+        if idents.len() < MAX_IDENTS_PER_FILE {
+            for name in identifiers_in_line(code_line) {
+                let entry = idents.entry(name).or_default();
+                if entry.last() != Some(&lineno) {
+                    entry.push(lineno);
+                }
+            }
+        }
+
+        // 声明：同样用代码段判定，避免字符串里的 "def foo" 被当成定义
+        let trimmed = code_line.trim();
+        if trimmed.is_empty() || !DEF_KEYWORDS.iter().any(|k| trimmed.contains(*k)) {
             continue;
         }
-        if !DEF_KEYWORDS.iter().any(|k| trimmed.contains(*k)) {
-            continue;
-        }
-        let text: String = trimmed.chars().take(200).collect();
+        let text: String = raw.trim().chars().take(200).collect();
         for name in declared_names(trimmed) {
-            defs.push((name, (idx + 1) as u32, text.clone()));
+            defs.push((name, lineno, text.clone()));
         }
     }
-    (defs, bloom)
+    (defs, bloom, idents)
 }
 
 /// 从声明行抽取被声明的标识符（跳过修饰符；语言无关的保守启发式）
@@ -608,6 +676,22 @@ fn build_def_map(file_defs: &[Vec<(String, u32, String)>]) -> HashMap<String, Ve
                 line: *line,
                 text: text.clone(),
             });
+        }
+    }
+    map
+}
+
+/// 由 per-file 倒排派生全局倒排：`identifier → [(文件下标, 行号)]`
+fn build_ident_map(
+    file_idents: &[HashMap<String, Vec<u32>>],
+) -> HashMap<String, Vec<(u32, u32)>> {
+    let mut map: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
+    for (file, idents) in file_idents.iter().enumerate() {
+        for (name, lines) in idents {
+            let entry = map.entry(name.clone()).or_default();
+            for line in lines {
+                entry.push((file as u32, *line));
+            }
         }
     }
     map

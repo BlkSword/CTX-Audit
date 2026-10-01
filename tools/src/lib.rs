@@ -17,6 +17,7 @@ pub mod registry;
 pub mod search_tools;
 pub mod symbol_index;
 pub mod taint_tools;
+pub mod text_scan;
 
 // 重新导出常用类型
 pub use ast_tools::register_ast_tools;

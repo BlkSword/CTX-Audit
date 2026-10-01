@@ -90,6 +90,14 @@ enum Commands {
         #[arg(long)]
         include_structural: bool,
 
+        /// 跨文件精度优先：关闭“结构可达链”(=0)、最低置信度提至 0.5（切片/取证面）
+        #[arg(long, conflicts_with = "recall_first")]
+        precision_first: bool,
+
+        /// 跨文件召回优先：结构链每 source 放宽至 3 条、最低置信度回到 0.35（候选面）
+        #[arg(long)]
+        recall_first: bool,
+
         /// 文件模式过滤（如 *.rs）
         #[arg(short, long)]
         pattern: Option<String>,
@@ -640,6 +648,8 @@ async fn main() -> Result<()> {
             query_mode,
             min_confidence,
             include_structural,
+            precision_first,
+            recall_first,
         } => {
             commands::scan::execute(
                 path,
@@ -660,6 +670,8 @@ async fn main() -> Result<()> {
                 query_mode,
                 min_confidence,
                 include_structural,
+                precision_first,
+                recall_first,
             )
             .await
         }

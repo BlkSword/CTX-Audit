@@ -165,6 +165,18 @@ fn should_skip(dir_name: &str) -> bool {
     SKIP_DIRS.contains(&dir_name) || dir_name.starts_with('.')
 }
 
+/// 内容索引的文件数上限：`CTX_AUDIT_INDEX_MAX_FILES` 可覆盖（0/非法值回落默认）。
+///
+/// 默认 2000 是"把文件内容全部读进内存"时代的产物；调大只影响内存，
+/// 符号工具（`get_symbol_definition`/`references`）已不受该上限约束。
+fn max_index_files() -> usize {
+    std::env::var("CTX_AUDIT_INDEX_MAX_FILES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(MAX_FILES)
+}
+
 pub fn language_of(path: &str) -> &'static str {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
@@ -217,9 +229,10 @@ fn load_files(root: &Path) -> LoadedIndex {
     let mut dir_stamps: Vec<DirStamp> = Vec::new();
     let mut skipped_large = 0usize;
     let mut truncated_at_limit = false;
+    let max_files = max_index_files();
     let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, dir_rel)) = stack.pop() {
-        if out.len() >= MAX_FILES {
+        if out.len() >= max_files {
             truncated_at_limit = true;
             break;
         }
@@ -248,7 +261,7 @@ fn load_files(root: &Path) -> LoadedIndex {
                 }
                 continue;
             }
-            if out.len() >= MAX_FILES {
+            if out.len() >= max_files {
                 truncated_at_limit = true;
                 break;
             }
@@ -319,6 +332,8 @@ fn symbol_index_stats(
     json!({
         "files_indexed": index.file_count(),
         "symbols": index.symbol_count(),
+        "identifiers": index.identifier_symbols(),
+        "identifier_occurrences": index.identifier_count(),
         "parsed_files": index.parsed_files(),
         "hit_source": hit.as_str(),
         "build_ms": build_ms,
@@ -352,59 +367,10 @@ pub fn find_definitions(content: &str, symbol: &str) -> Vec<(u32, String)> {
     hits
 }
 
-/// 纯函数：`symbol` 是否作为**独立标识符**出现在该行（两侧不是标识符字符）。
-///
-/// 真实仓库实测依据：整行子串匹配让 `App` 命中 `_AppCtxGlobals`、`copy` 命中 `deepcopy`，
-/// 引用精度只有 0.48。带点/其它符号的查询退化为子串匹配（保持旧语义）。
-pub fn contains_identifier(line: &str, symbol: &str) -> bool {
-    if symbol.is_empty() {
-        return false;
-    }
-    if !symbol
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-    {
-        return line.contains(symbol);
-    }
-    let chars: Vec<char> = line.chars().collect();
-    let sym: Vec<char> = symbol.chars().collect();
-    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    if sym.len() > chars.len() {
-        return false;
-    }
-    for i in 0..=(chars.len() - sym.len()) {
-        if chars[i..i + sym.len()] == sym[..] {
-            let before_ok = i == 0 || !is_ident(chars[i - 1]);
-            let after_ok = i + sym.len() == chars.len() || !is_ident(chars[i + sym.len()]);
-            if before_ok && after_ok {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// 纯函数：该行是否有 `name(` 形态的调用点，且 `name` 左侧不是标识符字符
-///（否则 `myread(` 会被当成 `read(` 的调用点）。
-pub fn call_site_match(line: &str, name: &str) -> bool {
-    let needle = format!("{name}(");
-    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    let mut from = 0usize;
-    while let Some(pos) = line[from..].find(&needle) {
-        let abs = from + pos;
-        let before_ok = abs == 0
-            || !line[..abs]
-                .chars()
-                .next_back()
-                .map(is_ident)
-                .unwrap_or(false);
-        if before_ok {
-            return true;
-        }
-        from = abs + needle.len();
-    }
-    false
-}
+// 行级代码段工具（去注释/字符串 + 标识符边界）统一放在 `text_scan`，此处重导出保持调用点不变。
+// 实测依据：整行子串匹配让 `App` 命中 `_AppCtxGlobals`、`copy` 命中 `deepcopy`（引用精度 0.48）；
+// 字符串/行内注释里的同名 token 是剩余误报来源（oracle 只计 NAME token）。
+pub use crate::text_scan::{call_site_match, code_lines, contains_identifier, hash_comment_language};
 
 /// 纯函数：引用行扫描（标识符边界 + **精确**排除该符号的真实定义行）。
 ///
@@ -413,24 +379,57 @@ pub fn call_site_match(line: &str, name: &str) -> bool {
 /// - 旧实现用"这行看起来像定义"来排除定义行 → 会把恰好含 def 关键字的真实引用行也排掉（recall 0.73）。
 ///   现在由符号索引给出该符号的真实定义行，精确排除。
 pub fn find_references_exact(
-    content: &str,
+    original: &[&str],
+    code: &[String],
     symbol: &str,
     def_lines: &std::collections::HashSet<u32>,
 ) -> Vec<(u32, String)> {
     let mut hits = Vec::new();
-    for (idx, line) in content.lines().enumerate() {
+    for (idx, code_line) in code.iter().enumerate() {
         let lineno = (idx + 1) as u32;
         if def_lines.contains(&lineno) {
             continue;
         }
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+        if !contains_identifier(code_line.trim(), symbol) {
             continue;
         }
-        if !contains_identifier(trimmed, symbol) {
+        let text = original
+            .get(idx)
+            .map(|l| l.trim().chars().take(200).collect::<String>())
+            .unwrap_or_default();
+        hits.push((lineno, text));
+    }
+    hits
+}
+
+/// 纯函数：调用点扫描（**代码段**判定 + 左边界），返回 `(行号, 原文行)`。
+///
+/// 用代码段而非原文，避免字符串/注释里的 `name(` 被当成调用点。
+pub fn find_call_sites_in_code(
+    original: &[&str],
+    code: &[String],
+    name: &str,
+) -> Vec<(u32, String)> {
+    let mut hits = Vec::new();
+    for (idx, code_line) in code.iter().enumerate() {
+        let trimmed = code_line.trim();
+        if !call_site_match(trimmed, name) {
             continue;
         }
-        hits.push((lineno, trimmed.chars().take(200).collect()));
+        let def_like = ["fn ", "def ", "func ", "function "]
+            .iter()
+            .any(|k| trimmed.contains(*k));
+        if def_like {
+            continue;
+        }
+        let text = original
+            .get(idx)
+            .map(|l| l.trim().chars().take(200).collect::<String>())
+            .unwrap_or_default();
+        hits.push(((idx + 1) as u32, text));
+        if hits.len() >= MAX_HITS {
+            break;
+        }
     }
     hits
 }
@@ -804,7 +803,7 @@ impl Tool for CodeIntelTool {
                         "build_id": id,
                         "index_freshness": freshness,
                         "limits": {
-                            "max_files": MAX_FILES,
+                            "max_files": max_index_files(),
                             "max_file_bytes": MAX_FILE_BYTES,
                             "skipped_large_files": index.skipped_large,
                             "truncated_at_limit": index.truncated_at_limit,
@@ -872,9 +871,8 @@ impl Tool for CodeIntelTool {
                 // （真实仓库实测：旧子串+启发式排除的 F1 只有 0.58——`App` 命中 `_AppCtxGlobals`。）
                 let (sindex, s_hit, s_build_ms) =
                     crate::symbol_index::get_or_build(root, refresh, None);
-                let candidates = sindex.reference_candidates(symbol);
-                let candidate_count = candidates.len();
 
+                // 该符号在各文件里的**真实定义行**（用于精确排除，替代"看起来像定义"的启发式）
                 let mut def_lines_by_file: std::collections::HashMap<
                     String,
                     std::collections::HashSet<u32>,
@@ -886,18 +884,39 @@ impl Tool for CodeIntelTool {
                         .insert(hit.line);
                 }
 
+                // 引用改为**倒排表查询**（不再逐文件扫描）：命中位置取自代码段
+                // （注释/字符串已剥离），因此"字符串里的同名 token"天然不进结果。
+                let mut by_file: std::collections::BTreeMap<usize, Vec<u32>> =
+                    std::collections::BTreeMap::new();
+                for (file_idx, line) in sindex.identifier_hits(symbol) {
+                    let rel = sindex.file_path(file_idx);
+                    if def_lines_by_file
+                        .get(rel)
+                        .map(|s| s.contains(&line))
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    by_file.entry(file_idx).or_default().push(line);
+                }
+                let candidate_count = by_file.len();
+
                 let mut collected: Vec<(String, u32, String)> = Vec::new();
                 let mut scanned_files = 0usize;
-                let empty = std::collections::HashSet::new();
-                for idx in candidates {
-                    let rel = sindex.file_path(idx);
+                for (file_idx, mut lines) in by_file {
+                    let rel = sindex.file_path(file_idx);
                     let content = match std::fs::read_to_string(root.join(rel)) {
                         Ok(c) => c,
                         Err(_) => continue,
                     };
                     scanned_files += 1;
-                    let defs_here = def_lines_by_file.get(rel).unwrap_or(&empty);
-                    for (line, text) in find_references_exact(&content, symbol, defs_here) {
+                    lines.sort_unstable();
+                    let originals: Vec<&str> = content.lines().collect();
+                    for line in lines {
+                        let text = originals
+                            .get((line as usize).saturating_sub(1))
+                            .map(|l| l.trim().chars().take(200).collect::<String>())
+                            .unwrap_or_default();
                         collected.push((rel.to_string(), line, text));
                     }
                 }
@@ -937,6 +956,7 @@ impl Tool for CodeIntelTool {
                             "not_lsp_resolved",
                             "index_covers_code_files_only",
                             "identifier_boundary_matching",
+                            "strings_and_comments_excluded",
                         ],
                         0,
                     ),
@@ -958,6 +978,8 @@ impl Tool for CodeIntelTool {
                         // 调用点匹配要覆盖**导入别名**（`import { put as save }` / `Loader as Ldr`），
                         // 否则真实调用点用本地名就没有（ground truth 上 recall=0）。
                         let lines: Vec<&str> = content.lines().collect();
+                        // 调用点也在**代码段**上判定：字符串/注释里的 `name(` 不算调用
+                        let code = code_lines(content, hash_comment_language(path));
                         let mut needles: Vec<String> = vec![function.to_string()];
                         for (imported, local) in import_aliases(content) {
                             if imported == function && !needles.contains(&local) {
@@ -967,7 +989,7 @@ impl Tool for CodeIntelTool {
                         let mut seen_callers: std::collections::HashSet<(String, u32)> =
                             std::collections::HashSet::new();
                         for needle in &needles {
-                            for (line, text) in find_call_sites(content, needle) {
+                            for (line, text) in find_call_sites_in_code(&lines, &code, needle) {
                                 let idx = (line as usize).saturating_sub(1);
                                 // 接口/抽象方法**声明**不是调用点（Go/Java/TS 接口体）
                                 if in_interface_block(&lines, idx) {

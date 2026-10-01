@@ -75,6 +75,8 @@ pub async fn execute(
     query_mode: bool,
     min_confidence: Option<f32>,
     include_structural: bool,
+    precision_first: bool,
+    recall_first: bool,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -125,8 +127,13 @@ pub async fn execute(
                 graph_output,
                 query_mode,
                 include_structural,
+                precision_first,
+                recall_first,
             )
             .await;
+        }
+        if precision_first || recall_first {
+            renderer.warning("跨文件模式开关只作用于本地扫描；daemon 扫描请设置对应环境变量");
         }
         return scan_via_daemon(
             path,
@@ -137,6 +144,8 @@ pub async fn execute(
             output_format,
             enable_taint,
             enable_cross_file,
+            precision_first,
+            recall_first,
             &mut renderer,
         )
         .await;
@@ -159,6 +168,8 @@ pub async fn execute(
         graph_output,
         query_mode,
         include_structural,
+        precision_first,
+        recall_first,
     )
     .await
 }
@@ -241,6 +252,8 @@ fn build_scan_options() -> ScanOptions {
             cross_file_max_flows: 50000,
             public_route_patterns,
             non_production_path_patterns,
+            cross_file_structural_per_source: None,
+            cross_file_min_confidence: None,
         },
         None => ScanOptions::default(),
     }
@@ -344,6 +357,8 @@ async fn scan_local(
     graph_output: Option<String>,
     query_mode: bool,
     include_structural: bool,
+    precision_first: bool,
+    recall_first: bool,
 ) -> Result<()> {
     let mode = match (enable_taint, enable_cross_file) {
         (true, true) => "深度扫描 (规则 + 污点 + 跨文件)",
@@ -361,6 +376,16 @@ async fn scan_local(
     scan_opts.enable_taint = enable_taint;
     scan_opts.enable_cross_file = enable_cross_file;
     scan_opts.include_structural = include_structural;
+    // 跨文件双模式（一等公民，替代只有环境变量能调的历史形态）
+    if precision_first {
+        scan_opts.cross_file_structural_per_source = Some(0);
+        scan_opts.cross_file_min_confidence = Some(0.5);
+        renderer.info("跨文件模式: precision-first（结构可达链=0、最低置信度 0.5）");
+    } else if recall_first {
+        scan_opts.cross_file_structural_per_source = Some(3);
+        scan_opts.cross_file_min_confidence = Some(0.35);
+        renderer.info("跨文件模式: recall-first（结构链 3 条/source、最低置信度 0.35）");
+    }
 
     // 合并排除列表：CLI + 配置文件 exclude_extra
     let all_excludes = build_exclude_dirs(exclude_dirs);
@@ -878,6 +903,8 @@ async fn scan_via_daemon(
     output_format: &str,
     enable_taint: bool,
     enable_cross_file: bool,
+    precision_first: bool,
+    recall_first: bool,
     renderer: &mut TerminalRenderer,
 ) -> Result<()> {
     let mut client = match DaemonClient::connect_with_retry().await {
@@ -902,6 +929,8 @@ async fn scan_via_daemon(
                 None,
                 false,
                 false,
+                precision_first,
+                recall_first,
             )
             .await;
         }
@@ -945,6 +974,8 @@ async fn scan_via_daemon(
                 None,
                 false,
                 false,
+                precision_first,
+                recall_first,
             )
             .await;
         }
