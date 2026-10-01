@@ -1451,10 +1451,44 @@ impl Tool for CodeIntelTool {
                         return Err(ToolError::InvalidArgument(format!("文件不存在: {}", file)))
                     }
                 }
+                // 路由 → handler 绑定：用符号索引把 handler **标识符精确**解析到定义位置。
+                // 这是"框架 resolver"的起点——先给出 route 与 handler 定义之间**可验证**的关联，
+                // 而不是只报"这行看起来像路由"。
+                let (sindex, s_hit, s_build_ms) =
+                    crate::symbol_index::get_or_build(root, refresh, None);
+                let mut handler_definitions: Vec<Value> = Vec::new();
+                if !handler.is_empty() {
+                    for hit in sindex.definitions(handler, 10) {
+                        let hf = sindex.file_path(hit.file).to_string();
+                        provenance.push(prov_with(&hf, hit.line, &id, "handler-definition"));
+                        handler_definitions.push(json!({
+                            "file": hf,
+                            "line": hit.line,
+                            "text": hit.text,
+                        }));
+                    }
+                }
+                let resolved = !handler.is_empty() && !handler_definitions.is_empty();
+                let mut reasons: Vec<&str> = vec!["framework_graph_not_resolved"];
+                if !handler.is_empty() && !resolved {
+                    reasons.push("handler_not_resolved");
+                }
                 IntelEnvelope {
-                    data: json!({"file": file, "handler": handler, "routes": routes, "middleware": middleware}),
+                    data: json!({
+                        "file": file,
+                        "handler": handler,
+                        "handler_resolved": resolved,
+                        "handler_definitions": handler_definitions,
+                        "routes": routes,
+                        "middleware": middleware,
+                        "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
+                    }),
                     provenance,
-                    uncertainty: Uncertainty::new("high", &["framework_graph_not_resolved"], 0),
+                    uncertainty: Uncertainty::new(
+                        if resolved { "medium" } else { "high" },
+                        &reasons,
+                        0,
+                    ),
                 }
             }
             IntelKind::IncrementalStatus => {
