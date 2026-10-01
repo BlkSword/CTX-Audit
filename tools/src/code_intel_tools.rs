@@ -524,14 +524,35 @@ pub fn body_span(lines: &[&str], def_idx: usize, brace: bool) -> (usize, usize) 
         }
         (def_idx, def_idx)
     } else {
-        let base = indent_width(lines[def_idx]);
-        let mut end = def_idx;
-        for (idx, line) in lines.iter().enumerate().skip(def_idx + 1) {
+        // 先跳过"多行签名"：签名收尾行常从第 0 列开始（如 Python 的 `) -> T:`），
+        // 若拿定义行缩进当基准会把函数体当 dedent 立即截断（实测导致切片漏函数头）。
+        // 用括号平衡定位签名结束更稳。
+        let mut depth: i32 = 0;
+        let mut header_end = def_idx;
+        for (offset, line) in lines.iter().enumerate().skip(def_idx) {
+            for ch in line.chars() {
+                match ch {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if depth <= 0 {
+                header_end = offset;
+                break;
+            }
+        }
+        let body_start = header_end + 1;
+        // dedent 阈值仍取**定义行缩进**（外层缩进）；只是扫描从签名之后开始，
+        // 这样多行签名的收尾行不会被误当成函数体结束。
+        let outer = indent_width(lines[def_idx]);
+        let mut end = header_end;
+        for (idx, line) in lines.iter().enumerate().skip(body_start) {
             if line.trim().is_empty() {
                 end = idx;
                 continue;
             }
-            if indent_width(line) <= base {
+            if indent_width(line) <= outer {
                 break;
             }
             end = idx;
@@ -1008,12 +1029,16 @@ impl Tool for CodeIntelTool {
                         // 早先的实现把"文件里出现过的所有调用"都算成 callee，
                         // ground truth 基线上精度只有 0.53（把同文件无关函数也算进来）。
                         let lines: Vec<&str> = content.lines().collect();
+                        // 体范围判定用**代码段**：函数体内的多行字符串若含顶格行，
+                        // 用原始行做缩进判定会把函数提前截断。
+                        let code = code_lines(content, hash_comment_language(path));
+                        let code_refs: Vec<&str> = code.iter().map(|s| s.as_str()).collect();
                         let brace = is_brace_language(path);
                         let mut seen: std::collections::HashSet<(String, String)> =
                             std::collections::HashSet::new();
                         for (def_line, _) in find_definitions(content, function) {
                             let def_idx = (def_line as usize).saturating_sub(1);
-                            let (start, end) = body_span(&lines, def_idx, brace);
+                            let (start, end) = body_span(&code_refs, def_idx, brace);
                             for idx in start..=end.min(lines.len().saturating_sub(1)) {
                                 for name in callee_names(lines[idx]) {
                                     if name.as_str() == function {
@@ -1077,16 +1102,70 @@ impl Tool for CodeIntelTool {
                 let symbol = input["symbol"].as_str().unwrap_or("");
                 let mut snippets: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
+                // 语义升级：定位目标行所在的**函数**，窗口必须覆盖函数头（否则切片读者看不到上下文）
+                let (sindex, s_hit, s_build_ms) =
+                    crate::symbol_index::get_or_build(root, refresh, None);
+                let mut function_name: Option<String> = None;
+                let mut function_def_line: Option<u32> = None;
+                let mut includes_function_header = false;
+                let mut window_start = 0usize;
+                let mut window_end = 0usize;
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
                         let lines: Vec<&str> = content.lines().collect();
+                        // 体范围判定用代码段（多行字符串里的顶格行不应被当成 dedent）
+                        let code = code_lines(content, hash_comment_language(path));
+                        let code_refs: Vec<&str> = code.iter().map(|s| s.as_str()).collect();
                         let center = if line > 0 { line.min(lines.len()) } else { lines.len() };
-                        let start = center.saturating_sub(depth);
+                        let brace = is_brace_language(path);
+                        // 目标行之前最后一条声明，且其函数体覆盖目标行 ⇒ 它就是所在函数
+                        let enclosing = sindex.file_index(path).and_then(|fi| {
+                            sindex
+                                .definitions_in_file(fi)
+                                .into_iter()
+                                .filter(|(_, def_line, _)| (*def_line as usize) <= center)
+                                .filter(|(_, def_line, _)| {
+                                    let (_, end) = body_span(
+                                        &code_refs,
+                                        (*def_line as usize).saturating_sub(1),
+                                        brace,
+                                    );
+                                    end + 1 >= center
+                                })
+                                .max_by_key(|(_, def_line, _)| *def_line)
+                        });
+                        let start = match &enclosing {
+                            Some((_, def_line, _)) => {
+                                center.saturating_sub(depth).min((*def_line as usize).saturating_sub(1))
+                            }
+                            None => center.saturating_sub(depth),
+                        };
+                        if let Some((name, def_line, _)) = &enclosing {
+                            function_name = Some(name.clone());
+                            function_def_line = Some(*def_line);
+                        }
+                        window_start = start;
+                        window_end = center;
                         for i in start..center {
                             let text = lines.get(i).copied().unwrap_or("");
-                            if symbol.is_empty() || text.contains(symbol) || i + 1 == center {
-                                provenance.push(prov(path, (i + 1) as u32, &id));
-                                snippets.push(json!({"line": i + 1, "text": text.trim().chars().take(200).collect::<String>()}));
+                            let is_header = function_def_line.map(|l| l as usize == i + 1).unwrap_or(false);
+                            let is_target = i + 1 == center;
+                            if symbol.is_empty() || is_header || is_target || text.contains(symbol) {
+                                if is_header {
+                                    includes_function_header = true;
+                                }
+                                provenance.push(prov_with(
+                                    path,
+                                    (i + 1) as u32,
+                                    &id,
+                                    if is_header { "slice+function-header" } else { "slice+line-window" },
+                                ));
+                                snippets.push(json!({
+                                    "line": i + 1,
+                                    "text": text.trim().chars().take(200).collect::<String>(),
+                                    "is_function_header": is_header,
+                                    "is_target": is_target,
+                                }));
                             }
                         }
                     }
@@ -1095,11 +1174,26 @@ impl Tool for CodeIntelTool {
                     }
                 }
                 IntelEnvelope {
-                    data: json!({"file": file, "snippets": snippets}),
+                    data: json!({
+                        "file": file,
+                        "slice_kind": "function_scoped_prefix",
+                        "function": function_name,
+                        "function_def_line": function_def_line,
+                        "includes_function_header": includes_function_header,
+                        "target_line": if line > 0 { json!(line) } else { Value::Null },
+                        "window": {"start_line": window_start + 1, "end_line": window_end},
+                        "depth": depth,
+                        "lines_returned": snippets.len(),
+                        "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
+                        "snippets": snippets,
+                    }),
                     provenance,
                     uncertainty: Uncertainty::new(
                         "high",
-                        &["line_window_not_true_dataflow_slice"],
+                        &[
+                            "backward_prefix_not_dataflow_slice",
+                            "function_header_included_when_found",
+                        ],
                         0,
                     ),
                 }
@@ -1500,6 +1594,19 @@ mod tests {
         assert_eq!(body_span(&lines, 0, true), (0, 3));
         assert!(is_brace_language("a.js") && is_brace_language("a.go"));
         assert!(!is_brace_language("a.py"));
+    }
+
+    /// 缩进语言：多行签名不得把函数体截断（签名收尾行 `) -> int:` 常从第 0 列开始）
+    #[test]
+    fn test_body_span_indent_multiline_signature() {
+        let src = "def outer(\n    a: int,\n) -> int:\n    x = a + 1\n    return x\n\n\ndef other():\n    return 0\n";
+        let lines: Vec<&str> = src.lines().collect();
+        let (start, end) = body_span(&lines, 0, false);
+        assert_eq!(start, 0);
+        assert!(
+            end >= 4 && end < 7,
+            "函数体应覆盖 `return x`(idx 4) 且止于下一个顶层 def(idx 7)：实际 end={end}"
+        );
     }
 
     /// 命名导入别名：JS/TS 花括号清单与 Python `from ... import`

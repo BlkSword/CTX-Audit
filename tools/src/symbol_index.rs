@@ -236,6 +236,22 @@ impl SymbolIndex {
         &self.files[idx].path
     }
 
+    /// 相对路径 → 文件下标（用于按文件查定义）
+    pub fn file_index(&self, rel: &str) -> Option<usize> {
+        self.files.iter().position(|f| f.path == rel)
+    }
+
+    /// 某文件里的全部声明 `(名字, 行号, 原文)`，按行号升序
+    pub fn definitions_in_file(&self, file_idx: usize) -> Vec<(String, u32, String)> {
+        let mut out = self
+            .file_defs
+            .get(file_idx)
+            .cloned()
+            .unwrap_or_default();
+        out.sort_by(|a, b| a.1.cmp(&b.1));
+        out
+    }
+
     /// 只读新鲜度判定（不重新解析）：已知文件逐个 stat + 目录指纹比对
     pub fn freshness(&self, root: &Path) -> bool {
         if self.dirs.is_empty() && self.files.is_empty() {
