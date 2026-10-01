@@ -911,11 +911,25 @@ impl AnalysisEngine {
         let ast_count = self.ast_engines.read().await.len();
         let scan_count = caches.len();
 
-        let ts_cache = match caches.get(path) {
-            Some(c) => c,
+        // 缓存槽的键是客户端传入的原始路径字符串（"."、相对路径、绝对路径、尾斜杠都可能出现）。
+        // 先精确匹配，再按规范化路径匹配，避免"同一项目查不到自己的槽"而误报 cold。
+        let slot = match caches.get_key_value(path) {
+            Some((key, value)) => Some((key.clone(), value)),
+            None => {
+                let wanted = canonical_slot_key(path);
+                caches
+                    .iter()
+                    .find(|(key, _)| canonical_slot_key(key) == wanted)
+                    .map(|(key, value)| (key.clone(), value))
+            }
+        };
+
+        let (slot_name, ts_cache) = match slot {
+            Some(pair) => pair,
             None => {
                 return serde_json::json!({
                     "project": path,
+                    "slot": serde_json::Value::Null,
                     "mode": "cold",
                     "cold_start": true,
                     "reason": "no_scan_cache_slot",
@@ -1003,6 +1017,7 @@ impl AnalysisEngine {
 
         serde_json::json!({
             "project": path,
+            "slot": slot_name,
             "mode": mode,
             "cold_start": cold_start,
             "files_cached": cache.entries.len(),
@@ -1201,6 +1216,22 @@ fn path_relative_to(root: &Path, full: &Path) -> String {
         .unwrap_or(full)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+/// 缓存槽键的规范化形式：能 canonicalize 就用绝对路径，否则退化为去掉尾斜杠的原字符串。
+///
+/// 用于把"."、相对路径、绝对路径、尾斜杠等写法归一，避免同一项目因写法不同查不到自己的槽。
+fn canonical_slot_key(path: &str) -> String {
+    let resolved = std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| {
+            path.trim_end_matches(|c| c == '/' || c == '\\').to_string()
+        });
+    if cfg!(windows) {
+        resolved.to_ascii_lowercase()
+    } else {
+        resolved
+    }
 }
 
 async fn cache_entries_count(

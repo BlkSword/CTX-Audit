@@ -763,7 +763,7 @@ async fn run_configured_scan(
                 memory_budget: scan.memory_budget_mb * 1024 * 1024,
                 batch_size: scan.batch_size,
                 line_tolerance: scan.line_tolerance,
-                include_tests: scan.include_tests,
+                include_tests: scan.include_tests,
                 include_structural: false,
                 enable_taint,
                 enable_cross_file,
@@ -2166,9 +2166,108 @@ async fn try_daemon_call_graph(project_path: &str, entry: &str, depth: usize) ->
     }
 }
 
+// ── 增量索引状态：跨进程接线（MCP 进程 ↔ daemon 进程）──────
+
+/// 查询 daemon 的增量索引状态；daemon 未运行/不可达时返回 `None`。
+///
+/// MCP 进程与 daemon 是两个进程：本进程内的索引缓存只能反映"本进程看到的项目"，
+/// 而"文件修改后待重编译、上次扫描是否增量、扫描耗时"这些事实在 daemon 手里。
+async fn try_daemon_incremental_status(project_path: &str) -> Option<Value> {
+    let mut client = DaemonClient::connect().await.ok()?;
+    let response = client
+        .incremental_status(project_path.to_string())
+        .await
+        .ok()?;
+    match response {
+        Response::IncrementalStatusInfo { status } => Some(status),
+        _ => None,
+    }
+}
+
+/// 把 daemon 增量状态合并进 `get_incremental_status` 的 envelope（纯函数，便于单测）。
+///
+/// - 写入 `data.daemon = {available, project, status}`；
+/// - `available=false` → 在 `uncertainty.reasons` 标 `daemon_not_running`；
+/// - 无论哪种情况都移除 `daemon_incremental_index_not_wired`（接线已完成，不该再这么说），
+///   可用时改为标注 `local_cache_is_mcp_process_scope`（本地那份状态的作用域）。
+fn merge_daemon_status(envelope: &mut Value, project_path: &str, daemon: Option<Value>) {
+    let available = daemon.is_some();
+    let payload = daemon.unwrap_or(Value::Null);
+
+    if let Some(data) = envelope.get_mut("data") {
+        if !data.is_object() {
+            *data = serde_json::json!({});
+        }
+        data["daemon"] = serde_json::json!({
+            "available": available,
+            "project": project_path,
+            "status": payload,
+        });
+    }
+
+    if let Some(reasons) = envelope
+        .get_mut("uncertainty")
+        .and_then(|u| u.get_mut("reasons"))
+        .and_then(|r| r.as_array_mut())
+    {
+        reasons.retain(|r| r.as_str() != Some("daemon_incremental_index_not_wired"));
+        let note = if available {
+            "local_cache_is_mcp_process_scope"
+        } else {
+            "daemon_not_running"
+        };
+        if !reasons.iter().any(|r| r.as_str() == Some(note)) {
+            reasons.push(Value::String(note.to_string()));
+        }
+    }
+}
+
+/// `get_incremental_status` 的装饰器：在本地（MCP 进程内）索引状态之上叠加 daemon 的真实状态。
+///
+/// 为什么放在 CLI：`tools` 不能依赖 `daemon`（daemon 依赖 tools，会成环），
+/// 而 CLI 同时依赖两者，是唯一能跨进程缝合的地方；`ToolRegistry::register` 同名即覆盖，
+/// 因此这里注册后原实现被替换（装饰器内部仍委托原实现）。
+struct DaemonIncrementalStatusTool {
+    inner: std::sync::Arc<dyn ctx_audit_tools::Tool>,
+    /// 查询 daemon 用的项目路径（MCP 进程的当前目录，规范化后）
+    project_path: String,
+}
+
+#[async_trait::async_trait]
+impl ctx_audit_tools::Tool for DaemonIncrementalStatusTool {
+    fn name(&self) -> &str {
+        "get_incremental_status"
+    }
+
+    fn description(&self) -> &str {
+        "增量索引状态：本进程索引缓存（stat 探测 + TTL）+ daemon 的真实状态（冷启动 / 待重编译 / 最近扫描遥测）"
+    }
+
+    fn category(&self) -> ctx_audit_tools::ToolCategory {
+        self.inner.category()
+    }
+
+    fn definition(&self) -> ctx_audit_tools::ToolDefinition {
+        self.inner.definition()
+    }
+
+    async fn execute(
+        &self,
+        input: Value,
+    ) -> Result<ctx_audit_tools::ToolResult, ctx_audit_tools::ToolError> {
+        let result = self.inner.execute(input).await?;
+        let mut envelope = result.data.clone().unwrap_or(Value::Null);
+        let daemon = try_daemon_incremental_status(&self.project_path).await;
+        merge_daemon_status(&mut envelope, &self.project_path, daemon);
+        Ok(ctx_audit_tools::ToolResult::json(
+            envelope,
+            Some(result.text.clone()),
+        ))
+    }
+}
+
 /// Load sanitizer descriptions from YAML taint rules
-fn get_sanitizer_descriptions() -> Vec<(String, String)> {
-    let yaml_dir = std::path::Path::new("rules/taint");
+fn get_sanitizer_descriptions() -> Vec<(String, String)> {    let yaml_dir = std::path::Path::new("rules/taint");
     if !yaml_dir.exists() {
         // 文件系统目录缺失（如在仓库外运行），回退到内置嵌入规则
         let mut descriptions = Vec::new();
@@ -3965,6 +4064,25 @@ impl McpServerState {
         let registry = std::sync::Arc::new(ctx_audit_tools::ToolRegistry::new());
         // 注册内置工具（基础工具 + 高阶 code-intel；legacy 打开时含搜索、污点、模式、调用图）
         ctx_audit_tools::register_all_tools(&registry, ".".to_string(), None, None, legacy).await;
+
+        // 跨进程接线：把 daemon 的真实增量状态叠加到 get_incremental_status 上。
+        // 同名注册即覆盖（ToolRegistry::register 用 HashMap::insert），装饰器内部委托原实现。
+        // 查询路径用 MCP 进程当前目录的规范化绝对路径——daemon 侧也按规范化路径匹配槽位，
+        // 这样"./proj"、"." 与 daemon 收到过的"/abs/proj"能对上同一个项目。
+        let project_path = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        if let Some(inner) = registry.get_tool("get_incremental_status") {
+            let wrapper: std::sync::Arc<dyn ctx_audit_tools::Tool> =
+                std::sync::Arc::new(DaemonIncrementalStatusTool {
+                    inner,
+                    project_path,
+                });
+            if let Err(e) = registry.register(wrapper).await {
+                tracing::warn!("注册增量状态装饰器失败: {}", e);
+            }
+        }
+
         Self {
             tool_registry: registry,
             audit: McpAuditState::new(),
@@ -4814,5 +4932,104 @@ mod tests {
             legacy_names.len()
         );
         assert!(legacy_state.legacy_tools && !default_state.legacy_tools);
+    }
+
+    /// daemon 不可达：如实标注，且不再声称"未接线"。
+    #[test]
+    fn test_merge_daemon_status_unavailable() {
+        let mut env = serde_json::json!({
+            "data": {"mode": "stat+mtime-probe+ttl-cache"},
+            "provenance": [],
+            "uncertainty": {
+                "level": "medium",
+                "reasons": ["daemon_incremental_index_not_wired", "new_directories_need_ttl_or_refresh"],
+                "unresolved_edges": 0
+            }
+        });
+
+        merge_daemon_status(&mut env, "/tmp/proj", None);
+
+        assert_eq!(env["data"]["daemon"]["available"], false);
+        assert_eq!(env["data"]["daemon"]["project"], "/tmp/proj");
+        assert!(env["data"]["daemon"]["status"].is_null());
+
+        let reasons: Vec<&str> = env["uncertainty"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            !reasons.contains(&"daemon_incremental_index_not_wired"),
+            "接线完成后不应再标注未接线: {reasons:?}"
+        );
+        assert!(reasons.contains(&"daemon_not_running"), "{reasons:?}");
+        assert!(
+            reasons.contains(&"new_directories_need_ttl_or_refresh"),
+            "既有原因不应被吞掉: {reasons:?}"
+        );
+    }
+
+    /// daemon 可达：把真实状态放进 data.daemon.status，并标注本地状态的作用域。
+    #[test]
+    fn test_merge_daemon_status_available() {
+        let mut env = serde_json::json!({
+            "data": {"mode": "stat+mtime-probe+ttl-cache"},
+            "uncertainty": {
+                "level": "medium",
+                "reasons": ["daemon_incremental_index_not_wired"],
+                "unresolved_edges": 0
+            }
+        });
+
+        merge_daemon_status(
+            &mut env,
+            "/tmp/proj",
+            Some(serde_json::json!({
+                "mode": "warm-pending-recompile",
+                "pending_recompile": 2,
+                "slot": "/tmp/proj"
+            })),
+        );
+
+        assert_eq!(env["data"]["daemon"]["available"], true);
+        assert_eq!(
+            env["data"]["daemon"]["status"]["mode"],
+            "warm-pending-recompile"
+        );
+        assert_eq!(env["data"]["daemon"]["status"]["pending_recompile"], 2);
+
+        let reasons: Vec<&str> = env["uncertainty"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            reasons.contains(&"local_cache_is_mcp_process_scope"),
+            "{reasons:?}"
+        );
+        assert!(!reasons.contains(&"daemon_not_running"), "{reasons:?}");
+        assert!(!reasons.contains(&"daemon_incremental_index_not_wired"));
+    }
+
+    /// 装饰器必须是默认工具面的一员，且沿用原实现的定义（参数/类目不变）。
+    #[tokio::test]
+    async fn test_incremental_status_decorator_keeps_definition() {
+        let state = McpServerState::new(false).await;
+        let tool = state
+            .tool_registry
+            .get_tool("get_incremental_status")
+            .expect("默认面应注册该工具");
+        assert_eq!(tool.name(), "get_incremental_status");
+        assert!(is_default_surface_tool(tool.name()));
+        let def = tool.definition();
+        assert_eq!(def.name, "get_incremental_status");
+        // 原实现带 refresh 参数；装饰器应原样沿用
+        assert!(
+            def.parameters.iter().any(|p| p.name == "refresh"),
+            "装饰器不应丢失原工具参数: {:?}",
+            def.parameters.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
     }
 }
