@@ -1057,6 +1057,8 @@ mod tests {
     #[test]
     fn test_disk_cache_avoids_reparse() {
         let root = fixture("persist");
+        // 磁盘缓存按根路径哈希命名，会跨测试进程残留：先清掉再跑，保证断言确定性
+        let _ = std::fs::remove_file(persist_path(&root));
         invalidate(&root);
         let (first, _, _) = get_or_build(&root, true, None);
         let full = first.parsed_files();
@@ -1095,5 +1097,6 @@ mod tests {
 
         invalidate(&root);
         let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(persist_path(&root));
     }
 }

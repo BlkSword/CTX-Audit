@@ -161,6 +161,39 @@ impl IntelKind {
     }
 }
 
+/// "语言冻结"的一等公民表达：只有这些语言有针对性分析路线（跨文件/守卫/框架 resolver）。
+/// 其余语言只做文本级启发式索引——必须在响应里如实标注，而不是假装所有语言一视同仁。
+const PRIMARY_ANALYSIS_LANGUAGES: [&str; 6] = [
+    "python",
+    "go",
+    "javascript",
+    "typescript",
+    "php",
+    "rust",
+];
+
+/// 语言能力报告：哪些主语言在场、哪些只有启发式索引
+fn language_capabilities(langs: &std::collections::BTreeMap<&'static str, usize>) -> Value {
+    let mut present_primary: Vec<&str> = Vec::new();
+    let mut heuristic_only: Vec<&str> = Vec::new();
+    for (lang, count) in langs {
+        if *count == 0 || *lang == "other" {
+            continue;
+        }
+        if PRIMARY_ANALYSIS_LANGUAGES.contains(lang) {
+            present_primary.push(lang);
+        } else {
+            heuristic_only.push(lang);
+        }
+    }
+    json!({
+        "primary_analysis_languages": PRIMARY_ANALYSIS_LANGUAGES,
+        "present_primary": present_primary,
+        "heuristic_only_present": heuristic_only,
+        "analysis_backed": !present_primary.is_empty(),
+    })
+}
+
 fn should_skip(dir_name: &str) -> bool {
     // 跳过清单 + 一切点号目录：`.ctx-audit` 是工具自己的状态目录
     // （mcp_metrics.jsonl 每次工具调用都会追加），索引它会让缓存指纹永远失效。
@@ -819,12 +852,19 @@ impl Tool for CodeIntelTool {
                 } else {
                     "stat + TTL cache (probe disabled by CTX_AUDIT_INDEX_PROBE)"
                 };
+                let caps = language_capabilities(&langs);
+                let analysis_backed = caps["analysis_backed"].as_bool().unwrap_or(false);
+                let mut cap_reasons: Vec<&str> = vec!["index_is_stat_based"];
+                if !analysis_backed {
+                    cap_reasons.push("project_language_outside_primary_set");
+                }
                 IntelEnvelope {
                     data: json!({
                         "files": files.len(),
                         "languages": langs,
                         "build_id": id,
                         "index_freshness": freshness,
+                        "capabilities": caps,
                         "limits": {
                             "max_files": max_index_files(),
                             "max_file_bytes": MAX_FILE_BYTES,
@@ -840,7 +880,11 @@ impl Tool for CodeIntelTool {
                         },
                     }),
                     provenance: vec![prov(".", 0, &id)],
-                    uncertainty: Uncertainty::new("low", &["index_is_stat_based"], 0),
+                    uncertainty: Uncertainty::new(
+                        if analysis_backed { "low" } else { "high" },
+                        &cap_reasons,
+                        0,
+                    ),
                 }
             }
             IntelKind::SymbolDefinition => {
