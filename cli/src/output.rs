@@ -109,9 +109,30 @@ impl OutputFormatter {
         Ok(output)
     }
 
+    /// 给每条 finding 打上"候选"标记（引擎产出的是**待判定候选**，不是结论）。
+    ///
+    /// 规则/污点已从"真值路径"移到"候选种子"——判定权在 LLM/人。此前 schema 里
+    /// 没有任何字段表达这件事，下游容易把候选直接当成已确认漏洞。
+    fn mark_candidates(findings: &[FindingData]) -> Result<Vec<serde_json::Value>> {
+        findings
+            .iter()
+            .map(|f| -> Result<serde_json::Value> {
+                let mut value = serde_json::to_value(f)?;
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert("candidate".to_string(), serde_json::Value::Bool(true));
+                    obj.insert(
+                        "decision_required".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
+                Ok(value)
+            })
+            .collect()
+    }
+
     /// JSON 格式
     fn format_findings_json(findings: &[FindingData]) -> Result<String> {
-        serde_json::to_string_pretty(findings).map_err(Into::into)
+        serde_json::to_string_pretty(&Self::mark_candidates(findings)?).map_err(Into::into)
     }
 
     /// LLM 面向的结构化 JSON 输出（含统计摘要）
@@ -124,7 +145,8 @@ impl OutputFormatter {
             "generated_at": chrono::Utc::now().to_rfc3339(),
             "total_findings": findings.len(),
             "by_severity": by_severity,
-            "findings": findings,
+            "candidate_note": "引擎产出为待判定候选：candidate=true 的条目必须先经 LLM/人复核才构成结论",
+            "findings": Self::mark_candidates(findings)?,
         });
         serde_json::to_string_pretty(&output).map_err(Into::into)
     }

@@ -665,8 +665,7 @@ async fn save_scan_results(
 
     let content = match format {
         "llm" => to_llm_json(findings),
-        "json" => serde_json::to_string_pretty(findings)
-            .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?,
+        "json" => to_json_with_candidates(findings)?,
         "sarif" => to_sarif(findings),
         "markdown" => to_markdown(findings),
         _ => to_text(findings),
@@ -782,6 +781,41 @@ fn to_text(findings: &[Finding]) -> String {
     text
 }
 
+/// JSON 输出：逐条打上"候选"标记（引擎输出是待判定候选，不是结论）
+fn to_json_with_candidates(findings: &[Finding]) -> Result<String> {
+    let mut values: Vec<serde_json::Value> = Vec::with_capacity(findings.len());
+    for f in findings {
+        let mut v =
+            serde_json::to_value(f).map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?;
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("candidate".to_string(), serde_json::Value::Bool(true));
+            obj.insert(
+                "decision_required".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+        values.push(v);
+    }
+    serde_json::to_string_pretty(&values).map_err(|e| miette::miette!("JSON 序列化失败: {}", e))
+}
+
+/// 同上，但输入已经是 JSON 值（`findings` 解析后的形态）
+fn to_json_values_with_candidates(values: &[serde_json::Value]) -> Result<String> {
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(values.len());
+    for value in values {
+        let mut v = value.clone();
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("candidate".to_string(), serde_json::Value::Bool(true));
+            obj.insert(
+                "decision_required".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+        out.push(v);
+    }
+    serde_json::to_string_pretty(&out).map_err(|e| miette::miette!("JSON 序列化失败: {}", e))
+}
+
 /// 转换为 LLM 面向的 JSON 格式
 fn to_llm_json(findings: &[Finding]) -> String {
     use serde_json::{json, Value};
@@ -811,6 +845,15 @@ fn to_llm_json(findings: &[Finding]) -> String {
                 "description": f.description,
                 "code_context": f.code_snippet,
             });
+
+            // 引擎产出是**待判定候选**（规则/污点已移出真值路径），
+            // 在 schema 面显式标注，避免下游把候选直接当成已确认漏洞。
+            obj.as_object_mut()
+                .unwrap()
+                .insert("candidate".to_string(), json!(true));
+            obj.as_object_mut()
+                .unwrap()
+                .insert("decision_required".to_string(), json!(true));
 
             // 文件角色标签
             if let Some(ref role) = f.file_role {
@@ -1048,8 +1091,7 @@ async fn scan_via_daemon(
                         converter.convert_to_json(&inputs).unwrap_or_default()
                     }
                     "markdown" => to_markdown(&parsed_findings),
-                    "json" => serde_json::to_string_pretty(&findings)
-                        .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))?,
+                    "json" => to_json_values_with_candidates(&findings)?,
                     _ => to_text(&parsed_findings),
                 };
                 tokio::fs::write(&output_path, content)
