@@ -678,7 +678,18 @@ pub fn in_interface_block(lines: &[&str], idx: usize) -> bool {
     }
 }
 
-/// 纯函数：从一行里提取 `(` 前的标识符（取最后一个点后的名字）。
+/// 结构性关键词：它们后面跟 `(` 但不是调用点。
+///
+/// 真实 Go 仓库实测依据：匿名函数字面量 `func(c *Config) {`、`go func() {`、`defer func() {`
+/// 会让 `callee_names` 产出名为 `func`/`go`/`defer` 的"callee"，直接污染调用图精度。
+const NON_CALL_KEYWORDS: &[&str] = &[
+    "func", "if", "for", "switch", "select", "go", "defer", "range", "case", "default",
+    "return", "struct", "interface", "map", "chan", "type", "var", "const", "else", "package",
+    "import", "break", "continue", "goto", "fallthrough", "while", "catch", "elif", "except",
+    "with", "lambda", "yield", "match", "when", "do", "then", "begin", "ensure", "rescue",
+];
+
+/// 纯函数：从一行里提取 `(` 前的标识符（取最后一个点后的名字），过滤结构性关键词。
 pub fn callee_names(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = line;
@@ -693,7 +704,10 @@ pub fn callee_names(line: &str) -> Vec<String> {
             .rev()
             .collect();
         let name = raw.rsplit('.').next().unwrap_or("").to_string();
-        if name.len() >= 2 && !out.contains(&name) {
+        if name.len() >= 2
+            && !NON_CALL_KEYWORDS.contains(&name.as_str())
+            && !out.contains(&name)
+        {
             out.push(name);
         }
         rest = &rest[pos + 1..];
@@ -1048,6 +1062,11 @@ impl Tool for CodeIntelTool {
                 let dynamic_markers =
                     ["getattr", "eval(", "apply(", "invoke(", "call_user_func", "Reflect."];
                 for (path, content) in files {
+                    // 调用图只在代码文件上做：内容索引包含 markdown/yaml/json，
+                    // 其中的代码片段会伪装成调用点（真实 Go 仓库的 AGENTS.md 曾混进 callees）
+                    if !crate::symbol_index::is_code_file(path) {
+                        continue;
+                    }
                     if direction != "callees" {
                         // 调用点匹配要覆盖**导入别名**（`import { put as save }` / `Loader as Ldr`），
                         // 否则真实调用点用本地名就没有（ground truth 上 recall=0）。
@@ -1260,6 +1279,10 @@ impl Tool for CodeIntelTool {
                 let mut steps: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
                 for (path, content) in files {
+                    // 数据流判定同样只在代码文件上做（文档里的示例代码不是数据流）
+                    if !crate::symbol_index::is_code_file(path) {
+                        continue;
+                    }
                     if let Some(f) = only_file {
                         if path.as_str() != f {
                             continue;
@@ -1647,6 +1670,18 @@ mod tests {
         assert_eq!(body_span(&lines, 0, true), (0, 3));
         assert!(is_brace_language("a.js") && is_brace_language("a.go"));
         assert!(!is_brace_language("a.py"));
+    }
+
+    /// Go 的匿名函数字面量不是调用点（真实仓库实测：callees 里混进名为 "func" 的条目）
+    #[test]
+    fn test_callee_names_skips_structural_keywords() {
+        let names = callee_names("go func(c *Config) { Validate(c) }()");
+        assert!(!names.contains(&"func".to_string()), "{names:?}");
+        assert!(!names.contains(&"go".to_string()), "{names:?}");
+        assert!(names.contains(&"Validate".to_string()), "{names:?}");
+
+        let names = callee_names("defer func() { cleanup() }()");
+        assert_eq!(names, vec!["cleanup".to_string()], "{names:?}");
     }
 
     /// 缩进语言：多行签名不得把函数体截断（签名收尾行 `) -> int:` 常从第 0 列开始）

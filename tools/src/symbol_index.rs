@@ -594,7 +594,10 @@ fn stat_mtime_ms(path: &Path) -> Option<u64> {
 
 /// 只有"代码文件"参与符号索引：JSON/YAML/锁文件等数据文件不含声明，
 /// 却会因为同名子串污染引用结果（实测夹具里 expected.json 贡献了全部误报）。
-fn is_code_file(rel: &str) -> bool {
+/// 是否为代码文件（符号/调用图/数据流只在代码文件上有意义：
+/// 内容索引含 markdown/yaml/json 等，其中的代码片段会伪装成调用点——
+/// 实测真实 Go 仓库的 `AGENTS.md` 混进了 `callees`）。
+pub fn is_code_file(rel: &str) -> bool {
     let ext = rel.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     matches!(
         ext.as_str(),
