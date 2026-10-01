@@ -28,6 +28,9 @@ const MAX_HITS: usize = 40;
 const MAX_REFERENCE_HITS: usize = 200;
 /// 定义结果上限（同引用：`index` 这类符号在真实仓库里可有上百处定义）
 const MAX_DEFINITION_HITS: usize = 200;
+/// 调用图结果上限（与定义/引用同一量级：真实 Go 仓库里 `Set`/`String` 这类方法可有数百个调用点，
+/// 40 条上限会把 callers 的实测召回从 0.92 压到 0.12）
+const MAX_CALL_GRAPH_HITS: usize = 200;
 const SKIP_DIRS: [&str; 8] = [
     ".git",
     "node_modules",
@@ -444,6 +447,7 @@ pub fn find_call_sites_in_code(
     original: &[&str],
     code: &[String],
     name: &str,
+    limit: usize,
 ) -> Vec<(u32, String)> {
     let mut hits = Vec::new();
     for (idx, code_line) in code.iter().enumerate() {
@@ -462,7 +466,7 @@ pub fn find_call_sites_in_code(
             .map(|l| l.trim().chars().take(200).collect::<String>())
             .unwrap_or_default();
         hits.push(((idx + 1) as u32, text));
-        if hits.len() >= MAX_HITS {
+        if hits.len() >= limit {
             break;
         }
     }
@@ -1069,7 +1073,7 @@ impl Tool for CodeIntelTool {
                 let mut matched_callers = 0usize;
                 let mut matched_callees = 0usize;
                 // 扫描上限比返回上限宽：用于如实统计"总共有多少"（上限纪律）
-                let scan_cap = MAX_HITS * 8;
+                let scan_cap = MAX_CALL_GRAPH_HITS * 4;
                 for (path, content) in files {
                     // 调用图只在代码文件上做：内容索引包含 markdown/yaml/json，
                     // 其中的代码片段会伪装成调用点（真实 Go 仓库的 AGENTS.md 曾混进 callees）
@@ -1091,7 +1095,7 @@ impl Tool for CodeIntelTool {
                         let mut seen_callers: std::collections::HashSet<(String, u32)> =
                             std::collections::HashSet::new();
                         for needle in &needles {
-                            for (line, text) in find_call_sites_in_code(&lines, &code, needle) {
+                            for (line, text) in find_call_sites_in_code(&lines, &code, needle, scan_cap) {
                                 let idx = (line as usize).saturating_sub(1);
                                 // 接口/抽象方法**声明**不是调用点（Go/Java/TS 接口体）
                                 if in_interface_block(&lines, idx) {
@@ -1175,9 +1179,9 @@ impl Tool for CodeIntelTool {
                     }
                 }
                 // 上限纪律：如实上报总数与是否被截断（调用图与定义/引用同一套约定）
-                let truncated_at_limit = matched_callers > MAX_HITS || matched_callees > MAX_HITS;
-                callers.truncate(MAX_HITS);
-                callees.truncate(MAX_HITS);
+                let truncated_at_limit = matched_callers > MAX_CALL_GRAPH_HITS || matched_callees > MAX_CALL_GRAPH_HITS;
+                callers.truncate(MAX_CALL_GRAPH_HITS);
+                callees.truncate(MAX_CALL_GRAPH_HITS);
                 let level = if unresolved > 0 { "high" } else { "medium" };
                 IntelEnvelope {
                     data: json!({
@@ -1188,7 +1192,7 @@ impl Tool for CodeIntelTool {
                             "callers": matched_callers,
                             "callees": matched_callees,
                         },
-                        "limit": MAX_HITS,
+                        "limit": MAX_CALL_GRAPH_HITS,
                         "truncated_at_limit": truncated_at_limit,
                     }),
                     provenance,
