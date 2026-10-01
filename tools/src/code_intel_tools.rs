@@ -1457,10 +1457,45 @@ impl Tool for CodeIntelTool {
                 let (sindex, s_hit, s_build_ms) =
                     crate::symbol_index::get_or_build(root, refresh, None);
                 let mut handler_definitions: Vec<Value> = Vec::new();
+                let mut handler_decorators: Vec<Value> = Vec::new();
                 if !handler.is_empty() {
                     for hit in sindex.definitions(handler, 10) {
                         let hf = sindex.file_path(hit.file).to_string();
                         provenance.push(prov_with(&hf, hit.line, &id, "handler-definition"));
+                        // 装饰器/中间件链：从定义行向上收集连续的 `@...` 行（保持自顶向下的顺序）
+                        let mut chain: Vec<Value> = Vec::new();
+                        if let Ok(content) = std::fs::read_to_string(root.join(&hf)) {
+                            let lines: Vec<&str> = content.lines().collect();
+                            let mut cursor = (hit.line as usize).saturating_sub(1);
+                            let mut steps = 0usize;
+                            while cursor > 0 && steps < 10 && cursor <= lines.len() {
+                                let prev = lines[cursor - 1].trim();
+                                if !prev.starts_with('@') {
+                                    break;
+                                }
+                                chain.push(json!({
+                                    "file": hf,
+                                    "line": cursor,
+                                    "text": prev.chars().take(200).collect::<String>(),
+                                }));
+                                cursor -= 1;
+                                steps += 1;
+                            }
+                            chain.reverse();
+                        }
+                        if !chain.is_empty() {
+                            for item in &chain {
+                                if let (Some(f), Some(l)) =
+                                    (item["file"].as_str(), item["line"].as_u64())
+                                {
+                                    provenance.push(prov_with(f, l as u32, &id, "handler-decorator"));
+                                }
+                            }
+                            handler_decorators.push(json!({
+                                "handler_line": hit.line,
+                                "chain": chain,
+                            }));
+                        }
                         handler_definitions.push(json!({
                             "file": hf,
                             "line": hit.line,
@@ -1479,6 +1514,7 @@ impl Tool for CodeIntelTool {
                         "handler": handler,
                         "handler_resolved": resolved,
                         "handler_definitions": handler_definitions,
+                        "handler_decorators": handler_decorators,
                         "routes": routes,
                         "middleware": middleware,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
