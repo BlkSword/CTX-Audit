@@ -23,11 +23,10 @@ use tokio::sync::RwLock;
 use deepaudit_core::ast_api::{ASTEngine, ASTParser, QueryEngine, Symbol};
 use deepaudit_core::scanning::{
     scan_directory_deep_with_rules, scan_directory_deep_with_rules_progress,
-    scan_directory_with_rules, Finding, RegexScanner, ScanResult, Scanner,
+    scan_directory_with_rules, Finding, ScanResult,
 };
 use deepaudit_core::taint::{AstTaintAnalyzer, CrossFileTaintAnalyzer, TaintFlow};
 use deepaudit_core::watcher::{DeltaResult, FileSnapshot};
-use rayon::prelude::*;
 
 // ────────────────────────────────────────────────────────
 // 文件级 findings 缓存
@@ -286,15 +285,14 @@ impl AnalysisEngine {
             cache.entries.remove(&rel);
         }
 
-        // 首次扫描、findings 缓存为空、或分析选项变化：整表重建。
-        //
-        // ⚠️ 为什么这里仍以 `entries.is_empty()` 为闸门（而不是 `last_scan.is_none()`）：
-        // 增量路径 `scan_files()` 目前是**桩实现**——它用的 `RegexScanner` 已废弃（恒返回空），
-        // 且在 rayon 闭包里 `Handle::block_on` 会 panic（"Cannot start a runtime from within a runtime"，
-        // 因为 rayon 会在调用线程上执行部分工作，而调用线程在 tokio runtime 上下文里）。
-        // 换句话说：把改动文件送进 `scan_files()` 既会崩、又会把该文件的缓存 findings 清空。
-        // 修好 `scan_files()` 之前，**不要**放宽这个闸门。
-        if cache.entries.is_empty() || cache.last_scan.is_none() || options_changed {
+        // 整表重建的三种情形：
+        //  1. 从未扫过（`last_scan` 为空）；
+        //  2. 分析选项变化——浅扫结果不能当深扫用，反之亦然；
+        //  3. 启用污点 / 跨文件——这两层是项目级分析（跨文件图、全项目污点传播），
+        //     无法按文件局部重算，必须整表重建。
+        // 其余情形走增量路径：只重扫变更文件，且与全量结果按构造一致
+        // （`scan_files` 复用 core 的同一条扫描管线）。
+        if cache.last_scan.is_none() || options_changed || enable_taint || enable_cross_file {
             drop(cache);
             drop(caches);
             return self
@@ -311,9 +309,7 @@ impl AnalysisEngine {
             delta.deleted_files.len()
         );
 
-        let (new_findings, file_hashes) = self
-            .scan_files(path, &changed_set, enable_taint, enable_cross_file)
-            .await?;
+        let (new_findings, file_hashes) = self.scan_files(path, &changed_set).await?;
 
         // 更新缓存：移除变更文件的旧 findings，加入新的
         for file_path in &changed_set {
@@ -321,13 +317,14 @@ impl AnalysisEngine {
             cache.entries.remove(&rel);
         }
 
-        // 按文件分组新 findings
+        // 按文件分组新 findings。
+        // 键必须是**相对路径**（与缓存条目键一致）：finding.file_path 是绝对路径，
+        // 直接拿它当键会让下面的 `by_file.get(&rel)` 永远查不中，
+        // 结果是把变更文件的条目替换成"空 findings"——静默清空该文件的结论。
         let mut by_file: HashMap<String, Vec<Finding>> = HashMap::with_capacity(changed_set.len());
         for f in &new_findings {
-            by_file
-                .entry(f.file_path.clone())
-                .or_default()
-                .push(f.clone());
+            let rel = path_relative_to(project_path, Path::new(&f.file_path));
+            by_file.entry(rel).or_default().push(f.clone());
         }
 
         // 计算变更文件的 content hash 并缓存（优先使用 scan_files 中已计算的 hash）
@@ -478,123 +475,41 @@ impl AnalysisEngine {
         })
     }
 
-    /// 扫描指定文件集合（并行处理），同时返回 content hash
+    /// 只重扫给定文件集合（快速层：规则 + 攻击面），同时返回 content hash。
+    ///
+    /// 走的是 core 的**同一条扫描管线**（`scan_files_with_rules`），因此"局部重扫 N 个文件"
+    /// 与"整目录扫描后取这 N 个文件的结果"逐条一致——这是增量结果可信的前提。
+    /// 不含污点/跨文件层（项目级分析）：调用方 `scan()` 在启用它们时改为整表重建。
     async fn scan_files(
         &self,
         project_path: &str,
         files: &std::collections::HashSet<PathBuf>,
-        enable_taint: bool,
-        enable_cross_file: bool,
     ) -> Result<(Vec<Finding>, HashMap<String, u64>)> {
         if files.is_empty() {
             return Ok((vec![], HashMap::new()));
         }
 
-        /// 最大文件大小 10MB，超过则跳过
-        const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+        // 确定性：与目录扫描一致先排序（枚举顺序会影响并行切分与合并顺序）
+        let mut ordered: Vec<PathBuf> = files.iter().cloned().collect();
+        ordered.sort();
 
-        let regex_scanner = RegexScanner::new();
-        let rt_handle = tokio::runtime::Handle::current();
+        let rules_dir = Self::resolve_rules_dir(project_path);
+        let findings = deepaudit_core::scanning::scan_files_with_rules(
+            project_path,
+            &ordered,
+            rules_dir.as_deref(),
+            None,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("局部重扫失败: {}", e))?;
 
-        // 并行扫描文件（同时计算 content hash）
-        let batch_results: Vec<(Vec<Finding>, Option<(String, String)>, u64)> = files
-            .par_iter()
-            .filter_map(|file_path| {
-                if !file_path.exists() {
-                    return None;
-                }
-                // 文件大小检查
-                match std::fs::metadata(file_path) {
-                    Ok(meta) if meta.len() > MAX_FILE_SIZE => {
-                        tracing::warn!(
-                            "跳过大文件 ({}MB): {:?}",
-                            meta.len() / 1024 / 1024,
-                            file_path
-                        );
-                        return None;
-                    }
-                    Err(_) => return None,
-                    _ => {}
-                }
-                let content = std::fs::read_to_string(file_path).ok()?;
-
-                // 在内存中顺便计算 hash，避免后续二次读取
-                let content_hash = hash_content(&content);
-
-                let file_findings =
-                    rt_handle.block_on(regex_scanner.scan_file(file_path, &content));
-
-                let cached = if enable_taint && !file_findings.is_empty() {
-                    Some((file_path.to_string_lossy().to_string(), content))
-                } else {
-                    None
-                };
-
-                Some((file_findings, cached, content_hash))
-            })
-            .collect();
-
-        // 合并结果
-        let mut all_findings = Vec::with_capacity(files.len() * 4);
-        let mut content_cache = std::collections::HashMap::new();
-        let mut file_hashes: HashMap<String, u64> = HashMap::with_capacity(files.len());
-        for (findings, cached, hash) in batch_results {
-            if let Some((ref path, ref content)) = cached {
-                content_cache.insert(path.clone(), content.clone());
-                file_hashes.insert(path.clone(), hash);
-            }
-            all_findings.extend(findings);
+        // content hash：调用方据此更新 per-file 缓存
+        let mut file_hashes: HashMap<String, u64> = HashMap::with_capacity(ordered.len());
+        for path in &ordered {
+            file_hashes.insert(path.to_string_lossy().to_string(), hash_file_content(path));
         }
 
-        // 如果启用污点分析，对有 findings 的文件做 taint 分析（复用 content cache）
-        if enable_taint && !all_findings.is_empty() {
-            let mut taint_analyzer = AstTaintAnalyzer::new();
-            let files_with_findings: std::collections::HashSet<String> =
-                all_findings.iter().map(|f| f.file_path.clone()).collect();
-
-            for file_path_str in &files_with_findings {
-                let p = Path::new(file_path_str);
-                // 优先使用缓存，避免重复读取
-                let code = if let Some(cached) = content_cache.get(file_path_str) {
-                    cached.clone()
-                } else if let Ok(c) = std::fs::read_to_string(p) {
-                    c
-                } else {
-                    continue;
-                };
-
-                let flows = taint_analyzer.analyze_file(p, &code);
-                for flow in flows {
-                    all_findings.push(Finding {
-                        finding_id: uuid::Uuid::new_v4().to_string(),
-                        file_path: file_path_str.clone(),
-                        line_start: flow.source.line,
-                        line_end: flow.sink.line,
-                        detector: "ast_taint".to_string(),
-                        vuln_type: format!("{:?}", flow.vulnerability_type),
-                        severity: format!("{:?}", flow.severity).to_lowercase(),
-                        description: format!(
-                            "Taint flow: {}:{} → {}:{}",
-                            flow.source.symbol, flow.source.line, flow.sink.symbol, flow.sink.line
-                        ),
-                        analysis_trail: None,
-                        llm_output: None,
-                        confidence: Some(flow.confidence),
-                        corroboration_count: None,
-                        code_snippet: None,
-                        source_snippet: flow.source.code_snippet.clone(),
-                        sink_snippet: flow.sink.code_snippet.clone(),
-                        file_role: None,
-                        barriers: None,
-                        reasoning_hint: None,
-                        evidence_refs: None,
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-
-        Ok((all_findings, file_hashes))
+        Ok((findings, file_hashes))
     }
 
     // ── 污点追踪 ──────────────────────────────────────
@@ -1072,6 +987,9 @@ impl AnalysisEngine {
         } else {
             "warm-pending-recompile"
         };
+        // 增量重扫只覆盖快速层（规则 + 攻击面）；污点/跨文件是项目级分析，
+        // 上一次若以深扫选项执行，则本次变更只能整表重建——如实标注。
+        let deep_options = matches!(cache.last_options, Some((true, _)) | Some((_, true)));
         let mut uncertainty: Vec<&str> = Vec::new();
         if peek_error.is_some() {
             uncertainty.push("change_peek_failed");
@@ -1079,9 +997,8 @@ impl AnalysisEngine {
         if !cache.snapshot.has_baseline() {
             uncertainty.push("baseline_not_built");
         }
-        // 诚实标注：变更已检出，但引擎目前只能整表重建（增量重编译路径待实现）
-        if pending_total > 0 {
-            uncertainty.push("partial_rescan_not_implemented");
+        if pending_total > 0 && deep_options {
+            uncertainty.push("partial_rescan_unavailable_for_deep_options");
         }
 
         serde_json::json!({
@@ -1104,6 +1021,7 @@ impl AnalysisEngine {
             "rules_dir": Self::resolve_rules_dir(path),
             "cache": {"ast_engines": ast_count, "scan_projects": scan_count},
             "peek_error": peek_error,
+            "partial_rescan_supported": !deep_options,
             "uncertainty": uncertainty,
         })
     }
@@ -1299,16 +1217,6 @@ async fn cache_entries_count(
 }
 
 /// 估算 AST Engine 的内存占用
-/// 计算内存中内容的 hash（避免二次文件 IO）
-fn hash_content(content: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    hasher.finish()
-}
-
 fn estimate_ast_bytes(engine: &ASTEngine) -> usize {
     engine
         .get_statistics()
@@ -1316,4 +1224,103 @@ fn estimate_ast_bytes(engine: &ASTEngine) -> usize {
         .and_then(|s| s.get("total_nodes").and_then(|v| v.as_u64()))
         .map(|n| n as usize * 512)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finding_key(f: &Finding) -> (String, usize, String, String) {
+        (
+            f.file_path.clone(),
+            f.line_start,
+            f.detector.clone(),
+            f.vuln_type.clone(),
+        )
+    }
+
+    fn write_fixture(root: &Path, name: &str, content: &str) {
+        let path = root.join(name);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// 增量重扫的不变量：**增量结果必须等于全量结果**。
+    ///
+    /// 夹具刻意包含一个无认证 HTTP 端点（`AttackSurfaceMapper` 会产出 finding），
+    /// 这样"改动文件后走增量路径"与"全新引擎全量扫描"可以逐条对比。
+    #[tokio::test]
+    async fn test_incremental_rescan_matches_full_scan() {
+        let root = std::env::temp_dir().join("ctx-audit-daemon-incremental-equiv");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_fixture(
+            &root,
+            "app.py",
+            "@app.route(\"/admin\")\ndef admin():\n    return \"ok\"\n",
+        );
+        write_fixture(&root, "util.py", "def add(a, b):\n    return a + b\n");
+        let root_str = root.to_string_lossy().to_string();
+
+        let engine = AnalysisEngine::new();
+        let first = engine.scan(&root_str, false, false).await.unwrap();
+        assert!(
+            !first.findings.is_empty(),
+            "夹具应至少产出 1 个 finding（无认证端点）"
+        );
+        assert!(!first.was_incremental, "首次扫描应为全量");
+
+        // 改一个文件 → 第二次走增量路径
+        write_fixture(
+            &root,
+            "app.py",
+            "@app.route(\"/admin2\")\ndef admin2():\n    return \"ok\"\n",
+        );
+        let second = engine.scan(&root_str, false, false).await.unwrap();
+        assert!(second.was_incremental, "有变更时应走增量路径");
+        assert_eq!(second.files_scanned, 1, "只应重扫变更的那 1 个文件");
+
+        // 全新引擎（无缓存）全量扫描同一内容：必须逐条一致
+        let fresh = AnalysisEngine::new();
+        let full = fresh.scan(&root_str, false, false).await.unwrap();
+        assert!(!full.was_incremental);
+
+        let mut incremental_keys: Vec<_> = second.findings.iter().map(finding_key).collect();
+        let mut full_keys: Vec<_> = full.findings.iter().map(finding_key).collect();
+        incremental_keys.sort();
+        full_keys.sort();
+        assert_eq!(
+            incremental_keys, full_keys,
+            "增量重扫结果必须与全量扫描结果一致（增量 {:?} vs 全量 {:?}）",
+            incremental_keys, full_keys
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 深扫选项必须整表重建：增量路径只覆盖快速层。
+    #[tokio::test]
+    async fn test_deep_options_force_full_rebuild() {
+        let root = std::env::temp_dir().join("ctx-audit-daemon-deep-gate");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_fixture(&root, "app.py", "def handler(request):\n    return request.args\n");
+        let root_str = root.to_string_lossy().to_string();
+
+        let engine = AnalysisEngine::new();
+        let _ = engine.scan(&root_str, false, false).await.unwrap();
+
+        // 启用污点：即使只有一个文件变化，也必须整表重建（files_scanned != 1 或 was_incremental=false）
+        write_fixture(
+            &root,
+            "app.py",
+            "def handler(request):\n    return request.args.get('q')\n",
+        );
+        let deep = engine.scan(&root_str, true, false).await.unwrap();
+        assert!(!deep.was_incremental, "深扫选项应整表重建");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

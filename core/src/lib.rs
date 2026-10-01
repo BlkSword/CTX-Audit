@@ -22,6 +22,7 @@ pub mod scanning {
         classify_file_role, classify_file_role_with_content, scan_directory, scan_directory_deep, scan_directory_deep_with_rules,
         scan_directory_deep_with_rules_progress, scan_directory_with_attack_surface,
         scan_directory_with_opts, scan_directory_with_rules, scan_directory_with_rules_progress,
+        scan_files_with_rules,
         EvidenceRefs, Finding, PathStepRef, ProgressCallback, SanitizerEvidence, ScanOptions,
         ScanPhase, ScanProgress, ScanResult, Scanner, SourceSinkEvidence,
     };

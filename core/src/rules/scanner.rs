@@ -5,6 +5,7 @@ use regex::Regex;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 pub enum RuleMatcher {
@@ -21,6 +22,77 @@ pub struct CompiledRule {
 pub struct RuleScanner {
     compiled_rules: Vec<CompiledRule>,
     context_lines: usize,
+}
+
+// ────────────────────────────────────────────────────────
+// 已编译规则扫描器缓存
+// ────────────────────────────────────────────────────────
+
+/// 缓存条目上限（超出后清空重建；条目本身不可变，清空不会影响正在使用它的调用方）。
+const MAX_CACHED_SCANNERS: usize = 8;
+
+fn scanner_cache() -> &'static Mutex<HashMap<u64, Arc<RuleScanner>>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, Arc<RuleScanner>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 规则集指纹：取规则集序列化结果的 hash，任一字面量字段变化都会重新编译
+/// （宁可多编译，不可用错规则）。
+fn rules_fingerprint(rules: &[Rule]) -> Option<u64> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let json = serde_json::to_string(rules).ok()?;
+    let mut hasher = DefaultHasher::new();
+    json.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+/// 取（或构建并缓存）给定规则集的已编译扫描器。
+///
+/// 动机（同一台机器实测）：规则编译是**每次扫描的固定大头**，且与项目文件数无关——
+/// 嵌入式 86 条规则 ≈2.9s，而 1 条项目规则仅 ≈0.03s；
+/// 1 文件项目整次扫描 3.35s vs 300 文件项目 3.52s（多 300 个文件只多 0.17s）。
+/// 缓存后同一规则集只编译一次，daemon 的增量重扫与 CLI 的重复扫描都能省下这部分。
+///
+/// 指纹取自规则集内容；序列化失败时不缓存（保守：宁可每次编译，也不用错规则）。
+pub fn cached_scanner(rules: Vec<Rule>) -> Arc<RuleScanner> {
+    let key = rules_fingerprint(&rules);
+
+    if let Some(key) = key {
+        if let Ok(cache) = scanner_cache().lock() {
+            if let Some(existing) = cache.get(&key) {
+                return existing.clone();
+            }
+        }
+    }
+
+    let scanner = Arc::new(RuleScanner::new(rules));
+
+    if let Some(key) = key {
+        if let Ok(mut cache) = scanner_cache().lock() {
+            if !cache.contains_key(&key) {
+                if cache.len() >= MAX_CACHED_SCANNERS {
+                    cache.clear();
+                }
+                cache.insert(key, scanner.clone());
+            }
+        }
+    }
+
+    scanner
+}
+
+/// 清空已编译扫描器缓存（测试与规则热加载强制刷新用）。
+pub fn clear_scanner_cache() {
+    if let Ok(mut cache) = scanner_cache().lock() {
+        cache.clear();
+    }
+}
+
+/// 当前缓存条目数（可观测性用）。
+pub fn scanner_cache_len() -> usize {
+    scanner_cache().lock().map(|c| c.len()).unwrap_or(0)
 }
 
 impl RuleScanner {
@@ -3492,6 +3564,57 @@ int main(void) {
             replace_c_macro_ident("MY_SYSTEM(\"ls\")", "SYSTEM", "system"),
             "MY_SYSTEM(\"ls\")"
         );
+    }
+
+    /// 已编译扫描器缓存：同一规则集复用同一实例，规则内容变化必须重新编译。
+    #[test]
+    fn test_cached_scanner_reuses_compiled_rules() {
+        let rule = || Rule {
+            id: "cache-probe".to_string(),
+            name: "t".to_string(),
+            description: "t".to_string(),
+            severity: crate::rules::model::Severity::High,
+            language: "python".to_string(),
+            pattern: Some(r"eval\(".to_string()),
+            patterns: None,
+            query: None,
+            cwe: Some("CWE-95".to_string()),
+            sanitizers: vec![],
+            sanitizer_file_scope: false,
+            sanitizer_match: SanitizerMatch::Any,
+            once_per_file: false,
+            exclude_string_literals: false,
+            sanitizer_include_chain: false,
+            php_bare_call_only: false,
+            sanitizer_after_lines: 0,
+            sanitizer_before_lines: 0,
+            go_io_copy_requires_open_file: false,
+            auth_check_in_func: false,
+            skip_likely_fp: false,
+            dead_sanitizer_patterns: vec![],
+            require_sig_tokens: vec![],
+            prefilter: vec![],
+            category: None,
+            owasp: None,
+            remediation: None,
+            references: None,
+        };
+
+        clear_scanner_cache();
+        let first = cached_scanner(vec![rule()]);
+        let second = cached_scanner(vec![rule()]);
+        assert!(Arc::ptr_eq(&first, &second), "同一规则集应复用同一编译结果");
+        assert_eq!(scanner_cache_len(), 1);
+
+        // 规则内容变化 → 指纹变化 → 重新编译
+        let mut changed = rule();
+        changed.pattern = Some(r"exec\(".to_string());
+        let third = cached_scanner(vec![changed]);
+        assert!(!Arc::ptr_eq(&first, &third), "规则内容变化必须重新编译");
+        assert_eq!(scanner_cache_len(), 2);
+
+        clear_scanner_cache();
+        assert_eq!(scanner_cache_len(), 0);
     }
 }
 

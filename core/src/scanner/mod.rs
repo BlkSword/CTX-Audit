@@ -1100,6 +1100,32 @@ pub async fn scan_directory_with_rules(
     scan_directory_with_rules_progress(path, rules_dir, exclude_dirs, sca_options, None).await
 }
 
+/// 只扫描给定文件集合（与目录扫描同一条管线、同一规则集、同一后处理）。
+///
+/// 用于增量/局部重扫：结果与"整目录扫描后取这些文件的结果"逐条一致
+/// （`scan_root` 仍用于相对路径与项目级上下文，如全局认证守卫检测）。
+/// 仅覆盖快速层（规则 + 攻击面）；污点/跨文件属项目级分析，
+/// 调用方在启用它们时应改为整表重建。
+pub async fn scan_files_with_rules(
+    scan_root: &str,
+    files: &[std::path::PathBuf],
+    rules_dir: Option<&str>,
+    sca_options: Option<ScaScanOptions>,
+) -> Result<Vec<Finding>, String> {
+    let (findings, _, _) = scan_directory_with_rules_inner(
+        scan_root,
+        rules_dir,
+        None,
+        true,
+        sca_options,
+        Some(ScanOptions::default()),
+        None,
+        Some(files),
+    )
+    .await?;
+    Ok(findings)
+}
+
 /// 带进度回调的扫描
 pub async fn scan_directory_with_rules_progress(
     path: &str,
@@ -1136,6 +1162,7 @@ pub async fn scan_directory_with_opts(
         sca_options,
         Some(scan_opts),
         progress,
+        None,
     )
     .await?;
     Ok(findings)
@@ -1150,6 +1177,7 @@ async fn scan_directory_with_rules_inner(
     sca_options: Option<ScaScanOptions>,
     scan_opts: Option<ScanOptions>,
     progress: Option<ProgressCallback>,
+    explicit_files: Option<&[std::path::PathBuf]>,
 ) -> Result<(Vec<Finding>, HashMap<String, Arc<str>>, Vec<String>), String> {
     use ignore::Walk;
 
@@ -1199,9 +1227,9 @@ async fn scan_directory_with_rules_inner(
         }
     };
 
-    // 创建规则扫描器
+    // 创建规则扫描器（已编译结果按规则集内容进程内缓存：编译是每次扫描的固定大头）
     let rule_scanner = if !rules.is_empty() {
-        Some(crate::rules::scanner::RuleScanner::new(rules))
+        Some(crate::rules::scanner::cached_scanner(rules))
     } else {
         None
     };
@@ -1218,35 +1246,49 @@ async fn scan_directory_with_rules_inner(
     let mut code_files: Vec<std::path::PathBuf> = Vec::new();
     let mut dep_files: Vec<std::path::PathBuf> = Vec::new();
 
-    for entry in Walk::new(path) {
-        if let Ok(entry) = entry {
-            let path = entry.path();
+    // 文件枚举来源：显式文件集合（增量/局部重扫）或整目录遍历。
+    // 两者的下游处理完全一致，因此"局部扫描 N 个文件"与
+    // "整目录扫描后只取这 N 个文件的结果"逐条相同（见 scan_files_with_rules）。
+    let candidates: Vec<std::path::PathBuf> = match explicit_files {
+        Some(files) => files.to_vec(),
+        None => Walk::new(path)
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().to_path_buf())
+            .collect(),
+    };
 
-            if !path.is_file() {
+    for candidate in candidates {
+        // 借用只在过滤/分类期间存在，之后才能把 candidate 移动进目标列表
+        let (is_dep, is_code) = {
+            let file_path = candidate.as_path();
+
+            if !file_path.is_file() {
                 continue;
             }
 
             // 排除目录过滤：基于扫描根目录的相对路径，
             // 避免项目本身位于名为 target/build/test 的父目录时被整体排除。
-            let rel_path = path.strip_prefix(scan_root).unwrap_or(path);
+            let rel_path = file_path.strip_prefix(scan_root).unwrap_or(file_path);
             if is_excluded(rel_path, &excludes) {
                 continue;
             }
 
             // 文件大小检查
-            if let Ok(meta) = std::fs::metadata(path) {
+            if let Ok(meta) = std::fs::metadata(file_path) {
                 if meta.len() > opts.max_file_size {
                     continue;
                 }
             }
 
-            let path_buf = path.to_path_buf();
+            let is_dep = sca_scanner::is_dependency_file(file_path);
+            let is_code = !is_dep && is_supported_file(file_path);
+            (is_dep, is_code)
+        };
 
-            if sca_scanner::is_dependency_file(path) {
-                dep_files.push(path_buf);
-            } else if is_supported_file(path) {
-                code_files.push(path_buf);
-            }
+        if is_dep {
+            dep_files.push(candidate);
+        } else if is_code {
+            code_files.push(candidate);
         }
     }
 
@@ -1693,6 +1735,7 @@ pub async fn scan_directory_deep_with_rules_progress(
         sca_options,
         scan_opts,
         progress.clone(),
+        None,
     )
     .await?;
 
@@ -4296,5 +4339,48 @@ mod tests {
             result.findings.iter().map(|f| &f.vuln_type).collect::<Vec<_>>()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 局部扫描（显式文件集）必须与"整目录扫描后取该文件的结果"逐条一致。
+    #[tokio::test]
+    async fn test_scan_files_with_rules_matches_directory_scan() {
+        let root = std::env::temp_dir().join("ctx-audit-scan-files-equiv");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let app = root.join("app.py");
+        std::fs::write(
+            &app,
+            "@app.route(\"/admin\")\ndef admin():\n    return \"ok\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("util.py"), "def add(a, b):\n    return a + b\n").unwrap();
+
+        let root_str = root.to_string_lossy().to_string();
+        let full = scan_directory_with_rules(&root_str, None, None, None)
+            .await
+            .unwrap();
+        assert!(!full.is_empty(), "夹具应至少产出 1 个 finding");
+
+        let explicit = scan_files_with_rules(&root_str, &[app.clone()], None, None)
+            .await
+            .unwrap();
+
+        let mut expected: Vec<(String, usize, String)> = full
+            .iter()
+            .filter(|f| f.file_path.ends_with("app.py"))
+            .map(|f| (f.file_path.clone(), f.line_start, f.detector.clone()))
+            .collect();
+        let mut actual: Vec<(String, usize, String)> = explicit
+            .iter()
+            .map(|f| (f.file_path.clone(), f.line_start, f.detector.clone()))
+            .collect();
+        expected.sort();
+        actual.sort();
+        assert_eq!(
+            actual, expected,
+            "局部扫描结果必须等于全量结果中该文件的部分"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
