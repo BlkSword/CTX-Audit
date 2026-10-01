@@ -111,6 +111,8 @@ pub struct SymbolIndex {
     /// 累计解析过的文件数（增量时只解析变化的）
     parsed_files: u64,
     skipped_large: usize,
+    /// 因不是代码文件（json/yaml/md 等）而跳过的文件数
+    skipped_non_code: usize,
     truncated: bool,
 }
 
@@ -157,6 +159,11 @@ impl SymbolIndex {
 
     pub fn skipped_large(&self) -> usize {
         self.skipped_large
+    }
+
+    /// 因不是代码文件而跳过的文件数
+    pub fn skipped_non_code(&self) -> usize {
+        self.skipped_non_code
     }
 
     pub fn truncated(&self) -> bool {
@@ -229,7 +236,7 @@ impl SymbolIndex {
 
     /// 增量重建：复用未变文件的声明与布隆位图，只解析新增/变化的文件。
     fn rebuild_incremental(&self, root: &Path) -> SymbolIndex {
-        let (paths, dirs, skipped_large, truncated) = collect_paths(root);
+        let (paths, dirs, skipped_large, skipped_non_code, truncated) = collect_paths(root);
         let mut old_by_path: HashMap<&str, usize> = HashMap::with_capacity(self.files.len());
         for (i, f) in self.files.iter().enumerate() {
             old_by_path.insert(f.path.as_str(), i);
@@ -275,6 +282,7 @@ impl SymbolIndex {
             built_at: Instant::now(),
             parsed_files,
             skipped_large,
+            skipped_non_code,
             truncated,
         }
     }
@@ -290,6 +298,7 @@ impl SymbolIndex {
             built_at: Instant::now(),
             parsed_files: 0,
             skipped_large: 0,
+            skipped_non_code: 0,
             truncated: false,
         };
         empty.rebuild_incremental(root)
@@ -413,6 +422,41 @@ fn stat_mtime_ms(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|m| mtime_ms(&m))
 }
 
+/// 只有"代码文件"参与符号索引：JSON/YAML/锁文件等数据文件不含声明，
+/// 却会因为同名子串污染引用结果（实测夹具里 expected.json 贡献了全部误报）。
+fn is_code_file(rel: &str) -> bool {
+    let ext = rel.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "rs" | "py"
+            | "go"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "ts"
+            | "tsx"
+            | "java"
+            | "php"
+            | "rb"
+            | "ex"
+            | "exs"
+            | "c"
+            | "h"
+            | "hpp"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "cs"
+            | "kt"
+            | "swift"
+            | "scala"
+            | "clj"
+            | "lua"
+            | "vue"
+    )
+}
+
 /// 收集候选文件 `(相对路径, 绝对路径, 元数据)` 与目录指纹
 fn collect_paths(
     root: &Path,
@@ -420,11 +464,13 @@ fn collect_paths(
     Vec<(String, PathBuf, std::fs::Metadata)>,
     Vec<DirEntry>,
     usize,
+    usize,
     bool,
 ) {
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     let mut skipped_large = 0usize;
+    let mut skipped_non_code = 0usize;
     let mut truncated = false;
     let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
 
@@ -476,6 +522,10 @@ fn collect_paths(
                 .strip_prefix(root)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or(name);
+            if !is_code_file(&rel) {
+                skipped_non_code += 1;
+                continue;
+            }
             files.push((rel, path, meta));
         }
     }
@@ -483,7 +533,7 @@ fn collect_paths(
     // 确定性：路径排序（避免枚举顺序影响 40 条上限的取舍）
     files.sort_by(|a, b| a.0.cmp(&b.0));
     dirs.sort_by(|a, b| a.path.cmp(&b.path));
-    (files, dirs, skipped_large, truncated)
+    (files, dirs, skipped_large, skipped_non_code, truncated)
 }
 
 /// 解析一个文件：返回 `(声明列表, trigram 布隆位图)`
@@ -516,7 +566,13 @@ pub fn declared_names(line: &str) -> Vec<String> {
         while let Some(pos) = line[from..].find(kw) {
             let abs = from + pos;
             let mut rest = line[abs + kw.len()..].trim_start();
-            // 跳过修饰符（pub/async/public/...）、泛型参数与指针等噪声
+            // Go/Rust 形态 `func (recv Type) Name(`：先跳过接收者/泛型括号，否则取不到方法名
+            if rest.starts_with('(') {
+                if let Some(close) = rest.find(')') {
+                    rest = rest[close + 1..].trim_start();
+                }
+            }
+            // 跳过修饰符（pub/async/public/...）与噪声
             loop {
                 let end = rest
                     .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
@@ -624,7 +680,40 @@ mod tests {
         assert_eq!(declared_names("pub async fn run(x: u32) {"), vec!["run"]);
         assert_eq!(declared_names("struct Foo<T> {"), vec!["Foo"]);
         assert_eq!(declared_names("const MAX_LEN: usize = 4;"), vec!["MAX_LEN"]);
+        // Go/Rust 接收者形态：必须先跳过 (recv Type)
+        assert_eq!(
+            declared_names("func (f fileReader) Read(p []byte) (int, error) {"),
+            vec!["Read"]
+        );
+        assert_eq!(
+            declared_names("func (s *Server) handle(c *gin.Context) {"),
+            vec!["handle"]
+        );
         assert!(declared_names("let x = 1;").is_empty());
+    }
+
+    /// 数据文件（json/yaml/md 等）不参与符号索引
+    #[test]
+    fn test_non_code_files_are_not_indexed() {
+        let root = fixture("noncode");
+        std::fs::write(
+            root.join("config.json"),
+            "{\n  \"handler\": \"app.handler\",\n  \"put\": \"x\"\n}\n",
+        )
+        .unwrap();
+
+        let (index, _, _) = get_or_build(&root, true, None);
+        let indexed: Vec<&str> = (0..index.file_count())
+            .map(|i| index.file_path(i))
+            .collect();
+        assert!(
+            indexed.iter().all(|p| !p.ends_with(".json")),
+            "数据文件不应进符号索引: {indexed:?}"
+        );
+        assert!(index.skipped_non_code() >= 1);
+
+        invalidate(&root);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

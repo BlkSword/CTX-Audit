@@ -40,9 +40,31 @@ const SKIP_DIRS: [&str; 8] = [
 pub struct Provenance {
     pub file: Option<String>,
     pub line: Option<u32>,
-    /// tree-sitter / file-heuristic / lsp / engine
+    /// tree-sitter / file-heuristic / symbol-index / ...
     pub resolver: String,
     pub build_id: String,
+    /// 该条证据的置信度（0–1）。按解析方式给固定档位，
+    /// 供上层对照 ground truth 度量"标注准确率"（校准），而非拍脑袋写不确定度。
+    #[serde(default = "default_evidence_confidence")]
+    pub confidence: f64,
+}
+
+/// 置信度默认档（未知解析方式）
+pub fn default_evidence_confidence() -> f64 {
+    0.5
+}
+
+/// 解析方式 → 置信度档位（唯一事实源，改动需同步 ground truth 校准结果）
+pub fn resolver_confidence(resolver: &str) -> f64 {
+    match resolver {
+        // 索引里的"被声明标识符"：标识符精确匹配声明行
+        "symbol-index" => 0.95,
+        // 索引剪枝 + 逐行启发式：同名不同符号未消歧
+        "symbol-index+line-heuristic" => 0.7,
+        // 纯文件/行启发式
+        "file-heuristic" => 0.5,
+        _ => default_evidence_confidence(),
+    }
 }
 
 /// 不确定度：显式暴露"猜"和"未解析"。
@@ -259,11 +281,13 @@ fn build_id(files: &[(String, String)]) -> String {
 }
 
 fn prov(file: &str, line: u32, id: &str) -> Provenance {
+    let resolver = "file-heuristic";
     Provenance {
         file: Some(file.to_string()),
         line: Some(line),
-        resolver: "file-heuristic".to_string(),
+        resolver: resolver.to_string(),
         build_id: id.to_string(),
+        confidence: resolver_confidence(resolver),
     }
 }
 
@@ -274,6 +298,7 @@ fn prov_with(file: &str, line: u32, id: &str, resolver: &str) -> Provenance {
         line: Some(line),
         resolver: resolver.to_string(),
         build_id: id.to_string(),
+        confidence: resolver_confidence(resolver),
     }
 }
 
@@ -291,6 +316,7 @@ fn symbol_index_stats(
         "build_ms": build_ms,
         "age_ms": index.build_age().as_millis() as u64,
         "skipped_large_files": index.skipped_large(),
+        "skipped_non_code_files": index.skipped_non_code(),
         "truncated_at_limit": index.truncated(),
         "match": "identifier_exact",
     })
@@ -363,6 +389,65 @@ pub fn find_call_sites(content: &str, name: &str) -> Vec<(u32, String)> {
         }
     }
     hits
+}
+
+/// 该文件是否用花括号界定函数体（决定 body_span 用配对括号还是缩进）
+pub fn is_brace_language(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    !matches!(ext.as_str(), "py" | "rb" | "ex" | "exs" | "clj" | "lua")
+}
+
+fn indent_width(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+/// 纯函数：估算某个定义所在函数的体范围（0-based，含首尾）。
+///
+/// - 花括号语言：从定义行的首个 `{` 起配对括号；
+/// - 缩进语言（Python/Ruby/...）：取缩进大于定义行的后续行（空行不断开）；
+/// - 找不到体时退化为定义行本身。
+pub fn body_span(lines: &[&str], def_idx: usize, brace: bool) -> (usize, usize) {
+    if def_idx >= lines.len() {
+        return (def_idx, def_idx);
+    }
+    if brace {
+        let mut depth: i32 = 0;
+        let mut started = false;
+        for (offset, line) in lines.iter().enumerate().skip(def_idx) {
+            for ch in line.chars() {
+                match ch {
+                    '{' => {
+                        depth += 1;
+                        started = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if started && depth <= 0 {
+                return (def_idx, offset);
+            }
+            // 多行签名允许上溯若干行；超限则放弃
+            if !started && offset > def_idx + 30 {
+                break;
+            }
+        }
+        (def_idx, def_idx)
+    } else {
+        let base = indent_width(lines[def_idx]);
+        let mut end = def_idx;
+        for (idx, line) in lines.iter().enumerate().skip(def_idx + 1) {
+            if line.trim().is_empty() {
+                end = idx;
+                continue;
+            }
+            if indent_width(line) <= base {
+                break;
+            }
+            end = idx;
+        }
+        (def_idx, end)
+    }
 }
 
 /// 纯函数：从一行里提取 `(` 前的标识符（取最后一个点后的名字）。
@@ -590,6 +675,7 @@ impl Tool for CodeIntelTool {
                     "definitions_are_identifier_exact",
                     "import_alias_not_resolved",
                     "not_lsp_resolved",
+                    "index_covers_code_files_only",
                 ];
                 if defs.is_empty() {
                     reasons.push("no_definition_in_index");
@@ -646,7 +732,11 @@ impl Tool for CodeIntelTool {
                     provenance,
                     uncertainty: Uncertainty::new(
                         "medium",
-                        &["same_name_not_disambiguated", "not_lsp_resolved"],
+                        &[
+                            "same_name_not_disambiguated",
+                            "not_lsp_resolved",
+                            "index_covers_code_files_only",
+                        ],
                         0,
                     ),
                 }
@@ -669,15 +759,46 @@ impl Tool for CodeIntelTool {
                             callers.push(json!({"file": path, "line": line, "text": text}));
                         }
                     }
-                    if direction != "callers" && content.contains(function) {
-                        for line in content.lines() {
-                            for name in callee_names(line) {
-                                if name.as_str() != function {
-                                    callees.push(json!({"name": name, "file": path}));
+                    if direction != "callers" {
+                        // callees 必须限定在**目标函数的函数体内**：
+                        // 早先的实现把"文件里出现过的所有调用"都算成 callee，
+                        // ground truth 基线上精度只有 0.53（把同文件无关函数也算进来）。
+                        let lines: Vec<&str> = content.lines().collect();
+                        let brace = is_brace_language(path);
+                        let mut seen: std::collections::HashSet<(String, String)> =
+                            std::collections::HashSet::new();
+                        for (def_line, _) in find_definitions(content, function) {
+                            let def_idx = (def_line as usize).saturating_sub(1);
+                            let (start, end) = body_span(&lines, def_idx, brace);
+                            for idx in start..=end.min(lines.len().saturating_sub(1)) {
+                                for name in callee_names(lines[idx]) {
+                                    if name.as_str() == function {
+                                        continue;
+                                    }
+                                    if !seen.insert((name.clone(), path.clone())) {
+                                        continue;
+                                    }
+                                    provenance.push(prov_with(
+                                        path,
+                                        (idx + 1) as u32,
+                                        &id,
+                                        "call-scan+body-scope",
+                                    ));
+                                    callees.push(json!({
+                                        "name": name,
+                                        "file": path,
+                                        "line": idx + 1,
+                                    }));
+                                    if callees.len() >= MAX_HITS {
+                                        break;
+                                    }
                                 }
                                 if callees.len() >= MAX_HITS {
                                     break;
                                 }
+                            }
+                            if callees.len() >= MAX_HITS {
+                                break;
                             }
                         }
                     }
@@ -694,7 +815,11 @@ impl Tool for CodeIntelTool {
                     provenance,
                     uncertainty: Uncertainty::new(
                         level,
-                        &["name_based_edges", "dynamic_dispatch_not_resolved"],
+                        &[
+                            "name_based_edges",
+                            "dynamic_dispatch_not_resolved",
+                            "callees_scoped_to_function_body",
+                        ],
                         unresolved,
                     ),
                 }
@@ -1105,5 +1230,31 @@ mod tests {
     fn test_tool_surface_is_ten() {
         assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 10);
         assert_eq!(IntelKind::all().len(), 9);
+    }
+
+    /// 缩进语言：callee 扫描必须止于函数体（同文件无关函数不得计入）
+    #[test]
+    fn test_body_span_indent_language() {
+        let src = "def target(request):\n    a = helper_one(request)\n    return helper_two(a)\n\n\ndef unrelated():\n    return other_call()\n";
+        let lines: Vec<&str> = src.lines().collect();
+        let (start, end) = body_span(&lines, 0, false);
+        assert_eq!(start, 0);
+        let body = lines[start..=end].join("\n");
+        assert!(body.contains("helper_one"), "{body}");
+        assert!(body.contains("helper_two"), "{body}");
+        assert!(
+            !body.contains("other_call"),
+            "函数体外的调用不应计入: {body}"
+        );
+    }
+
+    /// 花括号语言：按配对花括号取体范围
+    #[test]
+    fn test_body_span_brace_language() {
+        let src = "function target(req) {\n    const s = new Store();\n    return s.get(\"k\");\n}\n\nfunction unrelated() {\n    return other();\n}\n";
+        let lines: Vec<&str> = src.lines().collect();
+        assert_eq!(body_span(&lines, 0, true), (0, 3));
+        assert!(is_brace_language("a.js") && is_brace_language("a.go"));
+        assert!(!is_brace_language("a.py"));
     }
 }
