@@ -52,6 +52,30 @@ struct ProjectScanCache {
     snapshot: FileSnapshot,
     /// 上次全量扫描的 findings 总数
     total_findings: usize,
+    /// 最近一次扫描的遥测（把"冷启动/局部重编译/缓存命中"变成可观测事实）
+    last_scan: Option<ScanTelemetry>,
+    /// 最近一次扫描使用的分析选项 `(enable_taint, enable_cross_file)`。
+    /// 选项变化必须整表重建，否则会把浅扫结果当深扫结果复用。
+    last_options: Option<(bool, bool)>,
+}
+
+/// 最近一次扫描的遥测。
+#[derive(Debug, Clone)]
+struct ScanTelemetry {
+    /// 本次扫描耗时
+    duration_ms: u64,
+    /// 本次实际重扫的文件数
+    files_scanned: usize,
+    /// 走缓存未重扫的文件数（= 该文件此前有 findings 记录）
+    files_cached: usize,
+    /// 快照里的文件总数（本项目实际被跟踪的文件数）
+    snapshot_files: usize,
+    /// 是否走了增量路径
+    was_incremental: bool,
+    /// 变更文件数（无变更命中时为 0）
+    changed_files: usize,
+    /// 记录时刻（用于换算"多久之前"）
+    at: std::time::Instant,
 }
 
 // ────────────────────────────────────────────────────────
@@ -191,6 +215,8 @@ impl AnalysisEngine {
                             entries: HashMap::new(),
                             snapshot: FileSnapshot::new(project_path, ignore),
                             total_findings: 0,
+                            last_scan: None,
+                            last_options: None,
                         }),
                         last_accessed: std::sync::Mutex::new(std::time::Instant::now()),
                     }
@@ -214,14 +240,28 @@ impl AnalysisEngine {
             .detect_changes()
             .map_err(|e| anyhow::anyhow!("变更检测失败: {}", e))?;
 
-        if !delta.has_changes() && !cache.entries.is_empty() {
-            // 无变更，直接返回缓存
+        // 分析选项（污点/跨文件）变化时，缓存里已有的结果不可复用
+        let options = (enable_taint, enable_cross_file);
+        let options_changed = cache.last_options.is_some() && cache.last_options != Some(options);
+
+        if !delta.has_changes() && cache.last_scan.is_some() && !options_changed {
+            // 无变更且此前扫过（`entries` 是 **findings** 缓存，零 findings 项目会一直为空，
+            // 所以不能用它当"扫过了"的判据）→ 直接返回缓存
             let all_findings: Vec<Finding> = cache
                 .entries
                 .values()
                 .flat_map(|e| e.findings.clone())
                 .collect();
             let duration = start.elapsed().as_millis() as u64;
+            cache.last_scan = Some(ScanTelemetry {
+                duration_ms: duration,
+                files_scanned: 0,
+                files_cached: cache.entries.len(),
+                snapshot_files: cache.snapshot.file_count(),
+                was_incremental: true,
+                changed_files: 0,
+                at: std::time::Instant::now(),
+            });
 
             return Ok(ScanOutput {
                 findings: all_findings,
@@ -246,8 +286,15 @@ impl AnalysisEngine {
             cache.entries.remove(&rel);
         }
 
-        // 如果是首次扫描（无缓存），执行全量扫描
-        if cache.entries.is_empty() {
+        // 首次扫描、findings 缓存为空、或分析选项变化：整表重建。
+        //
+        // ⚠️ 为什么这里仍以 `entries.is_empty()` 为闸门（而不是 `last_scan.is_none()`）：
+        // 增量路径 `scan_files()` 目前是**桩实现**——它用的 `RegexScanner` 已废弃（恒返回空），
+        // 且在 rayon 闭包里 `Handle::block_on` 会 panic（"Cannot start a runtime from within a runtime"，
+        // 因为 rayon 会在调用线程上执行部分工作，而调用线程在 tokio runtime 上下文里）。
+        // 换句话说：把改动文件送进 `scan_files()` 既会崩、又会把该文件的缓存 findings 清空。
+        // 修好 `scan_files()` 之前，**不要**放宽这个闸门。
+        if cache.entries.is_empty() || cache.last_scan.is_none() || options_changed {
             drop(cache);
             drop(caches);
             return self
@@ -316,11 +363,22 @@ impl AnalysisEngine {
         let _ = cache.snapshot.build_baseline();
 
         let duration = start.elapsed().as_millis() as u64;
+        let files_cached = cache.entries.len().saturating_sub(changed_set.len());
+        cache.last_scan = Some(ScanTelemetry {
+            duration_ms: duration,
+            files_scanned: changed_set.len(),
+            files_cached,
+            snapshot_files: cache.snapshot.file_count(),
+            was_incremental: true,
+            changed_files: changed_set.len(),
+            at: std::time::Instant::now(),
+        });
+        cache.last_options = Some(options);
         Ok(ScanOutput {
             findings: all_findings,
             duration_ms: duration,
             files_scanned: changed_set.len(),
-            files_cached: cache.entries.len() - changed_set.len(),
+            files_cached,
             was_incremental: true,
         })
     }
@@ -334,15 +392,7 @@ impl AnalysisEngine {
         start: Instant,
     ) -> Result<ScanOutput> {
         // 检测规则目录（项目级 > 内置）
-        let project_rules = Path::new(path).join(".ctx-audit/rules");
-        let builtin_rules = Path::new("rules");
-        let rules_dir = if project_rules.exists() {
-            Some(project_rules.to_string_lossy().to_string())
-        } else if builtin_rules.exists() {
-            Some(builtin_rules.to_string_lossy().to_string())
-        } else {
-            None
-        };
+        let rules_dir = Self::resolve_rules_dir(path);
 
         self.log_rules_status(path, rules_dir.as_deref()).await;
 
@@ -377,6 +427,7 @@ impl AnalysisEngine {
         let total = findings.len();
 
         // 按 file_path 分组缓存
+        let duration = start.elapsed().as_millis() as u64;
         let caches = self.scan_caches.read().await;
         if let Some(ts_cache) = caches.get(path) {
             if let Ok(mut t) = ts_cache.last_accessed.lock() {
@@ -406,9 +457,18 @@ impl AnalysisEngine {
 
             cache.total_findings = total;
             let _ = cache.snapshot.build_baseline();
+            cache.last_scan = Some(ScanTelemetry {
+                duration_ms: duration,
+                files_scanned: cache.entries.len(),
+                files_cached: 0,
+                snapshot_files: cache.snapshot.file_count(),
+                was_incremental: false,
+                changed_files: cache.entries.len(),
+                at: std::time::Instant::now(),
+            });
+            cache.last_options = Some((enable_taint, enable_cross_file));
         }
 
-        let duration = start.elapsed().as_millis() as u64;
         Ok(ScanOutput {
             findings,
             duration_ms: duration,
@@ -910,6 +970,142 @@ impl AnalysisEngine {
         let engine = self.build_query_engine_for_project(project_path)?;
         let flow = engine.trace_variable_flow(file_path, function_name);
         Ok(serde_json::to_value(flow)?)
+    }
+
+    // ── 增量索引状态 ─────────────────────────────────
+
+    /// 规则目录解析（项目级 > 工作目录内置），扫描与状态上报共用同一口径。
+    fn resolve_rules_dir(path: &str) -> Option<String> {
+        let project_rules = Path::new(path).join(".ctx-audit/rules");
+        let builtin_rules = Path::new("rules");
+        if project_rules.exists() {
+            Some(project_rules.to_string_lossy().to_string())
+        } else if builtin_rules.exists() {
+            Some(builtin_rules.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// 增量索引状态：冷启动 / 缓存命中 / 待重编译清单。
+    ///
+    /// **只读**：变更判定走 `FileSnapshot::peek_changes`，不会更新 baseline，
+    /// 因此可以反复调用而不影响后续增量扫描的判定。
+    pub async fn incremental_status(&self, path: &str) -> serde_json::Value {
+        let caches = self.scan_caches.read().await;
+        let ast_count = self.ast_engines.read().await.len();
+        let scan_count = caches.len();
+
+        let ts_cache = match caches.get(path) {
+            Some(c) => c,
+            None => {
+                return serde_json::json!({
+                    "project": path,
+                    "mode": "cold",
+                    "cold_start": true,
+                    "reason": "no_scan_cache_slot",
+                    "files_cached": 0,
+                    "cached_findings": 0,
+                    "snapshot_files": 0,
+                    "pending_recompile": 0,
+                    "pending": {"added": 0, "changed": 0, "deleted": 0, "sample": []},
+                    "last_scan": null,
+                    "rules_dir": Self::resolve_rules_dir(path),
+                    "cache": {"ast_engines": ast_count, "scan_projects": scan_count},
+                    "uncertainty": ["project_not_loaded"],
+                });
+            }
+        };
+
+        let cache = ts_cache.cache.read().await;
+        let last_accessed_age_ms = ts_cache
+            .last_accessed
+            .lock()
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+
+        // 只读变更预览：不更新 baseline
+        let mut pending_added = 0usize;
+        let mut pending_changed = 0usize;
+        let mut pending_deleted = 0usize;
+        let mut pending_sample: Vec<String> = Vec::new();
+        let mut peek_error: Option<String> = None;
+        match cache.snapshot.peek_changes() {
+            Ok(delta) => {
+                pending_added = delta.added_files.len();
+                pending_changed = delta.changed_files.len();
+                pending_deleted = delta.deleted_files.len();
+                pending_sample = delta
+                    .added_files
+                    .iter()
+                    .chain(delta.changed_files.iter())
+                    .chain(delta.deleted_files.iter())
+                    .take(20)
+                    .map(|p| path_relative_to(Path::new(path), p))
+                    .collect();
+            }
+            Err(e) => peek_error = Some(e.to_string()),
+        }
+
+        let last_scan = cache.last_scan.as_ref().map(|t| {
+            serde_json::json!({
+                "duration_ms": t.duration_ms,
+                "files_scanned": t.files_scanned,
+                "files_cached": t.files_cached,
+                "snapshot_files": t.snapshot_files,
+                "was_incremental": t.was_incremental,
+                "changed_files": t.changed_files,
+                "age_ms": t.at.elapsed().as_millis() as u64,
+            })
+        });
+
+        let pending_total = pending_added + pending_changed + pending_deleted;
+        // "冷" 的判据是"从未扫过"，不是"findings 缓存为空"——零 findings 项目扫完仍为空。
+        let cold_start = cache.last_scan.is_none() && !cache.snapshot.has_baseline();
+        let last_options = cache.last_options.map(|(taint, cross_file)| {
+            serde_json::json!({"enable_taint": taint, "enable_cross_file": cross_file})
+        });
+        let mode = if cold_start {
+            "cold"
+        } else if pending_total == 0 {
+            "warm-unchanged"
+        } else {
+            "warm-pending-recompile"
+        };
+        let mut uncertainty: Vec<&str> = Vec::new();
+        if peek_error.is_some() {
+            uncertainty.push("change_peek_failed");
+        }
+        if !cache.snapshot.has_baseline() {
+            uncertainty.push("baseline_not_built");
+        }
+        // 诚实标注：变更已检出，但引擎目前只能整表重建（增量重编译路径待实现）
+        if pending_total > 0 {
+            uncertainty.push("partial_rescan_not_implemented");
+        }
+
+        serde_json::json!({
+            "project": path,
+            "mode": mode,
+            "cold_start": cold_start,
+            "files_cached": cache.entries.len(),
+            "cached_findings": cache.total_findings,
+            "snapshot_files": cache.snapshot.file_count(),
+            "pending_recompile": pending_total,
+            "pending": {
+                "added": pending_added,
+                "changed": pending_changed,
+                "deleted": pending_deleted,
+                "sample": pending_sample,
+            },
+            "last_scan": last_scan,
+            "last_options": last_options,
+            "last_accessed_age_ms": last_accessed_age_ms,
+            "rules_dir": Self::resolve_rules_dir(path),
+            "cache": {"ast_engines": ast_count, "scan_projects": scan_count},
+            "peek_error": peek_error,
+            "uncertainty": uncertainty,
+        })
     }
 
     // ── 缓存统计 ─────────────────────────────────────

@@ -689,6 +689,11 @@ async fn handle_request(
 
  // ── 原生 Agent / 轮次 runner ──────────────
         // AgentRoundRun / AgentRoundResume 为流式命令，已在 handle_client 特判
+        RequestCommand::IncrementalStatus { project_path } => {
+            let status = engine.incremental_status(&project_path).await;
+            Response::IncrementalStatusInfo { status }
+        }
+
         RequestCommand::AgentRoundRun { .. } | RequestCommand::AgentRoundResume { .. } => {
             Response::Error {
                 code: "internal".into(),

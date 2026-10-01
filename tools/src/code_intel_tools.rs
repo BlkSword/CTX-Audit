@@ -124,7 +124,7 @@ impl IntelKind {
             IntelKind::DataflowPath => "source→sink 路径（行区间启发式）",
             IntelKind::SanitizerGuards => "变量路径上的条件分支/校验逻辑",
             IntelKind::FrameworkContext => "路由 handler 的前置中间件/拦截器链",
-            IntelKind::IncrementalStatus => "增量索引状态与 SLO 指标（stat 基线）",
+            IntelKind::IncrementalStatus => "增量索引状态：冷启动/缓存命中/待重编译清单（stat 指纹 + TTL 缓存）",
         }
     }
 }
@@ -163,16 +163,40 @@ pub fn language_of(path: &str) -> &'static str {
     }
 }
 
-/// 遍历项目文件，返回 `(文件列表, 因大小上限跳过的文件数, 是否因文件数上限截断)`。
-fn load_files(root: &Path) -> (Vec<(String, String)>, usize, bool) {
+/// 索引加载结果：文件内容 + 可观测上限事实 + stat 指纹。
+struct LoadedIndex {
+    files: Vec<(String, String)>,
+    /// 因超过单文件大小上限而跳过的文件数
+    skipped_large: usize,
+    /// 是否因达到文件数上限而提前停止遍历
+    truncated_at_limit: bool,
+    /// 已索引文件的 stat 指纹（缓存失效探测用）
+    file_stamps: Vec<crate::index_cache::FileStamp>,
+    /// 已遍历目录的 stat 指纹（目录内增删的兜底探测）
+    dir_stamps: Vec<crate::index_cache::DirStamp>,
+}
+
+/// 遍历项目文件并采集 stat 指纹（跳过目录不采集，也不计入指纹）。
+fn load_files(root: &Path) -> LoadedIndex {
+    use crate::index_cache::{mtime_ms, DirStamp, FileStamp};
+
     let mut out: Vec<(String, String)> = Vec::new();
+    let mut file_stamps: Vec<FileStamp> = Vec::new();
+    let mut dir_stamps: Vec<DirStamp> = Vec::new();
     let mut skipped_large = 0usize;
     let mut truncated_at_limit = false;
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, dir_rel)) = stack.pop() {
         if out.len() >= MAX_FILES {
             truncated_at_limit = true;
             break;
+        }
+        // 目录指纹：目录内新增/删除/改名会改变目录 mtime，是文件级指纹的兜底
+        if let Ok(meta) = std::fs::metadata(&dir) {
+            dir_stamps.push(DirStamp {
+                path: dir_rel.clone(),
+                mtime_ms: mtime_ms(&meta),
+            });
         }
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
@@ -183,7 +207,12 @@ fn load_files(root: &Path) -> (Vec<(String, String)>, usize, bool) {
             let name = entry.file_name().to_string_lossy().to_string();
             if path.is_dir() {
                 if !should_skip(&name) {
-                    stack.push(path);
+                    let child_rel = if dir_rel.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{dir_rel}/{name}")
+                    };
+                    stack.push((path, child_rel));
                 }
                 continue;
             }
@@ -204,11 +233,22 @@ fn load_files(root: &Path) -> (Vec<(String, String)>, usize, bool) {
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or(name.clone());
             if let Ok(content) = std::fs::read_to_string(&path) {
+                file_stamps.push(FileStamp {
+                    path: rel.clone(),
+                    mtime_ms: mtime_ms(&meta),
+                    size: meta.len(),
+                });
                 out.push((rel, content));
             }
         }
     }
-    (out, skipped_large, truncated_at_limit)
+    LoadedIndex {
+        files: out,
+        skipped_large,
+        truncated_at_limit,
+        file_stamps,
+        dir_stamps,
+    }
 }
 
 fn build_id(files: &[(String, String)]) -> String {
@@ -439,18 +479,21 @@ impl Tool for CodeIntelTool {
             .unwrap_or(false);
         let ttl = crate::index_cache::default_ttl();
         // 索引缓存：TTL 内复用同一份索引，避免每次调用重新遍历项目
-        let (index, cache_hit) = crate::index_cache::get_or_build(root, refresh, ttl, || {
-            let (files, skipped_large, truncated_at_limit) = load_files(root);
-            let build_id = build_id(&files);
+        let (index, hit) = crate::index_cache::get_or_build(root, refresh, ttl, || {
+            let loaded = load_files(root);
+            let build_id = build_id(&loaded.files);
             crate::index_cache::ProjectIndex {
                 root: root.to_string_lossy().to_string(),
-                files,
+                files: loaded.files,
                 build_id,
-                skipped_large,
-                truncated_at_limit,
+                skipped_large: loaded.skipped_large,
+                truncated_at_limit: loaded.truncated_at_limit,
+                file_stamps: loaded.file_stamps,
+                dir_stamps: loaded.dir_stamps,
                 built_at: std::time::Instant::now(),
             }
         });
+        let cache_hit = hit.is_hit();
         let files: &[(String, String)] = &index.files;
         let id = index.build_id.clone();
         let env: IntelEnvelope = match self.kind {
@@ -460,12 +503,17 @@ impl Tool for CodeIntelTool {
                 for (path, _) in files {
                     *langs.entry(language_of(path)).or_insert(0) += 1;
                 }
+                let freshness = if crate::index_cache::probe_enabled() {
+                    "stat+mtime-probe + TTL cache (dir stamps cover add/remove)"
+                } else {
+                    "stat + TTL cache (probe disabled by CTX_AUDIT_INDEX_PROBE)"
+                };
                 IntelEnvelope {
                     data: json!({
                         "files": files.len(),
                         "languages": langs,
                         "build_id": id,
-                        "index_freshness": "stat-based + in-process TTL cache (daemon incremental index pending)",
+                        "index_freshness": freshness,
                         "limits": {
                             "max_files": MAX_FILES,
                             "max_file_bytes": MAX_FILE_BYTES,
@@ -474,6 +522,7 @@ impl Tool for CodeIntelTool {
                         },
                         "cache": {
                             "hit": cache_hit,
+                            "hit_source": hit.as_str(),
                             "age_ms": index.age().as_millis() as u64,
                             "ttl_ms": ttl.as_millis() as u64,
                             "refresh": refresh,
@@ -752,30 +801,55 @@ impl Tool for CodeIntelTool {
             }
             IntelKind::IncrementalStatus => {
                 let bytes = index.total_bytes();
+                let probe_on = crate::index_cache::probe_enabled();
+                let timing = crate::index_cache::cache_timing(root);
+                // 待局部重编译口径 = 相对上次构建已变化的文件/目录（stat 级，不重新遍历）
+                let pending = crate::index_cache::changed_since_build(root).unwrap_or_default();
+                let mut reasons: Vec<&str> = vec!["daemon_incremental_index_not_wired"];
+                if probe_on {
+                    reasons.push("new_directories_need_ttl_or_refresh");
+                } else {
+                    reasons.push("probe_disabled_by_env");
+                }
+                let mode = if probe_on {
+                    "stat+mtime-probe+ttl-cache"
+                } else {
+                    "stat+ttl-cache"
+                };
                 IntelEnvelope {
                     data: json!({
                         "build_id": id,
                         "files_indexed": files.len(),
                         "bytes_indexed": bytes,
-                        "mode": "stat-baseline+ttl-cache",
-                        "pending_recompile": 0,
+                        "mode": mode,
+                        "pending_recompile": pending.len(),
+                        "pending_sample": pending.iter().take(20).collect::<Vec<_>>(),
+                        "fingerprint": {
+                            "files": index.file_stamps.len(),
+                            "dirs": index.dir_stamps.len(),
+                            "probe_enabled": probe_on,
+                        },
                         "skipped_large_files": index.skipped_large,
                         "truncated_at_limit": index.truncated_at_limit,
                         "cache": {
                             "hit": cache_hit,
+                            "hit_source": hit.as_str(),
                             "age_ms": index.age().as_millis() as u64,
                             "ttl_ms": ttl.as_millis() as u64,
                             "refresh": refresh,
                             "entries": crate::index_cache::stats().0,
+                            "ttl_hits": timing.map(|t| t.ttl_hits),
+                            "probe_hits": timing.map(|t| t.probe_hits),
                         },
-                        "slo": {"symbol_jump_ms": null, "slice_ms": null, "refresh_ms": null},
+                        "slo": {
+                            "symbol_jump_ms": null,
+                            "slice_ms": null,
+                            "index_build_ms": timing.map(|t| t.last_build_ms),
+                            "validated_age_ms": timing.map(|t| t.validated_age_ms),
+                        },
                     }),
                     provenance: vec![prov(".", 0, &id)],
-                    uncertainty: Uncertainty::new(
-                        "medium",
-                        &["daemon_incremental_index_not_wired", "ttl_cache_not_mtime_exact"],
-                        0,
-                    ),
+                    uncertainty: Uncertainty::new("medium", &reasons, 0),
                 }
             }
         };
@@ -864,12 +938,91 @@ mod tests {
         std::fs::create_dir_all(root.join("node_modules")).unwrap();
         std::fs::write(root.join("node_modules/skip.js"), "var x = 1;").unwrap();
 
-        let (files, skipped_large, truncated_at_limit) = load_files(&root);
-        assert_eq!(files.len(), 1, "只应索引 src/main.rs");
-        assert_eq!(files[0].0, "src/main.rs");
-        assert_eq!(skipped_large, 1, "超大文件应被计数");
-        assert!(!truncated_at_limit, "未达文件数上限不应标记截断");
+        let loaded = load_files(&root);
+        assert_eq!(loaded.files.len(), 1, "只应索引 src/main.rs");
+        assert_eq!(loaded.files[0].0, "src/main.rs");
+        assert_eq!(loaded.skipped_large, 1, "超大文件应被计数");
+        assert!(!loaded.truncated_at_limit, "未达文件数上限不应标记截断");
+        assert_eq!(loaded.file_stamps.len(), 1, "每个已索引文件都应有指纹");
+        assert_eq!(loaded.file_stamps[0].path, "src/main.rs");
+        assert!(
+            loaded.dir_stamps.iter().any(|d| d.path.is_empty()),
+            "应记录项目根目录指纹"
+        );
+        assert!(
+            loaded
+                .dir_stamps
+                .iter()
+                .any(|d| d.path == "src" || d.path.ends_with("/src")),
+            "应记录子目录指纹: {:?}",
+            loaded.dir_stamps.iter().map(|d| &d.path).collect::<Vec<_>>()
+        );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 工具级：`get_incremental_status` 的 pending 与命中来源必须来自真实状态。
+    #[tokio::test]
+    async fn test_incremental_status_reports_real_pending() {
+        let root = std::env::temp_dir().join("ctx-audit-code-intel-incremental");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn a() {}").unwrap();
+        crate::index_cache::invalidate(&root);
+
+        let project = root.to_string_lossy().to_string();
+        let tool = CodeIntelTool::new(project.clone(), IntelKind::IncrementalStatus);
+
+        let first = tool.execute(json!({})).await.unwrap();
+        let first_env = first.data.clone().expect("应有 envelope data");
+        let probe_on = crate::index_cache::probe_enabled();
+        assert_eq!(
+            first_env["data"]["mode"],
+            if probe_on {
+                "stat+mtime-probe+ttl-cache"
+            } else {
+                "stat+ttl-cache"
+            }
+        );
+        assert_eq!(first_env["data"]["cache"]["hit"], false);
+        assert_eq!(first_env["data"]["cache"]["hit_source"], "miss");
+        assert_eq!(first_env["data"]["pending_recompile"], 0);
+        assert!(
+            first_env["data"]["fingerprint"]["files"].as_u64().unwrap() >= 1,
+            "应记录文件指纹: {first_env}"
+        );
+        assert!(
+            first_env["data"]["slo"]["index_build_ms"].as_u64().is_some(),
+            "首次构建后应有构建耗时: {first_env}"
+        );
+
+        // 第二次调用：TTL 内应命中，并如实报告命中来源
+        let second = tool.execute(json!({})).await.unwrap();
+        let second_env = second.data.clone().expect("应有 envelope data");
+        assert_eq!(second_env["data"]["cache"]["hit"], true);
+        let second_source = second_env["data"]["cache"]["hit_source"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            second_source == "ttl" || second_source == "probe",
+            "命中来源应为 ttl/probe（取决于 CTX_AUDIT_INDEX_TTL_MS）: {second_source}"
+        );
+
+        let status = crate::index_cache::changed_since_build(std::path::Path::new(&project))
+            .expect("构建后应有缓存条目");
+        assert!(status.is_empty(), "刚构建时不应有待重编译条目: {status:?}");
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(root.join("src/a.rs"), "fn a() { longer_body(); }").unwrap();
+        let status2 = crate::index_cache::changed_since_build(std::path::Path::new(&project))
+            .expect("缓存条目仍在");
+        assert!(
+            status2.iter().any(|p| p == "src/a.rs"),
+            "改动文件应进入待重编译: {status2:?}"
+        );
+
+        crate::index_cache::invalidate(&root);
         let _ = std::fs::remove_dir_all(&root);
     }
 

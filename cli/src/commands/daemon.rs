@@ -208,6 +208,121 @@ async fn show_status(renderer: &mut TerminalRenderer) -> Result<()> {
     Ok(())
 }
 
+/// 查询守护进程的增量索引状态
+///
+/// 只读：服务端用文件快照的只读预览判定变更，不会推进 baseline。
+pub async fn incremental(project: Option<String>) -> Result<()> {
+    let mut renderer = TerminalRenderer::new();
+
+    let mut client = match DaemonClient::connect().await {
+        Ok(c) => c,
+        Err(e) => {
+            renderer.warning("无法连接守护进程（TCP 连接失败）");
+            renderer.info(&format!("  {}", e));
+            renderer.info("提示: 先运行 'ctx-audit daemon start'");
+            return Ok(());
+        }
+    };
+
+    // 未指定项目时取守护进程已加载的第一个项目
+    let project = match project {
+        Some(p) => p,
+        None => match client.status().await {
+            Ok(Response::StatusInfo {
+                loaded_projects, ..
+            }) => match loaded_projects.first() {
+                Some(p) => p.clone(),
+                None => {
+                    renderer.warning("守护进程未加载任何项目");
+                    renderer.info("提示: 用 'ctx-audit daemon incremental --project <path>' 指定项目");
+                    return Ok(());
+                }
+            },
+            Ok(other) => {
+                renderer.info(&format!("守护进程响应异常: {:?}", other));
+                return Ok(());
+            }
+            Err(e) => {
+                renderer.error(&format!("查询状态失败: {}", e));
+                return Ok(());
+            }
+        },
+    };
+
+    match client.incremental_status(project.clone()).await {
+        Ok(Response::IncrementalStatusInfo { status }) => {
+            renderer.info(&format!("项目: {}", project));
+            renderer.info(&format!(
+                "  模式: {}",
+                status
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+            ));
+            renderer.info(&format!(
+                "  已缓存文件: {} / findings: {} / 快照文件: {}",
+                status
+                    .get("files_cached")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                status
+                    .get("cached_findings")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                status
+                    .get("snapshot_files")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            ));
+            renderer.info(&format!(
+                "  待重编译: {} (新增 {} / 修改 {} / 删除 {})",
+                status
+                    .get("pending_recompile")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                status["pending"]["added"].as_u64().unwrap_or(0),
+                status["pending"]["changed"].as_u64().unwrap_or(0),
+                status["pending"]["deleted"].as_u64().unwrap_or(0),
+            ));
+            if let Some(sample) = status["pending"]["sample"].as_array() {
+                if !sample.is_empty() {
+                    let list: Vec<&str> = sample.iter().filter_map(|v| v.as_str()).collect();
+                    renderer.info(&format!("  样本: {}", list.join(", ")));
+                }
+            }
+            renderer.info(&format!(
+                "  最近扫描: {}",
+                match status.get("last_scan") {
+                    Some(v) if !v.is_null() => format!(
+                        "{}ms / 重扫 {} / 缓存 {} / 增量 {}",
+                        v["duration_ms"].as_u64().unwrap_or(0),
+                        v["files_scanned"].as_u64().unwrap_or(0),
+                        v["files_cached"].as_u64().unwrap_or(0),
+                        v["was_incremental"].as_bool().unwrap_or(false),
+                    ),
+                    _ => "无记录（冷启动）".to_string(),
+                }
+            ));
+            if let Some(rules) = status.get("rules_dir").and_then(|v| v.as_str()) {
+                renderer.info(&format!("  规则目录: {}", rules));
+            }
+            renderer.info("完整 JSON:");
+            renderer.info(&serde_json::to_string_pretty(&status).unwrap_or_default());
+        }
+        Ok(Response::Error { code, message }) => {
+            renderer.error(&format!("查询失败 [{}]: {}", code, message));
+        }
+        Ok(other) => {
+            renderer.info(&format!("守护进程响应异常: {:?}", other));
+        }
+        Err(e) => {
+            renderer.error(&format!("增量状态查询失败: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
 /// 停止守护进程
 pub async fn stop() -> Result<()> {
     let mut renderer = TerminalRenderer::new();

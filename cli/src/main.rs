@@ -582,6 +582,13 @@ enum DaemonAction {
     /// 查询守护进程状态
     Status,
 
+    /// 查询增量索引状态（冷启动 / 缓存命中 / 待重编译清单）
+    Incremental {
+        /// 项目路径（省略时取守护进程已加载的第一个项目）
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+
     /// 停止守护进程
     Stop,
 }
@@ -715,6 +722,9 @@ async fn main() -> Result<()> {
         Commands::Daemon { action } => match action {
             DaemonAction::Start { project } => commands::daemon::start(project).await,
             DaemonAction::Status => commands::daemon::status().await,
+            DaemonAction::Incremental { project } => {
+                commands::daemon::incremental(project).await
+            }
             DaemonAction::Stop => commands::daemon::stop().await,
         },
 

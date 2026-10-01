@@ -158,9 +158,72 @@ impl FileSnapshot {
         })
     }
 
+    /// 只读变更预览：判定口径与 [`FileSnapshot::detect_changes`] 一致，但**不更新** baseline。
+    ///
+    /// 用途：状态上报（"待重编译"清单）等只读观测场景——可以反复调用而不影响后续增量扫描。
+    /// 未建立 baseline 时，把当前所有文件视为"新增"，同样不落库。
+    pub fn peek_changes(&self) -> Result<DeltaResult> {
+        let current_files = self.scan_project_files()?;
+
+        if !self.has_baseline {
+            let total = current_files.len();
+            return Ok(DeltaResult {
+                added_files: current_files,
+                changed_files: vec![],
+                deleted_files: vec![],
+                unchanged_count: 0,
+                total_files: total,
+            });
+        }
+
+        let mut added = Vec::new();
+        let mut changed = Vec::new();
+        let mut unchanged = 0usize;
+        let mut current_keys: HashSet<String> = HashSet::new();
+
+        for file_path in &current_files {
+            let relative = self.relative_path(file_path);
+            current_keys.insert(relative.clone());
+
+            if let Ok(hash) = self.hash_file(file_path) {
+                match self.file_hashes.get(&relative) {
+                    Some(&old_hash) if old_hash == hash => {
+                        unchanged += 1;
+                    }
+                    Some(_) => {
+                        changed.push(file_path.clone());
+                    }
+                    None => {
+                        added.push(file_path.clone());
+                    }
+                }
+            }
+        }
+
+        let deleted: Vec<PathBuf> = self
+            .file_hashes
+            .keys()
+            .filter(|k| !current_keys.contains(*k))
+            .map(|k| self.project_path.join(k))
+            .collect();
+
+        Ok(DeltaResult {
+            added_files: added,
+            changed_files: changed,
+            deleted_files: deleted,
+            unchanged_count: unchanged,
+            total_files: current_files.len(),
+        })
+    }
+
     /// 获取当前快照的文件数
     pub fn file_count(&self) -> usize {
         self.file_hashes.len()
+    }
+
+    /// 是否已建立 baseline（未建立时变更判定退化为"全部新增"）
+    pub fn has_baseline(&self) -> bool {
+        self.has_baseline
     }
 
     /// 扫描项目文件（排除忽略目录）
@@ -253,5 +316,80 @@ mod tests {
             total_files: 1,
         };
         assert!(with_changes.has_changes());
+    }
+
+    fn temp_project(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("ctx-audit-delta-peek-{tag}"));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn test_peek_changes_does_not_mutate_snapshot() {
+        let root = temp_project("noroot");
+        fs::write(root.join("a.py"), "x = 1\n").unwrap();
+
+        let mut snapshot = FileSnapshot::new(&root, vec!["node_modules".to_string()]);
+        // 未建立 baseline：peek 把现有文件全部视为新增，且不落库
+        let first = snapshot.peek_changes().unwrap();
+        assert_eq!(first.added_files.len(), 1);
+        assert!(!snapshot.has_baseline(), "peek 不应建立 baseline");
+        let second = snapshot.peek_changes().unwrap();
+        assert_eq!(second.added_files.len(), 1, "peek 结果必须可重复");
+
+        // 建立 baseline 后：无变化 → 全部未变
+        let baseline = snapshot.build_baseline().unwrap();
+        assert_eq!(baseline.total_files, 1);
+        let clean = snapshot.peek_changes().unwrap();
+        assert!(!clean.has_changes(), "无变化时不应报告变更: {clean:?}");
+        assert_eq!(clean.unchanged_count, 1);
+
+        // 改内容：peek 报"修改"，重复调用结果稳定，且后续 detect_changes 仍能识别
+        fs::write(root.join("a.py"), "x = 2\ny = 3\n").unwrap();
+        let changed = snapshot.peek_changes().unwrap();
+        assert_eq!(changed.changed_files.len(), 1, "应报修改: {changed:?}");
+        let changed_again = snapshot.peek_changes().unwrap();
+        assert_eq!(
+            changed_again.changed_files.len(),
+            1,
+            "peek 之后 detect 仍须能识别（说明 peek 没更新 baseline）"
+        );
+        let detected = snapshot.detect_changes().unwrap();
+        assert_eq!(detected.changed_files.len(), 1);
+        assert!(!snapshot.peek_changes().unwrap().has_changes(), "detect 后应已收敛");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_peek_changes_reports_added_and_deleted() {
+        let root = temp_project("adddel");
+        fs::write(root.join("keep.py"), "keep\n").unwrap();
+        fs::write(root.join("gone.py"), "gone\n").unwrap();
+
+        let mut snapshot = FileSnapshot::new(&root, vec![]);
+        snapshot.build_baseline().unwrap();
+
+        fs::write(root.join("new.py"), "new\n").unwrap();
+        fs::remove_file(root.join("gone.py")).unwrap();
+
+        let delta = snapshot.peek_changes().unwrap();
+        assert!(
+            delta
+                .added_files
+                .iter()
+                .any(|p| p.file_name().unwrap().to_string_lossy() == "new.py"),
+            "应识别新增文件: {delta:?}"
+        );
+        assert!(
+            delta
+                .deleted_files
+                .iter()
+                .any(|p| p.file_name().unwrap().to_string_lossy() == "gone.py"),
+            "应识别删除文件: {delta:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

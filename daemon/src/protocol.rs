@@ -105,6 +105,9 @@ pub enum RequestCommand {
     /// 获取调用图统计
     GetGraphStats { project_path: String },
 
+    /// 增量索引状态（只读：冷启动 / 缓存命中 / 待重编译清单）
+    IncrementalStatus { project_path: String },
+
     /// 列出文件中被索引的函数
     ListFileFunctions {
         project_path: String,
@@ -205,6 +208,9 @@ pub enum Response {
 
     /// 调用图查询结果
     GraphQueryResult { result: serde_json::Value },
+
+    /// 增量索引状态
+    IncrementalStatusInfo { status: serde_json::Value },
 
  // ── 原生 Agent / 轮次 runner ──────────────────
 
@@ -309,6 +315,31 @@ mod tests {
             }
             _ => panic!("Expected Scan command"),
         }
+    }
+
+    #[test]
+    fn test_incremental_status_roundtrip() {
+        let req = Request {
+            auth_token: Some("tok".into()),
+            command: RequestCommand::IncrementalStatus {
+                project_path: "/test/project".into(),
+            },
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: Request = serde_json::from_str(&json).unwrap();
+        match parsed.command {
+            RequestCommand::IncrementalStatus { project_path } => {
+                assert_eq!(project_path, "/test/project");
+            }
+            _ => panic!("Expected IncrementalStatus command"),
+        }
+
+        let resp = Response::IncrementalStatusInfo {
+            status: serde_json::json!({"mode": "cold", "pending_recompile": 0}),
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["type"], "IncrementalStatusInfo");
+        assert_eq!(v["data"]["status"]["mode"], "cold");
     }
 
     #[test]

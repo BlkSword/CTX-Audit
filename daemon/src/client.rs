@@ -266,6 +266,12 @@ impl DaemonClient {
             .await
     }
 
+    /// 增量索引状态（只读：冷启动 / 缓存命中 / 待重编译清单）
+    pub async fn incremental_status(&mut self, project_path: String) -> Result<Response> {
+        self.send_request(RequestCommand::IncrementalStatus { project_path })
+            .await
+    }
+
     /// 发送流式请求（AgentRoundRun / AgentRoundResume）
     ///
     /// 中间事件经 `on_event` 回调（AgentRoundStarted / AgentEvent），
