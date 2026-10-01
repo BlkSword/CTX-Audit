@@ -1061,6 +1061,15 @@ impl Tool for CodeIntelTool {
                 let mut unresolved = 0u32;
                 let dynamic_markers =
                     ["getattr", "eval(", "apply(", "invoke(", "call_user_func", "Reflect."];
+                // 符号索引：callees 必须用**标识符精确**的定义——子串式 `find_definitions` 会把
+                // `TestConfig_ValidateAndSetDefaults(` 当成 `Validate` 的定义，再把它整个函数体
+                // 当成 `Validate` 的体，收集出成批假 callee（真实 Go 仓库上 callees 精度≈0）。
+                let (sindex, _s_hit, _s_build) =
+                    crate::symbol_index::get_or_build(root, refresh, None);
+                let mut matched_callers = 0usize;
+                let mut matched_callees = 0usize;
+                // 扫描上限比返回上限宽：用于如实统计"总共有多少"（上限纪律）
+                let scan_cap = MAX_HITS * 8;
                 for (path, content) in files {
                     // 调用图只在代码文件上做：内容索引包含 markdown/yaml/json，
                     // 其中的代码片段会伪装成调用点（真实 Go 仓库的 AGENTS.md 曾混进 callees）
@@ -1091,8 +1100,16 @@ impl Tool for CodeIntelTool {
                                 if !seen_callers.insert((path.clone(), line)) {
                                     continue;
                                 }
-                                provenance.push(prov_with(path, line, &id, "call-scan+alias-aware"));
-                                callers.push(json!({"file": path, "line": line, "text": text}));
+                                matched_callers += 1;
+                                if callers.len() < scan_cap {
+                                    provenance.push(prov_with(
+                                        path,
+                                        line,
+                                        &id,
+                                        "call-scan+alias-aware",
+                                    ));
+                                    callers.push(json!({"file": path, "line": line, "text": text}));
+                                }
                             }
                         }
                     }
@@ -1108,51 +1125,72 @@ impl Tool for CodeIntelTool {
                         let brace = is_brace_language(path);
                         let mut seen: std::collections::HashSet<(String, String)> =
                             std::collections::HashSet::new();
-                        for (def_line, _) in find_definitions(content, function) {
+                        let def_lines: Vec<u32> = sindex
+                            .file_index(path)
+                            .map(|fi| {
+                                sindex
+                                    .definitions_in_file(fi)
+                                    .into_iter()
+                                    .filter(|(n, _, _)| n == function)
+                                    .map(|(_, l, _)| l)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        for def_line in def_lines {
                             let def_idx = (def_line as usize).saturating_sub(1);
                             let (start, end) = body_span(&code_refs, def_idx, brace);
-                            for idx in start..=end.min(lines.len().saturating_sub(1)) {
-                                for name in callee_names(lines[idx]) {
+                            for idx in start..=end.min(code_refs.len().saturating_sub(1)) {
+                                // 用**代码段**提取调用名：字符串/注释里的 `name(` 不算调用
+                                let text = code_refs.get(idx).copied().unwrap_or("");
+                                for name in callee_names(text) {
                                     if name.as_str() == function {
                                         continue;
                                     }
                                     if !seen.insert((name.clone(), path.clone())) {
                                         continue;
                                     }
-                                    provenance.push(prov_with(
-                                        path,
-                                        (idx + 1) as u32,
-                                        &id,
-                                        "call-scan+body-scope",
-                                    ));
-                                    callees.push(json!({
-                                        "name": name,
-                                        "file": path,
-                                        "line": idx + 1,
-                                    }));
-                                    if callees.len() >= MAX_HITS {
-                                        break;
+                                    matched_callees += 1;
+                                    if callees.len() < scan_cap {
+                                        provenance.push(prov_with(
+                                            path,
+                                            (idx + 1) as u32,
+                                            &id,
+                                            "call-scan+body-scope",
+                                        ));
+                                        callees.push(json!({
+                                            "name": name,
+                                            "file": path,
+                                            "line": idx + 1,
+                                        }));
                                     }
                                 }
-                                if callees.len() >= MAX_HITS {
-                                    break;
-                                }
-                            }
-                            if callees.len() >= MAX_HITS {
-                                break;
                             }
                         }
                     }
                     if dynamic_markers.iter().any(|m| content.contains(*m)) {
                         unresolved += 1;
                     }
-                    if callers.len() + callees.len() >= MAX_HITS {
+                    if callers.len() + callees.len() >= scan_cap {
                         break;
                     }
                 }
+                // 上限纪律：如实上报总数与是否被截断（调用图与定义/引用同一套约定）
+                let truncated_at_limit = matched_callers > MAX_HITS || matched_callees > MAX_HITS;
+                callers.truncate(MAX_HITS);
+                callees.truncate(MAX_HITS);
                 let level = if unresolved > 0 { "high" } else { "medium" };
                 IntelEnvelope {
-                    data: json!({"function": function, "callers": callers, "callees": callees}),
+                    data: json!({
+                        "function": function,
+                        "callers": callers,
+                        "callees": callees,
+                        "total_hits": {
+                            "callers": matched_callers,
+                            "callees": matched_callees,
+                        },
+                        "limit": MAX_HITS,
+                        "truncated_at_limit": truncated_at_limit,
+                    }),
                     provenance,
                     uncertainty: Uncertainty::new(
                         level,
