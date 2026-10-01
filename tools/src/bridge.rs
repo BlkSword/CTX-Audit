@@ -957,34 +957,45 @@ pub async fn register_all_tools(
         return;
     }
 
-    // ── 以下为遗留细粒度工具面，默认不注册 ──
+    // ── 以下为遗留细粒度工具面：默认不注册；整个模块面由 `legacy-tools` feature 决定是否编译 ──
+    #[cfg(feature = "legacy-tools")]
+    {
+        // 注册搜索工具
+        crate::search_tools::register_search_tools(registry, project_path.clone()).await;
 
-    // 注册搜索工具
-    crate::search_tools::register_search_tools(registry, project_path.clone()).await;
+        // 注册污点分析工具
+        crate::taint_tools::register_taint_tools(registry, project_path.clone()).await;
 
-    // 注册污点分析工具
-    crate::taint_tools::register_taint_tools(registry, project_path.clone()).await;
+        // 注册模式检测工具
+        crate::pattern_tools::register_pattern_tools(registry, project_path.clone()).await;
 
-    // 注册模式检测工具
-    crate::pattern_tools::register_pattern_tools(registry, project_path.clone()).await;
+        // 注册调用图查询工具（优先复用 Agent 已构建的查询引擎）
+        crate::call_graph_tools::register_call_graph_tools(registry, query_engine).await;
 
-    // 注册调用图查询工具（优先复用 Agent 已构建的查询引擎）
-    crate::call_graph_tools::register_call_graph_tools(registry, query_engine).await;
+        // 如果提供了 AST 引擎，注册 AST 工具并自动索引项目
+        if let Some(engine) = ast_engine {
+            engine.use_repository(&project_path);
 
-    // 如果提供了 AST 引擎，注册 AST 工具并自动索引项目
-    if let Some(engine) = ast_engine {
-        engine.use_repository(&project_path);
-
-        tracing::info!("自动索引项目以启用符号搜索...");
-        match engine.scan_project(&project_path) {
-            Ok(file_count) => {
-                tracing::info!("项目索引完成，共处理 {} 个文件", file_count);
+            tracing::info!("自动索引项目以启用符号搜索...");
+            match engine.scan_project(&project_path) {
+                Ok(file_count) => {
+                    tracing::info!("项目索引完成，共处理 {} 个文件", file_count);
+                }
+                Err(e) => {
+                    tracing::warn!("项目索引失败: {}，符号搜索功能可能不可用", e);
+                }
             }
-            Err(e) => {
-                tracing::warn!("项目索引失败: {}，符号搜索功能可能不可用", e);
-            }
+            crate::ast_tools::register_ast_tools(registry, project_path, engine).await;
         }
-        crate::ast_tools::register_ast_tools(registry, project_path, engine).await;
+    }
+
+    // feature 关闭时：显式说明"请求了遗留面但这次构建没有它"，避免静默无效果
+    #[cfg(not(feature = "legacy-tools"))]
+    {
+        let _ = (ast_engine, query_engine, project_path);
+        tracing::warn!(
+            "本次构建未包含遗留工具面（legacy-tools feature 关闭），--legacy-tools / CTX_AUDIT_LEGACY_TOOLS 不生效"
+        );
     }
 }
 
@@ -1026,9 +1037,18 @@ mod tests {
             );
         }
 
+        #[cfg(feature = "legacy-tools")]
         assert!(
             full_names.len() > base_names.len(),
             "legacy gate 未生效: 默认 {} 个 / 遗留 {} 个",
+            base_names.len(),
+            full_names.len()
+        );
+        #[cfg(not(feature = "legacy-tools"))]
+        assert_eq!(
+            full_names.len(),
+            base_names.len(),
+            "legacy-tools feature 关闭时不应注册任何遗留工具（默认 {} 个 / 请求遗留 {} 个）",
             base_names.len(),
             full_names.len()
         );

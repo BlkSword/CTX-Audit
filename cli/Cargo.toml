@@ -14,7 +14,13 @@ path = "src/main.rs"
 [features]
 # 默认不编译已搁置的 agent 模块（llm_mode=noop，结构变动时易断）。
 # 需要 `ctx-audit audit --agent` 时使用 `--features agent` 构建。
-default = []
+# 注：`agent` 之前只写在文档里、features 表里并没有定义（用了会报错），这里补上。
+default = ["legacy-tools"]
+# 显式声明（对齐文档；未定义时 `--features agent` 会直接报错）
+agent = []
+# 遗留细粒度工具面（搜索/污点/模式/调用图/AST）：默认开启以保持既有行为；
+# `cargo build -p ctx-audit --no-default-features` 可把它整体排除出构建（裁剪二进制与编译时间）。
+legacy-tools = ["ctx-audit-tools/legacy-tools"]
 
 [dependencies]
 # CLI 框架

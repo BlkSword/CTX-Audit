@@ -7,6 +7,13 @@ license.workspace = true
 repository.workspace = true
 description = "Tool system for CTX-Audit"
 
+[features]
+default = ["legacy-tools"]
+# 遗留细粒度工具面（搜索 / 污点 / 模式 / 调用图 / AST）。
+# 默认开启以保持既有行为；`--no-default-features` 可把它整体排除出构建，
+# 用于裁剪二进制体积与编译时间（新工具面 = 基础工具 + 高阶代码智能能力，不受影响）。
+legacy-tools = []
+
 [dependencies]
 # 序列化
 serde = { workspace = true }
