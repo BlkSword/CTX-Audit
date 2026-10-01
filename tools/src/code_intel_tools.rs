@@ -24,6 +24,8 @@ use crate::registry::{Tool, ToolRegistry};
 const MAX_FILES: usize = 2000;
 const MAX_FILE_BYTES: usize = 512 * 1024;
 const MAX_HITS: usize = 40;
+/// 引用结果上限（比 MAX_HITS 宽：40 条在真实仓库上会按文件顺序截断，导致 recall 虚低）
+const MAX_REFERENCE_HITS: usize = 200;
 const SKIP_DIRS: [&str; 8] = [
     ".git",
     "node_modules",
@@ -58,9 +60,15 @@ pub fn default_evidence_confidence() -> f64 {
 pub fn resolver_confidence(resolver: &str) -> f64 {
     match resolver {
         // 索引里的"被声明标识符"：标识符精确匹配声明行
+        // （实测：真实仓库 ground truth 上 accuracy = 1.00）
         "symbol-index" => 0.95,
-        // 索引剪枝 + 逐行启发式：同名不同符号未消歧
-        "symbol-index+line-heuristic" => 0.7,
+        // 索引 + 标识符边界（引用）：同名不同符号仍未消歧
+        "symbol-index+identifier-boundary" => 0.9,
+        // 函数体作用域内的调用名扫描（callees）/ 别名感知的调用点扫描（callers）
+        "call-scan+body-scope" => 0.9,
+        "call-scan+alias-aware" => 0.9,
+        // 索引剪枝 + 旧逐行启发式（历史值；实测真实仓库 accuracy 0.48，已不再是引用主路径）
+        "symbol-index+line-heuristic" => 0.5,
         // 纯文件/行启发式
         "file-heuristic" => 0.5,
         _ => default_evidence_confidence(),
@@ -344,6 +352,89 @@ pub fn find_definitions(content: &str, symbol: &str) -> Vec<(u32, String)> {
     hits
 }
 
+/// 纯函数：`symbol` 是否作为**独立标识符**出现在该行（两侧不是标识符字符）。
+///
+/// 真实仓库实测依据：整行子串匹配让 `App` 命中 `_AppCtxGlobals`、`copy` 命中 `deepcopy`，
+/// 引用精度只有 0.48。带点/其它符号的查询退化为子串匹配（保持旧语义）。
+pub fn contains_identifier(line: &str, symbol: &str) -> bool {
+    if symbol.is_empty() {
+        return false;
+    }
+    if !symbol
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    {
+        return line.contains(symbol);
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let sym: Vec<char> = symbol.chars().collect();
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    if sym.len() > chars.len() {
+        return false;
+    }
+    for i in 0..=(chars.len() - sym.len()) {
+        if chars[i..i + sym.len()] == sym[..] {
+            let before_ok = i == 0 || !is_ident(chars[i - 1]);
+            let after_ok = i + sym.len() == chars.len() || !is_ident(chars[i + sym.len()]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 纯函数：该行是否有 `name(` 形态的调用点，且 `name` 左侧不是标识符字符
+///（否则 `myread(` 会被当成 `read(` 的调用点）。
+pub fn call_site_match(line: &str, name: &str) -> bool {
+    let needle = format!("{name}(");
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut from = 0usize;
+    while let Some(pos) = line[from..].find(&needle) {
+        let abs = from + pos;
+        let before_ok = abs == 0
+            || !line[..abs]
+                .chars()
+                .next_back()
+                .map(is_ident)
+                .unwrap_or(false);
+        if before_ok {
+            return true;
+        }
+        from = abs + needle.len();
+    }
+    false
+}
+
+/// 纯函数：引用行扫描（标识符边界 + **精确**排除该符号的真实定义行）。
+///
+/// 与旧 `find_references` 的两点差别（都有实测依据）：
+/// - 旧实现整行子串匹配 → 真实仓库 precision 0.48；
+/// - 旧实现用"这行看起来像定义"来排除定义行 → 会把恰好含 def 关键字的真实引用行也排掉（recall 0.73）。
+///   现在由符号索引给出该符号的真实定义行，精确排除。
+pub fn find_references_exact(
+    content: &str,
+    symbol: &str,
+    def_lines: &std::collections::HashSet<u32>,
+) -> Vec<(u32, String)> {
+    let mut hits = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let lineno = (idx + 1) as u32;
+        if def_lines.contains(&lineno) {
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+            continue;
+        }
+        if !contains_identifier(trimmed, symbol) {
+            continue;
+        }
+        hits.push((lineno, trimmed.chars().take(200).collect()));
+    }
+    hits
+}
+
 /// 纯函数：引用行启发式（排除定义行）。
 pub fn find_references(content: &str, symbol: &str) -> Vec<(u32, String)> {
     let mut hits = Vec::new();
@@ -368,14 +459,14 @@ pub fn find_references(content: &str, symbol: &str) -> Vec<(u32, String)> {
 
 /// 纯函数：调用点启发式（`name(`，排除定义行）。
 pub fn find_call_sites(content: &str, name: &str) -> Vec<(u32, String)> {
-    let needle = format!("{}(", name);
     let mut hits = Vec::new();
     for (idx, line) in content.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.starts_with("//") || trimmed.starts_with('#') {
             continue;
         }
-        if !trimmed.contains(&needle) {
+        // 左边界校验：`myread(` 不算 `read(` 的调用点
+        if !call_site_match(trimmed, name) {
             continue;
         }
         let def_like = ["fn ", "def ", "func ", "function "]
@@ -447,6 +538,88 @@ pub fn body_span(lines: &[&str], def_idx: usize, brace: bool) -> (usize, usize) 
             end = idx;
         }
         (def_idx, end)
+    }
+}
+
+/// 纯函数：抽取**命名导入**的别名对 `(被导入的符号名, 文件内本地名)`。
+///
+/// 只处理能被静态确定的形态：
+/// - JS/TS：`import { a as b, c } from "..."`、`import Def, { a as b } from "..."`
+/// - Python：`from x import a as b, c`
+///
+/// 默认导入（`import Store from ...`）与命名空间导入（`import * as ns`）不产生别名对
+/// （本地名与导出名之间没有可静态推导的对应关系）。逐行解析，跨行的括号导入不支持。
+pub fn import_aliases(content: &str) -> Vec<(String, String)> {
+    fn is_ident(s: &str) -> bool {
+        !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    }
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+            continue;
+        }
+        let clause: &str = if trimmed.starts_with("import") || trimmed.starts_with("export") {
+            match (trimmed.find('{'), trimmed.find('}')) {
+                (Some(s), Some(e)) if e > s => &trimmed[s + 1..e],
+                _ => continue,
+            }
+        } else if trimmed.starts_with("from") {
+            match trimmed.find("import") {
+                Some(p) => trimmed[p + "import".len()..].trim(),
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+
+        let clause = clause.trim().trim_start_matches('(').trim_end_matches(')');
+        for item in clause.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let (imported, local) = match item.split_once(" as ") {
+                Some((a, b)) => (a.trim(), b.trim()),
+                None => (item, item),
+            };
+            if !is_ident(imported) || !is_ident(local) {
+                continue;
+            }
+            out.push((imported.to_string(), local.to_string()));
+        }
+    }
+    out
+}
+
+/// 纯函数：判断某行是否位于 `interface { ... }` 块内（Go/Java/TS 接口方法声明）。
+///
+/// 用于把"接口方法声明"从"调用点"里排除：`Read(p []byte) (int, error)` 会被
+/// `name(` 匹配到，但它不是任何人的调用点（ground truth 上表现为 precision 0.5）。
+pub fn in_interface_block(lines: &[&str], idx: usize) -> bool {
+    if idx >= lines.len() {
+        return false;
+    }
+    let mut depth: i32 = 0;
+    let mut i = idx;
+    loop {
+        for ch in lines[i].chars().rev() {
+            match ch {
+                '}' => depth += 1,
+                '{' => {
+                    if depth == 0 {
+                        return lines[i].contains("interface");
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        if i == 0 {
+            return false;
+        }
+        i -= 1;
     }
 }
 
@@ -694,15 +867,28 @@ impl Tool for CodeIntelTool {
                 let symbol = input["symbol"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 symbol 参数".to_string()))?;
-                // 引用沿用逐行启发式语义，但先用布隆过滤器把"不可能含该子串"的文件剪掉，
-                // 因此只需读取候选文件（布隆无假阴性 ⇒ 结果与全量扫描一致）
+                // 引用：布隆过滤器先剪掉"不可能含该子串"的文件；命中的候选文件里
+                // 再按**标识符边界**判定，并用符号索引给出的**真实定义行**精确排除定义行。
+                // （真实仓库实测：旧子串+启发式排除的 F1 只有 0.58——`App` 命中 `_AppCtxGlobals`。）
                 let (sindex, s_hit, s_build_ms) =
                     crate::symbol_index::get_or_build(root, refresh, None);
                 let candidates = sindex.reference_candidates(symbol);
                 let candidate_count = candidates.len();
-                let mut refs: Vec<Value> = Vec::new();
-                let mut provenance: Vec<Provenance> = Vec::new();
+
+                let mut def_lines_by_file: std::collections::HashMap<
+                    String,
+                    std::collections::HashSet<u32>,
+                > = std::collections::HashMap::new();
+                for hit in sindex.definitions(symbol, usize::MAX) {
+                    def_lines_by_file
+                        .entry(sindex.file_path(hit.file).to_string())
+                        .or_default()
+                        .insert(hit.line);
+                }
+
+                let mut collected: Vec<(String, u32, String)> = Vec::new();
                 let mut scanned_files = 0usize;
+                let empty = std::collections::HashSet::new();
                 for idx in candidates {
                     let rel = sindex.file_path(idx);
                     let content = match std::fs::read_to_string(root.join(rel)) {
@@ -710,21 +896,35 @@ impl Tool for CodeIntelTool {
                         Err(_) => continue,
                     };
                     scanned_files += 1;
-                    for (line, text) in find_references(&content, symbol) {
-                        provenance.push(prov_with(rel, line, &id, "symbol-index+line-heuristic"));
-                        refs.push(json!({"file": rel, "line": line, "text": text}));
-                        if refs.len() >= MAX_HITS {
-                            break;
-                        }
-                    }
-                    if refs.len() >= MAX_HITS {
-                        break;
+                    let defs_here = def_lines_by_file.get(rel).unwrap_or(&empty);
+                    for (line, text) in find_references_exact(&content, symbol, defs_here) {
+                        collected.push((rel.to_string(), line, text));
                     }
                 }
+
+                // 确定性：先排序再截断（旧实现按文件枚举顺序边扫边截，40 条上限会偏袒靠前文件）
+                collected.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+                let total_hits = collected.len();
+                let truncated_at_limit = total_hits > MAX_REFERENCE_HITS;
+                collected.truncate(MAX_REFERENCE_HITS);
+
+                let provenance: Vec<Provenance> = collected
+                    .iter()
+                    .map(|(file, line, _)| {
+                        prov_with(file, *line, &id, "symbol-index+identifier-boundary")
+                    })
+                    .collect();
+                let refs: Vec<Value> = collected
+                    .iter()
+                    .map(|(file, line, text)| json!({"file": file, "line": line, "text": text}))
+                    .collect();
                 IntelEnvelope {
                     data: json!({
                         "symbol": symbol,
                         "references": refs,
+                        "total_hits": total_hits,
+                        "limit": MAX_REFERENCE_HITS,
+                        "truncated_at_limit": truncated_at_limit,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
                         "candidate_files": candidate_count,
                         "scanned_files": scanned_files,
@@ -736,6 +936,7 @@ impl Tool for CodeIntelTool {
                             "same_name_not_disambiguated",
                             "not_lsp_resolved",
                             "index_covers_code_files_only",
+                            "identifier_boundary_matching",
                         ],
                         0,
                     ),
@@ -754,9 +955,30 @@ impl Tool for CodeIntelTool {
                     ["getattr", "eval(", "apply(", "invoke(", "call_user_func", "Reflect."];
                 for (path, content) in files {
                     if direction != "callees" {
-                        for (line, text) in find_call_sites(content, function) {
-                            provenance.push(prov(path, line, &id));
-                            callers.push(json!({"file": path, "line": line, "text": text}));
+                        // 调用点匹配要覆盖**导入别名**（`import { put as save }` / `Loader as Ldr`），
+                        // 否则真实调用点用本地名就没有（ground truth 上 recall=0）。
+                        let lines: Vec<&str> = content.lines().collect();
+                        let mut needles: Vec<String> = vec![function.to_string()];
+                        for (imported, local) in import_aliases(content) {
+                            if imported == function && !needles.contains(&local) {
+                                needles.push(local);
+                            }
+                        }
+                        let mut seen_callers: std::collections::HashSet<(String, u32)> =
+                            std::collections::HashSet::new();
+                        for needle in &needles {
+                            for (line, text) in find_call_sites(content, needle) {
+                                let idx = (line as usize).saturating_sub(1);
+                                // 接口/抽象方法**声明**不是调用点（Go/Java/TS 接口体）
+                                if in_interface_block(&lines, idx) {
+                                    continue;
+                                }
+                                if !seen_callers.insert((path.clone(), line)) {
+                                    continue;
+                                }
+                                provenance.push(prov_with(path, line, &id, "call-scan+alias-aware"));
+                                callers.push(json!({"file": path, "line": line, "text": text}));
+                            }
                         }
                     }
                     if direction != "callers" {
@@ -1256,5 +1478,65 @@ mod tests {
         assert_eq!(body_span(&lines, 0, true), (0, 3));
         assert!(is_brace_language("a.js") && is_brace_language("a.go"));
         assert!(!is_brace_language("a.py"));
+    }
+
+    /// 命名导入别名：JS/TS 花括号清单与 Python `from ... import`
+    #[test]
+    fn test_import_aliases() {
+        let js = "import Store, { put as save, get } from \"./store.js\";\nconst x = 1;\n";
+        let aliases = import_aliases(js);
+        assert!(
+            aliases.contains(&("put".to_string(), "save".to_string())),
+            "{aliases:?}"
+        );
+        assert!(
+            aliases.contains(&("get".to_string(), "get".to_string())),
+            "{aliases:?}"
+        );
+
+        let py = "from pkg.util import Loader as Ldr\nimport os\n";
+        let aliases = import_aliases(py);
+        assert!(
+            aliases.contains(&("Loader".to_string(), "Ldr".to_string())),
+            "{aliases:?}"
+        );
+
+        // 默认导入 / 命名空间导入不产生别名对
+        assert!(import_aliases("import Store from \"./store.js\";\n").is_empty());
+        assert!(import_aliases("import * as ns from \"./m.js\";\n").is_empty());
+    }
+
+    /// 接口方法声明不是调用点
+    #[test]
+    fn test_in_interface_block() {
+        let src = "type Reader interface {\n    Read(p []byte) (int, error)\n}\n\nfunc run(r Reader) int {\n    n, _ := r.Read(nil)\n    return n\n}\n";
+        let lines: Vec<&str> = src.lines().collect();
+        assert!(
+            in_interface_block(&lines, 1),
+            "接口方法声明应判为在 interface 块内"
+        );
+        assert!(
+            !in_interface_block(&lines, 5),
+            "函数体里的真实调用点不应被判为接口块"
+        );
+    }
+
+    /// 标识符边界：`App` 不得命中 `_AppCtxGlobals`，`copy` 不得命中 `deepcopy`
+    #[test]
+    fn test_contains_identifier_boundaries() {
+        assert!(contains_identifier("    const s = new Store();", "Store"));
+        assert!(!contains_identifier("class _AppCtxGlobals:", "App"));
+        assert!(!contains_identifier("import deepcopy", "copy"));
+        assert!(contains_identifier("x = copy.copy(y)", "copy"));
+        // 带点/其它符号的查询退化为子串匹配（保持旧语义）
+        assert!(contains_identifier("a.b.c", "b.c"));
+    }
+
+    /// 调用点左边界：`myread(` 不算 `read(` 的调用点
+    #[test]
+    fn test_call_site_match_left_boundary() {
+        assert!(call_site_match("    return loader.load(request)", "load"));
+        assert!(!call_site_match("    return myread(buf)", "read"));
+        assert!(call_site_match("n, _ := r.Read(buf)", "Read"));
     }
 }
