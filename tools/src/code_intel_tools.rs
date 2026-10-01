@@ -1368,16 +1368,22 @@ impl Tool for CodeIntelTool {
                 let mut provenance: Vec<Provenance> = Vec::new();
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
-                        for (idx, text) in content.lines().enumerate() {
+                        // 标记匹配走**代码段**：字符串/行内注释里的 "if "/"guard" 不算守卫
+                        //（此前只跳过"以注释开头的行"，行尾注释与字符串内容仍会命中）
+                        let code = code_lines(content, hash_comment_language(path));
+                        let originals: Vec<&str> = content.lines().collect();
+                        for (idx, code_line) in code.iter().enumerate() {
                             let ln = (idx + 1) as i64;
                             if line > 0 && (ln - line).abs() > 60 {
                                 continue;
                             }
+                            let text = originals.get(idx).copied().unwrap_or("");
                             let trimmed = text.trim();
-                            if trimmed.starts_with("//") || trimmed.starts_with('#') {
+                            let code_trimmed = code_line.trim();
+                            if code_trimmed.is_empty() {
                                 continue;
                             }
-                            if markers.iter().any(|m| trimmed.contains(*m)) {
+                            if markers.iter().any(|m| code_trimmed.contains(*m)) {
                                 provenance.push(prov(path, ln as u32, &id));
                                 guards.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
                             }
@@ -1414,16 +1420,25 @@ impl Tool for CodeIntelTool {
                 let mut provenance: Vec<Provenance> = Vec::new();
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
-                        for (idx, text) in content.lines().enumerate() {
+                        // 标记匹配走**代码段**：注释或字符串里出现的 `@app.route` / "middleware"
+                        // 不是真实路由/中间件（YAML 配置里的 `#` 注释同样会被剥掉，值本身保留）
+                        let code = code_lines(content, hash_comment_language(path));
+                        let originals: Vec<&str> = content.lines().collect();
+                        for (idx, code_line) in code.iter().enumerate() {
                             let ln = (idx + 1) as u32;
+                            let text = originals.get(idx).copied().unwrap_or("");
                             let trimmed = text.trim();
-                            if route_markers.iter().any(|m| trimmed.contains(*m))
+                            let code_trimmed = code_line.trim();
+                            if code_trimmed.is_empty() {
+                                continue;
+                            }
+                            if route_markers.iter().any(|m| code_trimmed.contains(*m))
                                 && (handler.is_empty() || trimmed.contains(handler))
                             {
                                 provenance.push(prov(path, ln, &id));
                                 routes.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
                             }
-                            if middleware_markers.iter().any(|m| trimmed.contains(*m)) {
+                            if middleware_markers.iter().any(|m| code_trimmed.contains(*m)) {
                                 provenance.push(prov(path, ln, &id));
                                 middleware.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
                             }
