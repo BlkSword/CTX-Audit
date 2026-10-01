@@ -83,7 +83,7 @@ pub struct DefHit {
     pub text: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct FileEntry {
     /// 相对路径（分隔符统一为 `/`）
     path: String,
@@ -93,7 +93,7 @@ struct FileEntry {
     bloom: Vec<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct DirEntry {
     path: String,
     mtime_ms: u64,
@@ -345,6 +345,15 @@ impl SymbolIndex {
 
     /// 从零构建
     fn build(root: &Path) -> SymbolIndex {
+        // 先试磁盘缓存：命中则只按指纹增量补齐（变化的文件才重新解析）
+        if persist_enabled() {
+            if let Some(mut loaded) = load_persisted(root) {
+                if !loaded.freshness(root) {
+                    loaded = loaded.rebuild_incremental(root);
+                }
+                return loaded;
+            }
+        }
         let empty = SymbolIndex {
             root: root.to_string_lossy().to_string(),
             files: Vec::new(),
@@ -359,7 +368,11 @@ impl SymbolIndex {
             skipped_non_code: 0,
             truncated: false,
         };
-        empty.rebuild_incremental(root)
+        let index = empty.rebuild_incremental(root);
+        if persist_enabled() {
+            let _ = save_persisted(&index, root);
+        }
+        index
     }
 }
 
@@ -466,6 +479,105 @@ pub fn stats() -> (usize, usize) {
         ),
         Err(_) => (0, 0),
     }
+}
+
+// ────────────────────────────────────────────────────────
+// 磁盘缓存（冷启动：建表 117ms–2.1s → 亚秒）
+// ────────────────────────────────────────────────────────
+
+/// 磁盘缓存格式版本（字段变化时递增，旧缓存自动失效）
+const PERSIST_VERSION: u32 = 1;
+/// 磁盘缓存体积上限（MB），超过则不落盘
+const PERSIST_MAX_MB: u64 = 64;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedIndex {
+    version: u32,
+    root: String,
+    files: Vec<FileEntry>,
+    dirs: Vec<DirEntry>,
+    file_defs: Vec<Vec<(String, u32, String)>>,
+    file_idents: Vec<HashMap<String, Vec<u32>>>,
+}
+
+/// 是否启用磁盘缓存：`CTX_AUDIT_INDEX_PERSIST=0` 关闭
+fn persist_enabled() -> bool {
+    !matches!(
+        std::env::var("CTX_AUDIT_INDEX_PERSIST")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// 磁盘缓存路径：**不写进项目目录**——否则创建 `.ctx-audit/index/` 会改变项目根目录的
+/// mtime，把工具自己的指纹探测打失效（与 `mcp_metrics.jsonl` 同一类自污染）。
+/// 放在系统临时目录，按规范化根路径哈希命名。
+fn persist_path(root: &Path) -> PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    cache_key(root).hash(&mut hasher);
+    std::env::temp_dir()
+        .join("ctx-audit-index")
+        .join(format!("{:016x}.json", hasher.finish()))
+}
+
+fn load_persisted(root: &Path) -> Option<SymbolIndex> {
+    let path = persist_path(root);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let data: PersistedIndex = serde_json::from_str(&text).ok()?;
+    if data.version != PERSIST_VERSION {
+        return None;
+    }
+    // 根路径必须一致（防止把别的项目的缓存当自己的）
+    if cache_key(Path::new(&data.root)) != cache_key(root) {
+        return None;
+    }
+    let defs = build_def_map(&data.file_defs);
+    let idents = build_ident_map(&data.file_idents);
+    Some(SymbolIndex {
+        root: root.to_string_lossy().to_string(),
+        files: data.files,
+        dirs: data.dirs,
+        file_defs: data.file_defs,
+        file_idents: data.file_idents,
+        defs,
+        idents,
+        built_at: Instant::now(),
+        parsed_files: 0,
+        skipped_large: 0,
+        skipped_non_code: 0,
+        truncated: false,
+    })
+}
+
+/// 落盘（原子写：先写临时文件再改名）；返回写入字节数
+fn save_persisted(index: &SymbolIndex, root: &Path) -> Option<u64> {
+    let data = PersistedIndex {
+        version: PERSIST_VERSION,
+        root: index.root.clone(),
+        files: index.files.clone(),
+        dirs: index.dirs.clone(),
+        file_defs: index.file_defs.clone(),
+        file_idents: index.file_idents.clone(),
+    };
+    let text = serde_json::to_string(&data).ok()?;
+    let bytes = text.len() as u64;
+    if bytes > PERSIST_MAX_MB * 1024 * 1024 {
+        return None;
+    }
+    let path = persist_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok()?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).ok()?;
+    std::fs::rename(&tmp, &path).ok()?;
+    Some(bytes)
 }
 
 // ────────────────────────────────────────────────────────
@@ -936,6 +1048,50 @@ mod tests {
         let (second, hit, _) = get_or_build(&root, false, Some(Duration::from_millis(1)));
         assert_eq!(hit, HitSource::Probe, "只有工具状态变化时应是探测命中");
         assert_eq!(second.parsed_files(), parsed, "不应重新解析任何文件");
+
+        invalidate(&root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 磁盘缓存：新进程（仅清进程内缓存）应零解析载入；改一个文件只重解析一个
+    #[test]
+    fn test_disk_cache_avoids_reparse() {
+        let root = fixture("persist");
+        invalidate(&root);
+        let (first, _, _) = get_or_build(&root, true, None);
+        let full = first.parsed_files();
+        assert!(full >= 2, "首次应解析全部文件: {full}");
+        assert!(persist_path(&root).exists(), "应写出磁盘缓存");
+
+        // 模拟新进程：只清进程内缓存，磁盘缓存仍在
+        invalidate(&root);
+        let (second, _, _) = get_or_build(&root, true, None);
+        assert_eq!(
+            second.parsed_files(),
+            0,
+            "磁盘缓存命中时不应重新解析任何文件"
+        );
+        assert_eq!(second.definitions("handler", 5).len(), 1, "载入后定义仍可查");
+        assert!(
+            !second.identifier_hits("request").is_empty(),
+            "载入后引用仍可查"
+        );
+
+        // 新增一个文件 → 只重解析该文件
+        std::thread::sleep(Duration::from_millis(10));
+        std::fs::write(
+            root.join("src/changed.py"),
+            "def changed_symbol():\n    pass\n",
+        )
+        .unwrap();
+        invalidate(&root);
+        let (third, _, _) = get_or_build(&root, true, None);
+        assert_eq!(
+            third.parsed_files(),
+            1,
+            "磁盘缓存 + 增量：只应重解析变化的文件"
+        );
+        assert_eq!(third.definitions("changed_symbol", 5).len(), 1);
 
         invalidate(&root);
         let _ = std::fs::remove_dir_all(&root);

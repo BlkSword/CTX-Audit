@@ -24,8 +24,10 @@ use crate::registry::{Tool, ToolRegistry};
 const MAX_FILES: usize = 2000;
 const MAX_FILE_BYTES: usize = 512 * 1024;
 const MAX_HITS: usize = 40;
-/// 引用结果上限（比 MAX_HITS 宽：40 条在真实仓库上会按文件顺序截断，导致 recall 虚低）
+/// 引用/定义结果上限（40 条在真实仓库上会按文件顺序截断，导致 recall 虚低且用户看不到截断）
 const MAX_REFERENCE_HITS: usize = 200;
+/// 定义结果上限（同引用：`index` 这类符号在真实仓库里可有上百处定义）
+const MAX_DEFINITION_HITS: usize = 200;
 const SKIP_DIRS: [&str; 8] = [
     ".git",
     "node_modules",
@@ -848,7 +850,11 @@ impl Tool for CodeIntelTool {
                 // 走符号索引（反向表哈希查找），不再逐文件读盘 + 全量扫描
                 let (sindex, s_hit, s_build_ms) =
                     crate::symbol_index::get_or_build(root, refresh, None);
-                let hits = sindex.definitions(symbol, MAX_HITS);
+                // 先取全量再截断：如实上报"总共多少处 / 是否被截断"（`index` 这类符号可上百处定义）
+                let all_hits = sindex.definitions(symbol, usize::MAX);
+                let total_hits = all_hits.len();
+                let truncated_at_limit = total_hits > MAX_DEFINITION_HITS;
+                let hits: Vec<_> = all_hits.into_iter().take(MAX_DEFINITION_HITS).collect();
                 let provenance: Vec<Provenance> = hits
                     .iter()
                     .map(|h| prov_with(sindex.file_path(h.file), h.line, &id, "symbol-index"))
@@ -877,6 +883,9 @@ impl Tool for CodeIntelTool {
                     data: json!({
                         "symbol": symbol,
                         "definitions": defs,
+                        "total_hits": total_hits,
+                        "limit": MAX_DEFINITION_HITS,
+                        "truncated_at_limit": truncated_at_limit,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
                     }),
                     provenance,
