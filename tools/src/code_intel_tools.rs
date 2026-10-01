@@ -1458,11 +1458,26 @@ impl Tool for CodeIntelTool {
                     crate::symbol_index::get_or_build(root, refresh, None);
                 let mut handler_definitions: Vec<Value> = Vec::new();
                 let mut handler_decorators: Vec<Value> = Vec::new();
+                // 鉴权类装饰器标记：用于给出"链上是否有鉴权"这一可度量判据
+                let auth_markers = [
+                    "login_required",
+                    "requires_auth",
+                    "authenticated",
+                    "permission_required",
+                    "jwt_required",
+                    "auth_required",
+                    "authorize",
+                    "is_admin",
+                    "staff_member_required",
+                    "user_passes_test",
+                ];
+                let mut auth_present = false;
                 if !handler.is_empty() {
                     for hit in sindex.definitions(handler, 10) {
                         let hf = sindex.file_path(hit.file).to_string();
                         provenance.push(prov_with(&hf, hit.line, &id, "handler-definition"));
-                        // 装饰器/中间件链：从定义行向上收集连续的 `@...` 行（保持自顶向下的顺序）
+                        // 装饰器/中间件链：从定义行向上收集连续的 `@...` 行（保持自顶向下的顺序），
+                        // 并按语义归类——auth / route / middleware / other。
                         let mut chain: Vec<Value> = Vec::new();
                         if let Ok(content) = std::fs::read_to_string(root.join(&hf)) {
                             let lines: Vec<&str> = content.lines().collect();
@@ -1473,10 +1488,20 @@ impl Tool for CodeIntelTool {
                                 if !prev.starts_with('@') {
                                     break;
                                 }
+                                let kind = if auth_markers.iter().any(|m| prev.contains(*m)) {
+                                    "auth"
+                                } else if route_markers.iter().any(|m| prev.contains(*m)) {
+                                    "route"
+                                } else if middleware_markers.iter().any(|m| prev.contains(*m)) {
+                                    "middleware"
+                                } else {
+                                    "other"
+                                };
                                 chain.push(json!({
                                     "file": hf,
                                     "line": cursor,
                                     "text": prev.chars().take(200).collect::<String>(),
+                                    "kind": kind,
                                 }));
                                 cursor -= 1;
                                 steps += 1;
@@ -1491,8 +1516,13 @@ impl Tool for CodeIntelTool {
                                     provenance.push(prov_with(f, l as u32, &id, "handler-decorator"));
                                 }
                             }
+                            let chain_has_auth = chain.iter().any(|c| c["kind"] == "auth");
+                            if chain_has_auth {
+                                auth_present = true;
+                            }
                             handler_decorators.push(json!({
                                 "handler_line": hit.line,
+                                "has_auth_decorator": chain_has_auth,
                                 "chain": chain,
                             }));
                         }
@@ -1515,6 +1545,7 @@ impl Tool for CodeIntelTool {
                         "handler_resolved": resolved,
                         "handler_definitions": handler_definitions,
                         "handler_decorators": handler_decorators,
+                        "auth_decorators_present": auth_present,
                         "routes": routes,
                         "middleware": middleware,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
