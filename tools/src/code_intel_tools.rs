@@ -1617,9 +1617,10 @@ impl Tool for CodeIntelTool {
                     "django" => "middleware_list_source_order_then_handler_decorators_top_down",
                     _ => "source_registration_order",
                 };
-                // 诚实标注：顺序规则目前只有 Flask 路径被真值验证过（独立 oracle 顺序正确率 1.000）；
-                // Express / Django / 未知框架只是"按语义声明的规则"，不得被当成已验证能力。
-                if fw != "flask" {
+                // 诚实标注：顺序规则已由独立 oracle 验证过的框架不加警示——
+                // Flask 12/12、Express 3/3（真实 Express 应用 `config/express.js` 的 19 处 app.use 行序完全一致）；
+                // Django 与未知框架仍只是"按语义声明的规则"。
+                if fw != "flask" && fw != "express" {
                     reasons.push("ordering_rule_not_ground_truth_verified");
                 }
                 IntelEnvelope {
