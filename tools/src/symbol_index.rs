@@ -729,6 +729,8 @@ fn index_content(
 
     let mut defs: Vec<(String, u32, String)> = Vec::new();
     let mut idents: HashMap<String, Vec<u32>> = HashMap::new();
+    // 是否位于括号块声明内（`var (` / `const (` / `type (`）
+    let mut block_decl = false;
 
     for (idx, raw) in content.lines().enumerate() {
         let lineno = (idx + 1) as u32;
@@ -742,6 +744,30 @@ fn index_content(
                     entry.push(lineno);
                 }
             }
+        }
+
+        // ── 括号块声明（Go/C/C++ 常见）──
+        // `var (` / `const (` / `type (` 之后的每一行**没有关键字**，只有 `名字 = ...`
+        // 或 `名字 类型`；旧实现只看带关键字的行，整块声明因此进不了索引。
+        let ctrim = code_line.trim();
+        if !block_decl
+            && (ctrim.starts_with("var (")
+                || ctrim.starts_with("const (")
+                || ctrim.starts_with("type ("))
+        {
+            block_decl = true;
+            continue;
+        }
+        if block_decl {
+            if ctrim.starts_with(')') {
+                block_decl = false;
+                continue;
+            }
+            let text: String = raw.trim().chars().take(200).collect();
+            for name in block_declared_names(code_line) {
+                defs.push((name, lineno, text.clone()));
+            }
+            continue;
         }
 
         // 声明：同样用代码段判定，避免字符串里的 "def foo" 被当成定义
@@ -758,6 +784,34 @@ fn index_content(
 }
 
 /// 从声明行抽取被声明的标识符（跳过修饰符；语言无关的保守启发式）
+/// 括号块声明内的一行：取 `=` 左侧（或 `type` 块里的首个）标识符。
+///
+/// 支持 `A = expr`、`A, B = expr`、`A Type`（type 块）三种形态；注释行与结束行返回空。
+fn block_declared_names(code_line: &str) -> Vec<String> {
+    let t = code_line.trim();
+    if t.is_empty() || t.starts_with("//") || t.starts_with(')') {
+        return Vec::new();
+    }
+    let lhs = t.split('=').next().unwrap_or(t);
+    let mut out = Vec::new();
+    for part in lhs.split(',') {
+        let name: String = part
+            .trim()
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if name
+            .chars()
+            .next()
+            .map(|c| c.is_alphabetic() || c == '_')
+            .unwrap_or(false)
+        {
+            out.push(name);
+        }
+    }
+    out
+}
+
 pub fn declared_names(line: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for kw in DEF_KEYWORDS {
@@ -1098,6 +1152,28 @@ mod tests {
         );
         assert_eq!(third.definitions("changed_symbol", 5).len(), 1);
 
+        invalidate(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(persist_path(&root));
+    }
+
+    /// 括号块声明（`var (` / `const (` / `type (`）内的行没有关键字，也必须进索引
+    #[test]
+    fn test_bracket_block_declarations_are_indexed() {
+        let root = fixture("blockdecl");
+        std::fs::write(
+            root.join("src/block.go"),
+            "package main\n\nvar (\n\tErrA = errors.New(\"a\")\n\tErrB = errors.New(\"b\")\n)\n\nconst (\n\tMaxN = 10\n)\n\ntype (\n\tWidget struct{}\n)\n",
+        )
+        .unwrap();
+        invalidate(&root);
+        let (index, _, _) = get_or_build(&root, true, None);
+        for name in ["ErrA", "ErrB", "MaxN", "Widget"] {
+            assert!(
+                !index.definitions(name, 5).is_empty(),
+                "{name} 应在括号块声明里被索引"
+            );
+        }
         invalidate(&root);
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(persist_path(&root));
