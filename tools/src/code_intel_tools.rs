@@ -1412,8 +1412,16 @@ impl Tool for CodeIntelTool {
                     "r.GET(", "Route::", "#[get(", "#[post(",
                 ];
                 let middleware_markers = [
-                    "middleware", "before_action", "@UseGuards", "interceptor", "filter_chain",
-                    "login_required", "permission_required", "before_request",
+                    "middleware",
+                    "before_action",
+                    "@UseGuards",
+                    "interceptor",
+                    "filter_chain",
+                    "login_required",
+                    "permission_required",
+                    "before_request",
+                    "app.use(",
+                    ".use(",
                 ];
                 let mut routes: Vec<Value> = Vec::new();
                 let mut middleware: Vec<Value> = Vec::new();
@@ -1576,6 +1584,33 @@ impl Tool for CodeIntelTool {
                     }
                 }
                 effective_chain.sort_by_key(|v| v["line"].as_u64().unwrap_or(0));
+                // 每框架的**运行时**顺序（源码顺序 ≠ 运行时顺序）：
+                // - 装饰器：`@outer` + `@inner` 等价于 `outer(inner(f))` ⇒ **前置执行顺序是自顶向下
+                //   （最外层先）**；反序只描述"包裹应用顺序"，不是执行顺序；
+                // - 文件级钩子/中间件（before_request、MIDDLEWARE、app.use）在 handler 之前；
+                // - Express：`app.use` 先注册先执行 ⇒ 保持源码顺序。
+                let fw: &str = if file.ends_with(".py") {
+                    if file.ends_with("urls.py")
+                        || middleware.iter().any(|m| {
+                            m["text"].as_str().unwrap_or("").contains("MIDDLEWARE")
+                        })
+                    {
+                        "django"
+                    } else {
+                        "flask"
+                    }
+                } else if file.ends_with(".js") || file.ends_with(".mjs") || file.ends_with(".ts") {
+                    "express"
+                } else {
+                    "unknown"
+                };
+                // 运行时链 = 文件级钩子（按源码序）在前，handler 装饰器（自顶向下）在后
+                let runtime_chain = effective_chain.clone();
+                let ordering_rule = match fw {
+                    "flask" => "file_scope_hooks_first_then_handler_decorators_top_down",
+                    "django" => "middleware_list_source_order_then_handler_decorators_top_down",
+                    _ => "source_registration_order",
+                };
                 IntelEnvelope {
                     data: json!({
                         "file": file,
@@ -1586,6 +1621,10 @@ impl Tool for CodeIntelTool {
                         "auth_decorators_present": auth_present,
                         "effective_chain": effective_chain,
                         "effective_chain_semantics": "source_registration_order_only",
+                        "framework": fw,
+                        "effective_chain_runtime": runtime_chain,
+                        "ordering_rule": ordering_rule,
+                        "decorator_application_order": "bottom_up_wrapping",
                         "routes": routes,
                         "middleware": middleware,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
