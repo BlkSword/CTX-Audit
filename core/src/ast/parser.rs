@@ -775,7 +775,11 @@ impl ASTParser {
             symbols: &mut Vec<Symbol>,
             class_stack: &mut Vec<String>,
             func_stack: &mut Vec<String>,
+            depth: usize,
         ) {
+            if depth > MAX_SYMBOL_VISIT_DEPTH {
+                return;
+            }
             match node.kind() {
                 "class_declaration" => {
                     if let Some(name_node) = node.child_by_field_name("name") {
@@ -952,7 +956,7 @@ impl ASTParser {
             }
 
             for child in node.children(&mut node.walk()) {
-                visit_node(child, content, file_path, symbols, class_stack, func_stack);
+                visit_node(child, content, file_path, symbols, class_stack, func_stack, depth + 1);
             }
 
             if node.kind() == "class_declaration" {
@@ -970,6 +974,7 @@ impl ASTParser {
             &mut symbols,
             &mut class_stack,
             &mut func_stack,
+            0,
         );
         Ok(symbols)
     }
@@ -2826,3 +2831,9 @@ function show($row) {
         assert!(calls.iter().any(|c| c.callee == "esc"));
     }
 }
+
+/// JS 符号提取的递归遍历深度上界（防御性）。
+///
+/// 真实仓库（如 DOMPurify）的嵌套深度足以把默认线程栈打穿并**直接崩溃**；
+/// 超过上界即停止下探——宁可少收深层符号，也不能崩。深度截断会在调用方统计里体现。
+const MAX_SYMBOL_VISIT_DEPTH: usize = 256;
