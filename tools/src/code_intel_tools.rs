@@ -1595,7 +1595,40 @@ impl Tool for CodeIntelTool {
                 //   （最外层先）**；反序只描述"包裹应用顺序"，不是执行顺序；
                 // - 文件级钩子/中间件（before_request、MIDDLEWARE、app.use）在 handler 之前；
                 // - Express：`app.use` 先注册先执行 ⇒ 保持源码顺序。
-                let fw: &str = if file.ends_with(".py") {
+                // Django 的 `MIDDLEWARE` 是**字符串列表**：代码段扫描会把字符串剥掉，
+                // 因此这里对**原文**做一次列表字面量解析，按声明顺序给出中间件链。
+                let mut django_middleware: Vec<Value> = Vec::new();
+                if let Ok(raw) = std::fs::read_to_string(root.join(&file)) {
+                    let mut in_list = false;
+                    let mut order = 0usize;
+                    for (idx, line) in raw.lines().enumerate() {
+                        let t = line.trim();
+                        if !in_list {
+                            if t.starts_with("MIDDLEWARE") && t.contains('[') {
+                                in_list = !t.contains(']');
+                            }
+                            continue;
+                        }
+                        if t.starts_with(']') {
+                            break;
+                        }
+                        let entry = t
+                            .trim_matches(|c| c == ',' || c == '"' || c == '\'' || c == ' ')
+                            .to_string();
+                        if !entry.is_empty() && !entry.starts_with('#') {
+                            order += 1;
+                            django_middleware.push(json!({
+                                "order": order,
+                                "entry": entry,
+                                "line": idx + 1,
+                            }));
+                        }
+                    }
+                }
+                let is_django_settings = !django_middleware.is_empty();
+                let fw: &str = if is_django_settings {
+                    "django"
+                } else if file.ends_with(".py") {
                     if file.ends_with("urls.py")
                         || middleware.iter().any(|m| {
                             m["text"].as_str().unwrap_or("").contains("MIDDLEWARE")
@@ -1636,6 +1669,7 @@ impl Tool for CodeIntelTool {
                         "framework": fw,
                         "effective_chain_runtime": runtime_chain,
                         "ordering_rule": ordering_rule,
+                        "django_middleware_order": django_middleware,
                         "decorator_application_order": "bottom_up_wrapping",
                         "routes": routes,
                         "middleware": middleware,
