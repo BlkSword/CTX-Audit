@@ -1213,7 +1213,7 @@ impl ASTParser {
 
         let root = tree.root_node();
         let mut assignments = Vec::new();
-        Self::collect_assignments_generic(&root, content, &mut assignments);
+        Self::collect_assignments_generic(&root, content, &mut assignments, 0);
         assignments
     }
 
@@ -1368,7 +1368,7 @@ impl ASTParser {
         Self::collect_function_bodies_recursive(&root, content, &mut bodies);
 
         let mut assignments = Vec::new();
-        Self::collect_assignments_generic(&root, content, &mut assignments);
+        Self::collect_assignments_generic(&root, content, &mut assignments, 0);
 
         let mut calls = Vec::new();
         Self::collect_calls_recursive(&root, content, &mut calls);
@@ -1376,7 +1376,17 @@ impl ASTParser {
         Some((tree, symbols, bodies, assignments, calls))
     }
 
-    fn collect_assignments_generic(node: &Node, content: &str, results: &mut Vec<Assignment>) {
+    fn collect_assignments_generic(
+        node: &Node,
+        content: &str,
+        results: &mut Vec<Assignment>,
+        depth: usize,
+    ) {
+        // 深度上界（防御性）：压缩/生成代码的嵌套深度足以打穿线程栈并直接崩溃，
+        // 超过上界即停止下探——宁可少收深层赋值，也不能崩。
+        if depth > MAX_ASSIGNMENT_VISIT_DEPTH {
+            return;
+        }
         let kind = node.kind();
         if matches!(
             kind,
@@ -1553,7 +1563,7 @@ impl ASTParser {
         // 递归遍历子节点
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            Self::collect_assignments_generic(&child, content, results);
+            Self::collect_assignments_generic(&child, content, results, depth + 1);
         }
     }
 
@@ -2837,3 +2847,6 @@ function show($row) {
 /// 真实仓库（如 DOMPurify）的嵌套深度足以把默认线程栈打穿并**直接崩溃**；
 /// 超过上界即停止下探——宁可少收深层符号，也不能崩。深度截断会在调用方统计里体现。
 const MAX_SYMBOL_VISIT_DEPTH: usize = 256;
+
+/// AST 赋值收集的递归深度上界（防御性，与 JS 符号遍历同因）。
+const MAX_ASSIGNMENT_VISIT_DEPTH: usize = 512;
