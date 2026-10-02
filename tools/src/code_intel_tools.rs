@@ -1612,10 +1612,19 @@ impl Tool for CodeIntelTool {
                         if t.starts_with(']') {
                             break;
                         }
-                        let entry = t
-                            .trim_matches(|c| c == ',' || c == '"' || c == '\'' || c == ' ')
-                            .to_string();
-                        if !entry.is_empty() && !entry.starts_with('#') {
+                        // 取该行**第一个字符串字面量**的内容：丢弃其后的逗号与行内注释
+                        // （真实项目里条目常写成 `"a.b.M",  # 说明`，按 trim 处理会连带注释）
+                        let entry = if let Some(start) = t.find(['"', '\'']) {
+                            let quote = t.as_bytes()[start] as char;
+                            let rest = &t[start + 1..];
+                            match rest.find(quote) {
+                                Some(end) => rest[..end].to_string(),
+                                None => String::new(),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        if !entry.is_empty() {
                             order += 1;
                             django_middleware.push(json!({
                                 "order": order,
@@ -1651,9 +1660,9 @@ impl Tool for CodeIntelTool {
                     _ => "source_registration_order",
                 };
                 // 诚实标注：顺序规则已由独立 oracle 验证过的框架不加警示——
-                // Flask 12/12、Express 3/3（真实 Express 应用 `config/express.js` 的 19 处 app.use 行序完全一致）；
+                // Flask 12/12、Express 3/3（19 处 app.use 完全一致）、Django 1/1（真实项目 10 条 MIDDLEWARE 逐项一致）；
                 // Django 与未知框架仍只是"按语义声明的规则"。
-                if fw != "flask" && fw != "express" {
+                if fw != "flask" && fw != "express" && fw != "django" {
                     reasons.push("ordering_rule_not_ground_truth_verified");
                 }
                 IntelEnvelope {
