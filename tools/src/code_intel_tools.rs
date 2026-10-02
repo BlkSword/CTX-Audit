@@ -1483,6 +1483,12 @@ impl Tool for CodeIntelTool {
                 if !handler.is_empty() {
                     for hit in sindex.definitions(handler, 10) {
                         let hf = sindex.file_path(hit.file).to_string();
+                        // 只接受**本次请求文件**里的同名定义：否则会把全仓库同名 handler 的
+                        // 装饰器链混成一条（真实项目实测：`index` 的链里混进 11 个不同文件的装饰器行，
+                        // 顺序正确率因此被压到 0.33）
+                        if hf != file {
+                            continue;
+                        }
                         provenance.push(prov_with(&hf, hit.line, &id, "handler-definition"));
                         // 装饰器/中间件链：从定义行向上收集连续的 `@...` 行（保持自顶向下的顺序），
                         // 并按语义归类——auth / route / middleware / other。
