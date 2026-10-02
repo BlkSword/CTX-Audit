@@ -626,6 +626,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // 初始化日志
+    // 全局 rayon 池：**先于任何并行分析**建立并给足线程栈。
+    // 真实仓库（压缩产物 dist/*.js）的 AST 递归深度足以打穿默认 2MB 线程栈并直接崩溃；
+    // 这里统一 64MB，与遍历器的深度上界构成纵深防御。
+    let _ = rayon::ThreadPoolBuilder::new()
+        .stack_size(64 * 1024 * 1024)
+        .build_global();
+
     init_logging(&cli);
 
     // 执行命令
