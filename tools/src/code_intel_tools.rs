@@ -1538,6 +1538,44 @@ impl Tool for CodeIntelTool {
                 if !handler.is_empty() && !resolved {
                     reasons.push("handler_not_resolved");
                 }
+                // 有效顺序链：文件级中间件（全局注册）在前，handler 装饰器在后，各自按源码行序。
+                // 这是"中间件实际生效顺序"的第一步近似——只表达**源码注册顺序**，
+                // 不表达框架运行时语义（Django MIDDLEWARE 列表顺序相反、Express app.use 先注册先执行）。
+                let mut effective_chain: Vec<Value> = Vec::new();
+                // handler 自己的装饰器行号：文件级扫描会重复命中它们（如 `login_required`
+                // 既在 middleware 标记里、又是 handler 装饰器），必须去重
+                let handler_decor_lines: std::collections::HashSet<u64> = handler_decorators
+                    .iter()
+                    .filter_map(|hd| hd["chain"].as_array())
+                    .flatten()
+                    .filter_map(|c| c["line"].as_u64())
+                    .collect();
+                for m in &middleware {
+                    if let (Some(l), Some(t)) = (m["line"].as_u64(), m["text"].as_str()) {
+                        if handler_decor_lines.contains(&l) {
+                            continue;
+                        }
+                        effective_chain.push(json!({
+                            "scope": "file",
+                            "line": l,
+                            "text": t,
+                            "kind": "middleware",
+                        }));
+                    }
+                }
+                for hd in &handler_decorators {
+                    if let Some(chain) = hd["chain"].as_array() {
+                        for c in chain {
+                            effective_chain.push(json!({
+                                "scope": "handler",
+                                "line": c["line"],
+                                "text": c["text"],
+                                "kind": c["kind"],
+                            }));
+                        }
+                    }
+                }
+                effective_chain.sort_by_key(|v| v["line"].as_u64().unwrap_or(0));
                 IntelEnvelope {
                     data: json!({
                         "file": file,
@@ -1546,6 +1584,8 @@ impl Tool for CodeIntelTool {
                         "handler_definitions": handler_definitions,
                         "handler_decorators": handler_decorators,
                         "auth_decorators_present": auth_present,
+                        "effective_chain": effective_chain,
+                        "effective_chain_semantics": "source_registration_order_only",
                         "routes": routes,
                         "middleware": middleware,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
