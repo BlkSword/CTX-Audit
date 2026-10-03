@@ -367,7 +367,9 @@ impl RuleScanner {
                                 &compiled.rule,
                                 path,
                                 line_start,
-                                line_end,
+                                // 注意：本作用域内的 `line_end` 已在上面被遮蔽为**字节偏移**
+                                // （用于切片 matched_line），不能当行号用——此处重新换算。
+                                content[..end_pos].matches('\n').count() + 1,
                                 format!("RegexRule: {}", compiled.rule.id),
                                 original_content,
                                 3,
