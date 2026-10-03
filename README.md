@@ -30,7 +30,7 @@ CTX-Audit 的解法：
 
 1. **先建图，再扫描**：解析 AST、构建调用图、计算函数摘要，把跨文件调用关系变成可查询的结构化数据。
 2. **用证据链说话**：每个高危 finding 携带 `enclosing_function`、`evidence_refs`、source/sink 代码片段，必要时附带污点传播路径。
-3. **把分析能力交给 LLM**：MCP 默认只暴露 **9 个高阶语义能力**（符号定义/引用、调用层级、反向切片、数据流路径、sanitizer 守卫、框架上下文、项目索引、增量状态等）+ 3 个基础读写工具，每个响应都携带 `provenance`（文件/行/解析方式/索引版本）与 `uncertainty`（不确定度与原因）。LLM 不必在几十个细粒度工具之间做选择；遗留的细粒度工具面保留实现，用 `--legacy-tools` 显式打开。
+3. **把分析能力交给 LLM**：MCP 默认只暴露 **9 个高阶语义能力**（符号定义/引用、调用层级、反向切片、数据流路径、sanitizer 守卫、框架上下文、项目索引、增量状态等）+ 4 个基础工具（`read_file` / `list_files` / `report_finding` / `finish_analysis`），每个响应都携带 `provenance`（文件/行/解析方式/索引版本）与 `uncertainty`（不确定度与原因）。LLM 不必在几十个细粒度工具之间做选择；遗留的细粒度工具面保留实现，用 `--legacy-tools` 显式打开。
 
 > **核心定位：引擎负责“确定性证据供给”，LLM 负责“语义判定”，可复现验证负责“坐实”。**
 
@@ -48,7 +48,7 @@ CTX-Audit 的解法：
 - [自定义规则](#自定义规则)
 - [报告与输出](#报告与输出)
 - [架构](#架构)
-- [项目现状与成就](#项目现状与成就)
+- [能力边界与验证方法](#能力边界与验证方法)
 - [开发与测试](#开发与测试)
 - [许可证](#许可证)
 
@@ -412,54 +412,64 @@ ctx-audit scan ./myproject --rules .ctx-audit/rules --deep
 
 ```
 CTX-Audit
-├── core/                         # 确定性分析引擎
-│   ├── analysis/                 # 污点/数据流/CPG/调用图/攻击面/风险模式
-│   ├── scanner/                  # 扫描器 + source/sink pattern
-│   ├── rules/                    # YAML 规则引擎 + 审计包
-│   ├── ast/                      # tree-sitter AST（12 语言）
-│   ├── sarif/                    # SARIF 导出
-│   └── scan_cache.rs             # 扫描缓存
+├── core/                              # 确定性分析引擎（deepaudit-core）
+│   ├── analysis/                      # 污点 / 数据流 / CPG / 调用图 / 攻击面 / 风险模式
+│   ├── scanner/                       # 扫描编排、文件角色与严重度调整
+│   ├── rules/                         # YAML 规则引擎（pattern → finding，含行号换算）
+│   ├── ast/                           # tree-sitter AST（12 语言）与符号提取
+│   ├── sarif/                         # SARIF 2.1.0 导出
+│   └── indexing/                      # 代码索引
 │
-├── tools/                        # MCP 工具集
-│   ├── bridge.rs                 # 内置工具
-│   ├── registry.rs / executor.rs # 工具注册与执行
-│   ├── ast_tools.rs              # AST / 符号工具
-│   ├── call_graph_tools.rs       # 调用图查询工具
-│   ├── search_tools.rs           # 文本 / 正则搜索
-│   ├── taint_tools.rs            # 污点追踪工具
-│   └── pattern_tools.rs          # 漏洞模式工具
+├── tools/                             # MCP 工具集（ctx-audit-tools）
+│   ├── code_intel_tools.rs            # 高阶代码智能面（9 能力 + envelope）
+│   ├── symbol_index.rs                # 符号/标识符倒排索引（定义、引用、落盘持久化）
+│   ├── index_cache.rs                 # 项目索引缓存（TTL + 显式 refresh）
+│   ├── text_scan.rs                   # 代码段语义（注释/字符串剥离、标识符边界）
+│   ├── bridge.rs / registry.rs / executor.rs   # 工具注册与执行
+│   └── ast_tools.rs / call_graph_tools.rs / search_tools.rs /
+│       taint_tools.rs / pattern_tools.rs       # 细粒度工具面（Cargo feature 门控）
 │
-├── cli/                          # CLI 客户端
-│   ├── commands/                 # scan/analyze/watch/daemon/mcp/config/...
-│   ├── database/                 # findings SQLite 存储
-│   └── report/                   # 报告导出
+├── cli/                               # CLI 客户端（二进制 ctx-audit）
+│   ├── commands/                      # scan / analyze / watch / daemon / mcp / rules / config …
+│   ├── database/                      # findings SQLite 存储
+│   └── report/                        # 报告导出（json / llm / sarif / markdown）
 │
-├── daemon/                       # 守护进程（增量缓存 / 状态服务）
+├── daemon/                            # 守护进程（增量缓存、状态服务、agent host）
 │
-├── rules/                        # YAML 模式规则 + taint 框架规则 + audit-packs
+├── agent/                             # Agent / Pipeline 框架（LLM provider、轮次、子代理、回放）
 │
-└── agent/                        # 通用 Agent / Pipeline 框架（可配置定制审计流程）
+├── rules/                             # YAML 模式规则 + taint 框架规则 + audit-packs
+│
+└── harness/                           # 公共 DSH 编排框架（可安装；私有内容经本地 overlay 注入）
 ```
 
 ---
 
-## 项目现状与成就
+## 能力边界与验证方法
 
-CTX-Audit 已从“规则扫描工具”逐步演进为一套 **真实项目驱动的混合审计能力平台**：
+CTX-Audit 的定位是**面向 LLM 的确定性代码智能与取证基础设施**：引擎负责把代码拓扑与数据流变成可查询、可复核的结构化事实，判定由 LLM 与人工在证据之上完成。
 
-### 已验证的能力
+### 引擎提供什么
 
-- **真实项目审计轮次**：累计完成 160+ 轮真实项目定向审计，覆盖 Java / Python / Go / JavaScript / TypeScript / PHP / Rust / C/C++ 等生态。
-- **漏洞验证产出**：在真实项目中确认 49 个真实漏洞（TP），其中 40 个为此前未公开的 0day，17 个 CVE 已通过复现/分析验证。
-- **引擎反哺闭环**：多个真实项目的漏洞与误报直接反哺为新增规则、YAML source/sink、sanitizer 窗口语义和 AST/CPG 修复，形成“真实项目 → 引擎改进 → 回归验证”的闭环。
-- **多语言确定性分析**：12 种 AST 语言、19 种扩展名、100+ sink、180+ sanitizer，支撑从 Web 应用到 C/C++ 系统软件的扫描。
-- **MCP 协作审计**：默认暴露 13 个 MCP 工具（9 个高阶代码智能能力 + `read_file`/`list_files`/`report_finding`/`finish_analysis`），每个响应携带 `provenance` 与 `uncertainty`；细粒度遗留工具面仍保留，通过 `--legacy-tools` 显式打开。工具输出是**候选与证据**，判定由 LLM/人工 + 可复现验证给出。
+- **符号与引用**：基于标识符的符号索引（定义、引用），按代码段语义（剥离注释与字符串）匹配，避免子串误配。
+- **调用层级**：函数上下游调用拓扑，callee 通过标识符精确解析，并区分函数作用域内的调用点。
+- **函数作用域切片**：反向切片以所在函数为界，保证包含函数头，便于阅读与引用。
+- **跨文件数据流**：调用图 + 函数摘要 + 跨文件路径查找，配合 sanitizer 守卫识别。
+- **框架上下文**：路由到处理函数的绑定、装饰器链、鉴权判据，以及各框架的中间件运行时顺序。
+- **响应契约**：每个响应携带 `provenance`（文件 / 行 / 解析方式 / 索引版本）与 `uncertainty`（不确定度与原因）；任何结果上限都会显式上报 `total_hits` / `limit` / `truncated_at_limit`，不静默截断。
 
-### 诚实边界
+### 引擎不做什么
 
-- 引擎定位是 **证据供给与噪声压缩**，逻辑漏洞、授权漏洞、业务漏洞等仍高度依赖 LLM 深审与人工验证。
-- 持续使用真实项目验证召回与误报，而不是只用人工构造的基准集“刷分”。
-- 高置信成果均以 **实机验证 / 双向版本对照** 的方式确认。
+- **不承担漏洞真值判定**：规则与污点命中输出的是**候选与证据**，`findings` 在 JSON / LLM 报告中标记为 `candidate`。漏洞认定由 LLM / 人工结合上下文与可复现验证给出。
+- **不承诺健全性**：不与工业级 SAST 比拼完备性；能力的意义在于“把可验证的事实供给判定者”，而不是替代判定。
+- **能力随语言分层**：项目索引会报告每种语言的分析能力（主分析语言与启发式语言的差别，以及 `analysis_backed` 标志），不具备完整分析能力的语言会在响应中显式标注不确定度。
+
+### 如何验证
+
+- **夹具回归**：仓库内提供可重复的 ground-truth 夹具与基线，比较工具输出（定义、引用、调用图、切片覆盖）是否回退。
+- **双向版本对照**：以“漏洞版本命中、修复版本豁免”的方式检验检测语义，而不是只看单侧命中数。
+- **边界显式化**：索引的规模与单文件上限、结果条数上限均可在索引元数据与响应中读到，超出即上报。
+- **不刷分**：优先使用真实代码库与可复现的对照，而非只针对人工构造样本调参。
 
 ---
 
