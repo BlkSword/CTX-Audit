@@ -17,19 +17,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install CTX-Audit
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # 从本次 checkout 构建，不通过 `cargo install --git` 拉取其它仓库：
+      # 构建源必须与本次 PR 的代码一致，且不引入外部仓库作为 CI 执行路径。
+      - name: Build from this checkout
         run: |
-          cargo install ctx-audit --git https://github.com/ctx-audit/ctx-audit || {
-            echo "CTX-Audit not yet published, building from source..."
-            cargo build --release
-            cp target/release/ctx-audit /usr/local/bin/
-          }
+          cargo build --release
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
 
       - name: Run Security Scan
         run: |
-          ctx-audit scan . --output sarif --output-path results.sarif
-        env:
-          CTX_AUDIT_API_KEY: ${{ secrets.CTX_AUDIT_API_KEY }}
+          ctx-audit scan . -o results.sarif
 
       - name: Upload SARIF to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v3

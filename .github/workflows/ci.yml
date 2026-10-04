@@ -12,8 +12,21 @@ env:
 
 jobs:
   build-and-test:
-    name: Build & Test
-    runs-on: windows-latest
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            exe: ""
+            artifact: ctx-audit-x86_64-unknown-linux-gnu
+          - os: macos-latest
+            exe: ""
+            artifact: ctx-audit-aarch64-apple-darwin
+          - os: windows-latest
+            exe: ".exe"
+            artifact: ctx-audit-x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v4
@@ -28,9 +41,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            windows-cargo-
+            ${{ matrix.os }}-cargo-
 
       - name: Build
         run: cargo build --release
@@ -40,20 +53,23 @@ jobs:
 
       - name: CLI smoke tests
         run: |
-          target/release/ctx-audit --version
-          target/release/ctx-audit config set scan.taint_max_candidate_files 1000
-          target/release/ctx-audit config show scan.taint_max_candidate_files
-          target/release/ctx-audit config set scan.taint_max_file_kb 256
-          target/release/ctx-audit config show scan.taint_max_file_kb
+          target/release/ctx-audit${{ matrix.exe }} --version
+          target/release/ctx-audit${{ matrix.exe }} config set scan.taint_max_candidate_files 1000
+          target/release/ctx-audit${{ matrix.exe }} config show scan.taint_max_candidate_files
+          target/release/ctx-audit${{ matrix.exe }} config set scan.taint_max_file_kb 256
+          target/release/ctx-audit${{ matrix.exe }} config show scan.taint_max_file_kb
 
+      # 只在单一平台跑 Clippy，避免三倍 CI 分钟；
+      # 目前仍为咨询性质（continue-on-error），在本地确认 `-D warnings` 通过后再转为硬门禁。
       - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --workspace -- -D warnings
         continue-on-error: true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ctx-audit-x86_64-pc-windows-msvc
+          name: ${{ matrix.artifact }}
           path: |
-            target/release/ctx-audit.exe
+            target/release/ctx-audit${{ matrix.exe }}
           if-no-files-found: warn

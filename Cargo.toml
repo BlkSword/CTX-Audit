@@ -13,7 +13,7 @@ version = "3.1.0"
 edition = "2021"
 authors = ["CTX-Audit Contributors"]
 license = "Apache-2.0"
-repository = "https://github.com/ctx-audit/ctx-audit"
+repository = "https://github.com/BlkSword/CTX-Audit"
 
 [workspace.dependencies]
 # 序列化

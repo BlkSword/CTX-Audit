@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "deepaudit-core"
-version = "0.1.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
