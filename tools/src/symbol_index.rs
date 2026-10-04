@@ -211,6 +211,11 @@ impl SymbolIndex {
         hits
     }
 
+    /// 该符号在倒排表里的 `(文件, 行)` 条目数——**不分配**，用于空结果分类与埋点。
+    pub fn identifier_occurrence_count(&self, symbol: &str) -> usize {
+        self.idents.get(symbol).map(|v| v.len()).unwrap_or(0)
+    }
+
     /// 倒排表覆盖的标识符出现次数（可观测性）
     pub fn identifier_count(&self) -> usize {
         self.idents.values().map(|v| v.len()).sum()

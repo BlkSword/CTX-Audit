@@ -362,6 +362,30 @@ fn prov_with(file: &str, line: u32, id: &str, resolver: &str) -> Provenance {
 }
 
 /// 符号索引的可观测状态（供响应体如实上报）
+/// 空结果的**可观测性分类**：把"索引里根本没有该符号"与"索引里有线索但没抽出结果"分开。
+///
+/// 动机：`total_hits = 0` 曾同时表示两件含义相反的事——"符号不存在"（正常答案）与
+/// "定义抽取漏收"（**覆盖缺口**，既是索引排查的信号，也是"全项目联动"实验的仪器读数）。
+fn empty_definition_kind(index: &crate::symbol_index::SymbolIndex, symbol: &str) -> &'static str {
+    if index.identifier_occurrence_count(symbol) == 0 {
+        "no_match"
+    } else {
+        "index_miss"
+    }
+}
+
+/// 引用空结果的分类：`no_match`（索引里没有）/ `index_miss`（有出现但无定义）/
+/// `definition_only`（只在定义处出现，确实没有引用）。
+fn empty_reference_kind(index: &crate::symbol_index::SymbolIndex, symbol: &str) -> &'static str {
+    if index.identifier_occurrence_count(symbol) == 0 {
+        "no_match"
+    } else if index.definitions(symbol, usize::MAX).is_empty() {
+        "index_miss"
+    } else {
+        "definition_only"
+    }
+}
+
 fn symbol_index_stats(
     index: &crate::symbol_index::SymbolIndex,
     hit: crate::symbol_index::HitSource,
@@ -941,6 +965,18 @@ impl Tool for CodeIntelTool {
                 if defs.is_empty() {
                     reasons.push("no_definition_in_index");
                 }
+                // 空结果分类：`total_hits = 0` 曾同时表示"符号不存在"（正常答案）与
+                // "定义抽取漏收"（覆盖缺口）。后者正是全项目联动实验的仪器读数。
+                let identifier_lines = sindex.identifier_occurrence_count(symbol);
+                let empty_kind: Option<&str> = if !defs.is_empty() {
+                    None
+                } else if identifier_lines == 0 {
+                    reasons.push("symbol_absent_from_index");
+                    Some("no_match")
+                } else {
+                    reasons.push("definition_missing_but_identifier_present");
+                    Some("index_miss")
+                };
                 IntelEnvelope {
                     data: json!({
                         "symbol": symbol,
@@ -948,6 +984,8 @@ impl Tool for CodeIntelTool {
                         "total_hits": total_hits,
                         "limit": MAX_DEFINITION_HITS,
                         "truncated_at_limit": truncated_at_limit,
+                        "empty_kind": empty_kind,
+                        "identifier_lines": identifier_lines,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
                     }),
                     provenance,
@@ -1029,6 +1067,27 @@ impl Tool for CodeIntelTool {
                     .iter()
                     .map(|(file, line, text)| json!({"file": file, "line": line, "text": text}))
                     .collect();
+                // 空结果分类（与 get_symbol_definition 同口径）。
+                let identifier_lines = sindex.identifier_occurrence_count(symbol);
+                let empty_kind: Option<&str> = if refs.is_empty() {
+                    Some(empty_reference_kind(&sindex, symbol))
+                } else {
+                    None
+                };
+                let mut reference_reasons: Vec<&str> = vec![
+                    "same_name_not_disambiguated",
+                    "not_lsp_resolved",
+                    "index_covers_code_files_only",
+                    "identifier_boundary_matching",
+                    "strings_and_comments_excluded",
+                ];
+                if let Some(kind) = empty_kind {
+                    reference_reasons.push(match kind {
+                        "no_match" => "symbol_absent_from_index",
+                        "index_miss" => "definition_missing_but_identifier_present",
+                        _ => "symbol_defined_but_never_referenced",
+                    });
+                }
                 IntelEnvelope {
                     data: json!({
                         "symbol": symbol,
@@ -1036,22 +1095,14 @@ impl Tool for CodeIntelTool {
                         "total_hits": total_hits,
                         "limit": MAX_REFERENCE_HITS,
                         "truncated_at_limit": truncated_at_limit,
+                        "empty_kind": empty_kind,
+                        "identifier_lines": identifier_lines,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
                         "candidate_files": candidate_count,
                         "scanned_files": scanned_files,
                     }),
                     provenance,
-                    uncertainty: Uncertainty::new(
-                        "medium",
-                        &[
-                            "same_name_not_disambiguated",
-                            "not_lsp_resolved",
-                            "index_covers_code_files_only",
-                            "identifier_boundary_matching",
-                            "strings_and_comments_excluded",
-                        ],
-                        0,
-                    ),
+                    uncertainty: Uncertainty::new("medium", &reference_reasons, 0),
                 }
             }
             IntelKind::CallHierarchy => {
@@ -1888,6 +1939,47 @@ mod tests {
             "应记录子目录指纹: {:?}",
             loaded.dir_stamps.iter().map(|d| &d.path).collect::<Vec<_>>()
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 端到端回归：代码段里的**落单引号**（Rust 生命周期 `&'static str`、JS 正则 `/'/g`）
+    /// 不得吞掉后续声明——否则定义进不了索引（表现为 `empty_kind=index_miss`）。
+    /// 同时验证空结果分类：索引里完全没有的符号报 `no_match`。
+    #[tokio::test]
+    async fn test_definition_after_lifetime_is_indexed_and_empty_kind_is_reported() {
+        let root = std::env::temp_dir().join("ctx-audit-code-intel-lifetime");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "fn f() -> Option<&'static str> {\n    None\n}\n\npub fn classify_file_role(p: &str) -> &'static str {\n    \"x\"\n}\n",
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let project = root.to_string_lossy().to_string();
+        let tool = CodeIntelTool::new(project, IntelKind::SymbolDefinition);
+
+        let hit = tool
+            .execute(json!({"symbol": "classify_file_role"}))
+            .await
+            .unwrap();
+        let d = hit.data.clone().expect("应有 envelope data");
+        assert!(
+            d["data"]["total_hits"].as_u64().unwrap() >= 1,
+            "生命周期之后的声明必须进索引: {d}"
+        );
+        assert_eq!(d["data"]["empty_kind"], Value::Null, "{d}");
+
+        let miss = tool
+            .execute(json!({"symbol": "definitely_absent_symbol_xyz"}))
+            .await
+            .unwrap();
+        let m = miss.data.expect("应有 envelope data");
+        assert_eq!(m["data"]["total_hits"], 0);
+        assert_eq!(m["data"]["empty_kind"], "no_match", "{m}");
 
         let _ = std::fs::remove_dir_all(&root);
     }
