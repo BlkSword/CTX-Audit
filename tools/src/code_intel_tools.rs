@@ -1221,6 +1221,9 @@ impl Tool for CodeIntelTool {
                     crate::symbol_index::get_or_build(root, refresh, None);
                 let mut function_name: Option<String> = None;
                 let mut function_def_line: Option<u32> = None;
+                // 根因定向证据：函数头原文（可引用），以及无法解析时的最近声明锚点
+                let mut function_signature: Option<String> = None;
+                let mut nearest_declaration: Option<Value> = None;
                 let mut includes_function_header = false;
                 let mut window_start = 0usize;
                 let mut window_end = 0usize;
@@ -1257,6 +1260,38 @@ impl Tool for CodeIntelTool {
                         if let Some((name, def_line, _)) = &enclosing {
                             function_name = Some(name.clone());
                             function_def_line = Some(*def_line);
+                            function_signature = lines
+                                .get((*def_line as usize).saturating_sub(1))
+                                .map(|s| s.trim().chars().take(200).collect::<String>());
+                        } else {
+                            // 函数体无法覆盖目标行：向上找最近的声明行作为结构锚点
+                            let upto = 80usize.min(center.saturating_sub(1));
+                            for back in 1..=upto {
+                                let idx = center.saturating_sub(back + 1);
+                                let text = lines.get(idx).copied().unwrap_or("");
+                                let t = text.trim();
+                                if t.is_empty() {
+                                    continue;
+                                }
+                                let looks_decl = t.starts_with("function ")
+                                    || t.contains(" function")
+                                    || t.starts_with("def ")
+                                    || t.starts_with("func ")
+                                    || t.starts_with("class ")
+                                    || t.starts_with("impl ")
+                                    || t.starts_with("public ")
+                                    || t.starts_with("private ")
+                                    || t.starts_with("protected ")
+                                    || t.starts_with("static ")
+                                    || t.contains("=> {");
+                                if looks_decl {
+                                    nearest_declaration = Some(json!({
+                                        "line": idx + 1,
+                                        "text": t.chars().take(160).collect::<String>(),
+                                    }));
+                                    break;
+                                }
+                            }
                         }
                         window_start = start;
                         window_end = center;
@@ -1293,6 +1328,9 @@ impl Tool for CodeIntelTool {
                         "slice_kind": "function_scoped_prefix",
                         "function": function_name,
                         "function_def_line": function_def_line,
+                        "function_signature": function_signature,
+                        "function_scope": if function_def_line.is_some() { "resolved" } else { "unresolved" },
+                        "nearest_declaration": nearest_declaration,
                         "includes_function_header": includes_function_header,
                         "target_line": if line > 0 { json!(line) } else { Value::Null },
                         "window": {"start_line": window_start + 1, "end_line": window_end},
