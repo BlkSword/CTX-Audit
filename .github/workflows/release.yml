@@ -81,10 +81,14 @@ jobs:
         with:
           path: artifacts
 
+      - name: Derive version from the tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: CTX-Audit 3.0.0
-          body_path: RELEASE_NOTES_3.0.0.md
+          name: CTX-Audit ${{ steps.version.outputs.value }}
+          body_path: RELEASE_NOTES_${{ steps.version.outputs.value }}.md
           files: artifacts/**/*
-          generate_release_notes: true
+          generate_release_notes: false
