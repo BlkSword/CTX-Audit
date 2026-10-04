@@ -2900,6 +2900,63 @@ $upsql = Input::postStrVar('upsql', '');
         assert!(invalid.is_empty(), "以下规则 pattern 无法编译:\n{}", invalid.join("\n"));
     }
 
+    /// ReDoS 家族：**锚定的无限量词**（`\s*$`、` +$`、`[ \t]+$`、`^\n+|\n+$`）。
+    ///
+    /// 真实漏报驱动（漏洞版命中、修复版豁免）：
+    /// axios-CVE-2021-3749（`str.replace(/^\s*/,'').replace(/\s*$/,'')`）、
+    /// markdown-it-CVE-2022-21670（`replace(/ +$/, "")`）、
+    /// turndown-CVE-2025-9670（`replace(/^\n+|\n+$/g, '')`）。
+    /// 旧 pattern 把该家族硬编码成 `\n` + `+`，只覆盖 turndown 一条。
+    ///
+    /// 负例（必须不报）：**双锚定** `/^\s+$/` 一类是线性正则——
+    /// 模式体排除 `^`，因此从开分隔符起步时无法跨过前导锚点。
+    #[test]
+    fn test_redos_anchored_quantifier_family() {
+        let rules = crate::rules::embedded::load_embedded_pattern_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.id == "redos-detection")
+            .expect("redos-detection 规则应存在")
+            .clone();
+        let scanner = RuleScanner::new(vec![rule]);
+
+        let vulns = [
+            ("axios.js", "return str.replace(/^\\s*/, '').replace(/\\s*$/, '');"),
+            ("markdown-it.js", "state.pending = state.pending.replace(/ +$/, \"\");"),
+            ("turndown.js", "content = content.replace(/^\\n+|\\n+$/g, '')"),
+            ("tabs.js", "return s.replace(/[ \\t]+$/, '');"),
+            ("twice.js", "return s.replace(/\\s*$/g, '');"),
+        ];
+        for (name, src) in vulns {
+            let f = scanner.scan_file_sync(&PathBuf::from(name), src);
+            assert!(!f.is_empty(), "应命中锚定无限量词: {name} `{src}`");
+        }
+
+        let safes = [
+            ("ok1.js", "if (/^\\s+$/.test(value)) { return null; }"),
+            ("ok2.js", "const m = /^[a-z]+$/i.test(s);"),
+            ("ok3.js", "if (/^\\d+$/.test(id)) { return; }"),
+            ("ok4.js", "const parts = line.split(/\\s+/);"),
+            // 实测负例（本轮 FP 排查中发现，缺这些约束会误报 15 条真实仓库 finding）：
+            // 正则**内部**的转义斜杠与字符类里的引号不得被当作分隔符。
+            ("ok5.js", "const validMediaType = /^[a-z]+\\/[a-z0-9\\-\\+\\._]+$/i;"),
+            ("ok6.js", "const base64WithPadding = /^[A-Za-z0-9+/]+={0,2}$/;"),
+            ("ok7.js", "const alpha = /^['x]+$/i;"),
+            ("ok8.js", "  'ar-OM': /^((\\+|00)968)([79]\\d{7})$/, "),
+            // 实测 FP（本轮三态 A/B 发现）：双锚定字符类正则含 `*`/`|`；
+            // 以及 `^` 锚定 + 分组 + 末尾 `$` 的日期正则（`/^(\d{4})…([ T]{1}\.*|$)/`）。
+            ("ok9.js", "const symbolRegex = /^[a*|^]+$/;"),
+            ("ok10.js", "const ordinalMatch = str.match(/^(\\d{4})-?(\\d{3})([ T]{1}\\.*|$)/);"),
+        ];
+        for (name, src) in safes {
+            let f = scanner.scan_file_sync(&PathBuf::from(name), src);
+            assert!(
+                f.is_empty(),
+                "双锚定/无锚定是线性正则，不应命中: {name} `{src}` -> {f:?}"
+            );
+        }
+    }
+
     /// 原型污染规则（CWE-1321）：for..in 拷贝循环的 hasOwnProperty 守卫豁免 +
     /// options 合并拷贝形态召回（无守卫的 for..in 属性拷贝是原型污染入口）
     #[test]
