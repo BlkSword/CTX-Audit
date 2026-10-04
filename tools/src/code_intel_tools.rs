@@ -554,6 +554,67 @@ fn indent_width(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
 }
 
+/// 判断一行是否像**函数头**，并尽力取出函数名（空串表示匿名）。
+///
+/// 为什么要它：符号索引的 `declared_names()` 只能从**关键字**形态
+/// （`function name(` / `def name(` / …）抽取声明，而 JS/TS 里极常见的是
+/// **匿名函数表达式与箭头函数**赋给对象属性或变量
+/// （`replacement: function (content) {`、`const f = (a) => {`）——
+/// 它们在索引里没有对应声明，于是 `slice_backward` 落入 `function_scope=unresolved`、
+/// 窗口不锚定函数头（实测这是"函数头入镜仅 40.4%"的机制性原因）。
+///
+/// 只做**行级**判断，不解析作用域；取不到名字时返回空串，由调用方用属性/变量名回填。
+pub fn function_header_name(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() || t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+        return None;
+    }
+    // `name: …` / `name = …` 左侧的最后一个标识符
+    let lhs_name = |s: &str| -> Option<String> {
+        let sep = s.find(':').into_iter().chain(s.find('=')).min()?;
+        let lhs = s[..sep].trim();
+        let name: String = lhs
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if name
+            .chars()
+            .next()
+            .map(|c| c.is_alphabetic() || c == '_')
+            .unwrap_or(false)
+        {
+            Some(name)
+        } else {
+            None
+        }
+    };
+    for kw in ["function ", "def ", "func ", "fn "] {
+        if let Some(pos) = t.find(kw) {
+            let rest = t[pos + kw.len()..].trim_start();
+            let rest = rest.strip_prefix('*').unwrap_or(rest).trim_start(); // function* gen
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            let after = rest[name.len()..].trim_start();
+            if !name.is_empty() && after.starts_with('(') {
+                return Some(name);
+            }
+            if rest.starts_with('(') {
+                return Some(lhs_name(t).unwrap_or_default()); // 匿名：回填属性/变量名
+            }
+        }
+    }
+    if t.contains("=>") {
+        return Some(lhs_name(t).unwrap_or_default());
+    }
+    None
+}
+
 /// 纯函数：估算某个定义所在函数的体范围（0-based，含首尾）。
 ///
 /// - 花括号语言：从定义行的首个 `{` 起配对括号；
@@ -1302,12 +1363,6 @@ impl Tool for CodeIntelTool {
                                 })
                                 .max_by_key(|(_, def_line, _)| *def_line)
                         });
-                        let start = match &enclosing {
-                            Some((_, def_line, _)) => {
-                                center.saturating_sub(depth).min((*def_line as usize).saturating_sub(1))
-                            }
-                            None => center.saturating_sub(depth),
-                        };
                         if let Some((name, def_line, _)) = &enclosing {
                             function_name = Some(name.clone());
                             function_def_line = Some(*def_line);
@@ -1315,27 +1370,33 @@ impl Tool for CodeIntelTool {
                                 .get((*def_line as usize).saturating_sub(1))
                                 .map(|s| s.trim().chars().take(200).collect::<String>());
                         } else {
-                            // 函数体无法覆盖目标行：向上找最近的声明行作为结构锚点
-                            let upto = 80usize.min(center.saturating_sub(1));
+                            // 两趟上溯：先找**体覆盖目标行**的函数头（含匿名函数表达式与箭头函数
+                            // ——它们在符号索引里没有声明），找不到再退化为"最近声明锚点"。
+                            //
+                            // 两个坑（实测）：
+                            // ① 必须校验函数体覆盖目标行，否则会把目标行上方"已经闭合的函数"当作用域
+                            //    （utilities.js:30 位于字符串数组里，上方最近的函数已闭合 ⇒ 应保持 unresolved）；
+                            // ② 不能与"最近声明"合并成一趟，否则中途遇到 `var indexEnd = …` 这类普通声明
+                            //    会提前 break，反而漏掉更上面的真正函数头。
+                            let upto = 120usize.min(center.saturating_sub(1));
                             for back in 1..=upto {
                                 let idx = center.saturating_sub(back + 1);
-                                let text = lines.get(idx).copied().unwrap_or("");
-                                let t = text.trim();
+                                let t = lines.get(idx).copied().unwrap_or("").trim();
                                 if t.is_empty() {
                                     continue;
                                 }
-                                let looks_decl = t.starts_with("function ")
-                                    || t.contains(" function")
-                                    || t.starts_with("def ")
-                                    || t.starts_with("func ")
-                                    || t.starts_with("class ")
-                                    || t.starts_with("impl ")
-                                    || t.starts_with("public ")
-                                    || t.starts_with("private ")
-                                    || t.starts_with("protected ")
-                                    || t.starts_with("static ")
-                                    || t.contains("=> {");
-                                if looks_decl {
+                                let code_line = code_refs.get(idx).copied().unwrap_or("");
+                                if let Some(name) = function_header_name(code_line) {
+                                    let (_, end) = body_span(&code_refs, idx, brace);
+                                    if end + 1 < center {
+                                        continue; // 该函数体不覆盖目标行：继续上溯
+                                    }
+                                    if !name.is_empty() {
+                                        function_name = Some(name);
+                                    }
+                                    function_def_line = Some((idx + 1) as u32);
+                                    function_signature =
+                                        Some(t.chars().take(200).collect::<String>());
                                     nearest_declaration = Some(json!({
                                         "line": idx + 1,
                                         "text": t.chars().take(160).collect::<String>(),
@@ -1343,7 +1404,39 @@ impl Tool for CodeIntelTool {
                                     break;
                                 }
                             }
+                            if function_def_line.is_none() {
+                                for back in 1..=upto {
+                                    let idx = center.saturating_sub(back + 1);
+                                    let t = lines.get(idx).copied().unwrap_or("").trim();
+                                    if t.is_empty() {
+                                        continue;
+                                    }
+                                    let looks_decl = t.starts_with("class ")
+                                        || t.starts_with("impl ")
+                                        || t.starts_with("public ")
+                                        || t.starts_with("private ")
+                                        || t.starts_with("protected ")
+                                        || t.starts_with("static ")
+                                        || t.starts_with("var ")
+                                        || t.starts_with("const ")
+                                        || t.starts_with("let ");
+                                    if looks_decl {
+                                        nearest_declaration = Some(json!({
+                                            "line": idx + 1,
+                                            "text": t.chars().take(160).collect::<String>(),
+                                        }));
+                                        break;
+                                    }
+                                }
+                            }
                         }
+                        // 窗口起点：解析到函数头则锚定函数头（保证切片含函数头）
+                        let start = match function_def_line {
+                            Some(l) => center
+                                .saturating_sub(depth)
+                                .min((l as usize).saturating_sub(1)),
+                            None => center.saturating_sub(depth),
+                        };
                         window_start = start;
                         window_end = center;
                         for i in start..center {
@@ -1980,6 +2073,76 @@ mod tests {
         let m = miss.data.expect("应有 envelope data");
         assert_eq!(m["data"]["total_hits"], 0);
         assert_eq!(m["data"]["empty_kind"], "no_match", "{m}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 函数头识别：关键字形态 + **匿名函数表达式/箭头函数**（后者索引里抽不出名字）。
+    #[test]
+    fn test_function_header_name_forms() {
+        assert_eq!(function_header_name("function foo(a) {").as_deref(), Some("foo"));
+        assert_eq!(function_header_name("async function h(req) {").as_deref(), Some("h"));
+        assert_eq!(function_header_name("def foo(x):").as_deref(), Some("foo"));
+        // 匿名函数表达式：名字由属性/变量名回填
+        assert_eq!(
+            function_header_name("replacement: function (content) {").as_deref(),
+            Some("replacement")
+        );
+        assert_eq!(function_header_name("const f = function (a) {").as_deref(), Some("f"));
+        assert_eq!(function_header_name("handler: (req, res) => {").as_deref(), Some("handler"));
+        assert_eq!(function_header_name("const g = (a) => a + 1").as_deref(), Some("g"));
+        // 非函数头
+        assert_eq!(function_header_name("const x = 1;"), None);
+        assert_eq!(function_header_name("// function notAHeader() {"), None);
+    }
+
+    /// `slice_backward` 必须锚定**函数头**，包括 `replacement: function (…) {` 这类
+    /// 对象属性函数表达式——它在符号索引里没有声明，旧实现因此返回
+    /// `function_scope="unresolved"`、窗口不含函数头（实测"函数头入镜 40.4%"的机制性原因）。
+    #[tokio::test]
+    async fn test_slice_anchors_object_property_function_expression() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-prop-fn");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "const rules = {}\n\nrules.blockquote = {\n  filter: 'blockquote',\n  replacement: function (content, node, options) {\n    content = content.replace(/^\\n+|\\n+$/g, '')\n    return content\n  }\n}\n";
+        std::fs::write(root.join("src/rules.js"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/rules.js", "line": 6, "depth": 40}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
+        assert_eq!(d["data"]["function"], "replacement", "{d}");
+        assert_eq!(d["data"]["function_def_line"], 5, "{d}");
+        assert_eq!(d["data"]["includes_function_header"], true, "{d}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 反向反例：目标行**不在任何函数体内**（文件级字符串数组），
+    /// 即使上方 120 行内有已闭合的函数，也不得报 `resolved`——那是假作用域。
+    #[tokio::test]
+    async fn test_slice_does_not_falsely_anchor_closed_function() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-no-false-anchor");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "export function trim (s) {\n  return s\n}\n\nexport var list = [\n  'A', 'B',\n  'C', 'D'\n]\n";
+        std::fs::write(root.join("src/u.js"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/u.js", "line": 7, "depth": 40}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["function_scope"], "unresolved", "{d}");
+        assert_eq!(d["data"]["includes_function_header"], false, "{d}");
 
         let _ = std::fs::remove_dir_all(&root);
     }
