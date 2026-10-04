@@ -1547,6 +1547,7 @@ impl Tool for CodeIntelTool {
                     "allowlist", "whitelist", "blocked", "forbid",
                 ];
                 let mut guards: Vec<Value> = Vec::new();
+                let mut guards_total = 0usize;
                 let mut provenance: Vec<Provenance> = Vec::new();
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
@@ -1566,11 +1567,14 @@ impl Tool for CodeIntelTool {
                                 continue;
                             }
                             if markers.iter().any(|m| code_trimmed.contains(*m)) {
-                                provenance.push(prov(path, ln as u32, &id));
-                                guards.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
-                            }
-                            if guards.len() >= MAX_HITS {
-                                break;
+                                // 全量计数、只在超限时不入列表：让 `truncated_at_limit` 可信
+                                //（此前在 40 条处 `break`，且 data 里没有任何上限字段——
+                                //  与 README 承诺的"任何上限都显式上报、不静默截断"冲突）
+                                guards_total += 1;
+                                if guards.len() < MAX_HITS {
+                                    provenance.push(prov(path, ln as u32, &id));
+                                    guards.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
+                                }
                             }
                         }
                     }
@@ -1579,7 +1583,13 @@ impl Tool for CodeIntelTool {
                     }
                 }
                 IntelEnvelope {
-                    data: json!({"file": file, "guards": guards}),
+                    data: json!({
+                        "file": file,
+                        "guards": guards,
+                        "total_hits": guards_total,
+                        "limit": MAX_HITS,
+                        "truncated_at_limit": guards_total > MAX_HITS,
+                    }),
                     provenance,
                     uncertainty: Uncertainty::new("medium", &["guard_semantics_not_validated"], 0),
                 }
@@ -1607,6 +1617,8 @@ impl Tool for CodeIntelTool {
                 ];
                 let mut routes: Vec<Value> = Vec::new();
                 let mut middleware: Vec<Value> = Vec::new();
+                let mut routes_total = 0usize;
+                let mut middleware_total = 0usize;
                 let mut provenance: Vec<Provenance> = Vec::new();
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
@@ -1625,15 +1637,18 @@ impl Tool for CodeIntelTool {
                             if route_markers.iter().any(|m| code_trimmed.contains(*m))
                                 && (handler.is_empty() || trimmed.contains(handler))
                             {
-                                provenance.push(prov(path, ln, &id));
-                                routes.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
+                                routes_total += 1;
+                                if routes.len() + middleware.len() < MAX_HITS {
+                                    provenance.push(prov(path, ln, &id));
+                                    routes.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
+                                }
                             }
                             if middleware_markers.iter().any(|m| code_trimmed.contains(*m)) {
-                                provenance.push(prov(path, ln, &id));
-                                middleware.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
-                            }
-                            if routes.len() + middleware.len() >= MAX_HITS {
-                                break;
+                                middleware_total += 1;
+                                if routes.len() + middleware.len() < MAX_HITS {
+                                    provenance.push(prov(path, ln, &id));
+                                    middleware.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
+                                }
                             }
                         }
                     }
@@ -1864,6 +1879,12 @@ impl Tool for CodeIntelTool {
                         "decorator_application_order": "bottom_up_wrapping",
                         "routes": routes,
                         "middleware": middleware,
+                        "total_hits": {
+                            "routes": routes_total,
+                            "middleware": middleware_total,
+                        },
+                        "limit": MAX_HITS,
+                        "truncated_at_limit": routes_total + middleware_total > MAX_HITS,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
                     }),
                     provenance,
@@ -2143,6 +2164,51 @@ mod tests {
         let d = out.data.clone().expect("应有 envelope data");
         assert_eq!(d["data"]["function_scope"], "unresolved", "{d}");
         assert_eq!(d["data"]["includes_function_header"], false, "{d}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 上限纪律：`get_sanitizer_guards` 超限时必须**显式上报**
+    /// `total_hits`/`limit`/`truncated_at_limit`，不得静默截断
+    ///（README 契约；修复前 data 里只有 `{file, guards}`，第 40 条处静默 break）。
+    #[tokio::test]
+    async fn test_sanitizer_guards_reports_truncation() {
+        let root = std::env::temp_dir().join("ctx-audit-guards-trunc");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut src = String::new();
+        for i in 0..50 {
+            src.push_str(&format!("if (guard_{}()) {{}}\n", i));
+        }
+        std::fs::write(root.join("src/g.js"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SanitizerGuards);
+
+        let out = tool.execute(json!({"file": "src/g.js"})).await.unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["limit"], MAX_HITS, "{d}");
+        assert_eq!(d["data"]["total_hits"], 50, "{d}");
+        assert_eq!(d["data"]["truncated_at_limit"], true, "{d}");
+        assert_eq!(
+            d["data"]["guards"].as_array().map(|a| a.len()),
+            Some(MAX_HITS),
+            "{d}"
+        );
+
+        // 未超限：不得误报截断，且 total_hits == 返回条数
+        std::fs::write(root.join("src/small.js"), "if (a) {}\nif (b) {}\n").unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let out2 = tool.execute(json!({"file": "src/small.js"})).await.unwrap();
+        let d2 = out2.data.clone().expect("应有 envelope data");
+        assert_eq!(d2["data"]["total_hits"], 2, "{d2}");
+        assert_eq!(d2["data"]["truncated_at_limit"], false, "{d2}");
+        assert_eq!(
+            d2["data"]["guards"].as_array().map(|a| a.len()),
+            Some(2),
+            "{d2}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
