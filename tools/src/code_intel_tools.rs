@@ -554,17 +554,36 @@ fn indent_width(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
 }
 
+/// 与最后一个 `)` 配对的 `(` 的位置（用于取出"名字("）。
+fn matching_open_paren(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, ch) in s.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// 判断一行是否像**函数头**，并尽力取出函数名（空串表示匿名）。
 ///
-/// 为什么要它：符号索引的 `declared_names()` 只能从**关键字**形态
-/// （`function name(` / `def name(` / …）抽取声明，而 JS/TS 里极常见的是
-/// **匿名函数表达式与箭头函数**赋给对象属性或变量
-/// （`replacement: function (content) {`、`const f = (a) => {`）——
-/// 它们在索引里没有对应声明，于是 `slice_backward` 落入 `function_scope=unresolved`、
-/// 窗口不锚定函数头（实测这是"函数头入镜仅 40.4%"的机制性原因）。
+/// `next` 为**之后首个非空行**，用于识别 C/C++ 的多行签名
+/// （`static ngx_int_t` / `ngx_http_foo(...)` / `{` 分三行，名字行不以 `{` 结尾）。
+///
+/// 为什么需要它：符号索引的 `declared_names()` 只能从**关键字**形态抽取声明，而
+/// ① JS/TS 极常见的是匿名函数表达式/箭头函数赋给属性或变量；
+/// ② C/C++ 定义**根本没有关键字**（`static int foo(int a) {`）——
+/// 这两类在索引里都没有声明，切片会退化成"无函数头的前缀窗口"。
 ///
 /// 只做**行级**判断，不解析作用域；取不到名字时返回空串，由调用方用属性/变量名回填。
-pub fn function_header_name(text: &str) -> Option<String> {
+pub fn function_header_name_ctx(text: &str, next: &str) -> Option<String> {
     let t = text.trim();
     if t.is_empty() || t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
         return None;
@@ -592,9 +611,30 @@ pub fn function_header_name(text: &str) -> Option<String> {
             None
         }
     };
-    for kw in ["function ", "def ", "func ", "fn "] {
-        if let Some(pos) = t.find(kw) {
-            let rest = t[pos + kw.len()..].trim_start();
+    for kw in ["function", "def", "func", "fn"] {
+        let mut from = 0usize;
+        while let Some(pos) = t[from..].find(kw) {
+            let abs = from + pos;
+            from = abs + kw.len();
+            // 关键字前后都必须是标识符边界：`define(` 里的 `def`、`myfn(` 里的 `fn` 都不算
+            let before_ok = abs == 0
+                || !t[..abs]
+                    .chars()
+                    .next_back()
+                    .map(|c| c.is_alphanumeric() || c == '_' || c == '$')
+                    .unwrap_or(false);
+            let tail = &t[abs + kw.len()..];
+            let boundary_ok = tail
+                .chars()
+                .next()
+                .map(|c| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                .unwrap_or(true);
+            if !before_ok || !boundary_ok {
+                continue;
+            }
+            // 关键字与 `(` 之间**可以没有空格**：`function(then) {` 是 JS 匿名函数的常见写法
+            //（旧实现的关键字表带尾空格，因此漏掉它并把 `function` 当成了函数名）。
+            let rest = tail.trim_start();
             let rest = rest.strip_prefix('*').unwrap_or(rest).trim_start(); // function* gen
             let name: String = rest
                 .chars()
@@ -612,7 +652,44 @@ pub fn function_header_name(text: &str) -> Option<String> {
     if t.contains("=>") {
         return Some(lhs_name(t).unwrap_or_default());
     }
+    // C/C++ 风格定义（无关键字）：`类型 名字(参数)` 且该行以 `{` 结尾、
+    // 或名字行以 `)` 结尾而下一非空行以 `{` 开头。
+    // 控制语句与调用因此都不会命中：`if (a) {` 的动作名在排除表里，`foo(bar);` 不以 `{` 结尾。
+    // 已知近似：C++ 构造函数的初始化列表（`Foo::Foo() : a(1) {`）会取到 `a` 而非 `Foo::Foo`。
+    let starts_block =
+        t.ends_with('{') || (t.ends_with(')') && next.trim_start().starts_with('{'));
+    if starts_block {
+        let head_src = t.trim_end_matches('{').trim_end();
+        if head_src.ends_with(')') {
+            if let Some(open) = matching_open_paren(head_src) {
+                let head = head_src[..open].trim_end();
+                let name: String = head
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let ctrl = matches!(
+                    name.as_str(),
+                    "if" | "for" | "while" | "switch" | "catch" | "do" | "else" | "return"
+                        | "sizeof" | "synchronized" | "finally" | "try" | "using" | "lock"
+                        | "foreach" | "with" | "when" | "assert" | "new" | "delete" | "throw"
+                        | "function" | "def" | "func" | "fn"
+                );
+                if !name.is_empty() && !ctrl {
+                    return Some(name);
+                }
+            }
+        }
+    }
     None
+}
+
+/// 兼容无下一行信息的调用点。
+pub fn function_header_name(text: &str) -> Option<String> {
+    function_header_name_ctx(text, "")
 }
 
 /// 纯函数：估算某个定义所在函数的体范围（0-based，含首尾）。
@@ -1386,7 +1463,15 @@ impl Tool for CodeIntelTool {
                                     continue;
                                 }
                                 let code_line = code_refs.get(idx).copied().unwrap_or("");
-                                if let Some(name) = function_header_name(code_line) {
+                                // 之后首个非空行：C/C++ 多行签名靠它识别（名字行以 `)` 结尾、`{` 在下一行）
+                                let next_code = code_refs
+                                    .iter()
+                                    .skip(idx + 1)
+                                    .take(3)
+                                    .find(|s| !s.trim().is_empty())
+                                    .copied()
+                                    .unwrap_or("");
+                                if let Some(name) = function_header_name_ctx(code_line, next_code) {
                                     let (_, end) = body_span(&code_refs, idx, brace);
                                     if end + 1 < center {
                                         continue; // 该函数体不覆盖目标行：继续上溯
@@ -2098,7 +2183,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 函数头识别：关键字形态 + **匿名函数表达式/箭头函数**（后者索引里抽不出名字）。
+    /// 函数头识别：关键字形态 + **匿名函数表达式/箭头函数** + **C/C++ 无关键字定义**。
     #[test]
     fn test_function_header_name_forms() {
         assert_eq!(function_header_name("function foo(a) {").as_deref(), Some("foo"));
@@ -2112,6 +2197,31 @@ mod tests {
         assert_eq!(function_header_name("const f = function (a) {").as_deref(), Some("f"));
         assert_eq!(function_header_name("handler: (req, res) => {").as_deref(), Some("handler"));
         assert_eq!(function_header_name("const g = (a) => a + 1").as_deref(), Some("g"));
+        // 关键字与 `(` 之间**无空格**（JS 匿名函数常见）→ 名字回填自左侧属性/变量
+        //（实测漏此形态会把 `function` 当成函数名）
+        assert_eq!(
+            function_header_name("Git.prototype.checkoutLatestTag = function(then) {").as_deref(),
+            Some("checkoutLatestTag")
+        );
+        assert_eq!(function_header_name("function(a) {").as_deref(), Some(""));
+        // 关键字边界：`define(` 的 `def`、`myfn(` 的 `fn` 都不得被当成关键字
+        assert_eq!(function_header_name("myfn(x) {").as_deref(), Some("myfn"));
+        assert_eq!(function_header_name("define(FOO, x)").as_deref(), None);
+        // C/C++：无关键字定义（单词一行 + 多行签名两种）
+        assert_eq!(function_header_name("static int foo(int a) {").as_deref(), Some("foo"));
+        assert_eq!(function_header_name("void bar(void) {").as_deref(), Some("bar"));
+        assert_eq!(
+            function_header_name_ctx("ngx_http_foo(ngx_http_request_t *r)", "{").as_deref(),
+            Some("ngx_http_foo")
+        );
+        // C/C++ 负例：控制语句、调用、结构体、else
+        assert_eq!(function_header_name("if (a) {"), None);
+        assert_eq!(function_header_name("for (i = 0; i < n; i++) {"), None);
+        assert_eq!(function_header_name("while (x) {"), None);
+        assert_eq!(function_header_name("synchronized (lock) {"), None);
+        assert_eq!(function_header_name("foo(bar);"), None);
+        assert_eq!(function_header_name("struct foo {"), None);
+        assert_eq!(function_header_name("} else {"), None);
         // 非函数头
         assert_eq!(function_header_name("const x = 1;"), None);
         assert_eq!(function_header_name("// function notAHeader() {"), None);
@@ -2164,6 +2274,32 @@ mod tests {
         let d = out.data.clone().expect("应有 envelope data");
         assert_eq!(d["data"]["function_scope"], "unresolved", "{d}");
         assert_eq!(d["data"]["includes_function_header"], false, "{d}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// C 风格定义（**无关键字**、多行签名）也要锚定函数头：
+    /// `static ngx_int_t` / `ngx_http_foo(...)` / `{` 三行式——nginx、pppd 的实际形态。
+    #[tokio::test]
+    async fn test_slice_anchors_c_style_function_header() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-c-header");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "static ngx_int_t\nngx_http_foo(ngx_http_request_t *r)\n{\n    int n = r->n;\n    if (n == 0) {\n        return 1;\n    }\n    return 0;\n}\n";
+        std::fs::write(root.join("src/a.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/a.c", "line": 5, "depth": 40}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
+        assert_eq!(d["data"]["function"], "ngx_http_foo", "{d}");
+        assert_eq!(d["data"]["function_def_line"], 2, "{d}");
+        assert_eq!(d["data"]["includes_function_header"], true, "{d}");
 
         let _ = std::fs::remove_dir_all(&root);
     }
