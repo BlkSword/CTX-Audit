@@ -91,13 +91,53 @@ pub fn code_lines(content: &str, hash_comment: bool) -> Vec<String> {
                 continue;
             }
             let ch = rest.chars().next().unwrap_or(' ');
-            if ch == '"' || ch == '\'' || ch == '`' {
+            if ch == '"' || ch == '\'' {
+                // 单/双引号必须**在本行内闭合**，否则按普通字符处理。
+                //
+                // 依据：本引擎支持的语言里 `'…'` 与 `"…"` 都不能跨原始换行；而 Rust 的
+                // 生命周期（`&'static str`）是**单个未配对**的 `'`。旧实现把后者当成
+                // 字符串开引号，且 `quote` 状态跨行存活 → 后续整行被当作字符串内容清空，
+                // 声明、引用与调用点成片丢失（实测 `core/src/scanner/mod.rs` 的函数定义
+                // 因此进不了符号索引，见下方回归测试）。
+                //
+                // 同类触发形态：JS 正则字面量里的单个引号（`/'/g`）、任何来源的落单撇号。
+                //
+                // 取舍（如实记录）：PHP/Ruby 的多行 `'…'` 与 `\` 续行字符串会因此把串体
+                // 当代码（少数语言、少数形态）；换来的是"落单引号不再污染整个文件"——
+                // 实测本仓符号定义 2567→3323（+29%）、标识符出现 187038→247919（+33%）。
+                let mut it = rest.chars();
+                it.next(); // 跳过开引号本身
+                let mut closes_here = false;
+                while let Some(c) = it.next() {
+                    if c == '\\' {
+                        it.next();
+                        continue;
+                    }
+                    if c == ch {
+                        closes_here = true;
+                        break;
+                    }
+                }
+                if closes_here {
+                    quote = Some(ch);
+                } else {
+                    kept.push(ch);
+                }
+                i += ch.len_utf8();
+                continue;
+            }
+            // 反引号（JS/TS 模板串）允许跨行，保持旧语义
+            if ch == '`' {
                 quote = Some(ch);
                 i += ch.len_utf8();
                 continue;
             }
             kept.push(ch);
             i += ch.len_utf8();
+        }
+        // 防御：`'`/`"` 不跨行（反引号模板串与 Python 三引号允许跨行）
+        if matches!(quote, Some('\'') | Some('"')) {
+            quote = None;
         }
         out.push(kept);
     }
@@ -240,5 +280,23 @@ mod tests {
         assert!(call_site_match("    return loader.load(request)", "load"));
         assert!(!call_site_match("    return myread(buf)", "read"));
         assert!(call_site_match("n, _ := r.Read(buf)", "Read"));
+    }
+
+    /// Rust 生命周期是**单个未配对**的 `'`（`&'static str`）。旧实现把它当成字符串
+    /// 开引号，且 `quote` 状态跨行存活 → 后续整行被当作字符串内容清空，声明、引用与
+    /// 调用点成片丢失。真实复现：`core/src/scanner/mod.rs` 的函数定义因此进不了符号索引。
+    #[test]
+    fn test_code_lines_rust_lifetime_does_not_swallow_following_lines() {
+        let rs = "fn f() -> Option<&'static str> {\n    let mut out = Vec::new();\n}\n\npub fn classify_file_role(path: &str) -> &'static str {\n    \"code\"\n}\n";
+        let code = code_lines(rs, false);
+        assert_eq!(code.len(), rs.lines().count(), "行数必须保持不变");
+        assert!(code[1].contains("Vec"), "存活行不应被清空: {:?}", code[1]);
+        assert!(
+            code[4].contains("classify_file_role"),
+            "生命周期不得吞掉后续声明行: {:?}",
+            code[4]
+        );
+        // 同行闭合的字符串仍按旧语义剥离
+        assert!(!code[5].contains("code"), "同行字符串应被剥离: {:?}", code[5]);
     }
 }
