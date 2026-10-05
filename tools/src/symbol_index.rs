@@ -1371,25 +1371,24 @@ mod tests {
     }
 
     /// 括号块声明（`var (` / `const (` / `type (`）内的行没有关键字，也必须进索引
-    #[test]
     /// 缓存必须与"索引构建逻辑"绑定：否则引擎改了抽取规则、旧缓存照旧命中，
     /// 新规则一次都不会跑（实测踩过：C 抽取规则改了而 nginx 的 symbols 恒为 391）。
+    /// 刻意**不碰文件系统**：先前用 `fixture()` 建临时目录，同一测试会一过一败。
     #[test]
     fn test_persist_path_is_version_scoped() {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        let root = fixture("cachever");
+        let root = std::path::Path::new("/nonexistent-ctx-audit-cache-key-probe");
         let mut h = DefaultHasher::new();
-        cache_key(&root).hash(&mut h);
+        cache_key(root).hash(&mut h);
         let legacy = std::env::temp_dir()
             .join("ctx-audit-index")
             .join(format!("{:016x}.json", h.finish()));
         assert_ne!(
-            persist_path(&root),
+            persist_path(root),
             legacy,
             "缓存键必须包含索引逻辑版本与 crate 版本"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 直接命中抽取路径：`index_content` 是索引的唯一入口，先在这里定位问题，
@@ -1484,6 +1483,7 @@ mod tests {
         let _ = std::fs::remove_file(persist_path(&root));
     }
 
+    #[test]
     fn test_bracket_block_declarations_are_indexed() {        let root = fixture("blockdecl");
         std::fs::write(
             root.join("src/block.go"),
