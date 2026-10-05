@@ -701,6 +701,20 @@ pub fn function_header_name_ctx(text: &str, next: &str) -> Option<String> {
     // 或名字行以 `)` 结尾而下一非空行以 `{` 开头。
     // 控制语句与调用因此都不会命中：`if (a) {` 的动作名在排除表里，`foo(bar);` 不以 `{` 结尾。
     // 已知近似：C++ 构造函数的初始化列表（`Foo::Foo() : a(1) {`）会取到 `a` 而非 `Foo::Foo`。
+    c_style_header_name(t, next)
+}
+
+/// 只走 **C/C++ 无关键字定义** 这一条分支：`类型 名字(参数) {`（签名可跨行）。
+///
+/// 单独成函数，是因为"向下拼接多行"的调用点**只能**用这条分支：关键字分支一旦看到被拼接
+/// 进来的后续行，就会把后面某个 `def`/`function` 当成本行的签名——实测模块级
+/// `_is_image_dataurl = re.compile(` 拼到后面的 `def _is_javascript_scheme(s):`，
+/// 把模块级代码误报成"有函数作用域"（假改善会计进度量）。
+fn c_style_header_name(text: &str, next: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
     let starts_block =
         t.ends_with('{') || (t.ends_with(')') && next.trim_start().starts_with('{'));
     if starts_block {
@@ -727,6 +741,58 @@ pub fn function_header_name_ctx(text: &str, next: &str) -> Option<String> {
                     return Some(name);
                 }
             }
+        }
+    }
+    None
+}
+
+/// 多行签名版：`following` 为**之后最多 6 条非空代码行**（已 trim 前）。
+///
+/// 为什么需要它：C/C++ 的签名经常跨 **3 行以上**（实测
+/// `static cmark_node *try_opening_table_header(` / `cmark_parser *parser,` /
+/// `… unsigned char *input, int len) {`），而两行判定要求"名字行以 `)` 结尾、下一行以 `{` 开头"，
+/// 于是这类函数一律被判成"找不到函数头"，长函数的作用域因此静默变成 unresolved。
+pub fn function_header_name_multi(text: &str, following: &[&str]) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    // 先按原两行规则判（覆盖绝大多数形态，且行为与既有测试一致）
+    if let Some(n) = function_header_name_ctx(t, following.first().copied().unwrap_or("")) {
+        return Some(n);
+    }
+    // 只有"签名尚未闭合"（圆括号不配对）时才允许向下拼接。
+    // 否则会**跨语句**把后面某个函数声明当成当前行的签名续行：实测
+    // `var x = require('y')` 后跟 `function f() {` 被拼成一个"函数头"，
+    // 于是模块级代码被误报成有函数作用域（把假改善算进度量）。
+    let mut depth = 0i32;
+    for ch in t.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    if depth <= 0 {
+        return None;
+    }
+    // 再把后续行拼进来：拼到出现 `{` 为止，最多 6 行（拼完仍未闭合则判定自然不成立）
+    let mut joined = t.to_string();
+    for s in following.iter().take(6) {
+        let s = s.trim();
+        if s.is_empty() {
+            continue;
+        }
+        joined.push(' ');
+        joined.push_str(s);
+        if s.contains('{') {
+            break;
+        }
+    }
+    if joined != t {
+        // 只认 C 风格：拼接结果必须形如 `类型 名字(…参数…) {`
+        if let Some(n) = c_style_header_name(&joined, "") {
+            return Some(n);
         }
     }
     None
@@ -1461,6 +1527,8 @@ impl Tool for CodeIntelTool {
                 let mut includes_function_header = false;
                 let mut window_start = 0usize;
                 let mut window_end = 0usize;
+                // 作用域锚点位置（在 match 之外读取，故在此声明）
+                let mut scope_anchor: Value = Value::Null;
                 // 点名文件解析：索引未收录时**按需从磁盘读取**（见 read_requested_file）。
                 // 与批量索引的文件数/单文件大小上限解耦——否则"我没索引它"会被回答成
                 // "文件不存在"，对 LLM 消费者就是在陈述一个错误的世界。
@@ -1512,23 +1580,60 @@ impl Tool for CodeIntelTool {
                             //    （utilities.js:30 位于字符串数组里，上方最近的函数已闭合 ⇒ 应保持 unresolved）；
                             // ② 不能与"最近声明"合并成一趟，否则中途遇到 `var indexEnd = …` 这类普通声明
                             //    会提前 break，反而漏掉更上面的真正函数头。
-                            let upto = 120usize.min(center.saturating_sub(1));
+                            // 目标行本身可能就是函数头：ES6 类方法 `name() {`、对象字面量方法、
+                            // 多行签名的匿名回调（实测 `addParseToken([...], function (`）。
+                            // 上溯循环从目标行**上方**开始，结构上永远找不到目标行自己。
+                            let self_idx = center.saturating_sub(1);
+                            let self_code = code_refs.get(self_idx).copied().unwrap_or("");
+                            let self_following: Vec<&str> = code_refs
+                                .iter()
+                                .skip(self_idx + 1)
+                                .filter(|s| !s.trim().is_empty())
+                                .take(6)
+                                .copied()
+                                .collect();
+                            if let Some(name) =
+                                function_header_name_multi(self_code, &self_following)
+                            {
+                                if !name.is_empty() {
+                                    function_name = Some(name);
+                                }
+                                function_def_line = Some(center as u32);
+                                function_signature = Some(
+                                    lines
+                                        .get(self_idx)
+                                        .copied()
+                                        .unwrap_or("")
+                                        .trim()
+                                        .chars()
+                                        .take(200)
+                                        .collect::<String>(),
+                                );
+                            }
+                            // 上溯范围 = **整个文件**。旧实现只上溯 120 行，于是 C/Java/Go 的千行
+                            // 长函数一律报 unresolved（实测：包含函数在目标行上方 60 行、933 行两例），
+                            // 并退化成"最近声明"这种非函数锚点。每轮只做一次廉价的形态判定，
+                            // 命中覆盖目标行的函数头即 break。
+                            let upto = center.saturating_sub(1);
                             for back in 1..=upto {
+                                if function_def_line.is_some() {
+                                    break; // 目标行自身已判定为函数头（见上）
+                                }
                                 let idx = center.saturating_sub(back + 1);
                                 let t = lines.get(idx).copied().unwrap_or("").trim();
                                 if t.is_empty() {
                                     continue;
                                 }
                                 let code_line = code_refs.get(idx).copied().unwrap_or("");
-                                // 之后首个非空行：C/C++ 多行签名靠它识别（名字行以 `)` 结尾、`{` 在下一行）
-                                let next_code = code_refs
+                                // 之后最多 6 条非空代码行：C/C++ 签名常跨 3 行以上
+                                let following: Vec<&str> = code_refs
                                     .iter()
                                     .skip(idx + 1)
-                                    .take(3)
-                                    .find(|s| !s.trim().is_empty())
+                                    .filter(|s| !s.trim().is_empty())
+                                    .take(6)
                                     .copied()
-                                    .unwrap_or("");
-                                if let Some(name) = function_header_name_ctx(code_line, next_code) {
+                                    .collect();
+                                if let Some(name) = function_header_name_multi(code_line, &following) {
                                     let (_, end) = body_span(&code_refs, idx, brace);
                                     if end + 1 < center {
                                         continue; // 该函数体不覆盖目标行：继续上溯
@@ -1581,6 +1686,15 @@ impl Tool for CodeIntelTool {
                         };
                         window_start = start;
                         window_end = center;
+                        // 作用域锚点的**位置事实**：函数头落在标称深度窗口内，还是因为函数太长
+                        // 而必须把窗口向前扩展才装得下。注意窗口起点是 `min(center-depth, 头行-1)`
+                        //（见上），所以解析成功时头**一定**在返回窗口里——这里区分的是"窗口被扩展过"，
+                        // 消费者据此知道本次窗口比 `depth` 更宽。
+                        scope_anchor = match function_def_line {
+                            None => Value::Null,
+                            Some(l) if (l as usize) + depth > center => json!("within_depth"),
+                            Some(_) => json!("extended_for_long_function"),
+                        };
                         for i in start..center {
                             let text = lines.get(i).copied().unwrap_or("");
                             let is_header = function_def_line.map(|l| l as usize == i + 1).unwrap_or(false);
@@ -1618,6 +1732,10 @@ impl Tool for CodeIntelTool {
                         "function_def_line": function_def_line,
                         "function_signature": function_signature,
                         "function_scope": if function_def_line.is_some() { "resolved" } else { "unresolved" },
+                        // `within_depth`：函数头落在标称深度窗口内；`extended_for_long_function`：
+                        // 函数太长，窗口被向前扩展才装下头（此时 `window.start_line` 会明显早于
+                        // `target_line - depth`）；`null`：未解析到作用域
+                        "scope_anchor": scope_anchor,
                         "nearest_declaration": nearest_declaration,
                         "includes_function_header": includes_function_header,
                         "target_line": if line > 0 { json!(line) } else { Value::Null },
@@ -2307,6 +2425,104 @@ mod tests {
         let stamps: Vec<&str> = loaded.file_stamps.iter().map(|s| s.path.as_str()).collect();
         assert_eq!(stamps, paths, "指纹顺序应与文件顺序一致");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 多行签名：C/C++ 签名跨 3 行以上时也必须能取出函数名（实测
+    /// `static cmark_node *try_opening_table_header(` + 2 行参数 + `… int len) {`）。
+    #[test]
+    fn test_function_header_name_multi_line_signature() {
+        assert_eq!(
+            function_header_name_multi("ngx_http_foo(ngx_http_request_t *r)", &["{"]).as_deref(),
+            Some("ngx_http_foo")
+        );
+        let sig = [
+            "cmark_parser *parser,",
+            "cmark_node *parent_container,",
+            "unsigned char *input, int len) {",
+        ];
+        assert_eq!(
+            function_header_name_multi(
+                "static cmark_node *try_opening_table_header(cmark_syntax_extension *self,",
+                &sig
+            )
+            .as_deref(),
+            Some("try_opening_table_header")
+        );
+        // 拼接不得制造误判：跨行的普通调用仍不是函数头；
+        // 且**圆括号已闭合**的行（`var x = require('y')`）绝不允许被后面的函数声明拼成函数头
+        assert_eq!(function_header_name_multi("foo(bar);", &["baz();"]).as_deref(), None);
+        assert_eq!(
+            function_header_name_multi("var isBuffer = require('is-buffer')", &["function keyIdentity (key) {"])
+                .as_deref(),
+            None
+        );
+        // 圆括号未闭合 ≠ 可以一路拼到后面的函数声明：模块级的 `x = re.compile(` 不得与
+        // 后面的 `def f(s):` 拼成函数头（实测假阳性，关键字分支只许匹配**本行**）
+        assert_eq!(
+            function_header_name_multi(
+                "_is_image_dataurl = re.compile(",
+                &["    r'^data:image/.+;base64', re.I).search",
+                  "_is_possibly_malicious_scheme = re.compile(",
+                  "def _is_javascript_scheme(s):",
+                  "    if _is_image_dataurl(s):"]
+            )
+            .as_deref(),
+            None
+        );
+    }
+
+    /// 目标行**自身**就是函数头（ES6 类方法）时也必须解析出作用域——上溯循环从目标行上方
+    /// 开始，结构上找不到目标行自己。
+    #[tokio::test]
+    async fn test_slice_resolves_when_target_line_is_the_header() {
+        let root = std::env::temp_dir().join("ctx-audit-code-intel-selfheader");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("m.js"),
+            "var handlers = {};\nhandlers.getPublicInterface = function () {\n  var self = this;\n  return self.x;\n};\n",
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        // 第 2 行就是函数头**本身**（符号索引里没有它的声明）
+        let hit = tool.execute(json!({"file": "m.js", "line": 2})).await.unwrap();
+        let d = hit.data.expect("应有 envelope data");
+        assert_eq!(d["data"]["function"], "getPublicInterface", "{d}");
+        assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
+        assert_eq!(d["data"]["scope_anchor"], "within_depth", "{d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 长函数：函数头在目标行**上方数百行**（远超切片窗口）时，仍需给出函数名与签名，
+    /// 并如实标注 `scope_anchor=outside_window`（窗口里没有头就不许说 `includes_function_header`）。
+    /// 用对象属性函数表达式构造，确保**符号索引里没有该声明**，只能靠上溯找到。
+    #[tokio::test]
+    async fn test_slice_resolves_enclosing_function_far_above_the_window() {
+        let root = std::env::temp_dir().join("ctx-audit-code-intel-farabove");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut src = String::from("var obj = {\n  farAbove: function (a) {\n    var x = a;\n");
+        for i in 0..300 {
+            src.push_str(&format!("    x = x + {i};\n"));
+        }
+        src.push_str("    return x;\n  }\n};\n");
+        std::fs::write(root.join("far.js"), &src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let hit = tool.execute(json!({"file": "far.js", "line": 304})).await.unwrap();
+        let d = hit.data.expect("应有 envelope data");
+        assert_eq!(d["data"]["function"], "farAbove", "{d}");
+        assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
+        // 函数太长 ⇒ 窗口被向前扩展才装下函数头，如实标注（消费者据此知道窗口比 depth 更宽）
+        assert_eq!(d["data"]["scope_anchor"], "extended_for_long_function", "{d}");
+        assert_eq!(d["data"]["window"]["start_line"], 2, "{d}");
+        assert_eq!(d["data"]["includes_function_header"], true, "{d}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
