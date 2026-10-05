@@ -970,6 +970,17 @@ pub(crate) fn kr_param_line(line: &str) -> bool {
     if body.is_empty() {
         return false;
     }
+    // 语句关键字开头的行不是参数类型声明：`return x;` 也是"两 token + 无括号 + 无 =`"，
+    // 不设这道闸就会被当成 K&R 参数行（跨语言误召回的入口）。
+    const STMT: [&str; 12] = [
+        "return", "goto", "break", "continue", "case", "default", "else", "do", "throw",
+        "sizeof", "defined", "static_assert",
+    ];
+    if let Some(first) = body.split_whitespace().next() {
+        if STMT.contains(&first) {
+            return false;
+        }
+    }
     let mut toks = 0usize;
     for tok in body.split_whitespace() {
         let bare = tok.trim_matches(|c| c == '*' || c == '&' || c == '[' || c == ']');

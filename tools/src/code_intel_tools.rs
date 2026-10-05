@@ -752,7 +752,7 @@ fn c_style_header_name(text: &str, next: &str) -> Option<String> {
 /// `static cmark_node *try_opening_table_header(` / `cmark_parser *parser,` /
 /// `… unsigned char *input, int len) {`），而两行判定要求"名字行以 `)` 结尾、下一行以 `{` 开头"，
 /// 于是这类函数一律被判成"找不到函数头"，长函数的作用域因此静默变成 unresolved。
-pub fn function_header_name_multi(text: &str, following: &[&str]) -> Option<String> {
+pub fn function_header_name_multi(text: &str, following: &[&str], c_like: bool) -> Option<String> {
     let t = text.trim();
     if t.is_empty() {
         return None;
@@ -796,7 +796,7 @@ pub fn function_header_name_multi(text: &str, following: &[&str]) -> Option<Stri
             }
             break;
         }
-        if !kr {
+        if !kr || !c_like {
             return None;
         }
         return c_style_header_name(&format!("{t} {{"), "");
@@ -1612,6 +1612,8 @@ impl Tool for CodeIntelTool {
                         let code_refs: Vec<&str> = code.iter().map(|s| s.as_str()).collect();
                         let center = if line > 0 { line.min(lines.len()) } else { lines.len() };
                         let brace = is_brace_language(path);
+                        // K&R 容忍只在 C 类文件生效（跨语言误召回的入口，必须门控）
+                        let c_like = is_c_like_path(path);
                         // 目标行之前最后一条声明，且其函数体覆盖目标行 ⇒ 它就是所在函数
                         let enclosing = sindex.file_index(path).and_then(|fi| {
                             sindex
@@ -1656,7 +1658,7 @@ impl Tool for CodeIntelTool {
                                 .copied()
                                 .collect();
                             if let Some(name) =
-                                function_header_name_multi(self_code, &self_following)
+                                function_header_name_multi(self_code, &self_following, c_like)
                             {
                                 if !name.is_empty() {
                                     function_name = Some(name);
@@ -1696,7 +1698,7 @@ impl Tool for CodeIntelTool {
                                     .take(6)
                                     .copied()
                                     .collect();
-                                if let Some(name) = function_header_name_multi(code_line, &following) {
+                                if let Some(name) = function_header_name_multi(code_line, &following, c_like) {
                                     let (_, end) = body_span(&code_refs, idx, brace);
                                     if end + 1 < center {
                                         continue; // 该函数体不覆盖目标行：继续上溯
@@ -2529,7 +2531,7 @@ mod tests {
     #[test]
     fn test_function_header_name_multi_line_signature() {
         assert_eq!(
-            function_header_name_multi("ngx_http_foo(ngx_http_request_t *r)", &["{"]).as_deref(),
+            function_header_name_multi("ngx_http_foo(ngx_http_request_t *r)", &["{"], true).as_deref(),
             Some("ngx_http_foo")
         );
         let sig = [
@@ -2540,16 +2542,28 @@ mod tests {
         assert_eq!(
             function_header_name_multi(
                 "static cmark_node *try_opening_table_header(cmark_syntax_extension *self,",
-                &sig
+                &sig,
+                true
             )
             .as_deref(),
             Some("try_opening_table_header")
         );
+        // K&R：签名已闭合，参数类型行在其后、`{` 更后 —— **只在 C 类文件**才允许
+        let kr = ["eap_state *esp;", "u_char *inp;", "int id;", "{"];
+        assert_eq!(
+            function_header_name_multi("eap_request(esp, inp, id, len)", &kr, true).as_deref(),
+            Some("eap_request")
+        );
+        assert_eq!(
+            function_header_name_multi("eap_request(esp, inp, id, len)", &kr, false).as_deref(),
+            None,
+            "非 C 语言不得走 K&R 容忍（跨语言误召回的入口）"
+        );
         // 拼接不得制造误判：跨行的普通调用仍不是函数头；
         // 且**圆括号已闭合**的行（`var x = require('y')`）绝不允许被后面的函数声明拼成函数头
-        assert_eq!(function_header_name_multi("foo(bar);", &["baz();"]).as_deref(), None);
+        assert_eq!(function_header_name_multi("foo(bar);", &["baz();"], true).as_deref(), None);
         assert_eq!(
-            function_header_name_multi("var isBuffer = require('is-buffer')", &["function keyIdentity (key) {"])
+            function_header_name_multi("var isBuffer = require('is-buffer')", &["function keyIdentity (key) {"], true)
                 .as_deref(),
             None
         );
@@ -2561,7 +2575,8 @@ mod tests {
                 &["    r'^data:image/.+;base64', re.I).search",
                   "_is_possibly_malicious_scheme = re.compile(",
                   "def _is_javascript_scheme(s):",
-                  "    if _is_image_dataurl(s):"]
+                  "    if _is_image_dataurl(s):"],
+                true
             )
             .as_deref(),
             None
