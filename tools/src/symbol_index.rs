@@ -517,15 +517,26 @@ fn persist_enabled() -> bool {
     )
 }
 
+/// 索引构建逻辑版本：**任何影响定义/标识符抽取的改动都必须 +1**。
+///
+/// 磁盘缓存键（见 `persist_path`）原先只由"规范化根路径"决定，于是引擎换了抽取规则、
+/// 缓存却照旧命中——缓存里存的是**旧二进制**解析出的 `file_defs`，新规则一次都不会跑。
+/// 实测代价：改完 C 的定义抽取规则后，nginx 的 `symbols` 仍恒为 **391**、定义召回仍
+/// **0/60**，而同一份代码在单元测试里是通过的（夹具目录没有旧缓存）。
+/// 把逻辑版本与 crate 版本并进缓存键，才能保证"你看到的索引来自你正在运行的引擎"。
+const INDEX_LOGIC_VERSION: u32 = 2;
+
 /// 磁盘缓存路径：**不写进项目目录**——否则创建 `.ctx-audit/index/` 会改变项目根目录的
 /// mtime，把工具自己的指纹探测打失效（与 `mcp_metrics.jsonl` 同一类自污染）。
-/// 放在系统临时目录，按规范化根路径哈希命名。
+/// 放在系统临时目录，按规范化根路径 + **索引逻辑版本** + crate 版本命名。
 fn persist_path(root: &Path) -> PathBuf {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
     cache_key(root).hash(&mut hasher);
+    INDEX_LOGIC_VERSION.hash(&mut hasher);
+    env!("CARGO_PKG_VERSION").hash(&mut hasher);
     std::env::temp_dir()
         .join("ctx-audit-index")
         .join(format!("{:016x}.json", hasher.finish()))
@@ -775,6 +786,27 @@ fn index_content(
             continue;
         }
 
+        // ── C/C++ 语言特有的定义形态 ──
+        // C 的规范写法是"返回类型一行、函数名顶格另一行、`{` 再一行"：
+        //     static ngx_int_t
+        //     ngx_resolver_copy(ngx_resolver_t *r, …)
+        //     {
+        // 行内没有任何 `fn/def/class/struct` 关键字，旧实现因此直接 `continue` 掉——
+        // 实测 nginx `src/core` 的函数定义召回 **0/60**（ctags 真值 416），
+        // 整个 C 侧的调用图/作用域/引用都建立在这个缺失之上。
+        if is_c_like(path) {
+            if let Some(name) = c_define_name(code_line) {
+                let text: String = raw.trim().chars().take(200).collect();
+                defs.push((name, lineno, text));
+                continue;
+            }
+            if let Some(name) = c_function_name(&code, idx) {
+                let text: String = raw.trim().chars().take(200).collect();
+                defs.push((name, lineno, text));
+                continue;
+            }
+        }
+
         // 声明：同样用代码段判定，避免字符串里的 "def foo" 被当成定义
         let trimmed = code_line.trim();
         if trimmed.is_empty() || !DEF_KEYWORDS.iter().any(|k| trimmed.contains(*k)) {
@@ -817,8 +849,184 @@ fn block_declared_names(code_line: &str) -> Vec<String> {
     out
 }
 
-pub fn declared_names(line: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// C/C++ 源文件判定（含头文件——声明与定义分离是 C 的常态）。
+fn is_c_like(path: &str) -> bool {
+    matches!(
+        path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str(),
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx"
+    )
+}
+
+/// C 的控制语句关键字：它们也长得像 `名字(`，但显然不是函数定义。
+const C_CTRL: [&str; 12] = [
+    "if", "for", "while", "switch", "catch", "do", "else", "return", "sizeof", "case",
+    "goto", "defined",
+];
+
+/// `#define NAME` / `#define NAME(args)` 的宏名。
+///
+/// C 的预处理器是**语言的一部分**：sink/source 藏在宏里时，看不到宏定义就等于看不到它
+/// （实测 nginx `src/core` 有 452 个宏定义）。宏名进索引后，调用方问 `NGX_OK` 这类
+/// 标识符时能拿到 `#define` 行本身——文本自带 `#define` 前缀，消费者一眼能分辨。
+fn c_define_name(code_line: &str) -> Option<String> {
+    let t = code_line.trim_start();
+    let rest = t.strip_prefix('#')?.trim_start();
+    let rest = rest.strip_prefix("define")?;
+    // `#defineX` 不是合法指令：`define` 后必须是空白或行尾
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let name: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name
+        .chars()
+        .next()
+        .map(|c| c.is_alphabetic() || c == '_')
+        .unwrap_or(false)
+    {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+/// 该行是否像 C 的**类型行**（`static ngx_int_t`、`void *`、`struct foo *`）：
+/// 不含 `(`/`;`/`=`/`{}`/`,`，且至少有一个标识符 token。
+fn c_type_line(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty()
+        || t.starts_with('#')
+        || t.contains('(')
+        || t.contains(';')
+        || t.contains('=')
+        || t.contains('{')
+        || t.contains('}')
+        || t.contains(',')
+    {
+        return false;
+    }
+    let mut saw = false;
+    for tok in t.split_whitespace() {
+        let bare = tok.trim_matches(|c| c == '*' || c == '&');
+        if bare.is_empty() {
+            continue; // 纯 `*` / `&`
+        }
+        if !bare.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return false;
+        }
+        saw = true;
+    }
+    saw
+}
+
+fn next_code_line(code: &[String], idx: usize) -> Option<String> {
+    code.iter()
+        .skip(idx + 1)
+        .take(4)
+        .find(|s| !s.trim().is_empty())
+        .cloned()
+}
+
+fn prev_code_line(code: &[String], idx: usize) -> Option<String> {
+    (0..idx)
+        .rev()
+        .take(4)
+        .map(|i| code[i].clone())
+        .find(|s| !s.trim().is_empty())
+}
+
+/// 从定义行起，签名闭合之后是否紧跟函数体的 `{`。
+///
+/// 必须支持**参数表跨行**——nginx/Linux 的规范写法是
+///     static ngx_int_t
+///     ngx_resolver_copy(ngx_resolver_t *r, … u_char *src,
+///         u_char *last)
+///     {
+/// 只看"紧邻下一行是不是 `{`"会把这类定义全部漏掉（实测 nginx src/core 召回 0/60）。
+fn c_opens_block(code: &[String], idx: usize) -> bool {
+    let mut depth = 0i32;
+    let mut closed = false;
+    for (k, line) in code.iter().enumerate().skip(idx).take(10) {
+        let t = line.trim();
+        // 预处理器指令**不是代码**：`#if/#else/#endif` 对签名与函数体是透明的。
+        // 实测 nginx 把同一签名写在两个条件分支里、函数体放在 `#endif` 之后
+        // （`ngx_log_error_core`），不跳过 `#` 行就会漏掉它。
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if closed {
+            if t.starts_with('{') {
+                return true;
+            }
+            // 另一分支里重复的签名/声明：继续往下找体；遇到语句或块结束则放弃
+            if t.starts_with('}') || t.contains(';') {
+                return false;
+            }
+            continue;
+        }
+        for ch in t.chars() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth <= 0 {
+            closed = true;
+            if t.ends_with('{') {
+                return true; // 单行式 `void f(void) {`
+            }
+        }
+    }
+    false
+}
+
+/// C/C++ 顶层函数定义的函数名（顶格 `名字(` + 签名闭合后的 `{`）。
+///
+/// 只认**顶格**（列 0）：C 的函数定义在列 0，而函数体内的续行/表达式都带缩进，
+/// 这条约束把"函数体内以标识符开头的行、宏调用、K&R 续行"全部挡在外面。
+/// 另两种形态也覆盖：① 名字独占一行时要求**上一行是类型行**（`static ngx_int_t`）；
+/// ② 单行式 `void foo(void) {` 直接取 `(` 前最后一个标识符。
+fn c_function_name(code: &[String], idx: usize) -> Option<String> {
+    let raw_line = code.get(idx)?;
+    if raw_line.trim_start().len() != raw_line.trim_end().len() {
+        return None; // 有缩进 ⇒ 不是顶层定义
+    }
+    let t = raw_line.trim_end();
+    if t.is_empty() || t.starts_with('#') || t.starts_with("//") || t.starts_with("/*") {
+        return None;
+    }
+    let open = t.find('(')?;
+    let head = t[..open].trim_end();
+    let name: String = head
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if name.is_empty() || C_CTRL.contains(&name.as_str()) {
+        return None;
+    }
+    let opens = c_opens_block(code, idx);
+    if !opens {
+        return None;
+    }
+    // 名字独占一行（head 只有 `*`/`&`）：必须有类型行在前
+    let head_bare = head.trim_matches(|c| c == '*' || c == '&').trim();
+    if head_bare.is_empty() {
+        if !prev_code_line(code, idx).map(|s| c_type_line(&s)).unwrap_or(false) {
+            return None;
+        }
+    }
+    Some(name)
+}
+
+pub fn declared_names(line: &str) -> Vec<String> {    let mut out: Vec<String> = Vec::new();
     for kw in DEF_KEYWORDS {
         let mut from = 0usize;
         while let Some(pos) = line[from..].find(kw) {
@@ -1164,8 +1372,119 @@ mod tests {
 
     /// 括号块声明（`var (` / `const (` / `type (`）内的行没有关键字，也必须进索引
     #[test]
-    fn test_bracket_block_declarations_are_indexed() {
-        let root = fixture("blockdecl");
+    /// 缓存必须与"索引构建逻辑"绑定：否则引擎改了抽取规则、旧缓存照旧命中，
+    /// 新规则一次都不会跑（实测踩过：C 抽取规则改了而 nginx 的 symbols 恒为 391）。
+    #[test]
+    fn test_persist_path_is_version_scoped() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let root = fixture("cachever");
+        let mut h = DefaultHasher::new();
+        cache_key(&root).hash(&mut h);
+        let legacy = std::env::temp_dir()
+            .join("ctx-audit-index")
+            .join(format!("{:016x}.json", h.finish()));
+        assert_ne!(
+            persist_path(&root),
+            legacy,
+            "缓存键必须包含索引逻辑版本与 crate 版本"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 直接命中抽取路径：`index_content` 是索引的唯一入口，先在这里定位问题，
+    /// 避免把"规则错"和"索引层/缓存没生效"混在一起（上一轮就吃了这个亏）。
+    #[test]
+    fn test_c_decl_extraction_direct() {
+        let src = "static ngx_int_t\nngx_resolver_copy(ngx_resolver_t *r, u_char *src)\n{\n    return NGX_OK;\n}\n";
+        let (defs, _, idents) = index_content("src/a.c", src);
+        assert!(
+            defs.iter().any(|(n, _, _)| n == "ngx_resolver_copy"),
+            "index_content 应抽出 C 定义，实际 defs={defs:?}"
+        );
+        assert!(idents.contains_key("ngx_resolver_copy"), "标识符应同时在倒排里");
+        // 参数表跨行（nginx 规范写法）
+        let src2 = "static ngx_int_t\nngx_resolver_multi(ngx_resolver_t *r, u_char *src,\n    u_char *last)\n{\n    return NGX_OK;\n}\n";
+        let (defs2, _, _) = index_content("src/b.c", src2);
+        assert!(
+            defs2.iter().any(|(n, _, _)| n == "ngx_resolver_multi"),
+            "跨行参数表应被抽出，实际 defs={defs2:?}"
+        );
+        // 条件编译：签名写在 `#if/#else` 两分支、体在 `#endif` 之后（nginx 实际写法）
+        let src3 = "#if (NGX_HAVE_VARIADIC_MACROS)\n\nvoid\nngx_log_error_core(ngx_uint_t level, ngx_log_t *log,\n    ngx_err_t err, const char *fmt, ...)\n\n#else\n\nvoid\nngx_log_error_core(ngx_uint_t level, ngx_log_t *log,\n    ngx_err_t err, const char *fmt, ...)\n\n#endif\n{\n    return;\n}\n";
+        let (defs3, _, _) = index_content("src/c.c", src3);
+        assert!(
+            defs3.iter().any(|(n, _, _)| n == "ngx_log_error_core"),
+            "跨条件编译分支的签名应被抽出，实际 defs={defs3:?}"
+        );
+        // 纯函数级
+        let code: Vec<String> = ["static ngx_int_t",
+                                 "ngx_resolver_copy(ngx_resolver_t *r, u_char *src)",
+                                 "{", "    return NGX_OK;", "}"]
+            .iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            c_function_name(&code, 1).as_deref(),
+            Some("ngx_resolver_copy")
+        );
+        assert!(c_opens_block(&code, 1));
+    }
+
+    /// C 的规范定义风格：返回类型一行、函数名**顶格**一行、`{` 再一行。
+    /// 行内没有任何 `fn/def/class/struct` 关键字，旧实现直接跳过 ⇒ 这类函数
+    /// **一个都抽不出来**（实测 nginx `src/core` 定义召回 0/60，ctags 真值 416）。
+    /// 同时覆盖单行式 `void f(void) {` 与 `#define` 宏（C 的 sink 常藏在宏里）。
+    #[test]
+    fn test_c_style_function_definitions_are_indexed() {
+        let root = fixture("cdefs");
+        std::fs::write(
+            root.join("src/ngx_resolver.c"),
+            "static ngx_int_t\nngx_resolver_copy(ngx_resolver_t *r, u_char *src)\n{\n    return NGX_OK;\n}\n\nstatic ngx_int_t\nngx_resolver_multi(ngx_resolver_t *r, ngx_str_t *name, u_char *buf,\n    u_char *src, u_char *last)\n{\n    return NGX_OK;\n}\n\nint ngx_cdecl\nmain(int argc, char *const *argv)\n{\n    return 0;\n}\n\nvoid ngx_single(void) {\n}\n\n#define NGX_RESOLVER_MAX 16\n#define NGX_CLAMP(x) ((x) > 0 ? (x) : 0)\n",
+        )
+        .unwrap();
+        invalidate(&root);
+        let (index, _, _) = get_or_build(&root, true, None);
+        for name in [
+            "ngx_resolver_copy",
+            "ngx_resolver_multi",
+            "main",
+            "ngx_single",
+            "NGX_RESOLVER_MAX",
+            "NGX_CLAMP",
+        ] {
+            assert!(
+                !index.definitions(name, 5).is_empty(),
+                "{name} 应被 C 规则索引"
+            );
+        }
+        // 反例：控制语句不得被当成定义
+        for name in ["if", "return", "sizeof"] {
+            assert!(
+                index.definitions(name, 5).is_empty(),
+                "{name} 不应被当成函数定义"
+            );
+        }
+        // 缩进的行不是顶层定义（函数体内的续行/表达式）
+        std::fs::write(
+            root.join("src/indented.c"),
+            "int outer(void)\n{\n    inner_call(1);\n    return 0;\n}\n",
+        )
+        .unwrap();
+        invalidate(&root);
+        let (index2, _, _) = get_or_build(&root, true, None);
+        assert!(
+            !index2.definitions("outer", 5).is_empty(),
+            "outer 应被索引"
+        );
+        assert!(
+            index2.definitions("inner_call", 5).is_empty(),
+            "缩进的调用不得被当成定义"
+        );
+        invalidate(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(persist_path(&root));
+    }
+
+    fn test_bracket_block_declarations_are_indexed() {        let root = fixture("blockdecl");
         std::fs::write(
             root.join("src/block.go"),
             "package main\n\nvar (\n\tErrA = errors.New(\"a\")\n\tErrB = errors.New(\"b\")\n)\n\nconst (\n\tMaxN = 10\n)\n\ntype (\n\tWidget struct{}\n)\n",
