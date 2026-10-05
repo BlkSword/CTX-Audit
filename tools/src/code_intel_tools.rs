@@ -964,6 +964,11 @@ const NON_CALL_KEYWORDS: &[&str] = &[
     "return", "struct", "interface", "map", "chan", "type", "var", "const", "else", "package",
     "import", "break", "continue", "goto", "fallthrough", "while", "catch", "elif", "except",
     "with", "lambda", "yield", "match", "when", "do", "then", "begin", "ensure", "rescue",
+    // C/C++ 的**运算符与内建形式**：`sizeof(x)`、`_Alignof(int)`、`offsetof(...)` 长得像调用，
+    // 实测会被当成 callee 混进调用图（C 语言台阶：真值比对时在抽样里直接看到 `sizeof`）。
+    "sizeof", "_Alignof", "__alignof__", "__alignof", "alignof", "typeof", "__typeof__",
+    "__typeof", "offsetof", "defined", "va_arg", "va_start", "va_end", "va_copy",
+    "_Generic", "static_assert", "_Static_assert",
 ];
 
 /// 纯函数：从一行里提取 `(` 前的标识符（取最后一个点后的名字），过滤结构性关键词。
@@ -2300,6 +2305,16 @@ mod tests {
     }
 
     #[test]
+    /// C 的运算符/内建形式不是被调用者（`sizeof`/`_Alignof`/`offsetof`）。
+    #[test]
+    fn test_callee_names_skips_c_operators() {
+        for line in ["n = sizeof(ngx_str_t);", "x = _Alignof(int) + offsetof(S, f);"] {
+            let names = callee_names(line);
+            assert!(names.is_empty(), "{line} 不应产出 callee: {names:?}");
+        }
+        assert_eq!(callee_names("ngx_foo(a);"), vec!["ngx_foo".to_string()]);
+    }
+
     fn test_callee_names() {
         let names = callee_names("let x = foo.bar(1) + baz(2);");
         assert!(names.contains(&"bar".to_string()));
