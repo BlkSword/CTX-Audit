@@ -946,10 +946,48 @@ fn prev_code_line(code: &[String], idx: usize) -> Option<String> {
 ///         u_char *last)
 ///     {
 /// 只看"紧邻下一行是不是 `{`"会把这类定义全部漏掉（实测 nginx src/core 召回 0/60）。
+/// K&R 风格函数定义的**参数类型声明行**：`EAP_STATE *esp;` / `int id;` / `char *inp;`。
+///
+/// 老式 C 把参数类型写在参数表**之后**、函数体之前：
+///     eap_request(esp, id, typenum, len, inp)
+///     EAP_STATE *esp;
+///     int id;
+///     {
+/// 旧实现遇到这种行里的 `;` 就判定"这不是函数定义"，于是整个 `eap_request` 进不了索引——
+/// 实测 CVE-2020-8597 的漏洞点（`pppd/eap.c`）因此 `function_scope=unresolved`，判定者
+/// 连"这是哪个函数"都拿不到。
+pub(crate) fn kr_param_line(line: &str) -> bool {
+    let t = line.trim();
+    if !t.ends_with(';')
+        || t.contains('(')
+        || t.contains('=')
+        || t.contains('{')
+        || t.contains('}')
+    {
+        return false;
+    }
+    let body = t.trim_end_matches(';').trim_end();
+    if body.is_empty() {
+        return false;
+    }
+    let mut toks = 0usize;
+    for tok in body.split_whitespace() {
+        let bare = tok.trim_matches(|c| c == '*' || c == '&' || c == '[' || c == ']');
+        if bare.is_empty() {
+            continue;
+        }
+        if !bare.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return false;
+        }
+        toks += 1;
+    }
+    toks >= 2 // 至少"类型 + 名字"：`int id;` 通过，`return;` 不通过
+}
+
 fn c_opens_block(code: &[String], idx: usize) -> bool {
     let mut depth = 0i32;
     let mut closed = false;
-    for (k, line) in code.iter().enumerate().skip(idx).take(10) {
+    for (k, line) in code.iter().enumerate().skip(idx).take(24) {
         let t = line.trim();
         // 预处理器指令**不是代码**：`#if/#else/#endif` 对签名与函数体是透明的。
         // 实测 nginx 把同一签名写在两个条件分支里、函数体放在 `#endif` 之后
@@ -960,6 +998,10 @@ fn c_opens_block(code: &[String], idx: usize) -> bool {
         if closed {
             if t.starts_with('{') {
                 return true;
+            }
+            // K&R：签名闭合后可能是**参数类型声明行**，之后才轮到 `{`
+            if kr_param_line(t) {
+                continue;
             }
             // 另一分支里重复的签名/声明：继续往下找体；遇到语句或块结束则放弃
             if t.starts_with('}') || t.contains(';') {
@@ -997,6 +1039,10 @@ fn c_function_name(code: &[String], idx: usize) -> Option<String> {
     }
     let t = raw_line.trim_end();
     if t.is_empty() || t.starts_with('#') || t.starts_with("//") || t.starts_with("/*") {
+        return None;
+    }
+    // 以 `;` 结尾 ⇒ 是调用/声明语句，不是定义头（`foo(bar);`）
+    if t.ends_with(';') {
         return None;
     }
     let open = t.find('(')?;
@@ -1371,6 +1417,39 @@ mod tests {
     }
 
     /// 括号块声明（`var (` / `const (` / `type (`）内的行没有关键字，也必须进索引
+    /// K&R 风格定义：签名之后是**参数类型声明行**（带 `;`），再 `{`。
+    /// 实测 CVE-2020-8597 的 `pppd/eap.c` 因为这种风格整函数进不了索引，
+    /// 漏洞点的切片因此 `function_scope=unresolved`。
+    #[test]
+    fn test_kr_style_definition_is_indexed() {
+        let root = fixture("krdefs");
+        std::fs::write(
+            root.join("src/kr.c"),
+            "static void\neap_request(esp, id, typenum, len, inp)\nEAP_STATE *esp;\nint id;\nint typenum;\nint len;\nunsigned char *inp;\n{\n    return;\n}\n",
+        )
+        .unwrap();
+        invalidate(&root);
+        let (index, _, _) = get_or_build(&root, true, None);
+        assert!(
+            !index.definitions("eap_request", 5).is_empty(),
+            "K&R 风格定义应被索引"
+        );
+        invalidate(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(persist_path(&root));
+    }
+
+    /// K&R 参数行判据本身：只认"类型 + 名字 + `;`"。
+    #[test]
+    fn test_kr_param_line() {
+        for ok in ["EAP_STATE *esp;", "int id;", "char *inp;", "struct foo *p;"] {
+            assert!(kr_param_line(ok), "{ok} 应判为参数类型声明行");
+        }
+        for bad in ["return;", "x = y;", "foo(bar);", "{", "int x = 1;"] {
+            assert!(!kr_param_line(bad), "{bad} 不应判为参数类型声明行");
+        }
+    }
+
     /// 缓存必须与"索引构建逻辑"绑定：否则引擎改了抽取规则、旧缓存照旧命中，
     /// 新规则一次都不会跑（实测踩过：C 抽取规则改了而 nginx 的 symbols 恒为 391）。
     /// 刻意**不碰文件系统**：先前用 `fixture()` 建临时目录，同一测试会一过一败。

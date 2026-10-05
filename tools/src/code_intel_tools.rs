@@ -774,7 +774,32 @@ pub fn function_header_name_multi(text: &str, following: &[&str]) -> Option<Stri
         }
     }
     if depth <= 0 {
-        return None;
+        // K&R 风格：签名**已闭合**，但参数类型声明行在其后、`{` 更后：
+        //     eap_request(esp, id, typenum, len, inp)
+        //     EAP_STATE *esp;
+        //     {
+        // 只认"后续若干行是参数类型声明行、且其中出现 `{`"这一种情况，
+        // 以免退回"跨语句拼接"的老毛病（那会把模块级代码误报成有函数作用域）。
+        // 实测：CVE-2020-8597 的 `pppd/eap.c` 正是这种风格。
+        let mut kr = false;
+        for s in following.iter().take(8) {
+            let s = s.trim();
+            if s.is_empty() {
+                continue;
+            }
+            if s.starts_with('{') {
+                kr = true;
+                break;
+            }
+            if crate::symbol_index::kr_param_line(s) {
+                continue;
+            }
+            break;
+        }
+        if !kr {
+            return None;
+        }
+        return c_style_header_name(&format!("{t} {{"), "");
     }
     // 再把后续行拼进来：拼到出现 `{` 为止，最多 6 行（拼完仍未闭合则判定自然不成立）
     let mut joined = t.to_string();
