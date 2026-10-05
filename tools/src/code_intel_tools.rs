@@ -215,6 +215,41 @@ fn max_index_files() -> usize {
         .unwrap_or(MAX_FILES)
 }
 
+/// 显式点名单文件时的读取上限（8MB）。
+///
+/// `MAX_FILE_BYTES` 约束的是**批量索引**（把 2000 个文件读进内存的成本）。调用方点名一个
+/// 文件时只读这一个，成本 O(1)。此前两者共用同一上限，于是被索引跳过的文件会被回答成
+/// "文件不存在"——内容其实就在盘上（实测：542KB 的生成产物、以及超出 2000 文件上限的
+/// 命中文件，都被误报为不存在）。批量上限与显式请求上限必须解耦。
+const MAX_EXPLICIT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 按需读取调用方**点名**的单个文件。
+///
+/// 失败信息必须给出**真实原因**（路径不存在 / 不是常规文件 / 超过单文件读取上限），
+/// 不得把"我没有索引它"说成"文件不存在"——对 LLM 消费者而言，后者是在陈述一个错误的世界。
+fn read_requested_file(root: &Path, rel: &str) -> Result<String, ToolError> {
+    let path = root.join(rel);
+    let meta = std::fs::metadata(&path).map_err(|_| {
+        ToolError::InvalidArgument(format!("文件不存在: {rel}（磁盘与索引中都没有该路径）"))
+    })?;
+    if !meta.is_file() {
+        return Err(ToolError::InvalidArgument(format!("不是常规文件: {rel}")));
+    }
+    if meta.len() > MAX_EXPLICIT_FILE_BYTES {
+        return Err(ToolError::InvalidArgument(format!(
+            "文件过大: {rel} = {} 字节 > 单文件读取上限 {} 字节（批量索引上限为 {} 字节）",
+            meta.len(),
+            MAX_EXPLICIT_FILE_BYTES,
+            MAX_FILE_BYTES
+        )));
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Ok(content),
+        // 非 UTF-8 源码（latin-1/GBK 注释）：按字节尽力转换，不因编码拒绝一个存在的文件
+        Err(_) => Ok(String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default()).to_string()),
+    }
+}
+
 pub fn language_of(path: &str) -> &'static str {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
@@ -268,8 +303,13 @@ fn load_files(root: &Path) -> LoadedIndex {
     let mut skipped_large = 0usize;
     let mut truncated_at_limit = false;
     let max_files = max_index_files();
-    let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
-    while let Some((dir, dir_rel)) = stack.pop() {
+    // 遍历顺序必须**确定性**：`read_dir` 返回顺序随文件系统而异，而"达到文件数上限就停"
+    // 意味着取舍结果在机器之间不同（同一仓库可能索引到不同的文件子集，实测命中文件因此
+    // 被漏掉并报成"文件不存在"）。改为：目录项排序 + 广度优先（浅目录优先 ⇒ 顶层源码
+    // 先于深层测试夹具进索引）。
+    let mut queue: std::collections::VecDeque<(PathBuf, String)> =
+        std::collections::VecDeque::from([(root.to_path_buf(), String::new())]);
+    while let Some((dir, dir_rel)) = queue.pop_front() {
         if out.len() >= max_files {
             truncated_at_limit = true;
             break;
@@ -285,7 +325,9 @@ fn load_files(root: &Path) -> LoadedIndex {
             Ok(e) => e,
             Err(_) => continue,
         };
-        for entry in entries.flatten() {
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             if path.is_dir() {
@@ -295,7 +337,7 @@ fn load_files(root: &Path) -> LoadedIndex {
                     } else {
                         format!("{dir_rel}/{name}")
                     };
-                    stack.push((path, child_rel));
+                    queue.push_back((path, child_rel));
                 }
                 continue;
             }
@@ -325,6 +367,9 @@ fn load_files(root: &Path) -> LoadedIndex {
             }
         }
     }
+    // 输出顺序同样做成确定性：`build_id` 与"取前 N 条"的取舍都依赖它
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    file_stamps.sort_by(|a, b| a.path.cmp(&b.path));
     LoadedIndex {
         files: out,
         skipped_large,
@@ -1416,6 +1461,18 @@ impl Tool for CodeIntelTool {
                 let mut includes_function_header = false;
                 let mut window_start = 0usize;
                 let mut window_end = 0usize;
+                // 点名文件解析：索引未收录时**按需从磁盘读取**（见 read_requested_file）。
+                // 与批量索引的文件数/单文件大小上限解耦——否则"我没索引它"会被回答成
+                // "文件不存在"，对 LLM 消费者就是在陈述一个错误的世界。
+                let on_demand: Vec<(String, String)> =
+                    match files.iter().find(|entry| entry.0.as_str() == file) {
+                        Some(_) => Vec::new(),
+                        None => vec![(file.to_string(), read_requested_file(root, file)?)],
+                    };
+                let content_source =
+                    if on_demand.is_empty() { "project-index" } else { "on-demand-read" };
+                let files: &[(String, String)] =
+                    if on_demand.is_empty() { files } else { &on_demand };
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
                         let lines: Vec<&str> = content.lines().collect();
@@ -1554,6 +1611,8 @@ impl Tool for CodeIntelTool {
                 IntelEnvelope {
                     data: json!({
                         "file": file,
+                        // 证据来源：索引收录 / 索引未收录时的按需读盘。后者本身即"索引漏收"的证据
+                        "content_source": content_source,
                         "slice_kind": "function_scoped_prefix",
                         "function": function_name,
                         "function_def_line": function_def_line,
@@ -1634,6 +1693,16 @@ impl Tool for CodeIntelTool {
                 let mut guards: Vec<Value> = Vec::new();
                 let mut guards_total = 0usize;
                 let mut provenance: Vec<Provenance> = Vec::new();
+                // 点名文件解析：索引未收录时按需读盘（见 read_requested_file）
+                let on_demand: Vec<(String, String)> =
+                    match files.iter().find(|entry| entry.0.as_str() == file) {
+                        Some(_) => Vec::new(),
+                        None => vec![(file.to_string(), read_requested_file(root, file)?)],
+                    };
+                let content_source =
+                    if on_demand.is_empty() { "project-index" } else { "on-demand-read" };
+                let files: &[(String, String)] =
+                    if on_demand.is_empty() { files } else { &on_demand };
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
                         // 标记匹配走**代码段**：字符串/行内注释里的 "if "/"guard" 不算守卫
@@ -1670,6 +1739,7 @@ impl Tool for CodeIntelTool {
                 IntelEnvelope {
                     data: json!({
                         "file": file,
+                        "content_source": content_source,
                         "guards": guards,
                         "total_hits": guards_total,
                         "limit": MAX_HITS,
@@ -1705,6 +1775,16 @@ impl Tool for CodeIntelTool {
                 let mut routes_total = 0usize;
                 let mut middleware_total = 0usize;
                 let mut provenance: Vec<Provenance> = Vec::new();
+                // 点名文件解析：索引未收录时按需读盘（见 read_requested_file）
+                let on_demand: Vec<(String, String)> =
+                    match files.iter().find(|entry| entry.0.as_str() == file) {
+                        Some(_) => Vec::new(),
+                        None => vec![(file.to_string(), read_requested_file(root, file)?)],
+                    };
+                let content_source =
+                    if on_demand.is_empty() { "project-index" } else { "on-demand-read" };
+                let files: &[(String, String)] =
+                    if on_demand.is_empty() { files } else { &on_demand };
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
                         // 标记匹配走**代码段**：注释或字符串里出现的 `@app.route` / "middleware"
@@ -1950,6 +2030,7 @@ impl Tool for CodeIntelTool {
                 IntelEnvelope {
                     data: json!({
                         "file": file,
+                        "content_source": content_source,
                         "handler": handler,
                         "handler_resolved": resolved,
                         "handler_definitions": handler_definitions,
@@ -2138,6 +2219,93 @@ mod tests {
             "应记录子目录指纹: {:?}",
             loaded.dir_stamps.iter().map(|d| &d.path).collect::<Vec<_>>()
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 点名文件解析必须与**批量索引**上限解耦：索引受文件数/单文件大小上限约束，
+    /// 但调用方点名一个文件时只该回答"能不能读"。此前两者共用同一上限，于是被索引跳过的
+    /// 文件被回答成"文件不存在"（实测 542KB 生成产物与超出 2000 文件上限的源码即此）。
+    #[tokio::test]
+    async fn test_file_skipped_by_index_is_read_on_demand() {
+        let root = std::env::temp_dir().join("ctx-audit-code-intel-ondemand");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut src = String::new();
+        while src.len() < MAX_FILE_BYTES + 64 * 1024 {
+            src.push_str("// filler line to exceed the bulk index limit\n");
+        }
+        src.push_str("function target(a) {\n  var x = a + 1;\n  return x;\n}\n");
+        let total = src.lines().count();
+        std::fs::write(root.join("big.js"), &src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let loaded = load_files(&root);
+        assert!(loaded.files.is_empty(), "超上限文件不应进批量索引");
+        assert_eq!(loaded.skipped_large, 1);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let hit = tool
+            .execute(json!({"file": "big.js", "line": total - 1}))
+            .await
+            .unwrap();
+        let d = hit.data.expect("应有 envelope data");
+        assert_eq!(d["data"]["content_source"], "on-demand-read", "{d}");
+        assert_eq!(d["data"]["function"], "target", "{d}");
+        assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 读取失败必须给出**真实原因**：磁盘与索引都没有 / 不是常规文件 / 超过读取上限。
+    #[tokio::test]
+    async fn test_missing_and_non_file_requests_report_true_reason() {
+        let root = std::env::temp_dir().join("ctx-audit-code-intel-missing");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn f() {}\n").unwrap();
+
+        let missing = format!("{:?}", read_requested_file(&root, "src/nope.rs").unwrap_err());
+        assert!(missing.contains("文件不存在"), "{missing}");
+        assert!(missing.contains("磁盘与索引"), "{missing}");
+
+        let dir = format!("{:?}", read_requested_file(&root, "src").unwrap_err());
+        assert!(dir.contains("不是常规文件"), "{dir}");
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let err = format!(
+            "{:?}",
+            tool.execute(json!({"file": "src/nope.rs", "line": 1}))
+                .await
+                .unwrap_err()
+        );
+        assert!(err.contains("磁盘与索引"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 索引遍历顺序必须确定性：`read_dir` 返回顺序随文件系统而异，而"达到文件数上限就停"
+    /// 会让取舍结果在机器之间不同（实测同一仓库在两台机器上命中不同的文件子集）。
+    #[test]
+    fn test_load_files_order_is_deterministic() {
+        let root = std::env::temp_dir().join("ctx-audit-code-intel-order");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("z/deep")).unwrap();
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("z/deep/x.js"), "var x = 1;").unwrap();
+        std::fs::write(root.join("a/y.js"), "var y = 1;").unwrap();
+        std::fs::write(root.join("top.js"), "var t = 1;").unwrap();
+
+        let loaded = load_files(&root);
+        let paths: Vec<&str> = loaded.files.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["a/y.js", "top.js", "z/deep/x.js"],
+            "已索引文件应按路径排序（确定性）"
+        );
+        let stamps: Vec<&str> = loaded.file_stamps.iter().map(|s| s.path.as_str()).collect();
+        assert_eq!(stamps, paths, "指纹顺序应与文件顺序一致");
 
         let _ = std::fs::remove_dir_all(&root);
     }
