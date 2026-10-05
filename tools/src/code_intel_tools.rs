@@ -955,6 +955,11 @@ pub fn in_interface_block(lines: &[&str], idx: usize) -> bool {
     }
 }
 
+/// C/C++ 源文件判定（调用图的 C 专用规则用）。
+fn is_c_like_path(path: &str) -> bool {
+    matches!(language_of(path), "c" | "c-header" | "cpp")
+}
+
 /// 结构性关键词：它们后面跟 `(` 但不是调用点。
 ///
 /// 真实 Go 仓库实测依据：匿名函数字面量 `func(c *Config) {`、`go func() {`、`defer func() {`
@@ -1399,12 +1404,40 @@ impl Tool for CodeIntelTool {
                         }
                         let mut seen_callers: std::collections::HashSet<(String, u32)> =
                             std::collections::HashSet::new();
+                        // C：调用点必须落在**某个函数体内部**——原型/声明行与**函数定义行本身**
+                        // 都不是调用点。实测把它们算进 callers 使精确率只有 0.839
+                        // （cscope 真值 172 条 / 引擎报 205 条）。
+                        // 注意：**不能**用"顶格 + `;` 结尾"近似替代——那条规则会误杀 5 条真调用
+                        // （实测召回 1.000 → 0.971 而精确率只到 0.865，已否决回退）。
+                        let c_bodies: Vec<(usize, usize)> = if is_c_like_path(path) {
+                            sindex
+                                .file_index(path)
+                                .map(|fi| {
+                                    sindex
+                                        .definitions_in_file(fi)
+                                        .into_iter()
+                                        .map(|(_, def_line, _)| {
+                                            let def_idx = (def_line as usize).saturating_sub(1);
+                                            let (_, end) = body_span(&lines, def_idx, is_brace_language(path));
+                                            (def_idx, end)
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
                         for needle in &needles {
                             for (line, text) in find_call_sites_in_code(&lines, &code, needle, scan_cap) {
                                 let idx = (line as usize).saturating_sub(1);
                                 // 接口/抽象方法**声明**不是调用点（Go/Java/TS 接口体）
                                 if in_interface_block(&lines, idx) {
                                     continue;
+                                }
+                                if !c_bodies.is_empty()
+                                    && !c_bodies.iter().any(|(s, e)| idx > *s && idx <= *e)
+                                {
+                                    continue; // 不在任何函数体内 ⇒ 原型/定义行
                                 }
                                 if !seen_callers.insert((path.clone(), line)) {
                                     continue;
@@ -2304,7 +2337,29 @@ mod tests {
         assert_eq!(sites[0].0, 2);
     }
 
-    #[test]
+    /// C：调用点必须在**函数体内**——原型行与函数**定义行本身**都不是调用点。
+    /// 实测依据：把它们算进 callers，20 函数抽样下真值 172 / 引擎 205（精确率 0.839）。
+    #[tokio::test]
+    async fn test_c_callers_only_inside_function_bodies() {
+        let root = std::env::temp_dir().join("ctx-audit-callers-body");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/a.c"),
+            "static ngx_int_t ngx_foo(ngx_str_t *s);\n\nngx_int_t\nngx_bar(ngx_str_t *s)\n{\n    return ngx_foo(s);\n}\n",
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
+        let hit = tool.execute(json!({"function": "ngx_foo"})).await.unwrap();
+        let d = hit.data.expect("应有 envelope data");
+        let callers = d["data"]["callers"].as_array().cloned().unwrap_or_default();
+        let lines: Vec<u64> = callers.iter().filter_map(|c| c["line"].as_u64()).collect();
+        assert_eq!(lines, vec![6], "只应命中函数体内的第 6 行调用: {d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// C 的运算符/内建形式不是被调用者（`sizeof`/`_Alignof`/`offsetof`）。
     #[test]
     fn test_callee_names_skips_c_operators() {
@@ -2315,6 +2370,7 @@ mod tests {
         assert_eq!(callee_names("ngx_foo(a);"), vec!["ngx_foo".to_string()]);
     }
 
+    #[test]
     fn test_callee_names() {
         let names = callee_names("let x = foo.bar(1) + baz(2);");
         assert!(names.contains(&"bar".to_string()));
