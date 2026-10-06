@@ -1729,6 +1729,7 @@ impl Tool for CodeIntelTool {
                 let mut function_signature: Option<String> = None;
                 let mut nearest_declaration: Option<Value> = None;
                 let mut includes_function_header = false;
+                let mut saw_conditional = false;
                 let mut window_start = 0usize;
                 let mut window_end = 0usize;
                 let mut forward_used = 0usize;
@@ -1750,6 +1751,9 @@ impl Tool for CodeIntelTool {
                 match files.iter().find(|entry| entry.0.as_str() == file) {
                     Some((path, content)) => {
                         let lines: Vec<&str> = content.lines().collect();
+                        // 条件编译状态：`#if 0` 里的行**可证死**（不进切片）；`#ifdef` 一类无法
+                        // 判定 ⇒ 只如实标注（`in_conditional_region` + uncertainty 原因），不假装看过。
+                        let preproc_states = crate::text_scan::preproc_line_states(content);
                         // 体范围判定用代码段（多行字符串里的顶格行不应被当成 dedent）
                         let code = code_lines(content, hash_comment_language(path));
                         let code_refs: Vec<&str> = code.iter().map(|s| s.as_str()).collect();
@@ -1928,6 +1932,10 @@ impl Tool for CodeIntelTool {
                         };
                         for i in start..window_end {
                             let text = lines.get(i).copied().unwrap_or("");
+                            let st = preproc_states.get(i).copied().unwrap_or_default();
+                            if st.dead {
+                                continue; // `#if 0` 里的行不进切片（活代码视图）
+                            }
                             let is_header = function_def_line.map(|l| l as usize == i + 1).unwrap_or(false);
                             let is_target = i + 1 == center;
                             let is_after_target = i + 1 > center;
@@ -1939,6 +1947,9 @@ impl Tool for CodeIntelTool {
                             {
                                 if is_header {
                                     includes_function_header = true;
+                                }
+                                if st.conditional {
+                                    saw_conditional = true;
                                 }
                                 provenance.push(prov_with(
                                     path,
@@ -1952,6 +1963,7 @@ impl Tool for CodeIntelTool {
                                     "is_function_header": is_header,
                                     "is_target": is_target,
                                     "is_after_target": is_after_target,
+                                    "in_conditional_region": st.conditional,
                                 }));
                             }
                         }
@@ -1997,6 +2009,11 @@ impl Tool for CodeIntelTool {
                             if forward_used > 0 {
                                 // 如实说明：目标行之后的这段是**固定下探**，不是数据流推导
                                 reasons.push("forward_window_is_heuristic_lookahead");
+                            }
+                            if saw_conditional {
+                                // 窗口里有**无法判定**的条件编译区（`#ifdef X` 之类）：
+                                // 我们不知道编译配置，只能如实标注，不能假装这段一定参与编译
+                                reasons.push("conditional_compilation_region_present");
                             }
                             reasons
                         },
@@ -3083,6 +3100,51 @@ mod tests {
             "{d2}"
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P7 活代码视图：`#if 0` 里的函数**不进索引**、切片里也不出现；`#ifdef` 一类无法判定
+    /// ⇒ 如实标 `in_conditional_region` 并给 uncertainty 原因（不假装这段一定参与编译）。
+    #[tokio::test]
+    async fn test_dead_branch_excluded_and_conditional_labeled() {
+        let root = std::env::temp_dir().join("ctx-audit-preproc-view");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "#include <string.h>\n\n#if 0\nint dead_only (void)\n{\n    return 1;\n}\n#endif\n\nint live_only (void)\n{\n    return 2;\n}\n";
+        std::fs::write(root.join("src/d.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let def = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SymbolDefinition);
+        let out = def.execute(json!({"symbol": "dead_only"})).await.unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["total_hits"], 0, "`#if 0` 里的函数不得进索引: {d}");
+
+        let out2 = def.execute(json!({"symbol": "live_only"})).await.unwrap();
+        let d2 = out2.data.clone().expect("应有 envelope data");
+        assert!(
+            d2["data"]["total_hits"].as_u64().unwrap_or(0) >= 1,
+            "活代码里的函数必须可查: {d2}"
+        );
+
+        // 无法判定的条件编译区：切片必须标注，而不是静默当成活代码
+        let src2 = "int live_only (void)\n{\n#ifdef FEATURE_X\n    return 1;\n#else\n    return 2;\n#endif\n}\n";
+        std::fs::write(root.join("src/c.c"), src2).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let sl = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out3 = sl.execute(json!({"file": "src/c.c", "line": 4})).await.unwrap();
+        let d3 = out3.data.clone().expect("应有 envelope data");
+        let snips = d3["data"]["snippets"].as_array().unwrap();
+        assert!(
+            snips.iter().any(|s| s["in_conditional_region"] == true),
+            "条件编译行必须带 in_conditional_region: {d3}"
+        );
+        let reasons = d3["uncertainty"]["reasons"].as_array().unwrap();
+        assert!(
+            reasons.iter().any(|r| r == "conditional_compilation_region_present"),
+            "必须如实上报条件编译区: {d3}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

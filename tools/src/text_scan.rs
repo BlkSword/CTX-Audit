@@ -6,6 +6,78 @@
 //! 实测依据（真实仓库 + CPython `ast`/`tokenize` 独立 oracle）：引用误报里剩下的那一成
 //! 来自**字符串字面量与行内注释里的同名标识符**——oracle 只计 NAME token，按行匹配会命中它们。
 
+/// 一行在条件编译里的处境。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PreprocLine {
+    /// **可证死**：位于 `#if 0` 分支（且之前的兄弟分支都没有可证为真的条件）里。
+    pub dead: bool,
+    /// 位于任意条件编译区内（含**无法判定**的 `#ifdef X` / `#if defined(X)` / `#if VERSION >= N`）。
+    pub conditional: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreprocFrame {
+    /// 该层是否已有可证为真的兄弟分支
+    seen_live: bool,
+    /// 当前分支是否可证死
+    cur_dead: bool,
+}
+
+/// 逐行的条件编译状态（**行级、保守**，不依赖树解析）。
+///
+/// 只把**能证明为假**的分支标成 `dead`：`#if 0`，以及 `#elif 0`（当上面没有可证为真的分支时）。
+/// `#ifdef X`／`#if defined(X)`／版本比较一律**不判死**，只标 `conditional` ——
+/// 我们不知道编译配置，就不能假装这段代码不存在。`#else` 视为活跃（保守）。
+///
+/// 用途：C4 的"活代码视图"缺口在**证据层**（符号索引 / 切片），不在规则扫描层——
+/// 规则层早已用 tree-sitter 收集条件编译区间做严重度降权，而索引/切片此前完全没有感知，
+/// 于是 `#if 0` 里的函数会被当成真实定义。
+pub fn preproc_line_states(content: &str) -> Vec<PreprocLine> {
+    let mut out: Vec<PreprocLine> = Vec::with_capacity(content.lines().count());
+    let mut stack: Vec<PreprocFrame> = Vec::new();
+
+    for line in content.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix('#') {
+            let rest = rest.trim_start();
+            let word: String = rest.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+            let arg = rest[word.len()..].trim();
+            match word.as_str() {
+                "if" | "ifdef" | "ifndef" => {
+                    let dead = word == "if" && arg == "0";
+                    stack.push(PreprocFrame { seen_live: !dead, cur_dead: dead });
+                }
+                "elif" => {
+                    if let Some(top) = stack.last_mut() {
+                        let dead = arg == "0";
+                        if !top.cur_dead {
+                            top.seen_live = true;
+                        }
+                        top.cur_dead = dead && !top.seen_live;
+                    }
+                }
+                "else" => {
+                    // 保守：`#else` 分支一律**视为可编译**（`#if 0 / #else` 时它确实就是活的那支；
+                    // `#if 1 / #else` 时我们只是不敢判死，方向安全）。
+                    if let Some(top) = stack.last_mut() {
+                        top.cur_dead = false;
+                        top.seen_live = true;
+                    }
+                }
+                "endif" => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+        out.push(PreprocLine {
+            dead: stack.iter().any(|f| f.cur_dead),
+            conditional: !stack.is_empty(),
+        });
+    }
+    out
+}
+
 /// 该语言的 `#` 是否为行注释（Python/Ruby/Shell/Perl/YAML 家族）
 pub fn hash_comment_language(path: &str) -> bool {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -222,6 +294,35 @@ pub fn call_site_match(line: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_preproc_line_states_dead_and_conditional() {
+        let src = "#if 0\nint dead_only (void) { return 1; }\n#else\nint live_in_else (void) { return 2; }\n#endif\n\n#ifdef FEATURE_X\nint maybe (void) { return 3; }\n#endif\n\nint always (void) { return 4; }\n";
+        let st = preproc_line_states(src);
+        assert!(st[1].dead, "`#if 0` 分支必须判死: {:?}", st[1]);
+        assert!(st[1].conditional);
+        assert!(!st[2].dead, "`#else` 行本身是活的: {:?}", st[2]);
+        assert!(!st[3].dead, "`#else` 之后的分支是活的: {:?}", st[3]);
+        assert!(
+            !st[4].dead && !st[4].conditional,
+            "`#endif` 之后不在条件区内: {:?}",
+            st[4]
+        );
+        // `#ifdef X` 无法判定 ⇒ 只标 conditional，绝不判死
+        assert!(!st[6].dead && st[6].conditional, "{:?}", st[6]);
+        assert!(!st[7].dead && st[7].conditional, "`#ifdef X` 不能判死: {:?}", st[7]);
+        assert!(!st[10].dead && !st[10].conditional, "{:?}", st[10]);
+    }
+
+    #[test]
+    fn test_preproc_line_states_elif_after_dead_branch() {
+        // `#if 0 / #elif 1` ⇒ elif 分支是活的；`#if 0 / #elif 0` ⇒ 仍判死
+        let live = preproc_line_states("#if 0\nA\n#elif 1\nB\n#endif\n");
+        assert!(live[1].dead);
+        assert!(!live[3].dead, "`#elif 1` 分支必须判活: {:?}", live[3]);
+        let dead = preproc_line_states("#if 0\nA\n#elif 0\nB\n#endif\n");
+        assert!(dead[3].dead, "`#elif 0` 分支必须判死: {:?}", dead[3]);
+    }
 
     #[test]
     fn test_hash_comment_language() {

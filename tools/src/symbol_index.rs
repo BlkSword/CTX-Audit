@@ -747,10 +747,17 @@ fn index_content(
     let mut idents: HashMap<String, Vec<u32>> = HashMap::new();
     // 是否位于括号块声明内（`var (` / `const (` / `type (`）
     let mut block_decl = false;
+    // 条件编译状态：**可证死**的行（`#if 0`）不进索引——死代码里的函数不是真实定义，
+    // 死分支里的引用也不该计入（C4 的"活代码视图"缺口在证据层，不在规则扫描层）。
+    let preproc = crate::text_scan::preproc_line_states(content);
 
     for (idx, raw) in content.lines().enumerate() {
         let lineno = (idx + 1) as u32;
         let code_line = code.get(idx).map(|s| s.as_str()).unwrap_or("");
+
+        if preproc.get(idx).map(|s| s.dead).unwrap_or(false) {
+            continue;
+        }
 
         // 标识符倒排：只在**代码段**里取（字符串/注释里的同名 token 不算引用）
         if idents.len() < MAX_IDENTS_PER_FILE {
