@@ -980,6 +980,25 @@ pub fn in_interface_block(lines: &[&str], idx: usize) -> bool {
     }
 }
 
+/// 文件的预处理视图：行级状态 + 可选的 `cpp -E` 真实分支求值。
+///
+/// `multi_file`（`get_dataflow_path` / `get_call_hierarchy` 这类要遍历整个项目的路径）默认**不**
+/// 起子进程；单文件路径（切片、守卫）默认开。开关：`CTX_AUDIT_PREPROCESS=1` 全局开、`=0` 全局关。
+/// 返回的 `Option<String>` 是**降级原因**（`cpp` 不可用/失败），必须带进响应，不得静默。
+fn preproc_view(
+    path: &str,
+    content: &str,
+    multi_file: bool,
+) -> (Vec<crate::text_scan::PreprocLine>, Option<String>) {
+    let mode = std::env::var("CTX_AUDIT_PREPROCESS").unwrap_or_default();
+    let enable = match mode.trim() {
+        "0" => false,
+        "1" => true,
+        _ => !multi_file,
+    };
+    crate::text_scan::preproc_line_states_with_cpp(path, content, enable)
+}
+
 /// C/C++ 源文件判定（调用图的 C 专用规则用）。
 fn is_c_like_path(path: &str) -> bool {
     matches!(language_of(path), "c" | "c-header" | "cpp")
@@ -1515,6 +1534,9 @@ impl Tool for CodeIntelTool {
                         // （cscope 真值 172 条 / 引擎报 205 条）。
                         // 注意：**不能**用"顶格 + `;` 结尾"近似替代——那条规则会误杀 5 条真调用
                         // （实测召回 1.000 → 0.971 而精确率只到 0.865，已否决回退）。
+                        // 显式条件编译过滤：此前 callers 侧**只**靠 `c_bodies` 间接生效
+                        //（死函数没有体 ⇒ 死分支里的调用点被体过滤挡掉），非 C 语言没有这层兜底。
+                        let (caller_pp, _caller_note) = preproc_view(path, content, true);
                         let c_bodies: Vec<(usize, usize)> = if is_c_like_path(path) {
                             sindex
                                 .file_index(path)
@@ -1555,6 +1577,9 @@ impl Tool for CodeIntelTool {
                                 // 接口/抽象方法**声明**不是调用点（Go/Java/TS 接口体）
                                 if in_interface_block(&lines, idx) {
                                     continue;
+                                }
+                                if caller_pp.get(idx).map(|s| s.dead).unwrap_or(false) {
+                                    continue; // 未激活分支里的调用点不是一条边
                                 }
                                 if own_def_lines.contains(&line) {
                                     continue; // 定义行本身（索引里认得出来时）
@@ -1730,6 +1755,9 @@ impl Tool for CodeIntelTool {
                 let mut nearest_declaration: Option<Value> = None;
                 let mut includes_function_header = false;
                 let mut saw_conditional = false;
+                let mut preproc_states: Vec<crate::text_scan::PreprocLine> = Vec::new();
+                let mut preproc_note: Option<String> = None;
+                let mut cpp_fallback = false;
                 let mut window_start = 0usize;
                 let mut window_end = 0usize;
                 let mut forward_used = 0usize;
@@ -1752,8 +1780,12 @@ impl Tool for CodeIntelTool {
                     Some((path, content)) => {
                         let lines: Vec<&str> = content.lines().collect();
                         // 条件编译状态：`#if 0` 里的行**可证死**（不进切片）；`#ifdef` 一类无法
-                        // 判定 ⇒ 只如实标注（`in_conditional_region` + uncertainty 原因），不假装看过。
-                        let preproc_states = crate::text_scan::preproc_line_states(content);
+                        // 判定的，先由行级判据标 `conditional`，能起 `cpp -E` 时再按真实分支求值
+                        // 升级为 dead；`cpp` 不可用则**如实降级并记录原因**。
+                        let (pp_states, pp_note) = preproc_view(path, content, false);
+                        preproc_states = pp_states;
+                        cpp_fallback = pp_note.is_some();
+                        preproc_note = pp_note;
                         // 体范围判定用代码段（多行字符串里的顶格行不应被当成 dedent）
                         let code = code_lines(content, hash_comment_language(path));
                         let code_refs: Vec<&str> = code.iter().map(|s| s.as_str()).collect();
@@ -1996,6 +2028,7 @@ impl Tool for CodeIntelTool {
                         "forward_bounded_by": forward_bounded_by,
                         "lines_returned": snippets.len(),
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
+                        "preprocess_note": preproc_note,
                         "snippets": snippets,
                     }),
                     provenance,
@@ -2015,6 +2048,11 @@ impl Tool for CodeIntelTool {
                                 // 我们不知道编译配置，只能如实标注，不能假装这段一定参与编译
                                 reasons.push("conditional_compilation_region_present");
                             }
+                            if cpp_fallback {
+                                // 想用 `cpp -E` 求真实分支但起不来（缺 cpp / 缺 include）：
+                                // 如实说明"此刻只有行级判据，未激活分支可能仍被当成活代码"
+                                reasons.push("cpp_preprocess_unavailable_line_level_fallback");
+                            }
                             reasons
                         },
                         0,
@@ -2029,6 +2067,8 @@ impl Tool for CodeIntelTool {
                 let only_file = input["file"].as_str();
                 let mut steps: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
+                let mut df_note: Option<String> = None;
+                let mut df_fallback = false;
                 for (path, content) in files {
                     // 数据流判定同样只在代码文件上做（文档里的示例代码不是数据流）
                     if !crate::symbol_index::is_code_file(path) {
@@ -2042,6 +2082,17 @@ impl Tool for CodeIntelTool {
                     let lines: Vec<&str> = content.lines().collect();
                     let src_line = lines.iter().position(|l| l.contains(source));
                     let Some(src_idx) = src_line else { continue };
+                    let (pp_states, pp_note) = preproc_view(path, content, true);
+                    if pp_note.is_some() {
+                        df_fallback = true;
+                        if df_note.is_none() {
+                            df_note = pp_note;
+                        }
+                    }
+                    // 源点落在**未激活分支**里 ⇒ 这条"路径"在当前配置下不存在，不是证据
+                    if pp_states.get(src_idx).map(|s| s.dead).unwrap_or(false) {
+                        continue;
+                    }
                     let sink_idx = if sink.is_empty() {
                         None
                     } else {
@@ -2050,6 +2101,9 @@ impl Tool for CodeIntelTool {
                     let end = sink_idx.unwrap_or(src_idx + 10).min(lines.len().saturating_sub(1));
                     let (lo, hi) = if src_idx <= end { (src_idx, end) } else { (end, src_idx) };
                     for i in lo..=hi {
+                        if pp_states.get(i).map(|s| s.dead).unwrap_or(false) {
+                            continue; // 未激活分支里的行不进"路径"
+                        }
                         provenance.push(prov(path, (i + 1) as u32, &id));
                         steps.push(json!({"file": path, "line": i + 1, "text": lines[i].trim().chars().take(200).collect::<String>()}));
                     }
@@ -2058,9 +2112,20 @@ impl Tool for CodeIntelTool {
                     }
                 }
                 IntelEnvelope {
-                    data: json!({"source": source, "sink": sink, "path": steps}),
+                    data: json!({"source": source, "sink": sink, "path": steps,
+                                 "preprocess_note": df_note}),
                     provenance,
-                    uncertainty: Uncertainty::new("high", &["statement_level_heuristic"], 0),
+                    uncertainty: Uncertainty::new(
+                        "high",
+                        &{
+                            let mut reasons = vec!["statement_level_heuristic"];
+                            if df_fallback {
+                                reasons.push("cpp_preprocess_unavailable_line_level_fallback");
+                            }
+                            reasons
+                        },
+                        0,
+                    ),
                 }
             }
             IntelKind::SanitizerGuards => {
@@ -2075,6 +2140,8 @@ impl Tool for CodeIntelTool {
                 ];
                 let mut guards: Vec<Value> = Vec::new();
                 let mut guards_total = 0usize;
+                let mut preproc_note: Option<String> = None;
+                let mut cpp_fallback = false;
                 let mut provenance: Vec<Provenance> = Vec::new();
                 // 点名文件解析：索引未收录时按需读盘（见 read_requested_file）
                 let on_demand: Vec<(String, String)> =
@@ -2092,6 +2159,11 @@ impl Tool for CodeIntelTool {
                         //（此前只跳过"以注释开头的行"，行尾注释与字符串内容仍会命中）
                         let code = code_lines(content, hash_comment_language(path));
                         let originals: Vec<&str> = content.lines().collect();
+                        // 守卫也是"证据"：**未激活分支**里的条件分支不算守卫——
+                        // 否则会把 `#if 0` 里的 `if` 交付给判定者（实测过）。
+                        let (pp_states, pp_note) = preproc_view(path, content, false);
+                        cpp_fallback = pp_note.is_some();
+                        preproc_note = pp_note;
                         for (idx, code_line) in code.iter().enumerate() {
                             let ln = (idx + 1) as i64;
                             if line > 0 && (ln - line).abs() > 60 {
@@ -2102,6 +2174,12 @@ impl Tool for CodeIntelTool {
                             let code_trimmed = code_line.trim();
                             if code_trimmed.is_empty() {
                                 continue;
+                            }
+                            if code_trimmed.starts_with('#') {
+                                continue; // 预处理器指令行（`#if 0` 本身含 "if "）不是守卫
+                            }
+                            if pp_states.get(idx).map(|s| s.dead).unwrap_or(false) {
+                                continue; // 未激活分支里的"守卫"不是证据
                             }
                             if markers.iter().any(|m| code_trimmed.contains(*m)) {
                                 // 全量计数、只在超限时不入列表：让 `truncated_at_limit` 可信
@@ -2127,9 +2205,20 @@ impl Tool for CodeIntelTool {
                         "total_hits": guards_total,
                         "limit": MAX_HITS,
                         "truncated_at_limit": guards_total > MAX_HITS,
+                        "preprocess_note": preproc_note,
                     }),
                     provenance,
-                    uncertainty: Uncertainty::new("medium", &["guard_semantics_not_validated"], 0),
+                    uncertainty: Uncertainty::new(
+                        "medium",
+                        &{
+                            let mut reasons = vec!["guard_semantics_not_validated"];
+                            if cpp_fallback {
+                                reasons.push("cpp_preprocess_unavailable_line_level_fallback");
+                            }
+                            reasons
+                        },
+                        0,
+                    ),
                 }
             }
             IntelKind::FrameworkContext => {
@@ -2157,6 +2246,8 @@ impl Tool for CodeIntelTool {
                 let mut middleware: Vec<Value> = Vec::new();
                 let mut routes_total = 0usize;
                 let mut middleware_total = 0usize;
+                let mut frame_cpp_fallback = false;
+                let mut frame_preproc_note: Option<String> = None;
                 let mut provenance: Vec<Provenance> = Vec::new();
                 // 点名文件解析：索引未收录时按需读盘（见 read_requested_file）
                 let on_demand: Vec<(String, String)> =
@@ -2174,6 +2265,10 @@ impl Tool for CodeIntelTool {
                         // 不是真实路由/中间件（YAML 配置里的 `#` 注释同样会被剥掉，值本身保留）
                         let code = code_lines(content, hash_comment_language(path));
                         let originals: Vec<&str> = content.lines().collect();
+                        // 路由/中间件同样是"证据"：未激活分支里的绑定不算
+                        let (pp_states, pp_note) = preproc_view(path, content, false);
+                        frame_cpp_fallback = pp_note.is_some();
+                        frame_preproc_note = pp_note;
                         for (idx, code_line) in code.iter().enumerate() {
                             let ln = (idx + 1) as u32;
                             let text = originals.get(idx).copied().unwrap_or("");
@@ -2181,6 +2276,9 @@ impl Tool for CodeIntelTool {
                             let code_trimmed = code_line.trim();
                             if code_trimmed.is_empty() {
                                 continue;
+                            }
+                            if pp_states.get(idx).map(|s| s.dead).unwrap_or(false) {
+                                continue; // 未激活分支里的路由/中间件不是证据
                             }
                             if route_markers.iter().any(|m| code_trimmed.contains(*m))
                                 && (handler.is_empty() || trimmed.contains(handler))
@@ -2294,6 +2392,10 @@ impl Tool for CodeIntelTool {
                 }
                 let resolved = !handler.is_empty() && !handler_definitions.is_empty();
                 let mut reasons: Vec<&str> = vec!["framework_graph_not_resolved"];
+                if frame_cpp_fallback {
+                    // 想用 `cpp -E` 求真实分支但起不来 ⇒ 如实说明此刻只有行级判据
+                    reasons.push("cpp_preprocess_unavailable_line_level_fallback");
+                }
                 if !handler.is_empty() && !resolved {
                     reasons.push("handler_not_resolved");
                 }
@@ -2435,6 +2537,7 @@ impl Tool for CodeIntelTool {
                         "limit": MAX_HITS,
                         "truncated_at_limit": routes_total + middleware_total > MAX_HITS,
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
+                        "preprocess_note": frame_preproc_note,
                     }),
                     provenance,
                     uncertainty: Uncertainty::new(
@@ -3178,6 +3281,63 @@ mod tests {
             vec![10],
             "只应有真调用点 L10（接口声明 L2 与定义行 L6 都不算）: {d}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P7 补完：未激活分支（`#if 0`）里的内容不得作为**证据**交付。
+    /// 覆盖三条路径：守卫、调用图的 callers、数据流路径。
+    #[tokio::test]
+    async fn test_dead_branch_not_delivered_as_evidence() {
+        let root = std::env::temp_dir().join("ctx-audit-dead-evidence");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "int target (void) {\n    int n = 0;\n#if 0\n    if (n > 0) { return 1; }\n#endif\n    if (n > 2) { return 3; }\n    return n;\n}\n\nint caller_live (void) {\n    return target();\n}\n\n#if 0\nint caller_dead (void) {\n    return target();\n}\n#endif\n\n#if 0\nvoid dead_flow (void) {\n    char *dead_src = getenv(\"X\");\n    sink_call(dead_src);\n}\n#endif\n";
+        std::fs::write(root.join("src/z.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        // ① 守卫：`#if 0` 里的 if（L4）与指令行本身（L3）都不算，活分支的 L6 必须保留
+        let g = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SanitizerGuards);
+        let out = g.execute(json!({"file": "src/z.c", "line": 7})).await.unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let lines: Vec<u64> = d["data"]["guards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["line"].as_u64())
+            .collect();
+        assert!(!lines.contains(&3), "`#if 0` 指令行不是守卫: {d}");
+        assert!(!lines.contains(&4), "`#if 0` 里的 if 不是守卫: {d}");
+        assert!(lines.contains(&6), "活分支的 if 必须是守卫: {d}");
+
+        // ② callers：未激活分支里的调用点不是边（只应剩活分支 L11）
+        let c = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
+        let out2 = c
+            .execute(json!({"function": "target", "direction": "callers"}))
+            .await
+            .unwrap();
+        let d2 = out2.data.clone().expect("应有 envelope data");
+        let cl: Vec<u64> = d2["data"]["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["line"].as_u64())
+            .collect();
+        assert_eq!(cl, vec![11], "只应返回活分支里的调用点 L11: {d2}");
+
+        // ③ 数据流：源点只出现在未激活分支里 ⇒ 不产生路径
+        let f = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::DataflowPath);
+        let out3 = f
+            .execute(json!({"source": "dead_src", "sink": "sink_call"}))
+            .await
+            .unwrap();
+        let d3 = out3.data.clone().expect("应有 envelope data");
+        assert_eq!(
+            d3["data"]["path"].as_array().unwrap().len(),
+            0,
+            "未激活分支里的源点不得产出路径: {d3}"
+        );
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

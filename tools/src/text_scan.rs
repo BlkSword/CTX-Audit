@@ -78,6 +78,131 @@ pub fn preproc_line_states(content: &str) -> Vec<PreprocLine> {
     out
 }
 
+/// C/C++ 家族（`cpp -E` 只对这些有意义）。
+fn is_c_family_path(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx")
+}
+
+/// 该行是否适合打"探针"：只对条件编译区里的**普通代码行**打。
+/// 空行、注释行、预处理器指令行、续行都不打（打上去会改变预处理语义或产生假阴性）。
+fn probeable(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty()
+        || t.starts_with('#')
+        || t.starts_with("//")
+        || t.starts_with("/*")
+        || t.starts_with('*')
+        || t.ends_with('\\')
+    {
+        return false;
+    }
+    true
+}
+
+/// 用 `cpp -E` 求**条件编译区里哪些行真的参与了编译**（探针法）。
+///
+/// 做法：把条件编译区里的每个代码行前缀成 `CTX_MARK(<行号>)`，并在文件头定义
+/// `#define CTX_MARK(n) CTX_LIVE_##n`；预处理输出里出现 `CTX_LIVE_<n>` 即该行**存活**。
+///
+/// 为什么不用 `# <行号> "文件"` 行标记：GCC 会用**空行填充**未激活区间以保持行号对齐，
+/// "逐行递增"的映射会把填充空行当成"该行存活"——实测 `#ifdef` 未定义的分支正是这样被误判为活代码。
+///
+/// 失败（无 `cpp`、include 解析不了、写不出探针文件）一律返回 `Err`，由调用方**如实降级**。
+pub fn cpp_active_probe_lines(
+    path: &str,
+    content: &str,
+    conditional: &[bool],
+) -> Result<std::collections::HashSet<u32>, String> {
+    use std::collections::HashSet;
+    use std::process::Command;
+
+    let p = std::path::Path::new(path);
+    let dir = p
+        .parent()
+        .map(|d| d.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "probe.c".to_string());
+    let probe_path = dir.join(format!(".{}.ctxprobe.c", name));
+
+    let mut probe = String::from("#define CTX_MARK(n) CTX_LIVE_##n\n");
+    for (i, line) in content.lines().enumerate() {
+        if conditional.get(i).copied().unwrap_or(false) && probeable(line) {
+            probe.push_str(&format!("CTX_MARK({}) {}\n", i + 1, line));
+        } else {
+            probe.push_str(line);
+            probe.push('\n');
+        }
+    }
+    std::fs::write(&probe_path, probe).map_err(|e| format!("probe_write_failed: {}", e))?;
+    let out = Command::new("cpp")
+        .arg("-E")
+        .arg(format!("-I{}", dir.to_string_lossy()))
+        .arg(&probe_path)
+        .output()
+        .map_err(|e| format!("spawn_failed: {}", e));
+    let _ = std::fs::remove_file(&probe_path);
+    let out = out?;
+    if !out.status.success() {
+        return Err(format!(
+            "exit_{}: {}",
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("").trim()
+        ));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut live: HashSet<u32> = HashSet::new();
+    for tok in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+        if let Some(n) = tok.strip_prefix("CTX_LIVE_") {
+            if let Ok(v) = n.parse::<u32>() {
+                live.insert(v);
+            }
+        }
+    }
+    Ok(live)
+}
+
+/// 行级状态 + **可选的 `cpp -E` 真实分支求值**（best-effort）。
+///
+/// 合并规则：**只**在行级判据认为"位于条件编译区（`conditional`）"时，用 `cpp` 的结论把它升级为
+/// `dead` —— 该行没有出现在预处理输出里，说明这个分支在当前配置下**未激活**。
+/// 文件里根本没有条件编译时不调用 `cpp`（绝大多数文件走这条快路）。
+/// `cpp` 失败时返回行级兜底结果 **加一个非空原因**，调用方必须把它带进 `uncertainty`。
+pub fn preproc_line_states_with_cpp(
+    path: &str,
+    content: &str,
+    enable_cpp: bool,
+) -> (Vec<PreprocLine>, Option<String>) {
+    let mut states = preproc_line_states(content);
+    if !enable_cpp || !is_c_family_path(path) {
+        return (states, None);
+    }
+    if !states.iter().any(|s| s.conditional) {
+        return (states, None); // 无条件编译 ⇒ 不必起子进程
+    }
+    let conditional: Vec<bool> = states.iter().map(|s| s.conditional).collect();
+    let raw: Vec<&str> = content.lines().collect();
+    match cpp_active_probe_lines(path, content, &conditional) {
+        Ok(live) => {
+            for (i, st) in states.iter_mut().enumerate() {
+                let ln = (i + 1) as u32;
+                // 只把**确实是代码行**的判死：注释/空行缺席输出不代表分支未激活
+                if st.conditional
+                    && !live.contains(&ln)
+                    && probeable(raw.get(i).copied().unwrap_or(""))
+                {
+                    st.dead = true;
+                }
+            }
+            (states, None)
+        }
+        Err(e) => (states, Some(format!("cpp_unavailable: {}", e))),
+    }
+}
+
 /// 该语言的 `#` 是否为行注释（Python/Ruby/Shell/Perl/YAML 家族）
 pub fn hash_comment_language(path: &str) -> bool {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -322,6 +447,27 @@ mod tests {
         assert!(!live[3].dead, "`#elif 1` 分支必须判活: {:?}", live[3]);
         let dead = preproc_line_states("#if 0\nA\n#elif 0\nB\n#endif\n");
         assert!(dead[3].dead, "`#elif 0` 分支必须判死: {:?}", dead[3]);
+    }
+
+    /// `cpp -E` 路线：要么把**未激活分支**升级为 dead，要么**给出降级原因**（绝不静默）。
+    #[test]
+    fn test_preproc_with_cpp_refines_or_degrades_honestly() {
+        let src = "#ifdef FEATURE_X\nint a (void) { return 1; }\n#endif\nint b (void) { return 2; }\n";
+        let (st, note) = preproc_line_states_with_cpp("x.c", src, true);
+        match note {
+            None => assert!(st[1].dead, "未定义的 FEATURE_X 分支应被 cpp 判死: {:?}", st[1]),
+            Some(r) => assert!(r.starts_with("cpp_unavailable"), "降级原因必须可读: {r}"),
+        }
+        // 关掉 cpp：只标 conditional，不判死
+        let (st2, note2) = preproc_line_states_with_cpp("x.c", src, false);
+        assert!(note2.is_none());
+        assert!(!st2[1].dead && st2[1].conditional, "{:?}", st2[1]);
+        // 无条件的文件走快路：不触发 cpp，也不该有降级原因
+        let (st3, note3) = preproc_line_states_with_cpp("y.c", "int f (void) { return 0; }\n", true);
+        assert!(note3.is_none() && !st3[0].dead && !st3[0].conditional);
+        // 非 C 家族不跑 cpp
+        let (_, note4) = preproc_line_states_with_cpp("z.go", src, true);
+        assert!(note4.is_none());
     }
 
     #[test]
