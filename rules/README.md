@@ -32,4 +32,6 @@
 
 ## 自定义规则
 
-项目级规则放在 `<项目>/.ctx-audit/rules/`，优先级高于本目录（见 `docs/custom-rules.md`）。
+项目级规则放在 `<项目>/.ctx-audit/rules/`，优先级高于本目录。
+
+字段表、两类规则的写法与校验方式见 [CUSTOM-RULES.md](CUSTOM-RULES.md)。
