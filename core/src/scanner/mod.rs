@@ -209,6 +209,15 @@ pub struct Finding {
     /// 包围函数的起始行号
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosing_function_line: Option<usize>,
+    /// 降级前的规则原始档位（仅在严重度被下调时出现）。
+    ///
+    /// 动机：调用方按 `min_severity` 过滤时只看到降级后的结果，无从知道"曾有一条更高级别的
+    /// 候选被降下来"。与 `total_hits`/`truncated_at_limit` 一样：降级必须如实上报。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity_original: Option<String>,
+    /// 每条降级原因的出处（如 `likely_fp:…` / `adjust_severity:critical→info (file_role=…)`）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub severity_downgraded_by: Vec<String>,
 }
 
 // ── 证据引用类型 ──────────────────────────────────────────

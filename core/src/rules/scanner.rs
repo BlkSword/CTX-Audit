@@ -1026,6 +1026,81 @@ fn scaled_by_numeric_constant(args: &str) -> bool {
     (is_var(lhs) && is_num(rhs)) || (is_num(lhs) && is_var(rhs))
 }
 
+/// printf 族格式串的**编译期输出长度上界**；算不出上界时返回 `None`（= 不得据此判 likely_fp）。
+///
+/// 为什么必须这么严：宽度说明符与整数精度都是**最小值不是上限**。
+/// 实测（真实 CVE 用例）：`sprintf(buf, "%08lX%04X%02hX", time(NULL), getpid(), cnt)`
+/// 在 `pid = 0x61B24` 时产出 15 字符 + NUL = **16 字节**，写穿 `char buf[15]` 一字节
+/// （上游按缓冲区溢出修复）——而旧判据只看"字面量且无 %s"，把这条 `critical` 降成了 `info`。
+///
+/// 唯一能判有界的形态：
+///   · 纯字面量、`%%`
+///   · `%c`（恰好 1 字节）
+///   · **`%s` 带显式精度** `%.Ns`（字符串精度才是截断上限）
+/// 其余（`%d`/`%i`/`%u`/`%o`/`%x`/`%X`/`%f`/`%e`/`%g`/`%p`/`%n`，以及无精度的 `%s`）
+/// 一律算不出上界：整数精度只补零、浮点整数部分无界。
+fn printf_output_bound(fmt: &str) -> Option<usize> {
+    let b = fmt.as_bytes();
+    let mut i = 0usize;
+    let mut total = 0usize;
+    while i < b.len() {
+        if b[i] != b'%' {
+            total += 1;
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= b.len() {
+            return None; // 末尾孤立 `%`
+        }
+        if b[i] == b'%' {
+            total += 1;
+            i += 1;
+            continue;
+        }
+        // 标志（`-+ #0'`）
+        while i < b.len() && matches!(b[i], b'-' | b'+' | b' ' | b'#' | b'0' | b'\'') {
+            i += 1;
+        }
+        // 精度：`.<数字>`（`%.*s` 这类运行期精度算不出上界）
+        let mut precision: Option<usize> = None;
+        if i < b.len() && b[i] == b'.' {
+            i += 1;
+            let start = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            if start == i {
+                return None;
+            }
+            precision = fmt[start..i].parse::<usize>().ok();
+        } else {
+            // 宽度（最小值）——吃掉但不作为上界
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        // 长度修饰符
+        while i < b.len() && matches!(b[i], b'h' | b'l' | b'L' | b'j' | b'z' | b't' | b'q') {
+            i += 1;
+        }
+        if i >= b.len() {
+            return None;
+        }
+        let conv = b[i] as char;
+        i += 1;
+        match conv {
+            'c' => total += 1,
+            's' => match precision {
+                Some(p) => total += p, // 字符串精度 = 截断上限
+                None => return None,
+            },
+            _ => return None, // 其余转换都没有编译期上界
+        }
+    }
+    Some(total)
+}
+
 /// 评估 sink 调用的参数是否攻击者不可控（likely_fp）。
 /// 返回 Some(原因) 表示可降级为 info：
 /// - 参数全部为字面量（如 os.popen("netstat ...")）
@@ -1060,8 +1135,8 @@ fn evaluate_likely_fp_args(content: &str, match_start: usize, match_end: usize) 
         let lits = extract_string_literals(&args);
         // printf 族：第一个字符串字面量即格式串（可能跳过 dst/stream 参数，取首个字面量近似）
         if let Some(fmt) = lits.first() {
-            if !fmt.contains("%s") && !fmt.contains("%[") && !fmt.is_empty() {
-                return Some("printf 族格式串为字面量且无 %s，输出有界");
+            if !fmt.is_empty() && printf_output_bound(fmt).is_some() {
+                return Some("printf 族格式串为字面量且每个转换都有编译期上界，输出有界");
             }
         }
     }
@@ -1236,11 +1311,30 @@ fn create_finding(
         file_role.as_deref().unwrap_or("production"),
         barriers.as_deref().unwrap_or(&[]),
     );
+    // 降级必须**留痕**：调用方按 `min_severity` 过滤时，只看得到"降过级之后"的结果，
+    // 无从知道曾有一条更高级别的候选被降下来（这与 `total_hits`/`truncated_at_limit` 那套
+    // "任何截断/降级都如实上报"的契约不对称）。
+    let mut downgraded_by: Vec<String> = Vec::new();
+    if adjusted != raw_severity {
+        downgraded_by.push(format!(
+            "adjust_severity:{}→{} (file_role={} barriers={})",
+            raw_severity,
+            adjusted,
+            file_role.as_deref().unwrap_or("production"),
+            barriers.as_deref().map(|b| b.len()).unwrap_or(0)
+        ));
+    }
     // likely_fp：参数攻击者不可控（全字面量 / 安全格式串），降为 info
-    let severity = if likely_fp.is_some() {
+    let severity = if let Some(reason) = likely_fp {
+        downgraded_by.push(format!("likely_fp:{}", reason));
         "info".to_string()
     } else {
         adjusted
+    };
+    let severity_original = if downgraded_by.is_empty() {
+        None
+    } else {
+        Some(raw_severity.clone())
     };
 
     // 证据补全（R-缺陷 A）：规则类 finding 此前 source/sink_snippet、enclosing_function、
@@ -1334,6 +1428,8 @@ fn create_finding(
         barriers,
         reasoning_hint,
         evidence_refs,
+        severity_original,
+        severity_downgraded_by: downgraded_by,
         ..Default::default()
     }
 }
@@ -1950,12 +2046,44 @@ mod tests {
 
     #[test]
     fn test_likely_fp_printf_bounded_format() {
-        // printf 族字面量格式串无 %s → likely_fp（json.c sprintf 场景）
+        // **本轮修正**：`%d:%d: … %c` 里的宽度/整数精度都是**最小**值，算不出输出上界
+        // （实测真实 CVE 用例 `"%08lX%04X%02hX"` 会写穿 15 字节缓冲）⇒ 不再降级。
         let content = r#"{  sprintf (error, "%d:%d: Expected , before %c", cur_line, e_off, b);"#;
         let start = content.find("sprintf (").unwrap();
-        // 模拟规则命中区间（包含空格与左括号）
         let end = start + "sprintf (".len();
-        assert!(evaluate_likely_fp_args(content, start, end).is_some());
+        assert!(evaluate_likely_fp_args(content, start, end).is_none());
+
+        // 有编译期上界的形态才降级：纯字面量 / `%c` / 带精度的 `%s`
+        for content in [
+            r#"sprintf(buf, "static text")"#,
+            r#"sprintf(buf, "%c", ch)"#,
+            r#"sprintf(buf, "%.8s", user)"#,
+        ] {
+            let start = content.find("sprintf(").unwrap();
+            let end = start + "sprintf(".len();
+            assert!(
+                evaluate_likely_fp_args(content, start, end).is_some(),
+                "应有上界: {content}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_printf_output_bound() {
+        // 有上界
+        assert_eq!(printf_output_bound("ab"), Some(2));
+        assert_eq!(printf_output_bound("%c"), Some(1));
+        assert_eq!(printf_output_bound("%.8s"), Some(8));
+        assert_eq!(printf_output_bound("x%c%c"), Some(3));
+        assert_eq!(printf_output_bound("100%%"), Some(4));
+        // 无上界：宽度/整数精度只是最小值
+        assert_eq!(printf_output_bound("%08lX%04X%02hX"), None);
+        assert_eq!(printf_output_bound("%d"), None);
+        assert_eq!(printf_output_bound("%04d"), None);
+        assert_eq!(printf_output_bound("%.4d"), None);
+        assert_eq!(printf_output_bound("%s"), None);
+        assert_eq!(printf_output_bound("%f"), None);
+        assert_eq!(printf_output_bound("%.*s"), None);
     }
 
     #[test]

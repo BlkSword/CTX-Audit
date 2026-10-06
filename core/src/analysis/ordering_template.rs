@@ -277,6 +277,8 @@ impl OrderingMechanism {
             }),
             enclosing_function: Some(body.name.clone()),
             enclosing_function_line: Some(body.start_line),
+            // 该路径不做严重度降级（severity 直接取自配置）⇒ 降级留痕字段留空
+            ..Default::default()
         })
     }
 }
