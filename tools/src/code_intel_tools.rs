@@ -1002,6 +1002,45 @@ const NON_CALL_KEYWORDS: &[&str] = &[
 ];
 
 /// 纯函数：从一行里提取 `(` 前的标识符（取最后一个点后的名字），过滤结构性关键词。
+/// 该行是否是**目标函数的定义头**（`… name(参数) {`）——用于非 C 语言的 callers 过滤。
+///
+/// 判据：名字后面的参数表闭合之后，本行只剩 `{`（Java/Go/Rust 的定义头），或本行到此为止
+/// 且**下一非空行**以 `{` 开头（返回类型另一行的 C 风格）。像 `if (h.handle("x")) {` 这种
+/// "调用出现在条件里"的行闭合括号之后还有内容 ⇒ 不算定义头；`h.handle("x")` 这种纯调用
+/// 语句后面没有 `{` ⇒ 也不算。
+fn looks_like_definition_header(text: &str, name: &str, next_is_brace: bool) -> bool {
+    let t = text.trim();
+    let t = match t.find("//") {
+        Some(i) => t[..i].trim(),
+        None => t,
+    };
+    if name.is_empty() || t.starts_with("if") || t.starts_with("for") || t.starts_with("while")
+        || t.starts_with("switch") || t.starts_with("return") || t.starts_with("case")
+    {
+        return false;
+    }
+    let with_paren = format!("{}(", name);
+    let open = match t.find(&with_paren) {
+        Some(p) => p + with_paren.len() - 1,
+        None => return false,
+    };
+    let mut depth = 0i32;
+    for (i, ch) in t[open..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let rest = t[open + i + 1..].trim();
+                    return rest == "{" || (rest.is_empty() && next_is_brace);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// 目标函数体内**解析不出目标**的调用点数量：函数指针派发 / 成员指针 / 表下标调用。
 ///
 /// 这是 `unresolved_edges` 的 C 口径。旧的"整文件子串探测"只认脚本语言的动态派发关键字，
@@ -1494,11 +1533,42 @@ impl Tool for CodeIntelTool {
                         } else {
                             Vec::new()
                         };
+                        // 目标函数**自己的定义行**不是调用点。C 由 `c_bodies`（调用点必须落在
+                        // 某个函数体内）挡住；非 C 没有体过滤，于是 Java 的
+                        // `public int handle(String s) {` 被当成 caller（实测 FP；Go/Rust/Python
+                        // 无此问题——它们的定义行带 `func`/`fn`/`def` 关键字，已被调用点判据排除）。
+                        // 这里统一用索引里的定义行下手，不去推广 C 的体过滤。
+                        let own_def_lines: Vec<u32> = sindex
+                            .file_index(path)
+                            .map(|fi| {
+                                sindex
+                                    .definitions_in_file(fi)
+                                    .into_iter()
+                                    .filter(|(n, _, _)| n == function)
+                                    .map(|(_, l, _)| l)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         for needle in &needles {
                             for (line, text) in find_call_sites_in_code(&lines, &code, needle, scan_cap) {
                                 let idx = (line as usize).saturating_sub(1);
                                 // 接口/抽象方法**声明**不是调用点（Go/Java/TS 接口体）
                                 if in_interface_block(&lines, idx) {
+                                    continue;
+                                }
+                                if own_def_lines.contains(&line) {
+                                    continue; // 定义行本身（索引里认得出来时）
+                                }
+                                // 索引认不出该定义时（实测：Java 的 `public int handle(String s) {`
+                                // 不在符号索引里）用形态判据兜底：整行只有"修饰/类型 + name(参数) {"
+                                let next_is_brace = code
+                                    .iter()
+                                    .skip(idx + 1)
+                                    .map(|s| s.trim())
+                                    .find(|s| !s.is_empty())
+                                    .map(|s| s.starts_with('{'))
+                                    .unwrap_or(false);
+                                if looks_like_definition_header(&text, function, next_is_brace) {
                                     continue;
                                 }
                                 if !c_bodies.is_empty()
@@ -3013,6 +3083,39 @@ mod tests {
             "{d2}"
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 非 C 的 callers 不得把**目标函数自己的定义行**算成调用点。
+    /// 实测形态：Java 的 `public int handle(String s) {`（Go/Rust/Python 的定义行带
+    /// `func`/`fn`/`def` 关键字，已被调用点判据排除；Java 没有，故由定义行判据统一挡）。
+    #[tokio::test]
+    async fn test_callers_exclude_own_definition_line_java() {
+        let root = std::env::temp_dir().join("ctx-audit-callers-java-def");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "interface Handler {\n    int handle(String s);\n}\n\nclass Impl implements Handler {\n    public int handle(String s) {\n        return s.length();\n    }\n    int use(Handler h) {\n        return h.handle(\"x\");\n    }\n}\n";
+        std::fs::write(root.join("src/A.java"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
+        let out = tool
+            .execute(json!({"function": "handle", "direction": "callers"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let lines: Vec<u64> = d["data"]["callers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["line"].as_u64())
+            .collect();
+        assert_eq!(
+            lines,
+            vec![10],
+            "只应有真调用点 L10（接口声明 L2 与定义行 L6 都不算）: {d}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
