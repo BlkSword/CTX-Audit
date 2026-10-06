@@ -336,6 +336,34 @@ pub struct GraphSnapshot {
 /// 提取匹配行周围的代码上下文
 /// 从命中行向上查找最近的函数/方法签名，返回函数名。
 ///
+/// 声明行里不能作为函数名的关键字（控制流 / 运算符 / 声明引导词）。
+fn fn_decl_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "for"
+            | "while"
+            | "switch"
+            | "else"
+            | "do"
+            | "case"
+            | "return"
+            | "goto"
+            | "break"
+            | "continue"
+            | "sizeof"
+            | "defined"
+            | "typedef"
+            | "static_assert"
+            | "struct"
+            | "union"
+            | "enum"
+            | "new"
+            | "delete"
+            | "throw"
+            | "catch"
+    )
+}
+
 /// 规则类 finding 此前不带 `enclosing_function`，LLM 无法直接用函数名查
 /// query_callers/query_callees（规则型命中的证据完整率长期为 0）。这里有界向上扫描
 /// （最多 200 行）并匹配各语言常见的函数签名形态。
@@ -352,6 +380,7 @@ pub fn find_enclosing_function_name_and_line(
     static GO_RE: OnceLock<regex::Regex> = OnceLock::new();
     static PHP_RE: OnceLock<regex::Regex> = OnceLock::new();
     static C_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static C_TOP_RE: OnceLock<regex::Regex> = OnceLock::new();
 
     let (re, group) = match language.to_lowercase().as_str() {
         "rust" => (
@@ -405,13 +434,52 @@ pub fn find_enclosing_function_name_and_line(
     if line == 0 || line > lines.len() {
         return None;
     }
+    let c_like = matches!(
+        language.to_lowercase().as_str(),
+        "c" | "cpp" | "c++" | "c-header"
+    );
+    // 下一个非空、非注释行：C 的"返回类型一行、名字一行"风格要靠它确认函数体开始。
+    let next_code = |from: usize| -> Option<&str> {
+        lines
+            .iter()
+            .skip(from + 1)
+            .map(|s| s.trim())
+            .find(|s| !s.is_empty() && !s.starts_with("//") && !s.starts_with("/*") && !s.starts_with('*'))
+    };
     let start = line.saturating_sub(200);
     for idx in (start..line).rev() {
         let text = lines.get(idx)?;
+        let trimmed = text.trim();
+        // 声明 `typedef …` 永远不是函数定义。`typedef int (*handler_fn) (const char *);`
+        // 曾经被 C 兜底正则匹配成"名为 `int` 的函数"，把 finding 的 enclosing_function
+        // 指到一个不存在的函数上（索引路径在同一位置给的是正确名字 ⇒ 两条实现不一致）。
+        let is_typedef = trimmed.starts_with("typedef");
         if let Some(caps) = re.captures(text) {
             if let Some(m) = caps.get(group).or_else(|| caps.get(1)) {
                 let name = m.as_str().trim();
-                if !name.is_empty() {
+                // `名字` 之后紧跟 `(*` ⇒ 函数指针声明，不是函数定义
+                let tail = text.get(m.end()..).unwrap_or("").trim_start();
+                let fn_ptr = tail.starts_with("(*");
+                if !name.is_empty() && !fn_decl_keyword(name) && !is_typedef && !fn_ptr {
+                    return Some((name.to_string(), idx + 1));
+                }
+            }
+        }
+        // C 形态 ②：**顶格 `名字(`**（返回类型写在上一行，nginx / pppd 的常见排版）。
+        // 原正则要求"类型 名字("连写，于是这类真函数头匹配不上，扫描会继续上溯到
+        // 无关的声明行。判据：名字不是关键字，且本行以 `{` 结尾或下一非空行以 `{` 开头
+        // ——后者把"顶层函数调用"与"函数定义"分开。
+        if c_like && !is_typedef {
+            if let Some(caps) = C_TOP_RE
+                .get_or_init(|| {
+                    regex::Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap()
+                })
+                .captures(trimmed)
+            {
+                let name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                let opens = trimmed.ends_with('{')
+                    || next_code(idx).map(|s| s.starts_with('{')).unwrap_or(false);
+                if !name.is_empty() && !fn_decl_keyword(name) && opens {
                     return Some((name.to_string(), idx + 1));
                 }
             }
@@ -4020,6 +4088,50 @@ fn sink_context_hint(vuln_type: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `typedef int (*fp)(const char *);` 不是函数定义：C 兜底正则曾把它匹配成
+    /// "名为 `int` 的函数"（该行比真函数头更靠近目标行时先命中），使 finding 的
+    /// `enclosing_function` 指向不存在的函数；同名位置的索引路径给的是正确名字。
+    #[test]
+    fn test_enclosing_function_ignores_typedef_function_pointer() {
+        let src = "static char g_buf[16];\n\ntypedef int (*handler_fn) (const char *);\n\nstatic handler_fn dispatch[4];\n\nint\ncopy_name (char *dst, const char *src, int len)\n{\n    char local[32];\n\n    memcpy (local, src, len);\n    strcpy (dst, local);\n    return 0;\n}\n";
+        assert_eq!(
+            find_enclosing_function_name_and_line(src, 13, "c"),
+            Some(("copy_name".to_string(), 8))
+        );
+        assert_eq!(
+            find_enclosing_function_name(src, 13, "c").as_deref(),
+            Some("copy_name")
+        );
+    }
+
+    /// 顶格 `名字(` + 下一行 `{`（返回类型在上一行）必须被认成函数头——
+    /// 原正则要求"类型 名字("连写，这类真函数头匹配不上。
+    #[test]
+    fn test_enclosing_function_accepts_multiline_c_header() {
+        let src = "static ngx_int_t\nngx_http_foo (ngx_http_request_t *r)\n{\n    int n = r->n;\n    return n;\n}\n";
+        assert_eq!(
+            find_enclosing_function_name_and_line(src, 4, "c"),
+            Some(("ngx_http_foo".to_string(), 2))
+        );
+    }
+
+    /// 只有 typedef 与函数指针变量、没有函数定义时，必须返回 None（不得编造名字）。
+    #[test]
+    fn test_enclosing_function_none_for_typedef_only() {
+        let src = "typedef int (*handler_fn) (const char *);\n\nstatic handler_fn dispatch[4];\n";
+        assert_eq!(find_enclosing_function_name_and_line(src, 3, "c"), None);
+    }
+
+    /// 单行签名形态不得回退：`int add (int a, int b) {` 仍解析出 `add`。
+    #[test]
+    fn test_enclosing_function_keeps_single_line_c_header() {
+        let src = "int add (int a, int b)\n{\n    return a + b;\n}\n";
+        assert_eq!(
+            find_enclosing_function_name_and_line(src, 3, "c"),
+            Some(("add".to_string(), 1))
+        );
+    }
 
     #[test]
     fn test_classify_file_role_vendor() {
