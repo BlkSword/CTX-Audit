@@ -1559,6 +1559,9 @@ mod tests {
         )
         .unwrap();
         invalidate(&root);
+        // 该夹具出现过一次间歇失败（同一轮里"刷新"后的第二个 build 看不到刚写入的文件）：
+        // 先把磁盘缓存也清掉，让 refresh 路径不依赖上一次运行留下的 persist 文件。
+        let _ = std::fs::remove_file(persist_path(&root));
         let (index2, _, _) = get_or_build(&root, true, None);
         assert!(
             !index2.definitions("outer", 5).is_empty(),

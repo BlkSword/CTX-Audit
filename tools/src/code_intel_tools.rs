@@ -1576,6 +1576,9 @@ impl Tool for CodeIntelTool {
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 file 参数".to_string()))?;
                 let line = input["line"].as_i64().unwrap_or(0).max(0) as usize;
                 let depth = input["depth"].as_i64().unwrap_or(40).clamp(1, 200) as usize;
+                // 前向窗口：危险点**之后**的谓词/危险操作常常才是决定性证据。
+                // 默认 8 行、上限 40；`forward: 0` 可退回纯后向（用于与旧二进制做 A/B 对照）。
+                let forward = input["forward"].as_i64().unwrap_or(8).clamp(0, 40) as usize;
                 let symbol = input["symbol"].as_str().unwrap_or("");
                 let mut snippets: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
@@ -1590,6 +1593,8 @@ impl Tool for CodeIntelTool {
                 let mut includes_function_header = false;
                 let mut window_start = 0usize;
                 let mut window_end = 0usize;
+                let mut forward_used = 0usize;
+                let mut forward_bounded_by: &str = "requested";
                 // 作用域锚点位置（在 match 之外读取，故在此声明）
                 let mut scope_anchor: Value = Value::Null;
                 // 点名文件解析：索引未收录时**按需从磁盘读取**（见 read_requested_file）。
@@ -1750,7 +1755,30 @@ impl Tool for CodeIntelTool {
                             None => center.saturating_sub(depth),
                         };
                         window_start = start;
-                        window_end = center;
+                        // 前向上界取三者最小：目标行 + forward、所在函数体末行、文件末行。
+                        // 不越过函数体，避免把下一个函数的代码当成"后文证据"。
+                        let body_end = function_def_line
+                            .and_then(|l| {
+                                let idx = (l as usize).saturating_sub(1);
+                                code_refs.get(idx).map(|_| {
+                                    let (_, end) = body_span(&code_refs, idx, brace);
+                                    end + 1 // 0-based 闭区间 → 1-based 行号
+                                })
+                            })
+                            .unwrap_or(lines.len());
+                        let requested_end = center.saturating_add(forward);
+                        let end_cap = body_end.min(lines.len());
+                        window_end = requested_end.min(end_cap);
+                        forward_used = window_end.saturating_sub(center);
+                        forward_bounded_by = if window_end < requested_end {
+                            if end_cap == body_end {
+                                "function_body"
+                            } else {
+                                "file_end"
+                            }
+                        } else {
+                            "requested"
+                        };
                         // 作用域锚点的**位置事实**：函数头落在标称深度窗口内，还是因为函数太长
                         // 而必须把窗口向前扩展才装得下。注意窗口起点是 `min(center-depth, 头行-1)`
                         //（见上），所以解析成功时头**一定**在返回窗口里——这里区分的是"窗口被扩展过"，
@@ -1760,11 +1788,17 @@ impl Tool for CodeIntelTool {
                             Some(l) if (l as usize) + depth > center => json!("within_depth"),
                             Some(_) => json!("extended_for_long_function"),
                         };
-                        for i in start..center {
+                        for i in start..window_end {
                             let text = lines.get(i).copied().unwrap_or("");
                             let is_header = function_def_line.map(|l| l as usize == i + 1).unwrap_or(false);
                             let is_target = i + 1 == center;
-                            if symbol.is_empty() || is_header || is_target || text.contains(symbol) {
+                            let is_after_target = i + 1 > center;
+                            if is_after_target
+                                || symbol.is_empty()
+                                || is_header
+                                || is_target
+                                || text.contains(symbol)
+                            {
                                 if is_header {
                                     includes_function_header = true;
                                 }
@@ -1779,6 +1813,7 @@ impl Tool for CodeIntelTool {
                                     "text": text.trim().chars().take(200).collect::<String>(),
                                     "is_function_header": is_header,
                                     "is_target": is_target,
+                                    "is_after_target": is_after_target,
                                 }));
                             }
                         }
@@ -1806,6 +1841,9 @@ impl Tool for CodeIntelTool {
                         "target_line": if line > 0 { json!(line) } else { Value::Null },
                         "window": {"start_line": window_start + 1, "end_line": window_end},
                         "depth": depth,
+                        "forward": forward,
+                        "forward_lines_returned": forward_used,
+                        "forward_bounded_by": forward_bounded_by,
                         "lines_returned": snippets.len(),
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
                         "snippets": snippets,
@@ -1813,10 +1851,17 @@ impl Tool for CodeIntelTool {
                     provenance,
                     uncertainty: Uncertainty::new(
                         "high",
-                        &[
-                            "backward_prefix_not_dataflow_slice",
-                            "function_header_included_when_found",
-                        ],
+                        &{
+                            let mut reasons = vec![
+                                "backward_prefix_not_dataflow_slice",
+                                "function_header_included_when_found",
+                            ];
+                            if forward_used > 0 {
+                                // 如实说明：目标行之后的这段是**固定下探**，不是数据流推导
+                                reasons.push("forward_window_is_heuristic_lookahead");
+                            }
+                            reasons
+                        },
                         0,
                     ),
                 }
@@ -2795,6 +2840,73 @@ mod tests {
         assert_eq!(d["data"]["function"], "ngx_http_foo", "{d}");
         assert_eq!(d["data"]["function_def_line"], 2, "{d}");
         assert_eq!(d["data"]["includes_function_header"], true, "{d}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 前向窗口：决定性证据常在目标行**之后**（实测形态：locus 停在注释行，
+    /// 真正的谓词与拷贝在下一行，旧实现里它们完全不在窗口内）。
+    #[tokio::test]
+    async fn test_slice_forward_window_delivers_lines_after_target() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-forward");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "static char buf[16];\n\nint\ncopy_len (char *dst, const char *src, int len)\n{\n    /* length comes from the peer */\n    if (len > 0)\n        memcpy (dst, src, len);\n    return 0;\n}\n";
+        std::fs::write(root.join("src/a.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        // 目标行取**注释行**（真实 CVE 形态），决定性行在其后
+        let out = tool
+            .execute(json!({"file": "src/a.c", "line": 6, "depth": 40}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["function"], "copy_len", "{d}");
+        // 窗口如实扩到函数体末行，且不越界
+        assert_eq!(d["data"]["window"]["end_line"], 10, "{d}");
+        assert_eq!(d["data"]["forward_bounded_by"], "function_body", "{d}");
+        let snips = d["data"]["snippets"].as_array().unwrap();
+        let after: Vec<&serde_json::Value> =
+            snips.iter().filter(|s| s["is_after_target"] == true).collect();
+        assert!(after.len() >= 2, "目标行之后应有谓词与拷贝: {d}");
+        assert!(
+            after.iter().any(|s| s["text"].as_str().unwrap_or("").contains("memcpy")),
+            "决定性拷贝行必须交付: {d}"
+        );
+        assert_eq!(d["uncertainty"]["reasons"].as_array().unwrap().len() >= 3, true, "{d}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `forward: 0` 必须退回**纯后向**窗口——旧行为可复现，A/B 对照才有意义。
+    #[tokio::test]
+    async fn test_slice_forward_zero_keeps_backward_only_window() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-forward-zero");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "static char buf[16];\n\nint\ncopy_len (char *dst, const char *src, int len)\n{\n    /* length comes from the peer */\n    if (len > 0)\n        memcpy (dst, src, len);\n    return 0;\n}\n";
+        std::fs::write(root.join("src/a.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/a.c", "line": 8, "depth": 40, "forward": 0}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["window"]["end_line"], 8, "{d}");
+        assert_eq!(d["data"]["forward_lines_returned"], 0, "{d}");
+        assert!(
+            d["data"]["snippets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["is_after_target"] == false),
+            "forward=0 不得返回目标行之后的片段: {d}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
