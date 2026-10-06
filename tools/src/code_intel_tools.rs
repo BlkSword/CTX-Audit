@@ -1002,6 +1002,46 @@ const NON_CALL_KEYWORDS: &[&str] = &[
 ];
 
 /// 纯函数：从一行里提取 `(` 前的标识符（取最后一个点后的名字），过滤结构性关键词。
+/// 目标函数体内**解析不出目标**的调用点数量：函数指针派发 / 成员指针 / 表下标调用。
+///
+/// 这是 `unresolved_edges` 的 C 口径。旧的"整文件子串探测"只认脚本语言的动态派发关键字，
+/// 于是 C 的 `p->handler(...)`、`(*fp)(...)`、`table[i](...)` 一条都不计，该字段在 C 上
+/// 结构性恒 0 —— 等于对外宣称"调用图已闭合"。
+///
+/// 计数口径：逐行取三类模式出现次数的**最大值**，避免 `(*table[i])(x)` 这类重叠形态
+/// 被重复计数。
+pub fn count_indirect_call_sites(code_refs: &[&str], start: usize, end: usize) -> u32 {
+    use std::sync::OnceLock;
+    static MEMBER: OnceLock<regex::Regex> = OnceLock::new();
+    static DEREF: OnceLock<regex::Regex> = OnceLock::new();
+    static INDEX: OnceLock<regex::Regex> = OnceLock::new();
+
+    let member = MEMBER.get_or_init(|| {
+        regex::Regex::new(r"->\s*[A-Za-z_][A-Za-z0-9_]*\s*\(").unwrap()
+    });
+    let deref = DEREF.get_or_init(|| {
+        regex::Regex::new(r"\(\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\(").unwrap()
+    });
+    let index = INDEX.get_or_init(|| {
+        regex::Regex::new(r"[A-Za-z_][A-Za-z0-9_]*\s*\[[^\]\n]*\]\s*\(").unwrap()
+    });
+
+    if code_refs.is_empty() || end < start {
+        return 0;
+    }
+    let mut n = 0u32;
+    for idx in start..=end.min(code_refs.len().saturating_sub(1)) {
+        let text = code_refs.get(idx).copied().unwrap_or("");
+        let per_line = member
+            .find_iter(text)
+            .count()
+            .max(deref.find_iter(text).count())
+            .max(index.find_iter(text).count());
+        n += per_line as u32;
+    }
+    n
+}
+
 pub fn callee_names(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = line;
@@ -1398,6 +1438,8 @@ impl Tool for CodeIntelTool {
                 let mut callees: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
                 let mut unresolved = 0u32;
+                // 脚本语言的动态派发标记：**只作为非 C 类文件的兜底**。
+                // C 类文件改走"逐调用点计数"（`count_indirect_call_sites`），见下方注释。
                 let dynamic_markers =
                     ["getattr", "eval(", "apply(", "invoke(", "call_user_func", "Reflect."];
                 // 符号索引：callees 必须用**标识符精确**的定义——子串式 `find_definitions` 会把
@@ -1534,7 +1576,33 @@ impl Tool for CodeIntelTool {
                             }
                         }
                     }
-                    if dynamic_markers.iter().any(|m| content.contains(*m)) {
+                    // ── 未解析边：从"每文件一次的子串探测"改为"逐调用点计数" ──
+                    // 旧判据是"整个文件里出现过脚本语言的动态派发关键字就 +1"，于是 C 的
+                    // `p->handler(...)` / `(*fp)(...)` / `table[i](...)` **一条都不计**，
+                    // `unresolved_edges` 在 C 上结构性恒 0 —— 那等于向判定者宣称"调用图已闭合"。
+                    // 口径与查询方向无关（它描述"这张图有多少条边解析不出来"）：始终统计
+                    // **目标函数体内**的间接调用点。
+                    if is_c_like_path(path) {
+                        let code_u = code_lines(content, hash_comment_language(path));
+                        let code_refs_u: Vec<&str> = code_u.iter().map(|s| s.as_str()).collect();
+                        let brace_u = is_brace_language(path);
+                        let def_lines_u: Vec<u32> = sindex
+                            .file_index(path)
+                            .map(|fi| {
+                                sindex
+                                    .definitions_in_file(fi)
+                                    .into_iter()
+                                    .filter(|(n, _, _)| n == function)
+                                    .map(|(_, l, _)| l)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        for def_line in def_lines_u {
+                            let def_idx = (def_line as usize).saturating_sub(1);
+                            let (s0, e0) = body_span(&code_refs_u, def_idx, brace_u);
+                            unresolved += count_indirect_call_sites(&code_refs_u, s0, e0);
+                        }
+                    } else if dynamic_markers.iter().any(|m| content.contains(*m)) {
                         unresolved += 1;
                     }
                     if callers.len() + callees.len() >= scan_cap {
@@ -2906,6 +2974,43 @@ mod tests {
                 .iter()
                 .all(|s| s["is_after_target"] == false),
             "forward=0 不得返回目标行之后的片段: {d}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `unresolved_edges` 的 C 口径：函数指针 / 成员指针 / 表下标派发必须**逐调用点如实计数**，
+    /// 而且必须与查询方向无关；没有派发的函数不得被整文件一刀切记成"有未解析边"。
+    #[tokio::test]
+    async fn test_call_hierarchy_counts_c_indirect_call_sites() {
+        let root = std::env::temp_dir().join("ctx-audit-indirect-edges");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "typedef int (*handler_fn) (const char *);\n\nstruct ops {\n    handler_fn run;\n};\n\nstatic handler_fn table[4];\n\nint\nrun_dispatch (struct ops *o, int idx, const char *arg)\n{\n    table[idx] (arg);\n    o->run (arg);\n    (*fp) (arg);\n    return 0;\n}\n\nint\nplain_call (void)\n{\n    return helper (1);\n}\n";
+        std::fs::write(root.join("src/d.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
+        let out = tool
+            .execute(json!({"function": "run_dispatch", "direction": "callees"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let u = d["uncertainty"]["unresolved_edges"].as_u64().unwrap_or(0);
+        assert!(u >= 3, "三类派发点都应被计数（表下标/成员指针/函数指针）: {d}");
+        assert_eq!(d["uncertainty"]["level"], "high", "{d}");
+
+        // 对照：无派发的函数必须是 0（旧实现会因文件里出现 `(*…)` 之类整文件 +1）
+        let out2 = tool
+            .execute(json!({"function": "plain_call", "direction": "callees"}))
+            .await
+            .unwrap();
+        let d2 = out2.data.clone().expect("应有 envelope data");
+        assert_eq!(
+            d2["uncertainty"]["unresolved_edges"].as_u64().unwrap_or(0),
+            0,
+            "{d2}"
         );
 
         let _ = std::fs::remove_dir_all(&root);
