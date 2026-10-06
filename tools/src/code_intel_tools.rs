@@ -999,6 +999,90 @@ fn preproc_view(
     crate::text_scan::preproc_line_states_with_cpp(path, content, enable)
 }
 
+/// 不该驱动"前向扩展 / 声明交付"的标识符：C/C++ 关键字与类型名。
+/// （不把 `len`/`buf`/`src` 这类常见变量名放进来——它们恰恰是有用的驱动器；
+/// 极短名如 `i`/`n` 由调用方的长度阈值过滤。）
+fn is_stop_ident(ident: &str) -> bool {
+    matches!(
+        ident,
+        "int" | "char"
+            | "long"
+            | "short"
+            | "float"
+            | "double"
+            | "void"
+            | "unsigned"
+            | "signed"
+            | "struct"
+            | "union"
+            | "enum"
+            | "const"
+            | "static"
+            | "extern"
+            | "return"
+            | "sizeof"
+            | "case"
+            | "switch"
+            | "while"
+            | "for"
+            | "else"
+            | "goto"
+            | "break"
+            | "continue"
+            | "default"
+            | "typedef"
+            | "register"
+            | "volatile"
+            | "inline"
+            | "auto"
+            | "if"
+            | "do"
+            | "new"
+            | "delete"
+            | "class"
+            | "public"
+            | "private"
+            | "protected"
+            | "namespace"
+            | "template"
+            | "typename"
+            | "using"
+            | "true"
+            | "false"
+            | "null"
+            | "nullptr"
+            | "defined"
+            | "include"
+            | "define"
+    )
+}
+
+/// 找 `ident` 的**声明行**（最多 `max` 条，按文件顺序）。
+///
+/// 只认"类型… 名字[可选数组] ;"形态，避免把赋值/调用语句当成声明
+/// （`row->n_columns = 0;` 不匹配：`-`/`>` 不在类型片段的字符集里）。
+/// 同一字段名可能在多个结构体里声明（cmark 的 `n_columns` 有 18/24 两处），
+/// 因此返回多条，让判定者按上下文取舍——引擎只交付原文，不做推断。
+fn find_declaration_lines(lines: &[&str], ident: &str, max: usize) -> Vec<usize> {
+    let pattern = format!(
+        r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*\s+)+[*\s]*{}\s*(?:\[[^\]]*\])?\s*;",
+        regex::escape(ident)
+    );
+    let Ok(re) = regex::Regex::new(&pattern) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if re.is_match(l) {
+            out.push(i);
+            if out.len() >= max {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// C/C++ 源文件判定（调用图的 C 专用规则用）。
 fn is_c_like_path(path: &str) -> bool {
     matches!(language_of(path), "c" | "c-header" | "cpp")
@@ -1742,6 +1826,10 @@ impl Tool for CodeIntelTool {
                 // 前向窗口：危险点**之后**的谓词/危险操作常常才是决定性证据。
                 // 默认 8 行、上限 40；`forward: 0` 可退回纯后向（用于与旧二进制做 A/B 对照）。
                 let forward = input["forward"].as_i64().unwrap_or(8).clamp(0, 40) as usize;
+                // 标识符驱动的前向扩展上限（默认 64）：目标行上的标识符（如 `len`）在标称窗口
+                // 之外还有使用时，把窗口扩到**最后一处**使用——真实 CVE 的决定性使用常在
+                // +20…+50 行（旧的 40 行上限够不着）。
+                let forward_max = input["forward_max"].as_i64().unwrap_or(64).clamp(0, 200) as usize;
                 let symbol = input["symbol"].as_str().unwrap_or("");
                 let mut snippets: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
@@ -1758,6 +1846,8 @@ impl Tool for CodeIntelTool {
                 let mut preproc_states: Vec<crate::text_scan::PreprocLine> = Vec::new();
                 let mut preproc_note: Option<String> = None;
                 let mut cpp_fallback = false;
+                let mut forward_extended_for: Vec<String> = Vec::new();
+                let mut decl_added = false;
                 let mut window_start = 0usize;
                 let mut window_end = 0usize;
                 let mut forward_used = 0usize;
@@ -1953,6 +2043,38 @@ impl Tool for CodeIntelTool {
                         } else {
                             "requested"
                         };
+                        // ── 标识符驱动扩展：目标行上的标识符在窗口之外还有使用时，扩到**最后一处** ──
+                        // `forward: 0` 保持纯后向（A/B 对照口径），此时不做扩展。
+                        if forward > 0 && forward_max > 0 {
+                            let target_text =
+                                lines.get(center.saturating_sub(1)).copied().unwrap_or("");
+                            let hard_end = center.saturating_add(forward_max).min(end_cap);
+                            let mut drivers: Vec<String> = Vec::new();
+                            let mut last_use: Option<usize> = None;
+                            for ident in crate::text_scan::identifiers_in_line(target_text) {
+                                if ident.len() < 3 || is_stop_ident(&ident) {
+                                    continue;
+                                }
+                                let mut hit = false;
+                                for j in window_end..hard_end {
+                                    if crate::text_scan::contains_identifier(
+                                        lines.get(j).copied().unwrap_or(""),
+                                        &ident,
+                                    ) {
+                                        hit = true;
+                                        last_use = Some(last_use.map_or(j, |m: usize| m.max(j)));
+                                    }
+                                }
+                                if hit {
+                                    drivers.push(ident);
+                                }
+                            }
+                            if let Some(j) = last_use {
+                                window_end = (j + 1).min(end_cap);
+                                forward_extended_for = drivers;
+                                forward_bounded_by = "identifier_use";
+                            }
+                        }
                         // 作用域锚点的**位置事实**：函数头落在标称深度窗口内，还是因为函数太长
                         // 而必须把窗口向前扩展才装得下。注意窗口起点是 `min(center-depth, 头行-1)`
                         //（见上），所以解析成功时头**一定**在返回窗口里——这里区分的是"窗口被扩展过"，
@@ -1999,6 +2121,77 @@ impl Tool for CodeIntelTool {
                                 }));
                             }
                         }
+                        // ── 窗口内标识符的**声明行**：判定常要看类型/容量，而声明可能远在窗口
+                        // 上方（真实 CVE：`uint16_t n_columns;` 在目标行上方约 170 行）。只交付
+                        // 原文行并标注来源（`declaration_for`），**不做任何推断**。
+                        {
+                            let target_text =
+                                lines.get(center.saturating_sub(1)).copied().unwrap_or("");
+                            let mut seen: std::collections::HashMap<String, usize> =
+                                std::collections::HashMap::new();
+                            let mut order: Vec<String> = Vec::new();
+                            for s in &snippets {
+                                if let Some(t) = s.get("text").and_then(|v| v.as_str()) {
+                                    for ident in crate::text_scan::identifiers_in_line(t) {
+                                        if ident.len() < 3 || is_stop_ident(&ident) {
+                                            continue;
+                                        }
+                                        *seen.entry(ident.clone()).or_insert(0) += 1;
+                                        if !order.contains(&ident) {
+                                            order.push(ident);
+                                        }
+                                    }
+                                }
+                            }
+                            // 优先级：① **目标行上**的标识符（判定几乎总要它的类型/容量）；
+                            // ② 在窗口里出现 ≥2 次的（一次性类型名多半与判定无关，先不取）。
+                            let mut prio: Vec<String> = Vec::new();
+                            for ident in crate::text_scan::identifiers_in_line(target_text) {
+                                if ident.len() >= 3
+                                    && !is_stop_ident(&ident)
+                                    && !prio.contains(&ident)
+                                {
+                                    prio.push(ident);
+                                }
+                            }
+                            for ident in &order {
+                                if !prio.contains(ident)
+                                    && seen.get(ident).copied().unwrap_or(0) >= 2
+                                {
+                                    prio.push(ident.clone());
+                                }
+                            }
+                            let mut added = 0usize;
+                            for ident in &prio {
+                                for idx in find_declaration_lines(&lines, ident, 2) {
+                                    if added >= 6 {
+                                        break;
+                                    }
+                                    let in_window = idx >= window_start && idx < window_end;
+                                    if in_window {
+                                        continue;
+                                    }
+                                    let text = lines.get(idx).copied().unwrap_or("");
+                                    provenance.push(prov_with(
+                                        path,
+                                        (idx + 1) as u32,
+                                        &id,
+                                        "slice+identifier-declaration",
+                                    ));
+                                    snippets.push(json!({
+                                        "line": idx + 1,
+                                        "text": text.trim().chars().take(200).collect::<String>(),
+                                        "is_function_header": false,
+                                        "is_target": false,
+                                        "is_after_target": false,
+                                        "in_conditional_region": preproc_states.get(idx).map(|s| s.conditional).unwrap_or(false),
+                                        "declaration_for": ident,
+                                    }));
+                                    added += 1;
+                                }
+                            }
+                            decl_added = added > 0;
+                        }
                     }
                     None => {
                         return Err(ToolError::InvalidArgument(format!("文件不存在: {}", file)))
@@ -2024,7 +2217,9 @@ impl Tool for CodeIntelTool {
                         "window": {"start_line": window_start + 1, "end_line": window_end},
                         "depth": depth,
                         "forward": forward,
+                        "forward_max": forward_max,
                         "forward_lines_returned": forward_used,
+                        "forward_extended_for": forward_extended_for.clone(),
                         "forward_bounded_by": forward_bounded_by,
                         "lines_returned": snippets.len(),
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
@@ -2052,6 +2247,16 @@ impl Tool for CodeIntelTool {
                                 // 想用 `cpp -E` 求真实分支但起不来（缺 cpp / 缺 include）：
                                 // 如实说明"此刻只有行级判据，未激活分支可能仍被当成活代码"
                                 reasons.push("cpp_preprocess_unavailable_line_level_fallback");
+                            }
+                            if !forward_extended_for.is_empty() {
+                                // 窗口因"目标行上的标识符在更下面还有使用"而被扩展：
+                                // 如实说明它比标称深度更宽，以及**为什么**宽
+                                reasons.push("forward_window_extended_for_identifier_use");
+                            }
+                            if decl_added {
+                                // 窗口内标识符的声明行（可能远在窗口上方）也被交付：
+                                // 这些是**原文附加证据**，不是推断出来的结论
+                                reasons.push("window_identifier_declarations_included");
                             }
                             reasons
                         },
@@ -3336,6 +3541,97 @@ mod tests {
             d3["data"]["path"].as_array().unwrap().len(),
             0,
             "未激活分支里的源点不得产出路径: {d3}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 标识符驱动的前向扩展：目标行上的标识符在标称窗口之外还有使用时，窗口应扩到那处
+    /// （真实 CVE：`ssize_t len = -1;` 的决定性使用在 +19 行，旧的 40 行上限内够不着）。
+    /// `forward: 0` 仍必须是纯后向。
+    #[tokio::test]
+    async fn test_slice_forward_extends_for_identifier_use() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-ident-forward");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut src = String::from("int\nwidget_copy (char *dst, int n)\n{\n    int len = -1;\n");
+        src.push_str(&"    /* filler */\n".repeat(20));
+        src.push_str("    len += 1 + n;\n    return len;\n}\n");
+        std::fs::write(root.join("src/f.c"), &src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        // 目标行 = 第 4 行（`int len = -1;`）；`len` 的下一处使用在第 25/26 行
+        let out = tool
+            .execute(json!({"file": "src/f.c", "line": 4, "depth": 40}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let end = d["data"]["window"]["end_line"].as_u64().unwrap();
+        assert!(end >= 26, "窗口应扩到 `len` 的使用处: {d}");
+        assert_eq!(d["data"]["forward_bounded_by"], "identifier_use", "{d}");
+        let drivers = d["data"]["forward_extended_for"].as_array().unwrap();
+        assert!(drivers.iter().any(|x| x == "len"), "扩展驱动者应含 len: {d}");
+        let reasons = d["uncertainty"]["reasons"].as_array().unwrap();
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == "forward_window_extended_for_identifier_use"),
+            "应如实上报窗口被扩展: {d}"
+        );
+
+        // `forward: 0` = 纯后向，不得扩展
+        let out0 = tool
+            .execute(json!({"file": "src/f.c", "line": 4, "depth": 40, "forward": 0}))
+            .await
+            .unwrap();
+        let d0 = out0.data.clone().expect("应有 envelope data");
+        assert_eq!(d0["data"]["window"]["end_line"], 4, "{d0}");
+        assert_eq!(d0["data"]["forward_extended_for"].as_array().unwrap().len(), 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 窗口内标识符的**声明行**必须被交付（真实 CVE：`uint16_t n_columns;` 在目标行上方
+    /// 约 170 行，固定窗口够不着；判定缺少"它是 16 位"这一步就推不出回绕）。
+    #[tokio::test]
+    async fn test_slice_delivers_window_identifier_declaration() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-decl-delivery");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut src = String::from("struct table_row {\n    unsigned short n_columns;\n};\n");
+        src.push_str(&"\n".repeat(45)); // 把声明推到窗口之外（depth=40）
+        src.push_str("int\nbuild (struct table_row *row, int n)\n{\n    row->n_columns = 0;\n    while (n > 0) {\n        row->n_columns += 1;\n        n--;\n    }\n    if (row->n_columns == 0) {\n        return -1;\n    }\n    return 0;\n}\n");
+        std::fs::write(root.join("src/g.c"), &src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/g.c", "line": 57, "depth": 40}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let decls: Vec<&serde_json::Value> = d["data"]["snippets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["declaration_for"] == "n_columns")
+            .collect();
+        assert!(!decls.is_empty(), "应交付 n_columns 的声明行: {d}");
+        assert!(
+            decls
+                .iter()
+                .any(|s| s["text"].as_str().unwrap_or("").contains("n_columns")),
+            "声明行原文必须可读: {d}"
+        );
+        let reasons = d["uncertainty"]["reasons"].as_array().unwrap();
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == "window_identifier_declarations_included"),
+            "应如实上报附加了声明行: {d}"
         );
 
         let _ = std::fs::remove_dir_all(&root);
