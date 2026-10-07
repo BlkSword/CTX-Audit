@@ -812,6 +812,17 @@ fn index_content(
                 defs.push((name, lineno, text));
                 continue;
             }
+            // 泛化关键字表在 C/C++ 里只对**标签定义头**成立（其余命中都是"把标签当类型用"
+            // 的声明语句或参数续行，见 `c_tag_definition_name`）。这类行若被记成定义，
+            // 就会在按文件解析"所在函数"时被当成函数头。
+            let next = next_code_line(&code, idx);
+            if let Some(name) =
+                c_tag_definition_name(code_line.trim(), next.as_deref())
+            {
+                let text: String = raw.trim().chars().take(200).collect();
+                defs.push((name, lineno, text));
+            }
+            continue;
         }
 
         // 声明：同样用代码段判定，避免字符串里的 "def foo" 被当成定义
@@ -1000,6 +1011,56 @@ pub(crate) fn kr_param_line(line: &str) -> bool {
         toks += 1;
     }
     toks >= 2 // 至少"类型 + 名字"：`int id;` 通过，`return;` 不通过
+}
+
+/// C/C++ **标签定义头**的标签名：`struct X {`、`enum X {`、C++ `class X : B {`、
+/// `namespace X {`（`{` 同行，或独占一行时 `{` 在下一非空行）。
+///
+/// 泛化关键字表（`DEF_KEYWORDS`）对 C 文件**只在这一种形态上成立**：C 的关键字后面跟的
+/// 常常是**类型名**而不是被声明的名字——
+/// - 声明语句：`struct Curl_dns_entry *dns = NULL;`、`const size_t n = strlen(s);`
+/// - 多行签名的参数续行：`struct socks_state *sx,` / `struct Curl_easy *data)`
+///
+/// 旧实现把这些行记成"该类型的定义"，于是按文件解析"目标行所在函数"时，最近的一行
+/// （声明行或参数续行）被当成函数头，`function` 变成类型名。
+///
+/// 判据：标签名之后**立即**是函数体 `{`（C++ 允许 `:` 基类表 / `final` 之类的修饰词，
+/// 但其中不得出现声明语句的特征字符）。类型 `template <class T> struct X {` 里的
+/// `class T` 因此不会命中：`T` 之后还有 `>` 才能到 `{`。
+fn c_tag_definition_name(code_line: &str, next: Option<&str>) -> Option<String> {
+    for kw in ["struct ", "enum ", "class ", "namespace "] {
+        let mut from = 0usize;
+        while let Some(pos) = code_line[from..].find(kw) {
+            let abs = from + pos;
+            from = abs + kw.len();
+            let rest = code_line[abs + kw.len()..].trim_start();
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+            let after = rest[name.len()..].trim();
+            if let Some(brace) = after.find('{') {
+                let head = &after[..brace];
+                if !head
+                    .chars()
+                    .any(|c| matches!(c, ';' | '=' | '(' | ')' | ',' | '>'))
+                {
+                    return Some(name);
+                }
+                continue;
+            }
+            // `{` 在下一非空行（`struct X` 独占一行）；`struct X *p;` 这类声明行到此不成立
+            if after.is_empty()
+                && next.map(|s| s.trim_start().starts_with('{')).unwrap_or(false)
+            {
+                return Some(name);
+            }
+        }
+    }
+    None
 }
 
 fn c_opens_block(code: &[String], idx: usize) -> bool {
@@ -1523,6 +1584,74 @@ mod tests {
             Some("ngx_resolver_copy")
         );
         assert!(c_opens_block(&code, 1));
+    }
+
+    /// C 的**声明行/参数续行**不得进索引："泛化关键字表"在 C 文件里只对标签定义头成立。
+    ///
+    /// 旧实现把这些行记成"关键字后面那个类型名的定义"：`struct Curl_dns_entry *dns = NULL;`
+    /// ⇒ `Curl_dns_entry` 的定义、`struct socks_state *sx,`（多行签名的参数续行）
+    /// ⇒ `socks_state` 的定义。按文件解析"目标行所在函数"时取的就是这些最近的定义，
+    /// 于是 `function` 变成类型名（实测 curl `lib/socks.c:590` ⇒ `Curl_dns_entry`）。
+    #[test]
+    fn test_c_declaration_lines_are_not_indexed_as_definitions() {
+        let src = concat!(
+            "static CURLproxycode do_SOCKS5(struct Curl_cfilter *cf,\n",
+            "                               struct socks_state *sx,\n",
+            "                               struct Curl_easy *data)\n",
+            "{\n",
+            "  struct connectdata *conn = cf->conn;\n",
+            "  const size_t hostname_len = strlen(sx->hostname);\n",
+            "  struct Curl_dns_entry *dns = NULL;\n",
+            "  return CURLPX_OK;\n",
+            "}\n",
+        );
+        let (defs, _, _) = index_content("lib/socks.c", src);
+        let names: Vec<&str> = defs.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"do_SOCKS5"),
+            "真正的函数定义仍须进索引，实际 defs={defs:?}"
+        );
+        for bogus in [
+            "Curl_dns_entry",
+            "socks_state",
+            "Curl_easy",
+            "connectdata",
+            "size_t",
+        ] {
+            assert!(
+                !names.contains(&bogus),
+                "{bogus} 只是声明行/参数里的类型名，不得被当成定义: {defs:?}"
+            );
+        }
+        // 标签定义头（带体）仍必须被抽出——声明闸不得把真正的类型定义一起吃掉
+        let (tagged, _, _) =
+            index_content("lib/a.c", "struct ops {\n    int run;\n};\n");
+        assert!(
+            tagged.iter().any(|(n, _, _)| n == "ops"),
+            "`struct ops {{` 是定义，必须进索引: {tagged:?}"
+        );
+        let (tagged2, _, _) = index_content("lib/b.c", "struct ops\n{\n    int run;\n};\n");
+        assert!(
+            tagged2.iter().any(|(n, _, _)| n == "ops"),
+            "`struct ops` 独占一行、`{{` 在下一行也必须进索引: {tagged2:?}"
+        );
+        // 纯函数级：同一条判据的边界
+        assert_eq!(
+            c_tag_definition_name("struct Curl_dns_entry *dns = NULL;", None),
+            None
+        );
+        assert_eq!(
+            c_tag_definition_name("struct socks_state *sx,", Some("{")),
+            None
+        );
+        assert_eq!(
+            c_tag_definition_name("struct ops {", None).as_deref(),
+            Some("ops")
+        );
+        assert_eq!(
+            c_tag_definition_name("struct ops", Some("{")).as_deref(),
+            Some("ops")
+        );
     }
 
     /// C 的规范定义风格：返回类型一行、函数名**顶格**一行、`{` 再一行。

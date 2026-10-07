@@ -3307,6 +3307,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// **声明行不得被当成函数头**：`struct <Type> *<name>;` 形态的变量声明在函数体内，
+    /// 旧实现（符号索引把关键字后的类型名记成"该类型的定义"）让上溯/已知定义判定选中它，
+    /// `function` 因此变成类型名——实测 curl `lib/socks.c:590` 得到 `Curl_dns_entry`。
+    /// 夹具形状与真实一致：多行签名（参数续行也带 `struct`）+ 函数体内 `struct X *p = NULL;`
+    /// + 之后是真正的函数定义体（`switch` 块，使声明行的"体覆盖"成立）。
+    #[tokio::test]
+    async fn test_slice_ignores_declaration_lines_as_function_headers() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-c-decl");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let src = concat!(
+            "static CURLproxycode do_socks5(struct Curl_cfilter *cf,\n",
+            "                              struct socks_state *sx,\n",
+            "                              struct Curl_easy *data)\n",
+            "{\n",
+            "  struct connectdata *conn = cf->conn;\n",
+            "  const size_t hostname_len = strlen(sx->hostname);\n",
+            "  struct Curl_dns_entry *dns = NULL;\n",
+            "  switch(sx->state) {\n",
+            "  case CONNECT_INIT:\n",
+            "    infof(data, \"connecting to proxy\", hostname_len, dns);\n",
+            "    break;\n",
+            "  default:\n",
+            "    break;\n",
+            "  }\n",
+            "  return CURLPX_OK;\n",
+            "}\n",
+        );
+        std::fs::write(root.join("lib/socks.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "lib/socks.c", "line": 10, "depth": 40}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["function"], "do_socks5", "{d}");
+        assert_eq!(d["data"]["function_def_line"], 1, "{d}");
+        assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
+        assert_eq!(d["data"]["includes_function_header"], true, "{d}");
+        assert_eq!(d["data"]["scope_anchor"], "within_depth", "{d}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// 前向窗口：决定性证据常在目标行**之后**（实测形态：locus 停在注释行，
     /// 真正的谓词与拷贝在下一行，旧实现里它们完全不在窗口内）。
     #[tokio::test]
