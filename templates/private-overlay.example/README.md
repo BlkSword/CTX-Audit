@@ -9,7 +9,6 @@ private/
 │   └── my-deep-review.md
 ├── methodology.md          # 你的审计方法论/checklist（可选）
 ├── registry.md             # 你的共享项目库/台账（可选）
-├── pipeline.yaml           # 你的 Pipeline 配置（可被 templates/pipelines 覆盖）
 ├── dsh/
 │   ├── profiles/           # 你的真实 DSH profile 覆盖
 │   └── skills/             # 你的真实 skill 覆盖
@@ -19,12 +18,8 @@ private/
 ## 接线
 
 ```bash
-export CTX_AUDIT_PIPELINE_FILE="$HOME/.ctx-audit/private/pipeline.yaml"
 export AUDIT_METHODOLOGY_FILE="$HOME/.ctx-audit/private/methodology.md"
 export CTX_AUDIT_PROJECT_REGISTRY="$HOME/.ctx-audit/private/registry.md"
-
-# 或写入全局配置
-ctx-audit config set agent.native_pipeline.file "$HOME/.ctx-audit/private/pipeline.yaml"
 ```
 
 ## Git 建议

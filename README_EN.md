@@ -191,21 +191,6 @@ ctx-audit scan ./myproject --rules .ctx-audit/rules --deep
 
 Full field tables and worked examples: **[rules/CUSTOM-RULES.md](rules/CUSTOM-RULES.md)** (Chinese). The role and freeze policy of the built-in corpus: [rules/README.md](rules/README.md).
 
-## Agent / Pipeline Framework
-
-`agent/` provides a generic LLM Agent infrastructure and a configurable audit pipeline:
-
-- LLM provider abstraction, message-driven loop, JSONL sessions, tool registry/whitelist, sub-agents, budgets, and cron.
-- Pipeline YAML customization for scan options, judge prompts, output contracts, gate behavior, and extra audit phases.
-- Load via `CTX_AUDIT_PIPELINE_FILE` or `agent.native_pipeline.file`.
-
-```bash
-export CTX_AUDIT_PIPELINE_FILE=templates/pipelines/custom-example.yaml
-ctx-audit agent round run --target ./project
-```
-
-The public DSH harness is `harness/` itself (minimal/default mode by default; the audit-specific `ctx-audit-auditor` preset is supplied through a private overlay); pipeline templates and private-overlay examples are under `templates/`.
-
 ## Detection Coverage
 
 | Type | CWE | Method |

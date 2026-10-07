@@ -4,16 +4,9 @@
 # 可用环境变量：CTX_AUDIT_PRIVATE_DIR（默认 ~/.ctx-audit/private）
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRIVATE_DIR="${CTX_AUDIT_PRIVATE_DIR:-$HOME/.ctx-audit/private}"
 
 mkdir -p "$PRIVATE_DIR"/{prompts,dsh/profiles,dsh/skills,logs}
-
-# 首次生成一份 Pipeline 草稿
-if [[ ! -f "$PRIVATE_DIR/pipeline.yaml" ]]; then
-  cp "$SCRIPT_DIR/../pipelines/custom-example.yaml" "$PRIVATE_DIR/pipeline.yaml"
-  echo "created $PRIVATE_DIR/pipeline.yaml"
-fi
 
 # 私有方法论/台账占位
 for name in methodology.md registry.md; do

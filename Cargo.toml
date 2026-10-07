@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "agent",
     "cli",
     "core",
     "daemon",
@@ -61,15 +60,11 @@ walkdir = "2.4"
 # 文本处理
 similar = { version = "2.5", features = ["text", "inline", "bytes"] }
 
-# 优先级队列
-# priority-queue = "2.0"  # only used by agent-engine
-
 # 内部包
 deepaudit-core = { path = "core" }
 # 默认不启用遗留细粒度工具面：只有显式打开 `legacy-tools` feature 的消费者（CLI）才会编译它
 ctx-audit-tools = { path = "tools", default-features = false }
 ctx-audit-daemon = { path = "daemon" }
-ctx-audit-agent = { path = "agent" }
 
 [profile.release]
 lto = true

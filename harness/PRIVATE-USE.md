@@ -7,7 +7,6 @@
 公共框架只负责通用机制：
 
 - DSH profile / skill / launcher
-- Agent Pipeline / Runner
 - MCP 接入
 
 私有内容全部放在你自己的 overlay：
@@ -23,7 +22,6 @@
 
 ```text
 ~/.ctx-audit/private/
-├── pipeline.yaml                 # 私人审计 Pipeline
 ├── methodology.md                # 方法论（可选）
 ├── registry.md                   # 项目台账（可选）
 ├── targets.txt                   # 每日轮转目标清单
@@ -57,7 +55,6 @@
 | `DSH_SCOUT_PROMPT_FILE` | `$PRIVATE_DIR/prompts/scout-prompt.md` | 侦察兵 prompt |
 | `DSH_SNIPER_PROMPT_FILE` | `$PRIVATE_DIR/prompts/sniper-prompt.md` | 狙击手 prompt |
 | `CVE_LIBRARY_PROMPT` | `$PRIVATE_DIR/prompts/cve-library.md` | CVE 库补充 prompt |
-| `CTX_AUDIT_PIPELINE_FILE` | 无 | Agent Pipeline 配置 |
 | `CTX_AUDIT_MCP_CMD` | 自动查找 | ctx-audit 二进制路径 |
 
 ## 使用公共 harness

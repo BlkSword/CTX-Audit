@@ -44,7 +44,6 @@ CTX-Audit 的解法：
 - [LLM 协作审计（推荐主线）](#llm-协作审计推荐主线)
 - [命令总览](#命令总览)
 - [配置文件](#配置文件)
-- [Agent / Pipeline 框架](#agent--pipeline-框架)
 - [检测能力](#检测能力)
 - [自定义规则](#自定义规则)
 - [报告与输出](#报告与输出)
@@ -273,8 +272,6 @@ ctx-audit completion fish
 ctx-audit completion powershell
 ```
 
-> 说明：仓库中的 `agent` 子命令是通用 LLM Agent / Pipeline 框架，可用 `agent.native_pipeline.file` 或 `CTX_AUDIT_PIPELINE_FILE` 定制审计流程；日常单轮审计推荐 `ctx-audit mcp` 配合外部 LLM 客户端完成协作审计。
-
 ---
 
 ## 配置文件
@@ -307,26 +304,6 @@ severity_threshold = "high"
 ```
 
 SCA 支持 OSV 漏洞库查询、依赖忽略列表、缓存 TTL、离线失败策略等配置；所有配置键可通过 `ctx-audit config list` 查看。
-
----
-
-## Agent / Pipeline 框架
-
-`agent/` 目录提供通用 LLM Agent 基础设施和可配置审计流水线：
-
-- 通用：LLM provider、消息驱动主循环、JSONL 会话、工具注册/白名单、子 Agent、预算/熔断、cron。
-- 可配置：通过 `agent.native_pipeline.file` 或 `CTX_AUDIT_PIPELINE_FILE` 指定 Pipeline YAML。
-- 输出契约可定制：TP 候选路径、verdict 字段、接受值均可配置。
-- 私有方法论可保留在本地，通过 `triage.prompt_path`、`deep_review.prompt_path` 或 `judge_prompt_path` 指向私有 prompt。
-- DSH 公共 `harness/` 默认使用极简模式；审计专用 `ctx-audit-auditor` preset 通过私有 overlay 提供。
-
-```bash
-# 使用自定义 Pipeline
-export CTX_AUDIT_PIPELINE_FILE=templates/pipelines/custom-example.yaml
-ctx-audit agent round run --target ./project
-```
-
-公共模板见 `templates/`，公开 DSH harness 即 `harness/`（脱敏、可安装、可运行、默认极简模式；私有内容通过本地 overlay 注入）。
 
 ---
 
@@ -458,14 +435,14 @@ CTX-Audit
 │   ├── database/                      # findings SQLite 存储
 │   └── report/                        # 报告导出（json / llm / sarif / markdown）
 │
-├── daemon/                            # 守护进程（增量缓存、状态服务、agent host）
-│
-├── agent/                             # Agent / Pipeline 框架（LLM provider、轮次、子代理、回放）
+├── daemon/                            # 守护进程（增量缓存、状态服务）
 │
 ├── rules/                             # YAML 模式规则 + taint 框架规则 + audit-packs
 │
 └── harness/                           # 公共 DSH 编排框架（可安装；私有内容经本地 overlay 注入）
 ```
+
+公共模板见 `templates/`（私有 overlay 示例），公开 DSH harness 即 `harness/`（默认极简模式；私有内容通过本地 overlay 注入）。
 
 ---
 
