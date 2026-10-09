@@ -31,6 +31,16 @@ const MAX_DEFINITION_HITS: usize = 200;
 /// 调用图结果上限（与定义/引用同一量级：真实 Go 仓库里 `Set`/`String` 这类方法可有数百个调用点，
 /// 40 条上限会把 callers 的实测召回从 0.92 压到 0.12）
 const MAX_CALL_GRAPH_HITS: usize = 200;
+/// 派发候选目标上限（C 的能力面 C3）：按签名近似匹配的候选最多交付这么多条
+const MAX_DISPATCH_CANDIDATES: usize = 8;
+/// 参与候选匹配的间接调用点上限（只在**目标函数体内**取，成本有界且可预期）
+const MAX_DISPATCH_SITES: usize = 16;
+/// 候选匹配时枚举的已索引 C/C++ 定义上限（超出即如实上报被截断）
+const MAX_DISPATCH_SIGNATURE_SPACE: usize = 20000;
+/// 跨行签名续行的最大行数（C 的 80 列风格：形参表多数在 2–6 行内闭合）
+const MAX_SIGNATURE_JOIN_LINES: usize = 12;
+/// 函数摘要上限（C 的能力面 C2）：一次响应最多给这么多函数出摘要
+const MAX_FUNCTION_SUMMARIES: usize = 8;
 const SKIP_DIRS: [&str; 8] = [
     ".git",
     "node_modules",
@@ -1184,6 +1194,816 @@ pub fn count_indirect_call_sites(code_refs: &[&str], start: usize, end: usize) -
     n
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// C3 证据：按签名匹配的**派发候选目标集合**
+//
+// 当调用点解析不出目标（函数指针 / 成员指针 / 表下标派发）时，引擎能确定的事实只有
+// "这里有一条解析不出的边 + 该调用点的实参形态"。本段把这份事实交付成一份**启发式候选
+// 集合**：候选来自**已被索引的 C/C++ 定义**，按 `参数个数相等` 为前提、再用
+// `实参表达式标识符 ↔ 形参名字` 与 `形参类型词 ↔ 实参文本` 的重叠度打分。
+//
+// 边界（必须守住）：
+// - 只产出**证据**，不产出调用边：`unresolved_edges` 仍由 `count_indirect_call_sites`
+//   独立计算，两者的口径互不影响；
+// - 候选只是"签名像"，不是解析结果，字段级 `heuristic: true` + `reason` + `score` 如实标注；
+// - 不做全量分析：站点只取目标函数体内（上限 `MAX_DISPATCH_SITES`），定义只枚举已索引的
+//   C/C++ 定义（上限 `MAX_DISPATCH_SIGNATURE_SPACE`），成本可预期。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 一个"解析不出目标"的调用点（与 `count_indirect_call_sites` 同源形态）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndirectCallSite {
+    /// 1-based 行号
+    pub line: u32,
+    /// `member`（`p->f(`）/ `deref`（`(*fp)(`）/ `index`（`t[i](`）
+    pub kind: &'static str,
+    /// 调用形态原文（如 `table[idx]`、`o->run`、`(*fp)`）
+    pub callee_text: String,
+    /// 实参表达式列表；**参数表未在同一行闭合**时为 `None`（= 实参个数不可判定）
+    pub args: Option<Vec<String>>,
+}
+
+/// 三类派发形态的正则（与 `count_indirect_call_sites` 保持同一套字面量；
+/// 刻意各留一份 statics，避免动到已冻结的计数实现）。
+fn dispatch_regex(kind: &str) -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static MEMBER: OnceLock<regex::Regex> = OnceLock::new();
+    static DEREF: OnceLock<regex::Regex> = OnceLock::new();
+    static INDEX: OnceLock<regex::Regex> = OnceLock::new();
+    match kind {
+        "member" => MEMBER.get_or_init(|| {
+            regex::Regex::new(r"->\s*[A-Za-z_][A-Za-z0-9_]*\s*\(").unwrap()
+        }),
+        "deref" => DEREF.get_or_init(|| {
+            regex::Regex::new(r"\(\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\(").unwrap()
+        }),
+        _ => INDEX.get_or_init(|| {
+            regex::Regex::new(r"[A-Za-z_][A-Za-z0-9_]*\s*\[[^\]\n]*\]\s*\(").unwrap()
+        }),
+    }
+}
+
+/// 目标函数体内**解析不出目标**的调用点（含实参文本，供候选匹配）。
+///
+/// 行的取值口径与 `count_indirect_call_sites` 对齐：每行只取三类模式中**匹配最多的那一类**，
+/// 因此站点数不超过该行对 `unresolved_edges` 的贡献；`unresolved_edges` 本身仍是那个已冻结的
+/// 函数算出来的，两者独立。
+pub fn indirect_call_sites(code_refs: &[&str], start: usize, end: usize) -> Vec<IndirectCallSite> {
+    let mut out: Vec<IndirectCallSite> = Vec::new();
+    if code_refs.is_empty() || end < start {
+        return out;
+    }
+    for idx in start..=end.min(code_refs.len().saturating_sub(1)) {
+        let text = code_refs.get(idx).copied().unwrap_or("");
+        let member = dispatch_regex("member").find_iter(text).count();
+        let deref = dispatch_regex("deref").find_iter(text).count();
+        let index = dispatch_regex("index").find_iter(text).count();
+        let best = member.max(deref).max(index);
+        if best == 0 {
+            continue;
+        }
+        let kind = if best == member {
+            "member"
+        } else if best == deref {
+            "deref"
+        } else {
+            "index"
+        };
+        for m in dispatch_regex(kind).find_iter(text) {
+            // 三类模式的匹配都以**调用参数表的左括号**结尾
+            let open = m.end().saturating_sub(1);
+            if !text.is_char_boundary(m.start()) || !text.is_char_boundary(open) {
+                continue;
+            }
+            out.push(IndirectCallSite {
+                line: (idx + 1) as u32,
+                kind,
+                callee_text: text[m.start()..open].trim().to_string(),
+                args: call_args_at(text, open),
+            });
+        }
+    }
+    out
+}
+
+/// 从 `(` 的字节下标开始解析实参表；参数表未在本行闭合时返回 `None`。
+fn call_args_at(text: &str, open: usize) -> Option<Vec<String>> {
+    if !text.is_char_boundary(open) || !text[open..].starts_with('(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut start = open + 1;
+    let mut args: Vec<String> = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (off, ch) in text[open..].char_indices() {
+        let i = open + off;
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' | '[' | '{' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth <= 0 {
+                    let seg = text[start..i].trim();
+                    if !seg.is_empty() {
+                        args.push(seg.to_string());
+                    }
+                    return Some(args);
+                }
+            }
+            // 方括号/花括号只用于维持深度平衡；能闭合实参表的只有 `)`
+            ']' | '}' => depth -= 1,
+            ',' if depth == 1 => {
+                args.push(text[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    None // 跨行实参表：实参个数不可判定
+}
+
+/// 表达式里的标识符 token（按出现顺序去重；纯数字与字面量天然被切开丢弃）。
+fn ident_tokens(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in s.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+        if raw.is_empty() {
+            continue;
+        }
+        if raw.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true) {
+            continue;
+        }
+        let t = raw.to_string();
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// 一段声明文本里最后一个标识符（= 参数名 / 函数名）。
+fn last_ident(s: &str) -> Option<String> {
+    let mut cur = String::new();
+    let mut last: Option<String> = None;
+    for ch in s.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            cur.push(ch);
+        } else {
+            if !cur.is_empty() {
+                last = Some(std::mem::take(&mut cur));
+            }
+        }
+    }
+    if !cur.is_empty() {
+        last = Some(cur);
+    }
+    last
+}
+
+/// 与 `open` 处的 `(` 配对的 `)` 的字节下标。
+fn matching_close(s: &str, open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (off, ch) in s[open..].char_indices() {
+        let i = open + off;
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 按顶层逗号切分参数表（括号/方括号/花括号内的逗号不算分隔符）。
+fn split_top_level(inner: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (i, ch) in inner.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(inner[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].to_string());
+    out
+}
+
+/// 从索引里的一条定义行文本解析 C/C++ 签名 → `(函数名, 形参文本, 是否变参)`。
+///
+/// 解析不出（无参数表 / 参数表跨行 / 函数指针声明 `(*fp)(…)` / `typedef` / 控制关键字）返回 `None`：
+/// 这些形态的目标不是"可被索引到的函数定义"，列进候选只会污染证据。
+fn parse_c_signature(text: &str) -> Option<(String, Vec<String>, bool)> {
+    let s = text.trim();
+    if s.is_empty() || s.starts_with("typedef") || s.starts_with('#') {
+        return None;
+    }
+    let open = s.find('(')?;
+    let close = matching_close(s, open)?;
+    // `(*name)(params)`：函数指针**变量声明**，不是可调用定义
+    if s[close..].trim_start().starts_with('(') {
+        return None;
+    }
+    let name = last_ident(&s[..open])?;
+    if NON_CALL_KEYWORDS.contains(&name.as_str()) {
+        return None;
+    }
+    let inner = &s[open + 1..close];
+    let mut params: Vec<String> = Vec::new();
+    let mut variadic = false;
+    for seg in split_top_level(inner) {
+        let p = seg.trim();
+        if p.is_empty() || (p == "void" && inner.trim() == "void") {
+            continue;
+        }
+        if p == "..." {
+            variadic = true;
+            continue;
+        }
+        params.push(p.to_string());
+    }
+    Some((name, params, variadic))
+}
+
+/// 括号是否已闭合（`(`/`)` 计数；签名文本里出现字符串右括号的形态不影响判据的保守性）。
+fn paren_balanced(s: &str) -> bool {
+    let mut depth = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth <= 0
+}
+
+/// 把**跨行签名**的定义行续成完整签名（返回 `(文本, 是否续过行)`）。
+///
+/// 索引里只存"定义行"原文；C 的 80 列风格常把形参表折到下一行（curl/nginx 处处如此），
+/// 只拿这一行就因括号不闭合而解析失败 ⇒ 候选空间被系统性偏向"单行签名"的函数
+/// （实测 curl 上真正的 writer 实现整批缺席，候选里只剩巧合同参数个数的无关函数）。
+/// 这里用**已在内存里**的内容索引把后续行拼上（上限 `MAX_SIGNATURE_JOIN_LINES`），
+/// 不额外读盘、不做全量分析；拼到上限仍不闭合就按解析失败处理（不猜）。
+fn signature_with_continuation(
+    text: &str,
+    file: &str,
+    line: u32,
+    contents: &std::collections::HashMap<&str, &str>,
+) -> (String, bool) {
+    if paren_balanced(text) {
+        return (text.to_string(), false);
+    }
+    let Some(content) = contents.get(file) else {
+        return (text.to_string(), false);
+    };
+    let mut joined = text.to_string();
+    for next in content
+        .lines()
+        .skip(line as usize)
+        .take(MAX_SIGNATURE_JOIN_LINES)
+    {
+        joined.push(' ');
+        joined.push_str(next.trim());
+        if paren_balanced(&joined) {
+            return (joined, true);
+        }
+    }
+    (text.to_string(), false)
+}
+
+/// 已索引的 C/C++ 定义（签名解析成功的那部分）。
+struct ParsedCDef {
+    name: String,
+    file: String,
+    line: u32,
+    text: String,
+    params: Vec<String>,
+    variadic: bool,
+}
+
+/// 调用点实参个数能否匹配形参表（变参函数只要实参数 ≥ 固定形参数）。
+fn arity_matches(argc: usize, params: usize, variadic: bool) -> bool {
+    if variadic {
+        argc >= params
+    } else {
+        argc == params
+    }
+}
+
+/// 签名近似打分（0.5 = 参数个数相等即得的基础分）：
+/// `0.5 + 0.4 * 实参名↔形参名重叠率 + 0.1 * 形参类型词↔实参文本重叠率`。
+fn score_signature_match(
+    args: &[String],
+    arg_tokens: &[String],
+    def: &ParsedCDef,
+) -> (f64, String, Vec<String>) {
+    let param_names: Vec<String> = def
+        .params
+        .iter()
+        .filter_map(|p| last_ident(p))
+        .collect();
+    let mut matched_names: Vec<String> = Vec::new();
+    for tok in arg_tokens {
+        if param_names.iter().any(|p| p == tok) && !matched_names.contains(tok) {
+            matched_names.push(tok.clone());
+        }
+    }
+    // 形参类型词（去掉形参名本身）+ 实参文本（只有显式转型之类才可能命中类型词）
+    let arg_text = args.join(", ");
+    let arg_text_tokens = ident_tokens(&arg_text);
+    let mut type_tokens: Vec<String> = Vec::new();
+    for p in &def.params {
+        let pname = last_ident(p).unwrap_or_default();
+        for tok in ident_tokens(p) {
+            if tok == pname || type_tokens.contains(&tok) {
+                continue;
+            }
+            type_tokens.push(tok);
+        }
+    }
+    let type_hits = type_tokens
+        .iter()
+        .filter(|t| arg_text_tokens.iter().any(|a| a == *t))
+        .count();
+    let name_sim = if arg_tokens.is_empty() {
+        0.0
+    } else {
+        matched_names.len() as f64 / arg_tokens.len() as f64
+    };
+    let type_sim = if type_tokens.is_empty() {
+        0.0
+    } else {
+        type_hits as f64 / type_tokens.len() as f64
+    };
+    let score = ((0.5 + 0.4 * name_sim + 0.1 * type_sim) * 1000.0).round() / 1000.0;
+    let reason = format!(
+        "arity_match={}/{};argument_name_overlap={}/{};param_type_token_overlap={}/{}",
+        args.len(),
+        def.params.len(),
+        matched_names.len(),
+        arg_tokens.len(),
+        type_hits,
+        type_tokens.len()
+    );
+    (score, reason, matched_names)
+}
+
+/// C3 交付物：把"解析不出目标的调用点"变成**按签名匹配的候选目标集合**。
+///
+/// 候选必须来自**已被索引的 C/C++ 定义**（不重扫磁盘、不做 CPG/污点分析）。
+/// `exclude` = 所在函数（派发的目标按定义是**别的**函数；含自身的候选只有一个固定假线索，
+/// 且会占掉有界名额），命中失败时不影响其余候选。
+/// `contents` = 本轮**已经在内存里**的内容索引，只用于把跨行签名的定义行续上
+/// （见 `signature_with_continuation`）；不产生任何额外读盘。
+pub fn dispatch_candidates_evidence(
+    sindex: &crate::symbol_index::SymbolIndex,
+    sites: &[IndirectCallSite],
+    exclude: Option<&str>,
+    contents: &[(String, String)],
+) -> Value {
+    let site_json: Vec<Value> = sites
+        .iter()
+        .map(|s| {
+            json!({
+                "line": s.line,
+                "kind": s.kind,
+                "callee_text": s.callee_text,
+                "arity": s.args.as_ref().map(|a| a.len()),
+            })
+        })
+        .collect();
+
+    // 只有"实参个数可判定"的调用点能做签名匹配
+    let usable: Vec<&IndirectCallSite> = sites.iter().filter(|s| s.args.is_some()).collect();
+
+    let mut parsed: Vec<ParsedCDef> = Vec::new();
+    let mut scanned = 0usize;
+    let mut space_truncated = false;
+    let mut joined_signatures = 0usize;
+    if !usable.is_empty() {
+        // 路径 → 文件文本：只服务"定义行签名跨行"的续行，不额外读盘
+        let by_path: std::collections::HashMap<&str, &str> = contents
+            .iter()
+            .map(|(p, c)| (p.as_str(), c.as_str()))
+            .collect();
+        'scan: for file_idx in 0..sindex.file_count() {
+            let rel = sindex.file_path(file_idx);
+            if !is_c_like_path(rel) {
+                continue;
+            }
+            for (name, line, text) in sindex.definitions_in_file(file_idx) {
+                if scanned >= MAX_DISPATCH_SIGNATURE_SPACE {
+                    space_truncated = true;
+                    break 'scan;
+                }
+                scanned += 1;
+                if Some(name.as_str()) == exclude {
+                    continue; // 所在函数自身不是"派发目标"候选
+                }
+                let (sig_text, joined) = signature_with_continuation(&text, rel, line, &by_path);
+                if joined {
+                    joined_signatures += 1;
+                }
+                if let Some((pname, params, variadic)) = parse_c_signature(&sig_text) {
+                    // 索引里的声明名与签名解析出的名字必须一致（避免把 `Type name(...)` 之类错认）
+                    if pname == name {
+                        parsed.push(ParsedCDef {
+                            name,
+                            file: rel.to_string(),
+                            line,
+                            text: sig_text,
+                            params,
+                            variadic,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 站点 × 候选：参数个数相等为前提，取每个候选名的最高分
+    let mut best: std::collections::BTreeMap<String, (f64, u32, Vec<String>, usize, String)> =
+        std::collections::BTreeMap::new();
+    for site in &usable {
+        let args = site.args.as_deref().unwrap_or(&[]);
+        let arg_tokens = ident_tokens(&args.join(", "));
+        for (idx, def) in parsed.iter().enumerate() {
+            if !arity_matches(args.len(), def.params.len(), def.variadic) {
+                continue;
+            }
+            let (score, reason, matched) = score_signature_match(args, &arg_tokens, def);
+            let slot = best
+                .entry(def.name.clone())
+                .or_insert((score, site.line, matched.clone(), idx, reason.clone()));
+            if score > slot.0 {
+                *slot = (score, site.line, matched, idx, reason);
+            }
+        }
+    }
+
+    let mut ranked: Vec<(String, f64, u32, Vec<String>, usize, String)> = best
+        .into_iter()
+        .map(|(name, (score, line, matched, idx, reason))| (name, score, line, matched, idx, reason))
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let total_hits = ranked.len();
+    let truncated_at_limit = total_hits > MAX_DISPATCH_CANDIDATES;
+    let candidates: Vec<Value> = ranked
+        .iter()
+        .take(MAX_DISPATCH_CANDIDATES)
+        .map(|(name, score, site_line, matched, idx, reason)| {
+            let def = &parsed[*idx];
+            json!({
+                "name": name,
+                "file": def.file,
+                "line": def.line,
+                "signature": def.text.trim().chars().take(200).collect::<String>(),
+                "arity": def.params.len(),
+                "variadic": def.variadic,
+                "score": score,
+                "reason": reason,
+                "matched_argument_names": matched,
+                "from_call_site_line": site_line,
+            })
+        })
+        .collect();
+
+    json!({
+        "heuristic": true,
+        "basis": "signature_match_over_indexed_c_definitions",
+        "note": "signature-matched candidate targets for call sites whose target is unresolved \
+                 (function-pointer / member-pointer / indexed-table dispatch); these are heuristic \
+                 candidates, not resolved call edges, and they do not change unresolved_edges; the \
+                 containing function itself is excluded",
+        "call_sites": site_json,
+        "call_sites_with_arity": usable.len(),
+        "signature_space": {
+            "scanned_indexed_c_definitions": scanned,
+            "signatures_joined_from_continuation_lines": joined_signatures,
+            "join_line_limit": MAX_SIGNATURE_JOIN_LINES,
+            "limit": MAX_DISPATCH_SIGNATURE_SPACE,
+            "truncated_at_limit": space_truncated,
+        },
+        "candidates": candidates,
+        "limit": MAX_DISPATCH_CANDIDATES,
+        "total_hits": total_hits,
+        "truncated_at_limit": truncated_at_limit,
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C2 证据：轻量过程间摘要（`function_summaries`）
+//
+// **复用** CPG 侧已有的 `compute_summary_from_cpg`（不另写一套摘要逻辑）。原料与引擎扫描
+// 管线同源：单函数 CPG（文本 CFG）+ 该函数体内的污点流 + 函数体文本 + sink 规则。
+// 范围被钉死在**本次响应里出现的函数**上（目标函数 + 去重后的 callee 名），上限
+// `MAX_FUNCTION_SUMMARIES`；每个文件只解析一次；单函数沿用扫描管线的函数级预算
+// （`CTX_AUDIT_MAX_FUNC_NODES` / `CTX_AUDIT_MAX_FUNC_BRANCHES`，超预算直接标 skipped，
+// 不做分析）。任何一环不可用都如实降级为 `available: false` + `reason`，
+// **不为了填字段去做全量分析**——成本必须可预期。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 函数级预算（与扫描管线同一套环境变量口径；0 = 关闭预算）。
+fn function_budget() -> (usize, usize) {
+    let read = |key: &str, default: usize| {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(default)
+    };
+    (
+        read("CTX_AUDIT_MAX_FUNC_NODES", 180),
+        read("CTX_AUDIT_MAX_FUNC_BRANCHES", 60),
+    )
+}
+
+/// C2 交付物：对给定函数名列表（本次响应里出现的函数）产出有界的轻量摘要。
+///
+/// `param_to_return` = 参数是否（保守地）影响返回值；`param_to_sink` = 参数是否到达 sink；
+/// 两者都带置信度与**作用域说明**：摘要只覆盖单函数体，缺席 ≠ 证明不存在。
+/// 同步函数（内部不 await），因此 tree-sitter parser 这类非 Send 资源不会跨 await 存活。
+fn function_summaries_evidence(
+    root: &Path,
+    sindex: &crate::symbol_index::SymbolIndex,
+    names: &[String],
+) -> Value {
+    use deepaudit_core::analysis::{compute_summary_from_cpg, AstTaintAnalyzer, CPGBuilder};
+    use deepaudit_core::ast_api::ASTParser;
+
+    // 去重，保持传入顺序（目标函数在前、callee 依响应顺序在后）
+    let mut ordered: Vec<String> = Vec::new();
+    for n in names {
+        let t = n.trim();
+        if t.is_empty() || ordered.iter().any(|o| o == t) {
+            continue;
+        }
+        ordered.push(t.to_string());
+    }
+    let total_hits = ordered.len();
+
+    // 解析到**已索引的定义**（`definitions()` 已按路径排序 ⇒ 确定性）
+    let resolved: Vec<Option<(String, u32)>> = ordered
+        .iter()
+        .map(|n| {
+            sindex
+                .definitions(n, 8)
+                .into_iter()
+                .next()
+                .map(|h| (sindex.file_path(h.file).to_string(), h.line))
+        })
+        .collect();
+    let resolved_in_index = resolved.iter().filter(|r| r.is_some()).count();
+
+    let (max_nodes, max_branches) = function_budget();
+    // 每个文件只解析一次
+    let mut parsed_files: std::collections::HashMap<
+        String,
+        Option<(
+            Vec<deepaudit_core::ast_api::FunctionBody>,
+            Vec<deepaudit_core::ast_api::Assignment>,
+            Vec<deepaudit_core::ast_api::CallInfo>,
+        )>,
+    > = std::collections::HashMap::new();
+    // 污点规则只加载一次（进程内），不在每次调用里重读规则文件
+    static ANALYZER: std::sync::OnceLock<AstTaintAnalyzer> = std::sync::OnceLock::new();
+
+    let mut entries: Vec<Value> = Vec::new();
+    let mut available_summaries = 0usize;
+
+    for (idx, name) in ordered.iter().enumerate().take(MAX_FUNCTION_SUMMARIES) {
+        let Some((file, line)) = resolved.get(idx).cloned().flatten() else {
+            entries.push(json!({
+                "func": name,
+                "available": false,
+                "reason": "no_definition_in_index",
+            }));
+            continue;
+        };
+        let parsed = parsed_files.entry(file.clone()).or_insert_with(|| {
+            let content = std::fs::read_to_string(root.join(&file)).ok()?;
+            let mut parser = ASTParser::new();
+            let (bodies, assignments, calls) =
+                parser.extract_all_for_taint(&root.join(&file), &content);
+            Some((bodies, assignments, calls))
+        });
+        let Some((bodies, assignments, calls)) = parsed else {
+            entries.push(json!({
+                "func": name,
+                "file": file,
+                "line": line,
+                "available": false,
+                "reason": "file_unreadable_or_unparsable",
+            }));
+            continue;
+        };
+        // 定义行落在函数体范围内优先；否则退化为同名函数
+        let body = bodies
+            .iter()
+            .find(|b| {
+                &b.name == name && (b.start_line as u32) <= line && line <= b.end_line as u32
+            })
+            .or_else(|| bodies.iter().find(|b| &b.name == name));
+        let Some(body) = body else {
+            entries.push(json!({
+                "func": name,
+                "file": file,
+                "line": line,
+                "available": false,
+                "reason": "function_body_not_extracted",
+            }));
+            continue;
+        };
+
+        let func_assignments: Vec<_> = assignments
+            .iter()
+            .filter(|a| a.line >= body.start_line && a.line <= body.end_line)
+            .cloned()
+            .collect();
+        let func_calls: Vec<_> = calls
+            .iter()
+            .filter(|c| c.line >= body.start_line && c.line <= body.end_line)
+            .cloned()
+            .collect();
+        let cpg = CPGBuilder::build_function_cpg_from_text(
+            &body.body_text,
+            &file,
+            body,
+            &func_assignments,
+            &func_calls,
+        );
+        // 函数级预算：超预算不做污点分析（与扫描管线同一口径，成本可预期）
+        let cfg_nodes = cpg.cfg.nodes.len();
+        let branches = cpg
+            .cfg
+            .nodes
+            .iter()
+            .filter(|n| n.successors.len() >= 2)
+            .count();
+        if (max_nodes > 0 && cfg_nodes > max_nodes) || (max_branches > 0 && branches > max_branches)
+        {
+            entries.push(json!({
+                "func": name,
+                "file": file,
+                "line": line,
+                "available": false,
+                "reason": "over_function_budget",
+                "cfg_nodes": cfg_nodes,
+                "branches": branches,
+                "budget": {"max_nodes": max_nodes, "max_branches": max_branches},
+            }));
+            continue;
+        }
+
+        let analyzer = ANALYZER.get_or_init(AstTaintAnalyzer::new);
+        let flows = analyzer.analyze_function_cpg(&cpg, &body.body_text, &[]);
+        let summary = compute_summary_from_cpg(&cpg, &flows, &body.body_text, analyzer.sinks());
+
+        // 参数下标 → 参数名。CPG 的 `signature.params` 就是 `body.typed_params`（下标一一对应），
+        // 退化时用 `body.params`；两者都没有就如实给 null（不编名字）。
+        let param_name_at = |idx: usize| -> Value {
+            body.typed_params
+                .get(idx)
+                .map(|p| p.name.clone())
+                .or_else(|| body.params.get(idx).cloned())
+                .map(Value::String)
+                .unwrap_or(Value::Null)
+        };
+        let param_to_return: Vec<Value> = summary
+            .taint_propagation
+            .iter()
+            .map(|(param, reaches)| {
+                json!({
+                    "param": param,
+                    "param_name": param_name_at(*param),
+                    "reaches_return": reaches,
+                    // 「参数存在单文件污点流 ⇒ 可能影响返回值」是**保守上界**，不是精确定论
+                    "confidence": 0.4,
+                })
+            })
+            .collect();
+        let param_to_sink: Vec<Value> = summary
+            .direct_sinks
+            .iter()
+            .map(|ds| {
+                json!({
+                    "param": ds.from_param,
+                    "param_name": param_name_at(ds.from_param),
+                    "sink": ds.sink_name,
+                    "sink_line": ds.sink_line,
+                    "sanitized": ds.sanitized,
+                    "sanitizer": ds.sanitizer,
+                    "vuln_type": serde_json::to_value(&ds.vuln_type).unwrap_or(Value::Null),
+                    "confidence": if ds.sanitized { 0.3 } else { 0.6 },
+                })
+            })
+            .collect();
+        let param_to_calls: Vec<Value> = summary
+            .param_to_calls
+            .iter()
+            .take(MAX_FUNCTION_SUMMARIES)
+            .map(|p| {
+                json!({
+                    "param": p.param_idx,
+                    "callee": p.callee,
+                    "arg_idx": p.arg_idx,
+                    "line": p.call_line,
+                })
+            })
+            .collect();
+        available_summaries += 1;
+        entries.push(json!({
+            "func": name,
+            "file": file,
+            "line": line,
+            "params": body.typed_params.len().max(body.params.len()),
+            "available": true,
+            "param_to_return": param_to_return,
+            "param_to_sink": param_to_sink,
+            "param_to_calls": param_to_calls,
+            "taint_flows": flows.len(),
+            "basis": "compute_summary_from_cpg(cpg + single-function taint flows)",
+            "scope": "single function body only; absence means no flow found in this scope, not proof of absence",
+        }));
+    }
+
+    // 依赖（CPG / 单函数污点）不可用时**不填假摘要**：字段仍在，但 `available: false` + `reason`。
+    // `available_summaries == 0` 的三种真实成因都写在 reason 里（无索引定义 / 函数体抽不出 /
+    // 超函数级预算），逐条原因在 `summaries[]` 的 `reason` 上，这里给的是字段级汇总。
+    let field_level_reason: Value = if available_summaries > 0 {
+        Value::Null
+    } else {
+        json!(
+            "no_function_summary_computed: no indexed definition in scope, or the function body \
+             could not be extracted, or it exceeded the function-level budget"
+        )
+    };
+    json!({
+        "method": "compute_summary_from_cpg",
+        "scope": "queried function + distinct returned callee names, in response order",
+        "available": available_summaries > 0,
+        "reason": field_level_reason,
+        "considered": total_hits,
+        "resolved_in_index": resolved_in_index,
+        "available_summaries": available_summaries,
+        "budget": {"max_cfg_nodes": max_nodes, "max_branches": max_branches},
+        "limit": MAX_FUNCTION_SUMMARIES,
+        "total_hits": total_hits,
+        "truncated_at_limit": total_hits > MAX_FUNCTION_SUMMARIES,
+        "summaries": entries,
+    })
+}
+
 pub fn callee_names(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = line;
@@ -1580,6 +2400,9 @@ impl Tool for CodeIntelTool {
                 let mut callees: Vec<Value> = Vec::new();
                 let mut provenance: Vec<Provenance> = Vec::new();
                 let mut unresolved = 0u32;
+                // C3：目标函数体内"解析不出目标"的调用点（与 `unresolved` 同一次扫描收集，
+                // 站点数上限 MAX_DISPATCH_SITES，成本有界）
+                let mut dispatch_sites: Vec<IndirectCallSite> = Vec::new();
                 // 脚本语言的动态派发标记：**只作为非 C 类文件的兜底**。
                 // C 类文件改走"逐调用点计数"（`count_indirect_call_sites`），见下方注释。
                 let dynamic_markers =
@@ -1779,7 +2602,14 @@ impl Tool for CodeIntelTool {
                         for def_line in def_lines_u {
                             let def_idx = (def_line as usize).saturating_sub(1);
                             let (s0, e0) = body_span(&code_refs_u, def_idx, brace_u);
+                            // 数值语义不变：`unresolved_edges` 仍由这个已冻结的计数函数给出
                             unresolved += count_indirect_call_sites(&code_refs_u, s0, e0);
+                            if dispatch_sites.len() < MAX_DISPATCH_SITES {
+                                let mut found = indirect_call_sites(&code_refs_u, s0, e0);
+                                let room = MAX_DISPATCH_SITES - dispatch_sites.len();
+                                found.truncate(room);
+                                dispatch_sites.extend(found);
+                            }
                         }
                     } else if dynamic_markers.iter().any(|m| content.contains(*m)) {
                         unresolved += 1;
@@ -1793,6 +2623,49 @@ impl Tool for CodeIntelTool {
                 callers.truncate(MAX_CALL_GRAPH_HITS);
                 callees.truncate(MAX_CALL_GRAPH_HITS);
                 let level = if unresolved > 0 { "high" } else { "medium" };
+                // C2 证据字段：对本次返回的函数（目标 + 去重后的 callee 名）给出**有界**摘要
+                let mut summary_names: Vec<String> = vec![function.to_string()];
+                for c in &callees {
+                    if let Some(n) = c["name"].as_str() {
+                        if !summary_names.iter().any(|s| s == n) {
+                            summary_names.push(n.to_string());
+                        }
+                    }
+                }
+                let function_summaries =
+                    function_summaries_evidence(root, &sindex, &summary_names);
+                let summaries_available = function_summaries
+                    .get("available_summaries")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                // C3 证据字段：解析不出目标的调用点 → 按签名匹配的候选目标集合。
+                // 只加证据：不进 findings、不改 `unresolved_edges` 的数值语义。
+                let dispatch_candidates = dispatch_candidates_evidence(
+                    &sindex,
+                    &dispatch_sites,
+                    Some(function),
+                    files,
+                );
+                let dispatch_has_candidates = dispatch_candidates
+                    .get("candidates")
+                    .and_then(|c| c.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false);
+                let mut ch_reasons: Vec<&str> = vec![
+                    "name_based_edges",
+                    "dynamic_dispatch_not_resolved",
+                    "callees_scoped_to_function_body",
+                ];
+                if dispatch_has_candidates {
+                    // 字段级如实标注：这些候选是**签名启发式**，不是解析结果
+                    ch_reasons.push("dispatch_candidates_are_signature_heuristic");
+                } else if !dispatch_sites.is_empty() {
+                    ch_reasons.push("dispatch_targets_unresolved_no_signature_match");
+                }
+                if summaries_available > 0 {
+                    // 摘要是**单函数**范围内的（单文件污点流），不是完整过程间结论
+                    ch_reasons.push("function_summaries_single_function_scope");
+                }
                 IntelEnvelope {
                     data: json!({
                         "function": function,
@@ -1804,17 +2677,11 @@ impl Tool for CodeIntelTool {
                         },
                         "limit": MAX_CALL_GRAPH_HITS,
                         "truncated_at_limit": truncated_at_limit,
+                        "dispatch_candidates": dispatch_candidates,
+                        "function_summaries": function_summaries,
                     }),
                     provenance,
-                    uncertainty: Uncertainty::new(
-                        level,
-                        &[
-                            "name_based_edges",
-                            "dynamic_dispatch_not_resolved",
-                            "callees_scoped_to_function_body",
-                        ],
-                        unresolved,
-                    ),
+                    uncertainty: Uncertainty::new(level, &ch_reasons, unresolved),
                 }
             }
             IntelKind::SliceBackward => {
@@ -1854,6 +2721,9 @@ impl Tool for CodeIntelTool {
                 let mut forward_bounded_by: &str = "requested";
                 // 作用域锚点位置（在 match 之外读取，故在此声明）
                 let mut scope_anchor: Value = Value::Null;
+                // C3：所在函数体内"解析不出目标"的调用点 → 签名候选集合（同样在 match 之外读取）
+                let mut dispatch_candidates: Value =
+                    dispatch_candidates_evidence(&sindex, &[], None, files);
                 // 点名文件解析：索引未收录时**按需从磁盘读取**（见 read_requested_file）。
                 // 与批量索引的文件数/单文件大小上限解耦——否则"我没索引它"会被回答成
                 // "文件不存在"，对 LLM 消费者就是在陈述一个错误的世界。
@@ -2192,6 +3062,23 @@ impl Tool for CodeIntelTool {
                             }
                             decl_added = added > 0;
                         }
+                        // C3：所在函数体内解析不出目标的调用点（函数指针 / 成员指针 / 表下标派发）
+                        // → 按签名匹配的候选目标集合。只对 C/C++ 生效（候选来源也是已索引的 C/C++ 定义），
+                        // 且只在作用域解析成功时做（否则"函数体内"没有确定的边界）。
+                        if c_like {
+                            if let Some(def_line) = function_def_line {
+                                let def_idx = (def_line as usize).saturating_sub(1);
+                                let (b0, b1) = body_span(&code_refs, def_idx, brace);
+                                let mut sites = indirect_call_sites(&code_refs, b0, b1);
+                                sites.truncate(MAX_DISPATCH_SITES);
+                                dispatch_candidates = dispatch_candidates_evidence(
+                                    &sindex,
+                                    &sites,
+                                    function_name.as_deref(),
+                                    files,
+                                );
+                            }
+                        }
                     }
                     None => {
                         return Err(ToolError::InvalidArgument(format!("文件不存在: {}", file)))
@@ -2224,6 +3111,7 @@ impl Tool for CodeIntelTool {
                         "lines_returned": snippets.len(),
                         "index": symbol_index_stats(&sindex, s_hit, s_build_ms),
                         "preprocess_note": preproc_note,
+                        "dispatch_candidates": dispatch_candidates,
                         "snippets": snippets,
                     }),
                     provenance,
@@ -2257,6 +3145,15 @@ impl Tool for CodeIntelTool {
                                 // 窗口内标识符的声明行（可能远在窗口上方）也被交付：
                                 // 这些是**原文附加证据**，不是推断出来的结论
                                 reasons.push("window_identifier_declarations_included");
+                            }
+                            if dispatch_candidates
+                                .get("candidates")
+                                .and_then(|c| c.as_array())
+                                .map(|a| !a.is_empty())
+                                .unwrap_or(false)
+                            {
+                                // 与 get_call_hierarchy 同一口径：这些候选是**签名启发式**，不是解析结果
+                                reasons.push("dispatch_candidates_are_signature_heuristic");
                             }
                             reasons
                         },
@@ -3456,6 +4353,382 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// C3：调用点解析不出目标（表下标 / 成员指针 / 函数指针派发）时，必须交付**按签名匹配的
+    /// 候选目标集合**——候选来自已索引的 C 定义、每条带 `reason`/`score`、字段级标注为启发式，
+    /// 且**不得**影响 `unresolved_edges` 的数值语义。
+    #[tokio::test]
+    async fn test_dispatch_candidates_signature_heuristic() {
+        let root = std::env::temp_dir().join("ctx-audit-dispatch-candidates");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = concat!(
+            "struct conn { int fd; };\n",
+            "\n",
+            "static int\n",
+            "handle_conn (struct conn *c, const char *buf)\n",
+            "{\n",
+            "    return c->fd;\n",
+            "}\n",
+            "\n",
+            "static int\n",
+            "three_args (int a, int b, int c)\n",
+            "{\n",
+            "    return a + b + c;\n",
+            "}\n",
+            "\n",
+            "typedef int (*handler_fn) (struct conn *, const char *);\n",
+            "\n",
+            "static handler_fn table[4];\n",
+            "\n",
+            "int\n",
+            "run_dispatch (struct conn *c, const char *buf, int idx)\n",
+            "{\n",
+            "    return table[idx] (c, buf);\n",
+            "}\n",
+        );
+        std::fs::write(root.join("src/d.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
+        let out = tool
+            .execute(json!({"function": "run_dispatch", "direction": "callees"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let dc = &d["data"]["dispatch_candidates"];
+        assert_eq!(dc["heuristic"], true, "字段级必须标注启发式: {d}");
+        assert_eq!(dc["basis"], "signature_match_over_indexed_c_definitions", "{d}");
+        let sites = dc["call_sites"].as_array().unwrap();
+        assert!(
+            !sites.is_empty(),
+            "表下标派发必须作为调用点交付: {d}"
+        );
+        let cands = dc["candidates"].as_array().unwrap();
+        assert!(!cands.is_empty(), "签名匹配应产出候选: {d}");
+        for c in cands {
+            assert!(
+                c["reason"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+                "每条候选必须带非空 reason: {c}"
+            );
+            assert!(c["score"].as_f64().is_some(), "每条候选必须带 score: {c}");
+            assert!(c["line"].as_u64().is_some(), "候选必须给出定义行: {c}");
+        }
+        let names: Vec<&str> = cands.iter().filter_map(|c| c["name"].as_str()).collect();
+        assert!(
+            names.contains(&"handle_conn"),
+            "同参数个数 + 实参名一致的 C 定义必须进候选: {d}"
+        );
+        assert!(
+            !names.contains(&"three_args"),
+            "参数个数不匹配（3≠2）的定义不得进候选: {d}"
+        );
+        // 只加证据：未解析边口径不变
+        assert!(
+            d["uncertainty"]["unresolved_edges"].as_u64().unwrap_or(0) >= 1,
+            "unresolved_edges 必须仍然计数: {d}"
+        );
+        let reasons = d["uncertainty"]["reasons"].as_array().unwrap();
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == "dispatch_candidates_are_signature_heuristic"),
+            "必须如实标注候选是签名启发式: {d}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// C3：**跨行签名**的定义必须进候选空间（C 的 80 列风格：形参表折行）。
+    /// 只用"定义行"原文时括号不闭合 ⇒ 真目标整批缺席，候选退化成"巧合同参数个数的无关函数"。
+    #[tokio::test]
+    async fn test_dispatch_candidates_multiline_signature_target_found() {
+        let root = std::env::temp_dir().join("ctx-audit-dispatch-multiline");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = concat!(
+            "struct conn { int fd; };\n",
+            "\n",
+            // 真目标：形参表折行 ⇒ 索引里的"定义行"原文括号不闭合
+            "static int\n",
+            "handle_conn (struct conn *c,\n",
+            "             const char *buf)\n",
+            "{\n",
+            "    return c->fd;\n",
+            "}\n",
+            "\n",
+            // 噪声：单行签名且参数个数不同
+            "static int one_arg (int a) { return a; }\n",
+            "\n",
+            "typedef int (*handler_fn) (struct conn *, const char *);\n",
+            "\n",
+            "static handler_fn table[4];\n",
+            "\n",
+            "int\n",
+            "run_dispatch (struct conn *c, const char *buf, int idx)\n",
+            "{\n",
+            "    return table[idx] (c, buf);\n",
+            "}\n",
+        );
+        std::fs::write(root.join("src/m.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
+        let out = tool
+            .execute(json!({"function": "run_dispatch", "direction": "callees"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let dc = &d["data"]["dispatch_candidates"];
+        let cands = dc["candidates"].as_array().unwrap();
+        let target = cands
+            .iter()
+            .find(|c| c["name"] == "handle_conn")
+            .unwrap_or_else(|| panic!("跨行签名的真目标必须在候选里: {d}"));
+        assert!(
+            target["signature"]
+                .as_str()
+                .unwrap_or("")
+                .contains("const char *buf"),
+            "续行后的签名文本必须完整: {target}"
+        );
+        assert!(
+            dc["signature_space"]["signatures_joined_from_continuation_lines"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 1,
+            "必须如实上报发生过续行: {d}"
+        );
+        assert!(
+            !cands.iter().any(|c| c["name"] == "one_arg"),
+            "参数个数不匹配的定义不得进候选: {d}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// C3 对照：签名**不匹配**（实参个数没有任何已索引 C 定义与之相等）⇒ 候选为空、
+    /// 并如实给出原因，不得为了"有字段"而硬凑候选。
+    #[tokio::test]
+    async fn test_dispatch_candidates_empty_when_no_signature_match() {
+        let root = std::env::temp_dir().join("ctx-audit-dispatch-nomatch");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = concat!(
+            "static int\n",
+            "two_args (int a, char *b)\n",
+            "{\n",
+            "    return a;\n",
+            "}\n",
+            "\n",
+            "typedef int (*handler_fn) (int, char *, char *);\n",
+            "\n",
+            "static handler_fn table[4];\n",
+            "\n",
+            "int\n",
+            "run_dispatch (int idx, char *a, char *b, char *c)\n",
+            "{\n",
+            "    table[idx] (a, b, c);\n",
+            "    return 0;\n",
+            "}\n",
+        );
+        std::fs::write(root.join("src/n.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
+        let out = tool
+            .execute(json!({"function": "run_dispatch", "direction": "callees"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let dc = &d["data"]["dispatch_candidates"];
+        assert!(
+            dc["call_sites"].as_array().unwrap().len() == 1,
+            "派发调用点必须被交付: {d}"
+        );
+        assert_eq!(
+            dc["candidates"].as_array().unwrap().len(),
+            0,
+            "实参个数与任何已索引定义都不相等 ⇒ 候选必须为空: {d}"
+        );
+        assert_eq!(dc["total_hits"], 0, "{d}");
+        assert_eq!(dc["truncated_at_limit"], false, "{d}");
+        let reasons = d["uncertainty"]["reasons"].as_array().unwrap();
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == "dispatch_targets_unresolved_no_signature_match"),
+            "无候选时也必须如实说明: {d}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// C3：`slice_backward` 的 envelope 同样必须交付 `dispatch_candidates`
+    /// （所在函数体由作用域解析确定；非 C 语言不做签名匹配）。
+    #[tokio::test]
+    async fn test_slice_backward_exposes_dispatch_candidates() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-dispatch");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = concat!(
+            "struct conn { int fd; };\n",
+            "\n",
+            "static int\n",
+            "handle_conn (struct conn *c, const char *buf)\n",
+            "{\n",
+            "    return c->fd;\n",
+            "}\n",
+            "\n",
+            "typedef int (*handler_fn) (struct conn *, const char *);\n",
+            "\n",
+            "static handler_fn table[4];\n",
+            "\n",
+            "int\n",
+            "run_dispatch (struct conn *c, const char *buf, int idx)\n",
+            "{\n",
+            "    return table[idx] (c, buf);\n",
+            "}\n",
+        );
+        std::fs::write(root.join("src/s.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/s.c", "line": 16, "depth": 20}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let dc = &d["data"]["dispatch_candidates"];
+        assert_eq!(dc["heuristic"], true, "切片响应也必须带启发式标注: {d}");
+        let names: Vec<&str> = dc["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"handle_conn"),
+            "切片所在函数体内的派发点应产出候选: {d}"
+        );
+        let reasons = d["uncertainty"]["reasons"].as_array().unwrap();
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == "dispatch_candidates_are_signature_heuristic"),
+            "切片响应也必须标注签名启发式: {d}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// C2：`get_call_hierarchy` 必须交付**有界**的轻量过程间摘要。
+    /// 断言：字段存在、每个条目要么带摘要要么带不可用原因、上限（8）被尊重、
+    /// 超限时 `truncated_at_limit = true`、并且摘要是复用 `compute_summary_from_cpg` 产出的。
+    #[tokio::test]
+    async fn test_function_summaries_bounded_and_truncated() {
+        let root = std::env::temp_dir().join("ctx-audit-func-summaries");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut src = String::from("#include <string.h>\n\n");
+        for i in 0..10 {
+            src.push_str(&format!(
+                "static int callee_{:02} (int a) {{ return a + {}; }}\n",
+                i, i
+            ));
+        }
+        src.push_str("\nint hub (char *buf, int n)\n{\n");
+        src.push_str("    callee_00(n);\n");
+        src.push_str("    strlen(buf);\n"); // 库里没有已索引定义 ⇒ 该项必须如实降级
+        for i in 1..10 {
+            src.push_str(&format!("    callee_{:02}(n);\n", i));
+        }
+        src.push_str("    memcpy(buf, \"y\", 1);\n    return n;\n}\n");
+        std::fs::write(root.join("src/h.c"), &src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
+        let out = tool
+            .execute(json!({"function": "hub", "direction": "callees"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let fs = &d["data"]["function_summaries"];
+        assert_eq!(fs["method"], "compute_summary_from_cpg", "{d}");
+        assert_eq!(fs["limit"], MAX_FUNCTION_SUMMARIES, "必须上报上限: {d}");
+        assert!(
+            fs["total_hits"].as_u64().unwrap_or(0) > MAX_FUNCTION_SUMMARIES as u64,
+            "本次响应里的函数数应超过上限（目标 + callee 名）: {d}"
+        );
+        assert_eq!(
+            fs["truncated_at_limit"], true,
+            "超限时必须如实标注截断: {d}"
+        );
+        let sums = fs["summaries"].as_array().unwrap();
+        assert_eq!(
+            sums.len(),
+            MAX_FUNCTION_SUMMARIES,
+            "交付的摘要条目数必须被上限钉住: {d}"
+        );
+        // 目标函数自己的摘要必须是真摘要（复用 compute_summary_from_cpg）
+        assert_eq!(sums[0]["func"], "hub", "{d}");
+        assert_eq!(sums[0]["available"], true, "{d}");
+        assert!(sums[0]["param_to_return"].as_array().is_some(), "{d}");
+        assert!(sums[0]["param_to_sink"].as_array().is_some(), "{d}");
+        // 字段级可用性标注，以及"参数→返回"的可读参数名（不能只有下标）
+        assert_eq!(fs["available"], true, "有摘要时字段级必须标注可用: {d}");
+        assert!(fs["reason"].is_null(), "可用时字段级不得给降级原因: {d}");
+        assert_eq!(fs["considered"], fs["total_hits"], "{d}");
+        let p2r = sums[0]["param_to_return"].as_array().unwrap();
+        assert!(
+            p2r.iter()
+                .any(|e| e["param_name"].as_str() == Some("buf") && e["param"].as_u64() == Some(0)),
+            "参数→返回必须把下标还原成参数名: {d}"
+        );
+        // 每条要么可用（带摘要），要么带**原因**（绝不静默缺席）
+        for s in sums {
+            if s["available"] == true {
+                assert!(s["basis"].as_str().unwrap_or("").contains("compute_summary_from_cpg"), "{s}");
+            } else {
+                assert!(
+                    s["reason"].as_str().map(|r| !r.is_empty()).unwrap_or(false),
+                    "不可用的条目必须给出原因: {s}"
+                );
+            }
+        }
+        // 索引里没有定义的 callee（`strlen`/`memcpy`）必须被计为"未解析到定义"
+        assert!(
+            fs["resolved_in_index"].as_u64().unwrap_or(0) < fs["total_hits"].as_u64().unwrap_or(0),
+            "未索引的 callee 不应被算作已解析: {d}"
+        );
+        let reasons = d["uncertainty"]["reasons"].as_array().unwrap();
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == "function_summaries_single_function_scope"),
+            "摘要的作用域限制必须进 uncertainty: {d}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// C2 的已知边界（**只记录，不改检测**）：既有调用名判据要求 `name(` 紧邻，
+    /// GNU 风格 `name (args)`（`(` 前有空格）不被识别。于这类文件里 `function_summaries`
+    /// 只会有目标函数自己，`total_hits` 会如实反映"没识别到 callee"。
+    /// 该判据同时服务调用图（检测线冻结），本任务不动它。
+    #[test]
+    fn test_callee_names_requires_adjacent_paren() {
+        assert_eq!(callee_names("    ok(a, b);"), vec!["ok".to_string()]);
+        assert!(
+            callee_names("    gnu_style (a, b);").is_empty(),
+            "带空格的 GNU 风格调用不被既有判据识别（只记录边界，不改检测）"
+        );
     }
 
     /// P7 活代码视图：`#if 0` 里的函数**不进索引**、切片里也不出现；`#ifdef` 一类无法判定
