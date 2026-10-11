@@ -1167,6 +1167,7 @@ pub fn count_indirect_call_sites(code_refs: &[&str], start: usize, end: usize) -
     static MEMBER: OnceLock<regex::Regex> = OnceLock::new();
     static DEREF: OnceLock<regex::Regex> = OnceLock::new();
     static INDEX: OnceLock<regex::Regex> = OnceLock::new();
+    static PAREN: OnceLock<regex::Regex> = OnceLock::new();
 
     let member = MEMBER.get_or_init(|| {
         regex::Regex::new(r"->\s*[A-Za-z_][A-Za-z0-9_]*\s*\(").unwrap()
@@ -1176,6 +1177,12 @@ pub fn count_indirect_call_sites(code_refs: &[&str], start: usize, end: usize) -
     });
     let index = INDEX.get_or_init(|| {
         regex::Regex::new(r"[A-Za-z_][A-Za-z0-9_]*\s*\[[^\]\n]*\]\s*\(").unwrap()
+    });
+    let paren = PAREN.get_or_init(|| {
+        // 经函数指针成员的调用，形如 (a->ops.run)(a)：括号内以标识符或成员链结尾、
+        // 无前导星号，也不呈现为 ->name( 的形态。此前三种模式都漏掉它，使大量使用该
+        // 写法的 C 项目 unresolved_edges 结构性恒 0。
+        regex::Regex::new(r"\(\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*)*\s*\)\s*\(").unwrap()
     });
 
     if code_refs.is_empty() || end < start {
@@ -1188,7 +1195,8 @@ pub fn count_indirect_call_sites(code_refs: &[&str], start: usize, end: usize) -
             .find_iter(text)
             .count()
             .max(deref.find_iter(text).count())
-            .max(index.find_iter(text).count());
+            .max(index.find_iter(text).count())
+            .max(paren.find_iter(text).count());
         n += per_line as u32;
     }
     n
@@ -1230,6 +1238,7 @@ fn dispatch_regex(kind: &str) -> &'static regex::Regex {
     static MEMBER: OnceLock<regex::Regex> = OnceLock::new();
     static DEREF: OnceLock<regex::Regex> = OnceLock::new();
     static INDEX: OnceLock<regex::Regex> = OnceLock::new();
+    static PAREN: OnceLock<regex::Regex> = OnceLock::new();
     match kind {
         "member" => MEMBER.get_or_init(|| {
             regex::Regex::new(r"->\s*[A-Za-z_][A-Za-z0-9_]*\s*\(").unwrap()
