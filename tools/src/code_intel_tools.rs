@@ -724,7 +724,7 @@ fn matching_open_paren(s: &str) -> Option<usize> {
 /// 判断一行是否像**函数头**，并尽力取出函数名（空串表示匿名）。
 ///
 /// `next` 为**之后首个非空行**，用于识别 C/C++ 的多行签名
-/// （`static ngx_int_t` / `ngx_http_foo(...)` / `{` 分三行，名字行不以 `{` 结尾）。
+/// （`static ret_t` / `http_handler(...)` / `{` 分三行，名字行不以 `{` 结尾）。
 ///
 /// 为什么需要它：符号索引的 `declared_names()` 只能从**关键字**形态抽取声明，而
 /// ① JS/TS 极常见的是匿名函数表达式/箭头函数赋给属性或变量；
@@ -879,8 +879,8 @@ pub fn function_header_name_multi(text: &str, following: &[&str], c_like: bool) 
     }
     if depth <= 0 {
         // K&R 风格：签名**已闭合**，但参数类型声明行在其后、`{` 更后：
-        //     eap_request(esp, id, typenum, len, inp)
-        //     EAP_STATE *esp;
+        //     opt_request(esp, id, typenum, len, inp)
+        //     OPT_STATE *esp;
         //     {
         // 只认"后续若干行是参数类型声明行、且其中出现 `{`"这一种情况，
         // 以免退回"跨语句拼接"的老毛病（那会把模块级代码误报成有函数作用域）。
@@ -3048,7 +3048,8 @@ impl Tool for CodeIntelTool {
                             //
                             // 两个坑（实测）：
                             // ① 必须校验函数体覆盖目标行，否则会把目标行上方"已经闭合的函数"当作用域
-                            //    （utilities.js:30 位于字符串数组里，上方最近的函数已闭合 ⇒ 应保持 unresolved）；
+                            //    （某 JS 库里位于字符串数组中的一行：上方最近的函数已闭合
+                            //     ⇒ 应保持 unresolved）；
                             // ② 不能与"最近声明"合并成一趟，否则中途遇到 `var indexEnd = …` 这类普通声明
                             //    会提前 break，反而漏掉更上面的真正函数头。
                             // 目标行本身可能就是函数头：ES6 类方法 `name() {`、对象字面量方法、
@@ -4119,13 +4120,13 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
             root.join("src/a.c"),
-            "static ngx_int_t ngx_foo(ngx_str_t *s);\n\nngx_int_t\nngx_bar(ngx_str_t *s)\n{\n    return ngx_foo(s);\n}\n",
+            "static ret_t helper_fn(str_t *s);\n\nret_t\ncaller_fn(str_t *s)\n{\n    return helper_fn(s);\n}\n",
         )
         .unwrap();
         crate::index_cache::invalidate(&root);
         crate::symbol_index::invalidate(&root);
         let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::CallHierarchy);
-        let hit = tool.execute(json!({"function": "ngx_foo"})).await.unwrap();
+        let hit = tool.execute(json!({"function": "helper_fn"})).await.unwrap();
         let d = hit.data.expect("应有 envelope data");
         let callers = d["data"]["callers"].as_array().cloned().unwrap_or_default();
         let lines: Vec<u64> = callers.iter().filter_map(|c| c["line"].as_u64()).collect();
@@ -4136,11 +4137,11 @@ mod tests {
     /// C 的运算符/内建形式不是被调用者（`sizeof`/`_Alignof`/`offsetof`）。
     #[test]
     fn test_callee_names_skips_c_operators() {
-        for line in ["n = sizeof(ngx_str_t);", "x = _Alignof(int) + offsetof(S, f);"] {
+        for line in ["n = sizeof(str_t);", "x = _Alignof(int) + offsetof(S, f);"] {
             let names = callee_names(line);
             assert!(names.is_empty(), "{line} 不应产出 callee: {names:?}");
         }
-        assert_eq!(callee_names("ngx_foo(a);"), vec!["ngx_foo".to_string()]);
+        assert_eq!(callee_names("helper_fn(a);"), vec!["helper_fn".to_string()]);
     }
 
     #[test]
@@ -4273,35 +4274,35 @@ mod tests {
     }
 
     /// 多行签名：C/C++ 签名跨 3 行以上时也必须能取出函数名（实测
-    /// `static cmark_node *try_opening_table_header(` + 2 行参数 + `… int len) {`）。
+    /// `static node_t *open_header(` + 2 行参数 + `… int len) {`）。
     #[test]
     fn test_function_header_name_multi_line_signature() {
         assert_eq!(
-            function_header_name_multi("ngx_http_foo(ngx_http_request_t *r)", &["{"], true).as_deref(),
-            Some("ngx_http_foo")
+            function_header_name_multi("http_handler(req_t *r)", &["{"], true).as_deref(),
+            Some("http_handler")
         );
         let sig = [
-            "cmark_parser *parser,",
-            "cmark_node *parent_container,",
+            "parser_t *parser,",
+            "node_t *parent_container,",
             "unsigned char *input, int len) {",
         ];
         assert_eq!(
             function_header_name_multi(
-                "static cmark_node *try_opening_table_header(cmark_syntax_extension *self,",
+                "static node_t *open_header(syntax_ext_t *self,",
                 &sig,
                 true
             )
             .as_deref(),
-            Some("try_opening_table_header")
+            Some("open_header")
         );
         // K&R：签名已闭合，参数类型行在其后、`{` 更后 —— **只在 C 类文件**才允许
-        let kr = ["eap_state *esp;", "u_char *inp;", "int id;", "{"];
+        let kr = ["opt_state *esp;", "u_char *inp;", "int id;", "{"];
         assert_eq!(
-            function_header_name_multi("eap_request(esp, inp, id, len)", &kr, true).as_deref(),
-            Some("eap_request")
+            function_header_name_multi("opt_request(esp, inp, id, len)", &kr, true).as_deref(),
+            Some("opt_request")
         );
         assert_eq!(
-            function_header_name_multi("eap_request(esp, inp, id, len)", &kr, false).as_deref(),
+            function_header_name_multi("opt_request(esp, inp, id, len)", &kr, false).as_deref(),
             None,
             "非 C 语言不得走 K&R 容忍（跨语言误召回的入口）"
         );
@@ -4441,8 +4442,8 @@ mod tests {
         // 关键字与 `(` 之间**无空格**（JS 匿名函数常见）→ 名字回填自左侧属性/变量
         //（实测漏此形态会把 `function` 当成函数名）
         assert_eq!(
-            function_header_name("Git.prototype.checkoutLatestTag = function(then) {").as_deref(),
-            Some("checkoutLatestTag")
+            function_header_name("Repo.prototype.refreshCache = function(then) {").as_deref(),
+            Some("refreshCache")
         );
         assert_eq!(function_header_name("function(a) {").as_deref(), Some(""));
         // 关键字边界：`define(` 的 `def`、`myfn(` 的 `fn` 都不得被当成关键字
@@ -4452,8 +4453,8 @@ mod tests {
         assert_eq!(function_header_name("static int foo(int a) {").as_deref(), Some("foo"));
         assert_eq!(function_header_name("void bar(void) {").as_deref(), Some("bar"));
         assert_eq!(
-            function_header_name_ctx("ngx_http_foo(ngx_http_request_t *r)", "{").as_deref(),
-            Some("ngx_http_foo")
+            function_header_name_ctx("http_handler(req_t *r)", "{").as_deref(),
+            Some("http_handler")
         );
         // C/C++ 负例：控制语句、调用、结构体、else
         assert_eq!(function_header_name("if (a) {"), None);
@@ -4526,7 +4527,7 @@ mod tests {
         let root = std::env::temp_dir().join("ctx-audit-slice-c-header");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
-        let src = "static ngx_int_t\nngx_http_foo(ngx_http_request_t *r)\n{\n    int n = r->n;\n    if (n == 0) {\n        return 1;\n    }\n    return 0;\n}\n";
+        let src = "static ret_t\nhttp_handler(req_t *r)\n{\n    int n = r->n;\n    if (n == 0) {\n        return 1;\n    }\n    return 0;\n}\n";
         std::fs::write(root.join("src/a.c"), src).unwrap();
         crate::index_cache::invalidate(&root);
         crate::symbol_index::invalidate(&root);
@@ -4538,7 +4539,7 @@ mod tests {
             .unwrap();
         let d = out.data.clone().expect("应有 envelope data");
         assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
-        assert_eq!(d["data"]["function"], "ngx_http_foo", "{d}");
+        assert_eq!(d["data"]["function"], "http_handler", "{d}");
         assert_eq!(d["data"]["function_def_line"], 2, "{d}");
         assert_eq!(d["data"]["includes_function_header"], true, "{d}");
 
@@ -4556,34 +4557,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("lib")).unwrap();
         let src = concat!(
-            "static CURLproxycode do_socks5(struct Curl_cfilter *cf,\n",
-            "                              struct socks_state *sx,\n",
-            "                              struct Curl_easy *data)\n",
+            "static ProxyCode open_proxy(struct Filter *cf,\n",
+            "                              struct ConnState *sx,\n",
+            "                              struct EasyConn *data)\n",
             "{\n",
-            "  struct connectdata *conn = cf->conn;\n",
+            "  struct Connection *conn = cf->conn;\n",
             "  const size_t hostname_len = strlen(sx->hostname);\n",
-            "  struct Curl_dns_entry *dns = NULL;\n",
+            "  struct DnsEntry *dns = NULL;\n",
             "  switch(sx->state) {\n",
-            "  case CONNECT_INIT:\n",
-            "    infof(data, \"connecting to proxy\", hostname_len, dns);\n",
+            "  case STATE_INIT:\n",
+            "    log_info(data, \"connecting to proxy\", hostname_len, dns);\n",
             "    break;\n",
             "  default:\n",
             "    break;\n",
             "  }\n",
-            "  return CURLPX_OK;\n",
+            "  return PROXY_OK;\n",
             "}\n",
         );
-        std::fs::write(root.join("lib/socks.c"), src).unwrap();
+        std::fs::write(root.join("lib/proxy.c"), src).unwrap();
         crate::index_cache::invalidate(&root);
         crate::symbol_index::invalidate(&root);
 
         let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
         let out = tool
-            .execute(json!({"file": "lib/socks.c", "line": 10, "depth": 40}))
+            .execute(json!({"file": "lib/proxy.c", "line": 10, "depth": 40}))
             .await
             .unwrap();
         let d = out.data.clone().expect("应有 envelope data");
-        assert_eq!(d["data"]["function"], "do_socks5", "{d}");
+        assert_eq!(d["data"]["function"], "open_proxy", "{d}");
         assert_eq!(d["data"]["function_def_line"], 1, "{d}");
         assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
         assert_eq!(d["data"]["includes_function_header"], true, "{d}");
