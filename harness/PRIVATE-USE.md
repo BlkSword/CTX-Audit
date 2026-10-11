@@ -99,37 +99,51 @@ export DSH_SNIPER_PROMPT_FILE="$HOME/.ctx-audit/private/prompts/sniper-prompt.md
 
 大轮/反馈脚本不再硬编码 `/root/audit-logs`、`/root/CTX-Audit` 等路径，而是通过环境变量或私有 overlay 解析。
 
-## Agent Preset 说明
+## Agent Preset 说明（0.2.0-rc.2 起：预设是"声明行"，不是目录）
 
-公共 `harness/` 默认使用 DSH 自带默认/极简模式，不自带 `ctx-audit-auditor` preset。
-`run-*.sh` 会把“加载 ctx-audit-auditor skill”写进任务，因此即使没有自定义 preset，审计流程也会加载 skill。
-
-如果你希望用更完整的审计专用 preset（例如 103 旧的 `ctx-audit-auditor`），把它放到私有 overlay：
+**已作废的旧写法**（本文件此前教的，以及 `harness-private/` 里仍在用的那种）：
 
 ```text
-~/.ctx-audit/private/dsh/.agent-presets/ctx-audit-auditor/
-├── preset.yml
-├── agent.cordis.yml
-└── (可选) gitbash-executor.mjs
+$DSH_HOME/.agent-presets/<id>/{preset.yml, agent.cordis.yml}   # 没有任何代码读它
+settings.yaml: agent-presets: {default: <id>}                  # 命名空间与字段都不对
 ```
 
-然后安装/覆盖到 DSH_HOME：
-
-```bash
-cp -rn ~/.ctx-audit/private/dsh/.agent-presets/ "$HOME/.dsh/"
-```
-
-并把私有 settings 中的默认 preset 指回：
+DSH 自带的组合编辑技能写明 *"Nothing reads that directory any more."*；默认值的正确落点是**设置命名空间 = profile 条目 id**：
 
 ```yaml
-agent-presets:
-  default: ctx-audit-auditor
+# $DSH_HOME/settings.yaml —— 只导入一次，随后文件会被改名为 settings.yaml.imported
+agent-preset-registry:
+  selectedDefault: ctx-audit
 ```
 
-结论：
+**现行三种写法（按稳健度递减）**
 
-- 公共/通用场景：极简默认模式更稳、更小、更安全。
-- 私有/真实审计场景：可以叠加 `ctx-audit-auditor` preset，获得审计专用 persona 和完整 shell/filesystem 工具面。
+1. **随 bundle 走（推荐）**：在 bundle 的 patch 里 insert 一行 `@deepseek-ai/dsh-agent-preset`，并覆写注册表的 `default`。仓库自带示例见
+   `plugins/ctx-audit-web/presets/ctx-audit.patch.yml`。
+2. **profile 层覆写**：在 `$DSH_HOME/profiles/<name>/cordis.patch.yml` 里
+   ```yaml
+   - id: agent-preset-registry
+     name: '@deepseek-ai/dsh-agent-preset-registry'
+     config:
+       default: ctx-audit
+   ```
+   （profile 层在所有 bundle 层之后应用）
+3. **旧式 settings.yaml**：见上面的 `selectedDefault`。
+
+**要点与坑**
+
+- `order` 只决定名单顺序，**不决定默认值**；默认值 = `selectedDefault ?? default`。
+- 预设行对插件管理**只读**：落地后要改组成只能重新发 bundle。
+- 覆写预设必须按 Loader 行 id（`preset-<id>`），且 **config 是整体替换**（必须重述所有字段）；id 匹配不到任何行时**只会告警并跳过**。
+- 预设 `id` 不得与内置的 `standard` / `ptc` / `minimal` / `cordis` 重名（重名直接抛错）。
+- 只有 bundle 列表里含 `@deepseek-ai/dsh-web-app` 时预设才可能注册（注册表那一行由它插入）。
+- 组装失败**不中断启动**，只记一条 `agent preset <id>: <原因>` 的 warning；坏掉的预设会从选择器里消失，**判活要看这行日志**。
+- skill 仍按原样部署到 `$DSH_HOME/skills/<name>/SKILL.md`（那是默认根之一），但预设里必须挂 `@deepseek-ai/dsh-skill-filesystem` + `@deepseek-ai/dsh-tool-skill`，模型才看得到 skill 工具——Web 面默认禁用了宿主那两行。
+
+**公共默认 vs 私有覆盖**
+
+- 公共/通用场景：DSH 自带 `standard` 预设即可，`run-*.sh` 会把"加载 `ctx-audit-auditor` skill"写进任务。
+- 审计场景：用仓库自带的 `ctx-audit` 预设（persona + 审计硬规则 + skill 先加载 + 只读目标项目 + TP 一律 `human_gate`），或再用上面的第 2 种写法把它设为默认。
 
 ## 边界红线
 

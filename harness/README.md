@@ -42,6 +42,22 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 细节见 [plugins/ctx-audit-web/README.md](./plugins/ctx-audit-web/README.md)，其中记录了本次实测踩到的
 **静默失败陷阱**：bundle 的 patch 必须为自己插一行，否则客户端半区永远不进 boot graph 且没有任何报错。
 
+**控制面板**（插件注册的 `main` 页面）：顶部状态胶囊（MCP 就绪 / 引擎版本 / 工具数）+ 四个 KPI；
+卡片含 **MCP 配置**、**MCP 引擎（实时 stdio 握手：服务端与协议版本、13 个工具及描述）**、
+**日志**（从工作区 `.ctx-audit/*.log` 尾部读，可选文件与行数）、**证据产物**（有界清单 + 体积 + 相对时间）、
+**路线图**（随仓库提交的 `roadmap.json`）。数据全部来自插件 host 半区的只读端点。
+
+**审计专用 agent 预设 `ctx-audit`**（`plugins/ctx-audit-web/presets/ctx-audit.patch.yml`）：先加载
+`ctx-audit-auditor` skill 再判定、结论必须带 `file:line`、TP 一律 `human_gate`、只读目标项目；
+随 bundle 一起注册并被设为部署默认（也可在 profile 层覆写 `agent-preset-registry.default`）。
+
+**校验**（预设的行不会在启动时校验，坏预设只在会话挂载时才报）：
+
+```bash
+node harness/scripts/verify-ctx-audit-web.mjs --dsh <path to @deepseek-ai/dsh>
+# 24 行 = 18 OK / 6 SKIP / 0 FAIL；把 persona 的 prefix 换成旧字段 text 会立刻 FAIL
+```
+
 ## Agent Preset / 默认模式
 
 - 公共 `harness/` **默认使用 DSH 自带极简/默认模式**，不默认加载自定义 agent preset。

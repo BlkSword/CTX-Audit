@@ -38,9 +38,20 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 | `client.js` | 浏览器半区：`main` 页面 + `sidebar.panellist` 入口，纯 ESM、零构建 |
 | `locale/{en,zh}.json` | 插件管理页/设置里显示的标题与描述（不激活插件即可读） |
 
-## 数据端点
+## 数据端点（控制面板的数据层）
 
-`GET /ctx-audit/api/status`（前缀 `/ctx-audit/api` 由本插件独占；未知子路径 404，非 GET/HEAD 405）
+前缀 `/ctx-audit/api` 由本插件独占；全部 **GET/HEAD**，其它方法 405，未知子路径 404。
+
+| 端点 | 内容 |
+|---|---|
+| `/status` | MCP 行回显（serverName / transport / command / **二进制是否存在** / 工具名前缀）、工作区、证据目录、**有界（≤30 项）的 `.ctx-audit/` 清单 + 计数**、可用 `.log` 文件列表 |
+| `/engine` | **真实 MCP 握手**（stdio：`initialize` → `initialized` → `tools/list`）：服务端名与版本、协议版本、**工具清单与描述**。带 6s 超时、5 分钟缓存；`?refresh=1` 强制重探 |
+| `/logs?file=<name>&lines=N` | 指定 `.log` 的**末尾 N 行**（≤500 行、只读文件尾 ≤256KB）；`file` 只能是枚举出来的名字，构造值拿不到目录外的文件 |
+| `/roadmap` | 随本 bundle 提交的 `roadmap.json`，原样返回 |
+
+只读、有界、**除日志尾读外不返回任何文件内容**；Web server 默认只绑回环（启动器拒绝 `--host 0.0.0.0`）。
+`commandFound` 为 `null` 表示命令是裸名（经 PATH 解析，此处无法判定），面板据此显示"经 PATH 解析"而不是猜。
+日志与产物清单都是**运行时从工作区读取**，不会写进仓库。
 
 ```json
 {
@@ -54,6 +65,49 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 
 只读、有界（最多 30 项）、**不返回文件内容**；Web server 默认只绑回环（启动器拒绝 `--host 0.0.0.0`）。
 `commandFound` 为 `null` 表示命令是裸名（经 PATH 解析，此处无法判定），页面据此显示为"经 PATH 解析"而不是猜。
+
+## Agent 预设 `ctx-audit`（随本 bundle 一起发布）
+
+`presets/ctx-audit.patch.yml` 是本 bundle 的**第二个 patch 层**（见 `package.json` 的 `dsh.bundle.patch` 数组），做两件事：
+
+1. **把预设 `ctx-audit` 注册进名单**：一行 `@deepseek-ai/dsh-agent-preset`（`config.id / name / description / order / plugins`）；
+2. **把它设为部署默认**：覆写 `agent-preset-registry` 的 `default`（该行由 `dsh-web-app` 插入，本层在其之后应用，因此生效）。
+
+> 预设不再是目录：`$DSH_HOME/.agent-presets/<id>/{preset.yml,agent.cordis.yml}` 这条路在 0.2.0-rc.2 已**无人读取**；
+> `settings.yaml` 里的默认值键名也不是 `agent-presets: default:`，而是**设置命名空间 = profile 条目 id**：
+> `agent-preset-registry: { selectedDefault: ctx-audit }`（只导入一次，随后文件被改名为 `settings.yaml.imported`）。
+
+**预设内容**（决定 agent 拿到什么）：
+
+| 部分 | 内容 |
+|---|---|
+| persona | `@deepseek-ai/dsh-persona`：`prefix`（必需字段，**没有 `text`**）= 审计身份 + 6 条硬规则（诚实 0 结果、结论必须带 `file:line`+≤5 行摘录、把引擎输出当候选、不改目标项目、TP 一律 `human_gate`、不披露/不 push）；`suffix` = 工作目录 |
+| 指令文件 | `@deepseek-ai/dsh-agent-instructions`（AGENTS.md 等，`maxBytes: 65536`） |
+| shell / 文件 | `dsh-tool-pwsh`（Windows）/ `dsh-tool-bash`（其它平台，二者互斥）、`dsh-tool-fs`、`dsh-tool-fs-search` |
+| skill | `@deepseek-ai/dsh-skill-filesystem` + `@deepseek-ai/dsh-tool-skill` —— **必需**：Web 面默认禁用了宿主那两行，不挂就没有 `skill` 工具，而 persona 的第一条动作正是加载 skill |
+| 其它工具 | `tool-todo`、`tool-web`、`tool-ask-user`、`present`；`tool-plugin-manager` 显式禁用（不让它改自己的组成） |
+| 压缩 / 委派 | 两个 `cordis:group`（`isolate` 必须与提供者同域）：压缩三件套；委派工具（用 `subagent`/`subagent_fork` 做按候选的取证分工） |
+
+**刻意的选择（与被否证的写法对照）**
+
+- **不设 `complete: true`**：那会把 persona 变成**唯一**的提示词段，"no tool guidance … can append"，工具指引全被丢掉——对审计 agent 是错的取舍。方法论交给 `ctx-audit-auditor` skill 承载。
+- **模型不在预设里选**：`dsh-agent-default-model` 属部署层（宿主行），留在 profile patch（`harness/settings.yaml` / `profiles/*/cordis.patch.yml`）。
+- **预设行对插件管理只读**：落地后要改组成只能重新发 bundle。
+
+## 校验（`harness/scripts/verify-ctx-audit-web.mjs`）
+
+预设的行**在启动时不校验**：坏预设照样能起来，只会在**会话挂载**时报 `agent preset <id>: <原因>`（并标 `broken`、从选择器里消失）。所以"启动无报错"**不能**当判活依据（我们做过反向对照证实：把 persona 的 `prefix` 换成 `text`，启动日志依然干净）。
+
+正确做法是用**运行时同一套 schema** 逐个校验本 bundle 的所有行：
+
+```bash
+node harness/scripts/verify-ctx-audit-web.mjs --dsh <path to @deepseek-ai/dsh>
+# 或 DSH_PACKAGE_DIR=<path> node harness/scripts/verify-ctx-audit-web.mjs
+```
+
+它会：解析两个 patch 文件的每一行（含 `@deepseek-ai/dsh-agent-preset` 声明**内部**的嵌套行、`cordis:group` 递归）→ 载入目标包的真实 `Config` schema → 用该行的 `config` 调一次；`!!js` 与子路径导出如实标 `SKIP`，失败行打 `FAIL` 并以退出码 1 结束。
+
+实测：**24 行 = 18 OK / 6 SKIP / 0 FAIL**；把 `prefix` 改成 `text` 后立刻 `FAIL ./presets/ctx-audit.patch.yml#preset-ctx-audit/plugins[0]  $.prefix missing required value`。
 
 ## 部署
 
@@ -87,7 +141,9 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 | profile 组合 | `dsh --profile ctx-audit-web --dump-config` 1272 行，含 `ctx-audit-web` 与 `ctx-audit-mcp` 两行 |
 | 客户端半区进 boot graph | index 内 `{"id":"@local/ctx-audit-web","url":"plugins/??@local/ctx-audit-web/client.js&rev=…","immediately":true}` |
 | bundle 被服务 | `GET /plugins/??@local/ctx-audit-web/client.js&rev=…` → 200，内容含 `sidebar.panellist` 与端点路径 |
-| 数据端点 | `GET /ctx-audit/api/status` → 200 + `application/json`；未知子路径 404；POST 405 |
+| 数据端点 | `/status` 200 + `application/json`（61 文件 + 5 目录、6.1 MB、1 个 `.log`）；`/engine` 200 且 `ok=true`（`ctx-audit 3.1.1`、13 工具）；`/logs?lines=3` 200 且返回末尾 3 行、`truncated=true`；`/roadmap` 200 且 6 条；未知子路径 404；POST 405 |
+| 端点安全 | `?file=../../package.json` → `unknown_log_file`（`file` 只接受枚举出的名字）；日志只读文件尾 ≤256KB |
+| 隔离测试 | 直接 `import` host 半区、伪造 `ctx`/`res` 把四个端点跑一遍：全部通过（含真实 MCP 握手拿到 13 个工具） |
 | MCP 握手 | 子进程 `ctx-audit` 被拉起并驻留；`failOnStartupError: true` 时 profile 仍能启动 |
 | 安装脚本 | 干净 `DSH_HOME` 跑通并自校验通过（`verified: … composes with both rows`） |
 | 语法/清单 | `node --check client.js\|index.js` 通过；`package.json` 与 `locale/*.json` 均为合法 UTF-8 JSON（无 BOM） |

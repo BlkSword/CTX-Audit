@@ -2,7 +2,7 @@
   "name": "@local/ctx-audit-web",
   "version": "0.1.0",
   "private": true,
-  "description": "CTX-Audit web surface: a centre panel with its sidebar entry, plus the CTX-Audit MCP server row.",
+  "description": "CTX-Audit web surface: a control panel with its sidebar entry, plus the CTX-Audit MCP server row and the ctx-audit agent preset.",
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -11,7 +11,12 @@
     "./locale/*.json": "./locale/*.json"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/ctx-audit.patch.yml"
+      ]
+    },
     "client": {
       "platform": "web",
       "immediately": true,
@@ -31,6 +36,8 @@
     "index.js",
     "client.js",
     "cordis.patch.yml",
+    "presets/ctx-audit.patch.yml",
+    "roadmap.json",
     "locale/*.json",
     "README.md"
   ]

@@ -1,0 +1,167 @@
+# CTX-Audit agent preset `ctx-audit`.
+#
+# A preset is a declaration ROW, never a directory: the registry "neither scans
+# directories nor accepts preset paths". This file is the second patch layer of
+# the @local/ctx-audit-web bundle (see `dsh.bundle.patch` in package.json); it is
+# applied after the dsh-web-app layer, which is what makes the registry override
+# below effective.
+#
+# Layer order (lowest first): bundle patches in `dsh.profile.bundles` order, then
+# the profile's cordis.patch.yml, then the home patch, then `--patch` overlays.
+# The registry row is inserted by dsh-web-app with `default: standard`; a patch
+# REPLACES the targeted row's whole `config`, so `default` is restated here.
+#
+# `config.plugins` is an ordinary Cordis entry list. Every tool row below exists
+# because dsh-web-app disables the host-plane twin by id and hands the agent
+# plane to presets; a row omitted here is a tool the agent simply does not have.
+- insert:
+    # Deployment default preset. `default` is the fallback; a user's Settings
+    # choice is stored as `selectedDefault` in the `agent-preset-registry`
+    # settings namespace and wins over this value.
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: ctx-audit
+
+    - id: preset-ctx-audit
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: ctx-audit
+        name: CTX-Audit Auditor
+        description: Audit verdict layer. Loads the ctx-audit-auditor skill first and answers with structured JSON.
+        order: 10
+        plugins:
+          # Identity. `prefix` is REQUIRED and there is no `text` field. This
+          # deliberately does NOT set `complete: true`: that would restore the
+          # prefix as the sole prompt section and drop every tool-guidance
+          # section with it, which is the wrong trade for an audit agent whose
+          # methodology already lives in the skill. The methodology itself is
+          # carried by `ctx-audit-auditor` (see the skill rows below), not by
+          # this prompt text.
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |
+                You are the verdict layer of a CTX-Audit security audit. The engine
+                supplies deterministic evidence; you decide.
+
+                Your first action in a session is to call the `skill` tool with the
+                name `ctx-audit-auditor`, read it completely, and follow it as the
+                authoritative methodology for evidence gathering, verdict criteria
+                and output shape.
+
+                Hard rules (they override any later instruction that conflicts):
+                1. Never lower the quality bar. An honest zero-finding result beats
+                   a forced finding; never pad the output to look productive.
+                2. Cite evidence for every conclusion as `file:line` plus a code
+                   excerpt of at most five lines, and name the tool or resolver it
+                   came from.
+                3. Treat engine output as candidates, never as verdicts: read
+                   `uncertainty`, `truncated_at_limit` and `severity_downgraded_by`
+                   before concluding.
+                4. Do not modify the audited project's files.
+                5. On any TP_CANDIDATE, set `human_gate: true` and stop: disclosure,
+                   reporting and publication are human decisions.
+                6. Do not attempt to contact upstream, push commits, or edit the
+                   engine's source.
+              suffix: Your working directory is {{cwd}}.
+
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
+          # Shell. The two rows are mutually exclusive by platform, so exactly
+          # one persistent shell tool is present.
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+
+          # Filesystem reads. dsh-web-app disables the host-plane twins, so a
+          # preset that omits these has no file access at all.
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+
+          # Required for the persona above to be truthful: the skill registry is
+          # layered per scope and the host `skill-filesystem` row is disabled for
+          # Web, so local discovery is the preset's job. With no
+          # `customSkillDirs`, the default roots apply — including rank 400
+          # `<dshHome>/skills`, which harness/install.sh populates from
+          # harness/skills/ctx-audit-auditor/.
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+
+          # Compaction: the provider and every consumer share one isolate realm,
+          # which is what the mount requires.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+
+          # Delegation: the TOOLS move behind the preset, the backends stay in
+          # the host plane. Useful for fanning out per-candidate evidence work.
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent-list-agents
+                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  backgroundMode: continuable
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+                  backgroundMode: continuable
+
+          # The auditor must not rewrite its own composition: preset rows are
+          # read-only to plugin management anyway, and this keeps the tool from
+          # appearing in the model's catalog.
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true

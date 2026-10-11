@@ -39,7 +39,7 @@ else
       echo "installed $web_profile/$f"
     fi
   done
-  for f in package.json index.js client.js cordis.patch.yml README.md; do
+  for f in package.json index.js client.js cordis.patch.yml roadmap.json README.md; do
     if [[ -f "$SCRIPT_DIR/plugins/ctx-audit-web/$f" && ! -f "$web_bundle/$f" ]]; then
       cp "$SCRIPT_DIR/plugins/ctx-audit-web/$f" "$web_bundle/$f"
       echo "installed $web_profile bundle/$f"
@@ -49,6 +49,15 @@ else
     if [[ -f "$SCRIPT_DIR/plugins/ctx-audit-web/locale/$f" && ! -f "$web_bundle/locale/$f" ]]; then
       cp "$SCRIPT_DIR/plugins/ctx-audit-web/locale/$f" "$web_bundle/locale/$f"
       echo "installed $web_profile bundle/locale/$f"
+    fi
+  done
+  # The preset is a separate patch file listed by the bundle manifest; a fixed
+  # filename list would silently omit it.
+  mkdir -p "$web_bundle/presets"
+  for f in ctx-audit.patch.yml; do
+    if [[ -f "$SCRIPT_DIR/plugins/ctx-audit-web/presets/$f" && ! -f "$web_bundle/presets/$f" ]]; then
+      cp "$SCRIPT_DIR/plugins/ctx-audit-web/presets/$f" "$web_bundle/presets/$f"
+      echo "installed $web_profile bundle/presets/$f"
     fi
   done
 fi
@@ -75,7 +84,7 @@ fi
 if command -v dsh >/dev/null 2>&1; then
   if composition="$(dsh --profile "$web_profile" --dump-config 2>/dev/null)"; then
     missing=""
-    for row in "id: $web_profile" "id: ctx-audit-mcp"; do
+    for row in "id: $web_profile" "id: ctx-audit-mcp" "id: preset-ctx-audit"; do
       grep -q -- "$row" <<<"$composition" || missing="$missing [$row]"
     done
     if [[ -z "$missing" ]]; then
