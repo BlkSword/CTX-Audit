@@ -607,6 +607,27 @@ pub fn stable_finding_id(
     format!("{:x}", digest)
 }
 
+/// 编译型语言源码扩展名。
+///
+/// 用途：消解 `plugins/` 这类**目录标记的语言相关性**——在 Web/PHP/JS 生态里它通常指
+/// 第三方插件，而在编译型语言生态里该目录本身常就是产品主体（第一方模块）。
+/// 命中本清单的路径不再被 `plugins/` 判成第三方，否则整棵子树会在污点（Stage B）与
+/// 跨文件（Stage C）阶段被**静默剔除**。
+const COMPILED_SOURCE_EXTENSIONS: &[&str] = &[
+    "c", "h", "cc", "cpp", "cxx", "c++", "hh", "hpp", "hxx", "inl", "ipp", "rs", "go", "java",
+    "kt", "kts", "cs", "swift", "m", "mm", "scala", "zig",
+];
+
+/// 路径是否指向编译型语言源码（按扩展名判定，大小写不敏感）。
+///
+/// 刻意不含 D 语言的 `.d`：C/C++ 工程里 `.d` 多为构建期依赖文件，误判会引入噪声。
+pub fn is_compiled_source_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    let file_name = normalized.rsplit('/').next().unwrap_or("");
+    let ext = file_name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    COMPILED_SOURCE_EXTENSIONS.contains(&ext)
+}
+
 pub fn classify_file_role(path: &str) -> &'static str {
     let normalized = path.replace('\\', "/").to_lowercase();
 
@@ -699,7 +720,6 @@ pub fn classify_file_role(path: &str) -> &'static str {
         "/external/",
         "/polyfill",
         "/node_modules/",
-        "/plugins/",
         "/libs/",
         "/webjars/",
         // : 捆绑随附组件与虚拟环境（捆绑随附组件的全仓扫描噪声源）
@@ -723,6 +743,12 @@ pub fn classify_file_role(path: &str) -> &'static str {
         if normalized.contains(marker) {
             return "vendor";
         }
+    }
+    // `plugins/` 与上面那批标记不同：它是**语言相关**的（见 `COMPILED_SOURCE_EXTENSIONS`）。
+    // 只对脚本/前端资源按第三方处理；编译型语言源码按第一方处理——否则第一方模块会被
+    // 当成第三方，在 Stage B / Stage C 被整棵剔除（规则层也会被降权）。
+    if normalized.contains("/plugins/") && !is_compiled_source_path(&normalized) {
+        return "vendor";
     }
     // 压缩/打包产物文件名（minified 第三方库是调用图与污点分析的主要噪声源）
     let vendor_file_patterns = [".min.js", ".min.css", ".bundle.js", ".chunk.js", ".vendor.js"];
@@ -1935,18 +1961,49 @@ pub async fn scan_directory_deep_with_rules_progress(
         tracing::debug!("[TaintAnalysis] 二次收集补充 {} 个 AST 文件", extra_cached);
     }
 
-    let candidate_files: Vec<String> = content_cache
+    // AST 支持 + 体积门先落地；余下两道门分开统计，使"被剔除"可如实上报而不是静默丢弃。
+    let ast_candidates: Vec<(&String, &Arc<str>)> = content_cache
         .iter()
         .filter(|(fp, _)| is_ast_supported_file(std::path::Path::new(fp)))
         .filter(|(_, content)| content.len() <= max_taint_file_kb * 1024)
-        // vendor / minified 第三方库不进入污点分析（只产生噪声）
-        .filter(|(fp, content)| classify_file_role_with_content(fp, content) != "vendor")
-        // 测试文件不进入污点分析（约占分析量两成，纯浪费且只产噪；
-        // Stage A 规则扫描对它们的行为不变）
-        .filter(|(fp, _)| !is_test_path(fp) && !is_test_file_name(fp))
+        .collect();
+    // vendor / minified 第三方库不进入污点分析（只产生噪声）
+    let (vendor_excluded, after_vendor): (Vec<_>, Vec<_>) = ast_candidates
+        .into_iter()
+        .partition(|(fp, content)| classify_file_role_with_content(fp, content) == "vendor");
+    // 测试文件不进入污点分析（约占分析量两成，纯浪费且只产噪；
+    // Stage A 规则扫描对它们的行为不变）
+    let (test_excluded, after_test): (Vec<_>, Vec<_>) = after_vendor
+        .into_iter()
+        .partition(|(fp, _)| is_test_path(fp) || is_test_file_name(fp));
+    let candidate_files: Vec<String> = after_test
+        .into_iter()
         .map(|(fp, _)| fp.clone())
         .take(max_candidate_files)
         .collect();
+
+    // 「文件角色导致不进污点分析」必须留痕：角色判定曾把第一方代码整棵挡在污点层之外
+    // （路径里出现 plugins 这类目录名即被判成第三方），而调用方从结果里看不出任何痕迹。
+    if !vendor_excluded.is_empty() {
+        tracing::info!(
+            "[TaintAnalysis] 因 file_role=vendor 剔除 {} 个文件（不进污点分析；规则层仍扫描并按角色降权）",
+            vendor_excluded.len()
+        );
+        tracing::debug!(
+            "[TaintAnalysis] vendor 剔除样本: {:?}",
+            vendor_excluded
+                .iter()
+                .take(5)
+                .map(|(fp, _)| fp.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+    if !test_excluded.is_empty() {
+        tracing::debug!(
+            "[TaintAnalysis] 因测试路径剔除 {} 个文件（不进污点分析）",
+            test_excluded.len()
+        );
+    }
 
     tracing::debug!(
         "[TaintAnalysis] content_cache: {}, AST 候选: {}",
@@ -2696,13 +2753,26 @@ pub async fn scan_directory_deep_with_rules_progress(
         // session.js handleLoginRequest → user-dao.js validateLogin → findOne）。
         // 之前只分析 AstTaintScanner 报过的文件——循环依赖：L3 靠 L2 选文件，
         // 而 L3 的价值恰恰是发现 L2 漏的。改为分析所有 AST 支持的源文件。
-        let mut taint_files: Vec<std::path::PathBuf> = content_cache
-            .iter()
-            .filter(|(fp, _)| is_ast_supported_file(std::path::Path::new(fp)))
-            // vendor / minified 第三方库不进入跨文件分析（只产生噪声边）
-            .filter(|(fp, content)| classify_file_role_with_content(fp, content) != "vendor")
-            .map(|(fp, _)| std::path::PathBuf::from(fp))
-            .collect();
+        let mut taint_files: Vec<std::path::PathBuf> = Vec::new();
+        let mut cross_file_vendor_excluded = 0usize;
+        for (fp, content) in content_cache.iter() {
+            if !is_ast_supported_file(std::path::Path::new(fp)) {
+                continue;
+            }
+            // vendor / minified 第三方库不进入跨文件分析（只产生噪声边）。
+            // 剔除计数如实上报：角色误判曾使第一方子树在跨文件层整体失踪。
+            if classify_file_role_with_content(fp, content) == "vendor" {
+                cross_file_vendor_excluded += 1;
+                continue;
+            }
+            taint_files.push(std::path::PathBuf::from(fp));
+        }
+        if cross_file_vendor_excluded > 0 {
+            tracing::info!(
+                "[TaintAnalysis] 因 file_role=vendor 剔除 {} 个文件（不进跨文件分析）",
+                cross_file_vendor_excluded
+            );
+        }
         // 确定性：content_cache 是 HashMap，迭代序随进程随机 → 跨文件阶段的
         // 并行输入顺序必须显式排序，否则同一输入在不同运行/机器上产出不同流集合。
         taint_files.sort();
@@ -4140,6 +4210,56 @@ mod tests {
             find_enclosing_function_name_and_line(src, 3, "c"),
             Some(("add".to_string(), 1))
         );
+    }
+
+    /// B10 回归：`plugins/` 是**语言相关**标记。编译型语言源码在该目录下必须按第一方处理，
+    /// 否则会被 Stage B / Stage C 的 vendor 过滤整棵剔除（规则层也被降权）；
+    /// 脚本/前端资源则保持第三方语义。
+    #[test]
+    fn test_classify_file_role_plugins_is_language_dependent() {
+        for p in [
+            "src/plugins/handler.c",
+            "src/plugins/handler.h",
+            "src/plugins/handler.cpp",
+            "src/plugins/handler.cxx",
+            "src/plugins/handler.rs",
+            "src/plugins/handler.go",
+            "src/plugins/Handler.java",
+            "src/plugins/mod.zig",
+        ] {
+            assert_eq!(classify_file_role(p), "production", "{} 应视为第一方", p);
+        }
+        for p in [
+            "web/static/plugins/a.js",
+            "src/plugins/mod.py",
+            "src/plugins/view.php",
+            "src/plugins/style.css",
+            "src/plugins/readme.md",
+        ] {
+            assert_eq!(classify_file_role(p), "vendor", "{} 应保持第三方语义", p);
+        }
+        // 目录成分精确匹配：相似目录名不受影响
+        assert_eq!(classify_file_role("src/plugins_extra/handler.c"), "production");
+        assert_eq!(classify_file_role("src/myplugins/handler.c"), "production");
+        // 无歧义的第三方标记优先于语言例外
+        assert_eq!(classify_file_role("src/vendor/plugins/handler.c"), "vendor");
+        assert_eq!(
+            classify_file_role("src/node_modules/plugins/handler.c"),
+            "vendor"
+        );
+    }
+
+    #[test]
+    fn test_is_compiled_source_path() {
+        assert!(is_compiled_source_path("a/b.c"));
+        assert!(is_compiled_source_path("A/B.CPP"));
+        assert!(is_compiled_source_path("x/y.rs"));
+        assert!(is_compiled_source_path("x/y.go"));
+        // 脚本/资源不算编译型；`.d`（构建依赖文件）刻意不判为 D 语言
+        assert!(!is_compiled_source_path("a/b.js"));
+        assert!(!is_compiled_source_path("a/b.py"));
+        assert!(!is_compiled_source_path("a/b.d"));
+        assert!(!is_compiled_source_path("Makefile"));
     }
 
     #[test]

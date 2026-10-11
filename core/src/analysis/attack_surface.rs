@@ -102,11 +102,21 @@ pub fn is_public_route(route: &str) -> bool {
 }
 
 /// 判断路径是否命中指定的非生产代码模式。
+///
+/// `plugins/` 是**语言相关**标记：在 Web/PHP/JS 生态里通常指第三方插件，而在编译型语言
+/// 生态里该目录常就是产品主体。对编译型源码不套用该标记，避免第一方代码被打成
+/// "non-production"（下游按 `file_role` 过滤时会被整体遮掉）。
+/// 判定口径与 `scanner::classify_file_role` 共用 `scanner::is_compiled_source_path`。
 pub fn is_non_production_path_with_patterns(path: &str, patterns: &[String]) -> bool {
     let normalized = path.replace('\\', "/").to_lowercase();
-    patterns
-        .iter()
-        .any(|p| normalized.contains(&p.to_lowercase()))
+    let compiled_source = crate::scanner::is_compiled_source_path(&normalized);
+    patterns.iter().any(|p| {
+        let pat = p.to_lowercase();
+        if compiled_source && pat == "/plugins/" {
+            return false;
+        }
+        normalized.contains(&pat)
+    })
 }
 
 /// 判断路径是否属于默认的非生产代码目录。
@@ -2263,5 +2273,37 @@ def public_page():
             !eps2[0].auth_required,
             "Endpoint without guard should NOT be auth_required"
         );
+    }
+
+    /// B10 回归：`plugins/` 是语言相关标记——编译型源码不得被打成非生产，
+    /// 其它非生产模式（tests/demo/...）对编译型源码仍然生效。
+    #[test]
+    fn test_non_production_path_plugins_is_language_dependent() {
+        let patterns = default_non_production_path_patterns();
+        assert!(is_non_production_path_with_patterns(
+            "web/static/plugins/a.js",
+            &patterns
+        ));
+        assert!(!is_non_production_path_with_patterns(
+            "src/plugins/handler.c",
+            &patterns
+        ));
+        assert!(!is_non_production_path_with_patterns(
+            "src/plugins/handler.cpp",
+            &patterns
+        ));
+        assert!(is_non_production_path_with_patterns(
+            "src/tests/handler.c",
+            &patterns
+        ));
+        assert!(is_non_production_path_with_patterns(
+            "src/demo/handler.c",
+            &patterns
+        ));
+        // 无歧义标记不受语言例外影响
+        assert!(is_non_production_path_with_patterns(
+            "src/vendor/handler.c",
+            &patterns
+        ));
     }
 }
