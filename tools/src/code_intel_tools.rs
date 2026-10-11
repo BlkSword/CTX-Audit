@@ -1454,6 +1454,65 @@ fn ident_tokens(s: &str) -> Vec<String> {
     out
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// source 模型去噪（只作用于 MCP 只读证据面）
+//
+// 背景：source→sink 路径里的 `source` 若其实来自**本进程的本地配置/命令行**
+//（argv/getenv/配置文件/选项结构体），把它当作"远端可控输入"会让判定者高估可利用性。
+// 这里只**加噪声标注**：在 `uncertainty.reasons` 里追加 `source_may_be_local_configuration`，
+// 并在 `data.source_origin` 里给出命中的信号。不改变路径本身、不产出 findings。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// "看起来像本地配置/命令行来源"的标识符（token 精确匹配，或 `<head>_…` 前缀形态）。
+const LOCAL_CONFIGURATION_IDENTIFIER_HEADS: [&str; 14] = [
+    "argv", "argc", "getenv", "environ", "optarg", "optind", "getopt", "cfg", "conf", "config",
+    "opts", "options", "settings", "prefs",
+];
+
+/// 同上，但按**子串**匹配的多词形态（这些词被标识符切分后仍是完整片段，但整串更明确）。
+const LOCAL_CONFIGURATION_SUBSTRINGS: [&str; 10] = [
+    "read_config",
+    "load_config",
+    "config_manager",
+    "configmanager",
+    "inifile",
+    "parse_args",
+    "parseargs",
+    "command_line",
+    "cmdline",
+    "program_options",
+];
+
+/// 判断 source 侧文本是否**看起来**来自本地配置/命令行；返回命中的信号（空 = 未观测到）。
+///
+/// 文本同时取 `source` 参数本身与它命中的源码行（行文本信息量更大，例如 `char *p = argv[1];`）。
+/// 这是**噪声标注而非结论**：命中只表示"该来源需要人工确认是否真的可由远端控制"；
+/// 未命中**不代表**一定是远端可控输入。
+pub fn local_configuration_signals(source: &str, source_line: Option<&str>) -> Vec<&'static str> {
+    let mut texts: Vec<String> = vec![source.to_lowercase()];
+    if let Some(line) = source_line {
+        texts.push(line.to_lowercase());
+    }
+    let mut out: Vec<&'static str> = Vec::new();
+    for text in &texts {
+        let tokens = ident_tokens(text);
+        for head in LOCAL_CONFIGURATION_IDENTIFIER_HEADS {
+            let hit = tokens
+                .iter()
+                .any(|t| t == head || t.strip_prefix(head).map(|r| r.starts_with('_')).unwrap_or(false));
+            if hit && !out.contains(&head) {
+                out.push(head);
+            }
+        }
+        for pat in LOCAL_CONFIGURATION_SUBSTRINGS {
+            if text.contains(pat) && !out.contains(&pat) {
+                out.push(pat);
+            }
+        }
+    }
+    out
+}
+
 /// 一段声明文本里最后一个标识符（= 参数名 / 函数名）。
 fn last_ident(s: &str) -> Option<String> {
     let mut cur = String::new();
@@ -3379,6 +3438,8 @@ impl Tool for CodeIntelTool {
                 let mut provenance: Vec<Provenance> = Vec::new();
                 let mut df_note: Option<String> = None;
                 let mut df_fallback = false;
+                // source 侧命中的源码行（用于"来源是否像本地配置/命令行"的噪声标注）
+                let mut df_source_line: Option<String> = None;
                 for (path, content) in files {
                     // 数据流判定同样只在代码文件上做（文档里的示例代码不是数据流）
                     if !crate::symbol_index::is_code_file(path) {
@@ -3403,6 +3464,11 @@ impl Tool for CodeIntelTool {
                     if pp_states.get(src_idx).map(|s| s.dead).unwrap_or(false) {
                         continue;
                     }
+                    // 只有**真的会交付路径**的源点才参与来源噪声标注（未激活分支里的不算）
+                    if df_source_line.is_none() {
+                        df_source_line =
+                            Some(lines[src_idx].trim().chars().take(200).collect::<String>());
+                    }
                     let sink_idx = if sink.is_empty() {
                         None
                     } else {
@@ -3421,9 +3487,26 @@ impl Tool for CodeIntelTool {
                         break;
                     }
                 }
+                // ── source 模型去噪（只加标注，不改路径）──
+                // 来源若是本进程的 argv/getenv/配置文件/选项结构体，判定者不应把它当远端输入。
+                // 标注口径：命中信号才追加 uncertainty 理由；未命中只报 `not_observed`。
+                let origin_signals = local_configuration_signals(source, df_source_line.as_deref());
+                let source_origin = json!({
+                    "classification": if origin_signals.is_empty() {
+                        "not_observed"
+                    } else {
+                        "local_configuration_like"
+                    },
+                    "signals": origin_signals,
+                    "observed_source_line": df_source_line,
+                    "note": "标注不等于结论：命中只表示该来源**可能**来自本地配置/命令行\
+                             （argv/getenv/配置文件/选项结构体），需人工确认它是否真的可由远端输入控制；\
+                             未命中也不代表一定是远端可控输入。",
+                });
                 IntelEnvelope {
                     data: json!({"source": source, "sink": sink, "path": steps,
-                                 "preprocess_note": df_note}),
+                                 "preprocess_note": df_note,
+                                 "source_origin": source_origin}),
                     provenance,
                     uncertainty: Uncertainty::new(
                         "high",
@@ -3431,6 +3514,9 @@ impl Tool for CodeIntelTool {
                             let mut reasons = vec!["statement_level_heuristic"];
                             if df_fallback {
                                 reasons.push("cpp_preprocess_unavailable_line_level_fallback");
+                            }
+                            if !origin_signals.is_empty() {
+                                reasons.push("source_may_be_local_configuration");
                             }
                             reasons
                         },
@@ -5116,6 +5202,95 @@ mod tests {
             d3["data"]["path"].as_array().unwrap().len(),
             0,
             "未激活分支里的源点不得产出路径: {d3}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// source 模型去噪（只作用于 MCP 只读证据面）：来源看起来是本地配置/命令行时，
+    /// 必须在 uncertainty 里追加 `source_may_be_local_configuration` 并给出 `source_origin`；
+    /// 普通来源不得被误标（标注是噪声，不是结论）。
+    #[tokio::test]
+    async fn test_dataflow_annotates_local_configuration_source() {
+        // 分类器口径（纯函数）
+        let cli_sig = local_configuration_signals("argv", Some("  char *cfg_path = argv[1];"));
+        assert!(cli_sig.contains(&"argv"), "命令行来源应被识别: {cli_sig:?}");
+        let env_sig = local_configuration_signals("getenv", Some("  char *p = getenv(\"APP_CFG\");"));
+        assert!(env_sig.contains(&"getenv"), "环境变量来源应被识别: {env_sig:?}");
+        let plain_sig =
+            local_configuration_signals("recv_buf", Some("  n = recv(fd, recv_buf, len, 0);"));
+        assert!(
+            plain_sig.is_empty(),
+            "普通网络来源不得被误标为本地配置: {plain_sig:?}"
+        );
+
+        let root = std::env::temp_dir().join("ctx-audit-df-source-origin");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/a.c"),
+            "int load (void)\n{\n    char *cfg_path = argv[1];\n    read_cfg (cfg_path);\n    return 0;\n}\n",
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::DataflowPath);
+        let out = tool
+            .execute(json!({"source": "argv", "sink": "read_cfg"}))
+            .await
+            .unwrap();
+        let env = out.data.clone().expect("应有 envelope data");
+        let reasons = env["uncertainty"]["reasons"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.as_str() == Some("source_may_be_local_configuration")),
+            "本地配置/命令行来源必须带噪声标注: {env}"
+        );
+        assert_eq!(
+            env["data"]["source_origin"]["classification"],
+            "local_configuration_like",
+            "{env}"
+        );
+        assert!(
+            !env["data"]["source_origin"]["signals"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .is_empty(),
+            "应给出命中的信号: {env}"
+        );
+
+        // 对照：普通来源（网络读入）不得追加该理由
+        std::fs::write(
+            root.join("src/plain.c"),
+            "int copy_in (char *dst, int len)\n{\n    int n = recv (fd, dst, len, 0);\n    return n;\n}\n",
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let out2 = tool
+            .execute(json!({"source": "dst", "sink": "recv", "file": "src/plain.c"}))
+            .await
+            .unwrap();
+        let env2 = out2.data.clone().expect("应有 envelope data");
+        let reasons2 = env2["uncertainty"]["reasons"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !reasons2
+                .iter()
+                .any(|r| r.as_str() == Some("source_may_be_local_configuration")),
+            "普通来源不得被标注: {env2}"
+        );
+        assert_eq!(
+            env2["data"]["source_origin"]["classification"], "not_observed",
+            "{env2}"
         );
 
         let _ = std::fs::remove_dir_all(&root);
