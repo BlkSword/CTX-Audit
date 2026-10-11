@@ -12,14 +12,14 @@
 //!    以及 `sizeof(...)` 这类编译期常量。触发点是常量 ⇒ 三角色不齐备。
 //! 2. **路径（path）** —— 守卫检索**只能作用于本构造**：
 //!    ① 本循环 / 本调用自身的条件式（含 `&&` 追加项、以及"守卫式提前返回"的 `if`）；
-//!    ② 紧邻前 **3** 行；③ **绑定标识符本身**（`duid_len` 不能被 `clid_len` 的守卫顶替）。
+//!    ② 紧邻前 **3** 行；③ **绑定标识符本身**（本构造的长度变量不能被兄弟构造的守卫顶替）。
 //!    **禁止大窗口**（如 ±80 行）：大窗口会让兄弟构造的守卫顶替本构造的守卫，
 //!    从而漏掉真候选。
 //! 3. **起效点（effect）** —— 写 sink 在循环内是否**累积**：
 //!    `p += sprintf(p, …)` / 指针推进 ⇒ 累积，需要 `Σ每轮上界 ≤ 剩余容量`；
-//!    每轮写回**同一基址**（`sprintf(daemon->dhcp_buff2, "vendor_class%i", i)`）⇒ 不累积，
+//!    每轮写回**同一基址**（`sprintf(buf, "item%i", i)`）⇒ 不累积，
 //!    单轮有界即可。
-//!    **A20 口径**：格式串里的宽度/精度是最小值**不是上界**，因此只有
+//!    **保守口径**：格式串里的宽度/精度是最小值**不是上界**，因此只有
 //!    "字面量格式 **且** 非累积 **且** 单轮"才判为"输出有界"，不升级。
 //!
 //! 三角色齐备 ⇒ `candidate`；缺任一 ⇒ `not_upgraded` 并给出 `cause`。
@@ -28,7 +28,7 @@
 //!
 //! * [`Construct::Loop`] —— 循环界构造。这是**已用已知答案验证过的原型规则集的忠实移植**：
 //!   含 sink 首匹配语义、12 行 sink 窗口、`base = bound.rsplit('.')` 的守卫绑定口径。
-//!   用于复现已验证的量级（某 DHCP 服务实现 → 9 条候选，含 `helper.c:277`）。
+//!   用于复现已验证的量级（某服务端实现的配置长度循环 → 9 条候选）。
 //!   移植刻意使用**行/正则**而非 AST —— 判据是在该规则集上验证的，换机制会改变候选集合。
 //! * [`Construct::LenArg`] —— 长度实参构造（判据本身要求"循环界**或**长度实参"）。
 //!   同一套三角色判据作用在 sink 的长度实参上；因为单轮写入没有"累积"可判，
@@ -346,7 +346,7 @@ fn is_accumulating(body: &str, sink: &str) -> bool {
     }
 }
 
-/// 是否"字面量格式串"：`sprintf(p, "` —— 用于 A20 口径的"输出有界"判定。
+/// 是否"字面量格式串"：`sprintf(p, "` —— 用于保守口径的"输出有界"判定。
 fn literal_format_re(sink: &str) -> Option<Regex> {
     static CACHE: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| {
@@ -1086,9 +1086,9 @@ mod tests {
         v.iter().find(|c| c.function == f)
     }
 
-    // 夹具与 harness-private/r245-fixtures/*.c 逐字一致（内联副本用于可在任何环境跑的回归）。
-    const FIX_UPGRADE_TAINTED_LEN: &str = r#"// R245 信号链 v0 夹具 · 期望「升级为候选」（触发点=参数长度、路径=无守卫、起效点=oob_write）
-// 用途：私有回归尺子。判据见 docs/CTX-Audit-R245-信号链设计.md §2/§3/§5。
+    // 内联夹具：语义等价于私有回归尺子的四个 *.c。私有夹具不入库，公开源码只保留
+    // 通用技术事实，因此夹具里的标识符与注释做了中性化改写（判据与形态完全一致）。
+    const FIX_UPGRADE_TAINTED_LEN: &str = r#"// 夹具：期望升级为候选（触发点=参数长度、路径=无守卫、起效点=oob_write）
 // 期望：升级；三角色齐备（trigger=param/length、path 无 guard、effect=oob_write）
 #include <string.h>
 
@@ -1099,8 +1099,8 @@ void tainted_copy(char *src, unsigned int n)
 }
 "#;
 
-    const FIX_NO_UPGRADE_SIZEOF: &str = r#"// R245 信号链 v0 夹具 · 期望「不升级」（触发点=编译期常量）
-// 这是 R244 里引擎真实误判的形态：dhcp_release.c 的 memcpy(p, &server, sizeof(server)) 被判 critical。
+    const FIX_NO_UPGRADE_SIZEOF: &str = r#"// 夹具：期望不升级（触发点=编译期常量）
+// 这是引擎真实误判过的形态：memcpy(p, &server, sizeof(server)) 被判 critical。
 // 期望：不升级；trigger.origin=constant ⇒ 三角色不齐备。
 #include <string.h>
 
@@ -1116,7 +1116,7 @@ void copy_fixed(struct server_info *si)
 }
 "#;
 
-    const FIX_NO_UPGRADE_GUARDED: &str = r#"// R245 信号链 v0 夹具 · 期望「不升级」（路径角色=已有有效守卫）
+    const FIX_NO_UPGRADE_GUARDED: &str = r#"// 夹具：期望不升级（路径角色=已有有效守卫）
 // 期望：不升级；path.guard_seen=true（窗口内存在 n > sizeof(dst) 类比较/返回）
 
 void sanitized_copy(char *src, unsigned int n)
@@ -1128,28 +1128,30 @@ void sanitized_copy(char *src, unsigned int n)
 }
 "#;
 
-    const FIX_UPGRADE_D1_SHAPE: &str = r#"// R245 信号链 v0 夹具 · 期望「升级」（复刻 R244 已确认的 D1 形态）
-// D1 真身：dnsmasq src/helper.c:277-282 —— DUID 展开循环写进 548 字节的 daemon->dhcp_packet，
-// 循环界 duid_len 来自配置且无上限；紧邻的 CLID 循环被 CVE-2026-4892 加了 && i < 100。
+    /// 已知答案的等价形态：展开循环把数据写进 548 字节的结构体缓冲，
+    /// 循环界来自配置且无上限；紧邻的兄弟循环带 `&& i < 100` 这类 clamp。
+    const FIX_UPGRADE_OOB_SHAPE: &str = r#"// 夹具：期望升级（复刻已确认的堆溢出形态）
+// 真身形态：展开循环写进 548 字节的结构体缓冲，循环界来自配置且无上限；
+// 紧邻的兄弟循环带 i < 100 这类 clamp（那是给兄弟加的守卫）。
 // 期望：升级；trigger.origin=config/param 且 attacker_influence 至少 unknown→按配置面标注；
 //       effect.kind=oob_write，sink=sprintf。
 
 #include <stdio.h>
 
-struct helper_data {
-    unsigned char packet[548];
+struct holder {
+    unsigned char buf[548];
 };
 
-static struct helper_data data;
+static struct holder data;
 
-void expand_duid(const unsigned char *duid, unsigned int duid_len)
+void expand_raw(const unsigned char *raw, unsigned int raw_len)
 {
-    char *p = (char *)data.packet;
+    char *p = (char *)data.buf;
     unsigned int i;
 
-    for (i = 0; i < duid_len; i++) {          /* 无 i < LIMIT 类 clamp */
-        p += sprintf(p, "%.2x", duid[i]);
-        if (i != duid_len - 1)
+    for (i = 0; i < raw_len; i++) {          /* 无 i < LIMIT 类 clamp */
+        p += sprintf(p, "%.2x", raw[i]);
+        if (i != raw_len - 1)
             p += sprintf(p, ":");
     }
 }
@@ -1170,7 +1172,7 @@ void expand_duid(const unsigned char *duid, unsigned int duid_len)
 
     #[test]
     fn fixture_no_upgrade_sizeof() {
-        // R244 已知 FP 形态：sizeof 常量绝不能被判成候选
+        // 已知 FP 形态：sizeof 常量绝不能被判成候选
         let v = scan_text(FIX_NO_UPGRADE_SIZEOF);
         let c = find(&v, "copy_fixed").expect("copy_fixed 应被登记");
         assert_eq!(c.verdict, "not_upgraded", "sizeof 常量不得升级");
@@ -1194,16 +1196,16 @@ void expand_duid(const unsigned char *duid, unsigned int duid_len)
     }
 
     #[test]
-    fn fixture_upgrade_d1_shape() {
-        // 已知答案（D1）的等价形态：循环界来自参数且无 clamp，写指针在循环内推进
-        let v = scan_text(FIX_UPGRADE_D1_SHAPE);
-        let c = find(&v, "expand_duid").expect("expand_duid 应被登记");
-        assert_eq!(c.verdict, "candidate", "D1 形态必须升级");
+    fn fixture_upgrade_oob_accumulating_shape() {
+        // 已知答案的等价形态：循环界来自参数且无 clamp，写指针在循环内推进
+        let v = scan_text(FIX_UPGRADE_OOB_SHAPE);
+        let c = find(&v, "expand_raw").expect("expand_raw 应被登记");
+        assert_eq!(c.verdict, "candidate", "该形态必须升级");
         assert_eq!(c.construct, "loop");
         assert_eq!(c.effect.sink, "sprintf");
         assert_eq!(c.effect.kind, "oob_write");
         assert!(c.effect.accumulating, "p += sprintf(p, …) 必须判为累积");
-        assert_eq!(c.trigger.expr, "duid_len");
+        assert_eq!(c.trigger.expr, "raw_len");
         assert!(!c.path.guard_seen);
     }
 
@@ -1211,22 +1213,22 @@ void expand_duid(const unsigned char *duid, unsigned int duid_len)
     #[test]
     fn sibling_guard_must_not_mask_own_construct() {
         let text = r#"
-struct d { unsigned char packet[548]; };
+struct d { unsigned char buf[548]; };
 static struct d data;
 
-void expand(unsigned char *duid, unsigned int duid_len, unsigned int clid_len)
+void expand(unsigned char *raw, unsigned int own_len, unsigned int sib_len)
 {
-    char *p = (char *)data.packet;
+    char *p = (char *)data.buf;
     unsigned int i;
 
-    /* 兄弟构造：CLID 循环自带 i < 100 这类 clamp */
-    for (i = 0; i < clid_len && i < 100; i++)
-        p += sprintf(p, "%.2x", duid[i]);
+    /* 兄弟构造：自带 i < 100 这类 clamp */
+    for (i = 0; i < sib_len && i < 100; i++)
+        p += sprintf(p, "%.2x", raw[i]);
 
-    /* 本构造：DUID 循环无 clamp —— 不能被上面兄弟的守卫顶替 */
-    p = (char *)data.packet;
-    for (i = 0; i < duid_len; i++)
-        p += sprintf(p, "%.2x", duid[i]);
+    /* 本构造：无 clamp —— 不能被上面兄弟的守卫顶替 */
+    p = (char *)data.buf;
+    for (i = 0; i < own_len; i++)
+        p += sprintf(p, "%.2x", raw[i]);
     return;
 }
 "#;
@@ -1237,14 +1239,14 @@ void expand(unsigned char *duid, unsigned int duid_len, unsigned int clid_len)
         // 兄弟循环：自身条件式含 i < 100 ⇒ own-condition 守卫
         let sib = loops
             .iter()
-            .find(|c| c.trigger.expr == "clid_len")
+            .find(|c| c.trigger.expr == "sib_len")
             .expect("兄弟循环");
         assert!(sib.path.guard_seen, "兄弟循环应命中自身条件式守卫");
         assert_eq!(sib.path.guard_scope, "own-condition");
         // 本构造：必须仍然是候选（守卫检索只作用于本构造）
         let own = loops
             .iter()
-            .find(|c| c.trigger.expr == "duid_len")
+            .find(|c| c.trigger.expr == "own_len")
             .expect("本构造");
         assert_eq!(
             own.verdict, "candidate",
@@ -1253,7 +1255,7 @@ void expand(unsigned char *duid, unsigned int duid_len, unsigned int clid_len)
         assert!(!own.path.guard_seen);
     }
 
-    /// A20 口径：字面量格式 + 非累积 + 单轮 ⇒ 判"输出有界"，不升级。
+    /// 保守口径：字面量格式 + 非累积 + 单轮 ⇒ 判"输出有界"，不升级。
     #[test]
     fn literal_format_single_round_is_bounded() {
         let text = r#"
@@ -1261,7 +1263,7 @@ void tag(char *out, unsigned int n)
 {
     unsigned int i;
     for (i = 0; i < n; i++)
-        sprintf(out, "vendor_class%i", i);
+        sprintf(out, "item%i", i);
 }
 "#;
         let v = scan_text(text);
@@ -1304,24 +1306,39 @@ void f(int *src, int *dst)
         assert!(v.iter().all(|c| c.verdict == "not_upgraded"));
     }
 
-    /// 私有大仓已知答案：仅当显式给出检出路径时才跑（CI 上不存在该仓库）。
-    /// `CTX_AUDIT_SIGNAL_CHAIN_DNSMASQ=/path/to/project-root`
+    /// 私有大仓已知答案：仅当显式给出检出路径与期望时才跑（CI 上不存在该仓库）。
+    ///
+    /// 环境变量（三者都给出才生效）：
+    ///   `CTX_AUDIT_SIGNAL_CHAIN_KNOWN_ANSWER_ROOT`   项目根目录
+    ///   `CTX_AUDIT_SIGNAL_CHAIN_EXPECT_FILE_SUFFIX`  期望候选所在文件的后缀
+    ///   `CTX_AUDIT_SIGNAL_CHAIN_EXPECT_LINE`         期望候选所在行号
     #[test]
-    fn known_answer_duid_loop_env_gated() {
-        let Some(root) = std::env::var_os("CTX_AUDIT_SIGNAL_CHAIN_DNSMASQ") else {
+    fn known_answer_env_gated() {
+        let (Some(root), Some(suffix), Some(line)) = (
+            std::env::var_os("CTX_AUDIT_SIGNAL_CHAIN_KNOWN_ANSWER_ROOT"),
+            std::env::var_os("CTX_AUDIT_SIGNAL_CHAIN_EXPECT_FILE_SUFFIX"),
+            std::env::var_os("CTX_AUDIT_SIGNAL_CHAIN_EXPECT_LINE"),
+        ) else {
             return;
         };
+        let Some(line) = line.to_string_lossy().parse::<usize>().ok() else {
+            return;
+        };
+        let suffix = suffix.to_string_lossy().to_string();
         let root = PathBuf::from(root);
         if !root.is_dir() {
             return;
         }
         let rep = scan_path(&root, &SignalChainOptions::default()).expect("scan");
-        let hit = rep.candidates.iter().find(|c| {
-            c.file.ends_with("helper.c") && (270..=285).contains(&c.line)
-        });
+        let hit = rep
+            .candidates
+            .iter()
+            .find(|c| c.file.ends_with(suffix.as_str()) && c.line == line);
         let hit = hit.unwrap_or_else(|| {
             panic!(
-                "必须列出 helper.c:277（DUID 循环）。候选 {} 条: {:?}",
+                "已知答案未被列为候选（{}:{}）。候选 {} 条: {:?}",
+                suffix,
+                line,
                 rep.candidate_count,
                 rep.candidates
                     .iter()
@@ -1330,7 +1347,6 @@ void f(int *src, int *dst)
             )
         });
         assert_eq!(hit.construct, "loop");
-        assert!(hit.effect.accumulating);
-        assert_eq!(hit.effect.sink, "sprintf");
+        assert!(hit.effect.accumulating, "已知答案的写指针必须在循环内推进");
     }
 }
