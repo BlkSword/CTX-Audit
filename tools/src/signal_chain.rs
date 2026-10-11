@@ -694,6 +694,62 @@ fn base_uncertainty(construct: Construct) -> Vec<String> {
 }
 
 /// 扫描一个目录/文件，产出三角色信号链候选与证据。
+/// ① 可追溯性：把候选指回"该文件最近一次**安全修复提交**"。
+///
+/// 粒度**诚实标注为文件级**（`fix-commit/<sha>`）：该提交修的是这个文件里的某一处，
+/// 不代表本条候选就是它的未修兄弟。取不到 git 或无匹配时同样如实标注，不伪造来源。
+fn annotate_fix_commits(root: &Path, list: &mut [SignalChainCandidate]) {
+    use std::collections::HashMap;
+    if !root.join(".git").exists() {
+        for c in list.iter_mut() {
+            c.uncertainty
+                .push("fix_commit_unavailable: 目标不是 git 仓库".to_string());
+        }
+        return;
+    }
+    let mut cache: HashMap<String, Option<String>> = HashMap::new();
+    for c in list.iter_mut() {
+        let entry = cache
+            .entry(c.file.clone())
+            .or_insert_with(|| {
+                let out = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .args([
+                        "log",
+                        "-1",
+                        "--format=%h|%s",
+                        "-i",
+                        "--grep=cve\\|security\\|overflow\\|bounds\\|use.after\\|double.free\\|clamp\\|sanitiz",
+                        "--",
+                    ])
+                    .arg(&c.file)
+                    .output()
+                    .ok()?;
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            })
+            .clone();
+        match entry {
+            Some(line) => {
+                let sha = line.split('|').next().unwrap_or("").to_string();
+                c.provenance.push(format!("fix-commit/{}", sha));
+                c.uncertainty.push(
+                    "fix_commit_is_file_level: 该提交修的是这个文件里的某一处，不代表本条候选就是它的未修兄弟"
+                        .to_string(),
+                );
+            }
+            None => c.uncertainty.push(
+                "fix_commit_not_found: 该文件没有匹配到安全修复提交".to_string(),
+            ),
+        }
+    }
+}
+
 pub fn scan_path(root: &Path, options: &SignalChainOptions) -> std::io::Result<SignalChainReport> {
     let mut files: Vec<PathBuf> = Vec::new();
     let start = if root.is_file() {
@@ -733,6 +789,7 @@ pub fn scan_path(root: &Path, options: &SignalChainOptions) -> std::io::Result<S
             .then(a.line.cmp(&b.line))
             .then(a.construct.cmp(&b.construct))
     });
+    annotate_fix_commits(root, &mut all);
     let mut candidates = Vec::new();
     let mut not_upgraded = Vec::new();
     let mut by_construct: std::collections::BTreeMap<String, usize> =
