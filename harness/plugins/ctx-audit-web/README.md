@@ -77,22 +77,34 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 > `settings.yaml` 里的默认值键名也不是 `agent-presets: default:`，而是**设置命名空间 = profile 条目 id**：
 > `agent-preset-registry: { selectedDefault: ctx-audit }`（只导入一次，随后文件被改名为 `settings.yaml.imported`）。
 
-**预设内容**（决定 agent 拿到什么）：
+**设计原则：本预设是内置 `standard` 能力面的超集，不是它的子集。** 审计恰好是最需要"整台机器"的负载——
+广度（对大量候选做便宜的分头取证）、深度（对幸存者做链式深审）、长时无人值守、以及不能靠"一次一个工具调用"完成的
+批处理。能力行对照实测：本预设 **35 个 id 对 standard 的 34 个**，standard 的每一个能力行都在（只差它自己的两个声明 id）。
 
-| 部分 | 内容 |
-|---|---|
-| persona | `@deepseek-ai/dsh-persona`：`prefix`（必需字段，**没有 `text`**）= 审计身份 + 6 条硬规则（诚实 0 结果、结论必须带 `file:line`+≤5 行摘录、把引擎输出当候选、不改目标项目、TP 一律 `human_gate`、不披露/不 push）；`suffix` = 工作目录 |
-| 指令文件 | `@deepseek-ai/dsh-agent-instructions`（AGENTS.md 等，`maxBytes: 65536`） |
-| shell / 文件 | `dsh-tool-pwsh`（Windows）/ `dsh-tool-bash`（其它平台，二者互斥）、`dsh-tool-fs`、`dsh-tool-fs-search` |
-| skill | `@deepseek-ai/dsh-skill-filesystem` + `@deepseek-ai/dsh-tool-skill` —— **必需**：Web 面默认禁用了宿主那两行，不挂就没有 `skill` 工具，而 persona 的第一条动作正是加载 skill |
-| 其它工具 | `tool-todo`、`tool-web`、`tool-ask-user`、`present`；`tool-plugin-manager` 显式禁用（不让它改自己的组成） |
-| 压缩 / 委派 | 两个 `cordis:group`（`isolate` 必须与提供者同域）：压缩三件套；委派工具（用 `subagent`/`subagent_fork` 做按候选的取证分工） |
+**预设内容**（33 个能力行）：
 
-**刻意的选择（与被否证的写法对照）**
+| 部分 | 行 | 对审计的作用 |
+|---|---|---|
+| 身份 | `persona`（`prefix` 必需字段 + `suffix`） | 审计身份 + 6 条硬规则；并明确"用整台机器"的打法（MCP 取证、jobs 跑长任务、plan mode 先定审计形状、delegation/workflow 做广度、goal 跨轮次、compaction 控上下文） |
+| 工作区约定 | `agent-instructions` | 先读目标仓库自己的 AGENTS.md/CLAUDE.md 再判定 |
+| 执行面 | `tool-pwsh`｜`tool-bash`（平台互斥）、`tool-fs`、`tool-fs-search`、**`tool-jobs`** | 跑引擎/模糊测试/目标自带测试；长扫描放后台不占住对话 |
+| 方法论 | `skill-filesystem` + `tool-skill` | **必需**：Web 面禁用了宿主那两行，不挂就没有 `skill` 工具，而 persona 第一条动作就是加载 skill |
+| 长时无人值守 | **`command-goal` + `tool-goal`** | 目标持久化并驱动多轮审计，跨轮次不中断 |
+| 先想后做 | **`planning` 组（`isolate.planMode`）→ `plan-mode`** | 先定目标/阶段/验收口径，再执行 |
+| 上下文预算 | **`compaction` 组 → `compaction-basic`/`command-compact`/`tool-result-pruner`** | 审计读的原始输出远多于它推理的量；这层决定长审计是否可负担 |
+| 广度与深度 | **`delegation` 组**：`tool-subagent-control`、`list-agents`、`tool-subagent`（**`modelSelectionSettings: true`**）、`tool-subagent-fork`、`workflow-ptc`、`tool-workflow`、`tool-ralph`(disabled)、`tool-subagent-codex/claude-code`(disabled) | **便宜模型并行做逐候选取证，本上下文负责判定**；workflow + PTC runtime 是批处理路径（脚本化 fan-out，而不是每条候选一次工具调用） |
+| 人机闸门与交付 | `tool-ask-user`、`tool-todo`、`tool-web`、`present` | 外网查公告/修复历史（可达性判定必需）；`present` 出报告 |
+| 刻意禁用 | `tool-plugin-manager`(disabled) | 预设行对插件管理本就只读，且审计员不该在运行中改自己的组成 |
 
-- **不设 `complete: true`**：那会把 persona 变成**唯一**的提示词段，"no tool guidance … can append"，工具指引全被丢掉——对审计 agent 是错的取舍。方法论交给 `ctx-audit-auditor` skill 承载。
-- **模型不在预设里选**：`dsh-agent-default-model` 属部署层（宿主行），留在 profile patch（`harness/settings.yaml` / `profiles/*/cordis.patch.yml`）。
-- **预设行对插件管理只读**：落地后要改组成只能重新发 bundle。
+**三处刻意的不做（都有理由，不是遗漏）**
+
+1. **不设 `complete: true`**：那会把 persona 变成**唯一**提示词段，"no tool guidance … can append"，工具指引全被丢掉；对必须驱动整面工具的 agent 是错的取舍。方法论交给 `ctx-audit-auditor` skill。
+2. **`tool-ralph` 保持 disabled**：它以"worker 自报"作为完成判据而非独立核验，且这种规模的无人值守迭代正是本项目此前 token 预算失控的形态；要开就按部署显式开。
+3. **不含 str-replace 编辑器**（standard 也没有）：审计纪律要求对目标项目只读，**能力干脆不授予**，而不是授予后用提示词禁止。同理 `tool-subagent-codex/claude-code` 保持 `disabled`（其 provider 不在本部署里），保留行是为了让工具目录形状与内置预设一致。
+
+**模型不在预设里选**：`dsh-agent-default-model` 属部署层（宿主行），留在 profile patch；预设能给的是**给子代理挑模型**的能力（`modelSelectionSettings`）。
+
+**预设行对插件管理只读**：落地后要改组成，只能重新发 bundle patch。
 
 ## 校验（`harness/scripts/verify-ctx-audit-web.mjs`）
 
@@ -107,7 +119,7 @@ node harness/scripts/verify-ctx-audit-web.mjs --dsh <path to @deepseek-ai/dsh>
 
 它会：解析两个 patch 文件的每一行（含 `@deepseek-ai/dsh-agent-preset` 声明**内部**的嵌套行、`cordis:group` 递归）→ 载入目标包的真实 `Config` schema → 用该行的 `config` 调一次；`!!js` 与子路径导出如实标 `SKIP`，失败行打 `FAIL` 并以退出码 1 结束。
 
-实测：**24 行 = 18 OK / 6 SKIP / 0 FAIL**；把 `prefix` 改成 `text` 后立刻 `FAIL ./presets/ctx-audit.patch.yml#preset-ctx-audit/plugins[0]  $.prefix missing required value`。
+实测：**33 行 = 25 OK / 8 SKIP / 0 FAIL**；把 `prefix` 改成 `text` 后立刻 `FAIL ./presets/ctx-audit.patch.yml#preset-ctx-audit/plugins[0]  $.prefix missing required value`。
 
 ## 部署
 

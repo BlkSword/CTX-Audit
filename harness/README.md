@@ -47,15 +47,13 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 **日志**（从工作区 `.ctx-audit/*.log` 尾部读，可选文件与行数）、**证据产物**（有界清单 + 体积 + 相对时间）、
 **路线图**（随仓库提交的 `roadmap.json`）。数据全部来自插件 host 半区的只读端点。
 
-**审计专用 agent 预设 `ctx-audit`**（`plugins/ctx-audit-web/presets/ctx-audit.patch.yml`）：先加载
-`ctx-audit-auditor` skill 再判定、结论必须带 `file:line`、TP 一律 `human_gate`、只读目标项目；
-随 bundle 一起注册并被设为部署默认（也可在 profile 层覆写 `agent-preset-registry.default`）。
+**审计专用 agent 预设 `ctx-audit`**（`plugins/ctx-audit-web/presets/ctx-audit.patch.yml`）：**内置 `standard` 能力面的超集**（33 个能力行 = jobs / goal / plan mode / workflow-PTC / 委派 / 压缩 / skill / web 全都在），差异只在 persona（审计身份 + 硬规则 + "用整台机器"的打法）、三处刻意不做（不设 `complete: true`、`ralph` 保持 disabled、不含写文件的编辑器）；随 bundle 注册并被设为部署默认（也可在 profile 层覆写 `agent-preset-registry.default`）。
 
 **校验**（预设的行不会在启动时校验，坏预设只在会话挂载时才报）：
 
 ```bash
 node harness/scripts/verify-ctx-audit-web.mjs --dsh <path to @deepseek-ai/dsh>
-# 24 行 = 18 OK / 6 SKIP / 0 FAIL；把 persona 的 prefix 换成旧字段 text 会立刻 FAIL
+# 33 行 = 25 OK / 8 SKIP / 0 FAIL；把 persona 的 prefix 换成旧字段 text 会立刻 FAIL
 ```
 
 ## Agent Preset / 默认模式

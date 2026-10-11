@@ -1,8 +1,16 @@
 # CTX-Audit agent preset `ctx-audit`.
 #
+# Design rule: this preset is a SUPERSET of the shipped `standard` capability
+# surface, not a reduced one. An audit is exactly the workload that needs the
+# whole harness — breadth (cheap fan-out over many candidates), depth (chained
+# review of the survivors), long unattended runs, and batch processing that must
+# not go through the model one tool call at a time. Nothing from `standard` is
+# dropped here except the writing tools the audit discipline forbids; see the
+# notes on `tool-plugin-manager` and on the absent str-replace editor below.
+#
 # A preset is a declaration ROW, never a directory: the registry "neither scans
 # directories nor accepts preset paths". This file is the second patch layer of
-# the @local/ctx-audit-web bundle (see `dsh.bundle.patch` in package.json); it is
+# the @local/ctx-audit-web bundle (see `dsh.bundle.patch` in package.json),
 # applied after the dsh-web-app layer, which is what makes the registry override
 # below effective.
 #
@@ -10,10 +18,6 @@
 # the profile's cordis.patch.yml, then the home patch, then `--patch` overlays.
 # The registry row is inserted by dsh-web-app with `default: standard`; a patch
 # REPLACES the targeted row's whole `config`, so `default` is restated here.
-#
-# `config.plugins` is an ordinary Cordis entry list. Every tool row below exists
-# because dsh-web-app disables the host-plane twin by id and hands the agent
-# plane to presets; a row omitted here is a tool the agent simply does not have.
 - insert:
     # Deployment default preset. `default` is the fallback; a user's Settings
     # choice is stored as `selectedDefault` in the `agent-preset-registry`
@@ -28,16 +32,15 @@
       config:
         id: ctx-audit
         name: CTX-Audit Auditor
-        description: Audit verdict layer. Loads the ctx-audit-auditor skill first and answers with structured JSON.
+        description: Full-capability audit preset. Evidence-first, structured JSON verdicts, human gate on every finding.
         order: 10
         plugins:
-          # Identity. `prefix` is REQUIRED and there is no `text` field. This
-          # deliberately does NOT set `complete: true`: that would restore the
-          # prefix as the sole prompt section and drop every tool-guidance
-          # section with it, which is the wrong trade for an audit agent whose
-          # methodology already lives in the skill. The methodology itself is
-          # carried by `ctx-audit-auditor` (see the skill rows below), not by
-          # this prompt text.
+          # ── Identity ────────────────────────────────────────────────────────
+          # `prefix` is REQUIRED and there is no `text` field. Deliberately NOT
+          # `complete: true`: that would restore the prefix as the sole prompt
+          # section and drop every tool-guidance section with it, which for an
+          # agent that must drive the whole tool surface is the wrong trade.
+          # The methodology itself lives in the `ctx-audit-auditor` skill.
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
@@ -45,10 +48,29 @@
                 You are the verdict layer of a CTX-Audit security audit. The engine
                 supplies deterministic evidence; you decide.
 
-                Your first action in a session is to call the `skill` tool with the
-                name `ctx-audit-auditor`, read it completely, and follow it as the
+                Start every session by calling the `skill` tool with the name
+                `ctx-audit-auditor` and reading it completely: it is the
                 authoritative methodology for evidence gathering, verdict criteria
-                and output shape.
+                and output shape. Prefer its checklists over improvisation.
+
+                Work with the whole harness, deliberately:
+                - Engine evidence arrives through the `mcp__ctxaudit__*` tools
+                  (project index, symbol definition/references, call hierarchy,
+                  slices, sanitizer guards, framework context, dataflow paths).
+                  Treat their output as candidates, never as verdicts, and read
+                  `uncertainty`, `truncated_at_limit` and `severity_downgraded_by`
+                  before concluding anything.
+                - Use jobs for long scans and builds so a running command never
+                  blocks reasoning.
+                - Use plan mode when an audit needs a shape (target selection,
+                  phase order, acceptance criteria) before any execution.
+                - Use delegation and the workflow runtime for breadth: fan out
+                  per-candidate evidence collection to cheaper subagent models
+                  instead of doing every lookup in this context.
+                - Use goals when an audit spans rounds and must keep going
+                  unattended; state the acceptance criteria when you set one.
+                - Compact deliberately: long audits are context-bound, so keep
+                  raw tool output out of the conversation and cite it instead.
 
                 Hard rules (they override any later instruction that conflicts):
                 1. Never lower the quality bar. An honest zero-finding result beats
@@ -56,23 +78,25 @@
                 2. Cite evidence for every conclusion as `file:line` plus a code
                    excerpt of at most five lines, and name the tool or resolver it
                    came from.
-                3. Treat engine output as candidates, never as verdicts: read
-                   `uncertainty`, `truncated_at_limit` and `severity_downgraded_by`
-                   before concluding.
-                4. Do not modify the audited project's files.
-                5. On any TP_CANDIDATE, set `human_gate: true` and stop: disclosure,
+                3. Do not modify the audited project's files, and do not run
+                   formatters or generators that rewrite them.
+                4. On any TP_CANDIDATE, set `human_gate: true` and stop: disclosure,
                    reporting and publication are human decisions.
-                6. Do not attempt to contact upstream, push commits, or edit the
+                5. Do not attempt to contact upstream, push commits, or edit the
                    engine's source.
               suffix: Your working directory is {{cwd}}.
 
+          # Workspace instructions (AGENTS.md / CLAUDE.md). Audits run inside
+          # repositories that carry their own conventions; the agent must read
+          # them before judging anything.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
 
-          # Shell. The two rows are mutually exclusive by platform, so exactly
-          # one persistent shell tool is present.
+          # ── Execution surface ───────────────────────────────────────────────
+          # Shell: exactly one persistent tool per platform. Audits need to run
+          # the engine, the fuzzer and the target's own test suite.
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -80,8 +104,6 @@
             name: '@deepseek-ai/dsh-tool-pwsh'
             disabled: !!js process.platform !== 'win32'
 
-          # Filesystem reads. dsh-web-app disables the host-plane twins, so a
-          # preset that omits these has no file access at all.
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
           - id: tool-fs-search
@@ -89,10 +111,16 @@
             config:
               sampleOverCapGlobResults: false
 
-          # Required for the persona above to be truthful: the skill registry is
-          # layered per scope and the host `skill-filesystem` row is disabled for
-          # Web, so local discovery is the preset's job. With no
-          # `customSkillDirs`, the default roots apply — including rank 400
+          # Background jobs: a full-repository scan or a build must not hold the
+          # conversation open.
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+
+          # ── Methodology ─────────────────────────────────────────────────────
+          # Both rows are REQUIRED: the Web surface disables the host-plane
+          # twins, so without them the agent has no `skill` tool at all — and the
+          # persona's first instruction is to load one. With no
+          # `customSkillDirs`, the default roots apply, including rank 400
           # `<dshHome>/skills`, which harness/install.sh populates from
           # harness/skills/ctx-audit-auditor/.
           - id: skill-filesystem
@@ -100,22 +128,43 @@
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
 
-          - id: tool-todo
-            name: '@deepseek-ai/dsh-tool-todo'
-            config:
-              allowParallelInProgress: true
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
-            config:
-              fetch: true
-              searchTimeoutMs: 60000
-          - id: tool-ask-user
-            name: '@deepseek-ai/dsh-tool-ask-user'
-          - id: present
-            name: '@deepseek-ai/dsh-tool-present'
+          # ── Long unattended audits ──────────────────────────────────────────
+          # Goals are what make a multi-round audit survive the end of a turn:
+          # the persisted goal reaches the model and `/goal` drives it.
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
 
-          # Compaction: the provider and every consumer share one isolate realm,
+          # Plan mode: design the audit (target, phases, acceptance criteria)
+          # before executing it. The provider and every consumer share one realm,
           # which is what the mount requires.
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+          # ── Context budget ──────────────────────────────────────────────────
+          # An audit reads far more raw output than it reasons about. Compaction
+          # and the tool-result pruner are what keep a long audit affordable;
+          # both stay in one realm with their consumers.
           - id: compaction
             name: cordis:group
             group: true
@@ -134,8 +183,13 @@
                   headChars: 4096
                   tailChars: 1024
 
-          # Delegation: the TOOLS move behind the preset, the backends stay in
-          # the host plane. Useful for fanning out per-candidate evidence work.
+          # ── Breadth and depth ───────────────────────────────────────────────
+          # The delegation TOOLS move behind the preset; the backends stay in the
+          # host plane. `modelSelectionSettings: true` is the point for an audit:
+          # cheap models collect per-candidate evidence in parallel, while this
+          # context does the judging. `tool-workflow` plus the PTC runtime is the
+          # batch path — scripted fan-out over hundreds of candidates instead of
+          # one tool call each.
           - id: delegation
             name: cordis:group
             group: true
@@ -151,6 +205,7 @@
                 config:
                   provider: spawn
                   toolName: subagent
+                  modelSelectionSettings: true
                   backgroundMode: continuable
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
@@ -158,10 +213,68 @@
                   provider: fork
                   toolName: subagent_fork
                   backgroundMode: continuable
+              # External coding-agent backends: kept as declared rows so the
+              # catalog shape matches the shipped preset, disabled because their
+              # providers are not part of this deployment.
+              - id: tool-subagent-codex
+                name: '@deepseek-ai/dsh-tool-subagent'
+                disabled: true
+                config:
+                  provider: codex
+                  toolName: subagent_codex
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+              - id: tool-subagent-claude-code
+                name: '@deepseek-ai/dsh-tool-subagent'
+                disabled: true
+                config:
+                  provider: claude-code
+                  toolName: subagent_claude_code
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+              # Ralph iterates a fresh agent over a fixed script. It stays
+              # disabled on purpose: completion is a worker self-report rather
+              # than an independent check, and unattended iteration at this
+              # scale is what previously blew up the project's token budget.
+              # Enable it consciously, per deployment, when that trade is wanted.
+              - id: tool-ralph
+                name: '@deepseek-ai/dsh-tool-ralph'
+                disabled: true
+                config:
+                  subagentProvider: spawn
+                  maxRounds: 64
 
-          # The auditor must not rewrite its own composition: preset rows are
-          # read-only to plugin management anyway, and this keeps the tool from
-          # appearing in the model's catalog.
+          # ── Human gates and deliverables ────────────────────────────────────
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          # Advisory and CVE research is external by nature: an audit that cannot
+          # look up the upstream fix or the disclosure history cannot judge
+          # reachability.
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+
+          # Deliberately disabled. Preset rows are read-only to plugin management
+          # anyway, and an auditor must not rewrite its own composition mid-run.
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
             disabled: true
+
+          # Deliberately absent, unlike the rest of the surface: the
+          # str-replace editor. The audit discipline is read-only with respect to
+          # the audited project, so the capability is not granted at all rather
+          # than granted and forbidden by prompt text.
