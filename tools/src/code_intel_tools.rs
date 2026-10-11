@@ -3242,6 +3242,7 @@ impl Tool for CodeIntelTool {
                 ];
                 let mut guards: Vec<Value> = Vec::new();
                 let mut guards_total = 0usize;
+                let mut guard_scope = "line_window";
                 let mut preproc_note: Option<String> = None;
                 let mut cpp_fallback = false;
                 let mut provenance: Vec<Provenance> = Vec::new();
@@ -3260,12 +3261,48 @@ impl Tool for CodeIntelTool {
                         // 标记匹配走**代码段**：字符串/行内注释里的 "if "/"guard" 不算守卫
                         //（此前只跳过"以注释开头的行"，行尾注释与字符串内容仍会命中）
                         let code = code_lines(content, hash_comment_language(path));
+                        let code_refs: Vec<&str> = code.iter().map(|s| s.as_str()).collect();
+                        let brace = is_brace_language(path);
                         let originals: Vec<&str> = content.lines().collect();
                         // 守卫也是"证据"：**未激活分支**里的条件分支不算守卫——
                         // 否则会把 `#if 0` 里的 `if` 交付给判定者（实测过）。
                         let (pp_states, pp_note) = preproc_view(path, content, false);
                         cpp_fallback = pp_note.is_some();
                         preproc_note = pp_note;
+                        // ── 守卫的作用域必须限定在**目标行所在函数**内 ──
+                        // 此前只用"目标行 ±60 行"窗口，会跨越函数边界，把**上一个函数**的守卫
+                        // 交付给判定者（实测：某文件第 613 行返回了 555/557/562 行的守卫；
+                        // 对 zip.c 的第 2313 行返回了 2257/2258/2270 行——都早于函数定义行）。
+                        // 判定者据此会误以为"本处已被净化"，是**假阴性**的来源。复用切片同款
+                        // `body_span` 做包含性判定，不引入新的解析口径；取不到函数边界时保持
+                        // 原窗口并在 data 里如实标注 `guard_scope=line_window`。
+                        let enclosing_span: Option<(usize, usize)> = {
+                            let target_idx = (line.max(1) as usize).saturating_sub(1);
+                            if brace && line > 0 && target_idx < code_refs.len() {
+                                let mut d = target_idx;
+                                let mut found = None;
+                                while d > 0 {
+                                    d -= 1;
+                                    let l = code_refs.get(d).copied().unwrap_or("");
+                                    if !l.contains('(') || l.trim_end().ends_with(';') {
+                                        continue;
+                                    }
+                                    let (_, end) = body_span(&code_refs, d, brace);
+                                    if end >= target_idx && end > d {
+                                        found = Some((d, end));
+                                        break;
+                                    }
+                                }
+                                found
+                            } else {
+                                None
+                            }
+                        };
+                        guard_scope = if enclosing_span.is_some() {
+                            "enclosing_function"
+                        } else {
+                            "line_window"
+                        };
                         for (idx, code_line) in code.iter().enumerate() {
                             let ln = (idx + 1) as i64;
                             if line > 0 && (ln - line).abs() > 60 {
@@ -3282,6 +3319,11 @@ impl Tool for CodeIntelTool {
                             }
                             if pp_states.get(idx).map(|s| s.dead).unwrap_or(false) {
                                 continue; // 未激活分支里的"守卫"不是证据
+                            }
+                            if let Some((fs, fe)) = enclosing_span {
+                                if idx < fs || idx > fe {
+                                    continue; // 跨函数的守卫不是本处的净化证据
+                                }
                             }
                             if markers.iter().any(|m| code_trimmed.contains(*m)) {
                                 // 全量计数、只在超限时不入列表：让 `truncated_at_limit` 可信
@@ -3303,6 +3345,7 @@ impl Tool for CodeIntelTool {
                     data: json!({
                         "file": file,
                         "content_source": content_source,
+                        "guard_scope": guard_scope,
                         "guards": guards,
                         "total_hits": guards_total,
                         "limit": MAX_HITS,
@@ -3314,6 +3357,10 @@ impl Tool for CodeIntelTool {
                         "medium",
                         &{
                             let mut reasons = vec!["guard_semantics_not_validated"];
+                            if guard_scope == "line_window" {
+                                // 取不到函数边界 ⇒ 交付的守卫可能来自**别的函数**，如实标注
+                                reasons.push("guard_scope_is_line_window");
+                            }
                             if cpp_fallback {
                                 reasons.push("cpp_preprocess_unavailable_line_level_fallback");
                             }
@@ -4952,6 +4999,43 @@ mod tests {
                 .iter()
                 .any(|r| r == "window_identifier_declarations_included"),
             "应如实上报附加了声明行: {d}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 守卫的作用域必须限定在**目标行所在函数**内：跨函数的守卫不得交付
+    /// （此前用"目标行 ±60 行"窗口，会把上一个函数的 `if` 当成此处的净化证据 ⇒ 假阴性）
+    #[tokio::test]
+    async fn test_sanitizer_guards_are_scoped_to_enclosing_function() {
+        let root = std::env::temp_dir().join("ctx-audit-guards-scope");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = "int\nfirst (int n)\n{\n    if (n > 10) {\n        return 1;\n    }\n    return 0;\n}\n\nint\nsecond (int n)\n{\n    return n + 1;\n}\n";
+        std::fs::write(root.join("src/g.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SanitizerGuards);
+        // 目标行在 `second` 内（第 12 行）；第 4 行的 `if` 属于**上一个函数** `first`
+        let out = tool
+            .execute(json!({"file": "src/g.c", "line": 12}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let lines: Vec<u64> = d["data"]["guards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            !lines.contains(&4),
+            "跨函数的守卫不得交付给判定者: {d}"
+        );
+        assert_eq!(
+            d["data"]["guard_scope"], "enclosing_function",
+            "应如实标注守卫作用域: {d}"
         );
 
         let _ = std::fs::remove_dir_all(&root);
