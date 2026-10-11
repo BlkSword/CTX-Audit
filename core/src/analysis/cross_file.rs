@@ -3519,7 +3519,7 @@ impl CrossFileTaintAnalyzer {
                 vec![source_id.clone()],
             ));
 
-        // 全局污点（1b）：源函数的输出缓冲常是项目级全局（如 pppd 的 inpacket_buf），
+        // 全局污点（1b）：源函数的输出缓冲常是项目级全局（如 某真实 C 代码库 的 inpacket_buf），
         // 在某一函数里被 1a 种污点后，需要在其它函数里也能参与匹配。这里用
         // "出现在源调用实参中、且不是任何函数形参" 的名字近似识别全局，并在每次
         // 分析函数前并入 current_tainted。
@@ -3614,7 +3614,7 @@ impl CrossFileTaintAnalyzer {
                     }
                     // 源推断（输出参数语义）：callee 若是源函数（函数体含 read/recv/fread 等
                     // 源模式），调用方传入的缓冲参数会被其写出内容污染；不建模这一步，
-                    // 报文数据永远进不了调用方污点集合（实测 pppd read_packet 包装层：
+                    // 报文数据永远进不了调用方污点集合（实测 某真实 C 代码库 read_packet 包装层：
                     // CVE 所在 eap.c 两版均 0 条数据流 finding）。
                     // 仅对形参名像缓冲/输出的参数生效，避免把 fd/len 等误标。
                     if callee_node.is_taint_source {
@@ -4944,8 +4944,8 @@ impl CrossFileTaintAnalyzer {
         let mut direct_sinks = Vec::new();
 
         // sink 实参归因：形参必须真的出现在该 sink 调用的实参里才归因。
-        // 旧实现“保守认为每个形参都可能到达函数内任意 sink”，对 ngx_open_cached_file(r, of, path, pool)
-        // 这类多参辅助函数会把 param0(r) 归因到 open(of->file->name) —— 实测 nginx 13 条 PathTraversal FP。
+        // 旧实现“保守认为每个形参都可能到达函数内任意 sink”，对 某真实 C 库的打开函数(r, of, path, pool)
+        // 这类多参辅助函数会把 param0(r) 归因到 open(of->file->name) —— 实测 某真实 C 代码库 13 条 PathTraversal FP。
         // 只有拿不到该调用实参信息时才回退保守归因。
         let sink_arg_mentions = |ct: &crate::analysis::cross_file::CallTarget, param_name: &str| -> Option<bool> {
             self.call_site_args

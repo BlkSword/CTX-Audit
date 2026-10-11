@@ -1928,7 +1928,7 @@ mod tests {
     #[test]
     fn test_is_sanitized_before_match_all_requires_full_set() {
         // sanitizer_match=all：危险集合必须完整覆盖，缺任一即不豁免。
-        // 场景：CVE-2021-42342——只过滤 LD_ 而缺 DYLD_/LDR_/_RLD/=() 视为防护不完整。
+        // 场景：某 CVE——只过滤 LD_ 而缺 DYLD_/LDR_/_RLD/=() 视为防护不完整。
         let sanitizers: Vec<String> = ["LD_", "DYLD_", "LDR_", "_RLD", "=()"]
             .iter()
             .map(|s| s.to_string())
@@ -2338,7 +2338,7 @@ $upsql = Input::postStrVar('upsql', '');
     fn test_sanitizer_after_lines_window() {
         // sanitizer_after_lines=N：命中点之后 N 行内出现 sanitizer 即豁免，
         // 且不受命中点之前文本影响（import/其他守卫不造成误豁免）。
-        // CVE-2026-16088 场景：resolve 后紧跟 checkDirectoryTraversal 校验
+        // 某 CVE 场景：resolve 后紧跟 checkDirectoryTraversal 校验
         let guarded = "import static x.FileUtils.checkDirectoryTraversal;\nclass T {\n  void f() {\n    var p = root.resolve(name);\n    checkDirectoryTraversal(root, p);\n  }\n}\n";
         let unguarded = "import static x.FileUtils.checkDirectoryTraversal;\nclass T {\n  void f() {\n    var p = root.resolve(name);\n    return new FileSystemResource(p);\n  }\n}\n";
         let mk_rule = |after: usize| Rule {
@@ -2451,7 +2451,7 @@ $upsql = Input::postStrVar('upsql', '');
 
     #[test]
     fn test_java_xxe_factory_hardening_setfeature_exempt() {
-        // CVE-2021-23901 回放：修复形态——
+        // 某 CVE 回放：修复形态——
         // SAXParserFactory.newInstance() 后紧跟 setFeature(disallow-doctype-decl,
         // true) + external-general-entities=false 即视为已加固，豁免；
         // 漏洞版（仅工厂创建+解析，无加固）保留命中。
@@ -2799,7 +2799,7 @@ $upsql = Input::postStrVar('upsql', '');
 
     #[test]
     fn test_php_http_sink_download_variable_url_forms() {
-        // php-http-sink-download 规则形态（CVE-2026-47260 回放）：
+        // php-http-sink-download 规则形态（某 CVE 回放）：
         // Http::sink($file)->get($episode->path) 变量 URL 命中；
         // 字面量 URL、SafeHttp->download 封装、无 sink 的 Http::get($url) 均豁免
         let rule = Rule {
@@ -2835,7 +2835,7 @@ $upsql = Input::postStrVar('upsql', '');
             remediation: None,
             references: None,
         };
-        // 正例：CVE-2026-47260 漏洞版形态（enclosure URL 二阶来源直下载）+ post 变体
+        // 正例：某 CVE 漏洞版形态（enclosure URL 二阶来源直下载）+ post 变体
         let vuln = concat!(
             "<?php\n",
             "Http::sink($file)->get($episode->path)->throw();\n",
@@ -2856,7 +2856,7 @@ $upsql = Input::postStrVar('upsql', '');
             .scan_file_sync(&PathBuf::from("b.php"), safe);
         assert_eq!(clean.len(), 0, "字面量 URL 与封装下载不应命中，实际 {:?}", clean.iter().map(|f| f.line_start).collect::<Vec<_>>());
 
-        // 负例：CVE-2026-47260 修复形态——isSafeUrl 前置校验（有界前向窗口豁免）
+        // 负例：某 CVE 修复形态——isSafeUrl 前置校验（有界前向窗口豁免）
         let guarded = concat!(
             "<?php\n",
             "if (!Network::isSafeUrl((string) $episode->path)) {\n",
@@ -3031,7 +3031,7 @@ $upsql = Input::postStrVar('upsql', '');
     /// ReDoS 家族：**锚定的无限量词**（`\s*$`、` +$`、`[ \t]+$`、`^\n+|\n+$`）。
     ///
     /// 真实漏报驱动（漏洞版命中、修复版豁免）：
-    /// axios-CVE-2021-3749（`str.replace(/^\s*/,'').replace(/\s*$/,'')`）、
+    /// axios-某 CVE（`str.replace(/^\s*/,'').replace(/\s*$/,'')`）、
     /// markdown-it-CVE-2022-21670（`replace(/ +$/, "")`）、
     /// turndown-CVE-2025-9670（`replace(/^\n+|\n+$/g, '')`）。
     /// 旧 pattern 把该家族硬编码成 `\n` + `+`，只覆盖 turndown 一条。

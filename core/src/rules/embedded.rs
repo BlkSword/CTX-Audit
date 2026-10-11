@@ -200,7 +200,7 @@ evidence_steps:
 
     #[test]
     fn test_embedded_xxe_rules_hardening_fields() {
-        // CVE-2021-23901 回放：xxe 两条规则必须携带 setFeature 加固
+        // 某 CVE 回放：xxe 两条规则必须携带 setFeature 加固
         // sanitizers 与有界窗口字段——YAML 新增字段静默解析失败会直接导致
         // 修复版豁免腿失效（教训：加字段必查反序列化兼容）。
         let rules = load_embedded_pattern_rules();

@@ -2909,7 +2909,7 @@ impl AstTaintAnalyzer {
     ) -> Option<&TaintSink> {
         let arg_texts: Vec<String> = call.arguments.iter().map(|a| a.text.clone()).collect();
         // 具体度优先：多个 sink 都能匹配时取“命中 pattern 最长”的那个。
-        // 反例（实测）：`ngx_sprintf(...)` 同时命中 printf( 与 sprintf(，
+        // 反例（实测）：`某真实 C 库的格式化宏(...)` 同时命中 printf( 与 sprintf(，
         // 按 id 排序取首个会把格式串位置判成 arg0（printf 家族），
         // 导致把目标缓冲指针当格式串而大量误报。
         let mut best: Option<(&TaintSink, usize)> = None;
@@ -3168,7 +3168,7 @@ impl AstTaintAnalyzer {
         // （`client.get(Policy.class, name)` 是存储查找而非 SQL/SSRF）
         let class_literal_exempt = Self::expr_has_class_literal(expr);
         // 与 match_sink_for_call 一致：多个 sink 命中时取最具体者，
-        // 否则 `ngx_sprintf(...)` 会按 id 顺序命中 printf(（格式串在 arg0），
+        // 否则 `某真实 C 库的格式化宏(...)` 会按 id 顺序命中 printf(（格式串在 arg0），
         // 而正确匹配是 sprintf(（格式串在 arg1）。
         let mut best: Option<(TaintSink, usize)> = None;
         for sink in self.sinks.iter() {
@@ -4003,7 +4003,7 @@ impl AstTaintAnalyzer {
                     "x-forwarded-proto",
                 ],
             ),
-            // GHSA-mc6w-69r3-62h8 回放：上游响应头（axios/fetch/requests 的
+            // 某安全公告 回放：上游响应头（axios/fetch/requests 的
             // response.headers / res.headers / resp.headers）受上游/中间人控制，
             // 用作文件名/路径 sink 时构成路径穿越（ETag → 缓存文件名 → RCE）
             TaintSource::new(
@@ -4232,7 +4232,7 @@ impl AstTaintAnalyzer {
             "bindParam".into(),
             "real_escape_string".into(),
             "escape_string".into(),
-            // GHSA-mc6w-69r3-62h8 修复形态：JS 字符集白名单清洗
+            // 某安全公告 修复形态：JS 字符集白名单清洗
             // replace(/[^\w-]/g, '')——非 word/dash 字符全剥（路径穿越序列消除）
             "[^\\w-]".into(),
         ]
@@ -4295,7 +4295,7 @@ result = exec(userInput)"#;
 
     #[test]
     fn test_response_headers_path_write_vulnerable() {
-        // GHSA-mc6w-69r3-62h8 漏洞形态（单函数扁平切片）：
+        // 某安全公告 漏洞形态（单函数扁平切片）：
         // 上游响应头 ETag（仅剥双引号）→ 缓存文件名 → writeFile
         // → 路径穿越写盘（3.4.0 前 seerr ImageProxy 真实形态）
         let code = r#"
