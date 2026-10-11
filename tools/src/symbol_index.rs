@@ -521,7 +521,7 @@ fn persist_enabled() -> bool {
 ///
 /// 磁盘缓存键（见 `persist_path`）原先只由"规范化根路径"决定，于是引擎换了抽取规则、
 /// 缓存却照旧命中——缓存里存的是**旧二进制**解析出的 `file_defs`，新规则一次都不会跑。
-/// 实测代价：改完 C 的定义抽取规则后，nginx 的 `symbols` 仍恒为 **391**、定义召回仍
+/// 实测代价：改完 C 的定义抽取规则后，某真实 C 代码库的 `symbols` 仍恒为 **391**、定义召回仍
 /// **0/60**，而同一份代码在单元测试里是通过的（夹具目录没有旧缓存）。
 /// 把逻辑版本与 crate 版本并进缓存键，才能保证"你看到的索引来自你正在运行的引擎"。
 const INDEX_LOGIC_VERSION: u32 = 2;
@@ -799,7 +799,7 @@ fn index_content(
         //     ngx_resolver_copy(ngx_resolver_t *r, …)
         //     {
         // 行内没有任何 `fn/def/class/struct` 关键字，旧实现因此直接 `continue` 掉——
-        // 实测 nginx `src/core` 的函数定义召回 **0/60**（ctags 真值 416），
+        // 实测某真实 C 代码库 src/core 的函数定义召回 **0/60**（ctags 真值 416），
         // 整个 C 侧的调用图/作用域/引用都建立在这个缺失之上。
         if is_c_like(path) {
             if let Some(name) = c_define_name(code_line) {
@@ -884,7 +884,7 @@ const C_CTRL: [&str; 12] = [
 /// `#define NAME` / `#define NAME(args)` 的宏名。
 ///
 /// C 的预处理器是**语言的一部分**：sink/source 藏在宏里时，看不到宏定义就等于看不到它
-/// （实测 nginx `src/core` 有 452 个宏定义）。宏名进索引后，调用方问 `NGX_OK` 这类
+/// （实测某真实 C 代码库 src/core 有 452 个宏定义）。宏名进索引后，调用方问某个宏名这类
 /// 标识符时能拿到 `#define` 行本身——文本自带 `#define` 前缀，消费者一眼能分辨。
 fn c_define_name(code_line: &str) -> Option<String> {
     let t = code_line.trim_start();
@@ -958,7 +958,7 @@ fn prev_code_line(code: &[String], idx: usize) -> Option<String> {
 
 /// 从定义行起，签名闭合之后是否紧跟函数体的 `{`。
 ///
-/// 必须支持**参数表跨行**——nginx/Linux 的规范写法是
+/// 必须支持**参数表跨行**——真实 C 代码库的规范写法是
 ///     static ngx_int_t
 ///     ngx_resolver_copy(ngx_resolver_t *r, … u_char *src,
 ///         u_char *last)

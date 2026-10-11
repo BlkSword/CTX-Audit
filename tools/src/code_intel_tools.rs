@@ -759,7 +759,7 @@ fn c_style_header_name(text: &str, next: &str) -> Option<String> {
 /// 多行签名版：`following` 为**之后最多 6 条非空代码行**（已 trim 前）。
 ///
 /// 为什么需要它：C/C++ 的签名经常跨 **3 行以上**（实测
-/// `static cmark_node *try_opening_table_header(` / `cmark_parser *parser,` /
+/// 三行式定义：`static node_t *build_table(` / `parser_t *parser,` /
 /// `… unsigned char *input, int len) {`），而两行判定要求"名字行以 `)` 结尾、下一行以 `{` 开头"，
 /// 于是这类函数一律被判成"找不到函数头"，长函数的作用域因此静默变成 unresolved。
 pub fn function_header_name_multi(text: &str, following: &[&str], c_like: bool) -> Option<String> {
@@ -790,7 +790,7 @@ pub fn function_header_name_multi(text: &str, following: &[&str], c_like: bool) 
         //     {
         // 只认"后续若干行是参数类型声明行、且其中出现 `{`"这一种情况，
         // 以免退回"跨语句拼接"的老毛病（那会把模块级代码误报成有函数作用域）。
-        // 实测：CVE-2020-8597 的 `pppd/eap.c` 正是这种风格。
+        // 实测：真实 C 代码库里的边界检查省略正是这种风格。
         let mut kr = false;
         for s in following.iter().take(8) {
             let s = s.trim();
@@ -1071,7 +1071,7 @@ fn is_stop_ident(ident: &str) -> bool {
 ///
 /// 只认"类型… 名字[可选数组] ;"形态，避免把赋值/调用语句当成声明
 /// （`row->n_columns = 0;` 不匹配：`-`/`>` 不在类型片段的字符集里）。
-/// 同一字段名可能在多个结构体里声明（cmark 的 `n_columns` 有 18/24 两处），
+/// 同一字段名可能在多个结构体里声明（实测某 C 解析库的同名字段有 18/24 两处），
 /// 因此返回多条，让判定者按上下文取舍——引擎只交付原文，不做推断。
 fn find_declaration_lines(lines: &[&str], ident: &str, max: usize) -> Vec<usize> {
     let pattern = format!(
@@ -1486,9 +1486,9 @@ fn paren_balanced(s: &str) -> bool {
 
 /// 把**跨行签名**的定义行续成完整签名（返回 `(文本, 是否续过行)`）。
 ///
-/// 索引里只存"定义行"原文；C 的 80 列风格常把形参表折到下一行（curl/nginx 处处如此），
+/// 索引里只存"定义行"原文；C 的 80 列风格常把形参表折到下一行（真实 C 代码库常见），
 /// 只拿这一行就因括号不闭合而解析失败 ⇒ 候选空间被系统性偏向"单行签名"的函数
-/// （实测 curl 上真正的 writer 实现整批缺席，候选里只剩巧合同参数个数的无关函数）。
+/// （实测：真实 C 代码库里真正的 writer 实现整批缺席，候选里只剩巧合同参数个数的无关函数）。
 /// 这里用**已在内存里**的内容索引把后续行拼上（上限 `MAX_SIGNATURE_JOIN_LINES`），
 /// 不额外读盘、不做全量分析；拼到上限仍不闭合就按解析失败处理（不猜）。
 fn signature_with_continuation(
@@ -4226,7 +4226,7 @@ mod tests {
     }
 
     /// C 风格定义（**无关键字**、多行签名）也要锚定函数头：
-    /// `static ngx_int_t` / `ngx_http_foo(...)` / `{` 三行式——nginx、pppd 的实际形态。
+    /// `static int` / `foo_bar(...)` / `{` 三行式——真实 C 代码库的常见形态。
     #[tokio::test]
     async fn test_slice_anchors_c_style_function_header() {
         let root = std::env::temp_dir().join("ctx-audit-slice-c-header");
@@ -4253,7 +4253,7 @@ mod tests {
 
     /// **声明行不得被当成函数头**：`struct <Type> *<name>;` 形态的变量声明在函数体内，
     /// 旧实现（符号索引把关键字后的类型名记成"该类型的定义"）让上溯/已知定义判定选中它，
-    /// `function` 因此变成类型名——实测 curl `lib/socks.c:590` 得到 `Curl_dns_entry`。
+    /// `function` 因此变成类型名——实测真实 C 文件里得到的是变量名而非函数名。
     /// 夹具形状与真实一致：多行签名（参数续行也带 `struct`）+ 函数体内 `struct X *p = NULL;`
     /// + 之后是真正的函数定义体（`switch` 块，使声明行的"体覆盖"成立）。
     #[tokio::test]
