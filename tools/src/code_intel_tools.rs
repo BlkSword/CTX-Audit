@@ -186,6 +186,95 @@ const PRIMARY_ANALYSIS_LANGUAGES: [&str; 6] = [
 ];
 
 /// 语言能力报告：哪些主语言在场、哪些只有启发式索引
+/// 只读探测"本构建启用的宏/后端"。
+///
+/// 来源优先级：`<root>/build*/CMakeCache.txt`（`ENABLE_*:BOOL=ON` 与
+/// `*_LIBRARY_*:FILEPATH=...-NOTFOUND`）→ `<root>/build*/config.h`（`#define HAVE_*`）。
+/// 裸 clone 通常拿不到（config.h 由构建期生成）⇒ 如实报 `confidence=unknown`，**不得猜**。
+fn probe_build_context(root: &std::path::Path) -> Value {
+    let mut cache_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut config_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut push_pair = |dir: &std::path::Path| {
+        let c = dir.join("CMakeCache.txt");
+        if c.is_file() {
+            cache_files.push(c);
+        }
+        let h = dir.join("config.h");
+        if h.is_file() {
+            config_files.push(h);
+        }
+    };
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if name.starts_with("build") || name == "out" {
+                    push_pair(&p);
+                }
+            }
+        }
+    }
+    push_pair(root);
+
+    let mut switches: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    let mut defines: Vec<String> = Vec::new();
+    let mut sources: Vec<String> = Vec::new();
+
+    for f in cache_files.iter().take(2) {
+        if let Ok(text) = std::fs::read_to_string(f) {
+            for line in text.lines().take(20_000) {
+                if let Some(rest) = line.strip_prefix("ENABLE_") {
+                    if let Some((k, v)) = rest.split_once(":BOOL=") {
+                        if v.trim() == "ON" {
+                            switches.push(k.to_string());
+                        }
+                    }
+                }
+                if let Some((k, v)) = line.split_once("_LIBRARY_") {
+                    if v.contains("NOTFOUND") {
+                        missing.push(k.to_string());
+                    }
+                }
+            }
+            sources.push(f.display().to_string());
+        }
+    }
+    for f in config_files.iter().take(2) {
+        if let Ok(text) = std::fs::read_to_string(f) {
+            for line in text.lines().take(20_000) {
+                let t = line.trim_start();
+                if t.starts_with("#define HAVE_") || t.starts_with("#define ARCHIVE_") {
+                    if let Some(name) = t.split_whitespace().nth(1) {
+                        defines.push(name.to_string());
+                    }
+                }
+            }
+            sources.push(f.display().to_string());
+        }
+    }
+    let known = !sources.is_empty();
+    for v in [&mut switches, &mut missing, &mut defines] {
+        v.sort();
+        v.dedup();
+        v.truncate(40);
+    }
+    json!({
+        "source": sources.first().cloned(),
+        "sources_scanned": sources,
+        "enabled_switches": switches,
+        "unavailable_libraries": missing,
+        "config_defines": defines,
+        "confidence": if known { "derived_from_build_artifacts" } else { "unknown" },
+        "note": if known {
+            "只读解析构建产物；不保证与当前编译命令逐字一致"
+        } else {
+            "未找到构建产物（CMakeCache.txt / config.h）：本构建启用了哪些宏/后端未知"
+        },
+    })
+}
+
 fn language_capabilities(langs: &std::collections::BTreeMap<&'static str, usize>) -> Value {
     let mut present_primary: Vec<&str> = Vec::new();
     let mut heuristic_only: Vec<&str> = Vec::new();
@@ -2190,10 +2279,16 @@ impl Tool for CodeIntelTool {
                     "stat + TTL cache (probe disabled by CTX_AUDIT_INDEX_PROBE)"
                 };
                 let caps = language_capabilities(&langs);
+                // 本构建启用的宏/后端：只读解析构建产物（CMakeCache.txt / config.h），
+                // 拿不到就如实报 unknown——用于让 C 的条件编译可判（此前只能人工读构建目录）。
+                let build_context = probe_build_context(root);
                 let analysis_backed = caps["analysis_backed"].as_bool().unwrap_or(false);
                 let mut cap_reasons: Vec<&str> = vec!["index_is_stat_based"];
                 if !analysis_backed {
                     cap_reasons.push("project_language_outside_primary_set");
+                }
+                if build_context["confidence"] == json!("unknown") {
+                    cap_reasons.push("build_context_unavailable");
                 }
                 IntelEnvelope {
                     data: json!({
@@ -2202,6 +2297,7 @@ impl Tool for CodeIntelTool {
                         "build_id": id,
                         "index_freshness": freshness,
                         "capabilities": caps,
+                        "build_context": build_context,
                         "limits": {
                             "max_files": max_index_files(),
                             "max_file_bytes": MAX_FILE_BYTES,
