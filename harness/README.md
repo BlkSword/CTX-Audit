@@ -28,6 +28,20 @@ CTX_AUDIT_MCP_CMD=ctx-audit ./bin/ctx-audit-dsh "对 ./project 做安全审计"
 ./scripts/dsh-audit-run.sh ./project R001
 ```
 
+## Web 定制面（`ctx-audit-web`）
+
+把 CTX-Audit 接进 DSH 的 Web GUI：插件注册的中心页面 + 侧边栏入口 + MCP 服务器行；页面数据来自该插件
+host 半区自己的只读 JSON 端点。**不需要 fork DSH，也不需要改前端**——这是"profile（有序 bundle 列表）"
+与"外挂客户端插件（`dsh.client` + `./client` 导出）"两个官方扩展点的组合。
+
+```bash
+DSH_HOME="$HOME/.dsh" ./install.sh        # 安装 profile 与 bundle（幂等；装完自动校验组合树）
+CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-open
+```
+
+细节见 [plugins/ctx-audit-web/README.md](./plugins/ctx-audit-web/README.md)，其中记录了本次实测踩到的
+**静默失败陷阱**：bundle 的 patch 必须为自己插一行，否则客户端半区永远不进 boot graph 且没有任何报错。
+
 ## Agent Preset / 默认模式
 
 - 公共 `harness/` **默认使用 DSH 自带极简/默认模式**，不默认加载自定义 agent preset。

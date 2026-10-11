@@ -1,0 +1,37 @@
+{
+  "name": "@local/ctx-audit-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CTX-Audit web surface: a centre panel with its sidebar entry, plus the CTX-Audit MCP server row.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "meta": {
+    "title": "CTX-Audit",
+    "description": "Code-audit evidence surface for the CTX-Audit MCP server."
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "README.md"
+  ]
+}

@@ -1,0 +1,8 @@
+# Audit-specific overrides on top of the web template.
+#
+# The web app's own layer already supplies the shell, transport and client
+# modules; this layer is where an audit deployment pins its provider/model and
+# persona. Remember that a patch REPLACES the targeted row's whole `config`, so
+# every key the row owns has to be restated here. Copy the provider/model rows
+# from `harness/settings.yaml` when this profile is used to run agents.
+[]

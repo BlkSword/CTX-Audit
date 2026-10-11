@@ -1,0 +1,14 @@
+{
+  "name": "dsh-profile-ctx-audit-web",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@local/ctx-audit-web"
+      ]
+    }
+  }
+}

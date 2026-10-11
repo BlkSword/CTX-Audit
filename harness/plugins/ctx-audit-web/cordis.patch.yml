@@ -1,0 +1,32 @@
+# CTX-Audit web surface bundle.
+#
+# TWO rows are required and for different reasons:
+#   1. a row naming THIS package — `dsh-client-modules` composes the browser boot
+#      graph by scanning *enabled Loader entries* for `dsh.client`, so without a
+#      row here the client half is never served, no matter what package.json says;
+#   2. the MCP server row. One `dsh-mcp-client` instance serves one MCP server.
+#      CTX-Audit speaks stdio JSON-RPC (`ctx-audit mcp`), so the stdio transport
+#      applies. The command is read from the environment so that no
+#      machine-specific path is committed; set `CTX_AUDIT_MCP_CMD` to the
+#      absolute path of the binary when it is not on PATH.
+- insert:
+    - id: ctx-audit-web
+      name: '@local/ctx-audit-web'
+      config:
+        # The endpoint is read-only and bounded; the workspace decides which
+        # `.ctx-audit/` directory the page lists.
+        workspace: !!js process.cwd()
+        # Same value the MCP row spawns, so the page echoes what actually runs.
+        mcpCommand: !!js process.env.CTX_AUDIT_MCP_CMD || 'ctx-audit'
+
+    - id: ctx-audit-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ctxaudit
+        transport: stdio
+        command: !!js process.env.CTX_AUDIT_MCP_CMD || 'ctx-audit'
+        args: ['mcp']
+        # `false` keeps a missing binary from blocking boot while evaluating this
+        # bundle; set `true` in a real deployment so a broken handshake is loud.
+        failOnStartupError: false
+
