@@ -41,6 +41,11 @@ const MAX_DISPATCH_SIGNATURE_SPACE: usize = 20000;
 const MAX_SIGNATURE_JOIN_LINES: usize = 12;
 /// 函数摘要上限（C 的能力面 C2）：一次响应最多给这么多函数出摘要
 const MAX_FUNCTION_SUMMARIES: usize = 8;
+/// **项目级**（全项目汇总，非单函数）候选派发采集的间接调用点上限。
+///
+/// 单函数口径用 `MAX_DISPATCH_SITES`；项目级口径的站点来源是"所有已索引 C 类函数的体"，
+/// 数量不可预估，因此必须另设上限并如实上报截断（`sites_truncated_at_limit`）。
+const MAX_PROJECT_DISPATCH_SITES: usize = 64;
 const SKIP_DIRS: [&str; 8] = [
     ".git",
     "node_modules",
@@ -1837,6 +1842,104 @@ pub fn dispatch_candidates_evidence(
         "limit": MAX_DISPATCH_CANDIDATES,
         "total_hits": total_hits,
         "truncated_at_limit": truncated_at_limit,
+    })
+}
+
+/// **项目级**候选派发证据：把全项目 C/C++ 函数体里"解析不出目标"的调用点汇总后，
+/// 复用 [`dispatch_candidates_evidence`]（与 MCP 证据面同一实现）产出签名候选集合。
+///
+/// 与 MCP 单函数口径的差异（必须如实标注，不能混为一谈）：
+/// - 站点来源是**全项目已索引的 C 类函数体**，不是某一个目标函数，因此没有"所在函数"
+///   可排除（`containing_function_excluded: false`）——某个站点可能把**自己所在的函数**
+///   也列为候选之一，这是该口径的已知噪声；
+/// - 站点数上限 [`MAX_PROJECT_DISPATCH_SITES`]，超出即截断并如实上报；
+/// - 只读：不产出 findings、不写除 TTL 缓存以外的任何状态、不改变 `unresolved_edges`
+///   的数值语义（与 MCP 面同一约定）。
+///
+/// 调用方（CLI）必须用 flag 门控——默认关闭时不调用本函数，历史输出因此逐字节不变。
+pub fn project_dispatch_candidates(root: &Path, refresh: bool) -> Value {
+    let ttl = crate::index_cache::default_ttl();
+    let (index, hit) = crate::index_cache::get_or_build(root, refresh, ttl, || {
+        let loaded = load_files(root);
+        let build_id = build_id(&loaded.files);
+        crate::index_cache::ProjectIndex {
+            root: root.to_string_lossy().to_string(),
+            files: loaded.files,
+            build_id,
+            skipped_large: loaded.skipped_large,
+            truncated_at_limit: loaded.truncated_at_limit,
+            file_stamps: loaded.file_stamps,
+            dir_stamps: loaded.dir_stamps,
+            built_at: std::time::Instant::now(),
+        }
+    });
+    let files: &[(String, String)] = &index.files;
+    let (sindex, s_hit, s_build_ms) = crate::symbol_index::get_or_build(root, refresh, None);
+
+    // 站点采集：与调用图同一判据——只取 C 类文件**函数体内**的间接调用点。
+    let mut sites: Vec<IndirectCallSite> = Vec::new();
+    let mut site_files: Vec<String> = Vec::new();
+    let mut files_with_sites = 0usize;
+    let mut sites_truncated = false;
+    'files: for (path, content) in files {
+        if !is_c_like_path(path) {
+            continue;
+        }
+        let Some(file_idx) = sindex.file_index(path) else {
+            continue;
+        };
+        let code = code_lines(content, hash_comment_language(path));
+        let refs: Vec<&str> = code.iter().map(|s| s.as_str()).collect();
+        let brace = is_brace_language(path);
+        let mut file_has_site = false;
+        for (_, def_line, _) in sindex.definitions_in_file(file_idx) {
+            let def_idx = (def_line as usize).saturating_sub(1);
+            let (start, end) = body_span(&refs, def_idx, brace);
+            for site in indirect_call_sites(&refs, start, end) {
+                if sites.len() >= MAX_PROJECT_DISPATCH_SITES {
+                    sites_truncated = true;
+                    break 'files;
+                }
+                file_has_site = true;
+                site_files.push(path.clone());
+                sites.push(site);
+            }
+        }
+        if file_has_site {
+            files_with_sites += 1;
+        }
+    }
+
+    let mut evidence = dispatch_candidates_evidence(&sindex, &sites, None, files);
+    // 项目级口径必须带文件归属：`IndirectCallSite` 只带行号，而 `call_sites` 是按输入
+    // 顺序 1:1 映射出来的，因此按序补 `file` 即可对齐（不改任何评分/候选逻辑）。
+    if let Some(arr) = evidence
+        .get_mut("call_sites")
+        .and_then(|v| v.as_array_mut())
+    {
+        for (i, item) in arr.iter_mut().enumerate() {
+            if let (Some(obj), Some(file)) = (item.as_object_mut(), site_files.get(i)) {
+                obj.insert("file".to_string(), Value::String(file.clone()));
+            }
+        }
+    }
+
+    json!({
+        "scope": "project",
+        "containing_function_excluded": false,
+        "root": root.to_string_lossy(),
+        "files_indexed": files.len(),
+        "files_with_indirect_sites": files_with_sites,
+        "sites_collected": sites.len(),
+        "sites_limit": MAX_PROJECT_DISPATCH_SITES,
+        "sites_truncated_at_limit": sites_truncated,
+        "index": {
+            "hit": hit.as_str(),
+            "truncated_at_limit": index.truncated_at_limit,
+            "skipped_large_files": index.skipped_large,
+        },
+        "symbol_index": symbol_index_stats(&sindex, s_hit, s_build_ms),
+        "evidence": evidence,
     })
 }
 

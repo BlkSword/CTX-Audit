@@ -141,6 +141,15 @@ enum Commands {
         /// 查询模式：构建调用图但不运行规则扫描（与 MCP 工具配合使用）
         #[arg(long)]
         query_mode: bool,
+
+        /// 输出中附加**候选派发**证据（默认关闭）。
+        ///
+        /// 对"解析不出目标"的间接调用点（函数指针/成员指针/表派发）给出按签名匹配的
+        /// 候选目标集合（启发式，非解析结果）。只在 `-o json` 时生效：把 findings 数组
+        /// 包进 `{"dispatch_candidates": …, "findings": […]}`；不加该 flag 时输出与历史
+        /// 逐字节一致。
+        #[arg(long)]
+        dispatch_candidates: bool,
     },
 
     Analyze {
@@ -477,6 +486,7 @@ async fn main() -> Result<()> {
             include_structural,
             precision_first,
             recall_first,
+            dispatch_candidates,
         } => {
             commands::scan::execute(
                 path,
@@ -499,6 +509,7 @@ async fn main() -> Result<()> {
                 include_structural,
                 precision_first,
                 recall_first,
+                dispatch_candidates,
             )
             .await
         }

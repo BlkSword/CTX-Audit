@@ -77,6 +77,7 @@ pub async fn execute(
     include_structural: bool,
     precision_first: bool,
     recall_first: bool,
+    dispatch_candidates: bool,
 ) -> Result<()> {
     let mut renderer = TerminalRenderer::new();
 
@@ -107,6 +108,11 @@ pub async fn execute(
 
     // 守护进程模式
     if daemon {
+        if dispatch_candidates {
+            renderer.warning(
+                "--dispatch-candidates 由本地扫描产出：daemon 扫描本身不带候选（仅在降级为本地扫描时生效）",
+            );
+        }
         if graph_output.is_some() || query_mode {
             renderer
                 .warning("--graph-output 和 --query-mode 在 daemon 模式下不可用，降级为本地扫描");
@@ -129,6 +135,7 @@ pub async fn execute(
                 include_structural,
                 precision_first,
                 recall_first,
+                dispatch_candidates,
             )
             .await;
         }
@@ -146,6 +153,7 @@ pub async fn execute(
             enable_cross_file,
             precision_first,
             recall_first,
+            dispatch_candidates,
             &mut renderer,
         )
         .await;
@@ -170,6 +178,7 @@ pub async fn execute(
         include_structural,
         precision_first,
         recall_first,
+        dispatch_candidates,
     )
     .await
 }
@@ -359,6 +368,7 @@ async fn scan_local(
     include_structural: bool,
     precision_first: bool,
     recall_first: bool,
+    dispatch_candidates: bool,
 ) -> Result<()> {
     let mode = match (enable_taint, enable_cross_file) {
         (true, true) => "深度扫描 (规则 + 污点 + 跨文件)",
@@ -576,13 +586,55 @@ async fn scan_local(
             (format.to_string(), output_path.clone())
         };
 
+        // --dispatch-candidates（默认关闭）：附加候选派发证据。
+        // 关闭时**完全不计算、不调用任何索引**，因此默认输出与历史逐字节一致。
+        let dispatch_evidence: Option<serde_json::Value> =
+            if dispatch_candidates && effective_format == "json" {
+                renderer.info("候选派发：采集间接调用点并按签名匹配候选目标（启发式证据）");
+                let started = std::time::Instant::now();
+                let evidence =
+                    ctx_audit_tools::code_intel_tools::project_dispatch_candidates(
+                        std::path::Path::new(&path),
+                        false,
+                    );
+                let sites = evidence
+                    .get("sites_collected")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let candidates = evidence
+                    .pointer("/evidence/candidates")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let truncated = evidence
+                    .get("sites_truncated_at_limit")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                renderer.info(&format!(
+                    "候选派发：{} 个调用点 → {} 个候选{}（{} ms）",
+                    sites,
+                    candidates,
+                    if truncated { "（站点已达上限，已截断）" } else { "" },
+                    started.elapsed().as_millis()
+                ));
+                Some(evidence)
+            } else {
+                if dispatch_candidates {
+                    renderer.warning("--dispatch-candidates 只作用于 JSON 输出（-o json）");
+                }
+                None
+            };
+
         save_scan_results(
             &effective_file_path,
             &filtered_findings,
             &effective_format,
+            dispatch_evidence.as_ref(),
             renderer,
         )
         .await?;
+    } else if dispatch_candidates {
+        renderer.warning("--dispatch-candidates 需要配合 -o json（未指定输出文件，未产出候选）");
     }
 
     // --graph-output: 单独构建并导出调用图
@@ -652,10 +704,14 @@ async fn scan_local(
 }
 
 /// 保存扫描结果到文件
+///
+/// `dispatch_evidence` 只在显式开启 `--dispatch-candidates` 时非 `None`，且目前只作用于
+/// JSON 输出；`None` 时各格式的产出与历史完全一致。
 async fn save_scan_results(
     output_path: &str,
     findings: &[Finding],
     format: &str,
+    dispatch_evidence: Option<&serde_json::Value>,
     renderer: &mut TerminalRenderer,
 ) -> miette::Result<()> {
     // 确保输出目录存在
@@ -665,7 +721,10 @@ async fn save_scan_results(
 
     let content = match format {
         "llm" => to_llm_json(findings),
-        "json" => to_json_with_candidates(findings)?,
+        "json" => match dispatch_evidence {
+            Some(evidence) => to_json_with_dispatch_candidates(findings, evidence)?,
+            None => to_json_with_candidates(findings)?,
+        },
         "sarif" => to_sarif(findings),
         "markdown" => to_markdown(findings),
         _ => to_text(findings),
@@ -783,6 +842,15 @@ fn to_text(findings: &[Finding]) -> String {
 
 /// JSON 输出：逐条打上"候选"标记（引擎输出是待判定候选，不是结论）
 fn to_json_with_candidates(findings: &[Finding]) -> Result<String> {
+    serde_json::to_string_pretty(&finding_candidate_values(findings)?)
+        .map_err(|e| miette::miette!("JSON 序列化失败: {}", e))
+}
+
+/// findings → JSON 值（含 `candidate` / `decision_required` 标记）。
+///
+/// 抽出来是为了让"纯 findings 数组"与"附加证据的对象"两条路径共用同一份编码逻辑，
+/// 保证默认输出逐字节不变。
+fn finding_candidate_values(findings: &[Finding]) -> Result<Vec<serde_json::Value>> {
     let mut values: Vec<serde_json::Value> = Vec::with_capacity(findings.len());
     for f in findings {
         let mut v =
@@ -796,7 +864,22 @@ fn to_json_with_candidates(findings: &[Finding]) -> Result<String> {
         }
         values.push(v);
     }
-    serde_json::to_string_pretty(&values).map_err(|e| miette::miette!("JSON 序列化失败: {}", e))
+    Ok(values)
+}
+
+/// JSON 输出（`--dispatch-candidates`）：在 findings 之外**附加**候选派发证据。
+///
+/// 顶层由"纯数组"变为对象，因此只在显式开启该 flag 时使用；findings 本身仍是同一份
+/// 编码结果（`finding_candidate_values`），便于与默认输出做逐条对照。
+fn to_json_with_dispatch_candidates(
+    findings: &[Finding],
+    dispatch_evidence: &serde_json::Value,
+) -> Result<String> {
+    let out = serde_json::json!({
+        "dispatch_candidates": dispatch_evidence,
+        "findings": finding_candidate_values(findings)?,
+    });
+    serde_json::to_string_pretty(&out).map_err(|e| miette::miette!("JSON 序列化失败: {}", e))
 }
 
 /// 同上，但输入已经是 JSON 值（`findings` 解析后的形态）
@@ -948,6 +1031,7 @@ async fn scan_via_daemon(
     enable_cross_file: bool,
     precision_first: bool,
     recall_first: bool,
+    dispatch_candidates: bool,
     renderer: &mut TerminalRenderer,
 ) -> Result<()> {
     let mut client = match DaemonClient::connect_with_retry().await {
@@ -974,6 +1058,7 @@ async fn scan_via_daemon(
                 false,
                 precision_first,
                 recall_first,
+                dispatch_candidates,
             )
             .await;
         }
@@ -1019,6 +1104,7 @@ async fn scan_via_daemon(
                 false,
                 precision_first,
                 recall_first,
+                dispatch_candidates,
             )
             .await;
         }
