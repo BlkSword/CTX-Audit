@@ -284,7 +284,7 @@ fn re_array_decl() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(
-            r"^\s*(?:static\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:char|u_char|uint8_t|u8|wchar_t)\s+([A-Za-z_]\w*)\s*\[\s*([A-Za-z0-9_]+)\s*\]",
+            r"^\s*(?:static\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:char|u_char|uint8_t|u8|wchar_t)\s+([A-Za-z_]\w*)\s*\[\s*([^\]\r\n]+?)\s*\]",
         )
         .expect("array decl regex")
     })
@@ -997,7 +997,20 @@ fn scan_lenargs(rel: &str, lines: &[&str], out: &mut Vec<SignalChainCandidate>) 
             // 起效点：单轮写入 ⇒ 需要目的地容量锚点（本函数内可见的定长数组）
             let arrays = fixed_arrays_in_function(lines, i);
             let dest_raw = args.first().map(|s| s.trim().to_string()).unwrap_or_default();
-            let dest_base = dest_raw
+            // 目的地实参可能是带 C 强制转换的表达式（memcpy ((char *) passbuf, ...)）：
+            // 必须在切分基名前剥掉前导的 ( ... ) 组，否则基名会变成 (char，容量锚点永远解析不到。
+            let mut dest_expr = dest_raw.as_str();
+            while dest_expr.starts_with('(') {
+                match dest_expr.find(')') {
+                    Some(close) => {
+                        let rest = dest_expr[close + 1..].trim_start();
+                        if rest.is_empty() { break; }
+                        dest_expr = rest;
+                    }
+                    None => break,
+                }
+            }
+            let dest_base = dest_expr
                 .split(|c: char| c == '[' || c.is_whitespace())
                 .next()
                 .unwrap_or("")
