@@ -3,30 +3,92 @@
 把 CTX-Audit 接进 DSH 的 Web GUI：一个由插件注册的 **中心页面**、它的 **侧边栏入口**，以及 CTX-Audit 的
 **MCP 服务器行**；页面数据来自本 bundle host 半区的只读端点。
 
-## 为什么这样就够了（机制）
+## 快速开始：安装与使用
 
-- Harness 里的"页面"**不是 URL 路由**，而是布局 `main` 插槽（`kind: 'keyed'`）里的一个 keyed 条目，
-  由共享同一 panel id 的侧边栏条目选中（`ctx.layout.selectPanel(id)`）。
-- 客户端插件是**外挂包**：`package.json` 声明 `dsh.bundle.patch`（host 侧行）与 `dsh.client`（浏览器侧），
-  `exports["./client"]` 指向浏览器半区；host 把它组成 boot graph，经已挂载的 `/plugins/<id>/client.js`
-  路由提供，浏览器懒加载。
-- 页面不能是 host 自己出的 HTML 文档（iframe 拿不到主题 token 与 locale），所以**页面用 React 渲染在插槽里**，
-  数据用本插件自己注册的 **JSON 路由**提供（`ctx.webServer.register`；宿主只拥有无人认领的路径与 fallback 座位）。
-- 因此**不需要 fork `dsh-web-app` / `dsh-web-frontend`**。
+### 0. 前置条件
 
-## ⚠️ 必须记住的一条（实测踩到）
+- **DSH 可用**（`dsh --version`）。本插件**不修改 DSH 本体**：它只装进一个独立 profile，因此与你日常使用的 profile 并存、互不影响。
+- **已构建 CTX-Audit 二进制**：`cargo build --release`。面板的"引擎体检 / 工具清单"会真跑它；用 debug 版也可以，把 `CTX_AUDIT_MCP_CMD` 指过去即可。
+- **Windows 上用 Git Bash 跑脚本**：PATH 上的 `bash` 可能是 WSL 占位程序，会报 `execvpe(/bin/bash) failed`。
 
-bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
+### 1. 安装
 
-```yaml
-- insert:
-    - id: ctx-audit-web
-      name: '@local/ctx-audit-web'
+```bash
+# 非破坏性：已存在的 profile/skill 不会被覆盖
+DSH_HOME="$HOME/.dsh" bash harness/install.sh
+# 需要覆盖本仓库自带的 profile 与 web bundle 时：
+DSH_HOME="$HOME/.dsh" FORCE=1 bash harness/install.sh
 ```
 
-`dsh-client-modules` 是**扫描"已启用的 Loader 条目"**里的 `dsh.client` 来组成浏览器 boot graph 的——
-`package.json` 里写了 `dsh.client` 但**没有对应行**时，客户端半区**永远不会被提供**：页面不出现，
-**且日志里没有任何报错**。官方模板隐式包含这一行，很容易漏。
+也可用 launcher（会补齐 `CTX_AUDIT_MCP_CMD`，缺模板时自动调 `install.sh`）：
+
+```bash
+DSH_PROFILE=ctx-audit-web bash harness/bin/ctx-audit-dsh --port 3081
+```
+
+装完的布局：
+
+```
+$DSH_HOME/profiles/ctx-audit-web/
+├── package.json                     # dsh.profile.bundles = [dsh-base, dsh-web-app, @local/ctx-audit-web]
+├── cordis.patch.yml                 # 空（组合树由 bundles 决定）
+├── cordis.yml                       # []
+└── node_modules/@local/ctx-audit-web/
+    ├── package.json                 # dsh.bundle.patch（有序两项）+ dsh.client + exports["./client"]
+    ├── index.js                     # host 半区：注册 /ctx-audit/api/* 只读端点
+    ├── client.js                    # 浏览器半区：面板页面 + 工具卡
+    ├── cordis.patch.yml             # 指向本包的那一行（必需，见下文）+ ctx-audit mcp 行
+    ├── presets/ctx-audit.patch.yml  # agent 预设 + 默认预设指向
+    └── roadmap.json / locale/*.json
+```
+
+> bundle 必须落在 **profile 目录自己的 `node_modules`** 下：`@local/*` 只能从 profile 目录解析。
+
+### 2. 安装后自检（都不需要浏览器）
+
+```bash
+# a) patch 逐行校验：用已安装包的真实 Config schema 校验我们的每一行
+node harness/scripts/verify-ctx-audit-web.mjs --dsh <DSH 包目录>
+#    期望：33 rows checked: 25 ok, 8 skipped, 0 failed
+
+# b) 组件树探针：递归调用 client 半区整棵组件树（并像 React 一样校验元素类型）
+node harness/scripts/probe-ctx-audit-web.mjs
+#    期望：slots exercised: 14 · components visited: 15 · no component threw
+
+# c) 起服务后的端点自检
+curl -s http://127.0.0.1:3081/ctx-audit/api/status | head -c 200
+curl -s http://127.0.0.1:3081/ctx-audit/api/engine     # 真跑 MCP 握手：版本 + 工具清单
+```
+
+### 3. 启动
+
+```bash
+export CTX_AUDIT_MCP_CMD=/abs/path/to/ctx-audit    # 可选，默认取 PATH 上的 ctx-audit
+dsh --profile ctx-audit-web --port 3081 --no-open
+# 打开打印出的 http://127.0.0.1:3081/?token=...
+```
+
+面板只监听 `127.0.0.1`，且这些端点是**只读**的。
+
+### 4. 使用
+
+| 想做什么 | 怎么做 |
+|---|---|
+| 打开控制台 | 左侧栏点 **CTX-Audit**：KPI + MCP 配置 / MCP 引擎 / 日志 / 证据产物 / 路线图 / Agent 预设 卡片 |
+| **换项目根** | 右上角 **工作目录** → 输入任意已存在目录（`D:\`、`C:\Users\me`）→「切换根」；或点「子目录」逐级进入、「上一级」回溯、「默认根」复位 |
+| 选目标 | 弹层里点候选（● 有证据 / ○ 无证据 + 文件数·体积·日志·最近时间），或输入绝对路径「只看它」 |
+| 看目标的引擎体检 | 选好目标看 **项目体检** 卡：真调 `get_project_index`（扫描文件数、`analysis_backed`、主语言、构建上下文、耗时） |
+| 用审计预设 | 新建会话 → 预设选择器选 **CTX-Audit Auditor**（默认预设也已指向它） |
+| 看工具调用 | 会话里调用 `mcp__ctxaudit__*`，调用处渲染 CTX-Audit 卡片（徽标 + 工具名 + 完成/失败 + 行数 + 可展开） |
+| 刷新数据 | 页头「刷新」重拉全部端点；日志卡内可单独「重新读取」 |
+
+目标必须落在**当前根之内**（根本身也是合法目标）；根外路径、不存在的根、非目录一律 **400**。
+
+### 5. 卸载
+
+```bash
+rm -rf "$DSH_HOME/profiles/ctx-audit-web"     # 只删这个 profile，不动 DSH 本体
+```
 
 ## 文件
 
@@ -37,6 +99,31 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 | `index.js` | host 半区：`inject: ['webServer']` + 只读 JSON 端点 |
 | `client.js` | 浏览器半区：`main` 页面 + `sidebar.panellist` 入口，纯 ESM、零构建 |
 | `locale/{en,zh}.json` | 插件管理页/设置里显示的标题与描述（不激活插件即可读） |
+
+## 部署
+
+推荐（幂等、含自校验）：
+
+```bash
+DSH_HOME="$HOME/.dsh" ./harness/install.sh              # 已存在则跳过
+FORCE=1 DSH_HOME="$HOME/.dsh" ./harness/install.sh      # 覆盖本仓库自带副本
+```
+
+脚本会把 profile 与 bundle 复制到 `$DSH_HOME/profiles/ctx-audit-web{,/node_modules/@local/ctx-audit-web}`，
+然后用 `dsh --profile ctx-audit-web --dump-config` **校验两行是否都在组合树里**（失败会 WARN，不会假装成功）。
+
+启动：
+
+```bash
+CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-open
+```
+
+手动放置时注意：`Copy-Item`/`cp -R` 在目标目录已存在时会把源目录**嵌套**进去，要么先删目标，要么复制
+`<src>/*`（bash 用 `<src>/.`）。
+
+正式产品化应改用宿主安装通道（同时完成包安装与 bundle 选择，新装 bundle 可经 HMR 生效）：
+`dsh plugin --profile ctx-audit-web add <pkg>`，或 DSH 内的 `plugin_manager.install_bundle`——
+不要用 shell 复刻它的安装/选择步骤。
 
 ## 数据端点（控制面板的数据层）
 
@@ -135,30 +222,50 @@ node harness/scripts/verify-ctx-audit-web.mjs --dsh <path to @deepseek-ai/dsh>
 
 实测：**33 行 = 25 OK / 8 SKIP / 0 FAIL**；把 `prefix` 改成 `text` 后立刻 `FAIL ./presets/ctx-audit.patch.yml#preset-ctx-audit/plugins[0]  $.prefix missing required value`。
 
-## 部署
+## 目标选择：项目根 + 目标
 
-推荐（幂等、含自校验）：
+起初面板所有路径都相对**进程工作目录**（也就是引擎自己那个仓库），对"审计别的项目"完全无用。现在是两级作用域：
 
-```bash
-DSH_HOME="$HOME/.dsh" ./harness/install.sh              # 已存在则跳过
-FORCE=1 DSH_HOME="$HOME/.dsh" ./harness/install.sh      # 覆盖本仓库自带副本
+- **项目根（右上角「工作目录」控件）**：显示当前目录名（悬停见完整路径），**点击弹出选择面板**。根可换成**任意已存在目录**（如 `D:\` 或 `C:\Users\me`）→「切换根」；也可用「上一级」沿父目录回溯，或点「子目录」列表里的任意一项**逐级进入**；「默认根」回到配置的扫描根。点背景或按 Esc 关闭。
+- **目标**：弹层里点候选（● 有证据 / ○ 无证据 + 文件数·体积·日志·最近时间，当前项高亮），或输入绝对路径「只看它」；「回到根」清掉目标。目标必须在**当前根之内**（根本身也是合法目标），或等于引擎的工作目录——面板始终能回头看引擎自己的仓库，但不会变成任意目录列举器。
+- **跟随目标**：`/status`、`/logs`、`/project` 都接受 `?root=` 与 `?target=<绝对路径>`，产物与日志都读该目标的 `.ctx-audit/`。
+- **项目体检卡（实时 MCP）**：`/project` 以**该目标的目录为 cwd** 真的 spawn `ctx-audit mcp` 并调用 `get_project_index`（扫描文件数、`analysis_backed`、主语言、构建上下文、索引缓存、耗时）。
+- **边界判定用 `path.relative`，不要用字符串前缀**：根以分隔符结尾时（`D:\`）`根 + 分隔符` 会变成双分隔符，前缀比较会把合法目标误判为"越界"。根不存在 / 非目录 / 目标是根的祖先或跨盘 → **400**。
+- 该端点仅监听 `127.0.0.1`、只读、**不返回任何 CORS 头**（其他来源的网页读不到响应内容）。
+
+## 主题一致性（与宿主同一套表面）
+
+- 此前样式引用的 `--dsw-alias-bg-primary` / `bg-secondary` / `bg-tertiary` / `border-secondary` / `font-size-body` / `state-danger` / `font-family-mono` **在宿主里并不存在**（从 `dsh-web-frontend` 的 CSS 逐个查证：0 命中），于是每一处都落到硬编 fallback 色，表现为**背景不统一**。现全部改用真实 token：`--dsw-alias-bg-base` / `bg-layer-1..3`、`--dsw-alias-border-l1..l3`、`--dsw-alias-label-{primary,secondary,tertiary,error}`、`--dsw-alias-state-{success,error,warn}-primary`、`--dsw-alias-interactive-bg-hover`、`--dsw-alias-scrollbar-bg-l2`、`--dsw-radius-{xs,sm,lg}`、`--dsw-font-markdown-code-font-family`。
+- 去掉了 sticky 头部及其背景（那是滚动时压出的一道色带）；卡片与统计块统一使用宿主同一层表面色。
+
+## 路线图（实时 + 可编辑）
+
+上半部分是**实时推导**：每次刷新都从本仓的私有记录重算（缺陷登记已修/待修、台账在跑项、CHANGELOG 未发布条数）。下半部分是**计划文档**，并显示来源与"几天前更新"。编辑计划文件（默认 `harness-private/roadmap.json`，可用配置 `roadmapPath` 指定）即更新下半部分——不再是冻在 bundle 里的静态快照。
+
+## 为什么这样就够了（机制）
+
+- Harness 里的"页面"**不是 URL 路由**，而是布局 `main` 插槽（`kind: 'keyed'`）里的一个 keyed 条目，
+  由共享同一 panel id 的侧边栏条目选中（`ctx.layout.selectPanel(id)`）。
+- 客户端插件是**外挂包**：`package.json` 声明 `dsh.bundle.patch`（host 侧行）与 `dsh.client`（浏览器侧），
+  `exports["./client"]` 指向浏览器半区；host 把它组成 boot graph，经已挂载的 `/plugins/<id>/client.js`
+  路由提供，浏览器懒加载。
+- 页面不能是 host 自己出的 HTML 文档（iframe 拿不到主题 token 与 locale），所以**页面用 React 渲染在插槽里**，
+  数据用本插件自己注册的 **JSON 路由**提供（`ctx.webServer.register`；宿主只拥有无人认领的路径与 fallback 座位）。
+- 因此**不需要 fork `dsh-web-app` / `dsh-web-frontend`**。
+
+## ⚠️ 必须记住的一条（实测踩到）
+
+bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
+
+```yaml
+- insert:
+    - id: ctx-audit-web
+      name: '@local/ctx-audit-web'
 ```
 
-脚本会把 profile 与 bundle 复制到 `$DSH_HOME/profiles/ctx-audit-web{,/node_modules/@local/ctx-audit-web}`，
-然后用 `dsh --profile ctx-audit-web --dump-config` **校验两行是否都在组合树里**（失败会 WARN，不会假装成功）。
-
-启动：
-
-```bash
-CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-open
-```
-
-手动放置时注意：`Copy-Item`/`cp -R` 在目标目录已存在时会把源目录**嵌套**进去，要么先删目标，要么复制
-`<src>/*`（bash 用 `<src>/.`）。
-
-正式产品化应改用宿主安装通道（同时完成包安装与 bundle 选择，新装 bundle 可经 HMR 生效）：
-`dsh plugin --profile ctx-audit-web add <pkg>`，或 DSH 内的 `plugin_manager.install_bundle`——
-不要用 shell 复刻它的安装/选择步骤。
+`dsh-client-modules` 是**扫描"已启用的 Loader 条目"**里的 `dsh.client` 来组成浏览器 boot graph 的——
+`package.json` 里写了 `dsh.client` 但**没有对应行**时，客户端半区**永远不会被提供**：页面不出现，
+**且日志里没有任何报错**。官方模板隐式包含这一行，很容易漏。
 
 ## 已验证 / 未验证（实测口径）
 
@@ -206,32 +313,6 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
   `cordis_inspect_query Theme` 核对（写错只退化为 fallback，不破坏渲染）。
 - 插槽注册只能用**已挂载组合声明过的键**；发明全新插槽键需要由 owner 包声明（那是唯一需要 fork 的场景）。
 - `dsh.client.external` 目前为空：本插件没有非基线运行时依赖。
-
-
-## 目标选择与自动汇总（面板不再固定看一个目录）
-
-起初面板所有路径都相对**进程工作目录**（也就是引擎自己那个仓库），对"审计别的项目"完全无用。现在：
-
-- **页头选择器**：候选来自 `GET /ctx-audit/api/targets`；点一行即切换，默认仍是引擎工作目录（标 "默认"）。
-- **跟随目标**：`/status`、`/logs`、`/project` 都接受 `?target=<绝对路径>`，产物与日志都读该目标的 `.ctx-audit/`。
-- **目标汇总卡**：自动聚合所有候选——哪些已有证据、证据文件数 / 体积 / 日志数 / 最近时间，并给出总量。
-- **项目体检卡（实时 MCP）**：`GET /ctx-audit/api/project?target=…` 以**该目标的目录为 cwd** 真的 spawn `ctx-audit mcp` 并调用 `get_project_index`，返回真实体检数字。实测本仓库 **1104 文件 / ~180ms**。
-- **路径闸门**：`target` 必须落在允许根内（默认 = 工作目录 + `targetsRoot`，可由配置 `allowedRoots` 覆盖），否则 **400** 拒绝；不存在或不是目录同样拒绝——避免该端点退化成任意目录列举器。
-
-
-## 主题一致性、目标选择与路线图（2026-10-11 修订）
-
-- **主题 token 全部换成真实存在的名字**。此前样式引用的是 `--dsw-alias-bg-primary`/`bg-secondary`/`bg-tertiary`/`border-secondary`/`font-size-body`/`state-danger`/`font-family-mono`——这些 token **在宿主里不存在**（从 `dsh-web-frontend` 的 CSS 里逐个查证过），于是全部落到硬编 fallback 色，表现为**背景与宿主不统一**。现改用真 token：`--dsw-alias-bg-base`/`bg-layer-1..3`、`--dsw-alias-border-l1..l3`、`--dsw-alias-label-primary/secondary/tertiary/error`、`--dsw-alias-state-{success,error,warn}-primary`、`--dsw-alias-interactive-bg-hover`、`--dsw-alias-scrollbar-bg-l2`、`--dsw-radius-{xs,sm,lg}`、`--dsw-font-markdown-code-font-family`。同时**去掉了 sticky 头部与其背景**（那是滚动时的一道色带），卡片/统计块统一用宿主同一层表面色。
-- **工作目录控件（页头右上角）**：显示当前目标目录名（悬停见完整路径），**点击弹出选择面板**：当前完整路径、候选过滤框、可点列表（● 有证据 / ○ 无证据 + 文件数/体积/日志/最近时间，当前项高亮）、手动输入绝对路径、"回到默认"、扫描根与允许根。点背景或按 Esc 关闭；选择后立即切换并关闭。目标选择不再占用网格中的一张常驻卡片。
-- **路线图**：上半部分**实时推导**（每次刷新重算，来源为本仓私有记录），下半部分是**计划文档**并显示其来源与"几天前更新"，编辑计划文件即更新下半部分。
-
-
-### 两级作用域：项目根 + 目标
-
-- **项目根**可改：弹层里输入任意已存在目录（如 `D:\` 或 `C:\Users\me`）→「切换根」；也可用「上一级」沿父目录回溯，或点「子目录」列表里的任意一项**逐级进入**；`默认根` 回到配置的扫描根。
-- **目标**必须在当前根**之内**（根本身也是合法目标），或等于引擎的工作目录——这样面板始终能回头看引擎自己的仓库，但不会变成任意目录列举器。
-- **包含关系用 \`path.relative\` 判定**，不要用字符串前缀：根以分隔符结尾时（`D:\`）`根 + 分隔符` 会变成双分隔符，前缀比较会误判为"越界"。
-- 根不存在、不是目录、目标是根的祖先或跨盘 → **400**。
 
 ## 卸载
 

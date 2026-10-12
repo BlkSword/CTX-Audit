@@ -30,6 +30,23 @@ CTX_AUDIT_MCP_CMD=ctx-audit ./bin/ctx-audit-dsh "对 ./project 做安全审计"
 
 ## Web 定制面（`ctx-audit-web`）
 
+一键安装 + 启动（细节与全部用法见插件自己的 README）：
+
+```bash
+# 安装（非破坏性；FORCE=1 覆盖本仓库自带的 profile 与 web bundle）
+DSH_HOME="$HOME/.dsh" bash harness/install.sh
+
+# 安装后自检（无需浏览器）
+node harness/scripts/verify-ctx-audit-web.mjs --dsh <DSH 包目录>   # patch 逐行校验
+node harness/scripts/probe-ctx-audit-web.mjs                      # 组件树探针
+
+# 启动（也可用 launcher：DSH_PROFILE=ctx-audit-web bash harness/bin/ctx-audit-dsh）
+dsh --profile ctx-audit-web --port 3081 --no-open
+```
+
+完整步骤（前置条件 / 文件布局 / 面板用法 / 换项目根 / 预设 / 工具卡 / 卸载）见
+`harness/plugins/ctx-audit-web/README.md` 的「快速开始：安装与使用」。
+
 把 CTX-Audit 接进 DSH 的 Web GUI：插件注册的中心页面 + 侧边栏入口 + MCP 服务器行；页面数据来自该插件
 host 半区自己的只读 JSON 端点。**不需要 fork DSH，也不需要改前端**——这是"profile（有序 bundle 列表）"
 与"外挂客户端插件（`dsh.client` + `./client` 导出）"两个官方扩展点的组合。

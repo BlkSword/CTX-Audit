@@ -16,7 +16,7 @@ if [[ -f "$DSH_HOME/secrets.env" ]]; then
 fi
 
 # 首次使用时自动安装公共 profile/skill 模板（已有文件不会被覆盖）。
-if [[ ! -f "$DSH_HOME/profiles/audit/package.json" || ! -f "$DSH_HOME/profiles/audit-scout/package.json" || ! -f "$DSH_HOME/profiles/audit-sniper/package.json" ]]; then
+if [[ ! -f "$DSH_HOME/profiles/audit/package.json" || ! -f "$DSH_HOME/profiles/audit-scout/package.json" || ! -f "$DSH_HOME/profiles/audit-sniper/package.json" || ! -f "$DSH_HOME/profiles/ctx-audit-web/package.json" ]]; then
   echo "==> Installing CTX-Audit DSH templates into $DSH_HOME" >&2
   "$SCRIPT_DIR/../install.sh"
 fi
