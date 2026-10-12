@@ -110,6 +110,17 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 **预设行对插件管理只读**：落地后要改组成，只能重新发 bundle patch。
 
 ## 校验（`harness/scripts/verify-ctx-audit-web.mjs`）
+另有**组件树探针**（无第三方依赖，React 以最小桩替代）：
+
+```bash
+node harness/scripts/probe-ctx-audit-web.mjs            # 默认探测本插件的 client.js
+node harness/scripts/probe-ctx-audit-web.mjs --client <path>
+```
+
+它递归调用整棵组件树（空 props 的 loading 分支 + 已就绪数据分支），并且**桩会校验元素类型**：
+`h('某个中文字符串')` 这类"标签名非法"错误在真实 React 里是 `InvalidCharacterError`，桩同样会抛。
+退出码 1 = 有组件抛错并逐条打印。为什么必须有它：插槽的 error boundary 在**面板之上**，面板内部任何
+一处抛错都会让整页空白、且没有定位信息——探针把这类错误变成命令行里的一行。
 
 预设的行**在启动时不校验**：坏预设照样能起来，只会在**会话挂载**时报 `agent preset <id>: <原因>`（并标 `broken`、从选择器里消失）。所以"启动无报错"**不能**当判活依据（我们做过反向对照证实：把 persona 的 `prefix` 换成 `text`，启动日志依然干净）。
 
@@ -168,7 +179,7 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 | 工具卡接线 | bundle 内含 `tool.call.toolview`×13 注册与 `caw-trow` 样式；**实际渲染仍需会话内目视确认** |
 | 路线图实时性 | `/roadmap` → `derived` **3 项**（缺陷登记 已修 22 / 待修 9、台账在跑 405、CHANGELOG 未发布 247）每次请求重算；`items` 6 项来自计划文档并带 `ageDays` |
 | 工作目录控件 | bundle 含 `TargetControl`/`caw-pop`/`caw-backdrop`；点开弹层，Esc 与点背景均可关闭 |
-| 组件树探针 | 递归调用整棵组件树（含 `TargetControl`/`LogsCard`/`ProjectCard` 等 **11 个**组件）→ `no component threw`；此探针曾当场抓出"控件被插进 LogsCard、`targets is not defined`"的真实错误 |
+| 组件树探针（仓库内） | `node harness/scripts/probe-ctx-audit-web.mjs` → **14 插槽 / 15 组件 / no component threw**（exit 0）；加固前它精确复现过 `invalid element type`）|
 | 主题一致性 | bundle 内**虚构 token 0 处**；`bg-layer-1`/`border-l2`/`label-tertiary`/`interactive-bg-hover`/`radius-sm` 等真 token 分别命中 4/8/7/3/4 处 |
 | 目标选择 | 过滤框 + 可点列表 + 手动路径 + 回到默认；bundle 内含"过滤候选"/"手动输入绝对路径" |
 | 目标发现 | `/targets` 在 `D:\project` 发现 **8 个候选**（3 个带证据），证据优先排序 |

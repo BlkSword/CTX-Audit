@@ -849,7 +849,7 @@ window.__ModuleLoader__.load({
         h('div', { key: 'head', className: 'caw-head' }, [
           h('div', { key: 't' }, [
             h('h2', { key: 'h', className: 'caw-title' }, 'CTX-Audit'),
-            h('代码安全审计 · 审计控制台'),
+            h('p', { key: 'p', className: 'caw-sub' }, '代码安全审计 · 审计控制台'),
           ]),
           h('div', { key: 's', className: 'caw-spacer' }),
           h('div', { key: 'pills', className: 'caw-pills' }, pills),
@@ -910,8 +910,11 @@ window.__ModuleLoader__.load({
       inject: ['slots'],
       apply(ctx) {
 
+        // The slot boundary sits above the panel: wrapping the entry here means a
+        // crash anywhere inside the panel renders a failure line instead of a blank page.
+        const PanelEntry = (props) => h(CardBoundary, { label: 'CTX-Audit 面板' }, h(CtxAuditPanel, props));
         ctx.slots.inject('main', () =>
-          ctx.slots.register({ name: 'main', key: PANEL_ID }, CtxAuditPanel),
+          ctx.slots.register({ name: 'main', key: PANEL_ID }, PanelEntry),
         );
 
         // One keyed entry per ctx-audit MCP tool: `tool.call.toolview` dispatches
