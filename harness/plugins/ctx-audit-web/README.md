@@ -48,6 +48,7 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 | `/engine` | **真实 MCP 握手**（stdio：`initialize` → `initialized` → `tools/list`）：服务端名与版本、协议版本、**工具清单与描述**。带 6s 超时、5 分钟缓存；`?refresh=1` 强制重探 |
 | `/logs?file=<name>&lines=N` | 指定 `.log` 的**末尾 N 行**（≤500 行、只读文件尾 ≤256KB）；`file` 只能是枚举出来的名字，构造值拿不到目录外的文件 |
 | `/roadmap` | 随本 bundle 提交的 `roadmap.json`，原样返回 |
+| `/presets` | **agent 预设名册**：host 侧用可选的 `ctx.get('agentPresets')` 读取（两个方法都是 `Promise`，已 await），返回 `{available, presets:[{id,name,description,isDefault,broken}]}` |
 
 只读、有界、**除日志尾读外不返回任何文件内容**；Web server 默认只绑回环（启动器拒绝 `--host 0.0.0.0`）。
 `commandFound` 为 `null` 表示命令是裸名（经 PATH 解析，此处无法判定），面板据此显示"经 PATH 解析"而不是猜。
@@ -160,7 +161,9 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 | 安装脚本 | 干净 `DSH_HOME` 跑通并自校验通过（`verified: … composes with both rows`） |
 | 语法/清单 | `node --check client.js\|index.js` 通过；`package.json` 与 `locale/*.json` 均为合法 UTF-8 JSON（无 BOM） |
 | 视觉渲染 | 已由使用者在真实浏览器中确认页面出现（agent 不另开浏览器截图，见官方 verification 指南） |
-| 工具卡 / 预设卡接线 | bundle 内含 `tool.call.toolview`×4、`agentPresets`×2 与 `caw-trow`/`caw-preset` 样式；**实际渲染需会话内目视确认**（见"已知边界"） |
+| 预设名册（机器可验证） | `GET /ctx-audit/api/presets` → `available=true`、5 条；`ctx-audit` **`default=true`、`broken` 空** ⇒ 预设已注册、是部署默认、挂载未失败 |
+| 卡片健壮性 | 每张卡各自包 `CardBoundary`；已用控制台报出的真实崩溃（`cannot get property "remote" without inject`）反证过"单卡崩溃不再带走整页" |
+| 工具卡接线 | bundle 内含 `tool.call.toolview`×13 注册与 `caw-trow` 样式；**实际渲染仍需会话内目视确认** |
 
 ## 已知边界与下一步
 
@@ -169,9 +172,9 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
   settled 阶段的 `block` 就是 `ToolResultNode`（`content: ContentBlock[]`、`isError`、`error`、`call.argsRaw`）。
   因此本插件为 `mcp__ctxaudit__<13 个工具名>` **各注册一个 key**，渲染"CTX-Audit 徽标 + 工具短名 + 完成/失败 + 行数 + 可展开结果"的卡片。
   注册包在 `try/catch` 内、失败只 `console.warn`：宿主自己的工具卡片不会被带崩（未知 key 本来就不渲染）。
-- **面板新增"Agent 预设"只读名册卡**：走**宿主自己的 remote 面** `ctx.remote.agentPresets.list()`
-  （行字段 `{id, isDefault, name, description, broken}`），不走 HTTP；服务缺失或报错都渲染成状态、不抛错。
-  这张卡同时是"预设是否 `broken` / 哪个是默认"的**可视化判活口径**。
+- **"Agent 预设"只读名册卡（走我们自己的 `/presets` 端点，不碰 `ctx.remote`）**：客户端内核**拒绝把未在 `inject` 里声明的服务交给插件，且属性访问本身就抛**（`cannot get property "remote" without inject`）——"防御性守卫"在 Cordis 作用域代理下不成立，第一版因此把**整个面板打成空白**。故改为：host 侧用**可选**的 `ctx.get('agentPresets')` 读注册表（`remoteExportList()`/`list()` 都是 async，必须 await），客户端走与其它卡片同一条 HTTP 路径。
+  实测名册：`standard/ptc/minimal/cordis`（`default=false`）+ **`ctx-audit`（`default=true`、`broken` 空）** ⇒ 预设**已注册、是部署默认、挂载未失败**；这也是"预设是否 `broken`"的**机器可验证口径**。
+- **逐卡 error boundary（`CardBoundary`）**：插槽的边界在**面板之上**，单卡渲染异常会带走整页（上面那次空白就是这样来的）。现在每张卡各自包裹，单卡失败只显示"（渲染失败）+ 原因"，其余照常。
 - 页面数据目前**不经会话**：`main` 的非 `conversation` 键没有 Session binding。要把引擎证据（findings /
   切片 / 污点链）接进来，应走 host 投影（`wire.view`）或经 `dsh-api-remotes`，属独立一步。
 - 可见文案暂未走 Client locale 服务；主题 token 用 `var(--dsw-alias-*, <fallback>)` 写法，token 名未经

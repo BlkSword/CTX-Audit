@@ -477,56 +477,75 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The preset roster, read through the Host's own remote surface rather than
-     * through HTTP: the registry owns this list, and a plugin's browser half
-     * reaches host services as `ctx.remote.<service>.<method>`. Every failure
-     * becomes a rendered state instead of a throw, because this card must never
-     * take the panel down with it.
+     * Keeps one card's failure from blanking the whole panel.
+     *
+     * The slot machinery has its own boundary, but it sits above the panel: an
+     * uncaught render error inside a single card would take every other card
+     * down with it, which is exactly what happened the first time this panel
+     * read a host service it had not declared.
      */
-    function useRemotePresets(ctx) {
-      const [state, setState] = useState({ phase: 'loading' });
-      useEffect(() => {
-        let alive = true;
-        const service = ctx.remote && ctx.remote.agentPresets;
-        if (!service || typeof service.list !== 'function') {
-          setState({ phase: 'unavailable' });
-          return () => {
-            alive = false;
-          };
+    class CardBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+
+      componentDidCatch(error) {
+        console.warn('[ctx-audit-web] card crashed:', this.props.label, error);
+      }
+
+      render() {
+        if (this.state.error) {
+          return h(
+            Card,
+            { title: `${this.props.label}（渲染失败）` },
+            h(ErrorLine, { message: String((this.state.error && this.state.error.message) || this.state.error) }),
+          );
         }
-        Promise.resolve(service.list())
-          .then((result) => {
-            if (!alive) return;
-            const rows = Array.isArray(result) ? result : (result && result.presets) || [];
-            setState({ phase: 'ready', rows });
-          })
-          .catch((error) => {
-            if (alive) setState({ phase: 'error', message: String((error && error.message) || error) });
-          });
-        return () => {
-          alive = false;
-        };
-      }, [ctx]);
-      return state;
+        return this.props.children;
+      }
     }
 
+    /**
+     * Preset roster card.
+     *
+     * The roster comes from the host half's own endpoint, NOT from `ctx.remote`:
+     * the client kernel refuses to hand a plugin a service it did not declare
+     * ("cannot get property \"remote\" without inject"), and that property access
+     * throws by itself, so a defensive `ctx.remote && ...` guard cannot save the
+     * render. Going through our own read-only endpoint also keeps this card
+     * verifiable with curl.
+     */
     function PresetsCard({ presets }) {
       let body;
-      if (!presets || presets.phase === 'loading') body = h(Skeleton, { rows: 5 });
-      else if (presets.phase === 'unavailable') body = h(Empty, null, '宿主未提供 agentPresets 服务');
+      if (presets.phase === 'loading') body = h(Skeleton, { rows: 5 });
       else if (presets.phase === 'error') body = h(ErrorLine, { message: `读取失败：${presets.message}` });
-      else if (presets.rows.length === 0) body = h(Empty, null, '名册为空');
       else {
-        body = presets.rows.map((row, i) =>
-          h('div', { key: row.id || i, className: 'caw-preset' }, [
-            h('code', { key: 'id', className: 'caw-code' }, row.id || '?'),
-            row.name ? h('span', { key: 'n' }, row.name) : null,
-            row.isDefault ? h('span', { key: 'd', className: 'caw-ok' }, '默认') : null,
-            row.broken ? h('span', { key: 'b', className: 'caw-bad' }, `损坏：${row.broken}`) : null,
-            h('span', { key: 's', className: 'caw-spacer' }),
-            row.description ? h('span', { key: 'x', className: 'caw-muted' }, row.description) : null,
-          ]),
-        );
+        const d = presets.data || {};
+        if (!d.available) {
+          body = h(Empty, null, `宿主未提供 agentPresets 服务${d.reason ? `（${d.reason}）` : ''}`);
+        } else if (d.error) {
+          body = h(Empty, null, `读取失败：${d.error}`);
+        } else {
+          const rows = d.presets || [];
+          if (rows.length === 0) body = h(Empty, null, '名册为空');
+          else {
+            body = rows.map((row, i) =>
+              h('div', { key: row.id || i, className: 'caw-preset' }, [
+                h('code', { key: 'id', className: 'caw-code' }, row.id || '?'),
+                row.name ? h('span', { key: 'n' }, row.name) : null,
+                row.isDefault ? h('span', { key: 'd', className: 'caw-ok' }, '默认') : null,
+                row.broken ? h('span', { key: 'b', className: 'caw-bad' }, `损坏：${row.broken}`) : null,
+                h('span', { key: 's', className: 'caw-spacer' }),
+                row.description ? h('span', { key: 'x', className: 'caw-muted' }, row.description) : null,
+              ]),
+            );
+          }
+        }
       }
       return h(
         Card,
@@ -535,7 +554,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function CtxAuditPanel({ presets }) {
+    function CtxAuditPanel() {
       const [nonce, setNonce] = useState(0);
       const [engineNonce, setEngineNonce] = useState(0);
       const [logFile, setLogFile] = useState(null);
@@ -545,6 +564,7 @@ window.__ModuleLoader__.load({
       const status = useResource(`${API}/status`, [nonce]);
       const engine = useResource(`${API}/engine${engineNonce ? '?refresh=1' : ''}`, [engineNonce]);
       const roadmap = useResource(`${API}/roadmap`, [nonce]);
+      const presets = useResource(`${API}/presets`, [nonce]);
       const logs = useResource(
         `${API}/logs?lines=${encodeURIComponent(logLines)}${logFile ? `&file=${encodeURIComponent(logFile)}` : ''}`,
         [logFile, logLines, logNonce, nonce],
@@ -619,20 +639,14 @@ window.__ModuleLoader__.load({
             ),
           ),
           h('div', { key: 'grid', className: 'caw-grid' }, [
-            h(EngineCard, { key: 'engine', engine, onReprobe: () => setEngineNonce((n) => n + 1) }),
-            h(StatusCard, { key: 'status', status }),
-            h(LogsCard, {
-              key: 'logs',
-              logs,
-              file: logFile,
-              lines: logLines,
-              onFile: setLogFile,
-              onLines: setLogLines,
-              onReload: () => setLogNonce((n) => n + 1),
-            }),
-            h(ArtifactsCard, { key: 'artifacts', status }),
-            h(RoadmapCard, { key: 'roadmap', roadmap }),
-            h(PresetsCard, { key: 'presets', presets }),
+            h(CardBoundary, { key: 'engine', label: 'MCP 引擎' },
+              h(EngineCard, { engine, onReprobe: () => setEngineNonce((n) => n + 1) })),
+            h(CardBoundary, { key: 'status', label: 'MCP 配置' }, h(StatusCard, { status })),
+            h(CardBoundary, { key: 'logs', label: '日志' },
+              h(LogsCard, { logs, file: logFile, lines: logLines, onFile: setLogFile, onLines: setLogLines, onReload: () => setLogNonce((n) => n + 1) })),
+            h(CardBoundary, { key: 'artifacts', label: '证据产物' }, h(ArtifactsCard, { status })),
+            h(CardBoundary, { key: 'roadmap', label: '路线图' }, h(RoadmapCard, { roadmap })),
+            h(CardBoundary, { key: 'presets', label: 'Agent 预设' }, h(PresetsCard, { presets })),
           ]),
           h('div', { key: 'foot', className: 'caw-foot' }, [
             s && s.workspace ? h('span', { key: 'w' }, `工作区 ${s.workspace}`) : null,
@@ -665,12 +679,9 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
-        // The panel reads the preset roster through the plugin's own context.
-        const CtxAuditPanelWithContext = (props) =>
-          h(CtxAuditPanel, { ...props, presets: useRemotePresets(ctx) });
 
         ctx.slots.inject('main', () =>
-          ctx.slots.register({ name: 'main', key: PANEL_ID }, CtxAuditPanelWithContext),
+          ctx.slots.register({ name: 'main', key: PANEL_ID }, CtxAuditPanel),
         );
 
         // One keyed entry per ctx-audit MCP tool: `tool.call.toolview` dispatches

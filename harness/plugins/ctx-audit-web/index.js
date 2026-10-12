@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Host half of the CTX-Audit web surface.
  *
  * Jobs:
@@ -341,6 +341,42 @@ export function apply(ctx, config = {}) {
             sendJson(res, 200, { files, file: name, ...tail, maxLines });
           } catch (error) {
             sendJson(res, 200, { files, file: name, lines: [], truncated: false, error: `read_failed: ${String((error && error.message) || error)}` });
+          }
+          return;
+        }
+
+        if (route === `${API_PREFIX}/presets`) {
+          // The preset registry is a HOST service. Read it optionally instead of
+          // declaring it in `inject`, so this plugin still activates in a profile
+          // that has no registry row (in that case the card says so).
+          let registry = null;
+          try {
+            registry = ctx.get('agentPresets');
+          } catch (error) {
+            registry = null;
+          }
+          if (!registry) {
+            sendJson(res, 200, { available: false, reason: 'agentPresets service is not mounted' });
+            return;
+          }
+          try {
+            const rows =
+              typeof registry.remoteExportList === 'function'
+                ? await registry.remoteExportList()
+                : await registry.list();
+            const list = Array.isArray(rows) ? rows : (rows && rows.presets) || [];
+            sendJson(res, 200, {
+              available: true,
+              presets: list.map((row) => ({
+                id: row.id,
+                name: row.name ?? null,
+                description: row.description ?? null,
+                isDefault: Boolean(row.isDefault),
+                broken: row.broken ?? null,
+              })),
+            });
+          } catch (error) {
+            sendJson(res, 200, { available: true, error: String((error && error.message) || error) });
           }
           return;
         }
