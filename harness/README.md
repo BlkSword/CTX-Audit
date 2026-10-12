@@ -46,6 +46,7 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 卡片含 **MCP 配置**、**MCP 引擎（实时 stdio 握手：服务端与协议版本、13 个工具及描述）**、
 **日志**（从工作区 `.ctx-audit/*.log` 尾部读，可选文件与行数）、**证据产物**（有界清单 + 体积 + 相对时间）、
 **路线图**（随仓库提交的 `roadmap.json`）。数据全部来自插件 host 半区的只读端点。
+页头还有**目标选择器**：候选由 `/targets` 自动发现（带 `.ctx-audit/` 证据或看起来是项目的目录），选中后产物 / 日志 / **项目体检**（以该目标为 cwd 实时调用 MCP `get_project_index`）都跟随它；目标路径受允许根约束（越权返回 400）。
 
 另有 **Agent 预设**只读名册卡（走宿主自己的 remote 面 `ctx.remote.agentPresets`，显示 id / 默认 / `broken`），
 并为 13 个 `mcp__ctxaudit__*` 工具各注册一张 `tool.call.toolview` 卡片（按工具名 keyed，注册失败只告警）。

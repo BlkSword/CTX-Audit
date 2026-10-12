@@ -96,6 +96,7 @@ window.__ModuleLoader__.load({
 .caw-badge{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.35));border-radius:999px;padding:1px 7px;font-size:10.5px;letter-spacing:.3px;opacity:.85}
 .caw-preset{display:flex;align-items:baseline;gap:8px;padding:5px 2px;border-bottom:1px dashed var(--dsw-alias-border-secondary,rgba(128,128,128,.18))}
 .caw-preset:last-child{border-bottom:none}
+.caw-picker{display:flex;align-items:center;gap:6px;max-width:420px}
 `;
 
     async function getJson(url, signal) {
@@ -554,6 +555,141 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** Marks where a card's numbers come from, so nothing on this panel is ambiguous. */
+    function SourceBadge({ kind }) {
+      const label = kind === 'live' ? '实时' : kind === 'local' ? '本地文件' : '静态文档';
+      return h('span', { className: `caw-badge ${kind === 'live' ? 'caw-ok' : 'caw-muted'}` }, label);
+    }
+
+    /** Target selector: discovered candidates, with the engine's own directory as the default. */
+    function TargetPicker({ targets, target, onSelect }) {
+      const d = targets.data || {};
+      const rows = d.targets || [];
+      const current = target || d.workspace || '';
+      const short = current.length > 44 ? `…${current.slice(-42)}` : current;
+      return h('div', { className: 'caw-picker' }, [
+        h(
+          'select',
+          {
+            key: 's',
+            className: 'caw-sel',
+            value: target,
+            onChange: (event) => onSelect(event.target.value),
+            title: '选择审计目标；带 ● 的已有证据目录',
+          },
+          [
+            h('option', { key: '__default', value: '' }, '默认（引擎工作目录）'),
+            ...rows.map((row) =>
+              h('option', { key: row.path, value: row.path }, `${row.hasAudit ? '● ' : '○ '}${row.name}`),
+            ),
+          ],
+        ),
+        h('span', { key: 'c', className: 'caw-muted', title: current }, short),
+      ]);
+    }
+
+    /** Live engine readout of the selected target: one real MCP `get_project_index`. */
+    function ProjectCard({ project, target }) {
+      let body;
+      if (project.phase === 'loading') body = h(Skeleton, { rows: 5 });
+      else if (project.phase === 'error') body = h(ErrorLine, { message: `读取失败：${project.message}` });
+      else {
+        const d = project.data || {};
+        if (!d.ok) {
+          body = [
+            h(Row, { key: 'st', label: '状态' }, h('span', { className: 'caw-bad' }, d.error || '探测失败')),
+            d.stderr ? h('div', { key: 'e', className: 'caw-err caw-code' }, String(d.stderr).slice(0, 300)) : null,
+          ];
+        } else {
+          body = [
+            h(Row, { key: 'f', label: '扫描文件' }, `${d.filesScanned ?? '—'}${d.ms ? ` · ${d.ms}ms` : ''}`),
+            h(
+              Row,
+              { key: 'ab', label: '语义分析' },
+              d.analysisBacked === true
+                ? h('span', { className: 'caw-ok' }, 'analysis_backed')
+                : h('span', { className: 'caw-muted' }, '仅启发式 / 未就绪'),
+            ),
+            h(Row, { key: 'p', label: '主语言' }, (d.primaryLanguages || []).join(', ') || '—'),
+            h(Row, { key: 'h', label: '仅启发式' }, (d.heuristicLanguages || []).join(', ') || '—'),
+            h(
+              Row,
+              { key: 'b', label: '构建上下文' },
+              h(
+                'span',
+                {
+                  className: d.buildConfidence === 'derived_from_build_artifacts' ? 'caw-ok' : 'caw-muted',
+                  title: d.buildNote || '',
+                },
+                d.buildConfidence || 'unknown',
+              ),
+            ),
+            h(Row, { key: 'c', label: '索引缓存' }, d.cacheHitSource || '—'),
+            h(
+              'div',
+              { key: 'src', className: 'caw-muted', style: { marginTop: '6px' } },
+              `cwd = ${d.target || target || '（默认：引擎工作目录）'}${d.checkedAt ? ` · ${fmtAgo(d.checkedAt)}` : ''}`,
+            ),
+          ];
+        }
+      }
+      return h(Card, { title: '项目体检（真实 MCP 调用）', extra: h(SourceBadge, { key: 's', kind: 'live' }) }, body);
+    }
+
+    /** Auto-aggregation: every candidate under the scan root, with its evidence footprint. */
+    function TargetsCard({ targets, target, onSelect }) {
+      let body;
+      if (targets.phase === 'loading') body = h(Skeleton, { rows: 6 });
+      else if (targets.phase === 'error') body = h(ErrorLine, { message: `读取失败：${targets.message}` });
+      else {
+        const d = targets.data || {};
+        const rows = d.targets || [];
+        const withEvidence = rows.filter((row) => row.hasAudit);
+        const totalBytes = rows.reduce((sum, row) => sum + (row.bytes || 0), 0);
+        body = [
+          h(Row, { key: 'root', label: '扫描根' }, h('code', { className: 'caw-code' }, d.root || '—')),
+          h(
+            Row,
+            { key: 'sum', label: '汇总' },
+            `候选 ${rows.length} · 已有证据 ${withEvidence.length} · 证据体积 ${fmtBytes(totalBytes)}`,
+          ),
+          h(
+            'div',
+            { key: 'list', className: 'caw-scroll', style: { marginTop: '6px' } },
+            rows.map((row) =>
+              h(
+                'div',
+                {
+                  key: row.path,
+                  className: 'caw-item',
+                  title: row.path,
+                  style: { cursor: 'pointer' },
+                  onClick: () => onSelect(row.path),
+                },
+                [
+                  h('span', { key: 'n', className: 'caw-name' }, `${row.hasAudit ? '● ' : '○ '}${row.name}`),
+                  h(
+                    'span',
+                    { key: 'm', className: 'caw-muted' },
+                    row.hasAudit
+                      ? `${row.files} 文件 · ${fmtBytes(row.bytes)}${row.logs ? ` · ${row.logs} 日志` : ''}`
+                      : '无证据目录',
+                  ),
+                  h('span', { key: 't', className: 'caw-muted' }, row.newest ? fmtAgo(row.newest) : ''),
+                ],
+              ),
+            ),
+          ),
+          h(
+            'div',
+            { key: 'src', className: 'caw-muted', style: { marginTop: '6px' } },
+            `点一行即可切换目标 · 允许根：${(d.allowedRoots || []).join(' · ')}`,
+          ),
+        ];
+      }
+      return h(Card, { title: '目标汇总（自动发现）', extra: h(SourceBadge, { key: 's', kind: 'local' }) }, body);
+    }
+
     function CtxAuditPanel() {
       const [nonce, setNonce] = useState(0);
       const [engineNonce, setEngineNonce] = useState(0);
@@ -561,13 +697,19 @@ window.__ModuleLoader__.load({
       const [logLines, setLogLines] = useState('200');
       const [logNonce, setLogNonce] = useState(0);
 
-      const status = useResource(`${API}/status`, [nonce]);
+      const [target, setTarget] = useState('');
+      // Every target-scoped read carries the selection, so the panel follows the
+      // chosen project instead of whichever directory the engine was started in.
+      const targetQuery = target ? `?target=${encodeURIComponent(target)}` : '';
+      const targets = useResource(`${API}/targets`, [nonce]);
+      const project = useResource(`${API}/project${targetQuery}`, [nonce, target]);
+      const status = useResource(`${API}/status${targetQuery}`, [nonce, target]);
       const engine = useResource(`${API}/engine${engineNonce ? '?refresh=1' : ''}`, [engineNonce]);
       const roadmap = useResource(`${API}/roadmap`, [nonce]);
       const presets = useResource(`${API}/presets`, [nonce]);
       const logs = useResource(
-        `${API}/logs?lines=${encodeURIComponent(logLines)}${logFile ? `&file=${encodeURIComponent(logFile)}` : ''}`,
-        [logFile, logLines, logNonce, nonce],
+        `${API}/logs?lines=${encodeURIComponent(logLines)}${logFile ? `&file=${encodeURIComponent(logFile)}` : ''}${target ? `&target=${encodeURIComponent(target)}` : ''}`,
+        [logFile, logLines, logNonce, nonce, target],
       );
 
       const refreshAll = useCallback(() => {
@@ -602,7 +744,7 @@ window.__ModuleLoader__.load({
           if (e.ok) list.push(h(Pill, { key: 'tools' }, `${e.toolCount} 工具`));
         }
         return list;
-      }, [s, e]);
+      }, [s, e, project]);
 
       const stats = useMemo(() => {
         const counts = (s && s.counts) || null;
@@ -611,6 +753,7 @@ window.__ModuleLoader__.load({
           { label: '证据产物', value: counts ? counts.files + counts.dirs : '—' },
           { label: '证据体积', value: counts ? fmtBytes(counts.bytes) : '—' },
           { label: '日志文件', value: s && s.logs ? s.logs.files.length : '—' },
+          { label: '目标文件', value: project.phase === 'ready' && project.data.ok ? project.data.filesScanned : '—' },
         ];
       }, [s, e]);
 
@@ -625,6 +768,7 @@ window.__ModuleLoader__.load({
           ]),
           h('div', { key: 's', className: 'caw-spacer' }),
           h('div', { key: 'pills', className: 'caw-pills' }, pills),
+          h(TargetPicker, { key: 't', targets, target, onSelect: setTarget }),
           h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: refreshAll, disabled: busy }, busy ? '刷新中…' : '刷新'),
         ]),
         h('div', { key: 'body', className: 'caw-body' }, [
@@ -647,6 +791,8 @@ window.__ModuleLoader__.load({
             h(CardBoundary, { key: 'artifacts', label: '证据产物' }, h(ArtifactsCard, { status })),
             h(CardBoundary, { key: 'roadmap', label: '路线图' }, h(RoadmapCard, { roadmap })),
             h(CardBoundary, { key: 'presets', label: 'Agent 预设' }, h(PresetsCard, { presets })),
+            h(CardBoundary, { key: 'project', label: '项目体检' }, h(ProjectCard, { project, target })),
+            h(CardBoundary, { key: 'targets', label: '目标汇总' }, h(TargetsCard, { targets, target, onSelect: setTarget })),
           ]),
           h('div', { key: 'foot', className: 'caw-foot' }, [
             s && s.workspace ? h('span', { key: 'w' }, `工作区 ${s.workspace}`) : null,

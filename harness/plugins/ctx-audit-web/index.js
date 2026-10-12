@@ -25,7 +25,7 @@
  */
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -243,12 +243,278 @@ function probeEngine(command, cwd, timeoutMs) {
   });
 }
 
+/** Directory names never worth walking when looking for targets. */
+const TARGET_SKIP_DIRS = new Set(['node_modules', '.git', 'target', 'dist', 'build', 'out', 'vendor']);
+
+/** Markers that make a directory look like a project worth auditing. */
+const PROJECT_MARKERS = [
+  '.git',
+  'package.json',
+  'Cargo.toml',
+  'go.mod',
+  'pom.xml',
+  'build.gradle',
+  'pyproject.toml',
+  'setup.py',
+  'composer.json',
+  'CMakeLists.txt',
+];
+
+/** The engine answers tool calls with a one-line summary followed by the JSON payload. */
+function parseToolPayload(text) {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  try {
+    return JSON.parse(text.slice(start));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Discover candidate targets under `root`: a directory counts when it carries a
+ * `.ctx-audit/` evidence directory or looks like a project. Evidence counts are
+ * computed only where evidence exists, so a directory full of sources cannot make
+ * this walk expensive.
+ */
+function discoverTargets(root, maxEntries) {
+  const found = [];
+  const visit = (dir, depth) => {
+    if (found.length >= maxEntries) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (found.length >= maxEntries) return;
+      if (!entry.isDirectory() || TARGET_SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+      const path = join(dir, entry.name);
+      let hasAudit = false;
+      let files = 0;
+      let bytes = 0;
+      let logs = 0;
+      let newest = null;
+      const auditDir = join(path, '.ctx-audit');
+      try {
+        hasAudit = statSync(auditDir).isDirectory();
+      } catch {
+        hasAudit = false;
+      }
+      if (hasAudit) {
+        try {
+          for (const item of readdirSync(auditDir, { withFileTypes: true })) {
+            if (!item.isFile()) continue;
+            files += 1;
+            try {
+              const stat = statSync(join(auditDir, item.name));
+              bytes += stat.size;
+              const stamp = stat.mtime.toISOString();
+              if (!newest || stamp > newest) newest = stamp;
+              if (item.name.toLowerCase().endsWith('.log')) logs += 1;
+            } catch {
+              /* unreadable entry: keep the totals gathered so far */
+            }
+          }
+        } catch {
+          /* raced with a removal */
+        }
+      }
+      const isProject = PROJECT_MARKERS.some((marker) => existsSync(join(path, marker)));
+      if (hasAudit || isProject) {
+        found.push({ name: entry.name, path, hasAudit, isProject, files, bytes, logs, newest });
+      }
+      if (depth < 2) visit(path, depth + 1);
+    }
+  };
+  visit(root, 1);
+  return found;
+}
+
+/**
+ * One MCP handshake plus a single `tools/call` of `get_project_index`, run with
+ * `cwd` set to the selected target so the engine answers about THAT project.
+ *
+ * Kept apart from the handshake-only probe on purpose: a slow index build must
+ * never cost us the tool catalogue.
+ */
+function probeProject(command, cwd, timeoutMs) {
+  return new Promise((resolveProbe) => {
+    const started = Date.now();
+    let child;
+    try {
+      child = spawn(command, ['mcp'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    } catch (error) {
+      resolveProbe({ ok: false, error: `spawn_failed: ${String((error && error.message) || error)}` });
+      return;
+    }
+
+    let settled = false;
+    let buffer = '';
+    let stderr = '';
+    const timeline = {};
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+      resolveProbe({ ...result, ms: Date.now() - started, timeline });
+    };
+
+    const timer = setTimeout(() => finish({ ok: false, error: 'timeout', stderr: stderr.trim().slice(0, 400) }), timeoutMs);
+
+    const write = (payload) => {
+      try {
+        child.stdin.write(`${JSON.stringify(payload)}\n`);
+      } catch {
+        /* the exit handler reports it */
+      }
+    };
+
+    child.on('error', (error) => finish({ ok: false, error: `spawn_error: ${String(error.message || error)}` }));
+    child.on('exit', (code) => finish({ ok: false, error: `exited_early: ${code}`, stderr: stderr.trim().slice(0, 400) }));
+
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      if (stderr.length < 2000) stderr += chunk;
+    });
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      let index = buffer.indexOf('\n');
+      while (index >= 0) {
+        const line = buffer.slice(0, index).trim();
+        buffer = buffer.slice(index + 1);
+        index = buffer.indexOf('\n');
+        if (!line) continue;
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message.id === 1 && message.result) {
+          timeline.initialize = Date.now() - started;
+          write({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+          write({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_project_index', arguments: {} } });
+        } else if (message.id === 1 && message.error) {
+          finish({ ok: false, error: `initialize_error: ${JSON.stringify(message.error)}` });
+        } else if (message.id === 2) {
+          timeline.tool = Date.now() - started;
+          if (message.error) {
+            finish({ ok: false, error: `tool_error: ${JSON.stringify(message.error)}` });
+            return;
+          }
+          const text = ((message.result && message.result.content) || [])
+            .map((block) => (block && typeof block.text === 'string' ? block.text : ''))
+            .join('\n');
+          const summary = (text.match(/get_project_index:\s*(\d+)\s*files/i) || [])[1];
+          const payload = parseToolPayload(text);
+          const data = payload && payload.data ? payload.data : payload;
+          const capabilities = (data && data.capabilities) || {};
+          const context = (data && data.build_context) || {};
+          finish({
+            ok: true,
+            isError: Boolean(message.result && message.result.isError),
+            filesScanned: summary ? Number(summary) : null,
+            analysisBacked: capabilities.analysis_backed ?? null,
+            primaryLanguages: capabilities.present_primary ?? null,
+            heuristicLanguages: capabilities.heuristic_only_present ?? null,
+            buildConfidence: context.confidence ?? null,
+            buildNote: context.note ?? null,
+            cacheHitSource: (data && data.cache && data.cache.hit_source) || null,
+            indexBuildId: (data && data.build_id) || null,
+            payloadAvailable: Boolean(data),
+          });
+        }
+      }
+    });
+
+    write({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'ctx-audit-web', version: '0.3.0' },
+      },
+    });
+  });
+}
+
+
+const PROJECT_TIMEOUT_MS = 30000;
+
 export function apply(ctx, config = {}) {
   const workspace = resolve(config.workspace ?? process.cwd());
   const artifactsDir = join(workspace, '.ctx-audit');
   const mcpCommand = config.mcpCommand ?? 'ctx-audit';
   const mcpCommandAbsolute = isAbsolute(mcpCommand);
   const mcpCommandFound = mcpCommandAbsolute ? existsSync(mcpCommand) : null;
+  // ── target selection ──────────────────────────────────────────────────────
+  // Everything path-based on this panel is relative to the SELECTED target, not
+  // to the process working directory: pointing a control panel at the engine's
+  // own checkout is never what a user means.
+  const targetsRoot = resolve(config.targetsRoot ?? dirname(workspace));
+  const allowedRoots = (Array.isArray(config.allowedRoots) && config.allowedRoots.length
+    ? config.allowedRoots
+    : [workspace, targetsRoot]
+  ).map((root) => resolve(root));
+
+  /** Resolve and validate `?target=`; an invalid or out-of-root path is refused. */
+  const selectTarget = (url) => {
+    const requested = url.searchParams.get('target');
+    const candidate = resolve(requested || workspace);
+    let stat = null;
+    try {
+      stat = statSync(candidate);
+    } catch {
+      return { ok: false, error: 'target does not exist', path: candidate };
+    }
+    if (!stat.isDirectory()) return { ok: false, error: 'target is not a directory', path: candidate };
+    const inside = allowedRoots.some(
+      (root) => candidate === root || candidate.startsWith(root + sep) || candidate.startsWith(`${root}/`),
+    );
+    if (!inside) return { ok: false, error: 'target is outside the allowed roots', path: candidate, allowedRoots };
+    return {
+      ok: true,
+      path: candidate,
+      artifactsDir: join(candidate, '.ctx-audit'),
+      isProject: PROJECT_MARKERS.some((marker) => existsSync(join(candidate, marker))),
+    };
+  };
+
+  const projectCache = new Map();
+  const projectInFlight = new Map();
+
+  async function projectReport(targetPath, refresh) {
+    const now = Date.now();
+    const hit = projectCache.get(targetPath);
+    if (!refresh && hit && now - hit.at < ENGINE_TTL_MS) {
+      return { ...hit.result, cached: true, checkedAt: new Date(hit.at).toISOString() };
+    }
+    let flight = projectInFlight.get(targetPath);
+    if (!flight) {
+      flight = probeProject(mcpCommand, targetPath, PROJECT_TIMEOUT_MS).then((result) => {
+        projectCache.set(targetPath, { at: Date.now(), result });
+        projectInFlight.delete(targetPath);
+        return result;
+      });
+      projectInFlight.set(targetPath, flight);
+    }
+    const result = await flight;
+    return { ...result, cached: false, checkedAt: new Date().toISOString() };
+  }
+
+
 
   // The roadmap is shipped next to this module and served verbatim.
   let roadmap;
@@ -290,9 +556,16 @@ export function apply(ctx, config = {}) {
         }
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         const route = url.pathname;
+        // Every path-based read follows the SELECTED target, not the process
+        // working directory; an explicit but invalid target is refused.
+        const selection = selectTarget(url);
+        if (!selection.ok && url.searchParams.has('target')) {
+          sendJson(res, 400, { error: selection.error, target: selection.path, allowedRoots });
+          return;
+        }
 
         if (route === `${API_PREFIX}/status`) {
-          const listing = inventory(artifactsDir);
+          const listing = inventory(selection.artifactsDir);
           sendJson(res, 200, {
             mcp: {
               serverName: config.serverName ?? 'ctxaudit',
@@ -304,13 +577,15 @@ export function apply(ctx, config = {}) {
               toolNamePrefix: `mcp__${config.serverName ?? 'ctxaudit'}__*`,
             },
             workspace,
-            artifactsDir,
+            target: selection.path,
+            targetIsProject: Boolean(selection.isProject),
+            artifactsDir: selection.artifactsDir,
             artifacts: listing ? listing.rows : null,
             counts: listing ? listing.counts : null,
             listingTruncated: listing ? listing.truncated : null,
             artifactsTotal: listing ? listing.total : null,
             artifactLimit: MAX_ARTIFACTS,
-            logs: { files: listLogs(artifactsDir), maxLines: MAX_LOG_LINES },
+            logs: { files: listLogs(selection.artifactsDir), maxLines: MAX_LOG_LINES },
             generatedAt: new Date().toISOString(),
           });
           return;
@@ -323,7 +598,7 @@ export function apply(ctx, config = {}) {
         }
 
         if (route === `${API_PREFIX}/logs`) {
-          const files = listLogs(artifactsDir);
+          const files = listLogs(selection.artifactsDir);
           const requested = url.searchParams.get('file');
           const name = requested || (files[0] && files[0].name) || null;
           // Only names from the enumeration are readable, so a crafted `file`
@@ -337,7 +612,7 @@ export function apply(ctx, config = {}) {
             ? Math.min(Math.max(requestedLines, 1), MAX_LOG_LINES)
             : 200;
           try {
-            const tail = tailFile(join(artifactsDir, name), maxLines);
+            const tail = tailFile(join(selection.artifactsDir, name), maxLines);
             sendJson(res, 200, { files, file: name, ...tail, maxLines });
           } catch (error) {
             sendJson(res, 200, { files, file: name, lines: [], truncated: false, error: `read_failed: ${String((error && error.message) || error)}` });
@@ -378,6 +653,31 @@ export function apply(ctx, config = {}) {
           } catch (error) {
             sendJson(res, 200, { available: true, error: String((error && error.message) || error) });
           }
+          return;
+        }
+
+        if (route === `${API_PREFIX}/targets`) {
+          const list = discoverTargets(targetsRoot, config.maxTargets ?? 60);
+          list.sort((a, b) => {
+            if (a.hasAudit !== b.hasAudit) return a.hasAudit ? -1 : 1;
+            return String(b.newest || '').localeCompare(String(a.newest || ''));
+          });
+          sendJson(res, 200, {
+            root: targetsRoot,
+            workspace,
+            allowedRoots,
+            targets: list,
+          });
+          return;
+        }
+
+        if (route === `${API_PREFIX}/project`) {
+          if (!selection.ok) {
+            sendJson(res, 400, { ok: false, error: selection.error, target: selection.path });
+            return;
+          }
+          const value = await projectReport(selection.path, url.searchParams.get('refresh') === '1');
+          sendJson(res, 200, { target: selection.path, ...value });
           return;
         }
 

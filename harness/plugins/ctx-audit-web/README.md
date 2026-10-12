@@ -48,6 +48,8 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 | `/engine` | **真实 MCP 握手**（stdio：`initialize` → `initialized` → `tools/list`）：服务端名与版本、协议版本、**工具清单与描述**。带 6s 超时、5 分钟缓存；`?refresh=1` 强制重探 |
 | `/logs?file=<name>&lines=N` | 指定 `.log` 的**末尾 N 行**（≤500 行、只读文件尾 ≤256KB）；`file` 只能是枚举出来的名字，构造值拿不到目录外的文件 |
 | `/roadmap` | 随本 bundle 提交的 `roadmap.json`，原样返回 |
+| `/targets` | **自动发现候选目标**：扫描 `targetsRoot`（默认 = 工作目录的父目录）深度 ≤2，列出带 `.ctx-audit/` 证据或看起来是项目的目录（文件数/体积/日志数/最近时间） |
+| `/project?target=` | **真实引擎体检**：以目标为 cwd spawn `ctx-audit mcp` 并调用 `get_project_index`（文件数、`analysis_backed`、主语言/仅启发式、构建上下文、索引缓存、耗时） |
 | `/presets` | **agent 预设名册**：host 侧用可选的 `ctx.get('agentPresets')` 读取（两个方法都是 `Promise`，已 await），返回 `{available, presets:[{id,name,description,isDefault,broken}]}` |
 
 只读、有界、**除日志尾读外不返回任何文件内容**；Web server 默认只绑回环（启动器拒绝 `--host 0.0.0.0`）。
@@ -164,6 +166,11 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 | 预设名册（机器可验证） | `GET /ctx-audit/api/presets` → `available=true`、5 条；`ctx-audit` **`default=true`、`broken` 空** ⇒ 预设已注册、是部署默认、挂载未失败 |
 | 卡片健壮性 | 每张卡各自包 `CardBoundary`；已用控制台报出的真实崩溃（`cannot get property "remote" without inject`）反证过"单卡崩溃不再带走整页" |
 | 工具卡接线 | bundle 内含 `tool.call.toolview`×13 注册与 `caw-trow` 样式；**实际渲染仍需会话内目视确认** |
+| 目标发现 | `/targets` 在 `D:\project` 发现 **8 个候选**（3 个带证据），证据优先排序 |
+| 目标体检（真实 MCP） | `/project` → `ok=true`、**1104 文件**、`analysis_backed=true`、主语言 go/js/python/rust、**~180ms** |
+| 跟随目标 | `/status?target=…halo-2.21.9` → `target` 与 `artifactsDir` 均指向该目标 |
+| 路径闸门 | `?target=C:\Windows` → **400**；无 `target` 时回落工作目录 |
+| 渲染探针 | `apply: OK`；main / sidebar / toolview / 三个新组件组件体均无异常 |
 
 ## 已知边界与下一步
 
@@ -181,6 +188,17 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
   `cordis_inspect_query Theme` 核对（写错只退化为 fallback，不破坏渲染）。
 - 插槽注册只能用**已挂载组合声明过的键**；发明全新插槽键需要由 owner 包声明（那是唯一需要 fork 的场景）。
 - `dsh.client.external` 目前为空：本插件没有非基线运行时依赖。
+
+
+## 目标选择与自动汇总（面板不再固定看一个目录）
+
+起初面板所有路径都相对**进程工作目录**（也就是引擎自己那个仓库），对"审计别的项目"完全无用。现在：
+
+- **页头选择器**：候选来自 `GET /ctx-audit/api/targets`；点一行即切换，默认仍是引擎工作目录（标 "默认"）。
+- **跟随目标**：`/status`、`/logs`、`/project` 都接受 `?target=<绝对路径>`，产物与日志都读该目标的 `.ctx-audit/`。
+- **目标汇总卡**：自动聚合所有候选——哪些已有证据、证据文件数 / 体积 / 日志数 / 最近时间，并给出总量。
+- **项目体检卡（实时 MCP）**：`GET /ctx-audit/api/project?target=…` 以**该目标的目录为 cwd** 真的 spawn `ctx-audit mcp` 并调用 `get_project_index`，返回真实体检数字。实测本仓库 **1104 文件 / ~180ms**。
+- **路径闸门**：`target` 必须落在允许根内（默认 = 工作目录 + `targetsRoot`，可由配置 `allowedRoots` 覆盖），否则 **400** 拒绝；不存在或不是目录同样拒绝——避免该端点退化成任意目录列举器。
 
 ## 卸载
 
