@@ -131,6 +131,39 @@ Legacy fine-grained tools are still implemented but off by default: start the se
 
 `cwd` selects the analysed project (otherwise the process working directory is used).
 
+## DSH Integration: Control Panel + Audit Preset
+
+CTX-Audit also ships as an out-of-tree plugin for the [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH) web GUI: a **control panel page** in the sidebar, plus an **audit-oriented agent preset**. The plugin does not modify DSH itself -- it installs into its own profile and coexists with whatever profile you normally use.
+
+**What the panel does**
+
+- **Status at a glance**: MCP configuration, the MCP engine (a real stdio handshake listing the 13 tools), logs, evidence artifacts, roadmap, agent presets.
+- **Point it anywhere**: the working-directory control in the top-right corner switches the project root to any directory (across drives, walking down level by level) and picks a target inside it; artifacts, logs and the health readout all follow that target.
+- **Project health**: calling `get_project_index` with the selected directory as the working directory reports files scanned, whether semantic analysis backs the result, primary languages, build context and timing.
+- **Tool cards**: when a session calls an `mcp__ctxaudit__*` tool, the call renders as a CTX-Audit card (tool name, outcome, line count, expandable result).
+- **Audit preset**: new sessions can pick **CTX-Audit Auditor**, a superset of the shipped capability surface (full tool surface plus skills, planning, compaction and delegation).
+
+**Install and use**
+
+```bash
+# 1) Install into $DSH_HOME/profiles/ctx-audit-web (non-destructive; FORCE=1 overwrites)
+DSH_HOME="$HOME/.dsh" bash harness/install.sh
+
+# 2) Self-checks -- neither needs a browser
+node harness/scripts/verify-ctx-audit-web.mjs --dsh <DSH package dir>   # validates every patch row
+node harness/scripts/probe-ctx-audit-web.mjs                            # component-tree probe
+
+# 3) Launch (or use the launcher: DSH_PROFILE=ctx-audit-web bash harness/bin/ctx-audit-dsh)
+dsh --profile ctx-audit-web --port 3081 --no-open
+```
+
+Prerequisites: a working DSH install and a built `ctx-audit` binary. On Windows, run the scripts from Git Bash.
+
+Full details live in [`harness/plugins/ctx-audit-web/README.md`](harness/plugins/ctx-audit-web/README.md) (prerequisites, file layout, panel usage, switching roots, uninstall, known limits).
+
+---
+
+
 ## Commands
 
 ### `mcp` — evidence-supply main line

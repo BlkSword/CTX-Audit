@@ -42,6 +42,7 @@ CTX-Audit 的解法：
 
 - [快速开始](#快速开始)
 - [LLM 协作审计（推荐主线）](#llm-协作审计推荐主线)
+- [DSH 集成：控制面板 + 审计预设](#dsh-集成控制面板--审计预设)
 - [命令总览](#命令总览)
 - [配置文件](#配置文件)
 - [检测能力](#检测能力)
@@ -162,6 +163,38 @@ report_finding / finish_analysis                   → 回写结论
 ```
 
 `cwd` 指向被分析项目（不填则用启动进程的当前目录）；在 Claude Code 中即可直接用自然语言驱动取证与判定。
+
+---
+
+## DSH 集成：控制面板 + 审计预设
+
+把 CTX-Audit 接进 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）的 Web GUI：侧边栏多一个**控制台页面**，并带一个**审计专用 agent 预设**。插件是**外置**的——不改 DSH 本体，装进独立 profile，与你日常使用的 profile 并存。
+
+**控制台能做什么**
+
+- **状态总览**：MCP 配置、MCP 引擎（实时 stdio 握手，列出 13 个工具）、日志、证据产物、路线图、Agent 预设。
+- **指向任意项目**：右上角「工作目录」可把项目根换成任意目录（含跨盘、逐级进入），并在其中选目标；面板的产物 / 日志 / 体检都跟随该目标。
+- **目标体检**：以所选目录为 cwd 真调 `get_project_index`，返回扫描文件数、是否具备语义分析、主语言、构建上下文与耗时。
+- **工具卡**：会话里调用 `mcp__ctxaudit__*` 时，调用处渲染 CTX-Audit 卡片（工具名 / 完成或失败 / 行数 / 可展开结果）。
+- **审计预设**：新建会话可选 **CTX-Audit Auditor**（内置能力面的**超集**：完整工具面 + 技能 + 计划 / 压缩 / 委派等）。
+
+**安装与使用**
+
+```bash
+# 1) 安装（非破坏性；FORCE=1 覆盖本仓库自带的 profile 与 web bundle）
+DSH_HOME="$HOME/.dsh" bash harness/install.sh
+
+# 2) 自检：两条命令，都不需要浏览器
+node harness/scripts/verify-ctx-audit-web.mjs --dsh <DSH 包目录>   # patch 逐行校验
+node harness/scripts/probe-ctx-audit-web.mjs                      # 组件树探针
+
+# 3) 启动（也可用 launcher：DSH_PROFILE=ctx-audit-web bash harness/bin/ctx-audit-dsh）
+dsh --profile ctx-audit-web --port 3081 --no-open
+```
+
+前置条件：DSH 可用、已构建 `ctx-audit` 二进制；Windows 上请用 Git Bash 跑脚本。
+
+完整说明见 [`harness/plugins/ctx-audit-web/README.md`](harness/plugins/ctx-audit-web/README.md)（前置条件 / 文件布局 / 面板用法 / 换项目根 / 卸载 / 已知边界）。
 
 ---
 
