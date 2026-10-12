@@ -1,0 +1,16 @@
+# Line-ending and text handling.
+#
+# Without this file the working copy follows each machine's `core.autocrlf`,
+# which is why `*.sh` was being checked out with CRLF on Windows: a shell script
+# with CRLF can fail on Linux, WSL or Git Bash (`bad interpreter`). Shell scripts
+# therefore keep LF everywhere; everything else is normalised to LF in the
+# repository and checked out with the platform's ending.
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows batch files are the opposite case: cmd.exe needs CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Everything else: store LF, let the checkout follow the platform.
+* text=auto

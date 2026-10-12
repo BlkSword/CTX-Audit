@@ -47,6 +47,9 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 **日志**（从工作区 `.ctx-audit/*.log` 尾部读，可选文件与行数）、**证据产物**（有界清单 + 体积 + 相对时间）、
 **路线图**（随仓库提交的 `roadmap.json`）。数据全部来自插件 host 半区的只读端点。
 
+另有 **Agent 预设**只读名册卡（走宿主自己的 remote 面 `ctx.remote.agentPresets`，显示 id / 默认 / `broken`），
+并为 13 个 `mcp__ctxaudit__*` 工具各注册一张 `tool.call.toolview` 卡片（按工具名 keyed，注册失败只告警）。
+
 **审计专用 agent 预设 `ctx-audit`**（`plugins/ctx-audit-web/presets/ctx-audit.patch.yml`）：**内置 `standard` 能力面的超集**（33 个能力行 = jobs / goal / plan mode / workflow-PTC / 委派 / 压缩 / skill / web 全都在），差异只在 persona（审计身份 + 硬规则 + "用整台机器"的打法）、三处刻意不做（不设 `complete: true`、`ralph` 保持 disabled、不含写文件的编辑器）；随 bundle 注册并被设为部署默认（也可在 profile 层覆写 `agent-preset-registry.default`）。
 
 **校验**（预设的行不会在启动时校验，坏预设只在会话挂载时才报）：

@@ -160,12 +160,18 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 | 安装脚本 | 干净 `DSH_HOME` 跑通并自校验通过（`verified: … composes with both rows`） |
 | 语法/清单 | `node --check client.js\|index.js` 通过；`package.json` 与 `locale/*.json` 均为合法 UTF-8 JSON（无 BOM） |
 | 视觉渲染 | 已由使用者在真实浏览器中确认页面出现（agent 不另开浏览器截图，见官方 verification 指南） |
+| 工具卡 / 预设卡接线 | bundle 内含 `tool.call.toolview`×4、`agentPresets`×2 与 `caw-trow`/`caw-preset` 样式；**实际渲染需会话内目视确认**（见"已知边界"） |
 
 ## 已知边界与下一步
 
-- **未实现**：`tool.call.toolview`（把 MCP 工具结果渲染成专用卡片）。原因：该插槽组件必须在**有会话**时才能
-  验证，而未经核对的插槽组件一旦抛错会**清空宿主自己的工具卡片**——宁可先不写。下一步应在有 agent 会话的
-  环境里按 `cordis_inspect what:"client"` 的 slot 契约实现并验证。
+- **`tool.call.toolview` 已实现（契约驱动；渲染效果待会话内目视确认）**：该插槽在 `dsh-client-ui-tool` 的
+  `SlotMap` 里声明为 **keyed / key = 工具名 / scope = session**，owner props 是 `{phase: 'preparing'|'start'|'result', block}`；
+  settled 阶段的 `block` 就是 `ToolResultNode`（`content: ContentBlock[]`、`isError`、`error`、`call.argsRaw`）。
+  因此本插件为 `mcp__ctxaudit__<13 个工具名>` **各注册一个 key**，渲染"CTX-Audit 徽标 + 工具短名 + 完成/失败 + 行数 + 可展开结果"的卡片。
+  注册包在 `try/catch` 内、失败只 `console.warn`：宿主自己的工具卡片不会被带崩（未知 key 本来就不渲染）。
+- **面板新增"Agent 预设"只读名册卡**：走**宿主自己的 remote 面** `ctx.remote.agentPresets.list()`
+  （行字段 `{id, isDefault, name, description, broken}`），不走 HTTP；服务缺失或报错都渲染成状态、不抛错。
+  这张卡同时是"预设是否 `broken` / 哪个是默认"的**可视化判活口径**。
 - 页面数据目前**不经会话**：`main` 的非 `conversation` 键没有 Session binding。要把引擎证据（findings /
   切片 / 污点链）接进来，应走 host 投影（`wire.view`）或经 `dsh-api-remotes`，属独立一步。
 - 可见文案暂未走 Client locale 服务；主题 token 用 `var(--dsw-alias-*, <fallback>)` 写法，token 名未经

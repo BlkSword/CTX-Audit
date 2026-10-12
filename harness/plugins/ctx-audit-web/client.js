@@ -91,6 +91,11 @@ window.__ModuleLoader__.load({
 .caw-skel{border-radius:6px;background:linear-gradient(90deg,var(--dsw-alias-bg-tertiary,rgba(128,128,128,.12)) 25%,var(--dsw-alias-bg-secondary,rgba(128,128,128,.06)) 37%,var(--dsw-alias-bg-tertiary,rgba(128,128,128,.12)) 63%);background-size:400% 100%;animation:caw-shim 1.3s ease-in-out infinite;height:11px;margin:4px 0}
 @keyframes caw-shim{0%{background-position:100% 0}100%{background-position:0 0}}
 .caw-err{color:var(--dsw-alias-state-danger,#b42318);font-size:12px}
+.caw-trow{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.28));border-radius:8px;padding:7px 9px;background:var(--dsw-alias-bg-secondary,rgba(128,128,128,.04));display:flex;flex-direction:column;gap:5px}
+.caw-trow-h{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.caw-badge{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.35));border-radius:999px;padding:1px 7px;font-size:10.5px;letter-spacing:.3px;opacity:.85}
+.caw-preset{display:flex;align-items:baseline;gap:8px;padding:5px 2px;border-bottom:1px dashed var(--dsw-alias-border-secondary,rgba(128,128,128,.18))}
+.caw-preset:last-child{border-bottom:none}
 `;
 
     async function getJson(url, signal) {
@@ -187,6 +192,93 @@ window.__ModuleLoader__.load({
 
     function ErrorLine({ message }) {
       return h('div', { className: 'caw-err' }, message);
+    }
+
+    /** ctx-audit's MCP tool surface, live-verified by the host half's /engine endpoint. */
+    const MCP_TOOL_NAMES = [
+      'get_project_index',
+      'get_symbol_definition',
+      'get_symbol_references',
+      'get_call_hierarchy',
+      'slice_backward',
+      'get_dataflow_path',
+      'get_sanitizer_guards',
+      'get_framework_context',
+      'get_incremental_status',
+      'read_file',
+      'list_files',
+      'report_finding',
+      'finish_analysis',
+    ];
+
+    /** Concatenate the text blocks of a settled tool result. */
+    function toolResultText(block) {
+      const content = (block && block.content) || [];
+      const parts = [];
+      for (const part of content) {
+        if (part && typeof part.text === 'string') parts.push(part.text);
+        else if (typeof part === 'string') parts.push(part);
+        else if (part) parts.push(JSON.stringify(part));
+      }
+      return parts.join('\n');
+    }
+
+    /**
+     * The registered view for one ctx-audit MCP tool call.
+     *
+     * `tool.call.toolview` is a keyed slot dispatched by the exact wire tool
+     * name, so this component is registered once per name in `MCP_TOOL_NAMES`.
+     * The owner passes explicit phase props; only the settled phase carries a
+     * result, and a preparing call has no arguments at all.
+     */
+    function CtxAuditToolRow(props) {
+      const [expanded, setExpanded] = useState(false);
+      const phase = (props && props.phase) || 'result';
+      const block = props && props.block;
+      const wireName =
+        (block && block.call && block.call.name) || (props && props.toolName) || 'ctx-audit';
+      const short = String(wireName).replace(/^mcp__ctxaudit__/, '');
+
+      const text = phase === 'result' ? toolResultText(block) : '';
+      const lines = text ? text.split(/\r?\n/) : [];
+      const isError = phase === 'result' && Boolean(block && block.isError);
+      const shown = expanded ? lines.slice(0, 200) : lines.slice(0, 6);
+
+      const head = [
+        h('span', { key: 'b', className: 'caw-badge' }, 'CTX-Audit'),
+        h('code', { key: 'n', className: 'caw-code' }, short),
+      ];
+      if (phase === 'result') {
+        head.push(
+          h('span', { key: 's', className: isError ? 'caw-bad' : 'caw-ok' }, isError ? '失败' : '完成'),
+          h('span', { key: 'l', className: 'caw-muted' }, `${lines.length} 行`),
+        );
+        if (lines.length > 6) {
+          head.push(
+            h(
+              'button',
+              { key: 't', className: 'caw-btn', type: 'button', onClick: () => setExpanded((v) => !v) },
+              expanded ? '收起' : '展开',
+            ),
+          );
+        }
+      } else {
+        head.push(h('span', { key: 'p', className: 'caw-muted' }, phase === 'start' ? '调用中…' : '准备中…'));
+      }
+
+      return h('div', { className: 'caw-trow', 'data-ctx-audit-tool': short }, [
+        h('div', { key: 'h', className: 'caw-trow-h' }, head),
+        block && block.error
+          ? h('div', { key: 'e', className: 'caw-err' }, `${block.error.name}: ${block.error.reason || block.error.code}`)
+          : null,
+        shown.length
+          ? h(
+              'div',
+              { key: 'c', className: 'caw-scroll', style: { maxHeight: expanded ? '320px' : '104px' } },
+              h('pre', { className: 'caw-log' }, shown.join('\n')),
+            )
+          : null,
+      ]);
     }
 
     function StatusCard({ status }) {
@@ -384,7 +476,66 @@ window.__ModuleLoader__.load({
       return h(Card, { title: '路线图', extra: h('span', { key: 'x', className: 'caw-muted' }, '随仓库提交') }, body);
     }
 
-    function CtxAuditPanel() {
+    /**
+     * The preset roster, read through the Host's own remote surface rather than
+     * through HTTP: the registry owns this list, and a plugin's browser half
+     * reaches host services as `ctx.remote.<service>.<method>`. Every failure
+     * becomes a rendered state instead of a throw, because this card must never
+     * take the panel down with it.
+     */
+    function useRemotePresets(ctx) {
+      const [state, setState] = useState({ phase: 'loading' });
+      useEffect(() => {
+        let alive = true;
+        const service = ctx.remote && ctx.remote.agentPresets;
+        if (!service || typeof service.list !== 'function') {
+          setState({ phase: 'unavailable' });
+          return () => {
+            alive = false;
+          };
+        }
+        Promise.resolve(service.list())
+          .then((result) => {
+            if (!alive) return;
+            const rows = Array.isArray(result) ? result : (result && result.presets) || [];
+            setState({ phase: 'ready', rows });
+          })
+          .catch((error) => {
+            if (alive) setState({ phase: 'error', message: String((error && error.message) || error) });
+          });
+        return () => {
+          alive = false;
+        };
+      }, [ctx]);
+      return state;
+    }
+
+    function PresetsCard({ presets }) {
+      let body;
+      if (!presets || presets.phase === 'loading') body = h(Skeleton, { rows: 5 });
+      else if (presets.phase === 'unavailable') body = h(Empty, null, '宿主未提供 agentPresets 服务');
+      else if (presets.phase === 'error') body = h(ErrorLine, { message: `读取失败：${presets.message}` });
+      else if (presets.rows.length === 0) body = h(Empty, null, '名册为空');
+      else {
+        body = presets.rows.map((row, i) =>
+          h('div', { key: row.id || i, className: 'caw-preset' }, [
+            h('code', { key: 'id', className: 'caw-code' }, row.id || '?'),
+            row.name ? h('span', { key: 'n' }, row.name) : null,
+            row.isDefault ? h('span', { key: 'd', className: 'caw-ok' }, '默认') : null,
+            row.broken ? h('span', { key: 'b', className: 'caw-bad' }, `损坏：${row.broken}`) : null,
+            h('span', { key: 's', className: 'caw-spacer' }),
+            row.description ? h('span', { key: 'x', className: 'caw-muted' }, row.description) : null,
+          ]),
+        );
+      }
+      return h(
+        Card,
+        { title: 'Agent 预设', extra: h('span', { key: 'x', className: 'caw-muted' }, '来自注册表') },
+        body,
+      );
+    }
+
+    function CtxAuditPanel({ presets }) {
       const [nonce, setNonce] = useState(0);
       const [engineNonce, setEngineNonce] = useState(0);
       const [logFile, setLogFile] = useState(null);
@@ -481,6 +632,7 @@ window.__ModuleLoader__.load({
             }),
             h(ArtifactsCard, { key: 'artifacts', status }),
             h(RoadmapCard, { key: 'roadmap', roadmap }),
+            h(PresetsCard, { key: 'presets', presets }),
           ]),
           h('div', { key: 'foot', className: 'caw-foot' }, [
             s && s.workspace ? h('span', { key: 'w' }, `工作区 ${s.workspace}`) : null,
@@ -513,9 +665,29 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        // The panel reads the preset roster through the plugin's own context.
+        const CtxAuditPanelWithContext = (props) =>
+          h(CtxAuditPanel, { ...props, presets: useRemotePresets(ctx) });
+
         ctx.slots.inject('main', () =>
-          ctx.slots.register({ name: 'main', key: PANEL_ID }, CtxAuditPanel),
+          ctx.slots.register({ name: 'main', key: PANEL_ID }, CtxAuditPanelWithContext),
         );
+
+        // One keyed entry per ctx-audit MCP tool: `tool.call.toolview` dispatches
+        // by exact wire tool name, so each name needs its own registration. An
+        // unknown key simply never renders, and a failed registration must not
+        // take the host's own tool card down with it.
+        for (const tool of MCP_TOOL_NAMES) {
+          const key = `mcp__ctxaudit__${tool}`;
+          ctx.slots.inject('tool.call.toolview', () => {
+            try {
+              return ctx.slots.register({ name: 'tool.call.toolview', key }, CtxAuditToolRow);
+            } catch (error) {
+              console.warn(`[ctx-audit-web] toolview registration failed for ${key}`, error);
+              return () => {};
+            }
+          });
+        }
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(
             { name: 'sidebar.panellist', id: PANEL_ID, order: 50, label: () => 'CTX-Audit' },
