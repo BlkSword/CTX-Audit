@@ -102,7 +102,7 @@ window.__ModuleLoader__.load({
 .caw-tgt{position:relative;display:flex;justify-content:flex-end}
 .caw-tgt-b{display:inline-flex;align-items:center;gap:6px;max-width:360px;overflow:hidden}
 .caw-backdrop{position:fixed;inset:0;z-index:20}
-.caw-pop{position:absolute;right:0;top:calc(100% + 6px);z-index:30;width:min(540px,86vw);text-align:left;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.3));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));box-shadow:0 10px 30px rgba(0,0,0,.18);padding:10px 12px}
+.caw-pop{position:absolute;right:0;top:calc(100% + 6px);z-index:30;width:min(560px,88vw);max-height:74vh;overflow:auto;text-align:left;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.3));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));box-shadow:0 10px 30px rgba(0,0,0,.18);padding:10px 12px}
 `;
 
     async function getJson(url, signal) {
@@ -586,20 +586,27 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Working-directory control: the current target sits in the header's top-right
-     * corner, and clicking it opens the picker -- filter, candidate list, manual
-     * path, and a way back to the default. A backdrop plus Escape closes it.
+     * Working-directory control in the header's top-right corner.
+     *
+     * The popover has two levels: `root` is the directory being browsed (changeable
+     * to any path, with a way to walk up or into a child), and `target` is the
+     * project inside it that the panel reports on. Both are optional; the backend
+     * defaults them to the configured scan root.
      */
-    function TargetControl({ targets, target, onSelect }) {
+    function TargetControl({ targets, target, onSelect, root, onRoot }) {
       const [open, setOpen] = useState(false);
       const [filter, setFilter] = useState('');
       const [manual, setManual] = useState('');
+      const [rootDraft, setRootDraft] = useState('');
       const d = targets.data || {};
       const all = d.targets || [];
+      const children = d.children || [];
+      const currentRoot = d.root || '';
+      const defaultRoot = (d.defaults && d.defaults.root) || '';
       const rows = filter
         ? all.filter((row) => `${row.name} ${row.path}`.toLowerCase().includes(filter.toLowerCase()))
         : all;
-      const current = target || d.workspace || '';
+      const current = target || currentRoot;
       const name = current ? current.split(/[\\/]/).filter(Boolean).pop() : '—';
       const withEvidence = all.filter((row) => row.hasAudit);
 
@@ -612,12 +619,31 @@ window.__ModuleLoader__.load({
         return () => document.removeEventListener('keydown', onKey);
       }, [open]);
 
-      const pick = (path) => {
-        onSelect(path);
+      const close = () => {
         setOpen(false);
         setFilter('');
         setManual('');
+        setRootDraft('');
       };
+      const pick = (path) => {
+        onSelect(path);
+        close();
+      };
+      const applyRoot = (path) => {
+        const value = String(path || '').trim();
+        if (!value) return;
+        onRoot(value);
+        setRootDraft('');
+        setFilter('');
+        setManual('');
+      };
+
+      const navButton = (key, label, path, title) =>
+        h(
+          'button',
+          { key, className: 'caw-btn', type: 'button', title: title || path, onClick: () => applyRoot(path) },
+          label,
+        );
 
       return h('div', { className: 'caw-tgt' }, [
         h(
@@ -627,7 +653,6 @@ window.__ModuleLoader__.load({
             className: 'caw-btn caw-tgt-b',
             type: 'button',
             title: current || '默认（引擎工作目录）',
-            title: current,
             onClick: () => setOpen((value) => !value),
           },
           [
@@ -636,30 +661,79 @@ window.__ModuleLoader__.load({
             h('span', { key: 'c', className: 'caw-muted' }, open ? '▴' : '▾'),
           ],
         ),
-        open ? h('div', { key: 'bd', className: 'caw-backdrop', onClick: () => setOpen(false) }) : null,
+        open ? h('div', { key: 'bd', className: 'caw-backdrop', onClick: close }) : null,
         open
           ? h('div', { key: 'pop', className: 'caw-pop' }, [
-              h('div', { key: 'cur', className: 'caw-row' }, [
-                h('div', { key: 'k', className: 'caw-k' }, '当前'),
+              h('div', { key: 'rootRow', className: 'caw-row' }, [
+                h('div', { key: 'k', className: 'caw-k' }, '项目根'),
                 h(
                   'div',
                   { key: 'v', className: 'caw-v' },
-                  h('code', { className: 'caw-code' }, current || '—'),
-                  target ? null : h('span', { key: 'd', className: 'caw-muted' }, '（默认：引擎工作目录）'),
+                  h('code', { className: 'caw-code' }, currentRoot || '—'),
+                  root ? null : h('span', { key: 'd', className: 'caw-muted' }, '（默认根）'),
                 ),
               ]),
+              h('div', { key: 'rootTools', className: 'caw-picker', style: { margin: '6px 0 10px' } }, [
+                h('input', {
+                  key: 'ri',
+                  className: 'caw-input',
+                  style: { flex: '1 1 200px' },
+                  placeholder: '输入新的项目根，例如 D:\\ 或 C:\\Users\\me',
+                  value: rootDraft,
+                  onChange: (event) => setRootDraft(event.target.value),
+                  onKeyDown: (event) => {
+                    if (event.key === 'Enter') applyRoot(rootDraft);
+                  },
+                }),
+                h(
+                  'button',
+                  { key: 'ra', className: 'caw-btn', type: 'button', disabled: !rootDraft.trim(), onClick: () => applyRoot(rootDraft) },
+                  '切换根',
+                ),
+                d.parent ? navButton('up', '上一级', d.parent) : null,
+                root && defaultRoot ? navButton('def', '默认根', defaultRoot) : null,
+              ]),
+              children.length
+                ? h('div', { key: 'childBlock' }, [
+                    h('div', { key: 'h', className: 'caw-muted', style: { marginBottom: '2px' } }, '子目录（点一下即作为项目根进入）'),
+                    h(
+                      'div',
+                      { key: 'l', className: 'caw-scroll', style: { maxHeight: '132px', marginBottom: '10px' } },
+                      children.map((child) =>
+                        h(
+                          'div',
+                          {
+                            key: child.path,
+                            className: 'caw-item',
+                            title: child.path,
+                            style: { cursor: 'pointer' },
+                            onClick: () => applyRoot(child.path),
+                          },
+                          [
+                            h('span', { key: 'n', className: 'caw-name' }, `▸ ${child.name}`),
+                            h(
+                              'span',
+                              { key: 'm', className: 'caw-muted' },
+                              child.hasAudit ? '已审计' : child.isProject ? '项目' : '',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ])
+                : null,
               h(
                 Row,
-                { key: 'sum', label: '汇总' },
+                { key: 'sum', label: '本根汇总' },
                 `候选 ${all.length} · 已有证据 ${withEvidence.length} · 证据体积 ${fmtBytes(
                   all.reduce((sum, row) => sum + (row.bytes || 0), 0),
                 )}`,
               ),
-              h('div', { key: 'tools', className: 'caw-picker', style: { margin: '8px 0' } }, [
+              h('div', { key: 'candTools', className: 'caw-picker', style: { margin: '8px 0' } }, [
                 h('input', {
                   key: 'f',
                   className: 'caw-input',
-                  style: { flex: '1 1 130px' },
+                  style: { flex: '1 1 120px' },
                   placeholder: '过滤候选…',
                   value: filter,
                   onChange: (event) => setFilter(event.target.value),
@@ -667,8 +741,8 @@ window.__ModuleLoader__.load({
                 h('input', {
                   key: 'm',
                   className: 'caw-input',
-                  style: { flex: '1 1 160px' },
-                  placeholder: '绝对路径…',
+                  style: { flex: '1 1 150px' },
+                  placeholder: '直接指定目录（绝对路径）…',
                   value: manual,
                   onChange: (event) => setManual(event.target.value),
                   onKeyDown: (event) => {
@@ -678,13 +752,13 @@ window.__ModuleLoader__.load({
                 h(
                   'button',
                   { key: 'a', className: 'caw-btn', type: 'button', disabled: !manual.trim(), onClick: () => pick(manual.trim()) },
-                  '应用',
+                  '只看它',
                 ),
-                target ? h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: () => pick('') }, '回到默认') : null,
+                target ? h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: () => pick('') }, '回到根') : null,
               ]),
               h(
                 'div',
-                { key: 'list', className: 'caw-scroll', style: { maxHeight: '260px' } },
+                { key: 'list', className: 'caw-scroll', style: { maxHeight: '210px' } },
                 rows.length
                   ? rows.map((row) =>
                       h(
@@ -714,12 +788,12 @@ window.__ModuleLoader__.load({
                         ],
                       ),
                     )
-                  : h('div', { key: 'empty', className: 'caw-muted' }, filter ? '无匹配候选' : '未发现候选'),
+                  : h('div', { key: 'empty', className: 'caw-muted' }, filter ? '无匹配候选' : '本根下未发现候选'),
               ),
               h(
                 'div',
                 { key: 'roots', className: 'caw-muted', style: { marginTop: '6px' } },
-                `扫描根 ${d.root || '—'} · 允许根：${(d.allowedRoots || []).join(' · ')}`,
+                '项目根之下任意目录都可作为目标；根外路径会被拒绝',
               ),
             ])
           : null,
@@ -785,16 +859,23 @@ window.__ModuleLoader__.load({
       const [target, setTarget] = useState('');
       // Every target-scoped read carries the selection, so the panel follows the
       // chosen project instead of whichever directory the engine was started in.
-      const targetQuery = target ? `?target=${encodeURIComponent(target)}` : '';
-      const targets = useResource(`${API}/targets`, [nonce]);
-      const project = useResource(`${API}/project${targetQuery}`, [nonce, target]);
-      const status = useResource(`${API}/status${targetQuery}`, [nonce, target]);
+      const [root, setRoot] = useState('');
+      // The scope is the directory being browsed (`root`) plus the target inside
+      // it; either may be empty, and the backend then falls back to its scan root.
+      const scope = [
+        root ? `root=${encodeURIComponent(root)}` : '',
+        target ? `target=${encodeURIComponent(target)}` : '',
+      ].filter(Boolean).join('&');
+      const targetQuery = scope ? `?${scope}` : '';
+      const targets = useResource(`${API}/targets${targetQuery}`, [nonce, root]);
+      const project = useResource(`${API}/project${targetQuery}`, [nonce, root, target]);
+      const status = useResource(`${API}/status${targetQuery}`, [nonce, root, target]);
       const engine = useResource(`${API}/engine${engineNonce ? '?refresh=1' : ''}`, [engineNonce]);
       const roadmap = useResource(`${API}/roadmap`, [nonce]);
       const presets = useResource(`${API}/presets`, [nonce]);
       const logs = useResource(
-        `${API}/logs?lines=${encodeURIComponent(logLines)}${logFile ? `&file=${encodeURIComponent(logFile)}` : ''}${target ? `&target=${encodeURIComponent(target)}` : ''}`,
-        [logFile, logLines, logNonce, nonce, target],
+        `${API}/logs?lines=${encodeURIComponent(logLines)}${logFile ? `&file=${encodeURIComponent(logFile)}` : ''}${scope ? `&${scope}` : ''}`,
+        [logFile, logLines, logNonce, nonce, root, target],
       );
 
       const refreshAll = useCallback(() => {
@@ -854,7 +935,17 @@ window.__ModuleLoader__.load({
           h('div', { key: 's', className: 'caw-spacer' }),
           h('div', { key: 'pills', className: 'caw-pills' }, pills),
           h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: refreshAll, disabled: busy }, busy ? '刷新中…' : '刷新'),
-          h(TargetControl, { key: 'wd', targets, target, onSelect: setTarget }),
+          h(TargetControl, {
+            key: 'wd',
+            targets,
+            target,
+            onSelect: setTarget,
+            root,
+            onRoot: (value) => {
+              setRoot(value);
+              setTarget('');
+            },
+          }),
         ]),
         h('div', { key: 'body', className: 'caw-body' }, [
           h(

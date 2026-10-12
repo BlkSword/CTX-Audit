@@ -48,8 +48,8 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 | `/engine` | **真实 MCP 握手**（stdio：`initialize` → `initialized` → `tools/list`）：服务端名与版本、协议版本、**工具清单与描述**。带 6s 超时、5 分钟缓存；`?refresh=1` 强制重探 |
 | `/logs?file=<name>&lines=N` | 指定 `.log` 的**末尾 N 行**（≤500 行、只读文件尾 ≤256KB）；`file` 只能是枚举出来的名字，构造值拿不到目录外的文件 |
 | `/roadmap` | **实时推导 + 可编辑计划**：`derived` 每请求从本仓记录重算（缺陷登记已修/待修、台账在跑项、CHANGELOG 未发布条数），`items` 来自计划文档（优先 `<workspace>/harness-private/roadmap.json`，回退 bundle 副本），并附 `source`/`ageDays` |
-| `/targets` | **自动发现候选目标**：扫描 `targetsRoot`（默认 = 工作目录的父目录）深度 ≤2，列出带 `.ctx-audit/` 证据或看起来是项目的目录（文件数/体积/日志数/最近时间） |
-| `/project?target=` | **真实引擎体检**：以目标为 cwd spawn `ctx-audit mcp` 并调用 `get_project_index`（文件数、`analysis_backed`、主语言/仅启发式、构建上下文、索引缓存、耗时） |
+| `/targets?root=` | **探测一个项目根**：`root` 为任意已存在的目录（默认 = 工作目录的父目录）。返回 `root`/`parent`/`defaults.root`、`targets`（有 `.ctx-audit/` 证据或像项目的目录，带文件数/体积/日志/最近时间）与 `children`（**直接子目录**，供逐级进入） |
+| `/project?root=&target=` | **真实引擎体检**：以目标为 cwd spawn `ctx-audit mcp` 并调用 `get_project_index`（文件数、`analysis_backed`、主语言/仅启发式、构建上下文、索引缓存、耗时） |
 | `/presets` | **agent 预设名册**：host 侧用可选的 `ctx.get('agentPresets')` 读取（两个方法都是 `Promise`，已 await），返回 `{available, presets:[{id,name,description,isDefault,broken}]}` |
 
 只读、有界、**除日志尾读外不返回任何文件内容**；Web server 默认只绑回环（启动器拒绝 `--host 0.0.0.0`）。
@@ -178,6 +178,8 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 | 卡片健壮性 | 每张卡各自包 `CardBoundary`；已用控制台报出的真实崩溃（`cannot get property "remote" without inject`）反证过"单卡崩溃不再带走整页" |
 | 工具卡接线 | bundle 内含 `tool.call.toolview`×13 注册与 `caw-trow` 样式；**实际渲染仍需会话内目视确认** |
 | 路线图实时性 | `/roadmap` → `derived` **3 项**（缺陷登记 已修 22 / 待修 9、台账在跑 405、CHANGELOG 未发布 247）每次请求重算；`items` 6 项来自计划文档并带 `ageDays` |
+| 换项目根 | `/targets?root=D:\` → `root=D:\`、167 个子目录；`/targets?root=C:\Users\<user>` → 22 个子目录（跨盘）；`/status?root=D:\&target=D:\project` → 200 且跟随 |
+| 根的边界 | 不存在的根 → 400；`root=D:\&target=C:\Windows` → 400；`root=D:\project&target=D:\`（祖先） → 400 |
 | 工作目录控件 | bundle 含 `TargetControl`/`caw-pop`/`caw-backdrop`；点开弹层，Esc 与点背景均可关闭 |
 | 组件树探针（仓库内） | `node harness/scripts/probe-ctx-audit-web.mjs` → **14 插槽 / 15 组件 / no component threw**（exit 0）；加固前它精确复现过 `invalid element type`）|
 | 主题一致性 | bundle 内**虚构 token 0 处**；`bg-layer-1`/`border-l2`/`label-tertiary`/`interactive-bg-hover`/`radius-sm` 等真 token 分别命中 4/8/7/3/4 处 |
@@ -222,6 +224,14 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 - **主题 token 全部换成真实存在的名字**。此前样式引用的是 `--dsw-alias-bg-primary`/`bg-secondary`/`bg-tertiary`/`border-secondary`/`font-size-body`/`state-danger`/`font-family-mono`——这些 token **在宿主里不存在**（从 `dsh-web-frontend` 的 CSS 里逐个查证过），于是全部落到硬编 fallback 色，表现为**背景与宿主不统一**。现改用真 token：`--dsw-alias-bg-base`/`bg-layer-1..3`、`--dsw-alias-border-l1..l3`、`--dsw-alias-label-primary/secondary/tertiary/error`、`--dsw-alias-state-{success,error,warn}-primary`、`--dsw-alias-interactive-bg-hover`、`--dsw-alias-scrollbar-bg-l2`、`--dsw-radius-{xs,sm,lg}`、`--dsw-font-markdown-code-font-family`。同时**去掉了 sticky 头部与其背景**（那是滚动时的一道色带），卡片/统计块统一用宿主同一层表面色。
 - **工作目录控件（页头右上角）**：显示当前目标目录名（悬停见完整路径），**点击弹出选择面板**：当前完整路径、候选过滤框、可点列表（● 有证据 / ○ 无证据 + 文件数/体积/日志/最近时间，当前项高亮）、手动输入绝对路径、"回到默认"、扫描根与允许根。点背景或按 Esc 关闭；选择后立即切换并关闭。目标选择不再占用网格中的一张常驻卡片。
 - **路线图**：上半部分**实时推导**（每次刷新重算，来源为本仓私有记录），下半部分是**计划文档**并显示其来源与"几天前更新"，编辑计划文件即更新下半部分。
+
+
+### 两级作用域：项目根 + 目标
+
+- **项目根**可改：弹层里输入任意已存在目录（如 `D:\` 或 `C:\Users\me`）→「切换根」；也可用「上一级」沿父目录回溯，或点「子目录」列表里的任意一项**逐级进入**；`默认根` 回到配置的扫描根。
+- **目标**必须在当前根**之内**（根本身也是合法目标），或等于引擎的工作目录——这样面板始终能回头看引擎自己的仓库，但不会变成任意目录列举器。
+- **包含关系用 \`path.relative\` 判定**，不要用字符串前缀：根以分隔符结尾时（`D:\`）`根 + 分隔符` 会变成双分隔符，前缀比较会误判为"越界"。
+- 根不存在、不是目录、目标是根的祖先或跨盘 → **400**。
 
 ## 卸载
 

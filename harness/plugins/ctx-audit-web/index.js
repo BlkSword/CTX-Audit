@@ -279,6 +279,7 @@ function parseToolPayload(text) {
  */
 function discoverTargets(root, maxEntries) {
   const found = [];
+  const children = [];
   const visit = (dir, depth) => {
     if (found.length >= maxEntries) return;
     let entries;
@@ -322,6 +323,7 @@ function discoverTargets(root, maxEntries) {
         }
       }
       const isProject = PROJECT_MARKERS.some((marker) => existsSync(join(path, marker)));
+      if (depth === 1) children.push({ name: entry.name, path, hasAudit, isProject });
       if (hasAudit || isProject) {
         found.push({ name: entry.name, path, hasAudit, isProject, files, bytes, logs, newest });
       }
@@ -329,7 +331,7 @@ function discoverTargets(root, maxEntries) {
     }
   };
   visit(root, 1);
-  return found;
+  return { found, children };
 }
 
 /**
@@ -582,23 +584,49 @@ export function apply(ctx, config = {}) {
   ).map((root) => resolve(root));
 
   /** Resolve and validate `?target=`; an invalid or out-of-root path is refused. */
-  const selectTarget = (url) => {
-    const requested = url.searchParams.get('target');
-    const candidate = resolve(requested || workspace);
+  /** Resolve `?root=`: the directory the picker browses. Defaults to the configured scan root. */
+  const selectRoot = (url) => {
+    const requested = url.searchParams.get('root');
+    const candidate = resolve(requested || targetsRoot);
     let stat = null;
     try {
       stat = statSync(candidate);
     } catch {
-      return { ok: false, error: 'target does not exist', path: candidate };
+      return { ok: false, error: 'root does not exist', path: candidate };
     }
-    if (!stat.isDirectory()) return { ok: false, error: 'target is not a directory', path: candidate };
-    const inside = allowedRoots.some(
-      (root) => candidate === root || candidate.startsWith(root + sep) || candidate.startsWith(`${root}/`),
-    );
-    if (!inside) return { ok: false, error: 'target is outside the allowed roots', path: candidate, allowedRoots };
+    if (!stat.isDirectory()) return { ok: false, error: 'root is not a directory', path: candidate };
+    return { ok: true, path: candidate };
+  };
+
+  /**
+   * Resolve `?target=` inside the current root. The root itself is a valid target,
+   * and the workspace stays selectable whatever root is being browsed, so the panel
+   * can always look back at the engine's own checkout.
+   */
+  const selectTarget = (url, root) => {
+    const requested = url.searchParams.get('target');
+    const base = root || targetsRoot;
+    const candidate = resolve(requested || base);
+    let stat = null;
+    try {
+      stat = statSync(candidate);
+    } catch {
+      return { ok: false, error: 'target does not exist', path: candidate, root: base };
+    }
+    if (!stat.isDirectory()) return { ok: false, error: 'target is not a directory', path: candidate, root: base };
+    // path.relative answers containment correctly for roots that end with a
+    // separator and for cross-drive pairs, where string prefixes do not.
+    const within = (basePath) => {
+      const rel = relative(basePath, candidate);
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+    };
+    if (!within(base) && !within(workspace)) {
+      return { ok: false, error: 'target is outside the current root', path: candidate, root: base };
+    }
     return {
       ok: true,
       path: candidate,
+      root: base,
       artifactsDir: join(candidate, '.ctx-audit'),
       isProject: PROJECT_MARKERS.some((marker) => existsSync(join(candidate, marker))),
     };
@@ -670,9 +698,14 @@ export function apply(ctx, config = {}) {
         const route = url.pathname;
         // Every path-based read follows the SELECTED target, not the process
         // working directory; an explicit but invalid target is refused.
-        const selection = selectTarget(url);
+        const rootSelection = selectRoot(url);
+        if (!rootSelection.ok) {
+          sendJson(res, 400, { error: rootSelection.error, root: rootSelection.path });
+          return;
+        }
+        const selection = selectTarget(url, rootSelection.path);
         if (!selection.ok && url.searchParams.has('target')) {
-          sendJson(res, 400, { error: selection.error, target: selection.path, allowedRoots });
+          sendJson(res, 400, { error: selection.error, target: selection.path, root: selection.root });
           return;
         }
 
@@ -769,16 +802,22 @@ export function apply(ctx, config = {}) {
         }
 
         if (route === `${API_PREFIX}/targets`) {
-          const list = discoverTargets(targetsRoot, config.maxTargets ?? 60);
+          const root = rootSelection.path;
+          const { found, children } = discoverTargets(root, config.maxTargets ?? 60);
+          const list = found;
           list.sort((a, b) => {
             if (a.hasAudit !== b.hasAudit) return a.hasAudit ? -1 : 1;
             return String(b.newest || '').localeCompare(String(a.newest || ''));
           });
+          const parent = dirname(root);
           sendJson(res, 200, {
-            root: targetsRoot,
+            root,
+            parent: parent && parent !== root ? parent : null,
             workspace,
-            allowedRoots,
+            allowedRoots: [root, workspace],
+            defaults: { root: targetsRoot },
             targets: list,
+            children,
           });
           return;
         }
