@@ -167,6 +167,8 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 | 卡片健壮性 | 每张卡各自包 `CardBoundary`；已用控制台报出的真实崩溃（`cannot get property "remote" without inject`）反证过"单卡崩溃不再带走整页" |
 | 工具卡接线 | bundle 内含 `tool.call.toolview`×13 注册与 `caw-trow` 样式；**实际渲染仍需会话内目视确认** |
 | 路线图实时性 | `/roadmap` → `derived` **3 项**（缺陷登记 已修 22 / 待修 9、台账在跑 405、CHANGELOG 未发布 247）每次请求重算；`items` 6 项来自计划文档并带 `ageDays` |
+| 工作目录控件 | bundle 含 `TargetControl`/`caw-pop`/`caw-backdrop`；点开弹层，Esc 与点背景均可关闭 |
+| 组件树探针 | 递归调用整棵组件树（含 `TargetControl`/`LogsCard`/`ProjectCard` 等 **11 个**组件）→ `no component threw`；此探针曾当场抓出"控件被插进 LogsCard、`targets is not defined`"的真实错误 |
 | 主题一致性 | bundle 内**虚构 token 0 处**；`bg-layer-1`/`border-l2`/`label-tertiary`/`interactive-bg-hover`/`radius-sm` 等真 token 分别命中 4/8/7/3/4 处 |
 | 目标选择 | 过滤框 + 可点列表 + 手动路径 + 回到默认；bundle 内含"过滤候选"/"手动输入绝对路径" |
 | 目标发现 | `/targets` 在 `D:\project` 发现 **8 个候选**（3 个带证据），证据优先排序 |
@@ -207,7 +209,7 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 ## 主题一致性、目标选择与路线图（2026-10-11 修订）
 
 - **主题 token 全部换成真实存在的名字**。此前样式引用的是 `--dsw-alias-bg-primary`/`bg-secondary`/`bg-tertiary`/`border-secondary`/`font-size-body`/`state-danger`/`font-family-mono`——这些 token **在宿主里不存在**（从 `dsh-web-frontend` 的 CSS 里逐个查证过），于是全部落到硬编 fallback 色，表现为**背景与宿主不统一**。现改用真 token：`--dsw-alias-bg-base`/`bg-layer-1..3`、`--dsw-alias-border-l1..l3`、`--dsw-alias-label-primary/secondary/tertiary/error`、`--dsw-alias-state-{success,error,warn}-primary`、`--dsw-alias-interactive-bg-hover`、`--dsw-alias-scrollbar-bg-l2`、`--dsw-radius-{xs,sm,lg}`、`--dsw-font-markdown-code-font-family`。同时**去掉了 sticky 头部与其背景**（那是滚动时的一道色带），卡片/统计块统一用宿主同一层表面色。
-- **目标选择**（页头下拉 → 独立卡片）：当前目标（完整路径）、候选过滤框、可点列表（● 有证据 / ○ 无证据 + 文件数/体积/日志/最近时间）、**手动输入绝对路径**（回车或"应用"）、"回到默认"按钮，底部列出允许根。
+- **工作目录控件（页头右上角）**：显示当前目标目录名（悬停见完整路径），**点击弹出选择面板**：当前完整路径、候选过滤框、可点列表（● 有证据 / ○ 无证据 + 文件数/体积/日志/最近时间，当前项高亮）、手动输入绝对路径、"回到默认"、扫描根与允许根。点背景或按 Esc 关闭；选择后立即切换并关闭。目标选择不再占用网格中的一张常驻卡片。
 - **路线图**：上半部分**实时推导**（每次刷新重算，来源为本仓私有记录），下半部分是**计划文档**并显示其来源与"几天前更新"，编辑计划文件即更新下半部分。
 
 ## 卸载

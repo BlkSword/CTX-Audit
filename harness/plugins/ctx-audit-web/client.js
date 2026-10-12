@@ -99,6 +99,10 @@ window.__ModuleLoader__.load({
 .caw-preset{display:flex;align-items:baseline;gap:8px;padding:5px 2px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.16))}
 .caw-preset:last-child{border-bottom:none}
 .caw-picker{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.caw-tgt{position:relative;display:flex;justify-content:flex-end}
+.caw-tgt-b{display:inline-flex;align-items:center;gap:6px;max-width:360px;overflow:hidden}
+.caw-backdrop{position:fixed;inset:0;z-index:20}
+.caw-pop{position:absolute;right:0;top:calc(100% + 6px);z-index:30;width:min(540px,86vw);text-align:left;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.3));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#fff));box-shadow:0 10px 30px rgba(0,0,0,.18);padding:10px 12px}
 `;
 
     async function getJson(url, signal) {
@@ -582,12 +586,12 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Target picker: the current selection, a filter over the discovered
-     * candidates, a clickable list, and a manual path entry for targets outside
-     * the scan root. The candidate list doubles as the aggregate view, so the
-     * panel does not grow two cards that say the same thing.
+     * Working-directory control: the current target sits in the header's top-right
+     * corner, and clicking it opens the picker -- filter, candidate list, manual
+     * path, and a way back to the default. A backdrop plus Escape closes it.
      */
-    function TargetPicker({ targets, target, onSelect }) {
+    function TargetControl({ targets, target, onSelect }) {
+      const [open, setOpen] = useState(false);
       const [filter, setFilter] = useState('');
       const [manual, setManual] = useState('');
       const d = targets.data || {};
@@ -596,92 +600,129 @@ window.__ModuleLoader__.load({
         ? all.filter((row) => `${row.name} ${row.path}`.toLowerCase().includes(filter.toLowerCase()))
         : all;
       const current = target || d.workspace || '';
+      const name = current ? current.split(/[\\/]/).filter(Boolean).pop() : '—';
       const withEvidence = all.filter((row) => row.hasAudit);
-      const totalBytes = all.reduce((sum, row) => sum + (row.bytes || 0), 0);
 
-      return h(Card, { title: '审计目标', extra: h(SourceBadge, { key: 's', kind: 'local' }) }, [
-        h('div', { key: 'cur', className: 'caw-row' }, [
-          h('div', { key: 'k', className: 'caw-k' }, '当前'),
-          h(
-            'div',
-            { key: 'v', className: 'caw-v' },
-            h('code', { className: 'caw-code' }, current || '—'),
-            target ? null : h('span', { key: 'd', className: 'caw-muted' }, '（默认：引擎工作目录）'),
-          ),
-        ]),
+      useEffect(() => {
+        if (!open) return undefined;
+        const onKey = (event) => {
+          if (event.key === 'Escape') setOpen(false);
+        };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+      }, [open]);
+
+      const pick = (path) => {
+        onSelect(path);
+        setOpen(false);
+        setFilter('');
+        setManual('');
+      };
+
+      return h('div', { className: 'caw-tgt' }, [
         h(
-          Row,
-          { key: 'sum', label: '汇总' },
-          `候选 ${all.length} · 已有证据 ${withEvidence.length} · 证据体积 ${fmtBytes(totalBytes)} · 扫描根 ${
-            d.root || '—'
-          }`,
+          'button',
+          {
+            key: 'b',
+            className: 'caw-btn caw-tgt-b',
+            type: 'button',
+            title: current || '默认（引擎工作目录）',
+            title: current,
+            onClick: () => setOpen((value) => !value),
+          },
+          [
+            h('span', { key: 'l', className: 'caw-muted' }, '工作目录'),
+            h('code', { key: 'n', className: 'caw-code' }, name),
+            h('span', { key: 'c', className: 'caw-muted' }, open ? '▴' : '▾'),
+          ],
         ),
-        h('div', { key: 'tools', className: 'caw-picker', style: { margin: '8px 0' } }, [
-          h('input', {
-            key: 'f',
-            className: 'caw-input',
-            style: { flex: '1 1 150px' },
-            placeholder: '过滤候选…',
-            value: filter,
-            onChange: (event) => setFilter(event.target.value),
-          }),
-          h('input', {
-            key: 'm',
-            className: 'caw-input',
-            style: { flex: '1 1 190px' },
-            placeholder: '手动输入绝对路径…',
-            value: manual,
-            onChange: (event) => setManual(event.target.value),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter' && manual.trim()) onSelect(manual.trim());
-            },
-          }),
-          h(
-            'button',
-            { key: 'a', className: 'caw-btn', type: 'button', disabled: !manual.trim(), onClick: () => onSelect(manual.trim()) },
-            '应用',
-          ),
-          target ? h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: () => onSelect('') }, '回到默认') : null,
-        ]),
-        h(
-          'div',
-          { key: 'list', className: 'caw-scroll' },
-          rows.length
-            ? rows.map((row) =>
+        open ? h('div', { key: 'bd', className: 'caw-backdrop', onClick: () => setOpen(false) }) : null,
+        open
+          ? h('div', { key: 'pop', className: 'caw-pop' }, [
+              h('div', { key: 'cur', className: 'caw-row' }, [
+                h('div', { key: 'k', className: 'caw-k' }, '当前'),
                 h(
                   'div',
-                  {
-                    key: row.path,
-                    className: 'caw-item',
-                    title: row.path,
-                    style: {
-                      cursor: 'pointer',
-                      ...(row.path === current
-                        ? { background: 'var(--dsw-alias-interactive-bg-active,rgba(128,128,128,.14))' }
-                        : {}),
-                    },
-                    onClick: () => onSelect(row.path),
-                  },
-                  [
-                    h('span', { key: 'n', className: 'caw-name' }, `${row.hasAudit ? '● ' : '○ '}${row.name}`),
-                    h(
-                      'span',
-                      { key: 'm2', className: 'caw-muted' },
-                      row.hasAudit
-                        ? `${row.files} 文件 · ${fmtBytes(row.bytes)}${row.logs ? ` · ${row.logs} 日志` : ''}`
-                        : '无证据目录',
-                    ),
-                    h('span', { key: 't', className: 'caw-muted' }, row.newest ? fmtAgo(row.newest) : ''),
-                  ],
+                  { key: 'v', className: 'caw-v' },
+                  h('code', { className: 'caw-code' }, current || '—'),
+                  target ? null : h('span', { key: 'd', className: 'caw-muted' }, '（默认：引擎工作目录）'),
                 ),
-              )
-            : h('div', { key: 'empty', className: 'caw-muted' }, filter ? '无匹配候选' : '未发现候选'),
-        ),
-        h(
-          'div',
-          { key: 'roots', className: 'caw-muted', style: { marginTop: '6px' } },
-          `点一行即切换 · 允许根：${(d.allowedRoots || []).join(' · ')}`,
-        ),
+              ]),
+              h(
+                Row,
+                { key: 'sum', label: '汇总' },
+                `候选 ${all.length} · 已有证据 ${withEvidence.length} · 证据体积 ${fmtBytes(
+                  all.reduce((sum, row) => sum + (row.bytes || 0), 0),
+                )}`,
+              ),
+              h('div', { key: 'tools', className: 'caw-picker', style: { margin: '8px 0' } }, [
+                h('input', {
+                  key: 'f',
+                  className: 'caw-input',
+                  style: { flex: '1 1 130px' },
+                  placeholder: '过滤候选…',
+                  value: filter,
+                  onChange: (event) => setFilter(event.target.value),
+                }),
+                h('input', {
+                  key: 'm',
+                  className: 'caw-input',
+                  style: { flex: '1 1 160px' },
+                  placeholder: '绝对路径…',
+                  value: manual,
+                  onChange: (event) => setManual(event.target.value),
+                  onKeyDown: (event) => {
+                    if (event.key === 'Enter' && manual.trim()) pick(manual.trim());
+                  },
+                }),
+                h(
+                  'button',
+                  { key: 'a', className: 'caw-btn', type: 'button', disabled: !manual.trim(), onClick: () => pick(manual.trim()) },
+                  '应用',
+                ),
+                target ? h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: () => pick('') }, '回到默认') : null,
+              ]),
+              h(
+                'div',
+                { key: 'list', className: 'caw-scroll', style: { maxHeight: '260px' } },
+                rows.length
+                  ? rows.map((row) =>
+                      h(
+                        'div',
+                        {
+                          key: row.path,
+                          className: 'caw-item',
+                          title: row.path,
+                          style: {
+                            cursor: 'pointer',
+                            ...(row.path === current
+                              ? { background: 'var(--dsw-alias-interactive-bg-active,rgba(128,128,128,.14))' }
+                              : {}),
+                          },
+                          onClick: () => pick(row.path),
+                        },
+                        [
+                          h('span', { key: 'n', className: 'caw-name' }, `${row.hasAudit ? '● ' : '○ '}${row.name}`),
+                          h(
+                            'span',
+                            { key: 'm2', className: 'caw-muted' },
+                            row.hasAudit
+                              ? `${row.files} 文件 · ${fmtBytes(row.bytes)}${row.logs ? ` · ${row.logs} 日志` : ''}`
+                              : '无证据目录',
+                          ),
+                          h('span', { key: 't', className: 'caw-muted' }, row.newest ? fmtAgo(row.newest) : ''),
+                        ],
+                      ),
+                    )
+                  : h('div', { key: 'empty', className: 'caw-muted' }, filter ? '无匹配候选' : '未发现候选'),
+              ),
+              h(
+                'div',
+                { key: 'roots', className: 'caw-muted', style: { marginTop: '6px' } },
+                `扫描根 ${d.root || '—'} · 允许根：${(d.allowedRoots || []).join(' · ')}`,
+              ),
+            ])
+          : null,
       ]);
     }
 
@@ -808,12 +849,12 @@ window.__ModuleLoader__.load({
         h('div', { key: 'head', className: 'caw-head' }, [
           h('div', { key: 't' }, [
             h('h2', { key: 'h', className: 'caw-title' }, 'CTX-Audit'),
-            h('p', { key: 'p', className: 'caw-sub' }, '代码安全审计 · 证据层控制面板'),
+            h('代码安全审计 · 审计控制台'),
           ]),
           h('div', { key: 's', className: 'caw-spacer' }),
           h('div', { key: 'pills', className: 'caw-pills' }, pills),
-          h(Pill, { key: 'tgt' }, `目标 ${target ? target.split(/[\\/]/).filter(Boolean).pop() : '默认'}`),
           h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: refreshAll, disabled: busy }, busy ? '刷新中…' : '刷新'),
+          h(TargetControl, { key: 'wd', targets, target, onSelect: setTarget }),
         ]),
         h('div', { key: 'body', className: 'caw-body' }, [
           h(
@@ -835,7 +876,6 @@ window.__ModuleLoader__.load({
             h(CardBoundary, { key: 'artifacts', label: '证据产物' }, h(ArtifactsCard, { status })),
             h(CardBoundary, { key: 'roadmap', label: '路线图' }, h(RoadmapCard, { roadmap })),
             h(CardBoundary, { key: 'presets', label: 'Agent 预设' }, h(PresetsCard, { presets })),
-            h(CardBoundary, { key: 'targets', label: '审计目标' }, h(TargetPicker, { targets, target, onSelect: setTarget })),
             h(CardBoundary, { key: 'project', label: '项目体检' }, h(ProjectCard, { project, target })),
           ]),
           h('div', { key: 'foot', className: 'caw-foot' }, [
