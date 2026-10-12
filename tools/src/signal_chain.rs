@@ -35,7 +35,19 @@
 //!   起效点改用**目的地容量锚点**：目的地必须是本函数内可见的定长数组
 //!   （`char dst[64]`），否则不升级（宁少勿滥）。
 //!
-//! 两个构造族都**只登记、不判定漏洞真值**：最终判定由人/LLM 依据证据做。
+//! * [`Construct::SprintfUnbounded`] —— **无长度实参的格式化写**：`sprintf`/`vsprintf` 本身不带长度，
+//!   目的地是本函数内可见的定长数组，而格式串含**无界转换**（`%s`/`%[`/`%*`）或本身非常量。
+//! * [`Construct::MacroClass`] —— **宏 / 字符分类构造**：累积的下标写入被**全大写宏**门控，
+//!   而宏定义未展开 ⇒ 该字符类是否有界无从证明（宏未展开照实标注）。
+//! * [`Construct::SignedInit`] —— **有符号负初值**：`ssize_t n = -1` 这类失败哨兵被当长度/下标使用，
+//!   且函数体内**没有**负值/哨兵检查（有则记 `negative_check_in_scope` 不升级）。
+//! * [`Construct::CharCopyLoop`] —— **逐字符拷贝循环**：循环体是 `*to++ = *from++` 这类指针自增写，
+//!   没有 libc sink 可匹配 ⇒ 既有 `loop` 族的 sink 集合结构上看不见它。
+//!
+//! **全部构造族都只登记、不判定漏洞真值**：最终判定由人/LLM 依据证据做。
+//! 后四族补的是**覆盖面**：既有两族只覆盖"循环界 / 长度实参"两种形态，
+//! 而真实代码里的同类缺陷大量以族外形态出现（写函数无长度实参、分类宏门控、
+//! 有符号负哨兵、指针逐字符拷贝）——覆盖面过窄是候选层命中的主要限制。
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -59,6 +71,14 @@ pub enum Construct {
     Loop,
     /// 长度实参构造。
     LenArg,
+    /// 无长度实参的格式化写（`sprintf`/`vsprintf`）：目的地是定长数组，格式串含无界转换。
+    SprintfUnbounded,
+    /// 宏 / 字符分类：累积下标写入被全大写宏门控，宏定义未展开。
+    MacroClass,
+    /// 有符号负初值：`-1` 哨兵被当长度/下标使用，且无负值检查。
+    SignedInit,
+    /// 逐字符拷贝循环：`*to++ = *from++`，没有 libc sink 可匹配。
+    CharCopyLoop,
 }
 
 impl Construct {
@@ -66,6 +86,10 @@ impl Construct {
         match self {
             Construct::Loop => "loop",
             Construct::LenArg => "lenarg",
+            Construct::SprintfUnbounded => "sprintf-unbounded",
+            Construct::MacroClass => "macro-class",
+            Construct::SignedInit => "signed-init",
+            Construct::CharCopyLoop => "charcopy-loop",
         }
     }
 }
@@ -76,6 +100,10 @@ pub enum ConstructSet {
     All,
     Loop,
     LenArg,
+    SprintfUnbounded,
+    MacroClass,
+    SignedInit,
+    CharCopyLoop,
 }
 
 impl ConstructSet {
@@ -84,6 +112,12 @@ impl ConstructSet {
             "all" | "both" => Some(ConstructSet::All),
             "loop" | "loops" => Some(ConstructSet::Loop),
             "lenarg" | "len-arg" | "lenarg-only" => Some(ConstructSet::LenArg),
+            "sprintf" | "sprintf-unbounded" | "no-len-arg" => {
+                Some(ConstructSet::SprintfUnbounded)
+            }
+            "macro" | "macro-class" | "charclass" => Some(ConstructSet::MacroClass),
+            "signed" | "signed-init" | "neg-init" => Some(ConstructSet::SignedInit),
+            "charcopy" | "charcopy-loop" | "ptr-copy" => Some(ConstructSet::CharCopyLoop),
             _ => None,
         }
     }
@@ -93,6 +127,10 @@ impl ConstructSet {
             ConstructSet::All => true,
             ConstructSet::Loop => c == Construct::Loop,
             ConstructSet::LenArg => c == Construct::LenArg,
+            ConstructSet::SprintfUnbounded => c == Construct::SprintfUnbounded,
+            ConstructSet::MacroClass => c == Construct::MacroClass,
+            ConstructSet::SignedInit => c == Construct::SignedInit,
+            ConstructSet::CharCopyLoop => c == Construct::CharCopyLoop,
         }
     }
 }
@@ -689,6 +727,20 @@ fn base_uncertainty(construct: Construct) -> Vec<String> {
             "长度实参构造要求目的地是本函数内可见的定长数组；单轮写入的容量关系仍需复核"
                 .to_string(),
         ),
+        Construct::SprintfUnbounded => u.push(
+            "输出上界未证明：格式串里的宽度/精度是最小值不是上界，只有'字面量且不含无界转换'才判为有界"
+                .to_string(),
+        ),
+        Construct::MacroClass => u.push(
+            "门控宏的定义未展开：该字符类是否有界、是否等价于容量检查，均未证明".to_string(),
+        ),
+        Construct::SignedInit => u.push(
+            "有符号性与赋值路径未证明：未证明该标识符在使用点已被成功路径赋值".to_string(),
+        ),
+        Construct::CharCopyLoop => u.push(
+            "目的地容量未解析（指针可能经别名指向更小的缓冲）：每轮 1 字节的上界关系需人工复核"
+                .to_string(),
+        ),
     }
     u
 }
@@ -855,11 +907,24 @@ fn collect_sources(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 pub fn scan_source(rel: &str, text: &str, options: &SignalChainOptions) -> Vec<SignalChainCandidate> {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out = Vec::new();
+    // 顺序即登记顺序：既有两族在前，保证按函数名取首条的既有断言不受新族影响。
     if options.constructs.includes(Construct::Loop) {
         scan_loops(rel, &lines, &mut out);
     }
     if options.constructs.includes(Construct::LenArg) {
         scan_lenargs(rel, &lines, &mut out);
+    }
+    if options.constructs.includes(Construct::SprintfUnbounded) {
+        scan_sprintf_unbounded(rel, &lines, &mut out);
+    }
+    if options.constructs.includes(Construct::MacroClass) {
+        scan_macro_class(rel, &lines, &mut out);
+    }
+    if options.constructs.includes(Construct::SignedInit) {
+        scan_signed_init(rel, &lines, &mut out);
+    }
+    if options.constructs.includes(Construct::CharCopyLoop) {
+        scan_charcopy_loops(rel, &lines, &mut out);
     }
     out
 }
@@ -1141,6 +1206,587 @@ fn scan_lenargs(rel: &str, lines: &[&str], out: &mut Vec<SignalChainCandidate>) 
     }
 }
 
+// ── 构造族：sprintf 无长度实参（①）────────────────────────────────────
+//
+// 依据：既有两族只覆盖"循环界 / 长度实参"，而"写函数自身没有长度实参"这一形态
+// 结构上落在那两族之外（`sprintf`/`vsprintf` 不接收长度参数）。
+// 本族的形态是**写函数本身没有长度实参**（`sprintf`/`vsprintf`），而目的地是本函数内
+// 可见的**定长数组**。判据里刻意保留既有口径：格式串里的宽度/精度是**最小值不是上界**，
+// 因此只有"字面量格式 **且不含无界转换**"才判为输出有界（`%s`/`%[`/`%*` 都算无界）。
+
+fn re_sprintf_unbounded() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"\b(sprintf|vsprintf)\s*\(").expect("sprintf regex"))
+}
+
+/// 从**原文**里取 `(dest, format)` 两个实参。
+/// 不能用 `args_after`：`split_args` 刻意把字符串字面量整体折叠成 `""`（与已验证原型同构），
+/// 于是 `"%s"` 与 `"%d"` 无法区分，本族就没有判据了。
+fn re_sprintf_args() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(r#"(?:sprintf|vsprintf)\s*\(\s*([^,()]+?)\s*,\s*("(?:[^"\\]|\\.)*"|[^,()]+)"#)
+            .expect("sprintf args regex")
+    })
+}
+
+/// 格式串里是否存在**无界转换**：`%s`、`%[`（扫描集）、`%*`（宽度取自实参）。
+fn format_has_unbounded_conversion(text: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    let re = R.get_or_init(|| {
+        Regex::new(r"%[-+ #0]*[*0-9]*[.]?[*0-9]*(?:s|\[|\*)").expect("unbounded format regex")
+    });
+    re.is_match(text)
+}
+
+/// 剥掉实参前的 C 强制转换并取基名（`(char *) passbuf` → `passbuf`）。
+fn strip_leading_casts(expr: &str) -> String {
+    let mut s = expr.trim();
+    while s.starts_with('(') {
+        match s.find(')') {
+            Some(close) => {
+                let rest = s[close + 1..].trim_start();
+                if rest.is_empty() {
+                    break;
+                }
+                s = rest;
+            }
+            None => break,
+        }
+    }
+    s.split(|c: char| c == '[' || c.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+fn scan_sprintf_unbounded(rel: &str, lines: &[&str], out: &mut Vec<SignalChainCandidate>) {
+    for (i, ln) in lines.iter().enumerate() {
+        let Some(m) = re_sprintf_unbounded().captures(ln) else {
+            continue;
+        };
+        let sink = m.get(1).unwrap().as_str().to_string();
+        let Some(am) = re_sprintf_args().captures(ln) else {
+            continue;
+        };
+        let dest_raw = am.get(1).unwrap().as_str().trim().to_string();
+        let fmt_raw = am.get(2).unwrap().as_str().trim().to_string();
+        if dest_raw.is_empty() || fmt_raw.is_empty() {
+            continue;
+        }
+        let dest_base = strip_leading_casts(&dest_raw);
+        if !is_plain_identifier(&dest_base) {
+            continue;
+        }
+        let unbound = if fmt_raw.starts_with('"') {
+            format_has_unbounded_conversion(&fmt_raw)
+        } else {
+            true // 非常量格式串：内容无从判断
+        };
+        let prev_lo = i.saturating_sub(GUARD_PREV_LINES);
+        let prev: Vec<&str> = lines[prev_lo..i].to_vec();
+        let own_hit = guard_hit(ln, &dest_base);
+        let prev_hit_line = guard_hit_line(&prev, &dest_base);
+        let (guard_seen, guard_scope, guard_line) = if own_hit {
+            (true, "own-condition".to_string(), Some(i + 1))
+        } else if let Some(l) = prev_hit_line {
+            (true, "prev-3-lines".to_string(), Some(prev_lo + l))
+        } else {
+            (false, "none".to_string(), None)
+        };
+        let (function, _params) = enclosing_function(lines, i);
+        let arrays = fixed_arrays_in_function(lines, i);
+        let dest_anchor = arrays.get(&dest_base).cloned();
+        let origin = trigger_origin(&fmt_raw);
+        let cap_expr = dest_anchor
+            .as_ref()
+            .map(|(_decl, cap)| {
+                if cap.chars().all(|c| c.is_ascii_digit()) {
+                    format!("sizeof({}) /* = {} */", dest_base, cap)
+                } else {
+                    format!("sizeof({})", dest_base)
+                }
+            })
+            .unwrap_or_else(|| format!("capacity({})", dest_raw));
+        let (verdict, cause) = if !unbound {
+            ("not_upgraded", Some("format_literal_bounded".to_string()))
+        } else if guard_seen {
+            ("not_upgraded", Some("guard_in_scope".to_string()))
+        } else if dest_anchor.is_none() {
+            ("not_upgraded", Some("no_fixed_destination".to_string()))
+        } else {
+            ("candidate", None)
+        };
+        out.push(SignalChainCandidate {
+            file: rel.to_string(),
+            line: i + 1,
+            function,
+            construct: Construct::SprintfUnbounded.as_str().to_string(),
+            trigger: Trigger {
+                expr: fmt_raw.clone(),
+                origin: origin.to_string(),
+                attacker_influence: if origin == "constant" {
+                    "none".to_string()
+                } else {
+                    "possible".to_string()
+                },
+            },
+            path: PathRole {
+                guard_seen,
+                guard_scope,
+                guard_line,
+                searched: vec![
+                    "own-condition".to_string(),
+                    format!("prev-{}lines", GUARD_PREV_LINES),
+                    "destination-identifier".to_string(),
+                ],
+            },
+            effect: Effect {
+                sink: sink.clone(),
+                kind: if dest_anchor.is_some() {
+                    "oob_write".to_string()
+                } else {
+                    "unknown_write".to_string()
+                },
+                accumulating: false,
+                precondition: Precondition {
+                    expr: format!("written({}) <= {}", sink, cap_expr),
+                    verdict: "unproven".to_string(),
+                },
+            },
+            verdict: verdict.to_string(),
+            cause,
+            evidence_line: ln.trim().to_string(),
+            provenance: provenance_for(Construct::SprintfUnbounded),
+            uncertainty: base_uncertainty(Construct::SprintfUnbounded),
+        });
+    }
+}
+
+// ── 构造族：宏 / 字符分类（②）────────────────────────────────────────
+//
+// 形态（expat `CHECK_NAME_CASE(c)`）：累积的下标写入被**全大写宏**门控，而宏定义
+// 未展开 ⇒ 无法证明该字符类是有界的。判据只认"全大写宏 + 窗口内出现自增下标写入 +
+// 目的地是本函数内可见的定长数组"，宏语义照实标成不确定。
+
+fn re_macro_class() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(r"\b(?:if|while)\s*\(\s*([A-Z][A-Z0-9_]{2,})\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\)")
+            .expect("macro class regex")
+    })
+}
+
+/// 自增/自减下标的数组写入：`name[idx++] =`、`name[idx--] =`、`name[idx += k] =`。
+fn re_indexed_write() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(r"\b([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*(?:\+\+|--|\+=|-=)\s*\]\s*=")
+            .expect("indexed write regex")
+    })
+}
+
+fn scan_macro_class(rel: &str, lines: &[&str], out: &mut Vec<SignalChainCandidate>) {
+    for (i, ln) in lines.iter().enumerate() {
+        let Some(m) = re_macro_class().captures(ln) else {
+            continue;
+        };
+        let macro_name = m.get(1).unwrap().as_str().to_string();
+        let arg = m.get(2).unwrap().as_str().to_string();
+        let end = (i + 12).min(lines.len());
+        let mut write: Option<(usize, String, String)> = None;
+        for j in i..end {
+            if let Some(w) = re_indexed_write().captures(lines[j]) {
+                write = Some((
+                    j,
+                    w.get(1).unwrap().as_str().to_string(),
+                    w.get(2).unwrap().as_str().to_string(),
+                ));
+                break;
+            }
+        }
+        let Some((wj, dest, index_ident)) = write else {
+            continue;
+        };
+        let prev_lo = i.saturating_sub(GUARD_PREV_LINES);
+        let prev: Vec<&str> = lines[prev_lo..i].to_vec();
+        let own_hit = guard_hit(ln, &index_ident);
+        let prev_hit_line = guard_hit_line(&prev, &index_ident);
+        let (guard_seen, guard_scope, guard_line) = if own_hit {
+            (true, "own-condition".to_string(), Some(i + 1))
+        } else if let Some(l) = prev_hit_line {
+            (true, "prev-3-lines".to_string(), Some(prev_lo + l))
+        } else {
+            (false, "none".to_string(), None)
+        };
+        let (function, _params) = enclosing_function(lines, wj);
+        let arrays = fixed_arrays_in_function(lines, i);
+        let dest_anchor = arrays.get(&dest).cloned();
+        let origin = trigger_origin(&arg);
+        let cap_expr = dest_anchor
+            .as_ref()
+            .map(|(_decl, cap)| {
+                if cap.chars().all(|c| c.is_ascii_digit()) {
+                    format!("sizeof({}) /* = {} */", dest, cap)
+                } else {
+                    format!("sizeof({})", dest)
+                }
+            })
+            .unwrap_or_else(|| format!("capacity({})", dest));
+        let (verdict, cause) = if origin == "constant" {
+            ("not_upgraded", Some("trigger_constant".to_string()))
+        } else if guard_seen {
+            ("not_upgraded", Some("guard_in_scope".to_string()))
+        } else if dest_anchor.is_none() {
+            ("not_upgraded", Some("no_fixed_destination".to_string()))
+        } else {
+            ("candidate", None)
+        };
+        let mut uncertainty = base_uncertainty(Construct::MacroClass);
+        uncertainty.push(format!(
+            "macro_not_expanded: 门控宏 {} 的定义未展开，其字符类是否有界未证明",
+            macro_name
+        ));
+        out.push(SignalChainCandidate {
+            file: rel.to_string(),
+            line: wj + 1,
+            function,
+            construct: Construct::MacroClass.as_str().to_string(),
+            trigger: Trigger {
+                expr: arg.clone(),
+                origin: origin.to_string(),
+                attacker_influence: if origin == "constant" {
+                    "none".to_string()
+                } else {
+                    "possible".to_string()
+                },
+            },
+            path: PathRole {
+                guard_seen,
+                guard_scope,
+                guard_line,
+                searched: vec![
+                    "own-condition".to_string(),
+                    format!("prev-{}lines", GUARD_PREV_LINES),
+                    "index-identifier".to_string(),
+                ],
+            },
+            effect: Effect {
+                sink: format!("{}[{}++]", dest, index_ident),
+                kind: if dest_anchor.is_some() {
+                    "oob_write".to_string()
+                } else {
+                    "unknown_write".to_string()
+                },
+                accumulating: true,
+                precondition: Precondition {
+                    expr: format!("Σ(written) <= {}", cap_expr),
+                    verdict: "unproven".to_string(),
+                },
+            },
+            verdict: verdict.to_string(),
+            cause,
+            evidence_line: ln.trim().to_string(),
+            provenance: provenance_for(Construct::MacroClass),
+            uncertainty,
+        });
+    }
+}
+
+// ── 构造族：有符号负初值（③）────────────────────────────────────────
+//
+// 形态（nginx `ssize_t len = -1`）：失败哨兵 `-1` 被当作长度/下标使用，而作用域内
+// **没有**负值/哨兵检查（`if (n < 0) return;` 这类修复形态）。有符号性本身不证明，
+// 只判"该标识符在函数体内被用作长度/下标，且无负值检查"。
+
+fn re_signed_neg_init() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(
+            r"\b(ssize_t|ssize|int|long|ptrdiff_t|off_t|int\d+_t|intptr_t)\s+([A-Za-z_]\w*)\s*=\s*-\s*1\s*;",
+        )
+        .expect("signed neg init regex")
+    })
+}
+
+/// 负值 / 哨兵检查：`n < 0`、`0 > n`、`n == -1`、`-1 == n`。
+fn negative_check_seen(lines: &[&str], ident: &str) -> Option<usize> {
+    let pattern = format!(
+        r"(?:{ident}\s*(?:<|<=|==)\s*(?:0|-1)|(?:0|-1)\s*(?:>|>=|==)\s*{ident})",
+        ident = regex::escape(ident)
+    );
+    let re = Regex::new(&pattern).ok()?;
+    for (i, line) in lines.iter().enumerate() {
+        if is_comment_or_preproc(line) {
+            continue;
+        }
+        if re.is_match(line) {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+fn scan_signed_init(rel: &str, lines: &[&str], out: &mut Vec<SignalChainCandidate>) {
+    for (i, ln) in lines.iter().enumerate() {
+        let Some(m) = re_signed_neg_init().captures(ln) else {
+            continue;
+        };
+        let ty = m.get(1).unwrap().as_str().to_string();
+        let ident = m.get(2).unwrap().as_str().to_string();
+        let (start, _) = function_span(lines, i);
+        let end = function_body_end(lines, start);
+        let mut usage: Option<(usize, String, String)> = None;
+        for j in (i + 1)..end {
+            let l = lines[j];
+            if is_comment_or_preproc(l) || !l.contains(&ident) {
+                continue;
+            }
+            if let Some(w) = re_indexed_write().captures(l) {
+                usage = Some((
+                    j,
+                    w.get(1).unwrap().as_str().to_string(),
+                    "indexed-write".to_string(),
+                ));
+                break;
+            }
+            if let Some(sk) = re_sink_lenarg().captures(l) {
+                let args = args_after(l, sk.get(0).unwrap().end().saturating_sub(1));
+                if args.iter().any(|a| a.trim() == ident) {
+                    let dest = args
+                        .first()
+                        .map(|a| strip_leading_casts(a))
+                        .unwrap_or_default();
+                    usage = Some((j, dest, "length-argument".to_string()));
+                    break;
+                }
+            }
+        }
+        let Some((uj, dest, use_kind)) = usage else {
+            continue; // 未被当作长度/下标使用 ⇒ 不登记
+        };
+        let neg_guard = negative_check_seen(&lines[start..end], &ident);
+        let (function, _params) = enclosing_function(lines, uj);
+        let arrays = fixed_arrays_in_function(lines, uj);
+        let dest_anchor = if dest.is_empty() {
+            None
+        } else {
+            arrays.get(&dest).cloned()
+        };
+        let (verdict, cause) = if neg_guard.is_some() {
+            ("not_upgraded", Some("negative_check_in_scope".to_string()))
+        } else if dest_anchor.is_none() {
+            ("not_upgraded", Some("no_fixed_destination".to_string()))
+        } else {
+            ("candidate", None)
+        };
+        let mut uncertainty = base_uncertainty(Construct::SignedInit);
+        uncertainty.push(
+            "signedness_and_flow_unproven: 未证明该标识符在成功路径上已被赋值（需要路径敏感分析）"
+                .to_string(),
+        );
+        let mut path = PathRole {
+            guard_seen: neg_guard.is_some(),
+            guard_scope: if neg_guard.is_some() {
+                "negative-check".to_string()
+            } else {
+                "none".to_string()
+            },
+            guard_line: neg_guard,
+            searched: vec![
+                "negative-check".to_string(),
+                "function-body".to_string(),
+                format!("prev-{}lines", GUARD_PREV_LINES),
+            ],
+        };
+        if neg_guard.is_none() {
+            path.guard_seen = false;
+        }
+        out.push(SignalChainCandidate {
+            file: rel.to_string(),
+            line: uj + 1,
+            function,
+            construct: Construct::SignedInit.as_str().to_string(),
+            trigger: Trigger {
+                expr: ident.clone(),
+                origin: "identifier".to_string(),
+                attacker_influence: "unknown".to_string(),
+            },
+            path,
+            effect: Effect {
+                sink: if dest.is_empty() {
+                    format!("{} ({})", ident, use_kind)
+                } else {
+                    format!("{}[{}]", dest, ident)
+                },
+                kind: if dest_anchor.is_some() {
+                    "oob_write".to_string()
+                } else {
+                    "unknown_write".to_string()
+                },
+                accumulating: true,
+                precondition: Precondition {
+                    expr: format!("{} >= 0", ident),
+                    verdict: "unproven".to_string(),
+                },
+            },
+            verdict: verdict.to_string(),
+            cause,
+            evidence_line: format!("{} {} = -1;", ty, ident),
+            provenance: provenance_for(Construct::SignedInit),
+            uncertainty,
+        });
+    }
+}
+
+// ── 构造族：逐字符拷贝循环（④）──────────────────────────────────────
+//
+// 形态（sudo `set_cmnd`）：循环体是 `*to++ = *from++` 这类**指针自增写**，没有 libc
+// sink 可匹配 ⇒ 既有 `loop` 族的 sink 集合看不见它。判据是"循环窗口内出现指针自增写 +
+// 目的地可锚到本函数内可见的定长数组 + 窗口内无界检查"。
+
+fn re_charcopy_assign() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(r"\*\s*([A-Za-z_]\w*)\s*\+\+\s*=\s*\*\s*([A-Za-z_]\w*)\s*\+?\+?")
+            .expect("charcopy regex")
+    })
+}
+
+/// 找到 `ident` 的指针绑定目标：`char *to = buf;` / `to = buf;` → `buf`。
+fn pointer_binding_target(lines: &[&str], idx: usize, ident: &str) -> Option<String> {
+    let (start, _) = function_span(lines, idx);
+    let end = function_body_end(lines, start);
+    let pattern = format!(r"(?:\*\s*)?{ident}\s*=\s*([A-Za-z_]\w*)", ident = regex::escape(ident));
+    let re = Regex::new(&pattern).ok()?;
+    for line in lines.iter().take(end).skip(start) {
+        if is_comment_or_preproc(line) {
+            continue;
+        }
+        if let Some(c) = re.captures(line) {
+            let target = c.get(1).unwrap().as_str().to_string();
+            if target != ident {
+                return Some(target);
+            }
+        }
+    }
+    None
+}
+
+fn scan_charcopy_loops(rel: &str, lines: &[&str], out: &mut Vec<SignalChainCandidate>) {
+    for (i, ln) in lines.iter().enumerate() {
+        let is_loop = re_loop().is_match(ln)
+            || ln.trim_start().starts_with("while")
+            || ln.trim_start().starts_with("do {");
+        if !is_loop {
+            continue;
+        }
+        let end = (i + 12).min(lines.len());
+        let body = lines[i..end].join("\n");
+        let Some(c) = re_charcopy_assign().captures(&body) else {
+            continue;
+        };
+        let dst = c.get(1).unwrap().as_str().to_string();
+        let src = c.get(2).unwrap().as_str().to_string();
+        let bound = re_loop()
+            .captures(ln)
+            .and_then(|m| {
+                re_cond_cmp()
+                    .captures(m.get(2).map(|x| x.as_str()).unwrap_or(""))
+                    .map(|cm| cm.get(3).unwrap().as_str().trim().to_string())
+            })
+            .unwrap_or_else(|| ln.trim().to_string());
+        let prev_lo = i.saturating_sub(GUARD_PREV_LINES);
+        let prev: Vec<&str> = lines[prev_lo..i].to_vec();
+        let arrays = fixed_arrays_in_function(lines, i);
+        let dest_base = if arrays.contains_key(&dst) {
+            Some(dst.clone())
+        } else {
+            pointer_binding_target(lines, i, &dst)
+        };
+        let dest_anchor = dest_base.as_ref().and_then(|b| arrays.get(b).cloned());
+        let guard_ident = dest_base.clone().unwrap_or_else(|| dst.clone());
+        let own_hit = guard_hit(ln, &guard_ident);
+        let prev_hit_line = guard_hit_line(&prev, &guard_ident);
+        let (guard_seen, guard_scope, guard_line) = if own_hit {
+            (true, "own-condition".to_string(), Some(i + 1))
+        } else if let Some(l) = prev_hit_line {
+            (true, "prev-3-lines".to_string(), Some(prev_lo + l))
+        } else {
+            (false, "none".to_string(), None)
+        };
+        let (function, params) = enclosing_function(lines, i);
+        let origin = trigger_origin(&bound);
+        let origin_label = if origin == "identifier" && params.contains(&bound) {
+            "param"
+        } else {
+            origin
+        };
+        let cap_expr = dest_base
+            .as_ref()
+            .map(|b| match &dest_anchor {
+                Some((_decl, cap)) if cap.chars().all(|c| c.is_ascii_digit()) => {
+                    format!("sizeof({}) /* = {} */", b, cap)
+                }
+                Some(_) => format!("sizeof({})", b),
+                None => format!("capacity({})", b),
+            })
+            .unwrap_or_else(|| "capacity(<unresolved>)".to_string());
+        let (verdict, cause) = if origin == "constant" {
+            ("not_upgraded", Some("trigger_constant".to_string()))
+        } else if guard_seen {
+            ("not_upgraded", Some("guard_in_scope".to_string()))
+        } else if dest_anchor.is_none() {
+            ("not_upgraded", Some("no_fixed_destination".to_string()))
+        } else {
+            ("candidate", None)
+        };
+        out.push(SignalChainCandidate {
+            file: rel.to_string(),
+            line: i + 1,
+            function,
+            construct: Construct::CharCopyLoop.as_str().to_string(),
+            trigger: Trigger {
+                expr: bound.clone(),
+                origin: origin_label.to_string(),
+                attacker_influence: if origin == "constant" {
+                    "none".to_string()
+                } else {
+                    "possible".to_string()
+                },
+            },
+            path: PathRole {
+                guard_seen,
+                guard_scope,
+                guard_line,
+                searched: vec![
+                    "own-condition".to_string(),
+                    format!("prev-{}lines", GUARD_PREV_LINES),
+                    "destination-identifier".to_string(),
+                ],
+            },
+            effect: Effect {
+                sink: format!("*{}++ = *{}++", dst, src),
+                kind: if dest_anchor.is_some() {
+                    "oob_write".to_string()
+                } else {
+                    "unknown_write".to_string()
+                },
+                accumulating: true,
+                precondition: Precondition {
+                    expr: format!("Σ(每轮 1 字节) <= {}", cap_expr),
+                    verdict: "unproven".to_string(),
+                },
+            },
+            verdict: verdict.to_string(),
+            cause,
+            evidence_line: ln.trim().to_string(),
+            provenance: provenance_for(Construct::CharCopyLoop),
+            uncertainty: base_uncertainty(Construct::CharCopyLoop),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1419,4 +2065,223 @@ void f(int *src, int *dst)
         assert_eq!(hit.construct, "loop");
         assert!(hit.effect.accumulating, "已知答案的写指针必须在循环内推进");
     }
+    // ── 新增四族的夹具（正例 + 有界/有守卫的负例）──────────────────
+    // 期望：四族各自在自己的形态上升级为候选；在有界/有守卫的兄弟形态上不升级。
+
+    /// ① `sprintf` 无长度实参：目的地是定长数组，格式串带无界转换。
+    const FIX_UPGRADE_SPRINTF_UNBOUNDED: &str = r#"// 期望升级：sprintf-unbounded（dest=定长数组、格式串 %s 无界、无守卫）
+#include <stdio.h>
+
+void copy_label(const char *user)
+{
+    char name[64];
+    sprintf(name, "%s", user);
+}
+"#;
+
+    /// ① 负例：字面量格式且**无界转换**之外的转换 ⇒ 输出有界，不升级。
+    const FIX_NO_UPGRADE_SPRINTF_BOUNDED: &str = r#"// 期望不升级：format_literal_bounded（%d 有界，非 %s/%[）
+#include <stdio.h>
+
+void format_index(int i)
+{
+    char buf[16];
+    sprintf(buf, "%d", i);
+}
+"#;
+
+    /// ② 宏/字符分类：累积下标写入被未展开的分类宏门控。
+    const FIX_UPGRADE_MACRO_CLASS: &str = r#"// 期望升级：macro-class（分类宏门控 + name[len++] 累积写入 + 无守卫）
+
+void expand_name(const char *p)
+{
+    char name[256];
+    unsigned int len = 0;
+    while (*p) {
+        char c = *p;
+        if (IS_NAME_CHAR(c)) {          /* 分类宏，定义未展开 */
+            name[len++] = c;
+        }
+        p++;
+    }
+}
+"#;
+
+    /// ② 负例：同一形态但窗口内有对下标标识符的容量守卫。
+    const FIX_NO_UPGRADE_MACRO_GUARDED: &str = r#"// 期望不升级：guard_in_scope（len >= sizeof(name) 已在窗口内）
+
+void expand_name_guarded(const char *p)
+{
+    char name[256];
+    unsigned int len = 0;
+    while (*p) {
+        char c = *p;
+        if (len >= sizeof(name)) break;
+        if (IS_NAME_CHAR(c)) {
+            name[len++] = c;
+        }
+        p++;
+    }
+}
+"#;
+
+    /// ③ 有符号负初值：失败哨兵 `-1` 被当长度实参使用，函数体内无负值检查。
+    const FIX_UPGRADE_SIGNED_INIT: &str = r#"// 期望升级：signed-init（ssize_t n = -1 被当 memcpy 长度，无负值检查）
+#include <string.h>
+
+int read_some(int fd, const char *src);
+
+void take_len(int fd, const char *src)
+{
+    char dst[32];
+    ssize_t n = -1;
+    n = read_some(fd, src);
+    memcpy(dst, src, n);
+}
+"#;
+
+    /// ③ 负例：同样的负初值，但函数体内有负值检查（修复形态）。
+    const FIX_NO_UPGRADE_SIGNED_CHECKED: &str = r#"// 期望不升级：negative_check_in_scope
+#include <string.h>
+
+int read_some(int fd, const char *src);
+
+void take_len_checked(int fd, const char *src)
+{
+    char dst[32];
+    ssize_t n = -1;
+    n = read_some(fd, src);
+    if (n < 0)
+        return;
+    memcpy(dst, src, n);
+}
+"#;
+
+    /// ④ 逐字符拷贝循环：指针自增写，没有 libc sink 可匹配。
+    const FIX_UPGRADE_CHARCOPY_LOOP: &str = r#"// 期望升级：charcopy-loop（*d++ = *from++ 累积写进定长数组，无守卫）
+
+void copy_token(const char *from, unsigned int count)
+{
+    char to[64];
+    char *d = to;
+    unsigned int i;
+    for (i = 0; i < count; i++) {
+        *d++ = *from++;
+    }
+}
+"#;
+
+    /// ④ 负例：同一形态但循环界是编译期常量。
+    const FIX_NO_UPGRADE_CHARCOPY_BOUNDED: &str = r#"// 期望不升级：trigger_constant（循环界是常量）
+
+void copy_fixed_token(const char *from)
+{
+    char to[64];
+    char *d = to;
+    unsigned int i;
+    for (i = 0; i < 8; i++) {
+        *d++ = *from++;
+    }
+}
+"#;
+
+    fn find_construct<'a>(
+        v: &'a [SignalChainCandidate],
+        construct: &str,
+    ) -> Option<&'a SignalChainCandidate> {
+        v.iter().find(|c| c.construct == construct)
+    }
+
+    #[test]
+    fn family_sprintf_unbounded_upgrades_on_wildcard_format() {
+        let v = scan_text(FIX_UPGRADE_SPRINTF_UNBOUNDED);
+        let c = find_construct(&v, "sprintf-unbounded").expect("sprintf 族应被登记");
+        assert_eq!(c.verdict, "candidate", "定长数组 + %s 无界 ⇒ 必须升级");
+        assert_eq!(c.effect.sink, "sprintf");
+        assert_eq!(c.effect.kind, "oob_write");
+        assert_eq!(c.trigger.expr, "\"%s\"");
+        assert!(!c.path.guard_seen);
+        assert!(c.provenance.iter().any(|p| p == "construct/sprintf-unbounded"));
+    }
+
+    #[test]
+    fn family_sprintf_unbounded_holds_back_on_bounded_format() {
+        let v = scan_text(FIX_NO_UPGRADE_SPRINTF_BOUNDED);
+        let c = find_construct(&v, "sprintf-unbounded").expect("sprintf 族应被登记");
+        assert_eq!(c.verdict, "not_upgraded", "%d 格式不得升级");
+        assert_eq!(c.cause.as_deref(), Some("format_literal_bounded"));
+    }
+
+    #[test]
+    fn family_macro_class_upgrades_without_capacity_guard() {
+        let v = scan_text(FIX_UPGRADE_MACRO_CLASS);
+        let c = find_construct(&v, "macro-class").expect("macro-class 族应被登记");
+        assert_eq!(c.verdict, "candidate", "分类宏门控的累积写入必须升级");
+        assert!(c.effect.accumulating);
+        assert_eq!(c.effect.kind, "oob_write");
+        assert_eq!(c.trigger.expr, "c");
+        assert!(!c.path.guard_seen);
+        assert!(
+            c.uncertainty
+                .iter()
+                .any(|u| u.contains("macro_not_expanded")),
+            "宏未展开必须如实标注: {:#?}",
+            c.uncertainty
+        );
+    }
+
+    #[test]
+    fn family_macro_class_holds_back_on_capacity_guard() {
+        let v = scan_text(FIX_NO_UPGRADE_MACRO_GUARDED);
+        let c = find_construct(&v, "macro-class").expect("macro-class 族应被登记");
+        assert_eq!(c.verdict, "not_upgraded", "有容量守卫不得升级");
+        assert_eq!(c.cause.as_deref(), Some("guard_in_scope"));
+        assert!(c.path.guard_seen);
+    }
+
+    #[test]
+    fn family_signed_init_upgrades_without_negative_check() {
+        let v = scan_text(FIX_UPGRADE_SIGNED_INIT);
+        let c = find_construct(&v, "signed-init").expect("signed-init 族应被登记");
+        assert_eq!(c.verdict, "candidate", "负哨兵当长度且无检查 ⇒ 必须升级");
+        assert_eq!(c.trigger.expr, "n");
+        assert!(!c.path.guard_seen);
+        assert!(
+            c.uncertainty
+                .iter()
+                .any(|u| u.contains("signedness_and_flow_unproven")),
+            "有符号性与赋值路径必须如实标注"
+        );
+    }
+
+    #[test]
+    fn family_signed_init_holds_back_on_negative_check() {
+        let v = scan_text(FIX_NO_UPGRADE_SIGNED_CHECKED);
+        let c = find_construct(&v, "signed-init").expect("signed-init 族应被登记");
+        assert_eq!(c.verdict, "not_upgraded", "已有负值检查不得升级");
+        assert_eq!(c.cause.as_deref(), Some("negative_check_in_scope"));
+        assert!(c.path.guard_seen);
+    }
+
+    #[test]
+    fn family_charcopy_loop_upgrades_on_pointer_copy() {
+        let v = scan_text(FIX_UPGRADE_CHARCOPY_LOOP);
+        let c = find_construct(&v, "charcopy-loop").expect("charcopy 族应被登记");
+        assert_eq!(c.verdict, "candidate", "指针自增写 + 非恒定界 ⇒ 必须升级");
+        assert_eq!(c.effect.sink, "*d++ = *from++");
+        assert_eq!(c.effect.kind, "oob_write");
+        assert!(c.effect.accumulating);
+        assert_eq!(c.trigger.origin, "param");
+        assert!(!c.path.guard_seen);
+    }
+
+    #[test]
+    fn family_charcopy_loop_holds_back_on_constant_bound() {
+        let v = scan_text(FIX_NO_UPGRADE_CHARCOPY_BOUNDED);
+        let c = find_construct(&v, "charcopy-loop").expect("charcopy 族应被登记");
+        assert_eq!(c.verdict, "not_upgraded", "常量界不得升级");
+        assert_eq!(c.cause.as_deref(), Some("trigger_constant"));
+    }
+
+
 }

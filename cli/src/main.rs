@@ -267,7 +267,7 @@ enum Commands {
         #[arg(short = 'o', long = "output", default_value = "text")]
         output: String,
 
-        /// 构造族: all | loop | lenarg
+        /// 构造族: all | loop | lenarg | sprintf-unbounded | macro-class | signed-init | charcopy-loop
         #[arg(long, default_value = "all")]
         constructs: String,
 

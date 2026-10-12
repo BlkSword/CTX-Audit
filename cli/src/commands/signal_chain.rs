@@ -23,7 +23,12 @@ pub async fn execute(
         return Err(miette!("路径不存在: {}", path));
     }
     let set = ConstructSet::parse(&constructs)
-        .ok_or_else(|| miette!("未知构造族 '{}'（可选 all | loop | lenarg）", constructs))?;
+        .ok_or_else(|| {
+            miette!(
+                "未知构造族 '{}'（可选 all | loop | lenarg | sprintf-unbounded | macro-class | signed-init | charcopy-loop）",
+                constructs
+            )
+        })?;
     let report = scan_path(
         &root,
         &SignalChainOptions {
