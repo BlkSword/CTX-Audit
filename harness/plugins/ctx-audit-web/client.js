@@ -38,65 +38,67 @@ window.__ModuleLoader__.load({
     const API = '/ctx-audit/api';
 
     const CSS = `
-.caw-root{color:var(--dsw-alias-text-primary,inherit);font-size:var(--dsw-alias-font-size-body,13px);line-height:1.55}
-.caw-head{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;padding:16px 20px 12px;border-bottom:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.25));position:sticky;top:0;background:var(--dsw-alias-bg-primary,transparent);z-index:2}
-.caw-title{margin:0;font-size:17px;font-weight:650;letter-spacing:.2px}
-.caw-sub{margin:2px 0 0;opacity:.62;font-size:12px}
+.caw-root{color:var(--dsw-alias-label-primary,inherit);font-size:13px;line-height:1.55}
+.caw-head{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;padding:14px 18px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.22))}
+.caw-title{margin:0;font-size:17px;font-weight:600;letter-spacing:.2px}
+.caw-sub{margin:2px 0 0;color:var(--dsw-alias-label-caption,var(--dsw-alias-label-tertiary,inherit));font-size:12px}
 .caw-spacer{flex:1}
 .caw-pills{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-.caw-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.3));border-radius:999px;padding:2px 9px;font-size:11.5px;white-space:nowrap}
-.caw-ok{color:var(--dsw-alias-state-success,#1a7f37)}
-.caw-bad{color:var(--dsw-alias-state-danger,#b42318)}
-.caw-btn{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.35));background:transparent;color:inherit;border-radius:7px;padding:3px 10px;font-size:12px;cursor:pointer;transition:background .12s ease}
-.caw-btn:hover:not(:disabled){background:var(--dsw-alias-bg-tertiary,rgba(128,128,128,.12))}
+.caw-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.3));border-radius:var(--dsw-radius-lg,999px);padding:2px 9px;font-size:11.5px;color:var(--dsw-alias-label-secondary,inherit);white-space:nowrap}
+.caw-ok{color:var(--dsw-alias-state-success-primary,#1a7f37)}
+.caw-bad{color:var(--dsw-alias-state-error-primary,#b42318)}
+.caw-warn{color:var(--dsw-alias-state-warn-primary,#9a6700)}
+.caw-btn{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.35));background:transparent;color:inherit;border-radius:var(--dsw-radius-sm,8px);padding:3px 10px;font-size:12px;cursor:pointer;transition:background .12s ease}
+.caw-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12))}
 .caw-btn:disabled{opacity:.5;cursor:default}
-.caw-body{padding:14px 20px 20px;display:flex;flex-direction:column;gap:14px}
+.caw-body{padding:14px 18px 18px;display:flex;flex-direction:column;gap:14px}
 .caw-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px}
-.caw-stat{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.28));border-radius:10px;padding:9px 12px;background:var(--dsw-alias-bg-secondary,rgba(128,128,128,.05))}
-.caw-stat-v{font-size:19px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:.2px}
-.caw-stat-l{font-size:11.5px;opacity:.62;margin-top:1px}
+.caw-stat{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.28));border-radius:var(--dsw-radius-sm,8px);padding:9px 12px;background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,transparent))}
+.caw-stat-v{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums}
+.caw-stat-l{font-size:11.5px;color:var(--dsw-alias-label-tertiary,inherit);margin-top:1px}
 .caw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;align-items:start}
-.caw-card{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.28));border-radius:10px;background:var(--dsw-alias-bg-secondary,rgba(128,128,128,.045));overflow:hidden}
-.caw-card-h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.2))}
-.caw-card-t{font-weight:620;font-size:12.5px}
+.caw-card{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.28));border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,transparent));overflow:hidden}
+.caw-card-h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.2))}
+.caw-card-t{font-weight:600;font-size:12.5px}
 .caw-card-b{padding:9px 12px}
 .caw-row{display:flex;gap:8px;padding:2.5px 0;align-items:baseline}
-.caw-k{opacity:.6;min-width:74px;flex:none;font-size:12px}
+.caw-k{color:var(--dsw-alias-label-tertiary,inherit);min-width:74px;flex:none;font-size:12px}
 .caw-v{overflow-wrap:anywhere;min-width:0}
-.caw-code{font-family:var(--dsw-alias-font-family-mono,ui-monospace,Menlo,monospace);font-size:11.5px}
-.caw-muted{opacity:.58;font-size:11.5px}
+.caw-code{font-family:var(--dsw-font-markdown-code-font-family,ui-monospace,Menlo,monospace);font-size:11.5px}
+.caw-muted{color:var(--dsw-alias-label-tertiary,inherit);font-size:11.5px}
 .caw-scroll{max-height:236px;overflow:auto;scrollbar-width:thin}
 .caw-scroll::-webkit-scrollbar{width:8px;height:8px}
-.caw-scroll::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-secondary,rgba(128,128,128,.4));border-radius:8px}
-.caw-item{display:flex;gap:8px;align-items:baseline;padding:3px 2px;border-bottom:1px dashed var(--dsw-alias-border-secondary,rgba(128,128,128,.18))}
+.caw-scroll::-webkit-scrollbar-thumb{background:var(--dsw-alias-scrollbar-bg-l2,rgba(128,128,128,.4));border-radius:8px}
+.caw-item{display:flex;gap:8px;align-items:baseline;padding:3px 4px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.16));border-radius:var(--dsw-radius-xs,4px)}
 .caw-item:last-child{border-bottom:none}
-.caw-item:hover{background:var(--dsw-alias-bg-tertiary,rgba(128,128,128,.09))}
-.caw-name{flex:1;min-width:0;overflow-wrap:anywhere;font-family:var(--dsw-alias-font-family-mono,ui-monospace,monospace);font-size:11.5px}
-.caw-log{font-family:var(--dsw-alias-font-family-mono,ui-monospace,monospace);font-size:11.5px;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.caw-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.09))}
+.caw-name{flex:1;min-width:0;overflow-wrap:anywhere;font-family:var(--dsw-font-markdown-code-font-family,ui-monospace,monospace);font-size:11.5px}
+.caw-log{font-family:var(--dsw-font-markdown-code-font-family,ui-monospace,monospace);font-size:11.5px;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;background:transparent}
 .caw-logline{padding:1px 0}
-.caw-logline:hover{background:var(--dsw-alias-bg-tertiary,rgba(128,128,128,.1))}
-.caw-sel{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.35));background:transparent;color:inherit;border-radius:6px;padding:2px 6px;font-size:11.5px;max-width:190px}
-.caw-road{display:flex;gap:9px;padding:7px 2px;border-bottom:1px dashed var(--dsw-alias-border-secondary,rgba(128,128,128,.18))}
+.caw-logline:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.08))}
+.caw-sel{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.35));background:var(--dsw-alias-bg-layer-2,transparent);color:inherit;border-radius:var(--dsw-radius-xs,4px);padding:2px 6px;font-size:11.5px;max-width:220px}
+.caw-input{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.35));background:var(--dsw-alias-bg-layer-2,transparent);color:inherit;border-radius:var(--dsw-radius-xs,4px);padding:3px 7px;font-size:11.5px;width:100%;box-sizing:border-box}
+.caw-road{display:flex;gap:9px;padding:6px 2px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.16))}
 .caw-road:last-child{border-bottom:none}
-.caw-dot{width:7px;height:7px;border-radius:50%;margin-top:5px;flex:none;background:var(--dsw-alias-text-secondary,#888)}
-.caw-dot-done{background:var(--dsw-alias-state-success,#1a7f37)}
-.caw-dot-active{background:var(--dsw-alias-state-info,#0969da)}
-.caw-dot-planned{background:var(--dsw-alias-state-warning,#9a6700)}
-.caw-dot-decision{background:var(--dsw-alias-state-danger,#b42318)}
-.caw-tool{padding:4px 2px;border-bottom:1px dashed var(--dsw-alias-border-secondary,rgba(128,128,128,.18))}
+.caw-dot{width:7px;height:7px;border-radius:50%;margin-top:5px;flex:none;background:var(--dsw-alias-state-idle-primary,var(--dsw-alias-label-tertiary,#888))}
+.caw-dot-done{background:var(--dsw-alias-state-success-primary,#1a7f37)}
+.caw-dot-active{background:var(--dsw-alias-state-business-primary,var(--dsw-alias-state-success-primary,#0969da))}
+.caw-dot-planned{background:var(--dsw-alias-state-warn-primary,#9a6700)}
+.caw-dot-decision{background:var(--dsw-alias-state-error-primary,#b42318)}
+.caw-tool{padding:4px 2px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.16))}
 .caw-tool:last-child{border-bottom:none}
-.caw-tool-n{font-family:var(--dsw-alias-font-family-mono,ui-monospace,monospace);font-size:11.5px}
-.caw-tool-d{opacity:.66;font-size:11.5px;margin-top:1px}
-.caw-foot{display:flex;gap:10px;flex-wrap:wrap;opacity:.55;font-size:11px;padding-top:2px}
-.caw-skel{border-radius:6px;background:linear-gradient(90deg,var(--dsw-alias-bg-tertiary,rgba(128,128,128,.12)) 25%,var(--dsw-alias-bg-secondary,rgba(128,128,128,.06)) 37%,var(--dsw-alias-bg-tertiary,rgba(128,128,128,.12)) 63%);background-size:400% 100%;animation:caw-shim 1.3s ease-in-out infinite;height:11px;margin:4px 0}
+.caw-tool-n{font-family:var(--dsw-font-markdown-code-font-family,ui-monospace,monospace);font-size:11.5px}
+.caw-tool-d{color:var(--dsw-alias-label-tertiary,inherit);font-size:11.5px;margin-top:1px}
+.caw-foot{display:flex;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,inherit);font-size:11px;padding-top:2px}
+.caw-skel{border-radius:var(--dsw-radius-xs,4px);background:linear-gradient(90deg,var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12)) 25%,var(--dsw-alias-bg-layer-1,rgba(128,128,128,.05)) 37%,var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12)) 63%);background-size:400% 100%;animation:caw-shim 1.3s ease-in-out infinite;height:11px;margin:4px 0}
 @keyframes caw-shim{0%{background-position:100% 0}100%{background-position:0 0}}
-.caw-err{color:var(--dsw-alias-state-danger,#b42318);font-size:12px}
-.caw-trow{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.28));border-radius:8px;padding:7px 9px;background:var(--dsw-alias-bg-secondary,rgba(128,128,128,.04));display:flex;flex-direction:column;gap:5px}
+.caw-err{color:var(--dsw-alias-label-error,#b42318);font-size:12px}
+.caw-trow{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.28));border-radius:var(--dsw-radius-sm,8px);padding:7px 9px;background:var(--dsw-alias-bg-layer-1,transparent);display:flex;flex-direction:column;gap:5px}
 .caw-trow-h{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-.caw-badge{border:1px solid var(--dsw-alias-border-secondary,rgba(128,128,128,.35));border-radius:999px;padding:1px 7px;font-size:10.5px;letter-spacing:.3px;opacity:.85}
-.caw-preset{display:flex;align-items:baseline;gap:8px;padding:5px 2px;border-bottom:1px dashed var(--dsw-alias-border-secondary,rgba(128,128,128,.18))}
+.caw-badge{border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.35));border-radius:var(--dsw-radius-lg,999px);padding:1px 7px;font-size:10.5px;color:var(--dsw-alias-label-secondary,inherit)}
+.caw-preset{display:flex;align-items:baseline;gap:8px;padding:5px 2px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.16))}
 .caw-preset:last-child{border-bottom:none}
-.caw-picker{display:flex;align-items:center;gap:6px;max-width:420px}
+.caw-picker{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 `;
 
     async function getJson(url, signal) {
@@ -441,41 +443,59 @@ window.__ModuleLoader__.load({
       return h(Card, { title: '日志', extra }, body);
     }
 
+    /**
+     * Roadmap: live items derived from this repository's own records, plus the
+     * forward-looking plan document with its own age. The plan stays a document
+     * someone edits -- what changes here is that the live half is recomputed on
+     * every refresh, and the document's staleness is visible instead of implied.
+     */
     function RoadmapCard({ roadmap }) {
+      const label = { done: '已完成', active: '进行中', planned: '计划', decision: '待决策' };
+
+      const rowFor = (item, key) =>
+        h('div', { key, className: 'caw-road' }, [
+          h('span', { key: 'd', className: `caw-dot caw-dot-${item.status || 'planned'}` }),
+          h('div', { key: 'c', style: { minWidth: 0 } }, [
+            h('div', { key: 't', style: { fontWeight: 550 } }, [
+              item.title,
+              h('span', { key: 'b', className: 'caw-muted', style: { marginLeft: '8px' } }, label[item.status] || item.status),
+            ]),
+            item.area ? h('div', { key: 'a', className: 'caw-muted' }, item.area) : null,
+            item.note ? h('div', { key: 'n', className: 'caw-muted' }, item.note) : null,
+          ]),
+        ]);
+
       let body;
       if (roadmap.phase === 'loading') body = h(Skeleton, { rows: 5 });
       else if (roadmap.phase === 'error') body = h(ErrorLine, { message: `读取失败：${roadmap.message}` });
       else {
         const d = roadmap.data || {};
-        const items = d.items || [];
-        const label = { done: '已完成', active: '进行中', planned: '计划', decision: '待决策' };
-        if (d.error) body = h(Empty, null, d.error);
-        else if (items.length === 0) body = h(Empty, null, '路线图为空');
-        else {
-          body = [
-            h(
-              'div',
-              { key: 'list' },
-              items.map((item, i) =>
-                h('div', { key: i, className: 'caw-road' }, [
-                  h('span', { key: 'd', className: `caw-dot caw-dot-${item.status || 'planned'}` }),
-                  h('div', { key: 'c', style: { minWidth: 0 } }, [
-                    h('div', { key: 't', style: { fontWeight: 550 } }, [
-                      item.title,
-                      h('span', { key: 'b', className: 'caw-muted', style: { marginLeft: '8px' } }, label[item.status] || item.status),
-                    ]),
-                    item.area ? h('div', { key: 'a', className: 'caw-muted' }, item.area) : null,
-                    item.note ? h('div', { key: 'n', className: 'caw-muted' }, item.note) : null,
-                  ]),
-                ]),
-              ),
-            ),
-            d.updated ? h('div', { key: 'u', className: 'caw-muted', style: { marginTop: '6px' } }, `更新于 ${d.updated}`) : null,
-          ];
-        }
+        const derived = d.derived || [];
+        const plan = d.items || [];
+        const planHeader =
+          `计划文档（${d.source || '—'}${typeof d.ageDays === 'number' ? ` · ${d.ageDays} 天前更新` : ''}）`;
+        body = [
+          h('div', { key: 'hd', className: 'caw-muted' }, '实时推导（每次刷新重算）'),
+          ...derived.map((item, i) => rowFor(item, `d${i}`)),
+          h('div', { key: 'hp', className: 'caw-muted', style: { marginTop: '8px' } }, planHeader),
+          ...plan.map((item, i) => rowFor(item, `p${i}`)),
+          h(
+            'div',
+            { key: 'hint', className: 'caw-muted', style: { marginTop: '8px' } },
+            '编辑计划文件即可更新下半部分；上半部分由仓库记录实时计算',
+          ),
+        ];
       }
-      return h(Card, { title: '路线图', extra: h('span', { key: 'x', className: 'caw-muted' }, '随仓库提交') }, body);
+      return h(
+        Card,
+        {
+          title: '路线图',
+          extra: h(SourceBadge, { key: 'x', kind: typeof roadmap.data?.ageDays === 'number' ? 'static' : 'local' }),
+        },
+        body,
+      );
     }
+
 
     /**
      * Keeps one card's failure from blanking the whole panel.
@@ -561,32 +581,110 @@ window.__ModuleLoader__.load({
       return h('span', { className: `caw-badge ${kind === 'live' ? 'caw-ok' : 'caw-muted'}` }, label);
     }
 
-    /** Target selector: discovered candidates, with the engine's own directory as the default. */
+    /**
+     * Target picker: the current selection, a filter over the discovered
+     * candidates, a clickable list, and a manual path entry for targets outside
+     * the scan root. The candidate list doubles as the aggregate view, so the
+     * panel does not grow two cards that say the same thing.
+     */
     function TargetPicker({ targets, target, onSelect }) {
+      const [filter, setFilter] = useState('');
+      const [manual, setManual] = useState('');
       const d = targets.data || {};
-      const rows = d.targets || [];
+      const all = d.targets || [];
+      const rows = filter
+        ? all.filter((row) => `${row.name} ${row.path}`.toLowerCase().includes(filter.toLowerCase()))
+        : all;
       const current = target || d.workspace || '';
-      const short = current.length > 44 ? `…${current.slice(-42)}` : current;
-      return h('div', { className: 'caw-picker' }, [
+      const withEvidence = all.filter((row) => row.hasAudit);
+      const totalBytes = all.reduce((sum, row) => sum + (row.bytes || 0), 0);
+
+      return h(Card, { title: '审计目标', extra: h(SourceBadge, { key: 's', kind: 'local' }) }, [
+        h('div', { key: 'cur', className: 'caw-row' }, [
+          h('div', { key: 'k', className: 'caw-k' }, '当前'),
+          h(
+            'div',
+            { key: 'v', className: 'caw-v' },
+            h('code', { className: 'caw-code' }, current || '—'),
+            target ? null : h('span', { key: 'd', className: 'caw-muted' }, '（默认：引擎工作目录）'),
+          ),
+        ]),
         h(
-          'select',
-          {
-            key: 's',
-            className: 'caw-sel',
-            value: target,
-            onChange: (event) => onSelect(event.target.value),
-            title: '选择审计目标；带 ● 的已有证据目录',
-          },
-          [
-            h('option', { key: '__default', value: '' }, '默认（引擎工作目录）'),
-            ...rows.map((row) =>
-              h('option', { key: row.path, value: row.path }, `${row.hasAudit ? '● ' : '○ '}${row.name}`),
-            ),
-          ],
+          Row,
+          { key: 'sum', label: '汇总' },
+          `候选 ${all.length} · 已有证据 ${withEvidence.length} · 证据体积 ${fmtBytes(totalBytes)} · 扫描根 ${
+            d.root || '—'
+          }`,
         ),
-        h('span', { key: 'c', className: 'caw-muted', title: current }, short),
+        h('div', { key: 'tools', className: 'caw-picker', style: { margin: '8px 0' } }, [
+          h('input', {
+            key: 'f',
+            className: 'caw-input',
+            style: { flex: '1 1 150px' },
+            placeholder: '过滤候选…',
+            value: filter,
+            onChange: (event) => setFilter(event.target.value),
+          }),
+          h('input', {
+            key: 'm',
+            className: 'caw-input',
+            style: { flex: '1 1 190px' },
+            placeholder: '手动输入绝对路径…',
+            value: manual,
+            onChange: (event) => setManual(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' && manual.trim()) onSelect(manual.trim());
+            },
+          }),
+          h(
+            'button',
+            { key: 'a', className: 'caw-btn', type: 'button', disabled: !manual.trim(), onClick: () => onSelect(manual.trim()) },
+            '应用',
+          ),
+          target ? h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: () => onSelect('') }, '回到默认') : null,
+        ]),
+        h(
+          'div',
+          { key: 'list', className: 'caw-scroll' },
+          rows.length
+            ? rows.map((row) =>
+                h(
+                  'div',
+                  {
+                    key: row.path,
+                    className: 'caw-item',
+                    title: row.path,
+                    style: {
+                      cursor: 'pointer',
+                      ...(row.path === current
+                        ? { background: 'var(--dsw-alias-interactive-bg-active,rgba(128,128,128,.14))' }
+                        : {}),
+                    },
+                    onClick: () => onSelect(row.path),
+                  },
+                  [
+                    h('span', { key: 'n', className: 'caw-name' }, `${row.hasAudit ? '● ' : '○ '}${row.name}`),
+                    h(
+                      'span',
+                      { key: 'm2', className: 'caw-muted' },
+                      row.hasAudit
+                        ? `${row.files} 文件 · ${fmtBytes(row.bytes)}${row.logs ? ` · ${row.logs} 日志` : ''}`
+                        : '无证据目录',
+                    ),
+                    h('span', { key: 't', className: 'caw-muted' }, row.newest ? fmtAgo(row.newest) : ''),
+                  ],
+                ),
+              )
+            : h('div', { key: 'empty', className: 'caw-muted' }, filter ? '无匹配候选' : '未发现候选'),
+        ),
+        h(
+          'div',
+          { key: 'roots', className: 'caw-muted', style: { marginTop: '6px' } },
+          `点一行即切换 · 允许根：${(d.allowedRoots || []).join(' · ')}`,
+        ),
       ]);
     }
+
 
     /** Live engine readout of the selected target: one real MCP `get_project_index`. */
     function ProjectCard({ project, target }) {
@@ -634,60 +732,6 @@ window.__ModuleLoader__.load({
         }
       }
       return h(Card, { title: '项目体检（真实 MCP 调用）', extra: h(SourceBadge, { key: 's', kind: 'live' }) }, body);
-    }
-
-    /** Auto-aggregation: every candidate under the scan root, with its evidence footprint. */
-    function TargetsCard({ targets, target, onSelect }) {
-      let body;
-      if (targets.phase === 'loading') body = h(Skeleton, { rows: 6 });
-      else if (targets.phase === 'error') body = h(ErrorLine, { message: `读取失败：${targets.message}` });
-      else {
-        const d = targets.data || {};
-        const rows = d.targets || [];
-        const withEvidence = rows.filter((row) => row.hasAudit);
-        const totalBytes = rows.reduce((sum, row) => sum + (row.bytes || 0), 0);
-        body = [
-          h(Row, { key: 'root', label: '扫描根' }, h('code', { className: 'caw-code' }, d.root || '—')),
-          h(
-            Row,
-            { key: 'sum', label: '汇总' },
-            `候选 ${rows.length} · 已有证据 ${withEvidence.length} · 证据体积 ${fmtBytes(totalBytes)}`,
-          ),
-          h(
-            'div',
-            { key: 'list', className: 'caw-scroll', style: { marginTop: '6px' } },
-            rows.map((row) =>
-              h(
-                'div',
-                {
-                  key: row.path,
-                  className: 'caw-item',
-                  title: row.path,
-                  style: { cursor: 'pointer' },
-                  onClick: () => onSelect(row.path),
-                },
-                [
-                  h('span', { key: 'n', className: 'caw-name' }, `${row.hasAudit ? '● ' : '○ '}${row.name}`),
-                  h(
-                    'span',
-                    { key: 'm', className: 'caw-muted' },
-                    row.hasAudit
-                      ? `${row.files} 文件 · ${fmtBytes(row.bytes)}${row.logs ? ` · ${row.logs} 日志` : ''}`
-                      : '无证据目录',
-                  ),
-                  h('span', { key: 't', className: 'caw-muted' }, row.newest ? fmtAgo(row.newest) : ''),
-                ],
-              ),
-            ),
-          ),
-          h(
-            'div',
-            { key: 'src', className: 'caw-muted', style: { marginTop: '6px' } },
-            `点一行即可切换目标 · 允许根：${(d.allowedRoots || []).join(' · ')}`,
-          ),
-        ];
-      }
-      return h(Card, { title: '目标汇总（自动发现）', extra: h(SourceBadge, { key: 's', kind: 'local' }) }, body);
     }
 
     function CtxAuditPanel() {
@@ -768,7 +812,7 @@ window.__ModuleLoader__.load({
           ]),
           h('div', { key: 's', className: 'caw-spacer' }),
           h('div', { key: 'pills', className: 'caw-pills' }, pills),
-          h(TargetPicker, { key: 't', targets, target, onSelect: setTarget }),
+          h(Pill, { key: 'tgt' }, `目标 ${target ? target.split(/[\\/]/).filter(Boolean).pop() : '默认'}`),
           h('button', { key: 'r', className: 'caw-btn', type: 'button', onClick: refreshAll, disabled: busy }, busy ? '刷新中…' : '刷新'),
         ]),
         h('div', { key: 'body', className: 'caw-body' }, [
@@ -791,8 +835,8 @@ window.__ModuleLoader__.load({
             h(CardBoundary, { key: 'artifacts', label: '证据产物' }, h(ArtifactsCard, { status })),
             h(CardBoundary, { key: 'roadmap', label: '路线图' }, h(RoadmapCard, { roadmap })),
             h(CardBoundary, { key: 'presets', label: 'Agent 预设' }, h(PresetsCard, { presets })),
+            h(CardBoundary, { key: 'targets', label: '审计目标' }, h(TargetPicker, { targets, target, onSelect: setTarget })),
             h(CardBoundary, { key: 'project', label: '项目体检' }, h(ProjectCard, { project, target })),
-            h(CardBoundary, { key: 'targets', label: '目标汇总' }, h(TargetsCard, { targets, target, onSelect: setTarget })),
           ]),
           h('div', { key: 'foot', className: 'caw-foot' }, [
             s && s.workspace ? h('span', { key: 'w' }, `工作区 ${s.workspace}`) : null,

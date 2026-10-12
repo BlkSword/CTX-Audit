@@ -47,7 +47,7 @@ bundle 的 `cordis.patch.yml` **必须为自己的包插一行**：
 | `/status` | MCP 行回显（serverName / transport / command / **二进制是否存在** / 工具名前缀）、工作区、证据目录、**有界（≤30 项）的 `.ctx-audit/` 清单 + 计数**、可用 `.log` 文件列表 |
 | `/engine` | **真实 MCP 握手**（stdio：`initialize` → `initialized` → `tools/list`）：服务端名与版本、协议版本、**工具清单与描述**。带 6s 超时、5 分钟缓存；`?refresh=1` 强制重探 |
 | `/logs?file=<name>&lines=N` | 指定 `.log` 的**末尾 N 行**（≤500 行、只读文件尾 ≤256KB）；`file` 只能是枚举出来的名字，构造值拿不到目录外的文件 |
-| `/roadmap` | 随本 bundle 提交的 `roadmap.json`，原样返回 |
+| `/roadmap` | **实时推导 + 可编辑计划**：`derived` 每请求从本仓记录重算（缺陷登记已修/待修、台账在跑项、CHANGELOG 未发布条数），`items` 来自计划文档（优先 `<workspace>/harness-private/roadmap.json`，回退 bundle 副本），并附 `source`/`ageDays` |
 | `/targets` | **自动发现候选目标**：扫描 `targetsRoot`（默认 = 工作目录的父目录）深度 ≤2，列出带 `.ctx-audit/` 证据或看起来是项目的目录（文件数/体积/日志数/最近时间） |
 | `/project?target=` | **真实引擎体检**：以目标为 cwd spawn `ctx-audit mcp` 并调用 `get_project_index`（文件数、`analysis_backed`、主语言/仅启发式、构建上下文、索引缓存、耗时） |
 | `/presets` | **agent 预设名册**：host 侧用可选的 `ctx.get('agentPresets')` 读取（两个方法都是 `Promise`，已 await），返回 `{available, presets:[{id,name,description,isDefault,broken}]}` |
@@ -166,6 +166,9 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 | 预设名册（机器可验证） | `GET /ctx-audit/api/presets` → `available=true`、5 条；`ctx-audit` **`default=true`、`broken` 空** ⇒ 预设已注册、是部署默认、挂载未失败 |
 | 卡片健壮性 | 每张卡各自包 `CardBoundary`；已用控制台报出的真实崩溃（`cannot get property "remote" without inject`）反证过"单卡崩溃不再带走整页" |
 | 工具卡接线 | bundle 内含 `tool.call.toolview`×13 注册与 `caw-trow` 样式；**实际渲染仍需会话内目视确认** |
+| 路线图实时性 | `/roadmap` → `derived` **3 项**（缺陷登记 已修 22 / 待修 9、台账在跑 405、CHANGELOG 未发布 247）每次请求重算；`items` 6 项来自计划文档并带 `ageDays` |
+| 主题一致性 | bundle 内**虚构 token 0 处**；`bg-layer-1`/`border-l2`/`label-tertiary`/`interactive-bg-hover`/`radius-sm` 等真 token 分别命中 4/8/7/3/4 处 |
+| 目标选择 | 过滤框 + 可点列表 + 手动路径 + 回到默认；bundle 内含"过滤候选"/"手动输入绝对路径" |
 | 目标发现 | `/targets` 在 `D:\project` 发现 **8 个候选**（3 个带证据），证据优先排序 |
 | 目标体检（真实 MCP） | `/project` → `ok=true`、**1104 文件**、`analysis_backed=true`、主语言 go/js/python/rust、**~180ms** |
 | 跟随目标 | `/status?target=…halo-2.21.9` → `target` 与 `artifactsDir` 均指向该目标 |
@@ -199,6 +202,13 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 - **目标汇总卡**：自动聚合所有候选——哪些已有证据、证据文件数 / 体积 / 日志数 / 最近时间，并给出总量。
 - **项目体检卡（实时 MCP）**：`GET /ctx-audit/api/project?target=…` 以**该目标的目录为 cwd** 真的 spawn `ctx-audit mcp` 并调用 `get_project_index`，返回真实体检数字。实测本仓库 **1104 文件 / ~180ms**。
 - **路径闸门**：`target` 必须落在允许根内（默认 = 工作目录 + `targetsRoot`，可由配置 `allowedRoots` 覆盖），否则 **400** 拒绝；不存在或不是目录同样拒绝——避免该端点退化成任意目录列举器。
+
+
+## 主题一致性、目标选择与路线图（2026-10-11 修订）
+
+- **主题 token 全部换成真实存在的名字**。此前样式引用的是 `--dsw-alias-bg-primary`/`bg-secondary`/`bg-tertiary`/`border-secondary`/`font-size-body`/`state-danger`/`font-family-mono`——这些 token **在宿主里不存在**（从 `dsh-web-frontend` 的 CSS 里逐个查证过），于是全部落到硬编 fallback 色，表现为**背景与宿主不统一**。现改用真 token：`--dsw-alias-bg-base`/`bg-layer-1..3`、`--dsw-alias-border-l1..l3`、`--dsw-alias-label-primary/secondary/tertiary/error`、`--dsw-alias-state-{success,error,warn}-primary`、`--dsw-alias-interactive-bg-hover`、`--dsw-alias-scrollbar-bg-l2`、`--dsw-radius-{xs,sm,lg}`、`--dsw-font-markdown-code-font-family`。同时**去掉了 sticky 头部与其背景**（那是滚动时的一道色带），卡片/统计块统一用宿主同一层表面色。
+- **目标选择**（页头下拉 → 独立卡片）：当前目标（完整路径）、候选过滤框、可点列表（● 有证据 / ○ 无证据 + 文件数/体积/日志/最近时间）、**手动输入绝对路径**（回车或"应用"）、"回到默认"按钮，底部列出允许根。
+- **路线图**：上半部分**实时推导**（每次刷新重算，来源为本仓私有记录），下半部分是**计划文档**并显示其来源与"几天前更新"，编辑计划文件即更新下半部分。
 
 ## 卸载
 

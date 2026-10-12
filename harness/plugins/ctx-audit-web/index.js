@@ -25,7 +25,7 @@
  */
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -453,6 +453,20 @@ function probeProject(command, cwd, timeoutMs) {
 
 const PROJECT_TIMEOUT_MS = 30000;
 
+/** Read a UTF-8 text file with a hard size cap, so a huge artifact cannot be pulled in by accident. */
+function readTextFile(path, maxBytes) {
+  const stat = statSync(path);
+  if (!stat.isFile()) throw new Error('not a regular file');
+  if (stat.size > maxBytes) throw new Error(`file exceeds the read cap (${stat.size} > ${maxBytes} bytes)`);
+  return readFileSync(path, 'utf8');
+}
+
+/** Display label for a path: relative when it lives under the workspace, absolute otherwise. */
+function relativeTo(root, path) {
+  const label = relative(root, path);
+  return label.startsWith('..') ? path : label;
+}
+
 export function apply(ctx, config = {}) {
   const workspace = resolve(config.workspace ?? process.cwd());
   const artifactsDir = join(workspace, '.ctx-audit');
@@ -463,6 +477,104 @@ export function apply(ctx, config = {}) {
   // Everything path-based on this panel is relative to the SELECTED target, not
   // to the process working directory: pointing a control panel at the engine's
   // own checkout is never what a user means.
+  // ── roadmap ───────────────────────────────────────────────────────────────
+  // The forward-looking plan is a document someone edits; the live items are
+  // derived from this repository's own records on every request, so the card is
+  // not a frozen snapshot any more.
+  const planPath = resolve(config.roadmapPath ?? join(workspace, 'harness-private', 'roadmap.json'));
+
+  function planDocument() {
+    const candidates = [planPath, fileURLToPath(new URL('./roadmap.json', import.meta.url))];
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(readTextFile(candidate, 1024 * 1024));
+        let mtime = null;
+        try {
+          mtime = statSync(candidate).mtime.toISOString();
+        } catch {
+          mtime = null;
+        }
+        const ageDays = mtime ? Math.floor((Date.now() - new Date(mtime).getTime()) / 86400000) : null;
+        return { source: relativeTo(workspace, candidate), mtime, ageDays, items: parsed.items || [] };
+      } catch {
+        /* try the next candidate */
+      }
+    }
+    return { source: null, mtime: null, ageDays: null, items: [], error: 'no roadmap document found' };
+  }
+
+  /** Count table rows under the first heading whose title contains `heading`. */
+  function countRowsIn(text, heading) {
+    let current = null;
+    let count = 0;
+    for (const line of text.split(/\r?\n/)) {
+      const match = line.match(/^##\s+(.+?)\s*$/);
+      if (match) {
+        current = match[1];
+        continue;
+      }
+      if (current && current.includes(heading) && line.startsWith('| ')) count += 1;
+    }
+    return count;
+  }
+
+  /** Live items: each one is read from a real local record, and skipped if absent. */
+  function derivedItems() {
+    const items = [];
+    try {
+      const text = readTextFile(
+        resolve(config.defectRegister ?? join(workspace, 'docs', 'CTX-Audit-C-问题总登记.md')),
+        2 * 1024 * 1024,
+      );
+      const fixed = (text.match(/^\|\s*\*{0,2}A\d+/gm) || []).length;
+      const pending = (text.match(/^\|\s*\*{0,2}B\d+/gm) || []).length;
+      if (fixed || pending) {
+        items.push({
+          area: '质量',
+          title: `缺陷登记：已修 ${fixed} / 待修 ${pending}`,
+          status: pending > 0 ? 'active' : 'done',
+          note: '实时统计自私有问题总登记',
+        });
+      }
+    } catch {
+      /* no register in this deployment */
+    }
+    try {
+      const text = readTextFile(
+        resolve(config.ledgerRegistry ?? join(workspace, 'docs', 'audit-rounds', 'projects-registry.md')),
+        4 * 1024 * 1024,
+      );
+      const inFlight = countRowsIn(text, '在跑');
+      items.push({
+        area: '台账',
+        title: `在跑 / 遗留 ${inFlight} 项`,
+        status: inFlight > 0 ? 'active' : 'done',
+        note: '实时统计自共享项目库',
+      });
+    } catch {
+      /* no ledger in this deployment */
+    }
+    try {
+      const text = readTextFile(resolve(config.changelog ?? join(workspace, 'CHANGELOG.md')), 8 * 1024 * 1024);
+      const unreleased = text.split(/^## /m)[1] || '';
+      const bullets = (unreleased.match(/^- \*\*/gm) || []).length;
+      items.push({
+        area: '引擎',
+        title: `未发布改动 ${bullets} 条`,
+        status: bullets > 0 ? 'active' : 'planned',
+        note: '实时统计自 CHANGELOG 的 Unreleased 段',
+      });
+    } catch {
+      /* no changelog in this deployment */
+    }
+    return items;
+  }
+
+  function roadmapReport() {
+    const plan = planDocument();
+    return { ...plan, derived: derivedItems(), generatedAt: new Date().toISOString() };
+  }
+
   const targetsRoot = resolve(config.targetsRoot ?? dirname(workspace));
   const allowedRoots = (Array.isArray(config.allowedRoots) && config.allowedRoots.length
     ? config.allowedRoots
@@ -682,7 +794,7 @@ export function apply(ctx, config = {}) {
         }
 
         if (route === `${API_PREFIX}/roadmap`) {
-          sendJson(res, 200, roadmap);
+          sendJson(res, 200, roadmapReport());
           return;
         }
 
