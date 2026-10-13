@@ -621,6 +621,21 @@ const COMPILED_SOURCE_EXTENSIONS: &[&str] = &[
 /// 路径是否指向编译型语言源码（按扩展名判定，大小写不敏感）。
 ///
 /// 刻意不含 D 语言的 `.d`：C/C++ 工程里 `.d` 多为构建期依赖文件，误判会引入噪声。
+/// 路径中是否存在**恰好**名为 `plugins` 的目录层级（成分精确匹配，不是子串匹配）。
+///
+/// 用途：给这类路径里的**编译型源码**保留 **vendor 降权语义**。它们以前被整体判成
+/// `vendor`、并从污点（Stage B）与跨文件（Stage C）阶段**静默剔除**（可见性缺陷，已修）；
+/// 现在它们**留在分析里**，但严重程度仍按 vendor 降权、并在 finding 的
+/// `severity_downgraded_by` 里**留痕**——"恢复可见"不等于"提高它的权重"。
+pub fn vendored_dir_component(path: &str) -> Option<&'static str> {
+    let normalized = path.replace('\\', "/");
+    if normalized.split('/').any(|component| component == "plugins") {
+        Some("plugins")
+    } else {
+        None
+    }
+}
+
 pub fn is_compiled_source_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_lowercase();
     let file_name = normalized.rsplit('/').next().unwrap_or("");
@@ -4696,4 +4711,20 @@ mod tests {
         assert!(opts.cross_file_structural_per_source.is_none());
         assert!(opts.cross_file_min_confidence.is_none());
     }
+    /// 路径成分**精确**匹配：`plugins` 层级命中，`plugins_extra`/`myplugins` 不命中；
+    /// 同时锁住"可见性已恢复（角色不再是 vendor）但降权语义仍由 hint 承担"这条边界。
+    #[test]
+    fn vendored_dir_component_matches_only_exact_component() {
+        assert_eq!(vendored_dir_component("src/plugins/zz.c"), Some("plugins"));
+        assert_eq!(vendored_dir_component("plugins/zz.c"), Some("plugins"));
+        assert_eq!(
+            vendored_dir_component("a\\b\\plugins\\zz.c"),
+            Some("plugins")
+        );
+        assert_eq!(vendored_dir_component("src/plugins_extra/zz.c"), None);
+        assert_eq!(vendored_dir_component("src/myplugins/zz.c"), None);
+        assert_eq!(vendored_dir_component("src/plain/zz.c"), None);
+        assert_ne!(classify_file_role("src/plugins/zz.c"), "vendor");
+    }
+
 }

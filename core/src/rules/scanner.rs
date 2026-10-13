@@ -1304,11 +1304,18 @@ fn create_finding(
         }
     };
 
-    // 根据角色和屏障调整严重程度
+    // 根据角色和屏障调整严重程度。
+    // 路径中含 `plugins` 目录的**编译型源码**：可见性已由扫描器恢复（不再静默剔除），
+    // 但这里仍按 `vendor` 降权并留痕 —— 恢复可见不等于提高它的权重。
+    let vendored_hint = crate::scanner::vendored_dir_component(&file_path);
+    let mut severity_role = file_role.as_deref().unwrap_or("production");
+    if vendored_hint.is_some() && severity_role == "production" {
+        severity_role = "vendor";
+    }
     let raw_severity = format!("{:?}", rule.severity).to_lowercase();
     let adjusted = crate::scanner::adjust_severity(
         &raw_severity,
-        file_role.as_deref().unwrap_or("production"),
+        severity_role,
         barriers.as_deref().unwrap_or(&[]),
     );
     // 降级必须**留痕**：调用方按 `min_severity` 过滤时，只看得到"降过级之后"的结果，
@@ -1317,10 +1324,13 @@ fn create_finding(
     let mut downgraded_by: Vec<String> = Vec::new();
     if adjusted != raw_severity {
         downgraded_by.push(format!(
-            "adjust_severity:{}→{} (file_role={} barriers={})",
+            "adjust_severity:{}→{} (file_role={}{} barriers={})",
             raw_severity,
             adjusted,
             file_role.as_deref().unwrap_or("production"),
+            vendored_hint
+                .map(|dir| format!(", vendored_dir_hint({})", dir))
+                .unwrap_or_default(),
             barriers.as_deref().map(|b| b.len()).unwrap_or(0)
         ));
     }
