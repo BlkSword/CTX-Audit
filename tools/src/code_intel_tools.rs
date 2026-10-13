@@ -171,7 +171,7 @@ impl IntelKind {
             IntelKind::SymbolReferences => "跨文件符号引用（含 import alias 未解析提示）",
             IntelKind::CallHierarchy => "函数上下游调用拓扑（callers/callees，未解析边入 uncertainty）",
             IntelKind::SliceBackward => "从 file:line 向前切出相关代码片段",
-            IntelKind::DataflowPath => "source→sink 路径（行区间启发式）",
+            IntelKind::DataflowPath => "source→sink **行区间**（按行序，非 def-use/污点链；可达性请配合调用层次/引用）",
             IntelKind::SanitizerGuards => "变量路径上的条件分支/校验逻辑",
             IntelKind::FrameworkContext => "路由 handler 的前置中间件/拦截器链",
             IntelKind::IncrementalStatus => "增量索引状态：冷启动/缓存命中/待重编译清单（stat 指纹 + TTL 缓存）",
@@ -3676,15 +3676,47 @@ impl Tool for CodeIntelTool {
                              （argv/getenv/配置文件/选项结构体），需人工确认它是否真的可由远端输入控制；\
                              未命中也不代表一定是远端可控输入。",
                 });
+                // ── 如实标注"这不是数据流链" ──
+                // `path` 的生成方式是"source 首次出现行 → sink 首次出现行之间的**行区间**（按行序）"，
+                // 不是 def-use / 污点链。真实 C 文件里这段区间常被原型声明、无关语句填满
+                // （实测：某解析器上 10 行里 9 行是函数原型）。字段名若被当作"路径"读，
+                // 会把噪声当证据 ⇒ 这里显式给出 `path_kind` / `dataflow_verified`
+                // 与"声明样行"计数，并追加 uncertainty 理由。
+                let declaration_like = steps
+                    .iter()
+                    .filter(|s| {
+                        let t = s["text"].as_str().unwrap_or("").trim();
+                        t.ends_with(';')
+                            && t.contains('(')
+                            && !t.contains('=')
+                            && !t.starts_with("if")
+                            && !t.starts_with("for")
+                            && !t.starts_with("while")
+                            && !t.starts_with("return")
+                            && !t.starts_with("switch")
+                    })
+                    .count();
                 IntelEnvelope {
                     data: json!({"source": source, "sink": sink, "path": steps,
+                                 "path_kind": "source_sink_line_span",
+                                 "dataflow_verified": false,
+                                 "span_statistics": {
+                                     "lines": steps.len(),
+                                     "declaration_like_lines": declaration_like,
+                                 },
+                                 "path_note": "path 是 source 首次出现行到 sink 首次出现行之间的**行区间**（按行序），\
+                                               不是 def-use / 污点链：区间内可能包含大量无关行（原型声明、无关语句）。\
+                                               要判可达性请配合 get_call_hierarchy / get_symbol_references。",
                                  "preprocess_note": df_note,
                                  "source_origin": source_origin}),
                     provenance,
                     uncertainty: Uncertainty::new(
                         "high",
                         &{
-                            let mut reasons = vec!["statement_level_heuristic"];
+                            let mut reasons = vec![
+                                "statement_level_heuristic",
+                                "path_is_line_span_not_dataflow_chain",
+                            ];
                             if df_fallback {
                                 reasons.push("cpp_preprocess_unavailable_line_level_fallback");
                             }
@@ -5377,6 +5409,43 @@ mod tests {
             "未激活分支里的源点不得产出路径: {d3}"
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `path` 是**行区间**而不是数据流链：必须显式标注 `path_kind`/`dataflow_verified`/
+    /// `span_statistics`，否则消费者会把区间里的原型声明当证据（实测真实 C 文件里这类行占多数）。
+    #[tokio::test]
+    async fn test_dataflow_path_is_labelled_as_line_span_not_chain() {
+        let root = std::env::temp_dir().join("ctx-audit-df-span-label");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        // source 在第 1 行、sink 在第 4 行 ⇒ 区间覆盖中间两条原型声明
+        std::fs::write(
+            root.join("src/a.c"),
+            "int src = 0;\nstatic int helper(int a, char *b);\nstatic int other(void);\nint sink = 0;\n",
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::DataflowPath);
+        let out = tool
+            .execute(json!({"source": "src", "sink": "sink"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["path_kind"], "source_sink_line_span", "{d}");
+        assert_eq!(d["data"]["dataflow_verified"], false, "{d}");
+        assert!(
+            d["data"]["path_note"].as_str().unwrap().contains("行区间"),
+            "必须明说这是行区间: {d}"
+        );
+        assert!(
+            d["data"]["span_statistics"]["declaration_like_lines"]
+                .as_u64()
+                .unwrap()
+                >= 2,
+            "区间里的原型行必须被计数（噪声可见）: {d}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
