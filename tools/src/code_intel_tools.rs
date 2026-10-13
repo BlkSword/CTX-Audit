@@ -577,24 +577,49 @@ fn locus_facts(
             }));
         }
     }
-    // 最小窗口只收**邻近 ±40 行**的检查行/锚点：把函数内所有 53 条守卫都算进来会让"最小窗口"
-    // 比交付窗口还大（实测某目标 389 行），那就失去意义了。更远的点单独计数，不撑大窗口。
+    // 最小窗口 = 目标行所在区域 + **最近的上方/下方 direct 检查** + **最近的上方/下方锚点**。
+    // 把所有 direct 检查都收进来会让窗口随函数规模增长（实测 p90 仍达 49 行）；只取最近邻
+    // 可以让窗口紧贴"判定够用"的范围（纳入半径 ±20 行，更远的只登记不纳入）。其余检查行**仍在 guards 里逐条列出并标 in_window=false**，
+    // 信息不丢，只是不撑大交付窗口。
     let anchor_center = center + 1;
     let mut points: Vec<usize> = vec![region_lo + 1, anchor_center, region_hi + 1];
+    let direct_lines: Vec<usize> = guards
+        .iter()
+        .filter(|g| g.get("relevance").map(|r| r == "direct").unwrap_or(false))
+        .filter_map(|g| g["line"].as_u64().map(|l| l as usize))
+        .collect();
+    let anchor_lines_all: Vec<usize> = anchors
+        .iter()
+        .filter_map(|a| a["line"].as_u64().map(|l| l as usize))
+        .collect();
+    let nearest_below = |xs: &[usize]| xs.iter().copied().filter(|l| *l < anchor_center).max();
+    let nearest_above = |xs: &[usize]| xs.iter().copied().filter(|l| *l > anchor_center).min();
+    let candidates = [
+        nearest_below(&direct_lines),
+        nearest_above(&direct_lines),
+        nearest_below(&anchor_lines_all),
+        nearest_above(&anchor_lines_all),
+    ];
     let mut far_points = 0usize;
-    for item in guards.iter().chain(anchors.iter()) {
-        // 只有 **direct** 检查行进入最小窗口；nearby 只作上下文列出。
-        let relevant = item.get("relevance").map(|r| r == "direct").unwrap_or(true);
-        if let Some(l) = item["line"].as_u64() {
-            let l = l as usize;
-            if !relevant {
-                continue;
-            }
-            if l.abs_diff(anchor_center) <= 40 {
-                points.push(l);
-            } else {
-                far_points += 1;
-            }
+    for c in candidates.into_iter().flatten() {
+        if c.abs_diff(anchor_center) <= 20 {
+            points.push(c);
+        } else {
+            far_points += 1;
+        }
+    }
+    // 未能进入窗口的 direct 检查行数（供消费者判断"窗口外还有几条相关检查"）
+    far_points += direct_lines
+        .iter()
+        .filter(|l| !points.contains(l))
+        .count();
+    points.sort_unstable();
+    points.dedup();
+    let mut guards: Vec<Value> = guards;
+    for g in guards.iter_mut() {
+        if let (Some(l), Some(obj)) = (g["line"].as_u64(), g.as_object_mut()) {
+            let inw = points.contains(&(l as usize));
+            obj.insert("in_window".to_string(), json!(inw));
         }
     }
     let lo = points.iter().copied().min().unwrap_or(center + 1);
@@ -607,7 +632,7 @@ fn locus_facts(
         "spread": if span > 40 { "wide" } else { "tight" },
         "covers": ["target_line", "guards", "capacity_anchors"],
         "far_points_outside_window": far_points,
-        "note": "只覆盖目标行与**±40 行内**的检查行/容量锚点——可直接作为交付单元；far_points_outside_window 是更远处被排除的点数（函数内其它无关守卫不参与窗口）",
+        "note": "只覆盖目标行所在区域与**最近的上/下方检查行、最近的上/下方容量锚点**（纳入半径 ±20 行）——可直接作为交付单元；far_points_outside_window 是未进入窗口的 direct 检查行数（它们在 guards 里仍逐条列出）",
     });
     // **目标行自身的检查状态**：locus 所在行常常就是那条检查（修复改的往往正是这一行）。
     // 之前这行被排除在 guards 之外且没有任何标注 ⇒ 当"决定性行就是目标行"时它凭空消失，
