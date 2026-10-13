@@ -280,6 +280,145 @@ fn probe_build_context(root: &std::path::Path) -> Value {
     })
 }
 
+/// 标识符判据：C 宏名的形态（字母/下划线开头，字母数字下划线组成，长度 ≥ 2）。
+fn is_macro_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    s.len() >= 2 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// 从 `#if` / `#elif` 的表达式里取被检验的宏名：`defined(X)`、`defined X`，以及前导的全大写标识符
+/// （`#if HAVE_ZLIB`、`#if ENABLE_A && …`）。只做**字面**提取，不求值表达式。
+fn defined_names(expr: &str) -> Vec<String> {
+    let chars: Vec<char> = expr.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let word = ['d', 'e', 'f', 'i', 'n', 'e', 'd'];
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut i = 0usize;
+    while i + word.len() <= chars.len() {
+        if chars[i..i + word.len()] == word {
+            let before_ok = i == 0 || !ident(chars[i - 1]);
+            let after_ok = i + word.len() == chars.len() || !ident(chars[i + word.len()]);
+            if before_ok && after_ok {
+                let mut j = i + word.len();
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < chars.len() && chars[j] == '(' {
+                    j += 1;
+                    while j < chars.len() && chars[j].is_whitespace() {
+                        j += 1;
+                    }
+                }
+                let start = j;
+                while j < chars.len() && ident(chars[j]) {
+                    j += 1;
+                }
+                let name: String = chars[start..j].iter().collect();
+                if is_macro_ident(&name) {
+                    out.push(name);
+                }
+                i = j.max(i + word.len());
+                continue;
+            }
+        }
+        i += 1;
+    }
+    // `defined(...)` 之外的条件项（`&& HAVE_ZLIB`、`|| ENABLE_X`、`!DEBUG_MODE`）：
+    // 按 C 的惯例取**含大写字母的标识符**；`0`/`1` 这类常量与全小写关键字自然被排除。
+    for token in expr.split(|c: char| !ident(c)) {
+        if token == "defined" || !is_macro_ident(token) {
+            continue;
+        }
+        if token.chars().any(|c| c.is_ascii_uppercase()) {
+            out.push(token.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// **索引期**上报：源码里出现过的条件编译宏（`#if`/`#elif` 的 `defined(...)`、`#ifdef`/`#ifndef`），
+/// 以及该宏是否由源码自身 `#define`。
+///
+/// 与 `probe_build_context` 互补：后者读构建产物（裸克隆拿不到 ⇒ `unknown`），本字段只报**源码事实**，
+/// 因此"这个项目对外部后端/特性有没有条件编译开关"在没有构建目录时也可判。只报字面事实：
+/// 宏出现过几次、是否在源码里被定义；**不代表构建时的取值**。
+fn collect_source_conditionals(files: &[(String, String)]) -> Value {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut branches: BTreeMap<String, usize> = BTreeMap::new();
+    let mut defines: BTreeSet<String> = BTreeSet::new();
+    let mut scanned_files = 0usize;
+    for (path, content) in files {
+        if !is_c_like_path(path) {
+            continue;
+        }
+        scanned_files += 1;
+        for line in content.lines().take(20_000) {
+            let t = line.trim_start();
+            let Some(rest) = t.strip_prefix('#') else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let (kw, tail) = match rest.split_once(char::is_whitespace) {
+                Some((k, v)) => (k, v.trim()),
+                None => (rest, ""),
+            };
+            match kw {
+                "if" | "elif" => {
+                    for name in defined_names(tail) {
+                        *branches.entry(name).or_insert(0) += 1;
+                    }
+                }
+                "ifdef" | "ifndef" => {
+                    let name = tail.split_whitespace().next().unwrap_or("");
+                    if is_macro_ident(name) {
+                        *branches.entry(name.to_string()).or_insert(0) += 1;
+                    }
+                }
+                "define" => {
+                    let name = tail
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .next()
+                        .unwrap_or("");
+                    if is_macro_ident(name) {
+                        defines.insert(name.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let distinct = branches.len();
+    let mut list: Vec<(String, usize, bool)> = branches
+        .into_iter()
+        .map(|(macro_name, count)| {
+            let defined_in_source = defines.contains(&macro_name);
+            (macro_name, count, defined_in_source)
+        })
+        .collect();
+    // 频次降序，再按宏名稳定排序；只保留前 40 个，避免大仓把响应撑大。
+    list.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    list.truncate(40);
+    json!({
+        "scanned_files": scanned_files,
+        "distinct_macros": distinct,
+        "branches": list
+            .iter()
+            .map(|(macro_name, count, defined_in_source)| json!({
+                "macro": macro_name,
+                "if_lines": count,
+                "defined_in_source": defined_in_source,
+            }))
+            .collect::<Vec<_>>(),
+        "note": "只统计源码里出现过的条件编译宏；是否为真取决于构建配置，不代表实际取值",
+    })
+}
+
 fn language_capabilities(langs: &std::collections::BTreeMap<&'static str, usize>) -> Value {
     let mut present_primary: Vec<&str> = Vec::new();
     let mut heuristic_only: Vec<&str> = Vec::new();
@@ -2460,6 +2599,9 @@ impl Tool for CodeIntelTool {
                         "index_freshness": freshness,
                         "capabilities": caps,
                         "build_context": build_context,
+                        // 索引期上报的源码侧条件编译宏（与 build_context 互补：后者读构建产物，
+                        // 裸克隆时是 unknown；本字段只报源码事实）。
+                        "source_conditionals": collect_source_conditionals(files),
                         "limits": {
                             "max_files": max_index_files(),
                             "max_file_bytes": MAX_FILE_BYTES,
@@ -5737,6 +5879,48 @@ mod tests {
         assert_eq!(d["data"]["includes_function_header"], true, "{d}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 索引期上报的源码侧条件编译宏：只报字面事实（出现次数、是否在源码里被定义），
+    /// 非 C 类文件不参与统计，构建配置的取值不由本字段推断。
+    #[test]
+    fn source_conditionals_reports_branch_macros() {
+        let files = vec![
+            (
+                "src/a.c".to_string(),
+                concat!(
+                    "#define WITH_TEST 1\n",
+                    "#if defined(WITH_TEST) && HAVE_ZLIB\n",
+                    "int x;\n",
+                    "#elif defined(OTHER_MACRO)\n",
+                    "#endif\n",
+                    "#ifdef FALLBACK_X\n",
+                    "#endif\n",
+                )
+                .to_string(),
+            ),
+            ("README.md".to_string(), "#if not_c_code\n".to_string()),
+        ];
+        let v = collect_source_conditionals(&files);
+        assert_eq!(v["scanned_files"], 1, "只有 C 类文件参与统计: {v}");
+        let branches = v["branches"].as_array().unwrap();
+        let names: Vec<&str> = branches
+            .iter()
+            .map(|b| b["macro"].as_str().unwrap())
+            .collect();
+        for expected in ["WITH_TEST", "HAVE_ZLIB", "OTHER_MACRO", "FALLBACK_X"] {
+            assert!(names.contains(&expected), "应报出 {expected}: {v}");
+        }
+        let with_test = branches
+            .iter()
+            .find(|b| b["macro"] == "WITH_TEST")
+            .unwrap();
+        assert_eq!(with_test["defined_in_source"], true, "{v}");
+        let fallback = branches
+            .iter()
+            .find(|b| b["macro"] == "FALLBACK_X")
+            .unwrap();
+        assert_eq!(fallback["defined_in_source"], false, "{v}");
     }
 
 }
