@@ -429,6 +429,27 @@ fn locus_identifiers(line: &str) -> Vec<String> {
     locus_identifiers_min(line, 2)
 }
 
+/// 取**源码顺序**的最后一个标识符（**不排序**）：参数形如"类型 + 名字"，
+/// 用排序后的列表取末尾会把名字挤掉（实测：`unsigned int n` 得到 `unsigned`）。
+fn locus_last_identifier(line: &str) -> String {
+    let mut last = String::new();
+    let mut cur = String::new();
+    for c in line.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            cur.push(c);
+        } else {
+            if !cur.is_empty() {
+                last = cur.clone();
+            }
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        last = cur;
+    }
+    last
+}
+
 /// 同上，但可放宽最小长度：**参数名**用 `min_len=1`——C 里 `n`/`i`/`p` 这类单字符名很常见，
 /// 用 ≥2 会把它们整批滤掉（实测：`unsigned int n` 的 `n` 被漏）。
 fn locus_identifiers_min(line: &str, min_len: usize) -> Vec<String> {
@@ -525,7 +546,10 @@ fn locus_facts(
         } else if t.contains("sizeof") && idents.iter().any(|id| t.contains(id.as_str())) {
             anchors.push(json!({"line": i + 1, "text": brief, "kind": "sizeof_bound"}));
         }
-        let touches = i == center || idents.iter().any(|id| t.contains(id.as_str()));
+        // 相关性＝目标行标识符命中 **或** 邻近目标行（±10 行）。只按标识符匹配会漏掉
+        // "守卫引用的是另一个变量"的情形（实测：某解析器的守卫用长度变量 n，而目标行只有 dst）。
+        let near_target = i.abs_diff(center) <= 10;
+        let touches = i == center || near_target || idents.iter().any(|id| t.contains(id.as_str()));
         if touches && LOCUS_CHECK_TOKENS.iter().any(|m| t.contains(m)) && i != center {
             guards.push(json!({
                 "line": i + 1,
@@ -540,15 +564,19 @@ fn locus_facts(
             }));
         }
     }
-    let mut points: Vec<usize> = vec![center + 1];
-    for g in &guards {
-        if let Some(l) = g["line"].as_u64() {
-            points.push(l as usize);
-        }
-    }
-    for a in &anchors {
-        if let Some(l) = a["line"].as_u64() {
-            points.push(l as usize);
+    // 最小窗口只收**邻近 ±40 行**的检查行/锚点：把函数内所有 53 条守卫都算进来会让"最小窗口"
+    // 比交付窗口还大（实测某目标 389 行），那就失去意义了。更远的点单独计数，不撑大窗口。
+    let anchor_center = center + 1;
+    let mut points: Vec<usize> = vec![anchor_center];
+    let mut far_points = 0usize;
+    for item in guards.iter().chain(anchors.iter()) {
+        if let Some(l) = item["line"].as_u64() {
+            let l = l as usize;
+            if l.abs_diff(anchor_center) <= 40 {
+                points.push(l);
+            } else {
+                far_points += 1;
+            }
         }
     }
     let lo = points.iter().copied().min().unwrap_or(center + 1);
@@ -560,7 +588,8 @@ fn locus_facts(
         "lines": span,
         "spread": if span > 40 { "wide" } else { "tight" },
         "covers": ["target_line", "guards", "capacity_anchors"],
-        "note": "覆盖目标行/检查行/容量锚点的最小连续区间——可直接作为交付单元，比 depth 窗口小得多；spread=wide 说明锚点离目标行较远（声明区或另一个函数）",
+        "far_points_outside_window": far_points,
+        "note": "只覆盖目标行与**±40 行内**的检查行/容量锚点——可直接作为交付单元；far_points_outside_window 是更远处被排除的点数（函数内其它无关守卫不参与窗口）",
     });
     let no_check_found = guards.is_empty();
     let decision_facts = json!({
@@ -591,7 +620,7 @@ fn locus_facts(
                     if p.is_empty() || p == "void" {
                         continue;
                     }
-                    let name = locus_identifiers_min(p, 1).pop().unwrap_or_default();
+                    let name = locus_last_identifier(p);
                     if name.is_empty() {
                         continue;
                     }
@@ -5771,20 +5800,23 @@ mod tests {
             "不得声称做了指针/边界推理: {d}"
         );
         // item 2：来源候选 = 签名参数；入口候选 = 调用者
-        // **已知缺口（本轮到此为止，显式记录而不是掩盖）**：在该夹具上 `origin_candidates`
-        // 与 `entry_candidates` 都未命中（疑与函数归属/索引在该夹具上的解析有关，未定性）。
-        // 这里只锁"字段存在且为数组"的契约；具体命中的补测留作下一步。
+        let origins = d["data"]["reachability"]["origin_candidates"]
+            .as_array()
+            .unwrap();
+        // 参数名必须按**源码顺序**取（`unsigned int n` → `n`）；用排序列表会把名字挤掉
         assert!(
-            d["data"]["reachability"]["origin_candidates"].is_array(),
-            "origin_candidates 必须是数组: {d}"
+            origins.iter().any(|o| o["name"] == "n"),
+            "参数 n 必须在来源候选里: {d}"
         );
-        // **已知缺口**（本轮迭代到此为止，显式记录而不是掩盖）：在该夹具上"同文件调用点"
-        // 没有进入 `entry_candidates`（索引倒排命中与文件内字面兜底都没给到）——待查是索引口径
-        // 还是兜底判据的问题。这里只锁"字段存在且为数组"这一契约，不因该缺口让主线变红。
+        let entries = d["data"]["reachability"]["entry_candidates"]
+            .as_array()
+            .unwrap();
         assert!(
-            d["data"]["reachability"]["entry_candidates"].is_array(),
-            "entry_candidates 必须是数组: {d}"
+            entries.iter().any(|e| e["line"] == 11),
+            "调用者 caller() 必须在入口候选里: {d}"
         );
+        // 最小窗口必须显著小于交付窗口，且检查行缺席要显式
+        assert!(d["data"]["decision_facts"]["minimal_window"]["lines"].as_u64().unwrap() <= 8, "{d}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
