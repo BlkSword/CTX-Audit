@@ -609,12 +609,30 @@ fn locus_facts(
         "far_points_outside_window": far_points,
         "note": "只覆盖目标行与**±40 行内**的检查行/容量锚点——可直接作为交付单元；far_points_outside_window 是更远处被排除的点数（函数内其它无关守卫不参与窗口）",
     });
-    let no_check_found = guards.is_empty();
+    // **目标行自身的检查状态**：locus 所在行常常就是那条检查（修复改的往往正是这一行）。
+    // 之前这行被排除在 guards 之外且没有任何标注 ⇒ 当"决定性行就是目标行"时它凭空消失，
+    // 判定者只能看到"作用域里别处没有检查"，这是**归属**错误而不是覆盖缺失（行在窗口里）。
+    let target_matched: Vec<&str> = LOCUS_CHECK_TOKENS
+        .iter()
+        .filter(|m| target_line.contains(**m))
+        .copied()
+        .collect();
+    let target_is_check = !target_matched.is_empty();
+    let target_brief: String = target_line.trim().chars().take(160).collect();
+    // `no_check_found` 只在**目标行与作用域都没有检查**时才为真（口径显式写在响应里）。
+    let no_check_found = guards.is_empty() && !target_is_check;
     let decision_facts = json!({
         "guards": {
             "lines": guards,
             "count": guards.len(),
+            "target_line_check": {
+                "line": center + 1,
+                "is_check": target_is_check,
+                "tokens_matched": target_matched,
+                "text": target_brief,
+            },
             "no_check_found": no_check_found,
+            "no_check_found_meaning": "目标行与作用域内都没有检出检查标记",
             "searched_scope": "enclosing_function",
             "markers": LOCUS_CHECK_TOKENS,
         },
@@ -764,6 +782,7 @@ fn locus_facts(
         "entry_candidates": entry_candidates,
         "entry_count": entry_candidates.len(),
         "guard_summary": if no_check_found { "no_check_found" } else { "check_present" },
+        "target_line_is_check": target_is_check,
         "confidence": if entry_candidates.is_empty() { "low" } else { "medium" },
         "semantics": {
             "analysis_backed": language_backed,
@@ -5839,6 +5858,15 @@ mod tests {
         assert_eq!(
             d["data"]["decision_facts"]["guards"]["no_check_found"], true,
             "该夹具无 n<=32 检查，必须报 no_check_found: {d}"
+        );
+        // 目标行自身的检查状态必须显式给出（之前被静默丢弃 ⇒ 当决定性行就是目标行时凭空消失）
+        assert_eq!(
+            d["data"]["decision_facts"]["guards"]["target_line_check"]["is_check"], false,
+            "`memcpy(dst, user, n);` 不是检查行: {d}"
+        );
+        assert_eq!(
+            d["data"]["decision_facts"]["guards"]["target_line_check"]["line"], 6,
+            "目标行自身检查状态必须带行号: {d}"
         );
         let anchors = d["data"]["decision_facts"]["capacity_anchors"]
             .as_array()
