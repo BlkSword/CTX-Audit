@@ -419,7 +419,7 @@ fn collect_source_conditionals(files: &[(String, String)]) -> Value {
     })
 }
 
-/// **A2：归属优先走 core 的 tree-sitter**（语言无关，替代文本启发式）。
+/// 归属优先走 core 的 tree-sitter（语言无关，替代文本启发式）。
 ///
 /// 只做一件事：问 AST"哪个体（函数/方法）包含目标行"，取**最近包含者**（最内层）。
 /// 返回 (名字, 体起始行, 体结束行, 体开始行)。**解析不到就返回 None**，由调用方保留既有
@@ -528,14 +528,14 @@ fn const_kind_check(t: &str) -> bool {
     !t.contains("] =") && !t.contains("]=") && !t.contains("] +=") && !t.contains("] -=")
 }
 
-/// 判定要素（item 1）+ 可达性视图（item 2）。
+/// 判定要素与可达性视图。
 ///
 /// 只产**字面事实与显式缺失**：检查行按"标记 + 目标行标识符命中"给出，未命中即
 /// `no_check_found`（缺席本身就是可归因的事实）；容量锚点是定长数组声明与 `sizeof`；
 /// 最小窗口只覆盖"目标行 + 检查行 + 锚点"；可达性给的是**签名字面参数**与**调用者**，
 /// 并明确标注这不是污点/可达性证明。
 #[allow(clippy::too_many_arguments)]
-// A1：`code` 是**代码视图**（注释与字符串已被抹空、行号对齐）。判定只用它、输出仍用原文，
+// `code` 是**代码视图**（注释与字符串已被抹空、行号对齐）。判定只用它、输出仍用原文，
 // 一次覆盖 C/Java/JS/Go/Rust 的行/块注释与 Java 文档注释、Python docstring（S3 上提）。
 #[allow(clippy::too_many_arguments)]
 fn locus_facts(
@@ -3955,8 +3955,8 @@ impl Tool for CodeIntelTool {
                         return Err(ToolError::InvalidArgument(format!("文件不存在: {}", file)))
                     }
                 }
-                // 判定要素（item 1）：检查行 / 容量锚点 / 最小窗口；缺席即 no_check_found。
-                // 可达性视图（item 2）：签名字面参数 + 调用者（倒排索引），并明确不是污点证明。
+                // 判定要素：检查行 / 容量锚点 / 最小窗口；缺席即 no_check_found。
+                // 可达性视图：签名字面参数 + 调用者（倒排索引），并明确不是污点证明。
                 // 内容在这里自包含取回（Some 分支内的 lines/center/code_refs 已出作用域）。
                 let fact_content: String = files
                     .iter()
@@ -3987,7 +3987,7 @@ impl Tool for CodeIntelTool {
                     PRIMARY_ANALYSIS_LANGUAGES.contains(&language_of(file)),
                     &sindex,
                 );
-                // A2：归属优先走 AST（core 的 tree-sitter，语言无关）；失败则保留启发式结果并如实标注来源。
+                // 归属优先走 AST（core 的 tree-sitter，语言无关）；失败则保留启发式结果并如实标注来源。
                 let (function_name, function_def_line, function_signature, scope_source) = {
                     let mut source = "index_heuristic";
                     let mut fname = function_name;
@@ -4396,6 +4396,9 @@ impl Tool for CodeIntelTool {
                 let route_markers = [
                     "@app.route", "@router.", "@RequestMapping", "app.get(", "router.get(",
                     "r.GET(", "Route::", "#[get(", "#[post(",
+                // Java：Spring MVC 注解式映射与 JAX-RS
+                "@GetMapping", "@PostMapping", "@PutMapping", "@DeleteMapping", "@PatchMapping",
+                "@Path(",
                 ];
                 let middleware_markers = [
                     "middleware",
@@ -4408,6 +4411,11 @@ impl Tool for CodeIntelTool {
                     "before_request",
                     "app.use(",
                     ".use(",
+                // Java：Spring Security 方法级/全局配置与过滤器链接入
+                "@PreAuthorize", "@PostAuthorize", "@Secured", "@RolesAllowed", "@PermitAll",
+                "@DenyAll", "@EnableWebSecurity", "@EnableMethodSecurity", "SecurityFilterChain",
+                "WebSecurityConfigurerAdapter", "authorizeHttpRequests", "authorizeRequests",
+                "addFilterBefore", "addFilterAfter", "OncePerRequestFilter", "HttpSecurity",
                 ];
                 let mut routes: Vec<Value> = Vec::new();
                 let mut middleware: Vec<Value> = Vec::new();
@@ -4453,7 +4461,31 @@ impl Tool for CodeIntelTool {
                                 routes_total += 1;
                                 if routes.len() + middleware.len() < MAX_HITS {
                                     provenance.push(prov(path, ln, &id));
-                                    routes.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
+                                    // 路由值：取注解实参里的首个字符串字面量（原文里取，避免被代码视图抹空）
+                                    // HTTP 方法：由注解名给出（Spring 的 @GetMapping 等），取不到即 null
+                                    let route_value = trimmed
+                                        .split('"')
+                                        .nth(1)
+                                        .map(|s| s.to_string())
+                                        .filter(|s| !s.is_empty());
+                                    let http_method = [
+                                        ("@GetMapping", "GET"),
+                                        ("@PostMapping", "POST"),
+                                        ("@PutMapping", "PUT"),
+                                        ("@DeleteMapping", "DELETE"),
+                                        ("@PatchMapping", "PATCH"),
+                                        ("@RequestMapping", "ANY"),
+                                        ("@Path(", "ANY"),
+                                    ]
+                                    .iter()
+                                    .find(|(m, _)| code_trimmed.contains(*m))
+                                    .map(|(_, v)| v.to_string());
+                                    routes.push(json!({
+                                        "line": ln,
+                                        "text": trimmed.chars().take(200).collect::<String>(),
+                                        "route": route_value,
+                                        "http_method": http_method,
+                                    }));
                                 }
                             }
                             if middleware_markers.iter().any(|m| code_trimmed.contains(*m)) {
@@ -4488,6 +4520,14 @@ impl Tool for CodeIntelTool {
                     "is_admin",
                     "staff_member_required",
                     "user_passes_test",
+                    // Java：Spring Security 的方法级授权与 SpEL 表达式
+                    "@PreAuthorize",
+                    "@PostAuthorize",
+                    "@Secured",
+                    "@RolesAllowed",
+                    "isAuthenticated(",
+                    "hasRole(",
+                    "hasAuthority(",
                 ];
                 let mut auth_present = false;
                 if !handler.is_empty() {
@@ -5965,7 +6005,7 @@ mod tests {
             .await
             .unwrap();
         let d = out.data.clone().expect("应有 envelope data");
-        // item 1：检查缺席必须显式，锚点必须给出行号，语义边界必须如实
+        // 检查缺席必须显式，锚点必须给出行号，语义边界必须如实
         assert_eq!(
             d["data"]["decision_facts"]["guards"]["no_check_found"], true,
             "该夹具无 n<=32 检查，必须报 no_check_found: {d}"
@@ -5997,7 +6037,7 @@ mod tests {
             d["data"]["decision_facts"]["semantics"]["pointer_or_bounds_reasoning"], false,
             "不得声称做了指针/边界推理: {d}"
         );
-        // item 2：来源候选 = 签名参数；入口候选 = 调用者
+        // 来源候选 = 签名参数；入口候选 = 调用者
         let origins = d["data"]["reachability"]["origin_candidates"]
             .as_array()
             .unwrap();
@@ -6018,6 +6058,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
+    /// 方法级授权注解必须进入鉴权链判定（`auth_present`）。夹具不依赖任何外部项目。
+    #[tokio::test]
+    async fn test_framework_context_reads_java_spring_annotations() {
+        let root = std::env::temp_dir().join("ctx-audit-framework-java");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/Api.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "import org.springframework.security.access.prepost.PreAuthorize;\n",
+                "@RestController\n",
+                "public class Api {\n",
+                "    @GetMapping(\"/admin/users\")\n",
+                "    @PreAuthorize(\"hasRole('ADMIN')\")\n",
+                "    public String listUsers() {\n",
+                "        return \"ok\";\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/Api.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let hit = routes
+            .iter()
+            .find(|r| r["http_method"] == "GET")
+            .expect("应识别出 @GetMapping 路由");
+        assert_eq!(hit["route"], "/admin/users", "{d}");
+        let mw = d["data"]["middleware"].as_array().expect("middleware 应为数组");
+        assert!(
+            mw.iter().any(|m| String::from(m["text"].as_str().unwrap_or("")).contains("@PreAuthorize")),
+            "方法级授权注解应进入中间件/鉴权链: {d}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
     /// `path` 是**行区间**而不是数据流链：必须显式标注 `path_kind`/`dataflow_verified`/
     /// `span_statistics`，否则消费者会把区间里的原型声明当证据（实测真实 C 文件里这类行占多数）。
     #[tokio::test]
