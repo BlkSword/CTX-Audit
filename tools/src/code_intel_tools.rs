@@ -171,7 +171,7 @@ impl IntelKind {
             IntelKind::SymbolReferences => "跨文件符号引用（含 import alias 未解析提示）",
             IntelKind::CallHierarchy => "函数上下游调用拓扑（callers/callees，未解析边入 uncertainty）",
             IntelKind::SliceBackward => "从 file:line 向前切出相关代码片段",
-            IntelKind::DataflowPath => "source→sink **行区间**（按行序，非 def-use/污点链；可达性请配合调用层次/引用）",
+            IntelKind::DataflowPath => "source→sink **行区间**（按行序，非 def-use/污点链）；响应会标注该语言是否受分析管线支持，可达性请配合调用层次/引用",
             IntelKind::SanitizerGuards => "变量路径上的条件分支/校验逻辑",
             IntelKind::FrameworkContext => "路由 handler 的前置中间件/拦截器链",
             IntelKind::IncrementalStatus => "增量索引状态：冷启动/缓存命中/待重编译清单（stat 指纹 + TTL 缓存）",
@@ -4129,10 +4129,25 @@ impl Tool for CodeIntelTool {
                             && !t.starts_with("switch")
                     })
                     .count();
+                // **按语言区分**：本工具的实现对所有语言都是"行区间"，但只有**分析受支持的语言**
+                // （见 PRIMARY_ANALYSIS_LANGUAGES）才有语义管线兜底；其余语言（如 C/C++）必须明确
+                // 告知消费者"不要用它判可达性，请改用调用层次/引用"。
+                let df_backed = only_file
+                    .map(|f| PRIMARY_ANALYSIS_LANGUAGES.contains(&language_of(f)))
+                    .unwrap_or(false);
+                let df_scope = only_file.unwrap_or("<all indexed files>").to_string();
                 IntelEnvelope {
                     data: json!({"source": source, "sink": sink, "path": steps,
                                  "path_kind": "source_sink_line_span",
                                  "dataflow_verified": false,
+                                 "language_analysis_backed": df_backed,
+                                 "language_scope": df_scope,
+                                 "recommended_for_reachability": false,
+                                 "recommendation": if df_backed {
+                                     "本语言有分析管线：可达性请用引擎的污点/跨文件分析（CLI `--taint` / `--cross-file`）或 get_call_hierarchy；本工具只给行区间"
+                                 } else {
+                                     "本语言**不受分析管线支持**：可达性请用 get_call_hierarchy / get_symbol_references，不要依赖本工具"
+                                 },
                                  "span_statistics": {
                                      "lines": steps.len(),
                                      "declaration_like_lines": declaration_like,
@@ -4150,6 +4165,9 @@ impl Tool for CodeIntelTool {
                                 "statement_level_heuristic",
                                 "path_is_line_span_not_dataflow_chain",
                             ];
+                            if !df_backed {
+                                reasons.push("language_not_analysis_backed_use_topology_tools");
+                            }
                             if df_fallback {
                                 reasons.push("cpp_preprocess_unavailable_line_level_fallback");
                             }
@@ -5955,6 +5973,10 @@ mod tests {
         let d = out.data.clone().expect("应有 envelope data");
         assert_eq!(d["data"]["path_kind"], "source_sink_line_span", "{d}");
         assert_eq!(d["data"]["dataflow_verified"], false, "{d}");
+        // C 不受分析管线支持：必须显式标注，并明确"不推荐用于可达性判定"
+        assert_eq!(d["data"]["language_analysis_backed"], false, "{d}");
+        assert_eq!(d["data"]["recommended_for_reachability"], false, "{d}");
+        assert!(d["data"]["recommendation"].as_str().unwrap().contains("get_call_hierarchy"), "{d}");
         assert!(
             d["data"]["path_note"].as_str().unwrap().contains("行区间"),
             "必须明说这是行区间: {d}"
