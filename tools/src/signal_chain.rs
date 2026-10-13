@@ -1787,6 +1787,238 @@ fn scan_charcopy_loops(rel: &str, lines: &[&str], out: &mut Vec<SignalChainCandi
     }
 }
 
+// ── Locus 来源：diff 与公告（"从哪一行开始看"）────────────────────────
+//
+// 流程复核的结论是：证据层够用，真正的瓶颈是**"从哪一行看起"**——17 个 locus 里 16 个
+// 来自"修复 diff"，即这一步目前靠人给。本模块把这一步做成可复算的来源：
+//
+// * `loci_from_diff`：从 `git diff -U0` 的 hunk 头解析范围，**删除行取镜像前**、
+//   纯新增 hunk 取新行号（没有"被删的行"可指，必须显式给锚点）；
+// * `loci_from_advisory`：从公告/清单文件里读 `file:line`（显式行号，原样采信）。
+//
+// 两条纪律都体现在实现里：**按 hunk 分别记 locus**（不合并），且**原文取自漏洞侧**
+// （删除行的原文用 `git show <pre_rev>:<file>` 取，而不是工作副本——工作副本往往已是修复版）。
+
+/// locus 报告：来源 + 每条 locus 的对齐原文。
+pub const LOCUS_REPORT_SCHEMA: &str = "ctx-audit/locus-report/v1";
+
+/// 一条"从哪一行开始看"的锚点。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Locus {
+    pub file: String,
+    /// 对齐后的行号（1-based）：hunk 范围内**首个实质代码行**（跳过空行/注释/预处理行）。
+    pub line: usize,
+    /// hunk 覆盖的行数（1 = 单行改动）。
+    pub span: usize,
+    /// `diff-removed` | `diff-added` | `advisory`
+    pub kind: String,
+    /// 来源标注（revspec 或公告文件名）。
+    pub source: String,
+    /// 对齐后的原文（取不到时缺省）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocusReport {
+    pub schema: String,
+    pub root: String,
+    pub source: String,
+    pub loci: Vec<Locus>,
+    pub note: String,
+}
+
+/// 解析 `git diff -U0` 的 hunk 头：`-10,2 +10,3 @@` → ((10,2),(10,3))。
+fn parse_hunk_header(rest: &str) -> Option<((usize, usize), (usize, usize))> {
+    let mut parts = rest.split_whitespace();
+    let pre = parts.next()?;
+    let post = parts.next()?;
+    let one = |s: &str| -> Option<(usize, usize)> {
+        let s = if let Some(r) = s.strip_prefix('-') {
+            r
+        } else {
+            s.strip_prefix('+')?
+        };
+        let mut it = s.split(',');
+        let start: usize = it.next()?.parse().ok()?;
+        let count: usize = it.next().map(|c| c.parse().ok()).flatten().unwrap_or(1);
+        Some((start, count))
+    };
+    Some((one(pre)?, one(post)?))
+}
+
+/// 该行是否"非实质"（空行、注释、预处理占位）——locus 对齐要跳过它们。
+fn is_non_substantive(line: &str) -> bool {
+    let t = line.trim();
+    t.is_empty()
+        || t.starts_with("//")
+        || t.starts_with("/*")
+        || t.starts_with('*')
+        || t.starts_with('#')
+}
+
+/// 在 `lines` 的 `[start, start+count)`（1-based）里取**首个实质代码行**；都没有则取 `start`。
+fn align_locus(lines: &[&str], start: usize, count: usize) -> (usize, Option<String>) {
+    let end = start + count.max(1) - 1;
+    for lineno in start..=end {
+        let Some(text) = lines.get(lineno.saturating_sub(1)) else {
+            break;
+        };
+        if !is_non_substantive(text) {
+            return (lineno, Some(text.trim().to_string()));
+        }
+    }
+    (
+        start,
+        lines
+            .get(start.saturating_sub(1))
+            .map(|s| s.trim().to_string()),
+    )
+}
+
+fn git_output(root: &Path, args: &[&str]) -> std::io::Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "git {} 失败: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// 文件内容：优先工作副本；`rev=Some` 时取该版本的镜像（删除行的原文必须来自漏洞侧）。
+fn file_lines(root: &Path, rev: Option<&str>, file: &str) -> Vec<String> {
+    let text = match rev {
+        Some(rev) => git_output(root, &["show", &format!("{rev}:{file}")]).ok(),
+        None => std::fs::read_to_string(root.join(file)).ok(),
+    };
+    text.map(|t| t.lines().map(|s| s.to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// 从 `git diff -U0 <revspec>` 解析 locus。`revspec` 形如 `A..B`（`A` 作为漏洞侧镜像）
+/// 或单个 `A`（对照工作副本）。
+pub fn loci_from_diff(root: &Path, revspec: &str, max_loci: usize) -> std::io::Result<LocusReport> {
+    let pre_rev = revspec.split("..").next().unwrap_or(revspec).to_string();
+    let diff = git_output(root, &["diff", "--unified=0", "--no-color", revspec])?;
+    let mut loci: Vec<Locus> = Vec::new();
+    let mut current: Option<String> = None;
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("--- ") {
+            let p = rest.trim();
+            if p != "/dev/null" {
+                current = Some(p.trim_start_matches("a/").to_string());
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            let p = rest.trim();
+            if p != "/dev/null" {
+                current = Some(p.trim_start_matches("b/").to_string());
+            }
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("@@ ") else {
+            continue;
+        };
+        let Some((pre, post)) = parse_hunk_header(rest) else {
+            continue;
+        };
+        let Some(file) = current.clone() else {
+            continue;
+        };
+        // 有删除行 ⇒ 指**镜像前**（漏洞侧）；纯新增 hunk ⇒ 指新行号（必须显式给锚点）。
+        let (kind, start, count, rev) = if pre.1 > 0 {
+            ("diff-removed", pre.0, pre.1, Some(pre_rev.as_str()))
+        } else {
+            ("diff-added", post.0, post.1, None)
+        };
+        let lines_owned = file_lines(root, rev, &file);
+        let refs: Vec<&str> = lines_owned.iter().map(|s| s.as_str()).collect();
+        let (line, text) = align_locus(&refs, start, count);
+        loci.push(Locus {
+            file: file.clone(),
+            line,
+            span: count,
+            kind: kind.to_string(),
+            source: format!("diff:{revspec}"),
+            text,
+        });
+        if max_loci > 0 && loci.len() >= max_loci {
+            break;
+        }
+    }
+    Ok(LocusReport {
+        schema: LOCUS_REPORT_SCHEMA.to_string(),
+        root: root.to_string_lossy().replace('\\', "/"),
+        source: format!("diff:{revspec}"),
+        loci,
+        note: "删除行取镜像前（漏洞侧）原文；纯新增 hunk 取新行号；按 hunk 分别记 locus，不合并".to_string(),
+    })
+}
+
+/// 从公告/清单文件读 locus：每行 `文件:行号`，`#` 开头与空行忽略。
+/// 公告给的是**显式锚点**，因此不再做实质行对齐（只把原文取出来供判定）。
+pub fn loci_from_advisory(
+    root: &Path,
+    advisory: &Path,
+    max_loci: usize,
+) -> std::io::Result<LocusReport> {
+    let text = std::fs::read_to_string(advisory)?;
+    let label = advisory
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| advisory.to_string_lossy().to_string());
+    let mut loci: Vec<Locus> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let Some((file, lineno)) = t.rsplit_once(':') else {
+            continue;
+        };
+        let Ok(lineno) = lineno.trim().parse::<usize>() else {
+            continue;
+        };
+        if lineno == 0 {
+            continue;
+        }
+        let file = file.trim().replace('\\', "/");
+        let lines_owned = file_lines(root, None, &file);
+        let text_line = lines_owned
+            .get(lineno - 1)
+            .map(|s| s.trim().to_string());
+        loci.push(Locus {
+            file,
+            line: lineno,
+            span: 1,
+            kind: "advisory".to_string(),
+            source: format!("advisory:{label}"),
+            text: text_line,
+        });
+        if max_loci > 0 && loci.len() >= max_loci {
+            break;
+        }
+    }
+    Ok(LocusReport {
+        schema: LOCUS_REPORT_SCHEMA.to_string(),
+        root: root.to_string_lossy().replace('\\', "/"),
+        source: format!("advisory:{label}"),
+        loci,
+        note: "公告给的是显式锚点，原样采信；原文取自当前工作副本".to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2283,5 +2515,92 @@ void copy_fixed_token(const char *from)
         assert_eq!(c.cause.as_deref(), Some("trigger_constant"));
     }
 
+
+    /// diff 驱动的 locus：**删除行的原文必须取自漏洞侧**（镜像前），
+    /// 纯新增 hunk 必须取**新**行号（没有"被删的行"可指）。
+    #[test]
+    fn loci_from_diff_uses_vulnerable_side_text_and_new_lines() {
+        let root = std::env::temp_dir().join("ctx-audit-locus-diff");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .expect("git 可用");
+            assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(
+            root.join("src/a.c"),
+            "int one(void) { return 1; }\nint two(void) { return 2; }\nint three(void) { return 3; }\n",
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "base"]);
+        // 修复提交：改第 2 行 + 纯新增一个文件
+        std::fs::write(
+            root.join("src/a.c"),
+            "int one(void) { return 1; }\nint two(void) { return 22; }\nint three(void) { return 3; }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/b.c"), "int four(void)\n{\n    return 4;\n}\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "fix"]);
+
+        let report = loci_from_diff(&root, "HEAD~1..HEAD", 50).unwrap();
+        assert_eq!(report.schema, "ctx-audit/locus-report/v1");
+        let removed = report
+            .loci
+            .iter()
+            .find(|l| l.kind == "diff-removed")
+            .expect("应有删除行 locus");
+        assert_eq!(removed.file, "src/a.c");
+        assert_eq!(removed.line, 2);
+        assert_eq!(
+            removed.text.as_deref(),
+            Some("int two(void) { return 2; }"),
+            "删除行的原文必须取自漏洞侧（镜像前）"
+        );
+        let added = report
+            .loci
+            .iter()
+            .find(|l| l.kind == "diff-added")
+            .expect("纯新增 hunk 应有 locus（显式锚点）");
+        assert_eq!(added.file, "src/b.c");
+        assert_eq!(added.line, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 公告驱动的 locus：显式行号原样采信，`#` 注释与空行忽略。
+    #[test]
+    fn loci_from_advisory_reads_explicit_lines() {
+        let root = std::env::temp_dir().join("ctx-audit-locus-advisory");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/a.c"),
+            "int one(void) { return 1; }\nint two(void) { return 2; }\nint three(void) { return 3; }\n",
+        )
+        .unwrap();
+        let advisory = std::env::temp_dir().join("ctx-audit-locus-advisory.txt");
+        std::fs::write(&advisory, "# 公告清单\n\nsrc/a.c:3\n").unwrap();
+
+        let report = loci_from_advisory(&root, &advisory, 50).unwrap();
+        assert_eq!(report.loci.len(), 1, "{:?}", report.loci);
+        let locus = &report.loci[0];
+        assert_eq!(locus.kind, "advisory");
+        assert_eq!(locus.file, "src/a.c");
+        assert_eq!(locus.line, 3);
+        assert_eq!(locus.text.as_deref(), Some("int three(void) { return 3; }"));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&advisory);
+    }
 
 }

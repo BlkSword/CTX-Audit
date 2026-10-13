@@ -278,6 +278,14 @@ enum Commands {
         /// 最多扫描的源文件数（0 = 不限）
         #[arg(long, default_value_t = 0)]
         max_files: usize,
+
+        /// 从 git diff 取 locus（如 `HEAD~1..HEAD`）：删除行取漏洞侧原文，纯新增 hunk 取新行号
+        #[arg(long, value_name = "REVSPEC")]
+        from_diff: Option<String>,
+
+        /// 从公告/清单文件取 locus（每行 `文件:行号`）
+        #[arg(long, value_name = "FILE")]
+        from_advisory: Option<String>,
     },
 
     /// 规则管理
@@ -592,13 +600,23 @@ async fn main() -> Result<()> {
             .map_err(|e| miette::miette!("MCP server error: {}", e)),
 
         Commands::SignalChain {
+            from_diff,
+            from_advisory,
             path,
             output,
             constructs,
             candidates_only,
             max_files,
         } => {
-            commands::signal_chain::execute(path, output, constructs, candidates_only, max_files)
+            commands::signal_chain::execute(
+                path,
+                output,
+                constructs,
+                candidates_only,
+                max_files,
+                from_diff,
+                from_advisory,
+            )
                 .await
         }
 

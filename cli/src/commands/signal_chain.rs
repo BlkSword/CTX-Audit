@@ -6,7 +6,10 @@
 //! 只产**候选与证据**：不读规则、不产出 findings、不触碰 `scan` 的任何输出路径。
 //! 判定仍由人/LLM 做。
 
-use ctx_audit_tools::signal_chain::{scan_path, ConstructSet, SignalChainOptions, SignalChainReport};
+use ctx_audit_tools::signal_chain::{
+    loci_from_advisory, loci_from_diff, scan_path, ConstructSet, LocusReport,
+    SignalChainOptions, SignalChainReport,
+};
 use miette::{miette, IntoDiagnostic, Result};
 use std::path::PathBuf;
 
@@ -17,10 +20,33 @@ pub async fn execute(
     constructs: String,
     candidates_only: bool,
     max_files: usize,
+    from_diff: Option<String>,
+    from_advisory: Option<String>,
 ) -> Result<()> {
     let root = PathBuf::from(&path);
     if !root.exists() {
         return Err(miette!("路径不存在: {}", path));
+    }
+    // locus 模式：只产出"从哪一行看起"及其原文，不扫描、不产 findings。
+    if from_diff.is_some() || from_advisory.is_some() {
+        let report = match from_diff {
+            Some(revspec) => loci_from_diff(&root, &revspec, 200).into_diagnostic()?,
+            None => {
+                let file = from_advisory.unwrap_or_default();
+                loci_from_advisory(&root, &PathBuf::from(&file), 200).into_diagnostic()?
+            }
+        };
+        if output.eq_ignore_ascii_case("json") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).into_diagnostic()?
+            );
+        } else if output.eq_ignore_ascii_case("text") {
+            print_loci(&report);
+        } else {
+            return Err(miette!("未知输出格式 '{}'（可选 text | json）", output));
+        }
+        return Ok(());
     }
     let set = ConstructSet::parse(&constructs)
         .ok_or_else(|| {
@@ -49,6 +75,26 @@ pub async fn execute(
         return Err(miette!("未知输出格式 '{}'（可选 text | json）", output));
     }
     Ok(())
+}
+
+fn print_loci(rep: &LocusReport) {
+    println!("locus 报告（来源：{}）", rep.source);
+    println!("  schema : {}", rep.schema);
+    println!("  root   : {}", rep.root);
+    println!("  loci   : {}", rep.loci.len());
+    println!("  note   : {}", rep.note);
+    println!();
+    for l in &rep.loci {
+        println!(
+            "LOCUS {}:{}  [{}] span={} source={} text={}",
+            l.file,
+            l.line,
+            l.kind,
+            l.span,
+            l.source,
+            l.text.clone().unwrap_or_else(|| "-".to_string())
+        );
+    }
 }
 
 fn print_text(rep: &SignalChainReport, candidates_only: bool) {
