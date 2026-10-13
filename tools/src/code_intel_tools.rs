@@ -3020,22 +3020,52 @@ impl Tool for CodeIntelTool {
                         let brace = is_brace_language(path);
                         // K&R 容忍只在 C 类文件生效（跨语言误召回的入口，必须门控）
                         let c_like = is_c_like_path(path);
-                        // 目标行之前最后一条声明，且其函数体覆盖目标行 ⇒ 它就是所在函数
-                        let enclosing = sindex.file_index(path).and_then(|fi| {
-                            sindex
-                                .definitions_in_file(fi)
-                                .into_iter()
-                                .filter(|(_, def_line, _)| (*def_line as usize) <= center)
-                                .filter(|(_, def_line, _)| {
-                                    let (_, end) = body_span(
-                                        &code_refs,
-                                        (*def_line as usize).saturating_sub(1),
-                                        brace,
-                                    );
-                                    end + 1 >= center
-                                })
-                                .max_by_key(|(_, def_line, _)| *def_line)
-                        });
+                        // 目标行之前最后一条声明，且其函数体覆盖目标行 ⇒ 它就是所在函数。
+                        //
+                        // 归属选择**优先**取"自身能解析为函数头"的定义：函数体内的局部声明
+                        // （`struct X *p = NULL;`）一旦进入索引，就会因 `body_span` 探到后续
+                        // `{`（`} else if (…) {`）而通过覆盖测试，并靠"取最近"盖过真正的函数头
+                        // ⇒ `function` 变成类型名/变量名。
+                        //
+                        // 兜底顺序保证不整片丢失归属：解析不出函数头的定义形态（无法用 C/JS
+                        // 头部规则识别的定义）在没有可解析候选时仍按旧口径取最近一条。
+                        let mut defs: Vec<(String, u32, String)> = sindex
+                            .file_index(path)
+                            .map(|fi| {
+                                sindex
+                                    .definitions_in_file(fi)
+                                    .into_iter()
+                                    .filter(|(_, def_line, _)| (*def_line as usize) <= center)
+                                    .filter(|(_, def_line, _)| {
+                                        let (_, end) = body_span(
+                                            &code_refs,
+                                            (*def_line as usize).saturating_sub(1),
+                                            brace,
+                                        );
+                                        end + 1 >= center
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        defs.sort_by_key(|(_, def_line, _)| *def_line);
+                        let parses_as_header = |def_line: u32| -> bool {
+                            let idx = (def_line as usize).saturating_sub(1);
+                            let code_line = code_refs.get(idx).copied().unwrap_or("");
+                            let following: Vec<&str> = code_refs
+                                .iter()
+                                .skip(idx + 1)
+                                .filter(|s| !s.trim().is_empty())
+                                .take(6)
+                                .copied()
+                                .collect();
+                            function_header_name_multi(code_line, &following, c_like).is_some()
+                        };
+                        let enclosing = defs
+                            .iter()
+                            .filter(|(_, def_line, _)| parses_as_header(*def_line))
+                            .next_back()
+                            .or_else(|| defs.last())
+                            .cloned();
                         if let Some((name, def_line, _)) = &enclosing {
                             function_name = Some(name.clone());
                             function_def_line = Some(*def_line);
@@ -5664,4 +5694,49 @@ mod tests {
         assert!(!call_site_match("    return myread(buf)", "read"));
         assert!(call_site_match("n, _ := r.Read(buf)", "Read"));
     }
+    /// **函数体内局部声明不得夺取函数归属**（同族缺陷在"局部声明的体覆盖成立"形态上的复现）：
+    /// 符号索引的 `struct` 关键字路径若把 `struct X *p = NULL;`（函数体内、缩进）记为定义，
+    /// 而该行之后最近的 `{`（`} else if (…) {`）让它的 body_span 覆盖目标行，则
+    /// `max_by_key(def_line)` 会选中这一行、盖过真正的函数头 ⇒ `function` 变成类型名。
+    /// 期望：`function` 是真正的函数名，`function_def_line` 是函数头行。
+    #[tokio::test]
+    async fn test_slice_local_declaration_does_not_steal_function_scope() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-c-localdecl");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let src = concat!(
+            "static char *reverse_rewrite_url(struct reversepath *reverse, char *url)\n",
+            "{\n",
+            "    char *reversepath = NULL;\n",
+            "    struct reversepath *rp = NULL;\n",
+            "    if (reverse == NULL) {\n",
+            "        return NULL;\n",
+            "    } else if (reverse->path != NULL) {\n",
+            "        rp = reverse;\n",
+            "        reversepath = rewrite_url(rp->path, url);\n",
+            "    }\n",
+            "    return reversepath;\n",
+            "}\n",
+        );
+        std::fs::write(root.join("src/rev.c"), src).unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/rev.c", "line": 9, "depth": 40}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(
+            d["data"]["function"], "reverse_rewrite_url",
+            "局部声明行不得夺取归属: {d}"
+        );
+        assert_eq!(d["data"]["function_def_line"], 1, "{d}");
+        assert_eq!(d["data"]["function_scope"], "resolved", "{d}");
+        assert_eq!(d["data"]["includes_function_header"], true, "{d}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
 }
