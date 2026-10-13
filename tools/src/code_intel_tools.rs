@@ -419,6 +419,31 @@ fn collect_source_conditionals(files: &[(String, String)]) -> Value {
     })
 }
 
+/// **A2：归属优先走 core 的 tree-sitter**（语言无关，替代文本启发式）。
+///
+/// 只做一件事：问 AST"哪个体（函数/方法）包含目标行"，取**最近包含者**（最内层）。
+/// 返回 (名字, 体起始行, 体结束行, 体开始行)。**解析不到就返回 None**，由调用方保留既有
+/// 启发式结果并如实标注来源——**不在这里写任何语言专属正则**（R6）。
+fn ast_enclosing_function(
+    root: &std::path::Path,
+    rel: &str,
+    content: &str,
+    line: u32,
+) -> Option<(String, usize, usize, usize)> {
+    if line == 0 || content.is_empty() {
+        return None;
+    }
+    let mut parser = deepaudit_core::ast_api::ASTParser::new();
+    let abs = root.join(rel);
+    let bodies = parser.extract_function_bodies(&abs, content);
+    let target = line as usize;
+    bodies
+        .iter()
+        .filter(|b| b.start_line <= target && target <= b.end_line)
+        .min_by_key(|b| b.end_line.saturating_sub(b.start_line))
+        .map(|b| (b.name.clone(), b.start_line, b.end_line, b.body_start_line))
+}
+
 /// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。
 const LOCUS_CHECK_TOKENS: [&str; 12] = [
     "if ", "if(", ">=", "<=", "==", "!=", "sizeof", "assert", "return", "break", "continue", "switch",
@@ -510,9 +535,13 @@ fn const_kind_check(t: &str) -> bool {
 /// 最小窗口只覆盖"目标行 + 检查行 + 锚点"；可达性给的是**签名字面参数**与**调用者**，
 /// 并明确标注这不是污点/可达性证明。
 #[allow(clippy::too_many_arguments)]
+// A1：`code` 是**代码视图**（注释与字符串已被抹空、行号对齐）。判定只用它、输出仍用原文，
+// 一次覆盖 C/Java/JS/Go/Rust 的行/块注释与 Java 文档注释、Python docstring（S3 上提）。
+#[allow(clippy::too_many_arguments)]
 fn locus_facts(
     root: &std::path::Path,
     files: &[(String, String)],
+    code: &[&str],
     lines: &[&str],
     scope_start: usize,
     scope_end: usize,
@@ -543,7 +572,9 @@ fn locus_facts(
     let end = scope_end.min(lines.len());
     for i in scope_start..end {
         let raw = lines.get(i).copied().unwrap_or("");
-        let t = raw.trim();
+        // 判定读**代码视图**（注释/字符串为空白），显示仍用原文 ⇒ 文档注释不再被当成检查行。
+        let scanned = code.get(i).copied().unwrap_or(raw);
+        let t = scanned.trim();
         if t.is_empty()
             || t.starts_with("//")
             || t.starts_with('*')
@@ -552,7 +583,7 @@ fn locus_facts(
         {
             continue;
         }
-        let brief: String = t.chars().take(160).collect();
+        let brief: String = raw.trim().chars().take(160).collect();
         if locus_capacity_anchor(t) {
             anchors.push(json!({"line": i + 1, "text": brief, "kind": "fixed_array_capacity"}));
         } else if t.contains("sizeof") && idents.iter().any(|id| t.contains(id.as_str())) {
@@ -3946,6 +3977,7 @@ impl Tool for CodeIntelTool {
                 let (decision_facts, reachability) = locus_facts(
                     root,
                     files,
+                    &fact_refs,
                     &fact_lines,
                     fn_start,
                     fn_end,
@@ -3955,6 +3987,40 @@ impl Tool for CodeIntelTool {
                     PRIMARY_ANALYSIS_LANGUAGES.contains(&language_of(file)),
                     &sindex,
                 );
+                // A2：归属优先走 AST（core 的 tree-sitter，语言无关）；失败则保留启发式结果并如实标注来源。
+                let (function_name, function_def_line, function_signature, scope_source) = {
+                    let mut source = "index_heuristic";
+                    let mut fname = function_name;
+                    let mut fdef = function_def_line;
+                    let mut fsig = function_signature;
+                    if let Some((name, start_line, _end, body_start)) =
+                        ast_enclosing_function(root, file, &fact_content, line as u32)
+                    {
+                        // 只有 AST 给出**实名**时才接管：匿名/占位名（`<anonymous@N>`）不得把
+                        // 启发式得来的可用名字换掉（实测：JS 对象属性函数表达式上会退化）。
+                        let named = !name.is_empty() && !name.starts_with('<');
+                        if named {
+                            source = "ast";
+                            // `function_def_line` 语义 = **函数头（名字所在）行**：在
+                            // [start_line, body_start] 内取首个含该名字的行（语言中立搜索，非语法正则）。
+                            let header = (start_line..=body_start.max(start_line))
+                                .find(|l| {
+                                    fact_lines
+                                        .get(l.saturating_sub(1))
+                                        .map(|s| s.contains(&name))
+                                        .unwrap_or(false)
+                                })
+                                .unwrap_or(start_line);
+                            fname = Some(name.clone());
+                            fdef = Some(header as u32);
+                            fsig = fact_lines
+                                .get(header.saturating_sub(1))
+                                .map(|s| s.trim().chars().take(200).collect::<String>());
+                        }
+                    }
+                    (fname, fdef, fsig, source)
+                };
+
                 IntelEnvelope {
                     data: json!({
                         "file": file,
@@ -3965,6 +4031,8 @@ impl Tool for CodeIntelTool {
                         "function_def_line": function_def_line,
                         "function_signature": function_signature,
                         "function_scope": if function_def_line.is_some() { "resolved" } else { "unresolved" },
+                    // 归属来源：ast = core 的 tree-sitter 命中；index_heuristic = 索引/文本启发式
+                    "scope_source": scope_source,
                         // `within_depth`：函数头落在标称深度窗口内；`extended_for_long_function`：
                         // 函数太长，窗口被向前扩展才装下头（此时 `window.start_line` 会明显早于
                         // `target_line - depth`）；`null`：未解析到作用域
