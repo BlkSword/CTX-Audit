@@ -526,6 +526,18 @@ fn locus_facts(
     let idents = locus_identifiers(target_line);
     // 参数相关性判定用放宽版：C 里参数常是单字符名（`n`/`i`），用 ≥2 会整批漏掉
     let idents_any = locus_identifiers_min(target_line, 1);
+    // **区域变量**：目标行 ±3 行内出现过的标识符。locus 常落在空白/指针行上，而真正的变量在
+    // 紧邻几行（实测：某解析器的目标行是空行，决定性的长度变量在下一行）⇒ 只看目标行会漏。
+    let region_lo = center.saturating_sub(3);
+    let region_hi = (center + 3).min(lines.len().saturating_sub(1));
+    let mut region_idents: Vec<String> = Vec::new();
+    for i in region_lo..=region_hi {
+        for id in locus_identifiers(lines.get(i).copied().unwrap_or("")) {
+            region_idents.push(id);
+        }
+    }
+    region_idents.sort();
+    region_idents.dedup();
     let mut guards: Vec<Value> = Vec::new();
     let mut anchors: Vec<Value> = Vec::new();
     let end = scope_end.min(lines.len());
@@ -546,32 +558,38 @@ fn locus_facts(
         } else if t.contains("sizeof") && idents.iter().any(|id| t.contains(id.as_str())) {
             anchors.push(json!({"line": i + 1, "text": brief, "kind": "sizeof_bound"}));
         }
-        // 相关性＝目标行标识符命中 **或** 邻近目标行（±10 行）。只按标识符匹配会漏掉
-        // "守卫引用的是另一个变量"的情形（实测：某解析器的守卫用长度变量 n，而目标行只有 dst）。
-        let near_target = i.abs_diff(center) <= 10;
-        let touches = i == center || near_target || idents.iter().any(|id| t.contains(id.as_str()));
-        if touches && LOCUS_CHECK_TOKENS.iter().any(|m| t.contains(m)) && i != center {
+        // 相关性分两层，避免"密集函数里所有守卫都算相关"（实测某函数 54 条守卫 ⇒ 最小窗口
+        // 反而比交付窗口大）：
+        //   direct  —— 提到**区域变量**（目标行 ±3 行里的名字）⇒ 参与最小窗口；
+        //   nearby  —— 仅在 ±10 行内、与区域变量无关 ⇒ 列出但不撑大窗口。
+        let is_check = LOCUS_CHECK_TOKENS.iter().any(|m| t.contains(m));
+        if !is_check || i == center {
+            continue;
+        }
+        let direct = region_idents.iter().any(|id| t.contains(id.as_str()));
+        let nearby = i.abs_diff(center) <= 10;
+        if direct || nearby {
             guards.push(json!({
                 "line": i + 1,
                 "text": brief,
                 "scope": "enclosing_function",
-            }));
-        } else if touches && LOCUS_CHECK_TOKENS.iter().any(|m| t.contains(m)) {
-            guards.push(json!({
-                "line": i + 1,
-                "text": brief,
-                "scope": "target_line",
+                "relevance": if direct { "direct" } else { "nearby" },
             }));
         }
     }
     // 最小窗口只收**邻近 ±40 行**的检查行/锚点：把函数内所有 53 条守卫都算进来会让"最小窗口"
     // 比交付窗口还大（实测某目标 389 行），那就失去意义了。更远的点单独计数，不撑大窗口。
     let anchor_center = center + 1;
-    let mut points: Vec<usize> = vec![anchor_center];
+    let mut points: Vec<usize> = vec![region_lo + 1, anchor_center, region_hi + 1];
     let mut far_points = 0usize;
     for item in guards.iter().chain(anchors.iter()) {
+        // 只有 **direct** 检查行进入最小窗口；nearby 只作上下文列出。
+        let relevant = item.get("relevance").map(|r| r == "direct").unwrap_or(true);
         if let Some(l) = item["line"].as_u64() {
             let l = l as usize;
+            if !relevant {
+                continue;
+            }
             if l.abs_diff(anchor_center) <= 40 {
                 points.push(l);
             } else {
@@ -635,6 +653,47 @@ fn locus_facts(
             }
         }
     }
+    // 局部赋值：目标表达式里的名字在本函数内被赋过值 ⇒ 来源候选（**只报字面行，不追链**）。
+    for i in scope_start..end {
+        let t = lines.get(i).copied().unwrap_or("").trim();
+        if t.starts_with("//") || !t.contains('=') || t.contains("==") {
+            continue;
+        }
+        let Some(eq) = t.find('=') else { continue };
+        let lhs = t[..eq].trim();
+        if lhs.contains('(') || lhs.contains(')') {
+            continue; // 调用/条件式，不是赋值目标
+        }
+        let lhs_no_index: String = lhs.chars().take_while(|c| *c != '[').collect();
+        let name = locus_last_identifier(&lhs_no_index);
+        if name.is_empty() || !region_idents.iter().any(|id| id == &name) {
+            continue;
+        }
+        // 同一个名字可能被赋多次：只保留**离目标行最近**的一条，避免来源候选被同一变量刷屏。
+        if let Some(existing) = origins
+            .iter_mut()
+            .find(|o| o["kind"] == "local_assignment" && o["name"] == name.as_str())
+        {
+            let existing_gap = (existing["line"].as_u64().unwrap_or(0) as usize)
+                .abs_diff(anchor_center);
+            if (i + 1).abs_diff(anchor_center) < existing_gap {
+                *existing = json!({
+                    "kind": "local_assignment",
+                    "name": name,
+                    "line": i + 1,
+                    "text": t.chars().take(120).collect::<String>(),
+                });
+            }
+        } else {
+            origins.push(json!({
+                "kind": "local_assignment",
+                "name": name,
+                "line": i + 1,
+                "text": t.chars().take(120).collect::<String>(),
+            }));
+        }
+    }
+
     let mut entry_candidates: Vec<Value> = Vec::new();
     if let Some(fname) = function {
         if !fname.is_empty() && fname != "<unknown>" {
