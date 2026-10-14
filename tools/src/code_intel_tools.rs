@@ -549,7 +549,13 @@ fn security_config_chains(project_files: &[(String, String)]) -> Vec<SecurityCha
         let mut current: Option<usize> = None;
         for (idx, code_line) in cfg_code.iter().enumerate() {
             let ct = code_line.trim();
-            if ct.contains("SecurityFilterChain") || ct.contains("SecurityWebFilterChain") {
+            // 导入行不是证据：`import ...SecurityWebFilterChain;` 曾在此凭空建链
+            if is_import_or_package_line(ct) {
+                continue;
+            }
+            // 只认**类型位置**的 `SecurityFilterChain`（后跟空格）：方法名 `springSecurityFilterChain`
+            // 与反应式的 `SecurityWebFilterChain` 都含该子串，否则会凭空建链
+            if ct.contains("SecurityFilterChain ") {
                 let order = cfg_lines
                     .iter()
                     .skip(idx.saturating_sub(5))
@@ -1364,6 +1370,102 @@ fn evidence_scope_label(module_root: &Option<String>) -> &'static str {
     }
 }
 
+/// 反应式（WebFlux）安全链：`ServerHttpSecurity.authorizeExchange(...)` 里的
+/// `pathMatchers(...)` / `matchers(...)` / `anyExchange()` 规则。
+///
+/// 与 servlet 侧**同语义**：链内首个匹配的规则生效；`anyExchange()` 等价 `/**` 兜底；
+/// 非字面量匹配器（如 `PathRequest.toStaticResources()`）登记为 `<dynamic>`，不猜。
+fn reactive_security_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
+    let mut decl_index = 0usize;
+    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+        let has_marker = cfg_content.lines().any(|l| {
+            let t = l.trim();
+            !is_import_or_package_line(t)
+                && (t.contains("ServerHttpSecurity")
+                    || t.contains("SecurityWebFilterChain")
+                    || t.contains("@EnableWebFluxSecurity"))
+        });
+        if !has_marker {
+            continue;
+        }
+        let cfg_code = code_lines(cfg_content, hash_comment_language(cfg_path));
+        let cfg_lines: Vec<&str> = cfg_content.lines().collect();
+        let mut current: Option<usize> = None;
+        for (idx, code_line) in cfg_code.iter().enumerate() {
+            let ct = code_line.trim();
+            if ct.contains("return http.build();") {
+                current = None;
+                continue;
+            }
+            // 链起点：返回 `SecurityWebFilterChain` 的方法声明
+            if ct.contains("SecurityWebFilterChain") && ct.contains('(') && !ct.contains("class ") {
+                decl_index += 1;
+                let order = cfg_lines
+                    .iter()
+                    .take(idx)
+                    .rev()
+                    .take(4)
+                    .find_map(|l| {
+                        let t = l.trim();
+                        t.strip_prefix("@Order(")
+                            .and_then(|s| s.split(')').next())
+                            .and_then(|s| s.trim().parse::<i64>().ok())
+                    });
+                chains.push(SecurityChain {
+                    order,
+                    matcher: None,
+                    decl_index,
+                    file: cfg_path.clone(),
+                    line: (idx + 1) as u32,
+                    rules: Vec::new(),
+                });
+                current = Some(chains.len() - 1);
+                continue;
+            }
+            let Some(ci) = current else { continue };
+            let is_path = ct.contains("pathMatchers(");
+            let is_matchers = ct.contains("matchers(") && !is_path;
+            let is_any_exchange = ct.contains("anyExchange()");
+            if !is_path && !is_matchers && !is_any_exchange {
+                continue;
+            }
+            let raw = cfg_lines.get(idx).copied().unwrap_or("");
+            let window: String = cfg_lines
+                .iter()
+                .skip(idx)
+                .take(4)
+                .cloned()
+                .collect::<Vec<&str>>()
+                .join(" ");
+            let clause = AUTH_CLAUSES
+                .iter()
+                .filter_map(|k| window.find(*k).map(|p| (p, *k)))
+                .min_by_key(|(p, _)| *p)
+                .map(|(_, k)| k.trim_end_matches('(').to_string())
+                .unwrap_or_else(|| "unspecified".to_string());
+            let mut patterns: Vec<String> = if is_any_exchange {
+                vec!["/**".to_string()]
+            } else {
+                url_patterns_in(raw)
+            };
+            if patterns.is_empty() {
+                patterns.push("<dynamic>".to_string());
+            }
+            for pattern in patterns {
+                chains[ci].rules.push(SecurityRule {
+                    pattern,
+                    clause: clause.clone(),
+                    kind: "spring_webflux".to_string(),
+                    file: cfg_path.clone(),
+                    line: (idx + 1) as u32,
+                });
+            }
+        }
+    }
+    chains.sort_by_key(|c| (c.order.unwrap_or(i64::MAX), c.decl_index));
+    chains
+}
 /// 反应式（WebFlux）安全配置：`SecurityWebFilterChain` / `ServerHttpSecurity` / `@EnableWebFluxSecurity`。
 ///
 /// 该类配置当前**未建模**；把它探测出来是为了能**如实**说"未建模"，而不是给出会被读成
@@ -5573,6 +5675,7 @@ impl Tool for CodeIntelTool {
                     &scoped_evidence
                 };
                 let mut all_chains = security_config_chains(evidence_files);
+                    all_chains.extend(reactive_security_chains(evidence_files));
                 // 跨文件证据面必须在 `files` 被"按需单文件"遮蔽**之前**预取：
                 // 否则只会扫描被请求的那个文件（实测：容器过滤器与拦截器注册因此整批漏掉）
                 let container_filters = container_filter_registrations(evidence_files);
@@ -8233,11 +8336,11 @@ mod tests {
         assert_eq!(regs[0].name.as_deref(), Some("CorsFilter"), "{regs:?}");
         assert_eq!(regs[0].pattern, "/*", "{regs:?}");
     }
-    /// 反应式（WebFlux）安全配置当前**未建模**：不得给出会被读成"没有保护"的结论，
-    /// 而应如实标为 `framework_not_modeled` 并带出配置出处。
+    /// 反应式安全配置应被**建模**：`pathMatchers("/x").permitAll()` 与 `anyExchange().authenticated()`
+    /// 与 servlet 侧同语义（链内首个匹配生效、`anyExchange()` 等价 `/**` 兜底），并可给出出处。
     #[tokio::test]
-    async fn test_reactive_security_is_reported_as_not_modeled() {
-        let root = std::env::temp_dir().join("ctx-audit-reactive-not-modeled");
+    async fn test_reactive_security_rules_are_modelled() {
+        let root = std::env::temp_dir().join("ctx-audit-reactive-modelled");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
@@ -8249,9 +8352,10 @@ mod tests {
                 "@EnableWebFluxSecurity\n",
                 "public class WebfluxSecurityConfiguration {\n",
                 "    public SecurityWebFilterChain springSecurityFilterChain(ServerHttpSecurity http) {\n",
-                "        http.authorizeExchange(e -> e.pathMatchers(\"/login\").permitAll()\n",
+                "        http.authorizeExchange(e -> e\n",
+                "                .pathMatchers(\"/login\").permitAll()\n",
                 "                .anyExchange().authenticated());\n",
-                "        return null;\n",
+                "        return http.build();\n",
                 "    }\n",
                 "}\n",
             ),
@@ -8281,22 +8385,77 @@ mod tests {
             .unwrap();
         let d = out.data.clone().expect("应有 envelope data");
         let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
-        let idx = routes
+        let idx = routes.iter().find(|r| r["route"] == "/").expect("应有 /");
+        assert_eq!(idx["global_coverage"], "covered_by_global_config", "{d}");
+        assert_eq!(idx["chains_considered"], 1, "{d}");
+        assert!(
+            idx["global_match"]["file"]
+                .as_str()
+                .unwrap_or("")
+                .contains("WebfluxSecurityConfiguration.java"),
+            "应给出来自反应式配置的出处: {d}"
+        );
+        assert!(idx["coverage_caveat"].is_null(), "已建模就不该带未建模提示: {d}");
+        let login = routes
             .iter()
-            .find(|r| r["route"] == "/")
-            .expect("应有 / 端点");
+            .find(|r| r["route"] == "/login")
+            .expect("应有 /login");
+        assert_eq!(
+            login["global_coverage"], "permitted_by_global_config",
+            "`pathMatchers(\"/login\").permitAll()` 应判为公开: {d}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 反应式配置存在、但**没有可用的规则**时，仍要如实说"未建模"，不得说成"没有保护"。
+    #[tokio::test]
+    async fn test_reactive_config_without_rules_is_reported_as_not_modelled() {
+        let root = std::env::temp_dir().join("ctx-audit-reactive-norules");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/WebfluxSecurityConfiguration.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.security.config.web.server.ServerHttpSecurity;\n",
+                "import org.springframework.security.web.server.SecurityWebFilterChain;\n",
+                "@EnableWebFluxSecurity\n",
+                "public class WebfluxSecurityConfiguration {\n",
+                "    public SecurityWebFilterChain springSecurityFilterChain(ServerHttpSecurity http) {\n",
+                "        http.csrf(csrf -> csrf.disable());\n",
+                "        return http.build();\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/IndexController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "public class IndexController {\n",
+                "    @GetMapping(\"/\")\n",
+                "    public String index() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/IndexController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let idx = routes.iter().find(|r| r["route"] == "/").expect("应有 /");
         assert_eq!(idx["global_coverage"], "framework_not_modeled", "{d}");
         assert_eq!(
             idx["coverage_caveat"], "reactive_security_not_modeled",
             "{d}"
-        );
-        assert_eq!(idx["unmodeled_framework"], "spring_webflux", "{d}");
-        assert!(
-            idx["unmodeled_source"]["file"]
-                .as_str()
-                .unwrap_or("")
-                .contains("WebfluxSecurityConfiguration.java"),
-            "要带出未建模配置的出处: {d}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
