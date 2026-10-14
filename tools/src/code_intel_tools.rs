@@ -444,6 +444,155 @@ fn ast_enclosing_function(
         .map(|b| (b.name.clone(), b.start_line, b.end_line, b.body_start_line))
 }
 
+/// 路径模式匹配：精确匹配、`/**` 前缀、`/*` 单段通配。
+fn route_matches_pattern(route: &str, pattern: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return route.starts_with(prefix);
+    }
+    if let Some(base) = pattern.strip_suffix("/*") {
+        if !route.starts_with(base) {
+            return false;
+        }
+        let rest = &route[base.len()..];
+        return !rest.is_empty() && !rest.trim_matches('/').contains('/');
+    }
+    route == pattern
+}
+
+/// 安全配置判定里使用的授权子句关键词。
+const AUTH_CLAUSES: [&str; 9] = [
+    "permitAll",
+    "hasRole",
+    "hasAnyRole",
+    "hasAuthority",
+    "hasAnyAuthority",
+    "isAuthenticated",
+    "authenticated",
+    "denyAll",
+    "access(",
+];
+
+/// 该文件是否像安全配置（含全局安全配置形态）。
+fn looks_like_security_config(content: &str) -> bool {
+    content.contains("SecurityFilterChain")
+        || content.contains("WebSecurityConfigurerAdapter")
+        || content.contains("@EnableWebSecurity")
+        || content.contains("authorizeHttpRequests")
+        || content.contains("authorizeRequests")
+}
+
+/// 跨文件证据：在已索引文件里收集「路径匹配器 + 授权子句」。
+/// 输入显式传入，不依赖任何调用分支的内部状态，便于单独测试。
+fn security_config_matchers(
+    project_files: &[(String, String)],
+) -> Vec<(String, String, String, u32)> {
+    let mut out = Vec::new();
+    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+        if !looks_like_security_config(cfg_content) {
+            continue;
+        }
+        let cfg_code = code_lines(cfg_content, hash_comment_language(cfg_path));
+        let cfg_lines: Vec<&str> = cfg_content.lines().collect();
+        for (idx, code_line) in cfg_code.iter().enumerate() {
+            let ct = code_line.trim();
+            if !(ct.contains("requestMatchers(")
+                || ct.contains("antMatchers(")
+                || ct.contains("mvcMatchers("))
+            {
+                continue;
+            }
+            let raw = cfg_lines.get(idx).copied().unwrap_or("");
+            let pattern = match raw.split('"').nth(1) {
+                Some(p) if !p.is_empty() => p.to_string(),
+                _ => continue,
+            };
+            let window: String = cfg_lines
+                .iter()
+                .skip(idx)
+                .take(4)
+                .cloned()
+                .collect::<Vec<&str>>()
+                .join(" ");
+            let clause = AUTH_CLAUSES
+                .iter()
+                .filter_map(|k| window.find(*k).map(|p| (p, *k)))
+                .min_by_key(|(p, _)| *p)
+                .map(|(_, k)| k)
+                .map(|k| k.trim_end_matches('(').to_string())
+                .unwrap_or_else(|| "unspecified".to_string());
+            out.push((pattern, clause, cfg_path.clone(), (idx + 1) as u32));
+        }
+    }
+    out
+}
+
+/// 跨文件证据：安全配置的声明位置（用于中间件链上的配置证据）。
+fn security_config_declarations(
+    project_files: &[(String, String)],
+) -> Vec<(String, u32, String)> {
+    let mut out = Vec::new();
+    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+        if !looks_like_security_config(cfg_content) {
+            continue;
+        }
+        let cfg_code = code_lines(cfg_content, hash_comment_language(cfg_path));
+        let cfg_lines: Vec<&str> = cfg_content.lines().collect();
+        for (idx, code_line) in cfg_code.iter().enumerate() {
+            let ct = code_line.trim();
+            if ct.contains("class ")
+                && (ct.contains("SecurityConfig") || ct.contains("WebSecurityConfig"))
+            {
+                out.push((
+                    cfg_path.clone(),
+                    (idx + 1) as u32,
+                    cfg_lines
+                        .get(idx)
+                        .copied()
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(200)
+                        .collect::<String>(),
+                ));
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// 给路由条目补上全局覆盖判定（纯数据变换）。
+/// 只陈述"找到了什么"：无匹配不等于"未受保护"（顺序语义与容器级过滤器不在本判定内）。
+fn annotate_route_coverage(routes: &mut [Value], matchers: &[(String, String, String, u32)]) {
+    for entry in routes.iter_mut() {
+        let route = entry
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let hit = if route.is_empty() {
+            None
+        } else {
+            matchers
+                .iter()
+                .find(|(p, _, _, _)| route_matches_pattern(&route, p))
+        };
+        let verdict = match hit {
+            Some((_, clause, _, _)) if clause == "permitAll" => "permitted_by_global_config",
+            Some(_) => "covered_by_global_config",
+            None if !matchers.is_empty() => "no_global_match_found",
+            None => "no_global_config_found",
+        };
+        let detail = hit.map(|(pattern, clause, cfg_path, cl)| {
+            json!({"pattern": pattern, "clause": clause, "file": cfg_path, "line": cl})
+        });
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("global_coverage".to_string(), json!(verdict));
+            obj.insert("global_match".to_string(), detail.unwrap_or(Value::Null));
+        }
+    }
+}
+
 /// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。
 const LOCUS_CHECK_TOKENS: [&str; 12] = [
     "if ", "if(", ">=", "<=", "==", "!=", "sizeof", "assert", "return", "break", "continue", "switch",
@@ -4389,6 +4538,9 @@ impl Tool for CodeIntelTool {
                 }
             }
             IntelKind::FrameworkContext => {
+                // 跨文件安全配置证据：此刻 `files` 仍是项目全量索引（下面会被按需单文件遮蔽）。
+                let security_matchers = security_config_matchers(files);
+                let security_config_decls = security_config_declarations(files);
                 let file = input["file"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 file 参数".to_string()))?;
@@ -4501,6 +4653,22 @@ impl Tool for CodeIntelTool {
                         return Err(ToolError::InvalidArgument(format!("文件不存在: {}", file)))
                     }
                 }
+                // 安全配置声明并入中间件链（跨文件证据）。
+                for (cfg_file, cfg_line, cfg_text) in security_config_decls.iter() {
+                    if middleware.len() >= MAX_HITS {
+                        break;
+                    }
+                    provenance.push(prov_with(cfg_file, *cfg_line, &id, "security-config"));
+                    middleware.push(json!({
+                        "line": cfg_line,
+                        "text": cfg_text,
+                        "kind": "security_config",
+                        "file": cfg_file,
+                    }));
+                }
+                // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
+                annotate_route_coverage(&mut routes, &security_matchers);
+
                 // 路由 → handler 绑定：用符号索引把 handler **标识符精确**解析到定义位置。
                 // 这是"框架 resolver"的起点——先给出 route 与 handler 定义之间**可验证**的关联，
                 // 而不是只报"这行看起来像路由"。
@@ -6056,6 +6224,70 @@ mod tests {
         // 最小窗口必须显著小于交付窗口，且检查行缺席要显式
         assert!(d["data"]["decision_facts"]["minimal_window"]["lines"].as_u64().unwrap() <= 8, "{d}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 路径匹配：精确、`/**` 前缀、`/*` 单段。
+    #[test]
+    fn test_route_matches_pattern() {
+        assert!(route_matches_pattern("/admin/users", "/admin/users"));
+        assert!(!route_matches_pattern("/admin/users/1", "/admin/users"));
+        assert!(route_matches_pattern("/admin/users", "/admin/**"));
+        assert!(route_matches_pattern("/admin/users/1", "/admin/**"));
+        assert!(route_matches_pattern("/admin/users", "/admin/*"));
+        assert!(!route_matches_pattern("/admin/users/1", "/admin/*"));
+        assert!(!route_matches_pattern("/public/x", "/admin/**"));
+    }
+
+    /// 跨文件安全配置：匹配器与授权子句被正确取出（输入显式，直接喂内存文件对）。
+    #[test]
+    fn test_security_config_matchers_and_annotation() {
+        let files = vec![
+            (
+                "src/SecurityConfig.java".to_string(),
+                concat!(
+                    "package app;\n",
+                    "@Configuration\n",
+                    "@EnableWebSecurity\n",
+                    "public class SecurityConfig {\n",
+                    "    @Bean\n",
+                    "    public SecurityFilterChain chain(HttpSecurity http) {\n",
+                    "        http.authorizeHttpRequests(auth -> auth\n",
+                    "            .requestMatchers(\"/admin/**\").hasRole(\"ADMIN\")\n",
+                    "            .requestMatchers(\"/public/**\").permitAll()\n",
+                    "            .anyRequest().authenticated());\n",
+                    "        return null;\n",
+                    "    }\n",
+                    "}\n",
+                )
+                .to_string(),
+            ),
+        ];
+        let matchers = security_config_matchers(&files);
+        assert!(
+            matchers.iter().any(|(p, c, f, _)| p == "/admin/**" && c == "hasRole" && f.ends_with("SecurityConfig.java")),
+            "应取到 /admin/** 的 hasRole 子句: {matchers:?}"
+        );
+        assert!(
+            matchers.iter().any(|(p, c, _, _)| p == "/public/**" && c == "permitAll"),
+            "应取到 /public/** 的 permitAll 子句: {matchers:?}"
+        );
+        let decls = security_config_declarations(&files);
+        assert_eq!(decls.len(), 1, "应识别出安全配置类: {decls:?}");
+
+        let mut routes = vec![
+            json!({"line": 1, "route": "/admin/users", "http_method": "GET"}),
+            json!({"line": 2, "route": "/public/info", "http_method": "GET"}),
+            json!({"line": 3, "route": "/other/thing", "http_method": "GET"}),
+        ];
+        annotate_route_coverage(&mut routes, &matchers);
+        assert_eq!(routes[0]["global_coverage"], "covered_by_global_config", "{routes:?}");
+        assert_eq!(routes[1]["global_coverage"], "permitted_by_global_config", "{routes:?}");
+        assert_eq!(routes[2]["global_coverage"], "no_global_match_found", "{routes:?}");
+
+        // 无任何安全配置时：如实报"未找到配置"，不推断"未受保护"
+        let mut solo = vec![json!({"line": 1, "route": "/x", "http_method": "GET"})];
+        annotate_route_coverage(&mut solo, &[]);
+        assert_eq!(solo[0]["global_coverage"], "no_global_config_found", "{solo:?}");
     }
 
     /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
