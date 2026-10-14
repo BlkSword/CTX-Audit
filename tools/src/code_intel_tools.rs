@@ -764,8 +764,12 @@ struct ContainerFilter {
 
 /// Servlet 风格的 URL 模式匹配：`/*` 全匹配、`/x/*` 前缀、`*.ext` 后缀、其余精确匹配。
 fn servlet_pattern_matches(route: &str, pattern: &str) -> bool {
-    if pattern == "/*" || pattern == "*" {
+    if pattern == "/*" || pattern == "*" || pattern == "/**" || pattern == "**" {
         return true;
+    }
+    // Spring 拦截器/路径匹配使用 `/**` 前缀语义（servlet 的 `/*` 之外）
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return route == prefix || route.starts_with(prefix);
     }
     if let Some(prefix) = pattern.strip_suffix("/*") {
         return route == prefix || route.starts_with(prefix);
@@ -1190,6 +1194,105 @@ fn is_type_declaration(code: &[String], idx: usize, line_trimmed: &str) -> bool 
         .find(|l| !l.trim().is_empty())
         .map(|l| l.trim().starts_with('{'))
         .unwrap_or(false)
+}
+
+/// 拦截器注册：`registry.addInterceptor(x).addPathPatterns("/**")` 形态。
+///
+/// 只交付**注册事实 + 适用路径**，不判定鉴权——拦截器内部做了什么无法从注册信息推断。
+/// 它与容器过滤器、安全配置并列，构成第三条保护面。
+fn interceptor_registrations(project_files: &[(String, String)]) -> Vec<ContainerFilter> {
+    let mut out: Vec<ContainerFilter> = Vec::new();
+    for (f, content) in project_files.iter().take(MAX_FILES) {
+        if !content.contains("addInterceptor(") {
+            continue;
+        }
+        let lines: Vec<&str> = content.lines().collect();
+        let code = code_lines(content, hash_comment_language(f));
+        for (idx, code_line) in code.iter().enumerate() {
+            if !code_line.contains("addInterceptor(") {
+                continue;
+            }
+            let raw = lines.get(idx).copied().unwrap_or("");
+            // 拦截器名：优先取 `new Xxx(` 里的类型名，否则取实参里的首个标识符
+            let after = raw.split("addInterceptor(").nth(1).unwrap_or("");
+            let name = after
+                .split("new ")
+                .nth(1)
+                .and_then(|s| s.split(|c: char| !(c.is_alphanumeric() || c == '_')).next())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    after
+                        .trim_start_matches('(')
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .next()
+                        .filter(|s| !s.is_empty())
+                })
+                .map(|s| s.to_string());
+            // 适用路径：本行或其后 3 行内的 addPathPatterns(...)
+            let mut patterns: Vec<String> = Vec::new();
+            for l in lines.iter().skip(idx).take(4) {
+                if l.contains("addPathPatterns") {
+                    patterns.extend(url_patterns_in(l));
+                }
+            }
+            let (pattern, basis) = if patterns.is_empty() {
+                ("/**".to_string(), "default_all_paths")
+            } else {
+                (patterns[0].clone(), "add_path_patterns")
+            };
+            // 同一注册可能被多行命中：按 (kind, pattern, file) 去重
+            if out.iter().any(|e| {
+                e.kind == "handler_interceptor" && e.pattern == pattern && e.file == *f
+            }) {
+                continue;
+            }
+            out.push(ContainerFilter {
+                pattern,
+                kind: "handler_interceptor".to_string(),
+                file: f.clone(),
+                line: (idx + 1) as u32,
+                name,
+                basis: basis.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// 给端点补上拦截器注册证据（类级映射不参与）。
+fn annotate_interceptors(routes: &mut [Value], regs: &[ContainerFilter]) {
+    for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+            continue;
+        }
+        let route = entry
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let matched: Vec<Value> = if route.is_empty() {
+            Vec::new()
+        } else {
+            regs.iter()
+                .filter(|r| servlet_pattern_matches(&route, &r.pattern))
+                .take(3)
+                .map(|r| {
+                    json!({
+                        "pattern": r.pattern,
+                        "basis": r.basis,
+                        "name": r.name,
+                        "file": r.file,
+                        "line": r.line,
+                    })
+                })
+                .collect()
+        };
+        let count = matched.len();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("interceptors".to_string(), json!(matched));
+            obj.insert("interceptor_count".to_string(), json!(count));
+        }
+    }
 }
 
 /// 映射注解的作用域：位于类声明**之上**的是类级前缀，不是端点。
@@ -5363,6 +5466,9 @@ impl Tool for CodeIntelTool {
                 // 容器级过滤器注册（注解 / 注册 Bean / web.xml）：另一条保护证据面，独立陈述
                 let container_filters = container_filter_registrations(files);
                 annotate_container_filters(&mut routes, &container_filters);
+                // 拦截器注册（第三条保护面）：作为证据交付，不参与鉴权判定
+                let interceptor_regs = interceptor_registrations(files);
+                annotate_interceptors(&mut routes, &interceptor_regs);
                 // 类级授权注解（打在类声明正上方，对整批方法生效）
                 let class_auth = files
                     .iter()
@@ -7497,6 +7603,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+
+    /// 拦截器注册：`addInterceptor(x).addPathPatterns("/**")` 应作为证据交付；
+    /// 无显式路径时按"全部路径"处理并如实标注依据；不参与鉴权判定字段。
+    #[test]
+    fn test_interceptor_registrations() {
+        let files = vec![(
+            "src/ApiConfig.java".to_string(),
+            concat!(
+                "package app;\n",
+                "public class ApiConfig implements WebMvcConfigurer {\n",
+                "    public void addInterceptors(InterceptorRegistry registry) {\n",
+                "        registry.addInterceptor(new RateLimitInterceptor()).addPathPatterns(\"/api/**\");\n",
+                "        registry.addInterceptor(localeChangeInterceptor());\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let regs = interceptor_registrations(&files);
+        assert!(
+            regs.iter()
+                .any(|r| r.pattern == "/api/**" && r.name.as_deref() == Some("RateLimitInterceptor")),
+            "应取到带路径的拦截器注册: {regs:?}"
+        );
+        assert!(
+            regs.iter().any(|r| r.basis == "default_all_paths"),
+            "无显式路径的注册应按全部路径并标注依据: {regs:?}"
+        );
+
+        let mut routes = vec![
+            json!({"line": 1, "route": "/api/users", "http_method": "GET", "scope": "method"}),
+            json!({"line": 2, "route": "/other", "http_method": "GET", "scope": "method"}),
+            json!({"line": 3, "route": "/api", "http_method": "ANY", "scope": "class"}),
+        ];
+        annotate_interceptors(&mut routes, &regs);
+        assert_eq!(routes[0]["interceptor_count"], 2, "{routes:?}");
+        assert_eq!(routes[1]["interceptor_count"], 1, "{routes:?}");
+        assert!(
+            routes[2].get("interceptor_count").is_none(),
+            "类级映射不应参与: {routes:?}"
+        );
+        // 证据面不得冒充鉴权判定
+        assert!(routes[0].get("auth_effect").is_none(), "{routes:?}");
+    }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
     #[test]
     fn test_type_declaration_allman_style() {
