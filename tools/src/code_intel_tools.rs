@@ -764,6 +764,8 @@ struct ContainerFilter {
     line: u32,
     name: Option<String>,
     basis: String,
+    /// `<dispatcher>`（web.xml 过滤映射限定生效的派发类型；缺省为 None）
+    dispatcher: Option<String>,
 }
 
 /// Servlet 风格的 URL 模式匹配：`/*` 全匹配、`/x/*` 前缀、`*.ext` 后缀、其余精确匹配。
@@ -805,35 +807,80 @@ fn url_patterns_in(line: &str) -> Vec<String> {
 /// 只交付"注册事实 + 适用模式"：过滤器内部是否做鉴权无法从注册信息推断，因此本项与过滤器链的
 /// 覆盖判定**分开陈述**，不用它去改 `global_coverage`。
 fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<ContainerFilter> {
-    let mut out = Vec::new();
+    let mut out: Vec<ContainerFilter> = Vec::new();
     for (f, content) in project_files.iter().take(MAX_FILES) {
         let lines: Vec<&str> = content.lines().collect();
         if f.ends_with(".xml") {
-            let mut last_filter: Option<String> = None;
+            // 按**区段**归类：只有 <filter-mapping> 是过滤器证据，<security-constraint> 是声明式约束证据，
+            // <servlet-mapping> 是路由（不是保护面），无上下文的 <url-pattern> 不作证据。
+            let mut section: Option<&str> = None;
+            let mut mapping_name: Option<String> = None;
+            let mut dispatcher: Option<String> = None;
+            let mut mapping_start: usize = 0;
+            let text_of = |line: &str, tag: &str| -> Option<String> {
+                line.split(&format!("<{}>", tag))
+                    .nth(1)
+                    .and_then(|s| s.split('<').next())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            };
             for (idx, raw) in lines.iter().enumerate() {
                 let t = raw.trim();
-                if t.contains("<filter-name>") {
-                    last_filter = t
-                        .split('>')
-                        .nth(1)
-                        .map(|s| s.split('<').next().unwrap_or("").trim().to_string());
+                if t.contains("<filter-mapping") {
+                    section = Some("filter-mapping");
+                    mapping_name = None;
+                    dispatcher = None;
+                    mapping_start = out.len();
+                    continue;
                 }
-                if t.contains("<url-pattern>") {
-                    let p = t
-                        .split('>')
-                        .nth(1)
-                        .map(|s| s.split('<').next().unwrap_or("").trim().to_string())
-                        .unwrap_or_default();
-                    if p.is_empty() {
+                if t.contains("<servlet-mapping") {
+                    section = Some("servlet-mapping");
+                    continue;
+                }
+                if t.contains("<security-constraint") {
+                    section = Some("security-constraint");
+                    continue;
+                }
+                if t.contains("</filter-mapping>")
+                    || t.contains("</servlet-mapping>")
+                    || t.contains("</security-constraint>")
+                {
+                    section = None;
+                    continue;
+                }
+                if section == Some("filter-mapping") {
+                    if let Some(n) = text_of(t, "filter-name") {
+                        mapping_name = Some(n);
                         continue;
                     }
+                    if let Some(d) = text_of(t, "dispatcher") {
+                        // `<dispatcher>` 常写在 `<url-pattern>` **之后**：回填本映射已产出的条目
+                        for e in out[mapping_start..].iter_mut() {
+                            e.dispatcher = Some(d.clone());
+                        }
+                        dispatcher = Some(d);
+                        continue;
+                    }
+                }
+                if let Some(pattern) = text_of(t, "url-pattern") {
+                    let kind = match section {
+                        Some("filter-mapping") => "web_xml_filter_mapping",
+                        Some("security-constraint") => "web_xml_security_constraint",
+                        _ => continue,
+                    };
+                    let name = if kind == "web_xml_filter_mapping" {
+                        mapping_name.clone()
+                    } else {
+                        None
+                    };
                     out.push(ContainerFilter {
-                        pattern: p,
-                        kind: "web_xml".to_string(),
+                        pattern,
+                        kind: kind.to_string(),
                         file: f.clone(),
                         line: (idx + 1) as u32,
-                        name: last_filter.clone(),
+                        name,
                         basis: "url-pattern".to_string(),
+                        dispatcher: dispatcher.clone(),
                     });
                 }
             }
@@ -852,6 +899,7 @@ fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<Con
                         line: (idx + 1) as u32,
                         name: None,
                         basis: "annotation".to_string(),
+                        dispatcher: None,
                     });
                 }
                 continue;
@@ -873,6 +921,7 @@ fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<Con
                         line: (idx + 1) as u32,
                         name: name.clone(),
                         basis: "default_all_urls".to_string(),
+                        dispatcher: None,
                     });
                 } else {
                     for p in found {
@@ -883,6 +932,7 @@ fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<Con
                             line: (idx + 1) as u32,
                             name: name.clone(),
                             basis: "url_patterns".to_string(),
+                        dispatcher: None,
                         });
                     }
                 }
@@ -1379,6 +1429,7 @@ fn interceptor_registrations(project_files: &[(String, String)]) -> Vec<Containe
                 line: (idx + 1) as u32,
                 name,
                 basis: basis.to_string(),
+                dispatcher: None,
             });
         }
     }
@@ -7482,7 +7533,7 @@ mod tests {
             "FilterRegistrationBean 的 addUrlPatterns 应被取到: {filters:?}"
         );
         assert!(
-            filters.iter().any(|f| f.kind == "web_xml" && f.pattern == "/secure/*" && f.name.as_deref() == Some("csrfFilter")),
+            filters.iter().any(|f| f.kind == "web_xml_filter_mapping" && f.pattern == "/secure/*" && f.name.as_deref() == Some("csrfFilter")),
             "web.xml 的 url-pattern 与 filter-name 应被取到: {filters:?}"
         );
 
@@ -7995,6 +8046,56 @@ mod tests {
             "覆盖判定必须来自本模块配置: {d}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+    /// web.xml 按区段归类：`<filter-mapping>` 是过滤器证据（带本映射的 filter-name 与 dispatcher）；
+    /// `<security-constraint>` 是声明式约束证据；`<servlet-mapping>` 与无上下文的 `<url-pattern>` 不作保护证据。
+    #[test]
+    fn test_web_xml_sections_are_classified() {
+        let files = vec![(
+            "web/WEB-INF/web.xml".to_string(),
+            concat!(
+                "<web-app>\n",
+                "  <servlet-mapping>\n",
+                "    <servlet-name>app</servlet-name>\n",
+                "    <url-pattern>*.htm</url-pattern>\n",
+                "  </servlet-mapping>\n",
+                "  <filter-mapping>\n",
+                "    <filter-name>springSecurityFilterChain</filter-name>\n",
+                "    <url-pattern>/*</url-pattern>\n",
+                "    <dispatcher>REQUEST</dispatcher>\n",
+                "  </filter-mapping>\n",
+                "  <security-constraint>\n",
+                "    <web-resource-collection>\n",
+                "      <url-pattern>/admin/*</url-pattern>\n",
+                "    </web-resource-collection>\n",
+                "  </security-constraint>\n",
+                "  <welcome-file-list>\n",
+                "    <url-pattern>/bare</url-pattern>\n",
+                "  </welcome-file-list>\n",
+                "</web-app>\n",
+            )
+            .to_string(),
+        )];
+        let regs = container_filter_registrations(&files);
+        assert!(
+            regs.iter().any(|r| r.kind == "web_xml_filter_mapping"
+                && r.pattern == "/*"
+                && r.name.as_deref() == Some("springSecurityFilterChain")
+                && r.dispatcher.as_deref() == Some("REQUEST")),
+            "filter-mapping 应带出名字与 dispatcher: {regs:?}"
+        );
+        assert!(
+            regs.iter().any(|r| r.kind == "web_xml_security_constraint" && r.pattern == "/admin/*"),
+            "security-constraint 应作为声明式约束证据: {regs:?}"
+        );
+        assert!(
+            !regs.iter().any(|r| r.pattern == "*.htm"),
+            "servlet-mapping 是路由，不得当作保护证据: {regs:?}"
+        );
+        assert!(
+            !regs.iter().any(|r| r.pattern == "/bare"),
+            "无区段上下文的 url-pattern 不得当作保护证据: {regs:?}"
+        );
     }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
     #[test]
