@@ -658,6 +658,9 @@ fn rule_for_route(route: &str, chain: &SecurityChain) -> Option<SecurityRule> {
 fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityChain]) {
     let total_rules: usize = chains.iter().map(|c| c.rules.len()).sum();
     for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+            continue;
+        }
         let route = entry
             .get("route")
             .and_then(|v| v.as_str())
@@ -872,6 +875,9 @@ fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<Con
 /// 给路由条目补上容器级过滤器证据（命中最多 3 条，附注册位置）。
 fn annotate_container_filters(routes: &mut [Value], filters: &[ContainerFilter]) {
     for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+            continue;
+        }
         let route = entry
             .get("route")
             .and_then(|v| v.as_str())
@@ -965,6 +971,9 @@ fn class_level_auth_annotations(content: &str) -> Vec<(u32, String)> {
 /// 给端点补上类级授权证据（与该文件的其余证据分开陈述）。
 fn annotate_class_level_auth(routes: &mut [Value], class_auth: &[(u32, String)]) {
     for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+            continue;
+        }
         let items: Vec<Value> = class_auth
             .iter()
             .map(|(l, t)| json!({"line": l, "text": t}))
@@ -1167,6 +1176,18 @@ fn is_type_declaration(code: &[String], idx: usize, line_trimmed: &str) -> bool 
         .find(|l| !l.trim().is_empty())
         .map(|l| l.trim().starts_with('{'))
         .unwrap_or(false)
+}
+
+/// 映射注解的作用域：位于类声明**之上**的是类级前缀，不是端点。
+///
+/// 类级 `@RequestMapping` 只提供前缀，把它当端点会让"端点清单"多出并不存在的请求路径。
+fn route_scope(content: &str, line: u32) -> &'static str {
+    let class_line = type_declaration_line(content);
+    if class_line > 0 && line <= class_line {
+        "class"
+    } else {
+        "method"
+    }
 }
 
 /// 方法级映射才继承类级前缀；类声明**自身**的 `@RequestMapping` 行不重复拼接。
@@ -5291,6 +5312,8 @@ impl Tool for CodeIntelTool {
                                             route_value.as_deref(),
                                         ),
                                         "route_raw": route_value,
+                                        // 类级映射只提供前缀，不是端点
+                                        "scope": route_scope(content, ln),
                                         "http_method": http_method,
                                     }));
                                 }
@@ -5341,6 +5364,9 @@ impl Tool for CodeIntelTool {
                     .unwrap_or_default();
                 if !auth_src.is_empty() {
                     for entry in routes.iter_mut() {
+                        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+                            continue;
+                        }
                         let route_line = entry
                             .get("line")
                             .and_then(|v| v.as_u64())
@@ -7375,6 +7401,54 @@ mod tests {
 
 
 
+
+    /// 类级映射注解只提供前缀，不得被当成端点：`scope=class` 且不参与覆盖/授权判定。
+    #[tokio::test]
+    async fn test_class_scope_mapping_is_not_an_endpoint() {
+        let root = std::env::temp_dir().join("ctx-audit-route-scope");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/Api.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "@RequestMapping(\"/api\")\n",
+                "public class Api {\n",
+                "    @GetMapping(\"/ping\")\n",
+                "    public String ping() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool.execute(json!({"file": "src/Api.java"})).await.unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let class_entry = routes
+            .iter()
+            .find(|r| r["scope"] == "class")
+            .expect("类级映射应被标注 scope=class");
+        assert_eq!(class_entry["route"], "/api", "{d}");
+        assert!(
+            class_entry.get("global_coverage").is_none(),
+            "类级映射不应参与覆盖判定: {d}"
+        );
+        assert!(
+            class_entry.get("auth_effect").is_none(),
+            "类级映射不应参与授权落点判定: {d}"
+        );
+        let method_entry = routes
+            .iter()
+            .find(|r| r["scope"] == "method")
+            .expect("方法级映射应为 scope=method");
+        assert_eq!(method_entry["route"], "/api/ping", "{d}");
+        assert!(method_entry.get("global_coverage").is_some(), "{d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
     #[test]
     fn test_type_declaration_allman_style() {
