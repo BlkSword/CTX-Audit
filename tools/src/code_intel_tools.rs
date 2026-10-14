@@ -725,6 +725,176 @@ fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityChain]) {
     }
 }
 
+/// 容器级过滤器注册：注解、注册 Bean、web.xml 三类，均可复核到行。
+#[derive(Clone, Debug)]
+struct ContainerFilter {
+    pattern: String,
+    kind: String,
+    file: String,
+    line: u32,
+    name: Option<String>,
+    basis: String,
+}
+
+/// Servlet 风格的 URL 模式匹配：`/*` 全匹配、`/x/*` 前缀、`*.ext` 后缀、其余精确匹配。
+fn servlet_pattern_matches(route: &str, pattern: &str) -> bool {
+    if pattern == "/*" || pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        return route == prefix || route.starts_with(prefix);
+    }
+    if let Some(ext) = pattern.strip_prefix("*.") {
+        return route.ends_with(&format!(".{}", ext));
+    }
+    route == pattern
+}
+
+/// 取一行里所有像 URL 模式的字符串字面量（以 `/` 或 `*.` 开头）。
+fn url_patterns_in(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(i) = rest.find('"') {
+        let after = &rest[i + 1..];
+        let Some(j) = after.find('"') else { break };
+        let val = &after[..j];
+        if val.starts_with('/') || val.starts_with("*.") {
+            out.push(val.to_string());
+        }
+        rest = &after[j + 1..];
+    }
+    out
+}
+
+/// 跨文件证据：容器级过滤器注册（`@WebFilter` / `FilterRegistrationBean` / `web.xml`）。
+///
+/// 只交付"注册事实 + 适用模式"：过滤器内部是否做鉴权无法从注册信息推断，因此本项与过滤器链的
+/// 覆盖判定**分开陈述**，不用它去改 `global_coverage`。
+fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<ContainerFilter> {
+    let mut out = Vec::new();
+    for (f, content) in project_files.iter().take(MAX_FILES) {
+        let lines: Vec<&str> = content.lines().collect();
+        if f.ends_with(".xml") {
+            let mut last_filter: Option<String> = None;
+            for (idx, raw) in lines.iter().enumerate() {
+                let t = raw.trim();
+                if t.contains("<filter-name>") {
+                    last_filter = t
+                        .split('>')
+                        .nth(1)
+                        .map(|s| s.split('<').next().unwrap_or("").trim().to_string());
+                }
+                if t.contains("<url-pattern>") {
+                    let p = t
+                        .split('>')
+                        .nth(1)
+                        .map(|s| s.split('<').next().unwrap_or("").trim().to_string())
+                        .unwrap_or_default();
+                    if p.is_empty() {
+                        continue;
+                    }
+                    out.push(ContainerFilter {
+                        pattern: p,
+                        kind: "web_xml".to_string(),
+                        file: f.clone(),
+                        line: (idx + 1) as u32,
+                        name: last_filter.clone(),
+                        basis: "url-pattern".to_string(),
+                    });
+                }
+            }
+            continue;
+        }
+        let code = code_lines(content, hash_comment_language(f));
+        for (idx, code_line) in code.iter().enumerate() {
+            let ct = code_line.trim();
+            let raw = lines.get(idx).copied().unwrap_or("");
+            if ct.contains("@WebFilter") {
+                for p in url_patterns_in(raw) {
+                    out.push(ContainerFilter {
+                        pattern: p,
+                        kind: "web_filter".to_string(),
+                        file: f.clone(),
+                        line: (idx + 1) as u32,
+                        name: None,
+                        basis: "annotation".to_string(),
+                    });
+                }
+                continue;
+            }
+            if ct.contains("FilterRegistrationBean") {
+                let mut found: Vec<String> = Vec::new();
+                for l in lines.iter().skip(idx).take(8) {
+                    if l.contains("addUrlPatterns") || l.contains("setUrlPatterns") {
+                        found.extend(url_patterns_in(l));
+                    }
+                }
+                if found.is_empty() {
+                    out.push(ContainerFilter {
+                        pattern: "/*".to_string(),
+                        kind: "filter_registration".to_string(),
+                        file: f.clone(),
+                        line: (idx + 1) as u32,
+                        name: None,
+                        basis: "default_all_urls".to_string(),
+                    });
+                } else {
+                    for p in found {
+                        out.push(ContainerFilter {
+                            pattern: p,
+                            kind: "filter_registration".to_string(),
+                            file: f.clone(),
+                            line: (idx + 1) as u32,
+                            name: None,
+                            basis: "url_patterns".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    // 同一注册可能被"声明行 + 构造行"各命中一次：按 (kind, pattern, file) 去重，保留首次出现
+    let mut seen: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    out.retain(|f| seen.insert((f.kind.clone(), f.pattern.clone(), f.file.clone())));
+    out
+}
+
+/// 给路由条目补上容器级过滤器证据（命中最多 3 条，附注册位置）。
+fn annotate_container_filters(routes: &mut [Value], filters: &[ContainerFilter]) {
+    for entry in routes.iter_mut() {
+        let route = entry
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let matched: Vec<Value> = if route.is_empty() {
+            Vec::new()
+        } else {
+            filters
+                .iter()
+                .filter(|flt| servlet_pattern_matches(&route, &flt.pattern))
+                .take(3)
+                .map(|flt| {
+                    json!({
+                        "pattern": flt.pattern,
+                        "kind": flt.kind,
+                        "basis": flt.basis,
+                        "file": flt.file,
+                        "line": flt.line,
+                        "name": flt.name,
+                    })
+                })
+                .collect()
+        };
+        let count = matched.len();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("container_filters".to_string(), json!(matched));
+            obj.insert("container_filter_count".to_string(), json!(count));
+        }
+    }
+}
+
 /// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。
 const LOCUS_CHECK_TOKENS: [&str; 12] = [
     "if ", "if(", ">=", "<=", "==", "!=", "sizeof", "assert", "return", "break", "continue", "switch",
@@ -4800,6 +4970,9 @@ impl Tool for CodeIntelTool {
                 }
                 // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
                 annotate_route_coverage(&mut routes, &security_chains);
+                // 容器级过滤器注册（注解 / 注册 Bean / web.xml）：另一条保护证据面，独立陈述
+                let container_filters = container_filter_registrations(files);
+                annotate_container_filters(&mut routes, &container_filters);
 
                 // 路由 → handler 绑定：用符号索引把 handler **标识符精确**解析到定义位置。
                 // 这是"框架 resolver"的起点——先给出 route 与 handler 定义之间**可验证**的关联，
@@ -6515,6 +6688,89 @@ mod tests {
         annotate_route_coverage(&mut r2, &chains2);
         assert_eq!(r2[0]["global_coverage"], "ambiguous_across_chains", "{r2:?}");
     }
+    /// 容器级过滤器：`@WebFilter` / `FilterRegistrationBean` / `web.xml` 三类注册都能被取到，
+    /// 且按 Servlet 风格模式与路由匹配（`/*` 全匹配、`/x/*` 前缀、`*.ext` 后缀）。
+    #[test]
+    fn test_container_filter_registrations() {
+        assert!(servlet_pattern_matches("/a/b", "/*"));
+        assert!(servlet_pattern_matches("/api/x", "/api/*"));
+        assert!(!servlet_pattern_matches("/other/x", "/api/*"));
+        assert!(servlet_pattern_matches("/page.jsp", "*.jsp"));
+        assert!(servlet_pattern_matches("/exact", "/exact"));
+
+        let files = vec![
+            (
+                "src/AuthFilter.java".to_string(),
+                concat!(
+                    "package app;\n",
+                    "import javax.servlet.annotation.WebFilter;\n",
+                    "@WebFilter(urlPatterns = \"/api/*\")\n",
+                    "public class AuthFilter implements Filter {\n",
+                    "}\n",
+                )
+                .to_string(),
+            ),
+            (
+                "src/FilterConfig.java".to_string(),
+                concat!(
+                    "package app;\n",
+                    "public class FilterConfig {\n",
+                    "    @Bean\n",
+                    "    public FilterRegistrationBean<RateLimitFilter> limit() {\n",
+                    "        FilterRegistrationBean<RateLimitFilter> reg = new FilterRegistrationBean<>();\n",
+                    "        reg.addUrlPatterns(\"/admin/*\");\n",
+                    "        return reg;\n",
+                    "    }\n",
+                    "}\n",
+                )
+                .to_string(),
+            ),
+            (
+                "web/WEB-INF/web.xml".to_string(),
+                concat!(
+                    "<web-app>\n",
+                    "  <filter>\n",
+                    "    <filter-name>csrfFilter</filter-name>\n",
+                    "    <filter-class>app.CsrfFilter</filter-class>\n",
+                    "  </filter>\n",
+                    "  <filter-mapping>\n",
+                    "    <filter-name>csrfFilter</filter-name>\n",
+                    "    <url-pattern>/secure/*</url-pattern>\n",
+                    "  </filter-mapping>\n",
+                    "</web-app>\n",
+                )
+                .to_string(),
+            ),
+        ];
+        let filters = container_filter_registrations(&files);
+        assert!(
+            filters.iter().any(|f| f.kind == "web_filter" && f.pattern == "/api/*"),
+            "@WebFilter 的 urlPatterns 应被取到: {filters:?}"
+        );
+        assert!(
+            filters.iter().any(|f| f.kind == "filter_registration" && f.pattern == "/admin/*"),
+            "FilterRegistrationBean 的 addUrlPatterns 应被取到: {filters:?}"
+        );
+        assert!(
+            filters.iter().any(|f| f.kind == "web_xml" && f.pattern == "/secure/*" && f.name.as_deref() == Some("csrfFilter")),
+            "web.xml 的 url-pattern 与 filter-name 应被取到: {filters:?}"
+        );
+
+        let mut routes = vec![
+            json!({"line": 1, "route": "/api/users", "http_method": "GET"}),
+            json!({"line": 2, "route": "/admin/users", "http_method": "GET"}),
+            json!({"line": 3, "route": "/other/page", "http_method": "GET"}),
+        ];
+        annotate_container_filters(&mut routes, &filters);
+        assert_eq!(routes[0]["container_filter_count"], 1, "{routes:?}");
+        assert_eq!(routes[1]["container_filter_count"], 1, "{routes:?}");
+        assert_eq!(routes[2]["container_filter_count"], 0, "{routes:?}");
+        assert_eq!(
+            routes[0]["container_filters"][0]["kind"], "web_filter",
+            "{routes:?}"
+        );
+    }
+
     /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
     /// 方法级授权注解必须进入鉴权链判定（`auth_present`）。夹具不依赖任何外部项目。
     #[tokio::test]
