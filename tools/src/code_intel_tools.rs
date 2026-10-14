@@ -1364,6 +1364,30 @@ fn evidence_scope_label(module_root: &Option<String>) -> &'static str {
     }
 }
 
+/// 反应式（WebFlux）安全配置：`SecurityWebFilterChain` / `ServerHttpSecurity` / `@EnableWebFluxSecurity`。
+///
+/// 该类配置当前**未建模**；把它探测出来是为了能**如实**说"未建模"，而不是给出会被读成
+/// "没有保护"的 `no_global_config_found`。导入行不算（`import ...ServerHttpSecurity;` 到处都是）。
+fn reactive_security_config(project_files: &[(String, String)]) -> Option<(String, u32)> {
+    for (f, content) in project_files.iter().take(MAX_FILES) {
+        if !content.contains("ServerHttpSecurity") && !content.contains("@EnableWebFluxSecurity") {
+            continue;
+        }
+        for (idx, raw) in content.lines().enumerate() {
+            let t = raw.trim();
+            if is_import_or_package_line(t) {
+                continue;
+            }
+            if t.contains("ServerHttpSecurity")
+                || t.contains("SecurityWebFilterChain")
+                || t.contains("@EnableWebFluxSecurity")
+            {
+                return Some((f.clone(), (idx + 1) as u32));
+            }
+        }
+    }
+    None
+}
 /// 声明性噪声行：`import` / `package` / `using` 是声明，不是证据。
 ///
 /// 放在共享位置，避免"导入语句被当成保护证据或配置"——实测中容器过滤器注册曾在
@@ -5553,6 +5577,8 @@ impl Tool for CodeIntelTool {
                 // 否则只会扫描被请求的那个文件（实测：容器过滤器与拦截器注册因此整批漏掉）
                 let container_filters = container_filter_registrations(evidence_files);
                 let interceptor_regs = interceptor_registrations(evidence_files);
+                // 反应式配置未建模：需要被发现才能如实标注（同样在"按需单文件"遮蔽之前取）
+                let reactive_cfg = reactive_security_config(evidence_files);
                 all_chains.extend(shiro_filter_chains(evidence_files));
                 let security_config_decls = security_config_declarations(evidence_files);
                 let file = input["file"]
@@ -5718,6 +5744,31 @@ impl Tool for CodeIntelTool {
                 annotate_container_filters(&mut routes, &container_filters);
                 // 拦截器注册（第三条保护面）：作为证据交付，不参与鉴权判定
                 annotate_interceptors(&mut routes, &interceptor_regs);
+                // 反应式安全配置当前未建模：宁可如实说"未建模"，也不给出会被读成"没有保护"的结论
+                if let Some((rf, rline)) = reactive_cfg.as_ref() {
+                    for entry in routes.iter_mut() {
+                        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+                            continue;
+                        }
+                        if entry.get("global_coverage").and_then(|v| v.as_str())
+                            != Some("no_global_config_found")
+                        {
+                            continue;
+                        }
+                        if let Some(obj) = entry.as_object_mut() {
+                            obj.insert("global_coverage".to_string(), json!("framework_not_modeled"));
+                            obj.insert(
+                                "coverage_caveat".to_string(),
+                                json!("reactive_security_not_modeled"),
+                            );
+                            obj.insert("unmodeled_framework".to_string(), json!("spring_webflux"));
+                            obj.insert(
+                                "unmodeled_source".to_string(),
+                                json!({"file": rf, "line": rline}),
+                            );
+                        }
+                    }
+                }
                 // 如实标注跨文件证据的范围：module（按模块根收敛）/ project（保持全项目）
                 for entry in routes.iter_mut() {
                     if let Some(obj) = entry.as_object_mut() {
@@ -8181,6 +8232,73 @@ mod tests {
         assert_eq!(regs[0].kind, "web_filter", "{regs:?}");
         assert_eq!(regs[0].name.as_deref(), Some("CorsFilter"), "{regs:?}");
         assert_eq!(regs[0].pattern, "/*", "{regs:?}");
+    }
+    /// 反应式（WebFlux）安全配置当前**未建模**：不得给出会被读成"没有保护"的结论，
+    /// 而应如实标为 `framework_not_modeled` 并带出配置出处。
+    #[tokio::test]
+    async fn test_reactive_security_is_reported_as_not_modeled() {
+        let root = std::env::temp_dir().join("ctx-audit-reactive-not-modeled");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/WebfluxSecurityConfiguration.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.security.config.web.server.ServerHttpSecurity;\n",
+                "import org.springframework.security.web.server.SecurityWebFilterChain;\n",
+                "@EnableWebFluxSecurity\n",
+                "public class WebfluxSecurityConfiguration {\n",
+                "    public SecurityWebFilterChain springSecurityFilterChain(ServerHttpSecurity http) {\n",
+                "        http.authorizeExchange(e -> e.pathMatchers(\"/login\").permitAll()\n",
+                "                .anyExchange().authenticated());\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/IndexController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "public class IndexController {\n",
+                "    @GetMapping(\"/\")\n",
+                "    public String index() { return \"ok\"; }\n",
+                "    @GetMapping(\"/login\")\n",
+                "    public String login() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/IndexController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let idx = routes
+            .iter()
+            .find(|r| r["route"] == "/")
+            .expect("应有 / 端点");
+        assert_eq!(idx["global_coverage"], "framework_not_modeled", "{d}");
+        assert_eq!(
+            idx["coverage_caveat"], "reactive_security_not_modeled",
+            "{d}"
+        );
+        assert_eq!(idx["unmodeled_framework"], "spring_webflux", "{d}");
+        assert!(
+            idx["unmodeled_source"]["file"]
+                .as_str()
+                .unwrap_or("")
+                .contains("WebfluxSecurityConfiguration.java"),
+            "要带出未建模配置的出处: {d}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
     #[test]
