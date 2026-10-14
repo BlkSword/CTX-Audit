@@ -5505,21 +5505,42 @@ impl Tool for CodeIntelTool {
                         return Err(ToolError::InvalidArgument(format!("文件不存在: {}", file)))
                     }
                 }
-                // 安全配置声明并入中间件链（跨文件证据）。
-                for (cfg_file, cfg_line, cfg_text) in security_config_decls.iter() {
-                    if middleware.len() >= MAX_HITS {
-                        break;
-                    }
-                    provenance.push(prov_with(cfg_file, *cfg_line, &id, "security-config"));
-                    middleware.push(json!({
-                        "line": cfg_line,
-                        "text": cfg_text,
-                        "kind": "security_config",
-                        "file": cfg_file,
-                    }));
-                }
                 // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
                 annotate_route_coverage(&mut routes, &all_chains);
+                // 安全配置声明并入中间件链：**只上报与本文件相关者**——本文件自身（若它是配置）
+                // 以及实际为端点提供覆盖判定的配置（来自 global_match.chain_file），
+                // 按文件去重并封顶，避免把整个项目里所有配置都当成这个文件的证据。
+                let mut relevant_cfg: Vec<String> = Vec::new();
+                if security_config_decls.iter().any(|(f, _, _)| f == file) {
+                    relevant_cfg.push(file.to_string());
+                }
+                for entry in routes.iter() {
+                    if let Some(cf) = entry
+                        .get("global_match")
+                        .and_then(|m| m.get("chain_file"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if !relevant_cfg.iter().any(|x| x == cf) {
+                            relevant_cfg.push(cf.to_string());
+                        }
+                    }
+                }
+                for cfg_file in relevant_cfg.iter().take(3) {
+                    if let Some((_, cfg_line, cfg_text)) =
+                        security_config_decls.iter().find(|(f, _, _)| f == cfg_file)
+                    {
+                        if middleware.len() >= MAX_HITS {
+                            break;
+                        }
+                        provenance.push(prov_with(cfg_file, *cfg_line, &id, "security-config"));
+                        middleware.push(json!({
+                            "line": cfg_line,
+                            "text": cfg_text,
+                            "kind": "security_config",
+                            "file": cfg_file,
+                        }));
+                    }
+                }
                 // 容器级过滤器注册（注解 / 注册 Bean / web.xml）：另一条保护证据面，独立陈述
                 annotate_container_filters(&mut routes, &container_filters);
                 // 拦截器注册（第三条保护面）：作为证据交付，不参与鉴权判定
