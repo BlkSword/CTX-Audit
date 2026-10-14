@@ -905,13 +905,20 @@ fn annotate_container_filters(routes: &mut [Value], filters: &[ContainerFilter])
 }
 
 /// 类级授权注解：`@PreAuthorize` 等打在**类**上时对整批方法生效。
-const AUTH_ANNOTATION_MARKERS: [&str; 6] = [
+const AUTH_ANNOTATION_MARKERS: [&str; 11] = [
+    // Spring Security 方法/类级授权
     "@PreAuthorize",
     "@PostAuthorize",
     "@Secured",
     "@RolesAllowed",
     "@PermitAll",
     "@DenyAll",
+    // Shiro 注解式授权（@RequiresPermissions / @RequiresRoles / @RequiresAuthentication 等）
+    "@RequiresPermissions",
+    "@RequiresRoles",
+    "@RequiresAuthentication",
+    "@RequiresUser",
+    "@RequiresGuest",
 ];
 
 /// 取**类声明正上方**那段连续注解行里的授权注解。
@@ -5306,6 +5313,10 @@ impl Tool for CodeIntelTool {
                     "isAuthenticated(",
                     "hasRole(",
                     "hasAuthority(",
+                    // Shiro 注解式授权
+                    "@RequiresPermissions",
+                    "@RequiresRoles",
+                    "@RequiresAuthentication",
                 ];
                 let mut auth_present = false;
                 if !handler.is_empty() {
@@ -7230,6 +7241,47 @@ mod tests {
         // 声明序在末位的 `/**` 兜底：前面的具体规则先命中
         assert_eq!(routes[3]["global_coverage"], "covered_by_global_config", "{routes:?}");
         assert_eq!(routes[3]["ordering_basis"], "declaration_order", "{routes:?}");
+    }
+
+    /// Shiro 注解式授权：`@RequiresPermissions` / `@RequiresRoles` 等应与 Spring 注解一样
+    /// 成为类级/方法级证据，并参与"方法级覆盖类级"的判定。
+    #[test]
+    fn test_shiro_authorization_annotations_are_evidence() {
+        let content = concat!(
+            "package app;\n",
+            "import org.apache.shiro.authz.annotation.RequiresPermissions;\n",
+            "import org.apache.shiro.authz.annotation.RequiresRoles;\n",
+            "@RestController\n",
+            "@RequiresRoles(\"admin\")\n",
+            "public class SysUserController {\n",
+            "    @RequiresPermissions(\"system:user:list\")\n",
+            "    @PostMapping(\"/list\")\n",
+            "    public String list() { return \"ok\"; }\n",
+            "    @PostMapping(\"/view\")\n",
+            "    public String view() { return \"ok\"; }\n",
+            "}\n",
+        );
+        let class_hits = class_level_auth_annotations(content);
+        assert_eq!(class_hits.len(), 1, "类级应取到 @RequiresRoles: {class_hits:?}");
+        assert!(class_hits[0].1.contains("RequiresRoles"), "{class_hits:?}");
+
+        let method_hits = method_level_auth_annotations(content, 7, 9, 6);
+        assert_eq!(
+            method_hits.len(),
+            1,
+            "方法级应取到 @RequiresPermissions: {method_hits:?}"
+        );
+        assert!(
+            method_hits[0].1.contains("system:user:list"),
+            "{method_hits:?}"
+        );
+        assert_eq!(
+            auth_effect(class_hits.len(), method_hits.len()),
+            "method_level",
+            "方法级注解存在时落点应为方法级"
+        );
+        assert_eq!(auth_effect(class_hits.len(), 0), "class_level");
+        assert_eq!(auth_effect(0, 0), "none_visible");
     }
 
     /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
