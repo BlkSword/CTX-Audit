@@ -931,12 +931,7 @@ fn class_level_auth_annotations(content: &str) -> Vec<(u32, String)> {
     let mut class_idx: Option<usize> = None;
     for (idx, code_line) in code.iter().enumerate() {
         let t = code_line.trim();
-        let is_type_decl = (t.contains("class ")
-            || t.contains("interface ")
-            || t.contains("enum ")
-            || t.contains("record "))
-            && t.contains('{');
-        if is_type_decl {
+        if is_type_declaration(&code, idx, t) {
             class_idx = Some(idx);
             break;
         }
@@ -999,12 +994,7 @@ fn type_declaration_line(content: &str) -> u32 {
     let code = code_lines(content, false);
     for (idx, code_line) in code.iter().enumerate() {
         let t = code_line.trim();
-        let is_type_decl = (t.contains("class ")
-            || t.contains("interface ")
-            || t.contains("enum ")
-            || t.contains("record "))
-            && t.contains('{');
-        if is_type_decl {
+        if is_type_declaration(&code, idx, t) {
             return (idx + 1) as u32;
         }
     }
@@ -1156,6 +1146,99 @@ fn shiro_filter_chains(project_files: &[(String, String)]) -> Vec<SecurityChain>
         }
     }
     chains
+}
+
+/// 类型声明判定：`class`/`interface`/`enum`/`record` 且**本行或下一非空行**出现 `{`。
+///
+/// Allman 排版（`{` 独占下一行）在真实 Java 项目里很常见，只认同行会整批漏判。
+fn is_type_declaration(code: &[String], idx: usize, line_trimmed: &str) -> bool {
+    let head = line_trimmed.contains("class ")
+        || line_trimmed.contains("interface ")
+        || line_trimmed.contains("enum ")
+        || line_trimmed.contains("record ");
+    if !head {
+        return false;
+    }
+    if line_trimmed.contains('{') {
+        return true;
+    }
+    code.iter()
+        .skip(idx + 1)
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim().starts_with('{'))
+        .unwrap_or(false)
+}
+
+/// 方法级映射才继承类级前缀；类声明**自身**的 `@RequestMapping` 行不重复拼接。
+fn annotate_route_with_prefix(content: &str, line: u32, route: Option<&str>) -> Option<String> {
+    let class_line = type_declaration_line(content);
+    if class_line > 0 && line <= class_line {
+        return route.map(|s| s.to_string());
+    }
+    join_route_paths(class_route_prefix(content).as_deref(), route)
+}
+/// 类级 `@RequestMapping("...")` 提供的路由前缀（取该注解上的首个字符串字面量）。
+///
+/// 只扫描**类声明正上方**那段连续注解，避免把方法级映射当类级前缀。
+fn class_route_prefix(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let code = code_lines(content, false);
+    let mut class_idx: Option<usize> = None;
+    for (idx, code_line) in code.iter().enumerate() {
+        let t = code_line.trim();
+        if is_type_declaration(&code, idx, t) {
+            class_idx = Some(idx);
+            break;
+        }
+    }
+    let ci = class_idx?;
+    let mut i = ci;
+    while i > 0 {
+        i -= 1;
+        let raw = lines.get(i).copied().unwrap_or("");
+        let t = raw.trim();
+        if t.is_empty() {
+            break;
+        }
+        if !t.starts_with('@') {
+            break;
+        }
+        if t.contains("@RequestMapping") {
+            let path = raw.split('"').nth(1)?;
+            if !path.is_empty() {
+                return Some(path.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 拼接类级前缀与方法级路径（Spring 的语义是**拼接**，方法级以 `/` 开头也不例外）。
+///
+/// 两者都缺时不产出路由（如实留空，而不是造一个空路径）。
+fn join_route_paths(prefix: Option<&str>, path: Option<&str>) -> Option<String> {
+    fn norm(s: &str) -> String {
+        let t = s.trim();
+        if t.is_empty() {
+            String::new()
+        } else if t.starts_with('/') {
+            t.to_string()
+        } else {
+            format!("/{}", t)
+        }
+    }
+    let p = prefix.map(norm).unwrap_or_default();
+    let m = path.map(norm).unwrap_or_default();
+    if p.is_empty() && m.is_empty() {
+        return None;
+    }
+    if p.is_empty() {
+        return Some(m);
+    }
+    if m.is_empty() {
+        return Some(p);
+    }
+    Some(format!("{}{}", p.trim_end_matches('/'), m))
 }
 
 /// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。
@@ -5201,7 +5284,13 @@ impl Tool for CodeIntelTool {
                                     routes.push(json!({
                                         "line": ln,
                                         "text": trimmed.chars().take(200).collect::<String>(),
-                                        "route": route_value,
+                                        // Spring 语义：类级前缀与方法级路径拼接（空实参的方法级映射继承类级路径）
+                                        "route": annotate_route_with_prefix(
+                                            content,
+                                            ln,
+                                            route_value.as_deref(),
+                                        ),
+                                        "route_raw": route_value,
                                         "http_method": http_method,
                                     }));
                                 }
@@ -7284,6 +7373,94 @@ mod tests {
         assert_eq!(auth_effect(0, 0), "none_visible");
     }
 
+
+
+    /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
+    #[test]
+    fn test_type_declaration_allman_style() {
+        let content = concat!(
+            "package app;\n",
+            "@RestController\n",
+            "@RequestMapping(\"/system/user\")\n",
+            "@RequiresRoles(\"admin\")\n",
+            "public class SysUserController extends BaseController\n",
+            "{\n",
+            "    @GetMapping()\n",
+            "    public String list() { return \"ok\"; }\n",
+            "}\n",
+        );
+        assert_eq!(
+            class_route_prefix(content).as_deref(),
+            Some("/system/user"),
+            "Allman 排版下类级前缀必须可判定"
+        );
+        let class_hits = class_level_auth_annotations(content);
+        assert_eq!(
+            class_hits.len(),
+            1,
+            "Allman 排版下类级授权注解必须可判定: {class_hits:?}"
+        );
+        assert!(class_hits[0].1.contains("RequiresRoles"), "{class_hits:?}");
+        assert_ne!(
+            type_declaration_line(content),
+            0,
+            "Allman 排版下类型声明行必须可定位"
+        );
+    }
+    /// 类级路由前缀继承：`@RequestMapping` 提供前缀，方法级映射拼接；空实参的方法级映射
+    /// 应继承为类级路径，而不是留空。
+    #[test]
+    fn test_class_route_prefix_inheritance() {
+        assert_eq!(
+            join_route_paths(Some("/system/user"), Some("/list")).as_deref(),
+            Some("/system/user/list")
+        );
+        assert_eq!(
+            join_route_paths(Some("/system/user"), None).as_deref(),
+            Some("/system/user")
+        );
+        assert_eq!(join_route_paths(None, Some("/list")).as_deref(), Some("/list"));
+        assert_eq!(join_route_paths(None, None), None);
+        assert_eq!(
+            join_route_paths(Some("system/user/"), Some("list")).as_deref(),
+            Some("/system/user/list")
+        );
+
+        let content = concat!(
+            "package app;\n",
+            "import org.springframework.web.bind.annotation.*;\n",
+            "@RestController\n",
+            "@RequestMapping(\"/system/user\")\n",
+            "public class SysUserController {\n",
+            "    @GetMapping()\n",
+            "    public String list() { return \"ok\"; }\n",
+            "}\n",
+        );
+        assert_eq!(class_route_prefix(content).as_deref(), Some("/system/user"));
+        // 类声明所在的映射行不重复拼接前缀；方法级空实参映射继承前缀
+        assert_eq!(
+            annotate_route_with_prefix(content, 4, Some("/system/user")).as_deref(),
+            Some("/system/user")
+        );
+        assert_eq!(
+            annotate_route_with_prefix(content, 6, None).as_deref(),
+            Some("/system/user")
+        );
+        assert_eq!(
+            annotate_route_with_prefix(content, 7, Some("list")).as_deref(),
+            Some("/system/user/list")
+        );
+
+        let no_prefix = concat!(
+            "package app;\n",
+            "@RestController\n",
+            "public class OpenController {\n",
+            "    @GetMapping(\"/ping\")\n",
+            "    public String ping() { return \"ok\"; }\n",
+            "}\n",
+        );
+        assert_eq!(class_route_prefix(no_prefix), None);
+    }
     /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
     /// 方法级授权注解必须进入鉴权链判定（`auth_present`）。夹具不依赖任何外部项目。
     #[tokio::test]
