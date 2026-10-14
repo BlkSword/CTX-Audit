@@ -489,6 +489,8 @@ struct SecurityRule {
     clause: String,
     file: String,
     line: u32,
+    /// 匹配语义来源：`spring` = Spring 通配，`shiro` = Shiro 通配
+    kind: String,
 }
 
 /// 一条过滤器链：顺序、适用范围、链内规则（保持声明顺序）。
@@ -588,6 +590,7 @@ fn security_config_chains(project_files: &[(String, String)]) -> Vec<SecurityCha
             chains[ci].rules.push(SecurityRule {
                 pattern,
                 clause,
+                kind: "spring".to_string(),
                 file: cfg_path.clone(),
                 line: (idx + 1) as u32,
             });
@@ -637,7 +640,13 @@ fn rule_for_route(route: &str, chain: &SecurityChain) -> Option<SecurityRule> {
     chain
         .rules
         .iter()
-        .find(|r| route_matches_pattern(route, &r.pattern))
+        .find(|r| {
+            if r.kind == "shiro" {
+                shiro_pattern_matches(route, &r.pattern)
+            } else {
+                route_matches_pattern(route, &r.pattern)
+            }
+        })
         .cloned()
 }
 
@@ -1025,6 +1034,121 @@ fn auth_effect(class_count: usize, method_count: usize) -> &'static str {
     } else {
         "none_visible"
     }
+}
+
+/// Shiro 链定义里的过滤子句 → 现有子句词表（`anon` 等价放行，其余视为受限）。
+///
+/// 映射后复用同一条覆盖判定路径，避免为每种安全栈再写一套判定。
+fn shiro_clause(definition: &str) -> String {
+    let d = definition.trim();
+    if d.split(',').any(|t| t.trim() == "anon" || t.trim() == "anon,") {
+        return "permitAll".to_string();
+    }
+    if d.contains("roles[") {
+        return "hasRole".to_string();
+    }
+    if d.contains("perms[") {
+        return "hasAuthority".to_string();
+    }
+    "authenticated".to_string()
+}
+
+/// Shiro 的 URL 通配：`/**` 与 `**` 为任意多段，`/*` 与 `*` 为单段，其余精确匹配。
+fn shiro_pattern_matches(route: &str, pattern: &str) -> bool {
+    if pattern == "/**" || pattern == "**" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return route == prefix || route.starts_with(prefix);
+    }
+    if let Some(prefix) = pattern.strip_suffix("**") {
+        return route.starts_with(prefix);
+    }
+    if let Some(base) = pattern.strip_suffix("/*") {
+        if !route.starts_with(base) {
+            return false;
+        }
+        let rest = &route[base.len()..];
+        return !rest.is_empty() && !rest.trim_matches('/').contains('/');
+    }
+    if let Some(stem) = pattern.strip_suffix('*') {
+        if !route.starts_with(stem) {
+            return false;
+        }
+        let rest = &route[stem.len()..];
+        return !rest.contains('/');
+    }
+    route == pattern
+}
+
+/// 该文件是否像 Shiro 链配置。
+fn looks_like_shiro_config(content: &str) -> bool {
+    content.contains("filterChainDefinitionMap")
+        || content.contains("ShiroFilterFactoryBean")
+        || content.contains("FilterChainDefinition")
+}
+
+/// 跨文件证据：Shiro 过滤器链。
+///
+/// 链内规则**保持声明顺序**（`LinkedHashMap` 的插入序即求值序，首个匹配生效），
+/// 链没有"适用范围"与 `@Order`，因此 `matcher`/`order` 均为 None、顺序依据为声明序。
+fn shiro_filter_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
+    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+        if !looks_like_shiro_config(cfg_content) {
+            continue;
+        }
+        let code = code_lines(cfg_content, hash_comment_language(cfg_path));
+        let lines: Vec<&str> = cfg_content.lines().collect();
+        let mut rules: Vec<SecurityRule> = Vec::new();
+        let mut first_line: Option<u32> = None;
+        for (idx, code_line) in code.iter().enumerate() {
+            let ct = code_line.trim();
+            if !(ct.contains("filterChainDefinitionMap.put(")
+                || (ct.contains(".put(") && ct.contains("filterChainDefinitionMap")))
+            {
+                continue;
+            }
+            let raw = lines.get(idx).copied().unwrap_or("");
+            let quoted: Vec<String> = {
+                let mut acc = Vec::new();
+                let mut rest = raw;
+                while let Some(i) = rest.find('"') {
+                    let after = &rest[i + 1..];
+                    let Some(j) = after.find('"') else { break };
+                    acc.push(after[..j].to_string());
+                    rest = &after[j + 1..];
+                }
+                acc
+            };
+            if quoted.len() < 2 {
+                continue;
+            }
+            let pattern = quoted[0].clone();
+            let clause = shiro_clause(&quoted[1]);
+            if first_line.is_none() {
+                first_line = Some((idx + 1) as u32);
+            }
+            rules.push(SecurityRule {
+                pattern,
+                clause,
+                kind: "shiro".to_string(),
+                file: cfg_path.clone(),
+                line: (idx + 1) as u32,
+            });
+        }
+        if !rules.is_empty() {
+            chains.push(SecurityChain {
+                order: None,
+                matcher: None,
+                decl_index: chains.len(),
+                file: cfg_path.clone(),
+                line: first_line.unwrap_or(1),
+                rules,
+            });
+        }
+    }
+    chains
 }
 
 /// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。
@@ -4973,7 +5097,8 @@ impl Tool for CodeIntelTool {
             }
             IntelKind::FrameworkContext => {
                 // 跨文件安全配置证据：此刻 `files` 仍是项目全量索引（下面会被按需单文件遮蔽）。
-                let security_chains = security_config_chains(files);
+                let mut all_chains = security_config_chains(files);
+                all_chains.extend(shiro_filter_chains(files));
                 let security_config_decls = security_config_declarations(files);
                 let file = input["file"]
                     .as_str()
@@ -5101,7 +5226,7 @@ impl Tool for CodeIntelTool {
                     }));
                 }
                 // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
-                annotate_route_coverage(&mut routes, &security_chains);
+                annotate_route_coverage(&mut routes, &all_chains);
                 // 容器级过滤器注册（注解 / 注册 Bean / web.xml）：另一条保护证据面，独立陈述
                 let container_filters = container_filter_registrations(files);
                 annotate_container_filters(&mut routes, &container_filters);
@@ -7050,6 +7175,61 @@ mod tests {
             .unwrap_or("")
             .contains("isAuthenticated"), "{d}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Shiro 链：`filterChainDefinitionMap.put` 保持声明顺序、首个匹配生效；
+    /// `anon` 映射为放行、`roles[...]`/`perms[...]`/`authc` 映射为受限；
+    /// Shiro 特有通配（`/x**`、`/x/*`）按各自语义匹配。
+    #[test]
+    fn test_shiro_filter_chains() {
+        assert!(shiro_pattern_matches("/favicon.ico", "/favicon.ico**"));
+        assert!(shiro_pattern_matches("/captcha/captchaImage", "/captcha/captchaImage**"));
+        assert!(shiro_pattern_matches("/css/a.css", "/css/**"));
+        assert!(shiro_pattern_matches("/css/a.css", "/css/*"));
+        assert!(!shiro_pattern_matches("/css/a/b.css", "/css/*"));
+        assert!(!shiro_pattern_matches("/admin/x", "/css/**"));
+        assert_eq!(shiro_clause("anon"), "permitAll");
+        assert_eq!(shiro_clause("authc,roles[admin]"), "hasRole");
+        assert_eq!(shiro_clause("authc,perms[user:add]"), "hasAuthority");
+        assert_eq!(shiro_clause("user"), "authenticated");
+
+        let files = vec![(
+            "src/main/java/app/ShiroConfig.java".to_string(),
+            concat!(
+                "package app;\n",
+                "public class ShiroConfig {\n",
+                "    public ShiroFilterFactoryBean shiroFilterFactoryBean() {\n",
+                "        LinkedHashMap<String, String> filterChainDefinitionMap = new LinkedHashMap<>();\n",
+                "        filterChainDefinitionMap.put(\"/login\", \"anon\");\n",
+                "        filterChainDefinitionMap.put(\"/css/**\", \"anon\");\n",
+                "        filterChainDefinitionMap.put(\"/admin/**\", \"authc,roles[admin]\");\n",
+                "        filterChainDefinitionMap.put(\"/**\", \"authc\");\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let chains = shiro_filter_chains(&files);
+        assert_eq!(chains.len(), 1, "应切出一条 Shiro 链: {chains:?}");
+        assert_eq!(chains[0].rules.len(), 4, "应取到 4 条链定义: {chains:?}");
+        assert_eq!(chains[0].rules[0].pattern, "/login", "{chains:?}");
+        assert_eq!(chains[0].rules[0].clause, "permitAll", "{chains:?}");
+
+        let mut routes = vec![
+            json!({"line": 1, "route": "/login", "http_method": "GET"}),
+            json!({"line": 2, "route": "/css/main.css", "http_method": "GET"}),
+            json!({"line": 3, "route": "/admin/users", "http_method": "GET"}),
+            json!({"line": 4, "route": "/system/other", "http_method": "GET"}),
+        ];
+        annotate_route_coverage(&mut routes, &chains);
+        assert_eq!(routes[0]["global_coverage"], "permitted_by_global_config", "{routes:?}");
+        assert_eq!(routes[1]["global_coverage"], "permitted_by_global_config", "{routes:?}");
+        assert_eq!(routes[2]["global_coverage"], "covered_by_global_config", "{routes:?}");
+        assert_eq!(routes[2]["global_match"]["clause"], "hasRole", "{routes:?}");
+        // 声明序在末位的 `/**` 兜底：前面的具体规则先命中
+        assert_eq!(routes[3]["global_coverage"], "covered_by_global_config", "{routes:?}");
+        assert_eq!(routes[3]["ordering_basis"], "declaration_order", "{routes:?}");
     }
 
     /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
