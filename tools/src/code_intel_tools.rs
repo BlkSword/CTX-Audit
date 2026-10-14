@@ -437,11 +437,25 @@ fn ast_enclosing_function(
     let abs = root.join(rel);
     let bodies = parser.extract_function_bodies(&abs, content);
     let target = line as usize;
-    bodies
+    // 由内向外取**最近的实名包含体**：嵌套匿名回调（`<anonymous@N>`）不应让归属整体落空，
+    // 但若整条链上只有匿名体，则返回 None，交由启发式命名（避免把可用名换成占位名）。
+    let mut containing: Vec<&deepaudit_core::ast_api::FunctionBody> = bodies
         .iter()
         .filter(|b| b.start_line <= target && target <= b.end_line)
-        .min_by_key(|b| b.end_line.saturating_sub(b.start_line))
-        .map(|b| (b.name.clone(), b.start_line, b.end_line, b.body_start_line))
+        .collect();
+    containing.sort_by_key(|b| b.end_line.saturating_sub(b.start_line));
+    for b in containing {
+        let named = !b.name.is_empty() && !b.name.starts_with('<');
+        if named {
+            return Some((
+                b.name.clone(),
+                b.start_line,
+                b.end_line,
+                b.body_start_line,
+            ));
+        }
+    }
+    None
 }
 
 /// 路径模式匹配：精确匹配、`/**` 前缀、`/*` 单段通配。`/**` 亦用于 `anyRequest()` 的 Catch-all。
@@ -7449,6 +7463,40 @@ mod tests {
         assert!(method_entry.get("global_coverage").is_some(), "{d}");
         let _ = std::fs::remove_dir_all(&root);
     }
+    /// 嵌套匿名回调内的行，应归属到最近的**实名**外层函数（而不是因最内层是占位名就整个放弃）；
+    /// 同时保留"只有匿名体时不接管、交由启发式命名"的行为。
+    #[tokio::test]
+    async fn test_js_nested_callback_attributes_to_named_outer_function() {
+        let root = std::env::temp_dir().join("ctx-audit-js-nested");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/index.js"),
+            concat!(
+                "module.exports = function (args, opts) {\n",
+                "    var aliases = {};\n",
+                "    Object.keys(opts.alias || {}).forEach(function (key) {\n",
+                "        aliases[key] = [].concat(opts.alias[key]);\n",
+                "    });\n",
+                "    return aliases;\n",
+                "};\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/index.js", "line": 4, "depth": 40, "forward": 0}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["scope_source"], "ast", "{d}");
+        assert_eq!(d["data"]["function"], "exports", "{d}");
+        assert_eq!(d["data"]["function_def_line"], 1, "{d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
     #[test]
     fn test_type_declaration_allman_style() {
