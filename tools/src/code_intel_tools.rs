@@ -1370,6 +1370,116 @@ fn evidence_scope_label(module_root: &Option<String>) -> &'static str {
     }
 }
 
+/// 取 XML 元素属性值（`attr="value"`）。
+fn xml_attr(line: &str, attr: &str) -> Option<String> {
+    let key = format!("{}=\"", attr);
+    line.split(&key)
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Ant 的 `*` 后缀按**前缀**处理（如 `/login.jsp*` 应命中 `/login.jsp` 及其后），
+/// 与既有前缀语义（`/x/*`）保持一致，避免被当成字面量而不匹配。
+fn normalize_ant_pattern(pattern: &str) -> String {
+    if pattern.ends_with('*') && !pattern.ends_with("/**") && !pattern.ends_with("/*") {
+        // 用 /**（前缀含自身）而不是 /*（单段）：Ant 的 /x* 应命中 /x 本身
+        format!("{}/**", pattern.trim_end_matches('*'))
+    } else {
+        pattern.to_string()
+    }
+}
+
+/// XML 里 `access="..."` 的子句：复用与注解侧同一套词汇，取不到即 `unspecified`（不猜）。
+fn xml_access_clause(access: &str) -> String {
+    if access.trim().is_empty() {
+        return "unspecified".to_string();
+    }
+    if let Some(k) = AUTH_CLAUSES
+        .iter()
+        .filter_map(|k| access.find(*k).map(|p| (p, *k)))
+        .min_by_key(|(p, _)| *p)
+        .map(|(_, k)| k.trim_end_matches('(').to_string())
+    {
+        return k;
+    }
+    if access.contains("ROLE_") {
+        return "hasRole".to_string();
+    }
+    "unspecified".to_string()
+}
+
+/// Spring Security 的 **XML 命名空间配置**：`<http>` 与其下的 `<intercept-url>`。
+///
+/// 与注解/Java DSL 侧**同语义**：`<http pattern="...">` 是链的适用范围（无 pattern 即全路径），
+/// `<intercept-url pattern="..." access="..."/>` 是链内规则（顺序即生效顺序）；
+/// `security="none"` 表示该范围不做安全（等价"公开"）。
+fn spring_xml_security_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
+    let mut decl_index = 0usize;
+    for (path, content) in project_files.iter().take(MAX_FILES) {
+        if !path.ends_with(".xml") {
+            continue;
+        }
+        let looks_supported = content.contains("<intercept-url")
+            || content.contains("springframework.org/schema/security");
+        if !looks_supported {
+            continue;
+        }
+        let mut current: Option<usize> = None;
+        for (idx, raw) in content.lines().enumerate() {
+            let t = raw.trim();
+            if t.starts_with("<http ") || t.starts_with("<http>") || t.starts_with("<security:http") {
+                decl_index += 1;
+                let matcher = xml_attr(t, "pattern").map(|p| normalize_ant_pattern(&p));
+                let mut rules: Vec<SecurityRule> = Vec::new();
+                if xml_attr(t, "security").as_deref() == Some("none") {
+                    if let Some(m) = matcher.clone() {
+                        rules.push(SecurityRule {
+                            pattern: m,
+                            clause: "permitAll".to_string(),
+                            kind: "spring_xml".to_string(),
+                            file: path.clone(),
+                            line: (idx + 1) as u32,
+                        });
+                    }
+                }
+                chains.push(SecurityChain {
+                    order: None,
+                    matcher,
+                    decl_index,
+                    file: path.clone(),
+                    line: (idx + 1) as u32,
+                    rules,
+                });
+                current = Some(chains.len() - 1);
+                continue;
+            }
+            if t.starts_with("</http>") || t.starts_with("</security:http>") {
+                current = None;
+                continue;
+            }
+            let Some(ci) = current else { continue };
+            if !t.contains("<intercept-url") {
+                continue;
+            }
+            let Some(p) = xml_attr(t, "pattern") else {
+                continue;
+            };
+            let access = xml_attr(t, "access").unwrap_or_default();
+            chains[ci].rules.push(SecurityRule {
+                pattern: normalize_ant_pattern(&p),
+                clause: xml_access_clause(&access),
+                kind: "spring_xml".to_string(),
+                file: path.clone(),
+                line: (idx + 1) as u32,
+            });
+        }
+    }
+    chains
+}
+
 /// 反应式（WebFlux）安全链：`ServerHttpSecurity.authorizeExchange(...)` 里的
 /// `pathMatchers(...)` / `matchers(...)` / `anyExchange()` 规则。
 ///
@@ -5676,6 +5786,7 @@ impl Tool for CodeIntelTool {
                 };
                 let mut all_chains = security_config_chains(evidence_files);
                     all_chains.extend(reactive_security_chains(evidence_files));
+                    all_chains.extend(spring_xml_security_chains(evidence_files));
                 // 跨文件证据面必须在 `files` 被"按需单文件"遮蔽**之前**预取：
                 // 否则只会扫描被请求的那个文件（实测：容器过滤器与拦截器注册因此整批漏掉）
                 let container_filters = container_filter_registrations(evidence_files);
@@ -8457,6 +8568,88 @@ mod tests {
             idx["coverage_caveat"], "reactive_security_not_modeled",
             "{d}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Spring Security 的 XML 配置应与注解/Java DSL 侧同语义地参与覆盖判定：
+    /// `permitAll` → 公开、`hasRole(...)` → 已覆盖、`/x*` 按前缀命中、并给出来处。
+    #[tokio::test]
+    async fn test_spring_xml_security_rules_are_modelled() {
+        let root = std::env::temp_dir().join("ctx-audit-spring-xml");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/applicationContext-security.xml"),
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<b:beans xmlns=\"http://www.springframework.org/schema/security\"\n",
+                "         xmlns:b=\"http://www.springframework.org/schema/beans\">\n",
+                "  <http>\n",
+                "    <intercept-url pattern=\"/\" access=\"permitAll\"/>\n",
+                "    <intercept-url pattern=\"/login.jsp*\" access=\"permitAll\"/>\n",
+                "    <intercept-url pattern=\"/admin/**\" access=\"hasRole('ADMIN')\"/>\n",
+                "    <intercept-url pattern=\"/**\" access=\"authenticated\"/>\n",
+                "  </http>\n",
+                "</b:beans>\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/PublicController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "public class PublicController {\n",
+                "    @GetMapping(\"/\")\n",
+                "    public String root() { return \"ok\"; }\n",
+                "    @GetMapping(\"/login.jsp\")\n",
+                "    public String login() { return \"ok\"; }\n",
+                "    @GetMapping(\"/admin/list\")\n",
+                "    public String admin() { return \"ok\"; }\n",
+                "    @GetMapping(\"/profile\")\n",
+                "    public String profile() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/PublicController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let find = |p: &str| routes.iter().find(|r| r["route"] == p).cloned();
+        let root_ep = find("/").expect("应有 /");
+        assert_eq!(
+            root_ep["global_coverage"], "permitted_by_global_config",
+            "`access=\"permitAll\"` 应判为公开: {d}"
+        );
+        let login = find("/login.jsp").expect("应有 /login.jsp");
+        assert_eq!(
+            login["global_coverage"], "permitted_by_global_config",
+            "Ant 的 `/login.jsp*` 应按前缀命中: {d}"
+        );
+        let admin = find("/admin/list").expect("应有 /admin/list");
+        assert_eq!(admin["global_coverage"], "covered_by_global_config", "{d}");
+        assert_eq!(admin["global_match"]["clause"], "hasRole", "{d}");
+        assert_eq!(admin["global_match"]["pattern"], "/admin/**", "{d}");
+        assert!(
+            admin["global_match"]["file"]
+                .as_str()
+                .unwrap_or("")
+                .ends_with("applicationContext-security.xml"),
+            "应给出来自 XML 的出处: {d}"
+        );
+        let profile = find("/profile").expect("应有 /profile");
+        assert_eq!(
+            profile["global_coverage"], "covered_by_global_config",
+            "`/**` 兜底应生效: {d}"
+        );
+        assert_eq!(profile["global_match"]["clause"], "authenticated", "{d}");
         let _ = std::fs::remove_dir_all(&root);
     }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
