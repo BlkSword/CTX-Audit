@@ -589,7 +589,9 @@ fn security_config_chains(project_files: &[(String, String)]) -> Vec<SecurityCha
                 let raw = cfg_lines.get(idx).copied().unwrap_or("");
                 match raw.split('"').nth(1) {
                     Some(p) if !p.is_empty() => p.to_string(),
-                    _ => continue,
+                    // 非字面量匹配器（如 `requestMatchers(变量)`）不得静默丢弃：
+                    // 登记为 `<dynamic>`，并在覆盖判定上如实提示"有一条未解析"
+                    _ => "<dynamic>".to_string(),
                 }
             };
             let window: String = cfg_lines
@@ -691,6 +693,7 @@ fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityChain]) {
         };
         let mut detail: Option<Value> = None;
         let mut considered = 0usize;
+        let mut dynamic_unresolved = false;
         if !route.is_empty() && total_rules > 0 {
             let mut results: Vec<(usize, SecurityRule)> = Vec::new();
             for (ci, chain) in chains.iter().enumerate() {
@@ -700,6 +703,9 @@ fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityChain]) {
                     }
                 }
                 considered += 1;
+                if chain.rules.iter().any(|r| r.pattern == "<dynamic>") {
+                    dynamic_unresolved = true;
+                }
                 if let Some(rule) = rule_for_route(&route, chain) {
                     results.push((ci, rule));
                 }
@@ -751,6 +757,15 @@ fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityChain]) {
             obj.insert("global_match".to_string(), detail.unwrap_or(Value::Null));
             obj.insert("ordering_basis".to_string(), json!(ordering_basis));
             obj.insert("chains_considered".to_string(), json!(considered));
+            // 链里存在未解析的非字面量匹配器时，如实提示该判定可能不完整
+            obj.insert(
+                "coverage_caveat".to_string(),
+                if dynamic_unresolved {
+                    json!("dynamic_matcher_unresolved")
+                } else {
+                    Value::Null
+                },
+            );
         }
     }
 }
@@ -891,13 +906,27 @@ fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<Con
             let ct = code_line.trim();
             let raw = lines.get(idx).copied().unwrap_or("");
             if ct.contains("@WebFilter") {
+                // 类名常在手写注解**下方**（可能隔着 @Order/@Component）
+                let name = lines
+                    .iter()
+                    .skip(idx)
+                    .take(7)
+                    .find_map(|l| {
+                        let t = l.trim();
+                        t.split("class ").nth(1).and_then(|s| {
+                            s.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                                .next()
+                                .map(|s| s.to_string())
+                        })
+                    })
+                    .filter(|s| !s.is_empty());
                 for p in url_patterns_in(raw) {
                     out.push(ContainerFilter {
                         pattern: p,
                         kind: "web_filter".to_string(),
                         file: f.clone(),
                         line: (idx + 1) as u32,
-                        name: None,
+                        name: name.clone(),
                         basis: "annotation".to_string(),
                         dispatcher: None,
                     });
@@ -8096,6 +8125,62 @@ mod tests {
             !regs.iter().any(|r| r.pattern == "/bare"),
             "无区段上下文的 url-pattern 不得当作保护证据: {regs:?}"
         );
+    }
+    /// 非字面量匹配器（如 `requestMatchers(ignoreUrls)`）不得被静默丢弃：
+    /// 应作为 `<dynamic>` 规则登记，并在覆盖判定上带出 `coverage_caveat`。
+    #[test]
+    fn test_dynamic_matcher_is_visible_not_silently_dropped() {
+        let files = vec![(
+            "src/SecurityConfig.java".to_string(),
+            concat!(
+                "package app;\n",
+                "public class SecurityConfig {\n",
+                "    public SecurityFilterChain chain(HttpSecurity http) {\n",
+                "        http.authorizeHttpRequests(a -> {\n",
+                "            String[] ignoreUrls = props.getIgnoreUrls();\n",
+                "            a.requestMatchers(ignoreUrls).permitAll();\n",
+                "            a.anyRequest().authenticated();\n",
+                "        });\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let chains = security_config_chains(&files);
+        assert_eq!(chains.len(), 1, "{chains:?}");
+        assert!(
+            chains[0].rules.iter().any(|r| r.pattern == "<dynamic>"),
+            "动态匹配器必须被登记而不是丢弃: {chains:?}"
+        );
+        let mut routes = vec![json!({"line": 1, "route": "/api/v1/auth/captcha", "http_method": "GET", "scope": "method"})];
+        annotate_route_coverage(&mut routes, &chains);
+        assert_eq!(
+            routes[0]["coverage_caveat"], "dynamic_matcher_unresolved",
+            "必须带出动态匹配器未解析的提示: {routes:?}"
+        );
+    }
+
+    /// `@WebFilter` 的类名在手写注解下方（常隔着 `@Order`/`@Component`）也要取到。
+    #[test]
+    fn test_web_filter_class_name_is_read_from_below() {
+        let files = vec![(
+            "src/CorsFilter.java".to_string(),
+            concat!(
+                "package app;\n",
+                "@WebFilter(urlPatterns = \"/*\")\n",
+                "@Order(Integer.MIN_VALUE)\n",
+                "@Component\n",
+                "public class CorsFilter implements Filter {\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let regs = container_filter_registrations(&files);
+        assert_eq!(regs.len(), 1, "{regs:?}");
+        assert_eq!(regs[0].kind, "web_filter", "{regs:?}");
+        assert_eq!(regs[0].name.as_deref(), Some("CorsFilter"), "{regs:?}");
+        assert_eq!(regs[0].pattern, "/*", "{regs:?}");
     }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
     #[test]
