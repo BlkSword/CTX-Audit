@@ -1206,6 +1206,85 @@ fn is_type_declaration(code: &[String], idx: usize, line_trimmed: &str) -> bool 
         .unwrap_or(false)
 }
 
+/// 模块根判定：取**最深的**、含构建文件（`pom.xml`/`build.gradle*`/`settings.gradle`）的祖先目录。
+///
+/// 一个仓库里可能并存多个独立应用（多模块 / 样例集合）⇒ 跨文件证据若按"仓库根=一个应用"取数，
+/// 会把**别的应用**的安全链与过滤器算进本端点的覆盖判定（实测：某样例仓库混入 87 条链与外来 web.xml）。
+/// 找不到构建文件时返回 None，由调用方保持"全项目"范围并如实标注。
+fn module_root_of(
+    project_files: &[(String, String)],
+    file: &str,
+) -> Option<String> {
+    const MARKERS: [&str; 4] = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle"];
+    let norm = file.replace('\\', "/");
+    let mut dirs: Vec<&str> = norm.split('/').collect();
+    dirs.pop(); // 去掉文件名，只保留目录
+    // ① 最深的、含构建文件的祖先目录 = 该文件所属模块
+    let mut probe = dirs.clone();
+    let mut current: Option<String> = None;
+    while !probe.is_empty() {
+        let candidate_prefix = probe.join("/");
+        let has_marker = MARKERS.iter().any(|m| {
+            let candidate = format!("{}/{}", candidate_prefix, m);
+            project_files
+                .iter()
+                .any(|(f, _)| f.replace('\\', "/") == candidate)
+        });
+        if has_marker {
+            current = Some(candidate_prefix);
+            break;
+        }
+        probe.pop();
+    }
+    let mut current = current?;
+    // ② 沿**聚合链**上溯：父目录的构建文件若把本模块列为子模块，则应用根上移。
+    //    （多模块单应用必须跨模块取证据；而"各自独立的应用集合"里父目录没有构建文件，自然停住）
+    loop {
+        let segs: Vec<&str> = current.split('/').collect();
+        if segs.is_empty() {
+            break;
+        }
+        let name = segs[segs.len() - 1];
+        let parent = segs[..segs.len() - 1].join("/");
+        let parent_build = MARKERS.iter().find_map(|m| {
+            let c = if parent.is_empty() {
+                m.to_string()
+            } else {
+                format!("{}/{}", parent, m)
+            };
+            project_files
+                .iter()
+                .find(|(f, _)| f.replace('\\', "/") == c)
+                .map(|(_, content)| content.clone())
+        });
+        let aggregated = parent_build
+            .map(|c| {
+                c.contains(&format!("<module>{}</module>", name))
+                    || c.contains(&format!("'{}'", name))
+                    || c.contains(&format!("\"{}\"", name))
+            })
+            .unwrap_or(false);
+        if !aggregated {
+            break;
+        }
+        current = parent;
+    }
+    if current.is_empty() {
+        Some(String::new())
+    } else {
+        Some(format!("{}/", current))
+    }
+}
+
+/// 证据范围标签（如实陈述）。
+fn evidence_scope_label(module_root: &Option<String>) -> &'static str {
+    if module_root.is_some() {
+        "module"
+    } else {
+        "project"
+    }
+}
+
 /// 声明性噪声行：`import` / `package` / `using` 是声明，不是证据。
 ///
 /// 放在共享位置，避免"导入语句被当成保护证据或配置"——实测中容器过滤器注册曾在
@@ -5375,13 +5454,27 @@ impl Tool for CodeIntelTool {
             }
             IntelKind::FrameworkContext => {
                 // 跨文件安全配置证据：此刻 `files` 仍是项目全量索引（下面会被按需单文件遮蔽）。
-                let mut all_chains = security_config_chains(files);
+                let module_root = module_root_of(files, input["file"].as_str().unwrap_or(""));
+                let scoped_evidence: Vec<(String, String)> = match &module_root {
+                    Some(r) => files
+                        .iter()
+                        .filter(|(p, _)| p.replace('\\', "/").starts_with(r.as_str()))
+                        .cloned()
+                        .collect(),
+                    None => Vec::new(),
+                };
+                let evidence_files: &[(String, String)] = if scoped_evidence.is_empty() {
+                    files
+                } else {
+                    &scoped_evidence
+                };
+                let mut all_chains = security_config_chains(evidence_files);
                 // 跨文件证据面必须在 `files` 被"按需单文件"遮蔽**之前**预取：
                 // 否则只会扫描被请求的那个文件（实测：容器过滤器与拦截器注册因此整批漏掉）
-                let container_filters = container_filter_registrations(files);
-                let interceptor_regs = interceptor_registrations(files);
-                all_chains.extend(shiro_filter_chains(files));
-                let security_config_decls = security_config_declarations(files);
+                let container_filters = container_filter_registrations(evidence_files);
+                let interceptor_regs = interceptor_registrations(evidence_files);
+                all_chains.extend(shiro_filter_chains(evidence_files));
+                let security_config_decls = security_config_declarations(evidence_files);
                 let file = input["file"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 file 参数".to_string()))?;
@@ -5545,6 +5638,16 @@ impl Tool for CodeIntelTool {
                 annotate_container_filters(&mut routes, &container_filters);
                 // 拦截器注册（第三条保护面）：作为证据交付，不参与鉴权判定
                 annotate_interceptors(&mut routes, &interceptor_regs);
+                // 如实标注跨文件证据的范围：module（按模块根收敛）/ project（保持全项目）
+                for entry in routes.iter_mut() {
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert(
+                            "evidence_scope".to_string(),
+                            json!(evidence_scope_label(&module_root)),
+                        );
+                        obj.insert("evidence_root".to_string(), json!(module_root));
+                    }
+                }
                 // 类级授权注解（打在类声明正上方，对整批方法生效）
                 let class_auth = files
                     .iter()
@@ -7781,6 +7884,117 @@ mod tests {
             !looks_like_shiro_config("import org.apache.shiro.spring.web.ShiroFilterFactoryBean;\n"),
             "仅导入 ShiroFilterFactoryBean 的文件不得被判为 Shiro 配置"
         );
+    }
+
+    /// 模块根：多模块仓库里应取**最深**的含构建文件的祖先；无构建文件时返回 None（保持全项目范围）。
+    #[test]
+    fn test_module_root_scoping() {
+        let files = vec![
+            ("pom.xml".to_string(), String::new()),
+            ("appA/pom.xml".to_string(), String::new()),
+            ("appA/src/main/java/A.java".to_string(), String::new()),
+            ("appB/build.gradle".to_string(), String::new()),
+            ("appB/src/main/java/B.java".to_string(), String::new()),
+        ];
+        assert_eq!(
+            module_root_of(&files, "appA/src/main/java/A.java").as_deref(),
+            Some("appA/"),
+            "应取最深模块根"
+        );
+        assert_eq!(
+            module_root_of(&files, "appB/src/main/java/B.java").as_deref(),
+            Some("appB/")
+        );
+        assert_eq!(module_root_of(&files, "loose/C.java"), None);
+        // 聚合者显式列出子模块 ⇒ 应用根上移到聚合者（多模块单应用必须跨模块取证据）
+        let agg = vec![
+            ("pom.xml".to_string(), "<project><modules><module>appA</module></modules></project>".to_string()),
+            ("appA/pom.xml".to_string(), "<project/>".to_string()),
+            ("appA/src/main/java/A.java".to_string(), String::new()),
+            ("appB/pom.xml".to_string(), "<project/>".to_string()),
+            ("appB/src/main/java/B.java".to_string(), String::new()),
+        ];
+        assert_eq!(module_root_of(&agg, "appA/src/main/java/A.java").as_deref(), Some(""), "被聚合的模块应上移到根");
+        assert_eq!(module_root_of(&agg, "appB/src/main/java/B.java").as_deref(), Some("appB/"), "未被聚合者保持自身模块");
+        assert_eq!(evidence_scope_label(&Some("appA/".to_string())), "module");
+        assert_eq!(evidence_scope_label(&None), "project");
+    }
+
+    /// 端到端：同仓库两个模块各有安全配置，端点的覆盖判定**只能**来自本模块的配置。
+    #[tokio::test]
+    async fn test_cross_file_evidence_is_scoped_to_the_module() {
+        let root = std::env::temp_dir().join("ctx-audit-module-scope");
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["appA/src/main/java", "appB/src/main/java"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        std::fs::write(root.join("appA/pom.xml"), "<project/>").unwrap();
+        std::fs::write(root.join("appB/pom.xml"), "<project/>").unwrap();
+        std::fs::write(
+            root.join("appA/src/main/java/Api.java"),
+            concat!(
+                "package a;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "@RequestMapping(\"/a\")\n",
+                "public class Api {\n",
+                "    @GetMapping(\"/ping\")\n",
+                "    public String ping() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("appA/src/main/java/SecurityConfig.java"),
+            concat!(
+                "package a;\n",
+                "public class SecurityConfig {\n",
+                "    public SecurityFilterChain chain(HttpSecurity http) {\n",
+                "        http.authorizeHttpRequests(a -> a.requestMatchers(\"/a/**\").hasRole(\"A\"));\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        // 另一个模块的配置：绝不能影响 A 端点的判定
+        std::fs::write(
+            root.join("appB/src/main/java/OtherConfig.java"),
+            concat!(
+                "package b;\n",
+                "public class OtherConfig {\n",
+                "    public SecurityFilterChain chain(HttpSecurity http) {\n",
+                "        http.authorizeHttpRequests(x -> x.requestMatchers(\"/**\").permitAll());\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "appA/src/main/java/Api.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let ping = routes
+            .iter()
+            .find(|r| r["route"] == "/a/ping")
+            .expect("应有 /a/ping");
+        assert_eq!(ping["evidence_scope"], "module", "{d}");
+        assert_eq!(ping["chains_considered"], 1, "只应考虑本模块的链: {d}");
+        assert_eq!(ping["global_coverage"], "covered_by_global_config", "{d}");
+        assert!(
+            ping["global_match"]["chain_file"]
+                .as_str()
+                .unwrap_or("")
+                .contains("appA/"),
+            "覆盖判定必须来自本模块配置: {d}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
     #[test]
