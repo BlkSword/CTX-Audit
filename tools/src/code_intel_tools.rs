@@ -974,6 +974,59 @@ fn annotate_class_level_auth(routes: &mut [Value], class_auth: &[(u32, String)])
     }
 }
 
+/// 取某一行（1-based）**正上方**连续注解行里的授权注解。
+///
+/// 与方法级证据配套：由调用方先用 AST 定位"包含该映射注解的方法起始行"，再向上取注解，
+/// 这样方法级判定不依赖正则去猜函数边界。
+/// 类型声明（class / interface / enum / record）所在行（1-based）；找不到返回 0。
+fn type_declaration_line(content: &str) -> u32 {
+    let code = code_lines(content, false);
+    for (idx, code_line) in code.iter().enumerate() {
+        let t = code_line.trim();
+        let is_type_decl = (t.contains("class ")
+            || t.contains("interface ")
+            || t.contains("enum ")
+            || t.contains("record "))
+            && t.contains('{');
+        if is_type_decl {
+            return (idx + 1) as u32;
+        }
+    }
+    0
+}
+fn method_level_auth_annotations(
+    content: &str,
+    start_line: u32,
+    body_start_line: u32,
+    floor_line: u32,
+) -> Vec<(u32, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+    // 注解可能落在 AST 起始行**之前或之内**（tree-sitter 把注解计入方法节点），
+    // 因此按 [start-3, body_start] 这个声明区间取，覆盖两种排版。
+    // 下界不得越过类声明行，否则类级注解会被误算作方法级
+    let lo = start_line.saturating_sub(1).max(floor_line).max(1) as usize;
+    let hi = (body_start_line.max(start_line) as usize).min(lines.len());
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for i in lo..=hi {
+        let t = lines.get(i - 1).copied().unwrap_or("").trim();
+        if t.starts_with('@') && AUTH_ANNOTATION_MARKERS.iter().any(|m| t.contains(*m)) {
+            out.push((i as u32, t.chars().take(200).collect::<String>()));
+        }
+    }
+    out
+}
+
+/// 授权落点：**方法级覆盖类级**；两者都不可见时如实报不可见。
+fn auth_effect(class_count: usize, method_count: usize) -> &'static str {
+    if method_count > 0 {
+        "method_level"
+    } else if class_count > 0 {
+        "class_level"
+    } else {
+        "none_visible"
+    }
+}
+
 /// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。
 const LOCUS_CHECK_TOKENS: [&str; 12] = [
     "if ", "if(", ">=", "<=", "==", "!=", "sizeof", "assert", "return", "break", "continue", "switch",
@@ -5059,6 +5112,47 @@ impl Tool for CodeIntelTool {
                     .map(|(_, c)| class_level_auth_annotations(c))
                     .unwrap_or_default();
                 annotate_class_level_auth(&mut routes, &class_auth);
+                // 方法级授权：用 AST 定位包含映射注解的方法起始行，再向上取连续注解 ⇒ 方法级覆盖类级
+                let auth_src = files
+                    .iter()
+                    .find(|(p, _)| p == file)
+                    .map(|(_, c)| c.clone())
+                    .unwrap_or_default();
+                if !auth_src.is_empty() {
+                    for entry in routes.iter_mut() {
+                        let route_line = entry
+                            .get("line")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                        let method_auth = ast_enclosing_function(root, file, &auth_src, route_line)
+                            .map(|(_, start, _, body_start)| {
+                                method_level_auth_annotations(
+                                    &auth_src,
+                                    start as u32,
+                                    body_start as u32,
+                                    type_declaration_line(&auth_src),
+                                )
+                            })
+                            .unwrap_or_default();
+                        let class_count = entry
+                            .get("class_level_auth_count")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        let effect = auth_effect(class_count, method_auth.len());
+                        let items: Vec<Value> = method_auth
+                            .iter()
+                            .map(|(l, x)| json!({"line": l, "text": x}))
+                            .collect();
+                        if let Some(obj) = entry.as_object_mut() {
+                            obj.insert("method_level_auth".to_string(), json!(items));
+                            obj.insert(
+                                "method_level_auth_count".to_string(),
+                                json!(method_auth.len()),
+                            );
+                            obj.insert("auth_effect".to_string(), json!(effect));
+                        }
+                    }
+                }
 
                 // 路由 → handler 绑定：用符号索引把 handler **标识符精确**解析到定义位置。
                 // 这是"框架 resolver"的起点——先给出 route 与 handler 定义之间**可验证**的关联，
@@ -6902,6 +6996,60 @@ mod tests {
         annotate_class_level_auth(&mut empty, &[]);
         assert_eq!(empty[0]["auth_scope"], "none_visible_in_file", "{empty:?}");
         assert_eq!(empty[0]["class_level_auth_count"], 0, "{empty:?}");
+    }
+
+    /// 方法级授权覆盖类级：有方法级注解的端点报 `method_level`，只有类级时报 `class_level`，
+    /// 两者都不可见时报 `none_visible`。用真实调用链（AST 定位方法 + 向上取注解）验证。
+    #[tokio::test]
+    async fn test_auth_effect_method_overrides_class() {
+        let root = std::env::temp_dir().join("ctx-audit-auth-effect");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/AdminApi.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "import org.springframework.security.access.prepost.PreAuthorize;\n",
+                "@RestController\n",
+                "@PreAuthorize(\"hasRole('ADMIN')\")\n",
+                "public class AdminApi {\n",
+                "    @GetMapping(\"/admin/users\")\n",
+                "    public String users() { return \"ok\"; }\n",
+                "\n",
+                "    @GetMapping(\"/admin/me\")\n",
+                "    @PreAuthorize(\"isAuthenticated()\")\n",
+                "    public String me() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/AdminApi.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let users = routes
+            .iter()
+            .find(|r| r["route"] == "/admin/users")
+            .expect("应有 /admin/users");
+        let me = routes
+            .iter()
+            .find(|r| r["route"] == "/admin/me")
+            .expect("应有 /admin/me");
+        assert_eq!(users["auth_effect"], "class_level", "{d}");
+        assert_eq!(users["class_level_auth_count"], 1, "{d}");
+        assert_eq!(me["auth_effect"], "method_level", "{d}");
+        assert_eq!(me["method_level_auth_count"], 1, "{d}");
+        assert!(me["method_level_auth"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("isAuthenticated"), "{d}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
