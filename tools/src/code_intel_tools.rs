@@ -895,6 +895,85 @@ fn annotate_container_filters(routes: &mut [Value], filters: &[ContainerFilter])
     }
 }
 
+/// 类级授权注解：`@PreAuthorize` 等打在**类**上时对整批方法生效。
+const AUTH_ANNOTATION_MARKERS: [&str; 6] = [
+    "@PreAuthorize",
+    "@PostAuthorize",
+    "@Secured",
+    "@RolesAllowed",
+    "@PermitAll",
+    "@DenyAll",
+];
+
+/// 取**类声明正上方**那段连续注解行里的授权注解。
+///
+/// 只向上收集连续注解（遇到空行或非注解行即停），避免把别处方法的注解算作类级；
+/// 方法级注解会覆盖类级注解，因此本项只作为**类级可见证据**陈述。
+fn class_level_auth_annotations(content: &str) -> Vec<(u32, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let code = code_lines(content, false);
+    let mut class_idx: Option<usize> = None;
+    for (idx, code_line) in code.iter().enumerate() {
+        let t = code_line.trim();
+        let is_type_decl = (t.contains("class ")
+            || t.contains("interface ")
+            || t.contains("enum ")
+            || t.contains("record "))
+            && t.contains('{');
+        if is_type_decl {
+            class_idx = Some(idx);
+            break;
+        }
+    }
+    let Some(ci) = class_idx else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, String)> = Vec::new();
+    let mut i = ci;
+    while i > 0 {
+        i -= 1;
+        let raw = lines.get(i).copied().unwrap_or("");
+        let t = raw.trim();
+        if t.is_empty() {
+            if out.is_empty() {
+                continue;
+            }
+            break;
+        }
+        if !t.starts_with('@') {
+            break;
+        }
+        if AUTH_ANNOTATION_MARKERS.iter().any(|m| t.contains(*m)) {
+            out.push(((i + 1) as u32, t.chars().take(200).collect::<String>()));
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// 给端点补上类级授权证据（与该文件的其余证据分开陈述）。
+fn annotate_class_level_auth(routes: &mut [Value], class_auth: &[(u32, String)]) {
+    for entry in routes.iter_mut() {
+        let items: Vec<Value> = class_auth
+            .iter()
+            .map(|(l, t)| json!({"line": l, "text": t}))
+            .collect();
+        let count = items.len();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("class_level_auth".to_string(), json!(items));
+            obj.insert("class_level_auth_count".to_string(), json!(count));
+            obj.insert(
+                "auth_scope".to_string(),
+                json!(if count > 0 {
+                    "class_level_visible"
+                } else {
+                    "none_visible_in_file"
+                }),
+            );
+        }
+    }
+}
+
 /// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。
 const LOCUS_CHECK_TOKENS: [&str; 12] = [
     "if ", "if(", ">=", "<=", "==", "!=", "sizeof", "assert", "return", "break", "continue", "switch",
@@ -4973,6 +5052,13 @@ impl Tool for CodeIntelTool {
                 // 容器级过滤器注册（注解 / 注册 Bean / web.xml）：另一条保护证据面，独立陈述
                 let container_filters = container_filter_registrations(files);
                 annotate_container_filters(&mut routes, &container_filters);
+                // 类级授权注解（打在类声明正上方，对整批方法生效）
+                let class_auth = files
+                    .iter()
+                    .find(|(p, _)| p == file)
+                    .map(|(_, c)| class_level_auth_annotations(c))
+                    .unwrap_or_default();
+                annotate_class_level_auth(&mut routes, &class_auth);
 
                 // 路由 → handler 绑定：用符号索引把 handler **标识符精确**解析到定义位置。
                 // 这是"框架 resolver"的起点——先给出 route 与 handler 定义之间**可验证**的关联，
@@ -6769,6 +6855,53 @@ mod tests {
             routes[0]["container_filters"][0]["kind"], "web_filter",
             "{routes:?}"
         );
+    }
+
+    /// 类级授权注解：打在类声明正上方的 `@PreAuthorize` 等应作为类级证据取到；
+    /// 只有方法级注解时不得算作类级；无类级注解时如实报"本文件不可见"。
+    #[test]
+    fn test_class_level_auth_annotations() {
+        let with_class_auth = concat!(
+            "package app;\n",
+            "import org.springframework.security.access.prepost.PreAuthorize;\n",
+            "@RestController\n",
+            "@RequestMapping(\"/api\")\n",
+            "@PreAuthorize(\"hasRole('ADMIN')\")\n",
+            "public class AdminApi {\n",
+            "    @GetMapping(\"/users\")\n",
+            "    public String users() { return \"ok\"; }\n",
+            "}\n",
+        );
+        let hits = class_level_auth_annotations(with_class_auth);
+        assert_eq!(hits.len(), 1, "应取到 1 条类级授权注解: {hits:?}");
+        assert!(
+            hits[0].1.contains("hasRole('ADMIN')"),
+            "应取到类级 @PreAuthorize 文本: {hits:?}"
+        );
+        assert_eq!(hits[0].0, 5, "应报类级注解所在行: {hits:?}");
+
+        // 只有方法级注解：向上收集应当在类声明处停止，不得把方法注解算作类级
+        let method_only = concat!(
+            "package app;\n",
+            "@RestController\n",
+            "public class OpenApi {\n",
+            "    @GetMapping(\"/users\")\n",
+            "    @PreAuthorize(\"isAuthenticated()\")\n",
+            "    public String users() { return \"ok\"; }\n",
+            "}\n",
+        );
+        let none = class_level_auth_annotations(method_only);
+        assert!(none.is_empty(), "方法级注解不得算作类级: {none:?}");
+
+        let mut routes = vec![json!({"line": 1, "route": "/api/users", "http_method": "GET"})];
+        annotate_class_level_auth(&mut routes, &hits);
+        assert_eq!(routes[0]["class_level_auth_count"], 1, "{routes:?}");
+        assert_eq!(routes[0]["auth_scope"], "class_level_visible", "{routes:?}");
+
+        let mut empty = vec![json!({"line": 1, "route": "/x", "http_method": "GET"})];
+        annotate_class_level_auth(&mut empty, &[]);
+        assert_eq!(empty[0]["auth_scope"], "none_visible_in_file", "{empty:?}");
+        assert_eq!(empty[0]["class_level_auth_count"], 0, "{empty:?}");
     }
 
     /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
