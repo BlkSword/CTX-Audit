@@ -488,12 +488,16 @@ const AUTH_CLAUSES: [&str; 9] = [
 
 /// 该文件是否像安全配置（含全局安全配置形态）。
 fn looks_like_security_config(content: &str) -> bool {
-    content.contains("SecurityFilterChain")
-        || content.contains("SecurityWebFilterChain")
-        || content.contains("WebSecurityConfigurerAdapter")
-        || content.contains("@EnableWebSecurity")
-        || content.contains("authorizeHttpRequests")
-        || content.contains("authorizeRequests")
+    content.lines().any(|l| {
+        let t = l.trim();
+        !is_import_or_package_line(t)
+            && (t.contains("SecurityFilterChain")
+                || t.contains("SecurityWebFilterChain")
+                || t.contains("WebSecurityConfigurerAdapter")
+                || t.contains("@EnableWebSecurity")
+                || t.contains("authorizeHttpRequests")
+                || t.contains("authorizeRequests"))
+    })
 }
 
 /// 一条安全规则：路径匹配器 + 授权子句 + 出处。
@@ -852,9 +856,11 @@ fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<Con
                 }
                 continue;
             }
-            if ct.contains("FilterRegistrationBean") {
+            if ct.contains("FilterRegistrationBean") && !is_import_or_package_line(ct) {
+                let window: Vec<&str> = lines.iter().skip(idx).take(10).cloned().collect();
+                let name = filter_class_name(&window);
                 let mut found: Vec<String> = Vec::new();
-                for l in lines.iter().skip(idx).take(8) {
+                for l in &window {
                     if l.contains("addUrlPatterns") || l.contains("setUrlPatterns") {
                         found.extend(url_patterns_in(l));
                     }
@@ -865,7 +871,7 @@ fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<Con
                         kind: "filter_registration".to_string(),
                         file: f.clone(),
                         line: (idx + 1) as u32,
-                        name: None,
+                        name: name.clone(),
                         basis: "default_all_urls".to_string(),
                     });
                 } else {
@@ -875,7 +881,7 @@ fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<Con
                             kind: "filter_registration".to_string(),
                             file: f.clone(),
                             line: (idx + 1) as u32,
-                            name: None,
+                            name: name.clone(),
                             basis: "url_patterns".to_string(),
                         });
                     }
@@ -1107,9 +1113,13 @@ fn shiro_pattern_matches(route: &str, pattern: &str) -> bool {
 
 /// 该文件是否像 Shiro 链配置。
 fn looks_like_shiro_config(content: &str) -> bool {
-    content.contains("filterChainDefinitionMap")
-        || content.contains("ShiroFilterFactoryBean")
-        || content.contains("FilterChainDefinition")
+    content.lines().any(|l| {
+        let t = l.trim();
+        !is_import_or_package_line(t)
+            && (t.contains("filterChainDefinitionMap")
+                || t.contains("ShiroFilterFactoryBean")
+                || t.contains("FilterChainDefinition"))
+    })
 }
 
 /// 跨文件证据：Shiro 过滤器链。
@@ -1194,6 +1204,43 @@ fn is_type_declaration(code: &[String], idx: usize, line_trimmed: &str) -> bool 
         .find(|l| !l.trim().is_empty())
         .map(|l| l.trim().starts_with('{'))
         .unwrap_or(false)
+}
+
+/// 声明性噪声行：`import` / `package` / `using` 是声明，不是证据。
+///
+/// 放在共享位置，避免"导入语句被当成保护证据或配置"——实测中容器过滤器注册曾在
+/// `import ...FilterRegistrationBean;` 这一行上命中。
+fn is_import_or_package_line(t: &str) -> bool {
+    t.starts_with("import ") || t.starts_with("package ") || t.starts_with("using ")
+}
+
+/// 从注册窗口里取过滤器名：优先 `setName("...")`，其次泛型 `FilterRegistrationBean<Xxx>`，
+/// 再次 `setFilter(... new Xxx())`；取不到即 None（不编造名字）。
+fn filter_class_name(window: &[&str]) -> Option<String> {
+    if let Some(n) = window.iter().find_map(|l| {
+        l.split("setName(\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }) {
+        return Some(n);
+    }
+    if let Some(n) = window.iter().find_map(|l| {
+        l.split("FilterRegistrationBean<")
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }) {
+        return Some(n);
+    }
+    window
+        .iter()
+        .filter_map(|l| l.split("new ").nth(1))
+        .filter_map(|s| s.split(['(', '<', ' ']).next())
+        .map(|s| s.to_string())
+        .find(|s| !s.is_empty() && s != "FilterRegistrationBean")
 }
 
 /// 拦截器注册：`registry.addInterceptor(x).addPathPatterns("/**")` 形态。
@@ -5267,6 +5314,9 @@ impl Tool for CodeIntelTool {
                             if code_trimmed.is_empty() {
                                 continue;
                             }
+                            if is_import_or_package_line(code_trimmed) {
+                                continue;
+                            }
                             if code_trimmed.starts_with('#') {
                                 continue; // 预处理器指令行（`#if 0` 本身含 "if "）不是守卫
                             }
@@ -5393,6 +5443,9 @@ impl Tool for CodeIntelTool {
                             let trimmed = text.trim();
                             let code_trimmed = code_line.trim();
                             if code_trimmed.is_empty() {
+                                continue;
+                            }
+                            if is_import_or_package_line(code_trimmed) {
                                 continue;
                             }
                             if pp_states.get(idx).map(|s| s.dead).unwrap_or(false) {
@@ -7648,6 +7701,65 @@ mod tests {
         );
         // 证据面不得冒充鉴权判定
         assert!(routes[0].get("auth_effect").is_none(), "{routes:?}");
+    }
+
+    /// 导入语句不得作为证据：`import ...FilterRegistrationBean;` 不能产出"容器过滤器注册"；
+    /// 同一文件里的真实注册必须能取出**过滤器名**。
+    #[test]
+    fn test_imports_are_not_evidence_and_filter_name_is_read() {
+        assert!(is_import_or_package_line("import org.springframework.boot.web.servlet.FilterRegistrationBean;"));
+        assert!(!is_import_or_package_line("registration.setFilter(new XssFilter());"));
+
+        let files = vec![
+            (
+                "src/FilterConfig.java".to_string(),
+                concat!(
+                    "package app;\n",
+                    "import org.springframework.boot.web.servlet.FilterRegistrationBean;\n",
+                    "import com.ruoyi.common.xss.XssFilter;\n",
+                    "public class FilterConfig {\n",
+                    "    @Bean\n",
+                    "    public FilterRegistrationBean<XssFilter> xssFilterRegistration() {\n",
+                    "        FilterRegistrationBean<XssFilter> registration = new FilterRegistrationBean<>();\n",
+                    "        registration.setDispatcherTypes(DispatcherType.REQUEST);\n",
+                    "        registration.setFilter(new XssFilter());\n",
+                    "        registration.addUrlPatterns(\"/*\");\n",
+                    "        registration.setName(\"xssFilter\");\n",
+                    "        return registration;\n",
+                    "    }\n",
+                    "}\n",
+                )
+                .to_string(),
+            ),
+            (
+                "src/OnlyImport.java".to_string(),
+                concat!(
+                    "package app;\n",
+                    "import org.springframework.security.config.annotation.web.builders.HttpSecurity;\n",
+                    "public class OnlyImport {\n",
+                    "}\n",
+                )
+                .to_string(),
+            ),
+        ];
+        let regs = container_filter_registrations(&files);
+        assert_eq!(regs.len(), 1, "只有真实注册才应产出条目（import 行不算）: {regs:?}");
+        assert_eq!(regs[0].name.as_deref(), Some("xssFilter"), "{regs:?}");
+        assert_eq!(regs[0].pattern, "/*", "{regs:?}");
+        assert!(
+            regs[0].line > 3,
+            "行号应指向真实注册而非 import 行: {regs:?}"
+        );
+
+        // 只有 import 的文件不得"看起来像安全配置"
+        assert!(
+            !looks_like_security_config(&files[1].1),
+            "仅导入 HttpSecurity 的文件不得被判为安全配置"
+        );
+        assert!(
+            !looks_like_shiro_config("import org.apache.shiro.spring.web.ShiroFilterFactoryBean;\n"),
+            "仅导入 ShiroFilterFactoryBean 的文件不得被判为 Shiro 配置"
+        );
     }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
     #[test]
