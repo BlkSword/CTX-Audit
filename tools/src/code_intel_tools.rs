@@ -5326,6 +5326,10 @@ impl Tool for CodeIntelTool {
             IntelKind::FrameworkContext => {
                 // 跨文件安全配置证据：此刻 `files` 仍是项目全量索引（下面会被按需单文件遮蔽）。
                 let mut all_chains = security_config_chains(files);
+                // 跨文件证据面必须在 `files` 被"按需单文件"遮蔽**之前**预取：
+                // 否则只会扫描被请求的那个文件（实测：容器过滤器与拦截器注册因此整批漏掉）
+                let container_filters = container_filter_registrations(files);
+                let interceptor_regs = interceptor_registrations(files);
                 all_chains.extend(shiro_filter_chains(files));
                 let security_config_decls = security_config_declarations(files);
                 let file = input["file"]
@@ -5464,10 +5468,8 @@ impl Tool for CodeIntelTool {
                 // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
                 annotate_route_coverage(&mut routes, &all_chains);
                 // 容器级过滤器注册（注解 / 注册 Bean / web.xml）：另一条保护证据面，独立陈述
-                let container_filters = container_filter_registrations(files);
                 annotate_container_filters(&mut routes, &container_filters);
                 // 拦截器注册（第三条保护面）：作为证据交付，不参与鉴权判定
-                let interceptor_regs = interceptor_registrations(files);
                 annotate_interceptors(&mut routes, &interceptor_regs);
                 // 类级授权注解（打在类声明正上方，对整批方法生效）
                 let class_auth = files
