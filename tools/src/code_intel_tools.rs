@@ -444,10 +444,10 @@ fn ast_enclosing_function(
         .map(|b| (b.name.clone(), b.start_line, b.end_line, b.body_start_line))
 }
 
-/// 路径模式匹配：精确匹配、`/**` 前缀、`/*` 单段通配。
+/// 路径模式匹配：精确匹配、`/**` 前缀、`/*` 单段通配。`/**` 亦用于 `anyRequest()` 的 Catch-all。
 fn route_matches_pattern(route: &str, pattern: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix("/**") {
-        return route.starts_with(prefix);
+        return route.starts_with(prefix.trim_end_matches('/'));
     }
     if let Some(base) = pattern.strip_suffix("/*") {
         if !route.starts_with(base) {
@@ -475,36 +475,102 @@ const AUTH_CLAUSES: [&str; 9] = [
 /// 该文件是否像安全配置（含全局安全配置形态）。
 fn looks_like_security_config(content: &str) -> bool {
     content.contains("SecurityFilterChain")
+        || content.contains("SecurityWebFilterChain")
         || content.contains("WebSecurityConfigurerAdapter")
         || content.contains("@EnableWebSecurity")
         || content.contains("authorizeHttpRequests")
         || content.contains("authorizeRequests")
 }
 
-/// 跨文件证据：在已索引文件里收集「路径匹配器 + 授权子句」。
-/// 输入显式传入，不依赖任何调用分支的内部状态，便于单独测试。
-fn security_config_matchers(
-    project_files: &[(String, String)],
-) -> Vec<(String, String, String, u32)> {
-    let mut out = Vec::new();
+/// 一条安全规则：路径匹配器 + 授权子句 + 出处。
+#[derive(Clone, Debug)]
+struct SecurityRule {
+    pattern: String,
+    clause: String,
+    file: String,
+    line: u32,
+}
+
+/// 一条过滤器链：顺序、适用范围、链内规则（保持声明顺序）。
+#[derive(Clone, Debug)]
+struct SecurityChain {
+    /// `@Order` 值；未声明时为 None（求值时排在声明了顺序的链之后）
+    order: Option<i64>,
+    /// 链的 `securityMatcher(...)` 模式；未声明时为 None（视为 Catch-all）
+    matcher: Option<String>,
+    /// 声明位置（用于同序时的稳定排序）
+    decl_index: usize,
+    file: String,
+    line: u32,
+    rules: Vec<SecurityRule>,
+}
+
+/// 从 `@Order(...)` 文本里取数字；取不到数字（如常量表达式）即视为未声明。
+fn parse_order_value(text: &str) -> Option<i64> {
+    let start = text.find("@Order")?;
+    let rest = &text[start..];
+    let open = rest.find('(')?;
+    let close = rest[open..].find(')')? + open;
+    rest[open + 1..close].trim().parse::<i64>().ok()
+}
+
+/// 跨文件证据：把安全配置按**过滤器链**切分，链内规则保持声明顺序。
+///
+/// 顺序语义是安全相关的事实：多条链并存时 `@Order` 小者先求值，同一条链内**首个匹配的规则生效**。
+/// 这里只做**行窗**启发式切分（不做括号配平），因此每条链都带出可复核的声明位置。
+fn security_config_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
     for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
         if !looks_like_security_config(cfg_content) {
             continue;
         }
         let cfg_code = code_lines(cfg_content, hash_comment_language(cfg_path));
         let cfg_lines: Vec<&str> = cfg_content.lines().collect();
+        let mut current: Option<usize> = None;
         for (idx, code_line) in cfg_code.iter().enumerate() {
             let ct = code_line.trim();
-            if !(ct.contains("requestMatchers(")
-                || ct.contains("antMatchers(")
-                || ct.contains("mvcMatchers("))
-            {
+            if ct.contains("SecurityFilterChain") || ct.contains("SecurityWebFilterChain") {
+                let order = cfg_lines
+                    .iter()
+                    .skip(idx.saturating_sub(5))
+                    .take(6)
+                    .find_map(|l| parse_order_value(l));
+                // 链的适用范围只认 `securityMatcher(...)` 行，避免把链内规则的字面量误当范围
+                let matcher = cfg_lines
+                    .iter()
+                    .skip(idx)
+                    .take(7)
+                    .find(|l| l.contains("securityMatcher"))
+                    .and_then(|l| l.split('"').nth(1).map(|s| s.to_string()))
+                    .filter(|s| s.starts_with('/'));
+                chains.push(SecurityChain {
+                    order,
+                    matcher,
+                    decl_index: chains.len(),
+                    file: cfg_path.clone(),
+                    line: (idx + 1) as u32,
+                    rules: Vec::new(),
+                });
+                current = Some(chains.len() - 1);
                 continue;
             }
-            let raw = cfg_lines.get(idx).copied().unwrap_or("");
-            let pattern = match raw.split('"').nth(1) {
-                Some(p) if !p.is_empty() => p.to_string(),
-                _ => continue,
+            // `anyRequest()` 是 Catch-all 匹配器：等价于 `/**`，漏掉它会让判定偏乐观
+            let is_any_request = ct.contains("anyRequest()");
+            let is_matcher = ct.contains("requestMatchers(")
+                || ct.contains("antMatchers(")
+                || ct.contains("mvcMatchers(");
+            if !is_matcher && !is_any_request {
+                continue;
+            }
+            let Some(ci) = current else { continue };
+            let pattern = if is_any_request {
+                "/**".to_string()
+            } else {
+                let raw = cfg_lines.get(idx).copied().unwrap_or("");
+                match raw.split('"').nth(1) {
+                    Some(p) if !p.is_empty() => p.to_string(),
+                    _ => continue,
+                }
             };
             let window: String = cfg_lines
                 .iter()
@@ -517,13 +583,18 @@ fn security_config_matchers(
                 .iter()
                 .filter_map(|k| window.find(*k).map(|p| (p, *k)))
                 .min_by_key(|(p, _)| *p)
-                .map(|(_, k)| k)
-                .map(|k| k.trim_end_matches('(').to_string())
+                .map(|(_, k)| k.trim_end_matches('(').to_string())
                 .unwrap_or_else(|| "unspecified".to_string());
-            out.push((pattern, clause, cfg_path.clone(), (idx + 1) as u32));
+            chains[ci].rules.push(SecurityRule {
+                pattern,
+                clause,
+                file: cfg_path.clone(),
+                line: (idx + 1) as u32,
+            });
         }
     }
-    out
+    chains.sort_by_key(|c| (c.order.unwrap_or(i64::MAX), c.decl_index));
+    chains
 }
 
 /// 跨文件证据：安全配置的声明位置（用于中间件链上的配置证据）。
@@ -561,34 +632,95 @@ fn security_config_declarations(
     out
 }
 
+/// 单条链内的判定：链内**首个匹配的规则生效**。
+fn rule_for_route(route: &str, chain: &SecurityChain) -> Option<SecurityRule> {
+    chain
+        .rules
+        .iter()
+        .find(|r| route_matches_pattern(route, &r.pattern))
+        .cloned()
+}
+
 /// 给路由条目补上全局覆盖判定（纯数据变换）。
-/// 只陈述"找到了什么"：无匹配不等于"未受保护"（顺序语义与容器级过滤器不在本判定内）。
-fn annotate_route_coverage(routes: &mut [Value], matchers: &[(String, String, String, u32)]) {
+///
+/// 顺序语义按实际行为：多条链按 `@Order` 升序求值（未声明顺序者排后），链的 `securityMatcher`
+/// 不匹配则跳过，链内首个匹配的规则生效。**只有当胜出链没有声明顺序、且与其它链的结论矛盾时**，
+/// 才如实报 `ambiguous_across_chains` —— 不挑乐观的那条。
+fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityChain]) {
+    let total_rules: usize = chains.iter().map(|c| c.rules.len()).sum();
     for entry in routes.iter_mut() {
         let route = entry
             .get("route")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let hit = if route.is_empty() {
-            None
+        let mut verdict = if chains.is_empty() || total_rules == 0 {
+            "no_global_config_found"
         } else {
-            matchers
+            "no_global_match_found"
+        };
+        let mut detail: Option<Value> = None;
+        let mut considered = 0usize;
+        if !route.is_empty() && total_rules > 0 {
+            let mut results: Vec<(usize, SecurityRule)> = Vec::new();
+            for (ci, chain) in chains.iter().enumerate() {
+                if let Some(m) = chain.matcher.as_deref() {
+                    if !route_matches_pattern(&route, m) {
+                        continue;
+                    }
+                }
+                considered += 1;
+                if let Some(rule) = rule_for_route(&route, chain) {
+                    results.push((ci, rule));
+                }
+            }
+            let mut kinds: Vec<&str> = results
                 .iter()
-                .find(|(p, _, _, _)| route_matches_pattern(&route, p))
+                .map(|(_, r)| {
+                    if r.clause == "permitAll" {
+                        "permitAll"
+                    } else {
+                        "restricted"
+                    }
+                })
+                .collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            let winner = results.first();
+            let ambiguous = kinds.len() > 1
+                && winner
+                    .map(|(ci, _)| chains[*ci].order.is_none())
+                    .unwrap_or(false);
+            if ambiguous {
+                verdict = "ambiguous_across_chains";
+            } else if let Some((ci, rule)) = winner {
+                verdict = if rule.clause == "permitAll" {
+                    "permitted_by_global_config"
+                } else {
+                    "covered_by_global_config"
+                };
+                detail = Some(json!({
+                    "pattern": rule.pattern,
+                    "clause": rule.clause,
+                    "file": rule.file,
+                    "line": rule.line,
+                    "chain_order": chains[*ci].order,
+                    "chain_matcher": chains[*ci].matcher,
+                    "chain_file": chains[*ci].file,
+                    "chain_line": chains[*ci].line,
+                }));
+            }
+        }
+        let ordering_basis = if chains.iter().any(|c| c.order.is_some()) {
+            "@Order"
+        } else {
+            "declaration_order"
         };
-        let verdict = match hit {
-            Some((_, clause, _, _)) if clause == "permitAll" => "permitted_by_global_config",
-            Some(_) => "covered_by_global_config",
-            None if !matchers.is_empty() => "no_global_match_found",
-            None => "no_global_config_found",
-        };
-        let detail = hit.map(|(pattern, clause, cfg_path, cl)| {
-            json!({"pattern": pattern, "clause": clause, "file": cfg_path, "line": cl})
-        });
         if let Some(obj) = entry.as_object_mut() {
             obj.insert("global_coverage".to_string(), json!(verdict));
             obj.insert("global_match".to_string(), detail.unwrap_or(Value::Null));
+            obj.insert("ordering_basis".to_string(), json!(ordering_basis));
+            obj.insert("chains_considered".to_string(), json!(considered));
         }
     }
 }
@@ -4539,7 +4671,7 @@ impl Tool for CodeIntelTool {
             }
             IntelKind::FrameworkContext => {
                 // 跨文件安全配置证据：此刻 `files` 仍是项目全量索引（下面会被按需单文件遮蔽）。
-                let security_matchers = security_config_matchers(files);
+                let security_chains = security_config_chains(files);
                 let security_config_decls = security_config_declarations(files);
                 let file = input["file"]
                     .as_str()
@@ -4667,7 +4799,7 @@ impl Tool for CodeIntelTool {
                     }));
                 }
                 // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
-                annotate_route_coverage(&mut routes, &security_matchers);
+                annotate_route_coverage(&mut routes, &security_chains);
 
                 // 路由 → handler 绑定：用符号索引把 handler **标识符精确**解析到定义位置。
                 // 这是"框架 resolver"的起点——先给出 route 与 handler 定义之间**可验证**的关联，
@@ -6262,7 +6394,15 @@ mod tests {
                 .to_string(),
             ),
         ];
-        let matchers = security_config_matchers(&files);
+        let chains = security_config_chains(&files);
+        let matchers: Vec<(String, String, String, u32)> = chains
+            .iter()
+            .flat_map(|c| {
+                c.rules
+                    .iter()
+                    .map(|r| (r.pattern.clone(), r.clause.clone(), r.file.clone(), r.line))
+            })
+            .collect();
         assert!(
             matchers.iter().any(|(p, c, f, _)| p == "/admin/**" && c == "hasRole" && f.ends_with("SecurityConfig.java")),
             "应取到 /admin/** 的 hasRole 子句: {matchers:?}"
@@ -6279,10 +6419,30 @@ mod tests {
             json!({"line": 2, "route": "/public/info", "http_method": "GET"}),
             json!({"line": 3, "route": "/other/thing", "http_method": "GET"}),
         ];
-        annotate_route_coverage(&mut routes, &matchers);
+        annotate_route_coverage(&mut routes, &chains);
         assert_eq!(routes[0]["global_coverage"], "covered_by_global_config", "{routes:?}");
         assert_eq!(routes[1]["global_coverage"], "permitted_by_global_config", "{routes:?}");
-        assert_eq!(routes[2]["global_coverage"], "no_global_match_found", "{routes:?}");
+        // `anyRequest().authenticated()` 是 Catch-all：未命中具体规则的路径同样受保护
+        assert_eq!(routes[2]["global_coverage"], "covered_by_global_config", "{routes:?}");
+
+        // 没有 `anyRequest()` 的链：未命中即如实报"无匹配"（不等于未受保护）
+        let noany = vec![(
+            "src/NoAny.java".to_string(),
+            concat!(
+                "public class NoAny {\n",
+                "    @Bean\n",
+                "    public SecurityFilterChain c(HttpSecurity http) {\n",
+                "        http.authorizeHttpRequests(x -> x.requestMatchers(\"/admin/**\").hasRole(\"ADMIN\"));\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let chains3 = security_config_chains(&noany);
+        let mut r3 = vec![json!({"line": 1, "route": "/other", "http_method": "GET"})];
+        annotate_route_coverage(&mut r3, &chains3);
+        assert_eq!(r3[0]["global_coverage"], "no_global_match_found", "{r3:?}");
 
         // 无任何安全配置时：如实报"未找到配置"，不推断"未受保护"
         let mut solo = vec![json!({"line": 1, "route": "/x", "http_method": "GET"})];
@@ -6290,6 +6450,71 @@ mod tests {
         assert_eq!(solo[0]["global_coverage"], "no_global_config_found", "{solo:?}");
     }
 
+    /// 顺序语义：`@Order` 小者先求值、链内首个匹配生效；无序链结论矛盾时报 ambiguous。
+    #[test]
+    fn test_security_chain_ordering_and_ambiguity() {
+        let files = vec![(
+            "src/SecurityConfig.java".to_string(),
+            concat!(
+                "package app;\n",
+                "public class SecurityConfig {\n",
+                "    @Bean\n",
+                "    @Order(1)\n",
+                "    public SecurityFilterChain apiChain(HttpSecurity http) {\n",
+                "        http.securityMatcher(\"/api/**\");\n",
+                "        http.authorizeHttpRequests(auth -> auth\n",
+                "            .requestMatchers(\"/api/admin/**\").hasRole(\"ADMIN\")\n",
+                "            .anyRequest().authenticated());\n",
+                "        return null;\n",
+                "    }\n",
+                "    @Bean\n",
+                "    public SecurityFilterChain webChain(HttpSecurity http) {\n",
+                "        http.authorizeHttpRequests(auth -> auth\n",
+                "            .requestMatchers(\"/**\").permitAll());\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let chains = security_config_chains(&files);
+        assert_eq!(chains.len(), 2, "应切出两条链: {chains:?}");
+        assert_eq!(chains[0].order, Some(1), "链 1 应带 @Order(1): {chains:?}");
+        assert_eq!(chains[0].matcher.as_deref(), Some("/api/**"), "{chains:?}");
+        let mut routes = vec![
+            json!({"line": 1, "route": "/api/admin/x", "http_method": "GET"}),
+            json!({"line": 2, "route": "/api/open/x", "http_method": "GET"}),
+            json!({"line": 3, "route": "/web/page", "http_method": "GET"}),
+        ];
+        annotate_route_coverage(&mut routes, &chains);
+        assert_eq!(routes[0]["global_coverage"], "covered_by_global_config", "{routes:?}");
+        assert_eq!(routes[0]["global_match"]["chain_order"], 1, "{routes:?}");
+        assert_eq!(routes[1]["global_coverage"], "covered_by_global_config", "{routes:?}");
+        assert_eq!(routes[2]["global_coverage"], "permitted_by_global_config", "{routes:?}");
+
+        let ambiguous = vec![(
+            "src/Two.java".to_string(),
+            concat!(
+                "public class Two {\n",
+                "    @Bean\n",
+                "    public SecurityFilterChain a(HttpSecurity http) {\n",
+                "        http.authorizeHttpRequests(x -> x.requestMatchers(\"/x/**\").permitAll());\n",
+                "        return null;\n",
+                "    }\n",
+                "    @Bean\n",
+                "    public SecurityFilterChain b(HttpSecurity http) {\n",
+                "        http.authorizeHttpRequests(x -> x.requestMatchers(\"/x/**\").hasRole(\"ADMIN\"));\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let chains2 = security_config_chains(&ambiguous);
+        let mut r2 = vec![json!({"line": 1, "route": "/x/y", "http_method": "GET"})];
+        annotate_route_coverage(&mut r2, &chains2);
+        assert_eq!(r2[0]["global_coverage"], "ambiguous_across_chains", "{r2:?}");
+    }
     /// Java 框架证据：注解式映射必须能被识别，并带出可复核的**路由值**与 **HTTP 方法**；
     /// 方法级授权注解必须进入鉴权链判定（`auth_present`）。夹具不依赖任何外部项目。
     #[tokio::test]
