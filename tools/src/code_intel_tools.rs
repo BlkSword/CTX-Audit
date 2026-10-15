@@ -1576,6 +1576,39 @@ fn reactive_security_chains(project_files: &[(String, String)]) -> Vec<SecurityC
     chains.sort_by_key(|c| (c.order.unwrap_or(i64::MAX), c.decl_index));
     chains
 }
+/// 已识别但**未建模**的保护栈信号：命中即说明"这里有保护机制，但我们不建模它"，
+/// 必须如实标注，绝不静默给出"没有保护"的结论。
+///
+/// 收录判据（三条缺一不可）：① 该串**明确指向某个保护框架**（不是通用基类或库调用）；
+/// ② 该框架当前未建模；③ 真实项目里出现过。
+/// 刻意**不收录** `OncePerRequestFilter` / `Jwts.parser` 这类通用串——它们可能只是日志过滤器
+/// 或令牌签发，收录会让"未建模"到处出现，反而噪声化；这类判定不了的东西只作证据、不参与判定。
+const UNMODELED_PROTECTION_SIGNALS: [(&str, &str); 4] = [
+    ("SaInterceptor", "sa-token"),
+    ("StpUtil", "sa-token"),
+    ("@SaCheck", "sa-token"),
+    ("SaTokenConfig", "sa-token"),
+];
+
+/// 扫描取数范围内的未建模保护栈信号（按框架去重，返回 (框架, 文件, 行)）。
+fn unmodeled_protection_signals(project_files: &[(String, String)]) -> Vec<(String, String, u32)> {
+    let mut out: Vec<(String, String, u32)> = Vec::new();
+    for (path, content) in project_files.iter().take(MAX_FILES) {
+        for (idx, raw) in content.lines().enumerate() {
+            let t = raw.trim();
+            if is_import_or_package_line(t) {
+                continue;
+            }
+            for (marker, framework) in UNMODELED_PROTECTION_SIGNALS.iter() {
+                if t.contains(marker) && !out.iter().any(|(f, _, _)| f == framework) {
+                    out.push((framework.to_string(), path.clone(), (idx + 1) as u32));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// 反应式（WebFlux）安全配置：`SecurityWebFilterChain` / `ServerHttpSecurity` / `@EnableWebFluxSecurity`。
 ///
 /// 该类配置当前**未建模**；把它探测出来是为了能**如实**说"未建模"，而不是给出会被读成
@@ -5793,6 +5826,8 @@ impl Tool for CodeIntelTool {
                 let interceptor_regs = interceptor_registrations(evidence_files);
                 // 反应式配置未建模：需要被发现才能如实标注（同样在"按需单文件"遮蔽之前取）
                 let reactive_cfg = reactive_security_config(evidence_files);
+                // 未建模保护栈信号（Sa-Token 等）：必须能在遮蔽前取到，才能如实标注
+                let unmodeled_signals = unmodeled_protection_signals(evidence_files);
                 all_chains.extend(shiro_filter_chains(evidence_files));
                 let security_config_decls = security_config_declarations(evidence_files);
                 let file = input["file"]
@@ -5958,8 +5993,20 @@ impl Tool for CodeIntelTool {
                 annotate_container_filters(&mut routes, &container_filters);
                 // 拦截器注册（第三条保护面）：作为证据交付，不参与鉴权判定
                 annotate_interceptors(&mut routes, &interceptor_regs);
-                // 反应式安全配置当前未建模：宁可如实说"未建模"，也不给出会被读成"没有保护"的结论
+                // 检测到但**未建模**的保护面：宁可如实说"未建模"，也绝不给出会被读成"没有保护"的结论。
+                // 反应式安全配置排前（语义最明确），其余按信号表登记。
+                let mut unmodeled: Vec<(String, String, u32)> = Vec::new();
                 if let Some((rf, rline)) = reactive_cfg.as_ref() {
+                    unmodeled.push(("spring_webflux".to_string(), rf.clone(), *rline));
+                }
+                unmodeled.extend(unmodeled_signals.iter().cloned());
+                if !unmodeled.is_empty() {
+                    let (first_fw, first_file, first_line) = unmodeled[0].clone();
+                    let caveat = if first_fw == "spring_webflux" {
+                        "reactive_security_not_modeled"
+                    } else {
+                        "unmodeled_protection_signal"
+                    };
                     for entry in routes.iter_mut() {
                         if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
                             continue;
@@ -5971,14 +6018,18 @@ impl Tool for CodeIntelTool {
                         }
                         if let Some(obj) = entry.as_object_mut() {
                             obj.insert("global_coverage".to_string(), json!("framework_not_modeled"));
-                            obj.insert(
-                                "coverage_caveat".to_string(),
-                                json!("reactive_security_not_modeled"),
-                            );
-                            obj.insert("unmodeled_framework".to_string(), json!("spring_webflux"));
+                            obj.insert("coverage_caveat".to_string(), json!(caveat));
+                            obj.insert("unmodeled_framework".to_string(), json!(first_fw));
                             obj.insert(
                                 "unmodeled_source".to_string(),
-                                json!({"file": rf, "line": rline}),
+                                json!({"file": first_file, "line": first_line}),
+                            );
+                            obj.insert(
+                                "unmodeled_signals".to_string(),
+                                json!(unmodeled
+                                    .iter()
+                                    .map(|(fw, f, l)| json!({"framework": fw, "file": f, "line": l}))
+                                    .collect::<Vec<Value>>()),
                             );
                         }
                     }
@@ -8650,6 +8701,111 @@ mod tests {
             "`/**` 兜底应生效: {d}"
         );
         assert_eq!(profile["global_match"]["clause"], "authenticated", "{d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 未建模的保护栈（示例：Sa-Token）必须显式标注，绝不能静默给"没有保护"。
+    #[tokio::test]
+    async fn test_unmodeled_protection_stack_is_reported() {
+        let root = std::env::temp_dir().join("ctx-audit-unmodeled-stack");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/SaTokenConfigure.java"),
+            concat!(
+                "package app;\n",
+                "public class SaTokenConfigure implements WebMvcConfigurer {\n",
+                "    public void addInterceptors(InterceptorRegistry registry) {\n",
+                "        registry.addInterceptor(new SaInterceptor(handle -> StpUtil.checkLogin()))\n",
+                "                .addPathPatterns(\"/**\");\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/AdminController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "@RequestMapping(\"/admin\")\n",
+                "public class AdminController {\n",
+                "    @GetMapping(\"/list\")\n",
+                "    public String list() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/AdminController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let r = routes
+            .iter()
+            .find(|x| x["route"] == "/admin/list")
+            .expect("应有 /admin/list");
+        assert_eq!(r["global_coverage"], "framework_not_modeled", "{d}");
+        assert_eq!(r["coverage_caveat"], "unmodeled_protection_signal", "{d}");
+        assert_eq!(r["unmodeled_framework"], "sa-token", "{d}");
+        assert!(
+            r["unmodeled_source"]["file"]
+                .as_str()
+                .unwrap_or("")
+                .contains("SaTokenConfigure.java"),
+            "要带出信号出处: {d}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 反向守卫：通用过滤器基类（可能只是日志过滤器）不得把"确实没有配置"误升级成"未建模"。
+    #[tokio::test]
+    async fn test_generic_filter_base_class_does_not_trigger_unmodeled() {
+        let root = std::env::temp_dir().join("ctx-audit-generic-filter");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/MDCFilter.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.filter.OncePerRequestFilter;\n",
+                "public class MDCFilter extends OncePerRequestFilter {\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/PlainController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "public class PlainController {\n",
+                "    @GetMapping(\"/ping\")\n",
+                "    public String ping() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/PlainController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let r = routes.iter().find(|x| x["route"] == "/ping").expect("应有 /ping");
+        assert_eq!(
+            r["global_coverage"], "no_global_config_found",
+            "通用过滤器基类不得触发未建模: {d}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
     /// Allman 排版（`{` 独占下一行）下，类级前缀与类级授权注解仍须可判定。
