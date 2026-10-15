@@ -1585,3 +1585,55 @@ use super::super::*;
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// JAX-RS 请求过滤器保护：全局规则不可读 ⇒ 应如实说"未建模"，不得说成"没有保护"。
+    #[tokio::test]
+    async fn test_jaxrs_filter_is_reported_as_unmodelled() {
+        let root = std::env::temp_dir().join("ctx-audit-jaxrs");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/AuthenticationFilter.java"),
+            concat!(
+                "package app;\n",
+                "import jakarta.ws.rs.container.ContainerRequestFilter;\n",
+                "@Provider\n",
+                "public class AuthenticationFilter implements ContainerRequestFilter {\n",
+                "    public void filter(ContainerRequestContext ctx) { }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/ProjectResource.java"),
+            concat!(
+                "package app;\n",
+                "import jakarta.ws.rs.*;\n",
+                "@Path(\"/api/v1/project\")\n",
+                "public class ProjectResource {\n",
+                "    @GET\n",
+                "    @Path(\"/list\")\n",
+                "    public String list() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/ProjectResource.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        assert!(!routes.is_empty(), "JAX-RS `@Path` 应被识别为端点: {d}");
+        let r = routes
+            .iter()
+            .find(|x| x["scope"] == "method")
+            .unwrap_or(&routes[0]);
+        assert_eq!(r["global_coverage"], "framework_not_modeled", "{d}");
+        assert_eq!(r["coverage_caveat"], "unmodeled_protection_signal", "{d}");
+        assert_eq!(r["unmodeled_framework"], "jax-rs", "{d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }

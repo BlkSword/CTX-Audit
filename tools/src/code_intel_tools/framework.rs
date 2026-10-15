@@ -1309,11 +1309,14 @@ pub(crate) fn security_starter_without_config(
 /// ② 该框架当前未建模；③ 真实项目里出现过。
 /// 刻意**不收录** `OncePerRequestFilter` / `Jwts.parser` 这类通用串——它们可能只是日志过滤器
 /// 或令牌签发，收录会让"未建模"到处出现，反而噪声化；这类判定不了的东西只作证据、不参与判定。
-pub(crate) const UNMODELED_PROTECTION_SIGNALS: [(&str, &str); 4] = [
+pub(crate) const UNMODELED_PROTECTION_SIGNALS: [(&str, &str); 5] = [
     ("SaInterceptor", "sa-token"),
     ("StpUtil", "sa-token"),
     ("@SaCheck", "sa-token"),
     ("SaTokenConfig", "sa-token"),
+    // JAX-RS 请求过滤器：资源/方法级注解（`@PermitAll`/`@DenyAll`/`@RolesAllowed`）已作为授权证据，
+    // 但过滤器里的**全局规则不可读** ⇒ 作为信号如实提示"未建模"，而不是说成"没有保护"。
+    ("ContainerRequestFilter", "jax-rs"),
 ];
 
 /// 扫描取数范围内的未建模保护栈信号（按框架去重，返回 (框架, 文件, 行)）。
