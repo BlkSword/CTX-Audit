@@ -29,6 +29,8 @@ mod index;
 pub use index::*;
 mod symbols;
 pub use symbols::*;
+mod dispatch;
+pub use dispatch::*;
 
 const MAX_FILES: usize = 2000;
 const MAX_FILE_BYTES: usize = 512 * 1024;
