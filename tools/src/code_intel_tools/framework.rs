@@ -1,0 +1,1408 @@
+// Copyright 2026 CTX-Audit
+// SPDX-License-Identifier: Apache-2.0
+
+//! Web 框架证据：端点路由、安全链（注解/Java DSL/XML/反应式）、容器过滤器与拦截器、
+//! 授权落点，以及"检测到但未建模的保护栈"信号。
+
+use super::*;
+/// 路径模式匹配：精确匹配、`/**` 前缀、`/*` 单段通配。`/**` 亦用于 `anyRequest()` 的 Catch-all。
+pub(crate) fn route_matches_pattern(route: &str, pattern: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return route.starts_with(prefix.trim_end_matches('/'));
+    }
+    if let Some(base) = pattern.strip_suffix("/*") {
+        if !route.starts_with(base) {
+            return false;
+        }
+        let rest = &route[base.len()..];
+        return !rest.is_empty() && !rest.trim_matches('/').contains('/');
+    }
+    route == pattern
+}
+
+/// 安全配置判定里使用的授权子句关键词。
+pub(crate) const AUTH_CLAUSES: [&str; 9] = [
+    "permitAll",
+    "hasRole",
+    "hasAnyRole",
+    "hasAuthority",
+    "hasAnyAuthority",
+    "isAuthenticated",
+    "authenticated",
+    "denyAll",
+    "access(",
+];
+
+/// 该文件是否像安全配置（含全局安全配置形态）。
+pub(crate) fn looks_like_security_config(content: &str) -> bool {
+    content.lines().any(|l| {
+        let t = l.trim();
+        !is_import_or_package_line(t)
+            && (t.contains("SecurityFilterChain")
+                || t.contains("SecurityWebFilterChain")
+                || t.contains("WebSecurityConfigurerAdapter")
+                || t.contains("@EnableWebSecurity")
+                || t.contains("authorizeHttpRequests")
+                || t.contains("authorizeRequests"))
+    })
+}
+
+/// 一条安全规则：路径匹配器 + 授权子句 + 出处。
+#[derive(Clone, Debug)]
+pub(crate) struct SecurityRule {
+    pub(crate) pattern: String,
+    pub(crate) clause: String,
+    pub(crate) file: String,
+    pub(crate) line: u32,
+    /// 匹配语义来源：`spring` = Spring 通配，`shiro` = Shiro 通配
+    pub(crate) kind: String,
+}
+
+/// 一条过滤器链：顺序、适用范围、链内规则（保持声明顺序）。
+#[derive(Clone, Debug)]
+pub(crate) struct SecurityChain {
+    /// `@Order` 值；未声明时为 None（求值时排在声明了顺序的链之后）
+    pub(crate) order: Option<i64>,
+    /// 链的 `securityMatcher(...)` 模式；未声明时为 None（视为 Catch-all）
+    pub(crate) matcher: Option<String>,
+    /// 声明位置（用于同序时的稳定排序）
+    pub(crate) decl_index: usize,
+    pub(crate) file: String,
+    pub(crate) line: u32,
+    pub(crate) rules: Vec<SecurityRule>,
+}
+
+/// 从 `@Order(...)` 文本里取数字；取不到数字（如常量表达式）即视为未声明。
+pub(crate) fn parse_order_value(text: &str) -> Option<i64> {
+    let start = text.find("@Order")?;
+    let rest = &text[start..];
+    let open = rest.find('(')?;
+    let close = rest[open..].find(')')? + open;
+    rest[open + 1..close].trim().parse::<i64>().ok()
+}
+
+/// 跨文件证据：把安全配置按**过滤器链**切分，链内规则保持声明顺序。
+///
+/// 顺序语义是安全相关的事实：多条链并存时 `@Order` 小者先求值，同一条链内**首个匹配的规则生效**。
+/// 这里只做**行窗**启发式切分（不做括号配平），因此每条链都带出可复核的声明位置。
+pub(crate) fn security_config_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
+    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+        if !looks_like_security_config(cfg_content) {
+            continue;
+        }
+        let cfg_code = code_lines(cfg_content, hash_comment_language(cfg_path));
+        let cfg_lines: Vec<&str> = cfg_content.lines().collect();
+        let mut current: Option<usize> = None;
+        for (idx, code_line) in cfg_code.iter().enumerate() {
+            let ct = code_line.trim();
+            // 导入行不是证据：`import ...SecurityWebFilterChain;` 曾在此凭空建链
+            if is_import_or_package_line(ct) {
+                continue;
+            }
+            // 只认**类型位置**的 `SecurityFilterChain`（后跟空格）：方法名 `springSecurityFilterChain`
+            // 与反应式的 `SecurityWebFilterChain` 都含该子串，否则会凭空建链
+            if ct.contains("SecurityFilterChain ") {
+                let order = cfg_lines
+                    .iter()
+                    .skip(idx.saturating_sub(5))
+                    .take(6)
+                    .find_map(|l| parse_order_value(l));
+                // 链的适用范围只认 `securityMatcher(...)` 行，避免把链内规则的字面量误当范围
+                let matcher = cfg_lines
+                    .iter()
+                    .skip(idx)
+                    .take(7)
+                    .find(|l| l.contains("securityMatcher"))
+                    .and_then(|l| l.split('"').nth(1).map(|s| s.to_string()))
+                    .filter(|s| s.starts_with('/'));
+                chains.push(SecurityChain {
+                    order,
+                    matcher,
+                    decl_index: chains.len(),
+                    file: cfg_path.clone(),
+                    line: (idx + 1) as u32,
+                    rules: Vec::new(),
+                });
+                current = Some(chains.len() - 1);
+                continue;
+            }
+            // `anyRequest()` 是 Catch-all 匹配器：等价于 `/**`，漏掉它会让判定偏乐观
+            let is_any_request = ct.contains("anyRequest()");
+            let is_matcher = ct.contains("requestMatchers(")
+                || ct.contains("antMatchers(")
+                || ct.contains("mvcMatchers(");
+            if !is_matcher && !is_any_request {
+                continue;
+            }
+            let Some(ci) = current else { continue };
+            let pattern = if is_any_request {
+                "/**".to_string()
+            } else {
+                let raw = cfg_lines.get(idx).copied().unwrap_or("");
+                match raw.split('"').nth(1) {
+                    Some(p) if !p.is_empty() => p.to_string(),
+                    // 非字面量匹配器（如 `requestMatchers(变量)`）不得静默丢弃：
+                    // 登记为 `<dynamic>`，并在覆盖判定上如实提示"有一条未解析"
+                    _ => "<dynamic>".to_string(),
+                }
+            };
+            let window: String = cfg_lines
+                .iter()
+                .skip(idx)
+                .take(4)
+                .cloned()
+                .collect::<Vec<&str>>()
+                .join(" ");
+            let clause = AUTH_CLAUSES
+                .iter()
+                .filter_map(|k| window.find(*k).map(|p| (p, *k)))
+                .min_by_key(|(p, _)| *p)
+                .map(|(_, k)| k.trim_end_matches('(').to_string())
+                .unwrap_or_else(|| "unspecified".to_string());
+            chains[ci].rules.push(SecurityRule {
+                pattern,
+                clause,
+                kind: "spring".to_string(),
+                file: cfg_path.clone(),
+                line: (idx + 1) as u32,
+            });
+        }
+    }
+    chains.sort_by_key(|c| (c.order.unwrap_or(i64::MAX), c.decl_index));
+    chains
+}
+
+/// 跨文件证据：安全配置的声明位置（用于中间件链上的配置证据）。
+pub(crate) fn security_config_declarations(
+    project_files: &[(String, String)],
+) -> Vec<(String, u32, String)> {
+    let mut out = Vec::new();
+    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+        if !looks_like_security_config(cfg_content) {
+            continue;
+        }
+        let cfg_code = code_lines(cfg_content, hash_comment_language(cfg_path));
+        let cfg_lines: Vec<&str> = cfg_content.lines().collect();
+        for (idx, code_line) in cfg_code.iter().enumerate() {
+            let ct = code_line.trim();
+            if ct.contains("class ")
+                && (ct.contains("SecurityConfig") || ct.contains("WebSecurityConfig"))
+            {
+                out.push((
+                    cfg_path.clone(),
+                    (idx + 1) as u32,
+                    cfg_lines
+                        .get(idx)
+                        .copied()
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(200)
+                        .collect::<String>(),
+                ));
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// 单条链内的判定：链内**首个匹配的规则生效**。
+pub(crate) fn rule_for_route(route: &str, chain: &SecurityChain) -> Option<SecurityRule> {
+    chain
+        .rules
+        .iter()
+        .find(|r| {
+            if r.kind == "shiro" {
+                shiro_pattern_matches(route, &r.pattern)
+            } else {
+                route_matches_pattern(route, &r.pattern)
+            }
+        })
+        .cloned()
+}
+
+/// 给路由条目补上全局覆盖判定（纯数据变换）。
+///
+/// 顺序语义按实际行为：多条链按 `@Order` 升序求值（未声明顺序者排后），链的 `securityMatcher`
+/// 不匹配则跳过，链内首个匹配的规则生效。**只有当胜出链没有声明顺序、且与其它链的结论矛盾时**，
+/// 才如实报 `ambiguous_across_chains` —— 不挑乐观的那条。
+pub(crate) fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityChain]) {
+    let total_rules: usize = chains.iter().map(|c| c.rules.len()).sum();
+    for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+            continue;
+        }
+        let route = entry
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut verdict = if chains.is_empty() || total_rules == 0 {
+            "no_global_config_found"
+        } else {
+            "no_global_match_found"
+        };
+        let mut detail: Option<Value> = None;
+        let mut considered = 0usize;
+        let mut dynamic_unresolved = false;
+        if !route.is_empty() && total_rules > 0 {
+            let mut results: Vec<(usize, SecurityRule)> = Vec::new();
+            for (ci, chain) in chains.iter().enumerate() {
+                if let Some(m) = chain.matcher.as_deref() {
+                    if !route_matches_pattern(&route, m) {
+                        continue;
+                    }
+                }
+                considered += 1;
+                if chain.rules.iter().any(|r| r.pattern == "<dynamic>") {
+                    dynamic_unresolved = true;
+                }
+                if let Some(rule) = rule_for_route(&route, chain) {
+                    results.push((ci, rule));
+                }
+            }
+            let mut kinds: Vec<&str> = results
+                .iter()
+                .map(|(_, r)| {
+                    if r.clause == "permitAll" {
+                        "permitAll"
+                    } else {
+                        "restricted"
+                    }
+                })
+                .collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            let winner = results.first();
+            let ambiguous = kinds.len() > 1
+                && winner
+                    .map(|(ci, _)| chains[*ci].order.is_none())
+                    .unwrap_or(false);
+            if ambiguous {
+                verdict = "ambiguous_across_chains";
+            } else if let Some((ci, rule)) = winner {
+                verdict = if rule.clause == "permitAll" {
+                    "permitted_by_global_config"
+                } else {
+                    "covered_by_global_config"
+                };
+                detail = Some(json!({
+                    "pattern": rule.pattern,
+                    "clause": rule.clause,
+                    "file": rule.file,
+                    "line": rule.line,
+                    "chain_order": chains[*ci].order,
+                    "chain_matcher": chains[*ci].matcher,
+                    "chain_file": chains[*ci].file,
+                    "chain_line": chains[*ci].line,
+                }));
+            }
+        }
+        let ordering_basis = if chains.iter().any(|c| c.order.is_some()) {
+            "@Order"
+        } else {
+            "declaration_order"
+        };
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("global_coverage".to_string(), json!(verdict));
+            obj.insert("global_match".to_string(), detail.unwrap_or(Value::Null));
+            obj.insert("ordering_basis".to_string(), json!(ordering_basis));
+            obj.insert("chains_considered".to_string(), json!(considered));
+            // 链里存在未解析的非字面量匹配器时，如实提示该判定可能不完整
+            obj.insert(
+                "coverage_caveat".to_string(),
+                if dynamic_unresolved {
+                    json!("dynamic_matcher_unresolved")
+                } else {
+                    Value::Null
+                },
+            );
+        }
+    }
+}
+
+/// 容器级过滤器注册：注解、注册 Bean、web.xml 三类，均可复核到行。
+#[derive(Clone, Debug)]
+pub(crate) struct ContainerFilter {
+    pub(crate) pattern: String,
+    pub(crate) kind: String,
+    pub(crate) file: String,
+    pub(crate) line: u32,
+    pub(crate) name: Option<String>,
+    pub(crate) basis: String,
+    /// `<dispatcher>`（web.xml 过滤映射限定生效的派发类型；缺省为 None）
+    pub(crate) dispatcher: Option<String>,
+}
+
+/// Servlet 风格的 URL 模式匹配：`/*` 全匹配、`/x/*` 前缀、`*.ext` 后缀、其余精确匹配。
+pub(crate) fn servlet_pattern_matches(route: &str, pattern: &str) -> bool {
+    if pattern == "/*" || pattern == "*" || pattern == "/**" || pattern == "**" {
+        return true;
+    }
+    // Spring 拦截器/路径匹配使用 `/**` 前缀语义（servlet 的 `/*` 之外）
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return route == prefix || route.starts_with(prefix);
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        return route == prefix || route.starts_with(prefix);
+    }
+    if let Some(ext) = pattern.strip_prefix("*.") {
+        return route.ends_with(&format!(".{}", ext));
+    }
+    route == pattern
+}
+
+/// 取一行里所有像 URL 模式的字符串字面量（以 `/` 或 `*.` 开头）。
+pub(crate) fn url_patterns_in(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(i) = rest.find('"') {
+        let after = &rest[i + 1..];
+        let Some(j) = after.find('"') else { break };
+        let val = &after[..j];
+        if val.starts_with('/') || val.starts_with("*.") {
+            out.push(val.to_string());
+        }
+        rest = &after[j + 1..];
+    }
+    out
+}
+
+/// 跨文件证据：容器级过滤器注册（`@WebFilter` / `FilterRegistrationBean` / `web.xml`）。
+///
+/// 只交付"注册事实 + 适用模式"：过滤器内部是否做鉴权无法从注册信息推断，因此本项与过滤器链的
+/// 覆盖判定**分开陈述**，不用它去改 `global_coverage`。
+pub(crate) fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<ContainerFilter> {
+    let mut out: Vec<ContainerFilter> = Vec::new();
+    for (f, content) in project_files.iter().take(MAX_FILES) {
+        let lines: Vec<&str> = content.lines().collect();
+        if f.ends_with(".xml") {
+            // 按**区段**归类：只有 <filter-mapping> 是过滤器证据，<security-constraint> 是声明式约束证据，
+            // <servlet-mapping> 是路由（不是保护面），无上下文的 <url-pattern> 不作证据。
+            let mut section: Option<&str> = None;
+            let mut mapping_name: Option<String> = None;
+            let mut dispatcher: Option<String> = None;
+            let mut mapping_start: usize = 0;
+            let text_of = |line: &str, tag: &str| -> Option<String> {
+                line.split(&format!("<{}>", tag))
+                    .nth(1)
+                    .and_then(|s| s.split('<').next())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            };
+            for (idx, raw) in lines.iter().enumerate() {
+                let t = raw.trim();
+                if t.contains("<filter-mapping") {
+                    section = Some("filter-mapping");
+                    mapping_name = None;
+                    dispatcher = None;
+                    mapping_start = out.len();
+                    continue;
+                }
+                if t.contains("<servlet-mapping") {
+                    section = Some("servlet-mapping");
+                    continue;
+                }
+                if t.contains("<security-constraint") {
+                    section = Some("security-constraint");
+                    continue;
+                }
+                if t.contains("</filter-mapping>")
+                    || t.contains("</servlet-mapping>")
+                    || t.contains("</security-constraint>")
+                {
+                    section = None;
+                    continue;
+                }
+                if section == Some("filter-mapping") {
+                    if let Some(n) = text_of(t, "filter-name") {
+                        mapping_name = Some(n);
+                        continue;
+                    }
+                    if let Some(d) = text_of(t, "dispatcher") {
+                        // `<dispatcher>` 常写在 `<url-pattern>` **之后**：回填本映射已产出的条目
+                        for e in out[mapping_start..].iter_mut() {
+                            e.dispatcher = Some(d.clone());
+                        }
+                        dispatcher = Some(d);
+                        continue;
+                    }
+                }
+                if let Some(pattern) = text_of(t, "url-pattern") {
+                    let kind = match section {
+                        Some("filter-mapping") => "web_xml_filter_mapping",
+                        Some("security-constraint") => "web_xml_security_constraint",
+                        _ => continue,
+                    };
+                    let name = if kind == "web_xml_filter_mapping" {
+                        mapping_name.clone()
+                    } else {
+                        None
+                    };
+                    out.push(ContainerFilter {
+                        pattern,
+                        kind: kind.to_string(),
+                        file: f.clone(),
+                        line: (idx + 1) as u32,
+                        name,
+                        basis: "url-pattern".to_string(),
+                        dispatcher: dispatcher.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+        let code = code_lines(content, hash_comment_language(f));
+        for (idx, code_line) in code.iter().enumerate() {
+            let ct = code_line.trim();
+            let raw = lines.get(idx).copied().unwrap_or("");
+            if ct.contains("@WebFilter") {
+                // 类名常在手写注解**下方**（可能隔着 @Order/@Component）
+                let name = lines
+                    .iter()
+                    .skip(idx)
+                    .take(7)
+                    .find_map(|l| {
+                        let t = l.trim();
+                        t.split("class ").nth(1).and_then(|s| {
+                            s.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                                .next()
+                                .map(|s| s.to_string())
+                        })
+                    })
+                    .filter(|s| !s.is_empty());
+                for p in url_patterns_in(raw) {
+                    out.push(ContainerFilter {
+                        pattern: p,
+                        kind: "web_filter".to_string(),
+                        file: f.clone(),
+                        line: (idx + 1) as u32,
+                        name: name.clone(),
+                        basis: "annotation".to_string(),
+                        dispatcher: None,
+                    });
+                }
+                continue;
+            }
+            if ct.contains("FilterRegistrationBean") && !is_import_or_package_line(ct) {
+                let window: Vec<&str> = lines.iter().skip(idx).take(10).cloned().collect();
+                let name = filter_class_name(&window);
+                let mut found: Vec<String> = Vec::new();
+                for l in &window {
+                    if l.contains("addUrlPatterns") || l.contains("setUrlPatterns") {
+                        found.extend(url_patterns_in(l));
+                    }
+                }
+                if found.is_empty() {
+                    out.push(ContainerFilter {
+                        pattern: "/*".to_string(),
+                        kind: "filter_registration".to_string(),
+                        file: f.clone(),
+                        line: (idx + 1) as u32,
+                        name: name.clone(),
+                        basis: "default_all_urls".to_string(),
+                        dispatcher: None,
+                    });
+                } else {
+                    for p in found {
+                        out.push(ContainerFilter {
+                            pattern: p,
+                            kind: "filter_registration".to_string(),
+                            file: f.clone(),
+                            line: (idx + 1) as u32,
+                            name: name.clone(),
+                            basis: "url_patterns".to_string(),
+                        dispatcher: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    // 同一注册可能被"声明行 + 构造行"各命中一次：按 (kind, pattern, file) 去重，保留首次出现
+    let mut seen: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    out.retain(|f| seen.insert((f.kind.clone(), f.pattern.clone(), f.file.clone())));
+    out
+}
+
+/// 给路由条目补上容器级过滤器证据（命中最多 3 条，附注册位置）。
+pub(crate) fn annotate_container_filters(routes: &mut [Value], filters: &[ContainerFilter]) {
+    for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+            continue;
+        }
+        let route = entry
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let matched: Vec<Value> = if route.is_empty() {
+            Vec::new()
+        } else {
+            filters
+                .iter()
+                .filter(|flt| servlet_pattern_matches(&route, &flt.pattern))
+                .take(3)
+                .map(|flt| {
+                    json!({
+                        "pattern": flt.pattern,
+                        "kind": flt.kind,
+                        "basis": flt.basis,
+                        "file": flt.file,
+                        "line": flt.line,
+                        "name": flt.name,
+                    })
+                })
+                .collect()
+        };
+        let count = matched.len();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("container_filters".to_string(), json!(matched));
+            obj.insert("container_filter_count".to_string(), json!(count));
+        }
+    }
+}
+
+/// 类级授权注解：`@PreAuthorize` 等打在**类**上时对整批方法生效。
+pub(crate) const AUTH_ANNOTATION_MARKERS: [&str; 11] = [
+    // Spring Security 方法/类级授权
+    "@PreAuthorize",
+    "@PostAuthorize",
+    "@Secured",
+    "@RolesAllowed",
+    "@PermitAll",
+    "@DenyAll",
+    // Shiro 注解式授权（@RequiresPermissions / @RequiresRoles / @RequiresAuthentication 等）
+    "@RequiresPermissions",
+    "@RequiresRoles",
+    "@RequiresAuthentication",
+    "@RequiresUser",
+    "@RequiresGuest",
+];
+
+/// 取**类声明正上方**那段连续注解行里的授权注解。
+///
+/// 只向上收集连续注解（遇到空行或非注解行即停），避免把别处方法的注解算作类级；
+/// 方法级注解会覆盖类级注解，因此本项只作为**类级可见证据**陈述。
+pub(crate) fn class_level_auth_annotations(content: &str) -> Vec<(u32, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let code = code_lines(content, false);
+    let mut class_idx: Option<usize> = None;
+    for (idx, code_line) in code.iter().enumerate() {
+        let t = code_line.trim();
+        if is_type_declaration(&code, idx, t) {
+            class_idx = Some(idx);
+            break;
+        }
+    }
+    let Some(ci) = class_idx else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, String)> = Vec::new();
+    let mut i = ci;
+    while i > 0 {
+        i -= 1;
+        let raw = lines.get(i).copied().unwrap_or("");
+        let t = raw.trim();
+        if t.is_empty() {
+            if out.is_empty() {
+                continue;
+            }
+            break;
+        }
+        if !t.starts_with('@') {
+            break;
+        }
+        if AUTH_ANNOTATION_MARKERS.iter().any(|m| t.contains(*m)) {
+            out.push(((i + 1) as u32, t.chars().take(200).collect::<String>()));
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// 给端点补上类级授权证据（与该文件的其余证据分开陈述）。
+pub(crate) fn annotate_class_level_auth(routes: &mut [Value], class_auth: &[(u32, String)]) {
+    for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+            continue;
+        }
+        let items: Vec<Value> = class_auth
+            .iter()
+            .map(|(l, t)| json!({"line": l, "text": t}))
+            .collect();
+        let count = items.len();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("class_level_auth".to_string(), json!(items));
+            obj.insert("class_level_auth_count".to_string(), json!(count));
+            obj.insert(
+                "auth_scope".to_string(),
+                json!(if count > 0 {
+                    "class_level_visible"
+                } else {
+                    "none_visible_in_file"
+                }),
+            );
+        }
+    }
+}
+
+/// 取某一行（1-based）**正上方**连续注解行里的授权注解。
+///
+/// 与方法级证据配套：由调用方先用 AST 定位"包含该映射注解的方法起始行"，再向上取注解，
+/// 这样方法级判定不依赖正则去猜函数边界。
+/// 类型声明（class / interface / enum / record）所在行（1-based）；找不到返回 0。
+pub(crate) fn type_declaration_line(content: &str) -> u32 {
+    let code = code_lines(content, false);
+    for (idx, code_line) in code.iter().enumerate() {
+        let t = code_line.trim();
+        if is_type_declaration(&code, idx, t) {
+            return (idx + 1) as u32;
+        }
+    }
+    0
+}
+pub(crate) fn method_level_auth_annotations(
+    content: &str,
+    start_line: u32,
+    body_start_line: u32,
+    floor_line: u32,
+) -> Vec<(u32, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+    // 注解可能落在 AST 起始行**之前或之内**（tree-sitter 把注解计入方法节点），
+    // 因此按 [start-3, body_start] 这个声明区间取，覆盖两种排版。
+    // 下界不得越过类声明行，否则类级注解会被误算作方法级
+    let lo = start_line.saturating_sub(1).max(floor_line).max(1) as usize;
+    let hi = (body_start_line.max(start_line) as usize).min(lines.len());
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for i in lo..=hi {
+        let t = lines.get(i - 1).copied().unwrap_or("").trim();
+        if t.starts_with('@') && AUTH_ANNOTATION_MARKERS.iter().any(|m| t.contains(*m)) {
+            out.push((i as u32, t.chars().take(200).collect::<String>()));
+        }
+    }
+    out
+}
+
+/// 授权落点：**方法级覆盖类级**；两者都不可见时如实报不可见。
+pub(crate) fn auth_effect(class_count: usize, method_count: usize) -> &'static str {
+    if method_count > 0 {
+        "method_level"
+    } else if class_count > 0 {
+        "class_level"
+    } else {
+        "none_visible"
+    }
+}
+
+/// Shiro 链定义里的过滤子句 → 现有子句词表（`anon` 等价放行，其余视为受限）。
+///
+/// 映射后复用同一条覆盖判定路径，避免为每种安全栈再写一套判定。
+pub(crate) fn shiro_clause(definition: &str) -> String {
+    let d = definition.trim();
+    if d.split(',').any(|t| t.trim() == "anon" || t.trim() == "anon,") {
+        return "permitAll".to_string();
+    }
+    if d.contains("roles[") {
+        return "hasRole".to_string();
+    }
+    if d.contains("perms[") {
+        return "hasAuthority".to_string();
+    }
+    "authenticated".to_string()
+}
+
+/// Shiro 的 URL 通配：`/**` 与 `**` 为任意多段，`/*` 与 `*` 为单段，其余精确匹配。
+pub(crate) fn shiro_pattern_matches(route: &str, pattern: &str) -> bool {
+    if pattern == "/**" || pattern == "**" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return route == prefix || route.starts_with(prefix);
+    }
+    if let Some(prefix) = pattern.strip_suffix("**") {
+        return route.starts_with(prefix);
+    }
+    if let Some(base) = pattern.strip_suffix("/*") {
+        if !route.starts_with(base) {
+            return false;
+        }
+        let rest = &route[base.len()..];
+        return !rest.is_empty() && !rest.trim_matches('/').contains('/');
+    }
+    if let Some(stem) = pattern.strip_suffix('*') {
+        if !route.starts_with(stem) {
+            return false;
+        }
+        let rest = &route[stem.len()..];
+        return !rest.contains('/');
+    }
+    route == pattern
+}
+
+/// 该文件是否像 Shiro 链配置。
+pub(crate) fn looks_like_shiro_config(content: &str) -> bool {
+    content.lines().any(|l| {
+        let t = l.trim();
+        !is_import_or_package_line(t)
+            && (t.contains("filterChainDefinitionMap")
+                || t.contains("ShiroFilterFactoryBean")
+                || t.contains("FilterChainDefinition"))
+    })
+}
+
+/// 跨文件证据：Shiro 过滤器链。
+///
+/// 链内规则**保持声明顺序**（`LinkedHashMap` 的插入序即求值序，首个匹配生效），
+/// 链没有"适用范围"与 `@Order`，因此 `matcher`/`order` 均为 None、顺序依据为声明序。
+pub(crate) fn shiro_filter_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
+    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+        if !looks_like_shiro_config(cfg_content) {
+            continue;
+        }
+        let code = code_lines(cfg_content, hash_comment_language(cfg_path));
+        let lines: Vec<&str> = cfg_content.lines().collect();
+        let mut rules: Vec<SecurityRule> = Vec::new();
+        let mut first_line: Option<u32> = None;
+        for (idx, code_line) in code.iter().enumerate() {
+            let ct = code_line.trim();
+            if !(ct.contains("filterChainDefinitionMap.put(")
+                || (ct.contains(".put(") && ct.contains("filterChainDefinitionMap")))
+            {
+                continue;
+            }
+            let raw = lines.get(idx).copied().unwrap_or("");
+            let quoted: Vec<String> = {
+                let mut acc = Vec::new();
+                let mut rest = raw;
+                while let Some(i) = rest.find('"') {
+                    let after = &rest[i + 1..];
+                    let Some(j) = after.find('"') else { break };
+                    acc.push(after[..j].to_string());
+                    rest = &after[j + 1..];
+                }
+                acc
+            };
+            if quoted.len() < 2 {
+                continue;
+            }
+            let pattern = quoted[0].clone();
+            let clause = shiro_clause(&quoted[1]);
+            if first_line.is_none() {
+                first_line = Some((idx + 1) as u32);
+            }
+            rules.push(SecurityRule {
+                pattern,
+                clause,
+                kind: "shiro".to_string(),
+                file: cfg_path.clone(),
+                line: (idx + 1) as u32,
+            });
+        }
+        if !rules.is_empty() {
+            chains.push(SecurityChain {
+                order: None,
+                matcher: None,
+                decl_index: chains.len(),
+                file: cfg_path.clone(),
+                line: first_line.unwrap_or(1),
+                rules,
+            });
+        }
+    }
+    chains
+}
+
+/// 类型声明判定：`class`/`interface`/`enum`/`record` 且**本行或下一非空行**出现 `{`。
+///
+/// Allman 排版（`{` 独占下一行）在真实 Java 项目里很常见，只认同行会整批漏判。
+pub(crate) fn is_type_declaration(code: &[String], idx: usize, line_trimmed: &str) -> bool {
+    let head = line_trimmed.contains("class ")
+        || line_trimmed.contains("interface ")
+        || line_trimmed.contains("enum ")
+        || line_trimmed.contains("record ");
+    if !head {
+        return false;
+    }
+    if line_trimmed.contains('{') {
+        return true;
+    }
+    code.iter()
+        .skip(idx + 1)
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim().starts_with('{'))
+        .unwrap_or(false)
+}
+
+/// 模块根判定：取**最深的**、含构建文件（`pom.xml`/`build.gradle*`/`settings.gradle`）的祖先目录。
+///
+/// 一个仓库里可能并存多个独立应用（多模块 / 样例集合）⇒ 跨文件证据若按"仓库根=一个应用"取数，
+/// 会把**别的应用**的安全链与过滤器算进本端点的覆盖判定（实测：某样例仓库混入 87 条链与外来 web.xml）。
+/// 找不到构建文件时返回 None，由调用方保持"全项目"范围并如实标注。
+pub(crate) fn module_root_of(
+    project_files: &[(String, String)],
+    file: &str,
+) -> Option<String> {
+    const MARKERS: [&str; 4] = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle"];
+    let norm = file.replace('\\', "/");
+    let mut dirs: Vec<&str> = norm.split('/').collect();
+    dirs.pop(); // 去掉文件名，只保留目录
+    // ① 最深的、含构建文件的祖先目录 = 该文件所属模块
+    let mut probe = dirs.clone();
+    let mut current: Option<String> = None;
+    while !probe.is_empty() {
+        let candidate_prefix = probe.join("/");
+        let has_marker = MARKERS.iter().any(|m| {
+            let candidate = format!("{}/{}", candidate_prefix, m);
+            project_files
+                .iter()
+                .any(|(f, _)| f.replace('\\', "/") == candidate)
+        });
+        if has_marker {
+            current = Some(candidate_prefix);
+            break;
+        }
+        probe.pop();
+    }
+    let mut current = current?;
+    // ② 沿**聚合链**上溯：父目录的构建文件若把本模块列为子模块，则应用根上移。
+    //    （多模块单应用必须跨模块取证据；而"各自独立的应用集合"里父目录没有构建文件，自然停住）
+    loop {
+        let segs: Vec<&str> = current.split('/').collect();
+        if segs.is_empty() {
+            break;
+        }
+        let name = segs[segs.len() - 1];
+        let parent = segs[..segs.len() - 1].join("/");
+        let parent_build = MARKERS.iter().find_map(|m| {
+            let c = if parent.is_empty() {
+                m.to_string()
+            } else {
+                format!("{}/{}", parent, m)
+            };
+            project_files
+                .iter()
+                .find(|(f, _)| f.replace('\\', "/") == c)
+                .map(|(_, content)| content.clone())
+        });
+        let aggregated = parent_build
+            .map(|c| {
+                c.contains(&format!("<module>{}</module>", name))
+                    || c.contains(&format!("'{}'", name))
+                    || c.contains(&format!("\"{}\"", name))
+            })
+            .unwrap_or(false);
+        if !aggregated {
+            break;
+        }
+        current = parent;
+    }
+    if current.is_empty() {
+        Some(String::new())
+    } else {
+        Some(format!("{}/", current))
+    }
+}
+
+/// 证据范围标签（如实陈述）。
+pub(crate) fn evidence_scope_label(module_root: &Option<String>) -> &'static str {
+    if module_root.is_some() {
+        "module"
+    } else {
+        "project"
+    }
+}
+
+/// 取 XML 元素属性值（`attr="value"`）。
+pub(crate) fn xml_attr(line: &str, attr: &str) -> Option<String> {
+    let key = format!("{}=\"", attr);
+    line.split(&key)
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Ant 的 `*` 后缀按**前缀**处理（如 `/login.jsp*` 应命中 `/login.jsp` 及其后），
+/// 与既有前缀语义（`/x/*`）保持一致，避免被当成字面量而不匹配。
+pub(crate) fn normalize_ant_pattern(pattern: &str) -> String {
+    if pattern.ends_with('*') && !pattern.ends_with("/**") && !pattern.ends_with("/*") {
+        // 用 /**（前缀含自身）而不是 /*（单段）：Ant 的 /x* 应命中 /x 本身
+        format!("{}/**", pattern.trim_end_matches('*'))
+    } else {
+        pattern.to_string()
+    }
+}
+
+/// XML 里 `access="..."` 的子句：复用与注解侧同一套词汇，取不到即 `unspecified`（不猜）。
+pub(crate) fn xml_access_clause(access: &str) -> String {
+    if access.trim().is_empty() {
+        return "unspecified".to_string();
+    }
+    if let Some(k) = AUTH_CLAUSES
+        .iter()
+        .filter_map(|k| access.find(*k).map(|p| (p, *k)))
+        .min_by_key(|(p, _)| *p)
+        .map(|(_, k)| k.trim_end_matches('(').to_string())
+    {
+        return k;
+    }
+    if access.contains("ROLE_") {
+        return "hasRole".to_string();
+    }
+    "unspecified".to_string()
+}
+
+/// Spring Security 的 **XML 命名空间配置**：`<http>` 与其下的 `<intercept-url>`。
+///
+/// 与注解/Java DSL 侧**同语义**：`<http pattern="...">` 是链的适用范围（无 pattern 即全路径），
+/// `<intercept-url pattern="..." access="..."/>` 是链内规则（顺序即生效顺序）；
+/// `security="none"` 表示该范围不做安全（等价"公开"）。
+pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
+    let mut decl_index = 0usize;
+    for (path, content) in project_files.iter().take(MAX_FILES) {
+        if !path.ends_with(".xml") {
+            continue;
+        }
+        let looks_supported = content.contains("<intercept-url")
+            || content.contains("springframework.org/schema/security");
+        if !looks_supported {
+            continue;
+        }
+        let mut current: Option<usize> = None;
+        for (idx, raw) in content.lines().enumerate() {
+            let t = raw.trim();
+            if t.starts_with("<http ") || t.starts_with("<http>") || t.starts_with("<security:http") {
+                decl_index += 1;
+                let matcher = xml_attr(t, "pattern").map(|p| normalize_ant_pattern(&p));
+                let mut rules: Vec<SecurityRule> = Vec::new();
+                if xml_attr(t, "security").as_deref() == Some("none") {
+                    if let Some(m) = matcher.clone() {
+                        rules.push(SecurityRule {
+                            pattern: m,
+                            clause: "permitAll".to_string(),
+                            kind: "spring_xml".to_string(),
+                            file: path.clone(),
+                            line: (idx + 1) as u32,
+                        });
+                    }
+                }
+                chains.push(SecurityChain {
+                    order: None,
+                    matcher,
+                    decl_index,
+                    file: path.clone(),
+                    line: (idx + 1) as u32,
+                    rules,
+                });
+                current = Some(chains.len() - 1);
+                continue;
+            }
+            if t.starts_with("</http>") || t.starts_with("</security:http>") {
+                current = None;
+                continue;
+            }
+            let Some(ci) = current else { continue };
+            if !t.contains("<intercept-url") {
+                continue;
+            }
+            let Some(p) = xml_attr(t, "pattern") else {
+                continue;
+            };
+            let access = xml_attr(t, "access").unwrap_or_default();
+            chains[ci].rules.push(SecurityRule {
+                pattern: normalize_ant_pattern(&p),
+                clause: xml_access_clause(&access),
+                kind: "spring_xml".to_string(),
+                file: path.clone(),
+                line: (idx + 1) as u32,
+            });
+        }
+    }
+    chains
+}
+
+/// 反应式（WebFlux）安全链：`ServerHttpSecurity.authorizeExchange(...)` 里的
+/// `pathMatchers(...)` / `matchers(...)` / `anyExchange()` 规则。
+///
+/// 与 servlet 侧**同语义**：链内首个匹配的规则生效；`anyExchange()` 等价 `/**` 兜底；
+/// 非字面量匹配器（如 `PathRequest.toStaticResources()`）登记为 `<dynamic>`，不猜。
+pub(crate) fn reactive_security_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
+    let mut decl_index = 0usize;
+    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+        let has_marker = cfg_content.lines().any(|l| {
+            let t = l.trim();
+            !is_import_or_package_line(t)
+                && (t.contains("ServerHttpSecurity")
+                    || t.contains("SecurityWebFilterChain")
+                    || t.contains("@EnableWebFluxSecurity"))
+        });
+        if !has_marker {
+            continue;
+        }
+        let cfg_code = code_lines(cfg_content, hash_comment_language(cfg_path));
+        let cfg_lines: Vec<&str> = cfg_content.lines().collect();
+        let mut current: Option<usize> = None;
+        for (idx, code_line) in cfg_code.iter().enumerate() {
+            let ct = code_line.trim();
+            if ct.contains("return http.build();") {
+                current = None;
+                continue;
+            }
+            // 链起点：返回 `SecurityWebFilterChain` 的方法声明
+            if ct.contains("SecurityWebFilterChain") && ct.contains('(') && !ct.contains("class ") {
+                decl_index += 1;
+                let order = cfg_lines
+                    .iter()
+                    .take(idx)
+                    .rev()
+                    .take(4)
+                    .find_map(|l| {
+                        let t = l.trim();
+                        t.strip_prefix("@Order(")
+                            .and_then(|s| s.split(')').next())
+                            .and_then(|s| s.trim().parse::<i64>().ok())
+                    });
+                chains.push(SecurityChain {
+                    order,
+                    matcher: None,
+                    decl_index,
+                    file: cfg_path.clone(),
+                    line: (idx + 1) as u32,
+                    rules: Vec::new(),
+                });
+                current = Some(chains.len() - 1);
+                continue;
+            }
+            let Some(ci) = current else { continue };
+            let is_path = ct.contains("pathMatchers(");
+            let is_matchers = ct.contains("matchers(") && !is_path;
+            let is_any_exchange = ct.contains("anyExchange()");
+            if !is_path && !is_matchers && !is_any_exchange {
+                continue;
+            }
+            let raw = cfg_lines.get(idx).copied().unwrap_or("");
+            let window: String = cfg_lines
+                .iter()
+                .skip(idx)
+                .take(4)
+                .cloned()
+                .collect::<Vec<&str>>()
+                .join(" ");
+            let clause = AUTH_CLAUSES
+                .iter()
+                .filter_map(|k| window.find(*k).map(|p| (p, *k)))
+                .min_by_key(|(p, _)| *p)
+                .map(|(_, k)| k.trim_end_matches('(').to_string())
+                .unwrap_or_else(|| "unspecified".to_string());
+            let mut patterns: Vec<String> = if is_any_exchange {
+                vec!["/**".to_string()]
+            } else {
+                url_patterns_in(raw)
+            };
+            if patterns.is_empty() {
+                patterns.push("<dynamic>".to_string());
+            }
+            for pattern in patterns {
+                chains[ci].rules.push(SecurityRule {
+                    pattern,
+                    clause: clause.clone(),
+                    kind: "spring_webflux".to_string(),
+                    file: cfg_path.clone(),
+                    line: (idx + 1) as u32,
+                });
+            }
+        }
+    }
+    chains.sort_by_key(|c| (c.order.unwrap_or(i64::MAX), c.decl_index));
+    chains
+}
+/// 已识别但**未建模**的保护栈信号：命中即说明"这里有保护机制，但我们不建模它"，
+/// 必须如实标注，绝不静默给出"没有保护"的结论。
+///
+/// 收录判据（三条缺一不可）：① 该串**明确指向某个保护框架**（不是通用基类或库调用）；
+/// ② 该框架当前未建模；③ 真实项目里出现过。
+/// 刻意**不收录** `OncePerRequestFilter` / `Jwts.parser` 这类通用串——它们可能只是日志过滤器
+/// 或令牌签发，收录会让"未建模"到处出现，反而噪声化；这类判定不了的东西只作证据、不参与判定。
+pub(crate) const UNMODELED_PROTECTION_SIGNALS: [(&str, &str); 4] = [
+    ("SaInterceptor", "sa-token"),
+    ("StpUtil", "sa-token"),
+    ("@SaCheck", "sa-token"),
+    ("SaTokenConfig", "sa-token"),
+];
+
+/// 扫描取数范围内的未建模保护栈信号（按框架去重，返回 (框架, 文件, 行)）。
+pub(crate) fn unmodeled_protection_signals(project_files: &[(String, String)]) -> Vec<(String, String, u32)> {
+    let mut out: Vec<(String, String, u32)> = Vec::new();
+    for (path, content) in project_files.iter().take(MAX_FILES) {
+        for (idx, raw) in content.lines().enumerate() {
+            let t = raw.trim();
+            if is_import_or_package_line(t) {
+                continue;
+            }
+            for (marker, framework) in UNMODELED_PROTECTION_SIGNALS.iter() {
+                if t.contains(marker) && !out.iter().any(|(f, _, _)| f == framework) {
+                    out.push((framework.to_string(), path.clone(), (idx + 1) as u32));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 反应式（WebFlux）安全配置：`SecurityWebFilterChain` / `ServerHttpSecurity` / `@EnableWebFluxSecurity`。
+///
+/// 该类配置当前**未建模**；把它探测出来是为了能**如实**说"未建模"，而不是给出会被读成
+/// "没有保护"的 `no_global_config_found`。导入行不算（`import ...ServerHttpSecurity;` 到处都是）。
+pub(crate) fn reactive_security_config(project_files: &[(String, String)]) -> Option<(String, u32)> {
+    for (f, content) in project_files.iter().take(MAX_FILES) {
+        if !content.contains("ServerHttpSecurity") && !content.contains("@EnableWebFluxSecurity") {
+            continue;
+        }
+        for (idx, raw) in content.lines().enumerate() {
+            let t = raw.trim();
+            if is_import_or_package_line(t) {
+                continue;
+            }
+            if t.contains("ServerHttpSecurity")
+                || t.contains("SecurityWebFilterChain")
+                || t.contains("@EnableWebFluxSecurity")
+            {
+                return Some((f.clone(), (idx + 1) as u32));
+            }
+        }
+    }
+    None
+}
+/// 声明性噪声行：`import` / `package` / `using` 是声明，不是证据。
+///
+/// 放在共享位置，避免"导入语句被当成保护证据或配置"——实测中容器过滤器注册曾在
+/// `import ...FilterRegistrationBean;` 这一行上命中。
+pub(crate) fn is_import_or_package_line(t: &str) -> bool {
+    t.starts_with("import ") || t.starts_with("package ") || t.starts_with("using ")
+}
+
+/// 从注册窗口里取过滤器名：优先 `setName("...")`，其次泛型 `FilterRegistrationBean<Xxx>`，
+/// 再次 `setFilter(... new Xxx())`；取不到即 None（不编造名字）。
+pub(crate) fn filter_class_name(window: &[&str]) -> Option<String> {
+    if let Some(n) = window.iter().find_map(|l| {
+        l.split("setName(\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }) {
+        return Some(n);
+    }
+    if let Some(n) = window.iter().find_map(|l| {
+        l.split("FilterRegistrationBean<")
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }) {
+        return Some(n);
+    }
+    window
+        .iter()
+        .filter_map(|l| l.split("new ").nth(1))
+        .filter_map(|s| s.split(['(', '<', ' ']).next())
+        .map(|s| s.to_string())
+        .find(|s| !s.is_empty() && s != "FilterRegistrationBean")
+}
+
+/// 拦截器注册：`registry.addInterceptor(x).addPathPatterns("/**")` 形态。
+///
+/// 只交付**注册事实 + 适用路径**，不判定鉴权——拦截器内部做了什么无法从注册信息推断。
+/// 它与容器过滤器、安全配置并列，构成第三条保护面。
+pub(crate) fn interceptor_registrations(project_files: &[(String, String)]) -> Vec<ContainerFilter> {
+    let mut out: Vec<ContainerFilter> = Vec::new();
+    for (f, content) in project_files.iter().take(MAX_FILES) {
+        if !content.contains("addInterceptor(") {
+            continue;
+        }
+        let lines: Vec<&str> = content.lines().collect();
+        let code = code_lines(content, hash_comment_language(f));
+        for (idx, code_line) in code.iter().enumerate() {
+            if !code_line.contains("addInterceptor(") {
+                continue;
+            }
+            let raw = lines.get(idx).copied().unwrap_or("");
+            // 拦截器名：优先取 `new Xxx(` 里的类型名，否则取实参里的首个标识符
+            let after = raw.split("addInterceptor(").nth(1).unwrap_or("");
+            let name = after
+                .split("new ")
+                .nth(1)
+                .and_then(|s| s.split(|c: char| !(c.is_alphanumeric() || c == '_')).next())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    after
+                        .trim_start_matches('(')
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .next()
+                        .filter(|s| !s.is_empty())
+                })
+                .map(|s| s.to_string());
+            // 适用路径：本行或其后 3 行内的 addPathPatterns(...)
+            let mut patterns: Vec<String> = Vec::new();
+            for l in lines.iter().skip(idx).take(4) {
+                if l.contains("addPathPatterns") {
+                    patterns.extend(url_patterns_in(l));
+                }
+            }
+            let (pattern, basis) = if patterns.is_empty() {
+                ("/**".to_string(), "default_all_paths")
+            } else {
+                (patterns[0].clone(), "add_path_patterns")
+            };
+            // 同一注册可能被多行命中：按 (kind, pattern, file) 去重
+            if out.iter().any(|e| {
+                e.kind == "handler_interceptor" && e.pattern == pattern && e.file == *f
+            }) {
+                continue;
+            }
+            out.push(ContainerFilter {
+                pattern,
+                kind: "handler_interceptor".to_string(),
+                file: f.clone(),
+                line: (idx + 1) as u32,
+                name,
+                basis: basis.to_string(),
+                dispatcher: None,
+            });
+        }
+    }
+    out
+}
+
+/// 给端点补上拦截器注册证据（类级映射不参与）。
+pub(crate) fn annotate_interceptors(routes: &mut [Value], regs: &[ContainerFilter]) {
+    for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+            continue;
+        }
+        let route = entry
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let matched: Vec<Value> = if route.is_empty() {
+            Vec::new()
+        } else {
+            regs.iter()
+                .filter(|r| servlet_pattern_matches(&route, &r.pattern))
+                .take(3)
+                .map(|r| {
+                    json!({
+                        "pattern": r.pattern,
+                        "basis": r.basis,
+                        "name": r.name,
+                        "file": r.file,
+                        "line": r.line,
+                    })
+                })
+                .collect()
+        };
+        let count = matched.len();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("interceptors".to_string(), json!(matched));
+            obj.insert("interceptor_count".to_string(), json!(count));
+        }
+    }
+}
+
+/// 映射注解的作用域：位于类声明**之上**的是类级前缀，不是端点。
+///
+/// 类级 `@RequestMapping` 只提供前缀，把它当端点会让"端点清单"多出并不存在的请求路径。
+pub(crate) fn route_scope(content: &str, line: u32) -> &'static str {
+    let class_line = type_declaration_line(content);
+    if class_line > 0 && line <= class_line {
+        "class"
+    } else {
+        "method"
+    }
+}
+
+/// 方法级映射才继承类级前缀；类声明**自身**的 `@RequestMapping` 行不重复拼接。
+pub(crate) fn annotate_route_with_prefix(content: &str, line: u32, route: Option<&str>) -> Option<String> {
+    let class_line = type_declaration_line(content);
+    if class_line > 0 && line <= class_line {
+        return route.map(|s| s.to_string());
+    }
+    join_route_paths(class_route_prefix(content).as_deref(), route)
+}
+/// 类级 `@RequestMapping("...")` 提供的路由前缀（取该注解上的首个字符串字面量）。
+///
+/// 只扫描**类声明正上方**那段连续注解，避免把方法级映射当类级前缀。
+pub(crate) fn class_route_prefix(content: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let code = code_lines(content, false);
+    let mut class_idx: Option<usize> = None;
+    for (idx, code_line) in code.iter().enumerate() {
+        let t = code_line.trim();
+        if is_type_declaration(&code, idx, t) {
+            class_idx = Some(idx);
+            break;
+        }
+    }
+    let ci = class_idx?;
+    let mut i = ci;
+    while i > 0 {
+        i -= 1;
+        let raw = lines.get(i).copied().unwrap_or("");
+        let t = raw.trim();
+        if t.is_empty() {
+            break;
+        }
+        if !t.starts_with('@') {
+            break;
+        }
+        if t.contains("@RequestMapping") {
+            let path = raw.split('"').nth(1)?;
+            if !path.is_empty() {
+                return Some(path.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 拼接类级前缀与方法级路径（Spring 的语义是**拼接**，方法级以 `/` 开头也不例外）。
+///
+/// 两者都缺时不产出路由（如实留空，而不是造一个空路径）。
+pub(crate) fn join_route_paths(prefix: Option<&str>, path: Option<&str>) -> Option<String> {
+    fn norm(s: &str) -> String {
+        let t = s.trim();
+        if t.is_empty() {
+            String::new()
+        } else if t.starts_with('/') {
+            t.to_string()
+        } else {
+            format!("/{}", t)
+        }
+    }
+    let p = prefix.map(norm).unwrap_or_default();
+    let m = path.map(norm).unwrap_or_default();
+    if p.is_empty() && m.is_empty() {
+        return None;
+    }
+    if p.is_empty() {
+        return Some(m);
+    }
+    if m.is_empty() {
+        return Some(p);
+    }
+    Some(format!("{}{}", p.trim_end_matches('/'), m))
+}
+
+/// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。
+pub(crate) const LOCUS_CHECK_TOKENS: [&str; 12] = [
+    "if ", "if(", ">=", "<=", "==", "!=", "sizeof", "assert", "return", "break", "continue", "switch",
+];
+
