@@ -1919,43 +1919,94 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                 // 拦截器注册（第三条保护面）：作为证据交付，不参与鉴权判定
                 annotate_interceptors(&mut routes, &interceptor_regs);
                 // 检测到但**未建模**的保护面：宁可如实说"未建模"，也绝不给出会被读成"没有保护"的结论。
-                // 反应式安全配置排前（语义最明确），其余按信号表登记。
+                // 已被建模的栈不再算"未建模信号"（否则已建模项目的每个端点都会被贴上提示）。
+                let unmodeled_signals: Vec<(String, String, u32)> = unmodeled_signals
+                    .into_iter()
+                    .filter(|(fw, _, _)| {
+                        !all_chains.iter().any(|c| c.rules.iter().any(|r| r.kind == *fw))
+                    })
+                    .collect();
                 let mut unmodeled: Vec<(String, String, u32)> = Vec::new();
+                // 反应式规则若已读到，则同样不再算"未建模"
+                let reactive_modelled = all_chains
+                    .iter()
+                    .any(|c| c.rules.iter().any(|r| r.kind == "spring_webflux"));
                 if let Some((rf, rline)) = reactive_cfg.as_ref() {
-                    unmodeled.push(("spring_webflux".to_string(), rf.clone(), *rline));
+                    if !reactive_modelled {
+                        unmodeled.push(("spring_webflux".to_string(), rf.clone(), *rline));
+                    }
                 }
                 unmodeled.extend(unmodeled_signals.iter().cloned());
-                if !unmodeled.is_empty() {
-                    let (first_fw, first_file, first_line) = unmodeled[0].clone();
-                    let caveat = if first_fw == "spring_webflux" {
-                        "reactive_security_not_modeled"
-                    } else {
-                        "unmodeled_protection_signal"
-                    };
-                    for entry in routes.iter_mut() {
-                        if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
-                            continue;
+                // 自动配置保护：声明了安全 starter 却无可读配置 ⇒ 如实提示（结论本身不改写）
+                let starter = if unmodeled.is_empty() && all_chains.is_empty() {
+                    security_starter_without_config(evidence_files)
+                } else {
+                    None
+                };
+                let signals_json = json!(unmodeled
+                    .iter()
+                    .map(|(fw, f, l)| json!({"framework": fw, "file": f, "line": l}))
+                    .collect::<Vec<Value>>());
+                for entry in routes.iter_mut() {
+                    if entry.get("scope").and_then(|v| v.as_str()) == Some("class") {
+                        continue;
+                    }
+                    let verdict = entry
+                        .get("global_coverage")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !unmodeled.is_empty() {
+                        let (first_fw, first_file, first_line) = unmodeled[0].clone();
+                        let caveat = if first_fw == "spring_webflux" {
+                            "reactive_security_not_modeled"
+                        } else {
+                            "unmodeled_protection_signal"
+                        };
+                        if verdict == "no_global_config_found" {
+                            if let Some(obj) = entry.as_object_mut() {
+                                obj.insert("global_coverage".to_string(), json!("framework_not_modeled"));
+                                obj.insert("coverage_caveat".to_string(), json!(caveat));
+                                obj.insert("unmodeled_framework".to_string(), json!(first_fw));
+                                obj.insert(
+                                    "unmodeled_source".to_string(),
+                                    json!({"file": first_file, "line": first_line}),
+                                );
+                                obj.insert("unmodeled_signals".to_string(), signals_json.clone());
+                            }
+                        } else if verdict != "framework_not_modeled" {
+                            let has_caveat = entry
+                                .get("coverage_caveat")
+                                .map(|v| !v.is_null())
+                                .unwrap_or(false);
+                            if let Some(obj) = entry.as_object_mut() {
+                                obj.insert("unmodeled_signals".to_string(), signals_json.clone());
+                                if !has_caveat {
+                                    obj.insert(
+                                        "coverage_caveat".to_string(),
+                                        json!("unmodeled_protection_present"),
+                                    );
+                                }
+                            }
                         }
-                        if entry.get("global_coverage").and_then(|v| v.as_str())
-                            != Some("no_global_config_found")
-                        {
-                            continue;
-                        }
-                        if let Some(obj) = entry.as_object_mut() {
-                            obj.insert("global_coverage".to_string(), json!("framework_not_modeled"));
-                            obj.insert("coverage_caveat".to_string(), json!(caveat));
-                            obj.insert("unmodeled_framework".to_string(), json!(first_fw));
-                            obj.insert(
-                                "unmodeled_source".to_string(),
-                                json!({"file": first_file, "line": first_line}),
-                            );
-                            obj.insert(
-                                "unmodeled_signals".to_string(),
-                                json!(unmodeled
-                                    .iter()
-                                    .map(|(fw, f, l)| json!({"framework": fw, "file": f, "line": l}))
-                                    .collect::<Vec<Value>>()),
-                            );
+                    } else if verdict == "no_global_config_found" {
+                        if let Some((sf, sl)) = starter.as_ref() {
+                            let no_caveat = entry
+                                .get("coverage_caveat")
+                                .map(|v| v.is_null())
+                                .unwrap_or(true);
+                            if no_caveat {
+                                if let Some(obj) = entry.as_object_mut() {
+                                    obj.insert(
+                                        "coverage_caveat".to_string(),
+                                        json!("security_starter_without_explicit_config"),
+                                    );
+                                    obj.insert(
+                                        "starter_source".to_string(),
+                                        json!({"file": sf, "line": sl}),
+                                    );
+                                }
+                            }
                         }
                     }
                 }

@@ -1270,6 +1270,38 @@ pub(crate) fn reactive_security_chains(project_files: &[(String, String)]) -> Ve
     chains.sort_by_key(|c| (c.order.unwrap_or(i64::MAX), c.decl_index));
     chains
 }
+/// 自动配置保护：构建文件声明了安全 starter，但取数范围内**没有任何可读的安全配置**。
+///
+/// 此时"未找到显式配置"是事实，但**不等于没有保护**（框架默认配置会生效）⇒ 端点上带出
+/// `security_starter_without_explicit_config` 提示与 starter 出处，结论本身不改写。
+pub(crate) fn security_starter_without_config(
+    project_files: &[(String, String)],
+) -> Option<(String, u32)> {
+    const STARTERS: [&str; 5] = [
+        "spring-boot-starter-security",
+        "spring-security-web",
+        "spring-boot-starter-oauth2",
+        "shiro-spring",
+        "sa-token",
+    ];
+    for (path, content) in project_files.iter().take(MAX_FILES) {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if name != "pom.xml" && name != "build.gradle" && name != "build.gradle.kts" {
+            continue;
+        }
+        for (idx, line) in content.lines().enumerate() {
+            let t = line.trim();
+            if t.starts_with("//") || t.starts_with("*") {
+                continue;
+            }
+            if STARTERS.iter().any(|s| t.contains(s)) {
+                return Some((path.clone(), (idx + 1) as u32));
+            }
+        }
+    }
+    None
+}
+
 /// 已识别但**未建模**的保护栈信号：命中即说明"这里有保护机制，但我们不建模它"，
 /// 必须如实标注，绝不静默给出"没有保护"的结论。
 ///

@@ -1414,3 +1414,174 @@ use super::super::*;
         assert!(bad.is_none(), "普通 GET(...) 不得被当成端点: {d}");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+
+    /// 已建模的栈不应再被当成"未建模信号"（否则已建模项目的每个端点都会被贴上未建模提示）。
+    #[tokio::test]
+    async fn test_modelled_stack_is_not_reported_as_unmodelled_signal() {
+        let root = std::env::temp_dir().join("ctx-audit-modelled-not-signal");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/SaTokenConfigure.java"),
+            concat!(
+                "package app;\n",
+                "public class SaTokenConfigure implements WebMvcConfigurer {\n",
+                "    public void addInterceptors(InterceptorRegistry registry) {\n",
+                "        registry.addInterceptor(new SaInterceptor(handle -> {\n",
+                "            SaRouter.match(\"/admin/**\", () -> StpUtil.checkLogin());\n",
+                "        }));\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/AdminController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "public class AdminController {\n",
+                "    @GetMapping(\"/admin/list\")\n",
+                "    public String list() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/AdminController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let r = routes.iter().find(|x| x["route"] == "/admin/list").expect("/admin/list");
+        assert_eq!(r["global_coverage"], "covered_by_global_config", "{d}");
+        assert!(r["coverage_caveat"].is_null(), "已建模不应带未建模提示: {d}");
+        assert!(r["unmodeled_signals"].is_null(), "已建模不应带未建模信号: {d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 并存：结论来自已建模栈，同时存在**另一个未建模**保护面时，保留结论但显式带出信号。
+    #[tokio::test]
+    async fn test_coexisting_unmodelled_signal_is_visible() {
+        let root = std::env::temp_dir().join("ctx-audit-coexist-signal");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/SecurityConfig.java"),
+            concat!(
+                "package app;\n",
+                "public class SecurityConfig {\n",
+                "    public SecurityFilterChain chain(HttpSecurity http) {\n",
+                "        http.authorizeHttpRequests(a -> a.requestMatchers(\"/api/**\").authenticated());\n",
+                "        return null;\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        // 另一个未建模栈只有一个无法读出规则的信号（没有 SaRouter.match）
+        std::fs::write(
+            root.join("src/OtherStack.java"),
+            concat!(
+                "package app;\n",
+                "public class OtherStack {\n",
+                "    void guard() {\n",
+                "        StpUtil.checkLogin();\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/ApiController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "public class ApiController {\n",
+                "    @GetMapping(\"/api/list\")\n",
+                "    public String list() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/ApiController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let r = routes.iter().find(|x| x["route"] == "/api/list").expect("/api/list");
+        assert_eq!(
+            r["global_coverage"], "covered_by_global_config",
+            "已建模栈的结论应保留: {d}"
+        );
+        assert_eq!(
+            r["coverage_caveat"], "unmodeled_protection_present",
+            "并存时应带出提示: {d}"
+        );
+        assert!(
+            r["unmodeled_signals"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+            "并存时应列出信号: {d}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 自动配置：声明了安全 starter、但范围内无可读配置 ⇒ 如实提示（结论不改写）。
+    #[tokio::test]
+    async fn test_security_starter_without_config_is_flagged() {
+        let root = std::env::temp_dir().join("ctx-audit-starter-no-config");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("build.gradle"),
+            concat!(
+                "dependencies {\n",
+                "    implementation 'org.springframework.boot:spring-boot-starter-webflux'\n",
+                "    implementation 'org.springframework.boot:spring-boot-starter-security'\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/HelloController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "public class HelloController {\n",
+                "    @GetMapping(\"/hello\")\n",
+                "    public String hello() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/HelloController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let r = routes.iter().find(|x| x["route"] == "/hello").expect("/hello");
+        assert_eq!(r["global_coverage"], "no_global_config_found", "{d}");
+        assert_eq!(
+            r["coverage_caveat"], "security_starter_without_explicit_config",
+            "应提示存在自动配置保护: {d}"
+        );
+        assert!(
+            r["starter_source"]["file"].as_str().unwrap_or("").contains("build.gradle"),
+            "应带出 starter 出处: {d}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
