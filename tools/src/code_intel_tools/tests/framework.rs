@@ -1899,3 +1899,39 @@ use super::super::*;
         annotate_route_coverage(&mut plain_routes, &plain_chains);
         assert_eq!(plain_routes[0]["csrf"], serde_json::Value::Null, "{:?}", plain_routes[0]);
     }
+
+    /// XML 命名空间侧的 CSRF：`<csrf disabled="true"/>` 显式禁用、`<csrf/>` 显式声明；
+    /// 没有 csrf 元素时不得凭空产生声明。（`disabled="true"` 变体在语料里没有真实靶，仅单测覆盖）
+    #[test]
+    fn test_xml_csrf_declaration() {
+        let with = |csrf_line: &str| {
+            vec![(
+                "src/main/resources/applicationContext-security.xml".to_string(),
+                format!(
+                    concat!(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                        "<b:beans xmlns=\"http://www.springframework.org/schema/security\"\n",
+                        "         xmlns:b=\"http://www.springframework.org/schema/beans\">\n",
+                        "  <http auto-config=\"true\">\n",
+                        "    <intercept-url pattern=\"/admin/**\" access=\"hasRole('ADMIN')\"/>\n",
+                        "    {}\n",
+                        "  </http>\n",
+                        "</b:beans>\n",
+                    ),
+                    csrf_line
+                ),
+            )]
+        };
+        let disabled = spring_xml_security_chains(&with("<csrf disabled=\"true\"/>"));
+        assert_eq!(disabled.len(), 1, "{disabled:?}");
+        let c = disabled[0].csrf.as_ref().expect("应读到 CSRF 声明");
+        assert_eq!(c.state, "disabled");
+        assert_eq!(c.line, 6);
+        let declared = spring_xml_security_chains(&with("<csrf/>"));
+        assert_eq!(
+            declared[0].csrf.as_ref().map(|c| c.state.as_str()),
+            Some("declared")
+        );
+        let none = spring_xml_security_chains(&with("<headers/>"));
+        assert!(none[0].csrf.is_none(), "没有 csrf 元素不得产生声明: {:?}", none[0].csrf);
+    }
