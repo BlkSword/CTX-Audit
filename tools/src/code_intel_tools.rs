@@ -1776,6 +1776,9 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                         let (pp_states, pp_note) = preproc_view(path, content, false);
                         frame_cpp_fallback = pp_note.is_some();
                         frame_preproc_note = pp_note;
+                        // JAX-RS 资源类的门控：只有这类文件里"动词注解本身就是路由声明"
+                        // （方法级没有 `@Path` 时路由继承类级路径）。按代码段判定，注释/字符串不算。
+                        let jaxrs_resource = code.iter().any(|l| l.trim().contains("@Path("));
                         for (idx, code_line) in code.iter().enumerate() {
                             let ln = (idx + 1) as u32;
                             let text = originals.get(idx).copied().unwrap_or("");
@@ -1790,19 +1793,32 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                             if pp_states.get(idx).map(|s| s.dead).unwrap_or(false) {
                                 continue; // 未激活分支里的路由/中间件不是证据
                             }
-                            if route_markers.iter().any(|m| code_trimmed.contains(*m))
+                            // JAX-RS 动词注解只有在"该方法没有自己的 `@Path`"时才是路由声明
+                            let jaxrs_verb = if jaxrs_resource {
+                                jaxrs_verb_only_route(content, ln)
+                            } else {
+                                None
+                            };
+                            if (route_markers.iter().any(|m| code_trimmed.contains(*m))
+                                || jaxrs_verb.is_some())
                                 && (handler.is_empty() || trimmed.contains(handler))
                             {
                                 routes_total += 1;
                                 if routes.len() + middleware.len() < MAX_HITS {
                                     provenance.push(prov(path, ln, &id));
                                     // 路由值：取注解实参里的首个字符串字面量（原文里取，避免被代码视图抹空）
-                                    // HTTP 方法：由注解名给出（Spring 的 @GetMapping 等），取不到即 null
-                                    let route_value = trimmed
-                                        .split('"')
-                                        .nth(1)
-                                        .map(|s| s.to_string())
-                                        .filter(|s| !s.is_empty());
+                                    // 动词注解本身没有实参 ⇒ 路由完全由类级前缀给出（行内注释里的
+                                    // 字符串也不得被当成路径）。HTTP 方法：Spring 由注解名给出；
+                                    // JAX-RS 的动词通常与 `@Path` 不同行 ⇒ 交给注解块解析
+                                    let route_value = if jaxrs_verb.is_some() && !code_trimmed.contains("@Path(") {
+                                        None
+                                    } else {
+                                        trimmed
+                                            .split('"')
+                                            .nth(1)
+                                            .map(|s| s.to_string())
+                                            .filter(|s| !s.is_empty())
+                                    };
                                     let http_method = [
                                         ("@GetMapping", "GET"),
                                         ("@PostMapping", "POST"),
@@ -1810,11 +1826,17 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                                         ("@DeleteMapping", "DELETE"),
                                         ("@PatchMapping", "PATCH"),
                                         ("@RequestMapping", "ANY"),
-                                        ("@Path(", "ANY"),
                                     ]
                                     .iter()
                                     .find(|(m, _)| code_trimmed.contains(*m))
-                                    .map(|(_, v)| v.to_string());
+                                    .map(|(_, v)| v.to_string())
+                                    .or_else(|| {
+                                        (jaxrs_verb.is_some()
+                                            || (jaxrs_resource && code_trimmed.contains("@Path(")))
+                                        .then(|| {
+                                            jaxrs_http_method(content, ln).unwrap_or("ANY").to_string()
+                                        })
+                                    });
                                     routes.push(json!({
                                         "line": ln,
                                         "text": trimmed.chars().take(200).collect::<String>(),

@@ -1589,9 +1589,10 @@ pub(crate) fn annotate_route_with_prefix(content: &str, line: u32, route: Option
     }
     join_route_paths(class_route_prefix(content).as_deref(), route)
 }
-/// 类级 `@RequestMapping("...")` 提供的路由前缀（取该注解上的首个字符串字面量）。
+/// 类级路由前缀：`@RequestMapping("...")`（Spring MVC）或 `@Path("...")`（JAX-RS 资源类）。
 ///
-/// 只扫描**类声明正上方**那段连续注解，避免把方法级映射当类级前缀。
+/// 只扫描**类声明正上方**那段连续注解，避免把方法级映射当类级前缀；
+/// 两种注解都在时以 `@RequestMapping` 为准（同一文件不会混用两种风格）。
 pub(crate) fn class_route_prefix(content: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
     let code = code_lines(content, false);
@@ -1605,6 +1606,7 @@ pub(crate) fn class_route_prefix(content: &str) -> Option<String> {
     }
     let ci = class_idx?;
     let mut i = ci;
+    let mut jaxrs_prefix: Option<String> = None;
     while i > 0 {
         i -= 1;
         let raw = lines.get(i).copied().unwrap_or("");
@@ -1621,8 +1623,16 @@ pub(crate) fn class_route_prefix(content: &str) -> Option<String> {
                 return Some(path.to_string());
             }
         }
+        // JAX-RS：类级 `@Path` 与 Spring 的类级 `@RequestMapping` 同义（都是**拼接**前缀）
+        if jaxrs_prefix.is_none() && t.contains("@Path(") {
+            if let Some(p) = raw.split('"').nth(1) {
+                if !p.is_empty() {
+                    jaxrs_prefix = Some(p.to_string());
+                }
+            }
+        }
     }
-    None
+    jaxrs_prefix
 }
 
 /// 拼接类级前缀与方法级路径（Spring 的语义是**拼接**，方法级以 `/` 开头也不例外）。
@@ -1651,6 +1661,99 @@ pub(crate) fn join_route_paths(prefix: Option<&str>, path: Option<&str>) -> Opti
         return Some(p);
     }
     Some(format!("{}{}", p.trim_end_matches('/'), m))
+}
+
+/// 行内是否为 JAX-RS 动词注解（`@GET`/`@POST`…）。
+///
+/// 注解名后必须不是标识符字符：`@GetMapping`（Spring）含 `@GET` 子串但**不算** JAX-RS 动词。
+pub(crate) fn jaxrs_verb_on_line(line: &str) -> Option<&'static str> {
+    const VERBS: [(&str, &str); 7] = [
+        ("@GET", "GET"),
+        ("@POST", "POST"),
+        ("@PUT", "PUT"),
+        ("@DELETE", "DELETE"),
+        ("@PATCH", "PATCH"),
+        ("@HEAD", "HEAD"),
+        ("@OPTIONS", "OPTIONS"),
+    ];
+    let t = line.trim();
+    if !t.starts_with('@') {
+        return None;
+    }
+    VERBS
+        .iter()
+        .find(|(m, _)| {
+            t.starts_with(*m)
+                && !t[m.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .map(|(_, v)| *v)
+}
+
+/// JAX-RS 的"**仅动词**路由"：动词注解所在方法（同一段连续注解块）里**没有**方法级 `@Path`，
+/// 此时有效路径就是类级 `@Path` ⇒ 这条路由必须由动词行本身声明。
+///
+/// 反之，注解块里已有 `@Path` 时路由由那一行声明，动词行**不得**再产生第二条路由。
+pub(crate) fn jaxrs_verb_only_route(content: &str, line: u32) -> Option<&'static str> {
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = (line.checked_sub(1)?) as usize;
+    let verb = jaxrs_verb_on_line(*lines.get(idx)?)?;
+    // 注解块 = 包含该行的那段连续 `@` 行（止于第一个非注解行）
+    let mut lo = idx;
+    while lo > 0 {
+        let t = lines[lo - 1].trim();
+        if t.is_empty() || !t.starts_with('@') {
+            break;
+        }
+        lo -= 1;
+    }
+    let mut hi = idx;
+    while hi + 1 < lines.len() {
+        let t = lines[hi + 1].trim();
+        if t.is_empty() || !t.starts_with('@') {
+            break;
+        }
+        hi += 1;
+    }
+    let has_path = (lo..=hi).any(|i| lines[i].trim().contains("@Path("));
+    (!has_path).then_some(verb)
+}
+
+/// JAX-RS 的动词注解（`@GET`/`@POST`…）通常与 `@Path` **不在同一行**（先后两种顺序都常见），
+/// 因此在本行与方法所在的那段**连续注解块**（向上、向下，止于第一个非注解行）里找动词。
+///
+/// 取不到即 `None`——子资源定位方法只有 `@Path` 而没有动词，此时由调用方按既有口径记 `ANY`。
+pub(crate) fn jaxrs_http_method(content: &str, line: u32) -> Option<&'static str> {
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = (line.checked_sub(1)?) as usize;
+    if idx >= lines.len() {
+        return None;
+    }
+    if let Some(v) = jaxrs_verb_on_line(lines[idx]) {
+        return Some(v);
+    }
+    let mut i = idx;
+    while i > 0 {
+        i -= 1;
+        let t = lines[i].trim();
+        if t.is_empty() || !t.starts_with('@') {
+            break;
+        }
+        if let Some(v) = jaxrs_verb_on_line(lines[i]) {
+            return Some(v);
+        }
+    }
+    for raw in lines.iter().skip(idx + 1) {
+        if !raw.trim().starts_with('@') {
+            break;
+        }
+        if let Some(v) = jaxrs_verb_on_line(raw) {
+            return Some(v);
+        }
+    }
+    None
 }
 
 /// 判定要素里"看起来像检查"的标记（与 `get_sanitizer_guards` 同族，但这里只用于**命中计数**）。

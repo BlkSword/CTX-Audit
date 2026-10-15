@@ -1731,3 +1731,67 @@ use super::super::*;
         let none = spring_xml_security_chains(&lookalike);
         assert!(none.is_empty(), "形近名与闭合标签不得成为规则: {none:?}");
     }
+
+    /// JAX-RS 资源类：类级 `@Path` 与 Spring 的类级 `@RequestMapping` 同义（都只提供**前缀**），
+    /// 方法级 `@Path` 与其拼接；动词注解常与 `@Path` 不同行（先后两种顺序都常见）。
+    #[test]
+    fn test_jaxrs_class_path_prefix_and_verb() {
+        let content = concat!(
+            "package com.example;\n",              // 1
+            "@Path(\"/v1/project\")\n",            // 2
+            "public class ProjectResource {\n",    // 3
+            "    @GET\n",                          // 4
+            "    @Path(\"/concise\")\n",           // 5
+            "    @Produces(MediaType.APPLICATION_JSON)\n", // 6
+            "    public Response concise() { return null; }\n", // 7
+            "\n",                                  // 8
+            "    @Path(\"/{uuid}\")\n",            // 9
+            "    @DELETE\n",                       // 10
+            "    public Response remove() { return null; }\n", // 11
+            "\n",                                  // 12
+            "    @Path(\"clone\")\n",              // 13
+            "    public Response locator() { return null; }\n", // 14
+            "    @GET\n",                            // 15：只有动词，没有方法级 @Path
+            "    @Produces(MediaType.TEXT_PLAIN)\n", // 16
+            "    public Response list() { return null; }\n", // 17
+            "}\n",                                 // 18
+        );
+        // 前缀：类级 `@Path` 被读出，且只在方法级行拼接
+        assert_eq!(class_route_prefix(content).as_deref(), Some("/v1/project"));
+        assert_eq!(
+            annotate_route_with_prefix(content, 5, Some("/concise")).as_deref(),
+            Some("/v1/project/concise")
+        );
+        assert_eq!(
+            annotate_route_with_prefix(content, 9, Some("/{uuid}")).as_deref(),
+            Some("/v1/project/{uuid}")
+        );
+        // 方法级无前导斜杠也拼接
+        assert_eq!(
+            annotate_route_with_prefix(content, 13, Some("clone")).as_deref(),
+            Some("/v1/project/clone")
+        );
+        // 类声明自身的映射行不重复拼接
+        assert_eq!(
+            annotate_route_with_prefix(content, 2, Some("/v1/project")).as_deref(),
+            Some("/v1/project")
+        );
+        // 动词：`@GET` 在 `@Path` 上方，`@DELETE` 在下方
+        assert_eq!(jaxrs_http_method(content, 5), Some("GET"));
+        assert_eq!(jaxrs_http_method(content, 9), Some("DELETE"));
+        // 子资源定位方法只有 `@Path`，没有动词 ⇒ 如实返回 None（调用方按 ANY 口径）
+        assert_eq!(jaxrs_http_method(content, 13), None);
+        // 注解名后是标识符字符的不算动词（`@GETTER`）
+        let lookalike = "class X {\n    @GETTER\n    @Path(\"/y\")\n    public Object y() { return null; }\n}\n";
+        assert_eq!(jaxrs_http_method(lookalike, 3), None);
+        // 仅动词路由：同一注解块里有 `@Path` 时不许再产生第二条路由，没有时才算路由
+        assert_eq!(jaxrs_verb_only_route(content, 5), None, "有方法级 @Path，路由由该行声明");
+        assert_eq!(jaxrs_verb_only_route(content, 9), None, "@Path 行本身不是动词");
+        assert_eq!(jaxrs_verb_only_route(content, 13), None, "@Path 行本身不是动词");
+        assert_eq!(jaxrs_verb_only_route(content, 15), Some("GET"), "无方法级 @Path ⇒ 动词行声明路由");
+        // 此时路由完全由类级前缀给出（动词注解没有实参）
+        assert_eq!(
+            annotate_route_with_prefix(content, 15, None).as_deref(),
+            Some("/v1/project")
+        );
+    }
