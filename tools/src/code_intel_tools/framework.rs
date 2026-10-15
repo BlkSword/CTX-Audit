@@ -58,6 +58,19 @@ pub(crate) struct SecurityRule {
     pub(crate) kind: String,
 }
 
+/// 链上读到的 CSRF 声明（**只记读到的文本事实**，不推断框架默认值）。
+///
+/// 未读到时不产字段：静默不等于"已启用"或"未启用"。
+#[derive(Clone, Debug)]
+pub(crate) struct CsrfDeclaration {
+    /// `disabled` / `ignoring_paths` / `custom_repository` / `declared`
+    pub(crate) state: String,
+    /// `ignoringRequestMatchers(...)` 上的路径字面量（仅 `ignoring_paths` 会有）
+    pub(crate) patterns: Vec<String>,
+    pub(crate) file: String,
+    pub(crate) line: u32,
+}
+
 /// 一条过滤器链：顺序、适用范围、链内规则（保持声明顺序）。
 #[derive(Clone, Debug)]
 pub(crate) struct SecurityChain {
@@ -70,6 +83,8 @@ pub(crate) struct SecurityChain {
     pub(crate) file: String,
     pub(crate) line: u32,
     pub(crate) rules: Vec<SecurityRule>,
+    /// 该链上读到的 CSRF 声明（未读到即 None）
+    pub(crate) csrf: Option<CsrfDeclaration>,
 }
 
 /// 从 `@Order(...)` 文本里取数字；取不到数字（如常量表达式）即视为未声明。
@@ -123,8 +138,26 @@ pub(crate) fn security_config_chains(project_files: &[(String, String)]) -> Vec<
                     file: cfg_path.clone(),
                     line: (idx + 1) as u32,
                     rules: Vec::new(),
+                    csrf: None,
                 });
                 current = Some(chains.len() - 1);
+                continue;
+            }
+            // 链上读到的 CSRF 声明（`.csrf(...)`）：只记读到的文本事实，未读到不产字段
+            if ct.contains(".csrf(") {
+                let Some(ci) = current else { continue };
+                if chains[ci].csrf.is_none() {
+                    if let Some((state, patterns, line)) =
+                        csrf_declaration_at(&cfg_code, &cfg_lines, idx)
+                    {
+                        chains[ci].csrf = Some(CsrfDeclaration {
+                            state,
+                            patterns,
+                            file: cfg_path.clone(),
+                            line,
+                        });
+                    }
+                }
                 continue;
             }
             // `anyRequest()` 是 Catch-all 匹配器：等价于 `/**`，漏掉它会让判定偏乐观
@@ -245,6 +278,7 @@ pub(crate) fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityCh
             "no_global_match_found"
         };
         let mut detail: Option<Value> = None;
+        let mut csrf_fact: Option<Value> = None;
         let mut considered = 0usize;
         let mut dynamic_unresolved = false;
         if !route.is_empty() && total_rules > 0 {
@@ -298,6 +332,27 @@ pub(crate) fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityCh
                     "chain_file": chains[*ci].file,
                     "chain_line": chains[*ci].line,
                 }));
+                // CSRF 证据：只报**胜出链上读到的**声明。未读到不产字段，也不否定
+                // （负向断言会读成"没有 CSRF 配置"）。Shiro 的 CSRF 不由本口径覆盖。
+                if rule.kind != "shiro" {
+                    if let Some(c) = chains[*ci].csrf.as_ref() {
+                        let (state, matched) = if c.state == "ignoring_paths" {
+                            match c.patterns.iter().find(|p| route_matches_pattern(&route, p)) {
+                                Some(p) => ("disabled_for_this_path".to_string(), Some(p.clone())),
+                                None => (c.state.clone(), None),
+                            }
+                        } else {
+                            (c.state.clone(), None)
+                        };
+                        csrf_fact = Some(json!({
+                            "state": state,
+                            "file": c.file,
+                            "line": c.line,
+                            "ignored_patterns": c.patterns,
+                            "matched_ignored_pattern": matched,
+                        }));
+                    }
+                }
             }
         }
         let ordering_basis = if chains.iter().any(|c| c.order.is_some()) {
@@ -308,6 +363,8 @@ pub(crate) fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityCh
         if let Some(obj) = entry.as_object_mut() {
             obj.insert("global_coverage".to_string(), json!(verdict));
             obj.insert("global_match".to_string(), detail.unwrap_or(Value::Null));
+            // 该端点胜出链上的 CSRF 声明；未读到即 null（不否定）
+            obj.insert("csrf".to_string(), csrf_fact.take().unwrap_or(Value::Null));
             obj.insert("ordering_basis".to_string(), json!(ordering_basis));
             obj.insert("chains_considered".to_string(), json!(considered));
             // 链里存在未解析的非字面量匹配器时，如实提示该判定可能不完整
@@ -368,6 +425,72 @@ pub(crate) fn url_patterns_in(line: &str) -> Vec<String> {
         rest = &after[j + 1..];
     }
     out
+}
+
+/// 读一条 `.csrf(...)` 调用：按**括号配平**取该调用覆盖到的行，再分类。
+///
+/// 只认读到的文本事实（`disable` / `ignoringRequestMatchers` / `csrfTokenRepository`），
+/// 读不出形态即 `declared`（**不推断框架默认值**）。括号配平在**代码视图**上做（注释与字符串
+/// 内容已被抹掉，串里的括号不干扰配平），路径取值在**原文**上做（字面量只在原文里存在）。
+pub(crate) fn csrf_declaration_at(
+    code: &[String],
+    originals: &[&str],
+    idx: usize,
+) -> Option<(String, Vec<String>, u32)> {
+    let start = code.get(idx)?;
+    let col = start.find(".csrf(")?;
+    let joined: String = code[idx..]
+        .iter()
+        .enumerate()
+        .map(|(k, l)| if k == 0 { &l[col..] } else { l.as_str() })
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let mut depth = 0i32;
+    let mut end = None;
+    for (i, ch) in joined.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let span = joined.get(..=end?)?.to_string();
+    let covered = span.matches('\n').count() + 1;
+    let state = if span.trim() == ".csrf()" {
+        // 空实参形态：只有紧随其后的链式 `.disable()` 才算同一条语句
+        // （否则会把下一个配置器的 `disable` 误算成本链禁用 CSRF）
+        let chained_disable = originals
+            .iter()
+            .skip(idx + 1)
+            .take_while(|l| l.trim().starts_with('.'))
+            .any(|l| l.trim().starts_with(".disable("));
+        if chained_disable {
+            "disabled"
+        } else {
+            "declared"
+        }
+    } else if span.contains("disable") {
+        "disabled"
+    } else if span.contains("ignoringRequestMatchers(") || span.contains("ignoringAntMatchers(") {
+        "ignoring_paths"
+    } else if span.contains("csrfTokenRepository(") {
+        "custom_repository"
+    } else {
+        "declared"
+    };
+    let patterns: Vec<String> = originals
+        .iter()
+        .skip(idx)
+        .take(covered)
+        .flat_map(|l| url_patterns_in(l))
+        .collect();
+    Some((state.to_string(), patterns, (idx + 1) as u32))
 }
 
 /// 跨文件证据：容器级过滤器注册（`@WebFilter` / `FilterRegistrationBean` / `web.xml`）。
@@ -816,6 +939,8 @@ pub(crate) fn shiro_filter_chains(project_files: &[(String, String)]) -> Vec<Sec
                 file: cfg_path.clone(),
                 line: first_line.unwrap_or(1),
                 rules,
+                // Shiro 的 CSRF 由它自己的过滤器承担，不在本证据面口径内
+                csrf: None,
             });
         }
     }
@@ -1039,12 +1164,31 @@ pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> 
                     file: path.clone(),
                     line: (idx + 1) as u32,
                     rules,
+                    csrf: None,
                 });
                 current = Some(chains.len() - 1);
                 continue;
             }
             if t.starts_with("</http>") || t.starts_with("</security:http>") {
                 current = None;
+                continue;
+            }
+            // XML 命名空间里的 CSRF 配置：`<csrf disabled="true"/>` 即显式禁用，`<csrf/>` 即显式声明
+            if line_has_xml_element(t, "csrf") {
+                if let Some(ci) = current {
+                    if chains[ci].csrf.is_none() {
+                        chains[ci].csrf = Some(CsrfDeclaration {
+                            state: if xml_attr(t, "disabled").as_deref() == Some("true") {
+                                "disabled".to_string()
+                            } else {
+                                "declared".to_string()
+                            },
+                            patterns: Vec::new(),
+                            file: path.clone(),
+                            line: (idx + 1) as u32,
+                        });
+                    }
+                }
                 continue;
             }
             // 旧式 FilterChainProxy 的 <filter-chain>：filters=none → 公开；其它 → 无法推断 → unspecified
@@ -1069,6 +1213,7 @@ pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> 
                         file: path.clone(),
                         line: (idx + 1) as u32,
                         rules: Vec::new(),
+                        csrf: None,
                     });
                     current = Some(chains.len() - 1);
                 }
@@ -1238,6 +1383,8 @@ pub(crate) fn sa_token_security_chains(project_files: &[(String, String)]) -> Ve
             file: path.clone(),
             line: (start + 1) as u32,
             rules,
+            // Sa-Token 的 CSRF 不在本证据面口径内
+            csrf: None,
         });
     }
     chains.sort_by_key(|c| (c.order.unwrap_or(i64::MAX), c.decl_index));
@@ -1293,8 +1440,26 @@ pub(crate) fn reactive_security_chains(project_files: &[(String, String)]) -> Ve
                     file: cfg_path.clone(),
                     line: (idx + 1) as u32,
                     rules: Vec::new(),
+                    csrf: None,
                 });
                 current = Some(chains.len() - 1);
+                continue;
+            }
+            // 反应式链上的 CSRF 声明（`.csrf(...)`）：与 servlet 侧同一读法
+            if ct.contains(".csrf(") {
+                let Some(ci) = current else { continue };
+                if chains[ci].csrf.is_none() {
+                    if let Some((state, patterns, line)) =
+                        csrf_declaration_at(&cfg_code, &cfg_lines, idx)
+                    {
+                        chains[ci].csrf = Some(CsrfDeclaration {
+                            state,
+                            patterns,
+                            file: cfg_path.clone(),
+                            line,
+                        });
+                    }
+                }
                 continue;
             }
             let Some(ci) = current else { continue };

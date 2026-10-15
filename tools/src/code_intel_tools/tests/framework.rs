@@ -1795,3 +1795,107 @@ use super::super::*;
             Some("/v1/project")
         );
     }
+
+    /// CSRF 读取：只认读到的文本事实；`disable` 必须在**同一条 `.csrf(...)` 语句**内
+    /// （否则会把下一个配置器的 disable 误算成本链禁用 CSRF）。
+    #[test]
+    fn test_csrf_declaration_reading() {
+        use crate::text_scan::code_lines;
+        let plain: Vec<(&str, Option<&str>)> = vec![
+            (".csrf(AbstractHttpConfigurer::disable)", Some("disabled")),
+            (".csrf(csrf -> csrf.disable())", Some("disabled")),
+            (".csrf(c -> c.csrfTokenRepository(repo))", Some("custom_repository")),
+            (
+                ".csrf((csrf) -> csrf.ignoringRequestMatchers(\"/token\"))",
+                Some("ignoring_paths"),
+            ),
+            (".csrf()", Some("declared")),
+        ];
+        for (src, want) in plain {
+            let line = format!("        {}\n", src);
+            let code = code_lines(&line, false);
+            let originals: Vec<&str> = line.lines().collect();
+            let got = csrf_declaration_at(&code, &originals, 0).map(|(s, _, _)| s);
+            assert_eq!(got.as_deref(), want, "{src}");
+        }
+        let read = |text: &str, idx: usize| {
+            let code = code_lines(text, false);
+            let originals: Vec<&str> = text.lines().collect();
+            csrf_declaration_at(&code, &originals, idx)
+        };
+        // `.csrf()` + 紧随其后的链式 `.disable()` ⇒ 禁用
+        let chained = "        http\n            .csrf()\n            .disable()\n";
+        assert_eq!(read(chained, 1).map(|(s, _, _)| s).as_deref(), Some("disabled"));
+        // 下一个配置器的 disable 不得算作 CSRF 禁用
+        let other = "        http\n            .csrf()\n            .formLogin(AbstractHttpConfigurer::disable)\n";
+        assert_eq!(read(other, 1).map(|(s, _, _)| s).as_deref(), Some("declared"));
+        // 忽略路径的字面量要带出来（含出处行号）
+        let ignored = "        .csrf(c -> c.ignoringRequestMatchers(\"/token\", \"/refresh\"))\n";
+        let (state, patterns, line) = read(ignored, 0).expect("应读到 CSRF 声明");
+        assert_eq!(state, "ignoring_paths");
+        assert_eq!(patterns, vec!["/token".to_string(), "/refresh".to_string()]);
+        assert_eq!(line, 1);
+    }
+
+    /// 链上 CSRF 声明的接线：`.csrf(...)` 挂到它所在的那条链，并随胜出链带到端点。
+    #[test]
+    fn test_csrf_attached_to_chain_and_endpoint() {
+        let cfg = concat!(
+            "package com.example;\n",                                        // 1
+            "@Configuration\n",                                              // 2
+            "public class SecurityConfig {\n",                               // 3
+            "    @Bean\n",                                                   // 4
+            "    public SecurityFilterChain chain(HttpSecurity http) throws Exception {\n", // 5
+            "        return http\n",                                         // 6
+            "            .authorizeHttpRequests(r -> {\n",                   // 7
+            "                r.requestMatchers(\"/admin/**\").hasRole(\"ADMIN\");\n", // 8
+            "                r.anyRequest().authenticated();\n",              // 9
+            "            })\n",                                              // 10
+            "            .csrf(AbstractHttpConfigurer::disable)\n",           // 11
+            "            .build();\n",                                       // 12
+            "    }\n",                                                       // 13
+            "}\n",                                                           // 14
+        );
+        let files = vec![(
+            "src/main/java/com/example/SecurityConfig.java".to_string(),
+            cfg.to_string(),
+        )];
+        let chains = security_config_chains(&files);
+        assert_eq!(chains.len(), 1, "{chains:?}");
+        let csrf = chains[0].csrf.as_ref().expect("应读到 CSRF 声明");
+        assert_eq!(csrf.state, "disabled");
+        assert_eq!(csrf.line, 11);
+        // 端点级：胜出链上的 CSRF 事实带到端点
+        let mut routes = vec![
+            json!({"line": 3, "route": "/admin/list", "http_method": "GET", "scope": "method"}),
+        ];
+        annotate_route_coverage(&mut routes, &chains);
+        assert_eq!(routes[0]["global_coverage"], "covered_by_global_config", "{:?}", routes[0]);
+        assert_eq!(routes[0]["csrf"]["state"], "disabled", "{:?}", routes[0]);
+        assert_eq!(routes[0]["csrf"]["line"], 11, "{:?}", routes[0]);
+        // 类级映射不参与判定，也不带 CSRF 字段
+        let mut class_route = vec![
+            json!({"line": 2, "route": "/admin", "http_method": "ANY", "scope": "class"}),
+        ];
+        annotate_route_coverage(&mut class_route, &chains);
+        assert!(class_route[0].get("csrf").is_none(), "{:?}", class_route[0]);
+        // 未读到 CSRF 声明时不产字段（也不否定）
+        let plain_files = vec![(
+            "src/main/java/com/example/Other.java".to_string(),
+            concat!(
+                "package com.example;\n",
+                "public class Other {\n",
+                "    public SecurityFilterChain chain(HttpSecurity http) throws Exception {\n",
+                "        return http.authorizeHttpRequests(r -> r.anyRequest().authenticated()).build();\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let plain_chains = security_config_chains(&plain_files);
+        let mut plain_routes = vec![
+            json!({"line": 3, "route": "/x", "http_method": "GET", "scope": "method"}),
+        ];
+        annotate_route_coverage(&mut plain_routes, &plain_chains);
+        assert_eq!(plain_routes[0]["csrf"], serde_json::Value::Null, "{:?}", plain_routes[0]);
+    }
