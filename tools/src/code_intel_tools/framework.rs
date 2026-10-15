@@ -5,6 +5,11 @@
 //! 授权落点，以及"检测到但未建模的保护栈"信号。
 
 use super::*;
+
+/// `no_global_match_found` 时带出的"考虑过的规则"上限。
+///
+/// 与既有封顶口径一致：超限时同时报 `total_hits` 与 `truncated_at_limit`，不静默截断。
+const MAX_SCOPE_RULES: usize = 8;
 /// 路径模式匹配：精确匹配、`/**` 前缀、`/*` 单段通配。`/**` 亦用于 `anyRequest()` 的 Catch-all。
 pub(crate) fn route_matches_pattern(route: &str, pattern: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix("/**") {
@@ -279,6 +284,7 @@ pub(crate) fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityCh
         };
         let mut detail: Option<Value> = None;
         let mut csrf_fact: Option<Value> = None;
+        let mut global_scope: Option<Value> = None;
         let mut considered = 0usize;
         let mut dynamic_unresolved = false;
         if !route.is_empty() && total_rules > 0 {
@@ -354,6 +360,40 @@ pub(crate) fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityCh
                     }
                 }
             }
+            // 没有规则匹配到该路由时，把"**考虑过哪些规则**"如实带出来：否则读者无法区分
+            // 「端点落在已声明范围之外」（漏鉴权的线索）与「解析不出规则」——而"范围是什么"
+            // 正是判定这件事所必需的事实（如只声明了 `/admin/**`）。
+            if results.is_empty() {
+                let mut rules: Vec<Value> = Vec::new();
+                let mut total = 0usize;
+                for chain in chains.iter() {
+                    if let Some(m) = chain.matcher.as_deref() {
+                        if !route_matches_pattern(&route, m) {
+                            continue;
+                        }
+                    }
+                    for r in chain.rules.iter() {
+                        total += 1;
+                        if rules.len() < MAX_SCOPE_RULES {
+                            rules.push(json!({
+                                "pattern": r.pattern,
+                                "clause": r.clause,
+                                "kind": r.kind,
+                                "file": r.file,
+                                "line": r.line,
+                            }));
+                        }
+                    }
+                }
+                if total > 0 {
+                    global_scope = Some(json!({
+                        "rules": rules,
+                        "total_hits": total,
+                        "limit": MAX_SCOPE_RULES,
+                        "truncated_at_limit": total > MAX_SCOPE_RULES,
+                    }));
+                }
+            }
         }
         let ordering_basis = if chains.iter().any(|c| c.order.is_some()) {
             "@Order"
@@ -365,6 +405,11 @@ pub(crate) fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityCh
             obj.insert("global_match".to_string(), detail.unwrap_or(Value::Null));
             // 该端点胜出链上的 CSRF 声明；未读到即 null（不否定）
             obj.insert("csrf".to_string(), csrf_fact.take().unwrap_or(Value::Null));
+            // 无规则匹配时带出"考虑过的规则"（有界）；有结论时为 null
+            obj.insert(
+                "global_scope".to_string(),
+                global_scope.take().unwrap_or(Value::Null),
+            );
             obj.insert("ordering_basis".to_string(), json!(ordering_basis));
             obj.insert("chains_considered".to_string(), json!(considered));
             // 链里存在未解析的非字面量匹配器时，如实提示该判定可能不完整

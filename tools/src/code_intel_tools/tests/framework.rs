@@ -1935,3 +1935,75 @@ use super::super::*;
         let none = spring_xml_security_chains(&with("<headers/>"));
         assert!(none[0].csrf.is_none(), "没有 csrf 元素不得产生声明: {:?}", none[0].csrf);
     }
+
+    /// 无规则匹配时必须说清"考虑过哪些规则"：读者要能看到已声明的范围
+    /// （否则"没匹配"无法与"解析不出规则"区分）；有结论或没有配置时不产该字段。
+    #[test]
+    fn test_global_scope_reported_when_no_rule_matches() {
+        let files = vec![(
+            "src/main/java/com/example/SecurityConfig.java".to_string(),
+            concat!(
+                "package com.example;\n",
+                "public class SecurityConfig {\n",
+                "    @Bean\n",
+                "    public SecurityFilterChain chain(HttpSecurity http) throws Exception {\n",
+                "        return http.authorizeHttpRequests(r -> {\n",
+                "            r.requestMatchers(\"/admin/**\").hasRole(\"ADMIN\");\n",
+                "        }).build();\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let chains = security_config_chains(&files);
+        assert_eq!(chains.len(), 1, "{chains:?}");
+        // 没有规则匹配 ⇒ 带出考虑过的规则（pattern/clause/出处）与封顶事实
+        let mut miss = vec![json!({"line": 1, "route": "/guest", "http_method": "GET", "scope": "method"})];
+        annotate_route_coverage(&mut miss, &chains);
+        assert_eq!(miss[0]["global_coverage"], "no_global_match_found", "{:?}", miss[0]);
+        assert_eq!(miss[0]["global_scope"]["total_hits"], 1, "{:?}", miss[0]);
+        assert_eq!(miss[0]["global_scope"]["limit"], 8, "{:?}", miss[0]);
+        assert_eq!(miss[0]["global_scope"]["truncated_at_limit"], false, "{:?}", miss[0]);
+        assert_eq!(miss[0]["global_scope"]["rules"][0]["pattern"], "/admin/**", "{:?}", miss[0]);
+        assert_eq!(miss[0]["global_scope"]["rules"][0]["clause"], "hasRole", "{:?}", miss[0]);
+        assert_eq!(miss[0]["global_scope"]["rules"][0]["line"], 6, "{:?}", miss[0]);
+        // 有结论时不产该字段（胜出规则已由 global_match 带出）
+        let mut hit = vec![json!({"line": 1, "route": "/admin/x", "http_method": "GET", "scope": "method"})];
+        annotate_route_coverage(&mut hit, &chains);
+        assert_eq!(hit[0]["global_coverage"], "covered_by_global_config", "{:?}", hit[0]);
+        assert_eq!(hit[0]["global_scope"], serde_json::Value::Null, "{:?}", hit[0]);
+        // 完全没有配置 ⇒ 也没有"考虑过的规则"可报
+        let mut none = vec![json!({"line": 1, "route": "/guest", "http_method": "GET", "scope": "method"})];
+        annotate_route_coverage(&mut none, &[]);
+        assert_eq!(none[0]["global_coverage"], "no_global_config_found", "{:?}", none[0]);
+        assert_eq!(none[0]["global_scope"], serde_json::Value::Null, "{:?}", none[0]);
+        // 规则数超过上限：如实报 total_hits 并标 truncated_at_limit
+        let mut cfg = String::from(concat!(
+            "package com.example;\n",
+            "public class SecurityConfig {\n",
+            "    @Bean\n",
+            "    public SecurityFilterChain chain(HttpSecurity http) throws Exception {\n",
+            "        return http.authorizeHttpRequests(r -> {\n",
+        ));
+        for i in 0..12 {
+            cfg.push_str(&format!(
+                "            r.requestMatchers(\"/p{}/**\").authenticated();\n",
+                i
+            ));
+        }
+        cfg.push_str("        }).build();\n    }\n}\n");
+        let many = security_config_chains(&[(
+            "src/main/java/com/example/SecurityConfig.java".to_string(),
+            cfg,
+        )]);
+        let mut capped = vec![json!({"line": 1, "route": "/nope", "http_method": "GET", "scope": "method"})];
+        annotate_route_coverage(&mut capped, &many);
+        assert_eq!(capped[0]["global_scope"]["total_hits"], 12, "{:?}", capped[0]);
+        assert_eq!(capped[0]["global_scope"]["truncated_at_limit"], true, "{:?}", capped[0]);
+        assert_eq!(
+            capped[0]["global_scope"]["rules"].as_array().map(|a| a.len()),
+            Some(8),
+            "{:?}",
+            capped[0]
+        );
+    }
