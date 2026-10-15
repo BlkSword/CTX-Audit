@@ -1321,3 +1321,96 @@ use super::super::*;
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+
+    /// 函数式路由应被识别为端点，并与其所在应用的安全配置一起判定覆盖。
+    #[tokio::test]
+    async fn test_functional_routes_are_endpoints() {
+        let root = std::env::temp_dir().join("ctx-audit-functional-routes");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/HelloApplication.java"),
+            concat!(
+                "package example;\n",
+                "import org.springframework.web.reactive.function.server.RouterFunction;\n",
+                "import org.springframework.web.reactive.function.server.ServerResponse;\n",
+                "import static org.springframework.web.reactive.function.server.RequestPredicates.GET;\n",
+                "import static org.springframework.web.reactive.function.server.RouterFunctions.route;\n",
+                "@SpringBootApplication\n",
+                "public class HelloApplication {\n",
+                "    @Bean\n",
+                "    public RouterFunction<ServerResponse> routes(HelloController helloController) {\n",
+                "        return route(GET(\"/\"), helloController::hello);\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/SecurityConfig.java"),
+            concat!(
+                "package example;\n",
+                "import org.springframework.security.config.web.server.ServerHttpSecurity;\n",
+                "import org.springframework.security.web.server.SecurityWebFilterChain;\n",
+                "@EnableWebFluxSecurity\n",
+                "public class SecurityConfig {\n",
+                "    public SecurityWebFilterChain chain(ServerHttpSecurity http) {\n",
+                "        http.authorizeExchange(e -> e.anyExchange().authenticated());\n",
+                "        return http.build();\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/HelloApplication.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let r = routes
+            .iter()
+            .find(|x| x["route"] == "/")
+            .expect("函数式路由 GET / 应被识别: {d}");
+        assert_eq!(r["http_method"], "GET", "{d}");
+        assert_eq!(r["route_source"], "functional", "{d}");
+        assert_eq!(r["scope"], "method", "{d}");
+        assert_eq!(r["global_coverage"], "covered_by_global_config", "{d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 反向守卫：没有 WebFlux 函数式类型的文件里，`GET("...")` 不得被当成端点。
+    #[tokio::test]
+    async fn test_plain_get_call_is_not_a_functional_route() {
+        let root = std::env::temp_dir().join("ctx-audit-plain-get");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/PlainService.java"),
+            concat!(
+                "package app;\n",
+                "public class PlainService {\n",
+                "    void run() {\n",
+                "        client.send(GET(\"/not-an-endpoint\"));\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/PlainService.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let bad = routes.iter().find(|x| x["route"] == "/not-an-endpoint");
+        assert!(bad.is_none(), "普通 GET(...) 不得被当成端点: {d}");
+        let _ = std::fs::remove_dir_all(&root);
+    }

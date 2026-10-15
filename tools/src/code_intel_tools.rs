@@ -1844,7 +1844,41 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                         return Err(ToolError::InvalidArgument(format!("文件不存在: {}", file)))
                     }
                 }
-                // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
+                // 函数式路由（WebFlux RouterFunctions 风格）：与注解式并列的端点声明方式
+                let (fcontent, froutes) = read_requested_file(root, file)
+                    .map(|c| {
+                        let rs = functional_routes(&c);
+                        (c, rs)
+                    })
+                    .unwrap_or_default();
+                for (fln, fmethod, fpath) in froutes {
+                    if routes
+                        .iter()
+                        .any(|r| r["line"].as_u64() == Some(fln as u64) && r["route"].as_str() == Some(fpath.as_str()))
+                    {
+                        continue;
+                    }
+                    if routes.len() + middleware.len() >= MAX_HITS {
+                        break;
+                    }
+                    provenance.push(prov(file, fln, &id));
+                    routes.push(json!({
+                        "line": fln,
+                        "text": fcontent
+                            .lines()
+                            .nth(fln as usize - 1)
+                            .unwrap_or("")
+                            .trim()
+                            .chars()
+                            .take(200)
+                            .collect::<String>(),
+                        "route": fpath,
+                        "route_raw": fpath,
+                        "scope": "method",
+                        "http_method": fmethod,
+                        "route_source": "functional",
+                    }));
+                }                // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
                 annotate_route_coverage(&mut routes, &all_chains);
                 // 安全配置声明并入中间件链：**只上报与本文件相关者**——本文件自身（若它是配置）
                 // 以及实际为端点提供覆盖判定的配置（来自 global_match.chain_file），

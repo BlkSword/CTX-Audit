@@ -1032,6 +1032,60 @@ pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> 
     chains
 }
 
+/// 函数式路由（WebFlux `RouterFunctions` 风格）：`route(GET("/x"), handler)` 里的谓词与路径。
+///
+/// 仅在文件确实引用了 WebFlux 函数式类型时才启用——否则普通 `GET("...")` 会被误当端点。
+/// 返回 (行号, HTTP 方法, 路径)。路径本身即完整路径，不参与类级前缀拼接。
+pub(crate) fn functional_routes(content: &str) -> Vec<(u32, String, String)> {
+    let looks_functional = content.contains("RouterFunction")
+        || content.contains("RouterFunctions")
+        || content.contains("ServerResponse");
+    if !looks_functional {
+        return Vec::new();
+    }
+    // 代码视图会把**字符串字面量**抹掉，因此"是否代码行"用代码视图判断、
+    // "路径字面量"必须从**原始行**取（否则 `GET("/")` 会变成 `GET(   )`）。
+    let code = code_lines(content, hash_comment_language("FunctionalRoutes.java"));
+    let raw_lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<(u32, String, String)> = Vec::new();
+    for (idx, line) in code.iter().enumerate() {
+        let t = line.trim();
+        if is_import_or_package_line(t) {
+            continue;
+        }
+        let raw_line = raw_lines.get(idx).copied().unwrap_or("").trim();
+        if raw_line.is_empty() {
+            continue;
+        }
+        for (marker, method) in [
+            ("GET(", "GET"),
+            ("POST(", "POST"),
+            ("PUT(", "PUT"),
+            ("DELETE(", "DELETE"),
+            ("PATCH(", "PATCH"),
+        ] {
+            if !t.contains(marker) {
+                continue;
+            }
+            let mut rest = raw_line;
+            while let Some(pos) = rest.find(marker) {
+                let after = &rest[pos + marker.len()..];
+                let window = &after[..after.len().min(80)];
+                if let Some(p) = url_patterns_in(window).into_iter().next() {
+                    if !out
+                        .iter()
+                        .any(|(l, m, path)| *l == (idx + 1) as u32 && m == method && *path == p)
+                    {
+                        out.push(((idx + 1) as u32, method.to_string(), p));
+                    }
+                }
+                rest = after;
+            }
+        }
+    }
+    out
+}
+
 /// Sa-Token 的检查调用 → 子句词汇（与其它栈统一）；取不到即 `unspecified`（不猜）。
 fn sa_token_clause(window: &str) -> String {
     const MAP: [(&str, &str); 3] = [
