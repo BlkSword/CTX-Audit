@@ -932,6 +932,39 @@ pub(crate) fn xml_attr(line: &str, attr: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// 行内是否出现该 XML **元素**（忽略任意命名空间前缀）：`<filter-chain`、`<sec:filter-chain`、
+/// `<security:filter-chain` 都算；闭合标签（`</sec:filter-chain>`）不算。
+///
+/// 之所以不做字面前缀匹配：命名空间前缀是**任意取名**的（`sec:`/`security:`/自定义），
+/// 只认某一种拼写会让另一种写法被静默漏读 —— 那会读成"没有配置保护"。
+fn line_has_xml_element(line: &str, name: &str) -> bool {
+    let mut from = 0usize;
+    while let Some(pos) = line[from..].find(name) {
+        let abs = from + pos;
+        let after = line[abs + name.len()..].chars().next();
+        let after_ok = matches!(
+            after,
+            None | Some(' ') | Some('\t') | Some('/') | Some('>') | Some('\r') | Some('\n')
+        );
+        let before_ok = match line[..abs].chars().next_back() {
+            Some('<') => true,
+            Some(':') => line[..abs - 1].rfind('<').is_some_and(|lt| {
+                let prefix = &line[lt + 1..abs - 1];
+                !prefix.is_empty()
+                    && prefix
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            }),
+            _ => false,
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+        from = abs + name.len();
+    }
+    false
+}
+
 /// Ant 的 `*` 后缀按**前缀**处理（如 `/login.jsp*` 应命中 `/login.jsp` 及其后），
 /// 与既有前缀语义（`/x/*`）保持一致，避免被当成字面量而不匹配。
 pub(crate) fn normalize_ant_pattern(pattern: &str) -> String {
@@ -962,7 +995,8 @@ pub(crate) fn xml_access_clause(access: &str) -> String {
     "unspecified".to_string()
 }
 
-/// Spring Security 的 **XML 命名空间配置**：`<http>` 与其下的 `<intercept-url>`。
+/// Spring Security 的 **XML 命名空间配置**：`<http>` 与其下的 `<intercept-url>`，
+/// 以及旧式 `FilterChainProxy` 的 `<filter-chain>`（命名空间前缀任意）。
 ///
 /// 与注解/Java DSL 侧**同语义**：`<http pattern="...">` 是链的适用范围（无 pattern 即全路径），
 /// `<intercept-url pattern="..." access="..."/>` 是链内规则（顺序即生效顺序）；
@@ -975,6 +1009,7 @@ pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> 
             continue;
         }
         let looks_supported = content.contains("<intercept-url")
+            || line_has_xml_element(content, "filter-chain")
             || content.contains("springframework.org/schema/security");
         if !looks_supported {
             continue;
@@ -1010,6 +1045,41 @@ pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> 
             }
             if t.starts_with("</http>") || t.starts_with("</security:http>") {
                 current = None;
+                continue;
+            }
+            // 旧式 FilterChainProxy 的 <filter-chain>：filters=none → 公开；其它 → 无法推断 → unspecified
+            if line_has_xml_element(t, "filter-chain") {
+                let Some(p) = xml_attr(t, "pattern") else {
+                    continue;
+                };
+                let filters = xml_attr(t, "filters").unwrap_or_default();
+                let clause = if filters == "none" {
+                    "permitAll"
+                } else if filters.is_empty() {
+                    continue;
+                } else {
+                    "unspecified"
+                };
+                if current.is_none() {
+                    decl_index += 1;
+                    chains.push(SecurityChain {
+                        order: None,
+                        matcher: None,
+                        decl_index,
+                        file: path.clone(),
+                        line: (idx + 1) as u32,
+                        rules: Vec::new(),
+                    });
+                    current = Some(chains.len() - 1);
+                }
+                let ci = current.unwrap();
+                chains[ci].rules.push(SecurityRule {
+                    pattern: normalize_ant_pattern(&p),
+                    clause: clause.to_string(),
+                    kind: "spring_xml".to_string(),
+                    file: path.clone(),
+                    line: (idx + 1) as u32,
+                });
                 continue;
             }
             let Some(ci) = current else { continue };

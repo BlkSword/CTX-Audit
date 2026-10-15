@@ -1637,3 +1637,97 @@ use super::super::*;
         assert_eq!(r["unmodeled_framework"], "jax-rs", "{d}");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// 旧式 `FilterChainProxy` 的 `<filter-chain pattern="..." filters="..."/>`：
+    /// `filters="none"` 表示该路径**不经过安全过滤器链**（等价"公开"）；
+    /// 其它取值是 bean 名列表，**无法从名字推断子句** ⇒ 记 `unspecified`（不猜）。
+    /// 旧式配置通常没有 `<http>`，因此用一条覆盖全部路径的链承载这些规则。
+    #[test]
+    fn test_legacy_filter_chain_is_modelled() {
+        let files = vec![(
+            "web/WEB-INF/applicationContext-security.xml".to_string(),
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<b:beans xmlns=\"http://www.springframework.org/schema/security\"\n",
+                "         xmlns:b=\"http://www.springframework.org/schema/beans\">\n",
+                "  <b:bean id=\"filterChainProxy\" class=\"org.springframework.security.web.FilterChainProxy\">\n",
+                "    <b:property name=\"filterChainMap\">\n",
+                "      <b:list>\n",
+                "        <filter-chain pattern=\"/public/**\" filters=\"none\"/>\n",
+                "        <filter-chain pattern=\"/**\" filters=\"springSecurityFilterChain\"/>\n",
+                "      </b:list>\n",
+                "    </b:property>\n",
+                "  </b:bean>\n",
+                "</b:beans>\n",
+            )
+            .to_string(),
+        )];
+        let chains = spring_xml_security_chains(&files);
+        assert_eq!(chains.len(), 1, "{chains:?}");
+        let public_rule = chains[0]
+            .rules
+            .iter()
+            .find(|r| r.pattern == "/public/**")
+            .expect("应有 /public/** 规则");
+        assert_eq!(public_rule.clause, "permitAll", "filters=none 应等价公开");
+        let rest = chains[0]
+            .rules
+            .iter()
+            .find(|r| r.pattern == "/**")
+            .expect("应有兜底规则");
+        assert_eq!(rest.clause, "unspecified", "bean 名列表无法推断子句，不得猜");
+    }
+
+    /// 元素识别必须**忽略命名空间前缀**：命名空间前缀是任意取名的，只认一种拼写会让另一种写法被
+    /// 静默漏读 ⇒ 端点会被报成 `no_global_config_found`（读成"没有配置保护"）。
+    /// 反向要求同样重要：形近名字（`<filter-chains`）与闭合标签（`</sec:filter-chain>`）不得被当成规则。
+    #[test]
+    fn test_filter_chain_element_is_prefix_agnostic() {
+        let prefixed = vec![(
+            "web/WEB-INF/applicationContext-security.xml".to_string(),
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<beans xmlns=\"http://www.springframework.org/schema/beans\"\n",
+                "       xmlns:sec=\"http://www.springframework.org/schema/security\">\n",
+                "  <bean id=\"filterChainProxy\" class=\"org.springframework.security.web.FilterChainProxy\">\n",
+                "    <property name=\"filterChainMap\">\n",
+                "      <sec:filter-chain-map path-type=\"ant\">\n",
+                "        <sec:filter-chain pattern=\"/api/public\" filters=\"none\"/>\n",
+                "        <sec:filter-chain pattern=\"/**\" filters=\"springSecurityFilterChain\"/>\n",
+                "      </sec:filter-chain-map>\n",
+                "    </property>\n",
+                "  </bean>\n",
+                "</beans>\n",
+            )
+            .to_string(),
+        )];
+        let chains = spring_xml_security_chains(&prefixed);
+        assert_eq!(chains.len(), 1, "sec: 前缀写法必须被识别: {chains:?}");
+        assert_eq!(chains[0].rules.len(), 2, "{chains:?}");
+        let public_rule = chains[0]
+            .rules
+            .iter()
+            .find(|r| r.pattern == "/api/public")
+            .expect("应有 /api/public 规则");
+        assert_eq!(public_rule.clause, "permitAll", "filters=none 应等价公开");
+        let rest = chains[0]
+            .rules
+            .iter()
+            .find(|r| r.pattern == "/**")
+            .expect("应有兜底规则");
+        assert_eq!(rest.clause, "unspecified", "bean 名列表无法推断子句，不得猜");
+
+        // 形近名 / 闭合标签：不得凭空造出链或规则
+        let lookalike = vec![(
+            "web/WEB-INF/applicationContext-security.xml".to_string(),
+            concat!(
+                "<beans xmlns:sec=\"http://www.springframework.org/schema/security\">\n",
+                "  <sec:filter-chains pattern=\"/**\" filters=\"none\"/>\n",
+                "  </sec:filter-chain>\n",
+                "</beans>\n",
+            )
+            .to_string(),
+        )];
+        let none = spring_xml_security_chains(&lookalike);
+        assert!(none.is_empty(), "形近名与闭合标签不得成为规则: {none:?}");
+    }
