@@ -567,7 +567,7 @@ pub(crate) fn annotate_container_filters(routes: &mut [Value], filters: &[Contai
 }
 
 /// 类级授权注解：`@PreAuthorize` 等打在**类**上时对整批方法生效。
-pub(crate) const AUTH_ANNOTATION_MARKERS: [&str; 11] = [
+pub(crate) const AUTH_ANNOTATION_MARKERS: [&str; 15] = [
     // Spring Security 方法/类级授权
     "@PreAuthorize",
     "@PostAuthorize",
@@ -581,6 +581,11 @@ pub(crate) const AUTH_ANNOTATION_MARKERS: [&str; 11] = [
     "@RequiresAuthentication",
     "@RequiresUser",
     "@RequiresGuest",
+    // Sa-Token 注解式鉴权
+    "@SaCheckLogin",
+    "@SaCheckRole",
+    "@SaCheckPermission",
+    "@SaCheckSafe",
 ];
 
 /// 取**类声明正上方**那段连续注解行里的授权注解。
@@ -1024,6 +1029,94 @@ pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> 
             });
         }
     }
+    chains
+}
+
+/// Sa-Token 的检查调用 → 子句词汇（与其它栈统一）；取不到即 `unspecified`（不猜）。
+fn sa_token_clause(window: &str) -> String {
+    const MAP: [(&str, &str); 3] = [
+        ("checkLogin", "authenticated"),
+        ("checkRole", "hasRole"),
+        ("checkPermission", "hasAuthority"),
+    ];
+    MAP.iter()
+        .filter_map(|(k, v)| window.find(*k).map(|p| (p, *v)))
+        .min_by_key(|(p, _)| *p)
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_else(|| "unspecified".to_string())
+}
+
+/// Sa-Token 链：`SaInterceptor` 注册处为链，`SaRouter.match(pattern, () -> { StpUtil.checkXxx(); })`
+/// 为链内规则。
+///
+/// 与其它栈**同语义**：pattern 用 Spring 通配（`/admin/**`），链内首个匹配的规则生效；
+/// `checkLogin→authenticated`、`checkRole→hasRole`、`checkPermission→hasAuthority`，
+/// 其余 check 一律 `unspecified`。拦截器上的 `addPathPatterns` 作为链的适用范围。
+/// `SaRouter.notMatch(...)` 的排除语义**未建模**（实测靶未出现，不猜）。
+pub(crate) fn sa_token_security_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
+    let mut chains: Vec<SecurityChain> = Vec::new();
+    let mut decl_index = 0usize;
+    for (path, content) in project_files.iter().take(MAX_FILES) {
+        let has_rule = content.lines().any(|l| {
+            let t = l.trim();
+            !is_import_or_package_line(t) && t.contains("SaRouter.match(")
+        });
+        if !has_rule {
+            continue;
+        }
+        let lines: Vec<&str> = content.lines().collect();
+        let code = code_lines(content, hash_comment_language(path));
+        let start = code
+            .iter()
+            .position(|l| l.contains("SaInterceptor") && !is_import_or_package_line(l.trim()))
+            .or_else(|| code.iter().position(|l| l.contains("SaRouter.match(")));
+        let Some(start) = start else { continue };
+        decl_index += 1;
+        let matcher = code
+            .iter()
+            .skip(start)
+            .take(8)
+            .find(|l| l.contains("addPathPatterns"))
+            .and_then(|l| url_patterns_in(l).into_iter().next())
+            .map(|p| normalize_ant_pattern(&p));
+        let mut rules: Vec<SecurityRule> = Vec::new();
+        for (idx, code_line) in code.iter().enumerate() {
+            if idx < start || !code_line.contains("SaRouter.match(") {
+                continue;
+            }
+            let raw = lines.get(idx).copied().unwrap_or("");
+            let mut patterns = url_patterns_in(raw);
+            if patterns.is_empty() {
+                patterns.push("<dynamic>".to_string());
+            }
+            let window: String = lines
+                .iter()
+                .skip(idx)
+                .take(5)
+                .cloned()
+                .collect::<Vec<&str>>()
+                .join(" ");
+            let clause = sa_token_clause(&window);
+            for p in patterns {
+                rules.push(SecurityRule {
+                    pattern: normalize_ant_pattern(&p),
+                    clause: clause.clone(),
+                    kind: "sa-token".to_string(),
+                    file: path.clone(),
+                    line: (idx + 1) as u32,
+                });
+            }
+        }
+        chains.push(SecurityChain {
+            order: None,
+            matcher,
+            decl_index,
+            file: path.clone(),
+            line: (start + 1) as u32,
+            rules,
+        });
+    }
+    chains.sort_by_key(|c| (c.order.unwrap_or(i64::MAX), c.decl_index));
     chains
 }
 

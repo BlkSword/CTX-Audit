@@ -1710,6 +1710,7 @@ impl Tool for CodeIntelTool {
                 let mut all_chains = security_config_chains(evidence_files);
                     all_chains.extend(reactive_security_chains(evidence_files));
                     all_chains.extend(spring_xml_security_chains(evidence_files));
+all_chains.extend(sa_token_security_chains(evidence_files));
                 // 跨文件证据面必须在 `files` 被"按需单文件"遮蔽**之前**预取：
                 // 否则只会扫描被请求的那个文件（实测：容器过滤器与拦截器注册因此整批漏掉）
                 let container_filters = container_filter_registrations(evidence_files);

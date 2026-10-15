@@ -1251,3 +1251,73 @@ use super::super::*;
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+
+    /// Sa-Token 应被**建模**：`SaRouter.match("/admin/**")` 内的 `checkLogin/checkRole` 成为规则，
+    /// 并给出来源；`@SaCheckLogin` 作为方法级授权证据。
+    #[tokio::test]
+    async fn test_sa_token_rules_are_modelled() {
+        let root = std::env::temp_dir().join("ctx-audit-satoken");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/SaTokenConfigure.java"),
+            concat!(
+                "package app;\n",
+                "import cn.dev33.satoken.interceptor.SaInterceptor;\n",
+                "public class SaTokenConfigure implements WebMvcConfigurer {\n",
+                "    public void addInterceptors(InterceptorRegistry registry) {\n",
+                "        registry.addInterceptor(new SaInterceptor(handle -> {\n",
+                "            SaRouter.match(\"/admin/**\", () -> {\n",
+                "                StpUtil.checkLogin();\n",
+                "                StpUtil.checkRole(\"admin\");\n",
+                "            });\n",
+                "        })).addPathPatterns(\"/**\");\n",
+                "    }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/AdminController.java"),
+            concat!(
+                "package app;\n",
+                "import org.springframework.web.bind.annotation.*;\n",
+                "@RestController\n",
+                "public class AdminController {\n",
+                "    @GetMapping(\"/admin/list\")\n",
+                "    public String list() { return \"ok\"; }\n",
+                "    @SaCheckLogin\n",
+                "    @GetMapping(\"/share/info\")\n",
+                "    public String share() { return \"ok\"; }\n",
+                "    @GetMapping(\"/public/hello\")\n",
+                "    public String hello() { return \"ok\"; }\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::FrameworkContext);
+        let out = tool
+            .execute(json!({"file": "src/AdminController.java"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        let routes = d["data"]["routes"].as_array().expect("routes 应为数组");
+        let admin = routes.iter().find(|r| r["route"] == "/admin/list").expect("/admin/list");
+        assert_eq!(admin["global_coverage"], "covered_by_global_config", "{d}");
+        assert_eq!(admin["global_match"]["clause"], "authenticated", "{d}");
+        assert!(
+            admin["global_match"]["file"].as_str().unwrap_or("").contains("SaTokenConfigure.java"),
+            "应给出来自 Sa-Token 配置的出处: {d}"
+        );
+        let share = routes.iter().find(|r| r["route"] == "/share/info").expect("/share/info");
+        assert_eq!(share["auth_effect"], "method_level", "`@SaCheckLogin` 应计入方法级授权: {d}");
+        let public = routes.iter().find(|r| r["route"] == "/public/hello").expect("/public/hello");
+        assert_eq!(
+            public["global_coverage"], "no_global_match_found",
+            "有配置但无匹配规则时应如实说'未匹配': {d}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
