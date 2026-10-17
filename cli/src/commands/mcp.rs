@@ -4029,6 +4029,23 @@ fn evidence_step_params(
     let file = finding_file.unwrap_or("");
     let line = finding_line.unwrap_or(1);
     match tool {
+        // 现代高阶工具（证据包已迁移到默认工具面的名字）：按各自的真实入参预填。
+        // 不预填就会落到下面的通配分支、给出 `file_path` 之类**该工具不认的键**，
+        // 把"建议调用"变成必然失败的调用。
+        "get_framework_context" => serde_json::json!({"file": file}),
+        "slice_backward" => serde_json::json!({"file": file, "line": line}),
+        "get_sanitizer_guards" => serde_json::json!({"file": file, "line": line}),
+        "get_call_hierarchy" => serde_json::json!({
+            "function": "<sink 所在函数名，可先用 slice_backward 的 function 字段确认>",
+            "direction": "callers"
+        }),
+        "get_symbol_references" | "get_symbol_definition" => {
+            serde_json::json!({"symbol": "<待检索的符号名>"})
+        }
+        "get_project_index" => serde_json::json!({}),
+        "list_files" => serde_json::json!({"path": "."}),
+        "read_file" => serde_json::json!({"file_path": file}),
+        // 遗留细粒度工具：保留旧映射，兼容用户自带的旧证据包
         "get_code_context" => serde_json::json!({"file_path": file, "line": line}),
         "search_code" => serde_json::json!({
             "project_path": project_path,
@@ -4683,6 +4700,28 @@ async fn handle_request_with_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 证据包的建议调用必须预填**该工具真正接受的键**：现代高阶工具用 `file`/`line`/`symbol`。
+    /// 落到通配分支会给出 `file_path` 这类不被接受的键，把"建议调用"变成必然失败的调用。
+    #[test]
+    fn evidence_step_params_use_keys_the_tools_accept() {
+        let p = |tool: &str| evidence_step_params(tool, "/proj", Some("src/A.java"), Some(7));
+        let fw = p("get_framework_context");
+        assert_eq!(fw["file"], "src/A.java");
+        assert!(fw.get("file_path").is_none(), "{fw}");
+        let sb = p("slice_backward");
+        assert_eq!(sb["file"], "src/A.java");
+        assert_eq!(sb["line"], 7);
+        let ch = p("get_call_hierarchy");
+        assert!(ch.get("function").is_some(), "{ch}");
+        assert_eq!(ch["direction"], "callers");
+        assert!(p("get_symbol_references").get("symbol").is_some());
+        assert_eq!(p("read_file")["file_path"], "src/A.java");
+        // 遗留名字保留既有映射：用户自带的旧证据包不被破坏
+        let old = p("get_code_context");
+        assert_eq!(old["file_path"], "src/A.java");
+        assert_eq!(old["line"], 7);
+    }
 
     /// 构造带两个分组的测试会话
     fn sample_session() -> SessionContext {

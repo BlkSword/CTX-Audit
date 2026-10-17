@@ -49,7 +49,7 @@ weakly to the first, and does not own the last.
 | Path | How | Reality check |
 |---|---|---|
 | Rule / taint scan | `ctx-audit scan <PATH> --deep --min-severity low -o json` | Low recall on C: a scan hit is a bonus, not an expectation |
-| From the attack surface | `get_framework_context(file)` for routes, then `get_call_hierarchy(f, direction: "callees")` | Mostly applies to framework languages, rarely to C |
+| From the attack surface | `get_framework_context(file)` for routes **and the authorization-coverage verdict of each route** (CSRF, container filters and interceptors come with it — see §3.4), then `get_call_hierarchy(f, direction: "callees")` | Only meaningful on **modelled web framework stacks**; on other languages it returns routes with the authorization fields empty, and you may **not** read that as "no authorization" (see the boundary at the end of §3.4) |
 | From a sink upward | `get_symbol_references("<dangerous API>")` then `get_call_hierarchy(f, direction: "callers")` | Works, but noisy in large C code bases |
 | From data flow / dispatch | `get_dataflow_path(source, sink)`; `dispatch_candidates` (see §3) for unresolved indirect calls | The dispatch candidate set is the engine's only mechanical help for indirect calls |
 | Outside the engine | Your own hypothesis, a fuzzer, an advisory or a fix diff | Today this is the most productive path — say so in your report instead of pretending the engine found it |
@@ -62,7 +62,7 @@ get_sanitizer_guards   {file, line}              → checks/branches on the path
 get_call_hierarchy     {function, direction}     → callers/callees, unresolved_edges, candidates
 get_symbol_definition  {symbol} / get_symbol_references {symbol}   → where it lives / who uses it
 get_dataflow_path      {source, sink}            → source→sink path (needs a rule-backed label)
-get_framework_context  {file, handler}           → middleware / interceptor order
+get_framework_context  {file}                    → routes + coverage verdict / CSRF / container filters / interceptors (§3.4)
 read_file              {file_path, start_line, end_line}  → fill whatever the window missed
 ```
 
@@ -107,6 +107,9 @@ Every tool returns the same shape: `{ "data": {...}, "provenance": [...], "uncer
 | `dispatch_candidates` | call hierarchy, slice | **Signature-matched candidate targets** for an unresolved dispatch site. Heuristic by construction: `heuristic: true`, per-candidate `reason`/`score`, call sites, and the scanned signature space. Never a resolution result — corroborate before you rely on it |
 | `function_summaries` | call hierarchy | Lightweight per-function summary (parameter→return, parameter→sink) with field-level `available`/`reason`, a cap and `truncated_at_limit`. Scope is the single function body: absence of a flow is **not** proof of absence |
 | `severity_original` / `severity_downgraded_by` | scan findings | A higher-severity candidate was lowered, and why. Never read "downgraded" as "absent" |
+| `routes[].global_coverage` / `global_match` / `global_scope` | framework evidence | Whether the route is covered by an authorization chain, which rule won (with source), and what scope was declared when nothing matched — **the verdicts and how to read them are in §3.4** |
+| `routes[].coverage_caveat` | framework evidence | The engine's own statement that the verdict is incomplete; **non-null means do not treat that verdict as final** (values in §3.4) |
+| `routes[].csrf` / `auth_effect` / `container_filters` / `interceptors` | framework evidence | The other three protection surfaces (CSRF declaration, authorization placement, container filters, interceptors — §3.4) |
 
 ### 3.2 `provenance` and `uncertainty`
 
@@ -129,6 +132,58 @@ engine's own statement of what it could not resolve (`backward_prefix_not_datafl
    non-null `preprocess_note` means the preprocessor view degraded — do not draw strong conclusions there.
 6. `unresolved_edges` is 0 only when nothing is dispatched; non-zero means unresolved indirect calls exist.
 7. Check `severity_original` / `severity_downgraded_by` before filtering by severity.
+
+### 3.4 Reading framework evidence (authorization coverage and CSRF)
+
+This is the only tool that answers "**is this route covered by an authorization chain / protected against
+CSRF**". Each route entry looks like
+`{route, http_method, scope, global_coverage, global_match, global_scope, coverage_caveat, csrf, auth_effect, container_filters, interceptors}`.
+The verdicts have strict semantics — read them wrong and you will turn "I could not read it" into
+"there is no protection".
+
+**① `global_coverage`, six verdicts**
+
+| Verdict | Meaning | How to use it |
+|---|---|---|
+| `covered_by_global_config` | A rule inside a chain matches the route and its clause requires an identity or a permission | An authorization gate exists; **still read `global_match.clause`** (`unspecified` means the clause could not be read — not a strong conclusion) |
+| `permitted_by_global_config` | The matching rule is `permitAll` (explicitly public) | A **strong fact**: the route is explicitly declared public — not "nothing found" |
+| `no_global_match_found` | Configuration exists but no rule matches this route | **Read `global_scope`**: what was declared. The route may genuinely sit outside the declared scope |
+| `no_global_config_found` | No security configuration was read | States "nothing read", **not** "no protection" (the configuration may exist in another form elsewhere) |
+| `framework_not_modeled` | The stack is not modelled (signals are in the `unmodeled_*` fields) | The protection surface is **unknown**: neither "protected" nor "unprotected" |
+| `ambiguous_across_chains` | Chains without an order disagree | Evidence only; do not pick the optimistic chain |
+
+**② Three companion fields**
+
+- `global_match`: the winning rule `{pattern, clause, file, line}` plus the chain's `chain_order` / `chain_matcher` / `chain_file` / `chain_line`. **A conclusion must carry this source.**
+- `global_scope`: **only present when no rule matched**, `{rules:[{pattern, clause, kind, file, line}], total_hits, limit, truncated_at_limit}` — it answers "what was actually declared". With `truncated_at_limit: true` you may not claim "that is all".
+- `coverage_caveat`: the engine's own statement that the verdict is incomplete; **non-null means do not treat it as final**. Common values: `dynamic_matcher_unresolved` (a non-literal matcher exists), `security_starter_without_explicit_config` (a security dependency is declared but no readable configuration — the framework default may still apply), `unmodeled_protection_signal` (an unmodelled protection stack exists, with its source), `unmodeled_protection_present` (an unmodelled surface sits next to a modelled conclusion), `reactive_security_not_modeled`.
+
+**③ `csrf`: only declarations that were read**
+
+| Value | Meaning |
+|---|---|
+| `disabled` | The chain **explicitly disables** CSRF (with source) |
+| `ignoring_paths` | Only the listed paths are exempt; `ignored_patterns` lists them |
+| `disabled_for_this_path` | **This route** is explicitly exempt; `matched_ignored_pattern` names the pattern |
+| `declared` | Explicitly declared and left at the framework default |
+| `custom_repository` | A custom token repository is installed |
+| `null` | **No declaration was read** — this is neither "enabled" nor "disabled" |
+
+**④ Three parallel protection surfaces — do not collapse them**
+
+`auth_effect` (`method_level` / `class_level` / `none_visible`, method level overrides class level) is the
+**annotation** layer, together with `method_level_auth` / `class_level_auth` (the annotation lists and their
+counts) and `auth_scope`. `container_filters` and `interceptors` are two further surfaces that are **reported
+only, never folded into** the coverage verdict — whether a filter authorizes internally cannot be inferred
+from its registration. They are independent: `auth_effect=none_visible` does not mean "no protection", and
+`covered_by_global_config` does not mean "fine-grained authorization exists".
+
+**⑤ Language boundary (red line)**
+
+These verdicts hold only for **modelled web framework stacks**. On other languages or frameworks the tool
+returns routes and `http_method` with the authorization fields reading `auth_effect=none_visible` /
+`global_coverage=no_global_config_found` — that means "the engine has not modelled this stack", and it may
+**not** be written up as "this endpoint has no authorization". State "this stack is not modelled".
 
 ---
 
@@ -219,6 +274,9 @@ a look — the engine never removes a candidate silently, and neither should you
 | `list_files` | — | `path`, `pattern` |
 | `report_finding` | `title`, `description`, `severity`, `file_path`, `line_number` | — |
 | `finish_analysis` | `summary`, `findings_count` | — |
+
+The response fields and reading rules of `get_framework_context` are in **§3.4** (six coverage verdicts,
+`global_scope`, `coverage_caveat`, `csrf`, the three parallel protection surfaces, and the language boundary).
 
 **Legacy surface** (`ctx-audit mcp --legacy-tools` or `CTX_AUDIT_LEGACY_TOOLS=1`) keeps the old
 fine-grained names (`security_scan`, `query_callers`, `get_code_context`, `check_sanitizer`, …).

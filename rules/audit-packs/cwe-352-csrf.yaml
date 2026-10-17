@@ -10,26 +10,24 @@ vuln_types:
 cwe:
   - "CWE-352"
 evidence_steps:
-  - tool: get_code_context
-    purpose: "确认 CSRF 豁免形态：是显式 @csrf.exempt / csrf_exempt / skip_authorization 装饰器，还是全局 CSRF 中间件被移除/未启用。记录豁免范围（单端点 vs 整个蓝图/路由组）。"
-  - tool: search_code
-    purpose: "搜索 SESSION_COOKIE_SAMESITE / CSRF_COOKIE_SAMESITE / SameSite / csrf 配置项，确认框架是否配置了 SameSite 属性。未配置时现代浏览器默认 Lax（经典跨域 CSRF 不成立，但同站/同主机不同端口仍成立）。同时搜索 CSRFProtect / CsrfViewMiddleware / protect_from_forgery 确认 CSRF 中间件是否全局启用。"
-  - tool: query_middleware_chain
-    purpose: "检查受影响端点是否被全局认证中间件覆盖（before_request / app.use / MIDDLEWARE）。认证门存在不阻止 CSRF（会话 Cookie 仍自动携带），但确认端点确实需要认证才能访问——无认证端点的 CSRF 无意义。"
-  - tool: get_code_context
-    purpose: "检查受影响端点的 HTTP 方法和副作用：仅 GET 请求无副作用（安全）；POST/PUT/DELETE 且有写操作（创建/修改/删除数据）才构成 CSRF 攻击面。同时检查是否接受 attacker-controlled HTML/content（CSRF → 存储型 XSS 放大路径）。"
-  - tool: search_code
-    purpose: "搜索 Origin / Referer 头校验逻辑（request.headers.get('Origin') / check_referer / verify_origin），确认是否存在 CSRF token 之外的替代防护。若存在有效的 Origin/Referer 校验，CSRF 利用难度显著上升。"
+  - tool: get_framework_context
+    purpose: "先读端点自带的 CSRF 事实（`csrf`）：`disabled` = 该链显式关闭（带出处）；`ignoring_paths` = 只对被忽略的路径不校验（附 `ignored_patterns`）；`disabled_for_this_path` = 本端点被显式豁免（附命中的模式）；`declared` = 显式声明、按默认启用；`custom_repository` = 自定义 token 仓库。**`null` 表示未读到声明，不等于已启用，也不等于已关闭**。同时读 `global_coverage`/`global_match`/`coverage_caveat` 与 `auth_effect`：CSRF 只在「存在会话认证」的前提下才有意义，而 `coverage_caveat` 非空说明该判定不完整。"
+  - tool: slice_backward
+    purpose: "确认豁免形态与副作用：豁免是显式装饰器/过滤器配置，还是全局 CSRF 中间件被移除/未启用；豁免范围是单端点还是整个路由组。同时看 HTTP 方法与写操作——仅 GET 且无副作用不构成 CSRF 攻击面，POST/PUT/DELETE 且有创建/修改/删除才构成。再看是否接受 attacker-controlled HTML（CSRF → 存储型 XSS 放大路径）。"
+  - tool: read_file
+    purpose: "读框架配置文件确认两条全局事实：① CSRF 中间件是否全局启用（`CSRFProtect` / `CsrfViewMiddleware` / `protect_from_forgery` / 链上 `.csrf(...)`）；② SameSite 是否配置（`SESSION_COOKIE_SAMESITE` / `CSRF_COOKIE_SAMESITE` / `SameSite`）。未配置时现代浏览器默认 Lax：经典跨域表单 POST 不成立，但同站/同主机不同端口仍成立。用 `list_files` 先定位配置文件位置。"
+  - tool: get_symbol_references
+    purpose: "搜索 Origin / Referer 的替代校验逻辑（`Origin` / `Referer` / `verify_origin` / `check_referer`），确认是否存在 CSRF token 之外的防护。存在有效校验时利用难度显著上升。"
 tp_criteria:
-  - "端点显式豁免 CSRF 保护（装饰器/蓝图级豁免）或全局 CSRF 中间件未启用"
-  - "端点接受 POST/PUT/DELETE 请求且执行写操作（创建/修改/删除数据）"
-  - "端点需要认证（会话 Cookie 自动携带是 CSRF 前提）"
+  - "引擎给出 `csrf=disabled` 或 `csrf=disabled_for_this_path`（带出处），且端点接受 POST/PUT/DELETE 并执行写操作"
+  - "端点显式豁免 CSRF 保护（装饰器/过滤器/路由组级豁免）或全局 CSRF 中间件未启用"
+  - "端点需要认证且凭据是会话 Cookie（自动携带是 CSRF 前提）"
   - "无有效的 Origin/Referer 校验作为替代防护"
 fp_criteria:
   - "端点仅接受 GET 请求且无副作用"
   - "端点不需要认证（公开 API，无会话 Cookie 可被利用）"
   - "存在有效的 Origin/Referer 校验"
   - "API 使用 Authorization header（Bearer/API token）认证而非会话 Cookie——CSRF 前提不成立"
-  - "SESSION_COOKIE_SAMESITE 显式配置为 Strict（完全阻止跨站 Cookie 发送）"
+  - "`SESSION_COOKIE_SAMESITE` 显式配置为 Strict（完全阻止跨站 Cookie 发送）"
   - "finding 位于测试、构建脚本或 vendor 第三方库"
-confidence_guide: "显式豁免 + 写操作 + 会话认证 + 无 Origin 校验 + SameSite 未配置 → 0.9+；豁免存在但 SameSite=Lax 已配置或端点副作用有限 → 0.7-0.9；豁免存在但端点为只读或认证方式非 Cookie → <0.7，判 needs_review。同站/同主机部署场景（自托管工具典型形态）下 SameSite=Lax 不阻止攻击，置信度不应因此降至 0.7 以下。"
+confidence_guide: "显式豁免（`csrf=disabled`/`disabled_for_this_path`，带出处）+ 写操作 + 会话认证 + 无 Origin 校验 + SameSite 未配置 → 0.9+；豁免存在但 SameSite=Lax 已配置或端点副作用有限 → 0.7-0.9；豁免存在但端点为只读或认证方式非 Cookie → <0.7，判 needs_review。同站/同主机部署场景（自托管工具典型形态）下 SameSite=Lax 不阻止攻击，置信度不应因此降至 0.7 以下。**`csrf` 为 `null` 时不构成任何一侧的依据**：未读到声明既不证明已启用，也不证明已关闭；要下结论必须回到配置文件原文（第 3 步）。"

@@ -44,7 +44,7 @@
 | 路径 | 怎么做 | 现实约束 |
 |---|---|---|
 | 规则/污点扫描 | `ctx-audit scan <PATH> --deep --min-severity low -o json` | C 上召回低：命中算意外收获，不是预期 |
-| 从攻击面往下 | `get_framework_context(file)` 拿路由，再 `get_call_hierarchy(f, direction: "callees")` | 主要用于框架类语言，C 上基本不适用 |
+| 从攻击面往下 | `get_framework_context(file)` 拿路由**与该路由的鉴权覆盖判定**（CSRF、容器过滤器、拦截器一并给，读法见 §3.4），再 `get_call_hierarchy(f, direction: "callees")` | 只对**已建模的 Web 框架栈**有效；其余语言只给路由，鉴权字段为空——那时**不得**据此判"无鉴权"（§3.4 末条的边界） |
 | 从 sink 往上 | `get_symbol_references("<危险 API>")`，再 `get_call_hierarchy(f, direction: "callers")` | 可用，但大 C 代码库里噪声大 |
 | 从数据流/派发 | `get_dataflow_path(source, sink)`；未解析间接调用用 `dispatch_candidates`（见 §3） | 派发候选是引擎对"间接调用"唯一的机械化帮助 |
 | 引擎之外 | 你自己的假设、fuzzer、advisory、修复 diff | **今天是最高产的路径**——如实写在报告里，不要假装是引擎找到的 |
@@ -57,7 +57,7 @@ get_sanitizer_guards   {file, line}              → 路径上的校验/分支
 get_call_hierarchy     {function, direction}     → 上下游、unresolved_edges、派发候选
 get_symbol_definition  {symbol} / get_symbol_references {symbol}   → 定义在哪 / 谁在用
 get_dataflow_path      {source, sink}            → source→sink 路径（需要规则给的标签）
-get_framework_context  {file, handler}           → 中间件/拦截器顺序
+get_framework_context  {file, handler}           → 路由 + 覆盖判定/CSRF/容器过滤器/拦截器（§3.4）
 read_file              {file_path, start_line, end_line}  → 补窗口之外
 ```
 
@@ -98,6 +98,9 @@ read_file              {file_path, start_line, end_line}  → 补窗口之外
 | `dispatch_candidates` | 调用图、切片 | 未解析派发点的**按签名匹配的候选目标**。构造上就是启发式：`heuristic: true`、每条带 `reason`/`score`、含调用点与扫描的签名空间。**不是解析结果**，采用前必须交叉核实 |
 | `function_summaries` | 调用图 | 轻量函数摘要（参数→返回、参数→sink），带字段级 `available`/`reason`、上限与 `truncated_at_limit`。作用域仅函数体：**没有流不等于不存在流** |
 | `severity_original` / `severity_downgraded_by` | 扫描 finding | 曾有一条更高级别的候选被降下来，以及为什么。**不要把"被降级"读成"不存在"** |
+| `routes[].global_coverage` / `global_match` / `global_scope` | 框架证据 | 该路由是否被鉴权链覆盖、命中哪条规则（带出处）、无匹配时到底声明了哪些范围——**读法与六种判定见 §3.4** |
+| `routes[].coverage_caveat` | 框架证据 | 判定不完整的自述；**非空即不得把该判定当定论**（取值见 §3.4） |
+| `routes[].csrf` / `auth_effect` / `container_filters` / `interceptors` | 框架证据 | 另外三个保护面的事实（CSRF 声明、授权落点、容器过滤器、拦截器），口径见 §3.4 |
 
 ### 3.2 `provenance` 与 `uncertainty`
 
@@ -118,6 +121,54 @@ read_file              {file_path, start_line, end_line}  → 补窗口之外
    **不要**据此下强结论。
 6. `unresolved_edges` 只有在没有任何派发时才为 0；非 0 表示确实存在无法解析的间接调用。
 7. 按严重度过滤前，先看 `severity_original` / `severity_downgraded_by`。
+
+### 3.4 框架证据怎么读（`get_framework_context` 的覆盖判定与 CSRF）
+
+这是唯一能回答"**该路由是否被鉴权 / 是否受 CSRF 保护**"的工具。每个端点条目形如
+`{route, http_method, scope, global_coverage, global_match, global_scope, coverage_caveat, csrf, auth_effect, container_filters, interceptors}`。
+结论有严格口径，**不按口径读就会把"我没读到"读成"没有保护"**。
+
+**① 覆盖判定（`global_coverage`）六种取值**
+
+| 取值 | 含义 | 判定上怎么用 |
+|---|---|---|
+| `covered_by_global_config` | 有链内规则匹配该路由，且子句要求身份/权限 | 存在全局鉴权门；**仍必须看 `global_match.clause`**（`unspecified` 表示子句读不出，别当强结论） |
+| `permitted_by_global_config` | 命中的规则是 `permitAll`（显式公开） | 这是**强事实**（被显式声明为公开），不是"没查到" |
+| `no_global_match_found` | 有配置，但没有规则匹配到该路由 | **去看 `global_scope`**：声明了哪些范围。端点可能确实落在范围之外 |
+| `no_global_config_found` | 没读到任何安全配置 | 只陈述"未读到配置"，**不等于"没有保护"**（配置可能以别的形态存在于别处） |
+| `framework_not_modeled` | 该栈尚未建模（信号在 `unmodeled_*` 字段） | 保护面**未知**：既不得当"有保护"，也不得当"无保护" |
+| `ambiguous_across_chains` | 无序链之间结论矛盾 | 只作证据，不挑乐观的那条 |
+
+**② 三个配套字段**
+
+- `global_match`：胜出规则 `{pattern, clause, file, line}` + 命中链的 `chain_order`/`chain_matcher`/`chain_file`/`chain_line`。**引用结论必须带出处**。
+- `global_scope`：**仅当无规则匹配时**出现，`{rules:[{pattern, clause, kind, file, line}], total_hits, limit, truncated_at_limit}`——回答"那到底声明了什么范围"。`truncated_at_limit: true` 时不得断言"范围就这些"。
+- `coverage_caveat`：判定不完整的自述，**非空即不得当定论**。常见取值：`dynamic_matcher_unresolved`（存在非字面量匹配器）、`security_starter_without_explicit_config`（声明了安全依赖却无可读配置——默认配置仍可能存在）、`unmodeled_protection_signal`（存在未建模的保护栈，带出处）、`unmodeled_protection_present`（已建模结论旁边还有未建模保护面）、`reactive_security_not_modeled`。
+
+**③ `csrf`：只报读到的声明**
+
+| 取值 | 含义 |
+|---|---|
+| `disabled` | 该链**显式关闭** CSRF（带出处） |
+| `ignoring_paths` | 只对被忽略的路径不校验，附 `ignored_patterns` |
+| `disabled_for_this_path` | **本端点**被显式豁免，附命中的 `matched_ignored_pattern` |
+| `declared` | 显式声明、按默认启用（XML 的 `<csrf/>` 等） |
+| `custom_repository` | 装了自定义 token 仓库 |
+| `null` | **未读到声明**——不等于已启用，也不等于已关闭 |
+
+**④ 三个并列的保护面，不要混为一谈**
+
+`auth_effect`（`method_level` / `class_level` / `none_visible`，方法级覆盖类级）是**注解层**的授权事实，
+配套 `method_level_auth` / `class_level_auth`（各自可见的授权注解清单与数量）与 `auth_scope`；
+`container_filters` 与 `interceptors` 是另外两个保护面，**只陈述、不并入**覆盖判定——过滤器内部是否鉴权
+无法从注册信息推断。三者互相独立：`auth_effect=none_visible` 不代表没有保护，`covered_by_global_config`
+也不代表有细粒度授权。
+
+**⑤ 语言边界（红线）**
+
+以上判定只对**已建模的 Web 框架栈**成立。其它语言/框架下该工具只给路由与 `http_method`，鉴权字段是
+`auth_effect=none_visible` / `global_coverage=no_global_config_found` —— 那是"引擎还没建模这个栈"，
+**不得**据此写成"该端点无鉴权"。写报告时如实标注"该栈未建模"。
 
 ---
 
@@ -201,6 +252,8 @@ finding 是**候选**：`candidate: true`、`decision_required: true`。读 `det
 | `list_files` | — | `path`、`pattern` |
 | `report_finding` | `title`、`description`、`severity`、`file_path`、`line_number` | — |
 | `finish_analysis` | `summary`、`findings_count` | — |
+
+`get_framework_context` 的返回字段与判读口径见 **§3.4**（覆盖判定六种取值、`global_scope`、`coverage_caveat`、`csrf`、三个并列保护面、语言边界）。
 
 **遗留面**（`ctx-audit mcp --legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1`）保留旧细粒度工具名
 （`security_scan`、`query_callers`、`get_code_context`、`check_sanitizer` 等）。在默认面调用它们
