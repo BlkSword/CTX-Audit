@@ -75,6 +75,10 @@ const FETCH_MARKERS: &[&str] = &[
     "apclient",
     "fetch_object",
     "fetch_json",
+    // 异步联邦库形态：先"取文档并解析"的包装器再验签（已知答案矩阵里该形态的
+    // 抓取行正是包装器名，而非 requests/aiohttp 原语）
+    "retrieve_and_parse_document",
+    "fetch_document",
     "fetch_remote_object",
     "fetch_remote_actor",
     "fetch_remote_activity",
@@ -333,6 +337,27 @@ def refresh_caches(url):
     #[test]
     fn ignores_non_handler_fetch() {
         assert!(analyze_file("app/cache.py", NON_HANDLER).is_empty());
+    }
+
+    /// 异步联邦库形态：`verify` 内先调用"取文档并解析"的包装器、再 `crypto.verify`。
+    /// 已知答案矩阵里这类实例的抓取行是包装器名（不是 `requests.get` 之类的原语），
+    /// 若包装器名不在抓取标记里，整类会被漏报。
+    #[test]
+    fn detects_async_document_fetch_wrapper_before_verify() {
+        const SRC: &str = r#"
+async def retrieve_and_parse_document(url):
+    async with aiohttp.ClientSession() as session:
+        return await fetch_document(url)
+
+async def verify(request):
+    header = request.headers.get("Signature")
+    key_doc = await retrieve_and_parse_document(header["keyId"])
+    crypto.verify(key_doc, request)
+    return True
+"#;
+        let findings = analyze_file("federation/protocol.py", SRC);
+        assert_eq!(findings.len(), 1, "应命中 1 条时序违例: {findings:?}");
+        assert!(findings[0].description.contains("precedes signature verification"));
     }
 
     #[test]
