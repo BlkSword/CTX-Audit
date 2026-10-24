@@ -2018,7 +2018,11 @@ use super::super::*;
         assert_eq!(policy_file_role("README.md"), "documentation");
         assert_eq!(policy_file_role("src/test/java/app/SecurityConfigTest.java"), "test");
         assert_eq!(policy_file_role("examples/demo/SecurityConfig.java"), "example");
-        assert_eq!(policy_file_role("samples/x/SecurityConfig.java"), "example");
+        // 回归：`samples/` 是常见真实工程目录（不是"示例代码"）
+        assert_eq!(
+            policy_file_role("src/main/java/org/springframework/samples/petclinic/Owner.java"),
+            "production"
+        );
         // 回归：常见包名不是"示例目录"（`com.example.demo` 是生产代码的默认包名）
         assert_eq!(
             policy_file_role("src/main/java/com/example/demo/SecurityConfig.java"),
@@ -2130,5 +2134,192 @@ use super::super::*;
         assert_eq!(scan.routes[0]["route"], "/articles", "{:?}", scan.routes[0]);
         assert_eq!(scan.routes[0]["route_path_unresolved"], false);
         assert_eq!(scan.routes[0]["http_method"], "GET");
+    }
+
+
+    // ── B/A/C：函数式路由窗口、非 Java 语法扫描、模块图（R247 下一阶段）────────────
+
+    /// 函数式路由：多行 + `.or()` 嵌套都要取到（旧实现只看同一行）。
+    #[test]
+    fn test_functional_routes_multiline_window() {
+        let src = concat!(
+            "class R {\n",
+            "  RouterFunction<ServerResponse> r() {\n",
+            "    return RouterFunctions.route()\n",
+            "        .GET(\n",
+            "            \"/authors/{name}\",\n",
+            "            this::list)\n",
+            "        .or(GET(\"/authors/{name}/page/{page}\", this::page))\n",
+            "        .build();\n",
+            "  }\n",
+            "}\n",
+        );
+        let routes = functional_routes(src);
+        let got: Vec<(&str, &str)> = routes.iter().map(|(_, m, p)| (m.as_str(), p.as_str())).collect();
+        assert!(got.contains(&("GET", "/authors/{name}")), "{got:?}");
+        assert!(got.contains(&("GET", "/authors/{name}/page/{page}")), "{got:?}");
+    }
+
+    /// 非 Java：接收者感知的动词 + 组/mount 前缀 + 跨行字面量；HTTP 客户端调用不算路由。
+    #[test]
+    fn test_scan_non_java_express() {
+        let js = concat!(
+            "const router = express.Router();\n",
+            "router.get('/users', list);\n",
+            "router.post(\n",
+            "  '/users',\n",
+            "  create);\n",
+            "router.route('/users/:id').get(getUser).put(updateUser);\n",
+            "app.use('/api', router);\n",
+            "axios.get('/not-a-route');\n",
+            "app.get('/health', h);\n",
+        );
+        let rs = scan_non_java_routes("src/routes.js", js);
+        let got: Vec<(String, String)> = rs
+            .iter()
+            .map(|r| (
+                r["http_method"].as_str().unwrap_or("").to_string(),
+                r["route"].as_str().unwrap_or("").to_string(),
+            ))
+            .collect();
+        // 挂载在 /api 下的 router 路由带前缀
+        assert!(got.contains(&("GET".into(), "/api/users".into())), "{got:?}");
+        assert!(got.contains(&("POST".into(), "/api/users".into())), "{got:?}");
+        assert!(got.iter().any(|(m, p)| m == "GET" && p.contains("/users/:id")), "{got:?}");
+        assert!(got.contains(&("GET".into(), "/health".into())), "{got:?}");
+        assert!(!got.iter().any(|(_, p)| p.contains("not-a-route")), "axios 调用不得算路由: {got:?}");
+    }
+
+    #[test]
+    fn test_scan_non_java_gin_group() {
+        let go = concat!(
+            "func main() {\n",
+            "  r := gin.Default()\n",
+            "  api := r.Group(\"/api\")\n",
+            "  api.GET(\"/users\", list)\n",
+            "  api.POST(\"/users\", create)\n",
+            "  r.GET(\"/health\", health)\n",
+            "}\n",
+        );
+        let rs = scan_non_java_routes("main.go", go);
+        let got: Vec<(String, String)> = rs
+            .iter()
+            .map(|r| (
+                r["http_method"].as_str().unwrap_or("").to_string(),
+                r["route"].as_str().unwrap_or("").to_string(),
+            ))
+            .collect();
+        assert!(got.contains(&("GET".into(), "/api/users".into())), "{got:?}");
+        assert!(got.contains(&("POST".into(), "/api/users".into())), "{got:?}");
+        assert!(got.contains(&("GET".into(), "/health".into())), "{got:?}");
+    }
+
+    #[test]
+    fn test_scan_non_java_flask_blueprint() {
+        let py = concat!(
+            "from flask import Blueprint\n",
+            "bp = Blueprint('bp', __name__)\n",
+            "\n",
+            "@bp.route('/users', methods=['GET', 'POST'])\n",
+            "def users():\n",
+            "    return '[]'\n",
+            "\n",
+            "@app.get('/health')\n",
+            "def health():\n",
+            "    return 'ok'\n",
+        );
+        let rs = scan_non_java_routes("app/api.py", py);
+        let got: Vec<(String, String)> = rs
+            .iter()
+            .map(|r| (
+                r["http_method"].as_str().unwrap_or("").to_string(),
+                r["route"].as_str().unwrap_or("").to_string(),
+            ))
+            .collect();
+        assert!(got.contains(&("GET".into(), "/users".into())), "{got:?}");
+        assert!(got.contains(&("POST".into(), "/users".into())), "{got:?}");
+        assert!(got.contains(&("GET".into(), "/health".into())), "{got:?}");
+    }
+
+    /// 模块图：链只在"同模块或其依赖方"上生效；根目录配置视为全局。
+    #[test]
+    fn test_module_graph_affinity() {
+        let pom = |artifact: &str, deps: &[&str]| {
+            let mut s = format!("<project><artifactId>{artifact}</artifactId>");
+            for d in deps {
+                s.push_str(&format!("<dependency><artifactId>{d}</artifactId></dependency>"));
+            }
+            s.push_str("</project>");
+            s
+        };
+        let files = vec![
+            ("pom.xml".to_string(), pom("root", &[])),
+            ("security/pom.xml".to_string(), pom("sec", &[])),
+            ("app/pom.xml".to_string(), pom("app", &["sec"])),
+            ("other/pom.xml".to_string(), pom("other", &[])),
+        ];
+        let g = ModuleGraph::from_files(&files);
+        assert!(!g.is_empty());
+        // app 依赖 sec ⇒ sec 的链作用于 app
+        assert!(g.chain_applies("security/src/SecConfig.java", "app/src/Ctl.java"));
+        // other 不依赖 sec ⇒ 不作用
+        assert!(!g.chain_applies("security/src/SecConfig.java", "other/src/Ctl.java"));
+        // 同模块
+        assert!(g.chain_applies("app/src/Sec.java", "app/src/Ctl.java"));
+        // 根目录配置视为全局
+        assert!(g.chain_applies("src/Sec.java", "other/src/Ctl.java"));
+
+        let chain = |file: &str| SecurityChain {
+            order: None,
+            matcher: None,
+            decl_index: 0,
+            file: file.to_string(),
+            line: 1,
+            rules: Vec::new(),
+            csrf: None,
+        };
+        let chains = vec![chain("security/src/SecConfig.java"), chain("other/src/Sec.java")];
+        let (scoped, label) = g.scoped_chains(&chains, "app/src/Ctl.java");
+        assert_eq!(label, "module_affinity");
+        assert_eq!(scoped.len(), 1);
+        assert!(scoped[0].file.contains("security/"));
+    }
+
+
+    /// 回归：Cypress 的 `cy.get(...)` 与含插值的模板字符串都不是可静态确定的路由。
+    #[test]
+    fn test_scan_non_java_ignores_cypress_and_templated_paths() {
+        let ts = concat!(
+            "cy.get('/api/users');\n",
+            "const p = `/api/${id}`;\n",
+            "router.get('/real', h);\n",
+        );
+        let rs = scan_non_java_routes("src/test/javascript/support.ts", ts);
+        let paths: Vec<String> = rs.iter().map(|r| r["route"].as_str().unwrap_or("").to_string()).collect();
+        assert_eq!(paths, vec!["/real".to_string()], "{paths:?}");
+    }
+
+    /// 回归：非路由装饰器（`@register.filter()` 等）不得被当成路由。
+    #[test]
+    fn test_scan_non_java_python_non_route_decorators() {
+        let py = concat!(
+            "@register.filter()\n",
+            "def escapejs(value):\n",
+            "    return value\n",
+            "\n",
+            "@register.tag()\n",
+            "def do_filter(parser, token):\n",
+            "    return None\n",
+            "\n",
+            "@app.route('/real')\n",
+            "def real():\n",
+            "    return 'ok'\n",
+        );
+        let rs = scan_non_java_routes("django/template/defaultfilters.py", py);
+        let got: Vec<String> = rs
+            .iter()
+            .map(|r| r["route"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(got, vec!["/real".to_string()], "{got:?}");
     }
 

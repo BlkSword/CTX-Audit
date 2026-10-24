@@ -1297,53 +1297,8 @@ pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> 
 /// 仅在文件确实引用了 WebFlux 函数式类型时才启用——否则普通 `GET("...")` 会被误当端点。
 /// 返回 (行号, HTTP 方法, 路径)。路径本身即完整路径，不参与类级前缀拼接。
 pub(crate) fn functional_routes(content: &str) -> Vec<(u32, String, String)> {
-    let looks_functional = content.contains("RouterFunction")
-        || content.contains("RouterFunctions")
-        || content.contains("ServerResponse");
-    if !looks_functional {
-        return Vec::new();
-    }
-    // 代码视图会把**字符串字面量**抹掉，因此"是否代码行"用代码视图判断、
-    // "路径字面量"必须从**原始行**取（否则 `GET("/")` 会变成 `GET(   )`）。
-    let code = code_lines(content, hash_comment_language("FunctionalRoutes.java"));
-    let raw_lines: Vec<&str> = content.lines().collect();
-    let mut out: Vec<(u32, String, String)> = Vec::new();
-    for (idx, line) in code.iter().enumerate() {
-        let t = line.trim();
-        if is_import_or_package_line(t) {
-            continue;
-        }
-        let raw_line = raw_lines.get(idx).copied().unwrap_or("").trim();
-        if raw_line.is_empty() {
-            continue;
-        }
-        for (marker, method) in [
-            ("GET(", "GET"),
-            ("POST(", "POST"),
-            ("PUT(", "PUT"),
-            ("DELETE(", "DELETE"),
-            ("PATCH(", "PATCH"),
-        ] {
-            if !t.contains(marker) {
-                continue;
-            }
-            let mut rest = raw_line;
-            while let Some(pos) = rest.find(marker) {
-                let after = &rest[pos + marker.len()..];
-                let window = &after[..after.len().min(80)];
-                if let Some(p) = url_patterns_in(window).into_iter().next() {
-                    if !out
-                        .iter()
-                        .any(|(l, m, path)| *l == (idx + 1) as u32 && m == method && *path == p)
-                    {
-                        out.push(((idx + 1) as u32, method.to_string(), p));
-                    }
-                }
-                rest = after;
-            }
-        }
-    }
-    out
+    // 窗口法实现（跨行 / .or() 嵌套）：见 `routes_syntax::functional_routes_window`
+    functional_routes_window(content)
 }
 
 /// Sa-Token 的检查调用 → 子句词汇（与其它栈统一）；取不到即 `unspecified`（不猜）。
@@ -1993,17 +1948,14 @@ pub(crate) fn policy_file_role(path: &str) -> &'static str {
     ) {
         return "documentation";
     }
-    // 只收**目录形态**明确表示示例/文档的标记：`/demo/`、`/example/`、`/sample/` 太宽
-    // （常见包名就是 `com.example.demo`、`demo`），会把生产代码误降级成示例。
+    // 只收**目录形态**明确表示示例/文档的标记。`/demo/`、`/example/`、`/samples/` 都太宽：
+    // 常见包名是 `com.example.demo`，而真实工程目录也常叫 `samples/`（会把生产代码误降级）。
     for marker in [
         "/docs/",
         "/doc/",
         "/documentation/",
         "/examples/",
-        "/samples/",
-        "/sample-data/",
         "/testdata/",
-        "/fixtures-examples/",
     ] {
         if padded.contains(marker) {
             return "example";
@@ -2192,6 +2144,11 @@ pub(crate) fn scan_routes_in_file(
     let (pp_states, pp_note) = preproc_view(path, content, false);
     let jaxrs_resource = code.iter().any(|l| l.trim().contains("@Path("));
     let role = policy_file_role(path);
+    // 非注解式栈（JS/TS/Go/Python）：走语法扫描（接收者感知的动词、组/mount 前缀、跨行字面量），
+    // 不再用"字面 marker + 行内首个字面量"；中间件/保护声明仍用标记扫描供上层算 effective_chain。
+    let non_java = !(path.ends_with(".java")
+        || path.ends_with(".kt")
+        || path.ends_with(".xml"));
     let mut out = FileRouteScan {
         routes: Vec::new(),
         middleware: Vec::new(),
@@ -2201,6 +2158,35 @@ pub(crate) fn scan_routes_in_file(
         preproc_note: pp_note.clone(),
         cpp_fallback: pp_note.is_some(),
     };
+    if non_java && has_syntax_scanner(path) {
+        out.routes = scan_non_java_routes(path, content);
+        out.routes_total = out.routes.len();
+        for (idx, code_line) in code.iter().enumerate() {
+            let t = code_line.trim();
+            if t.is_empty() || is_import_or_package_line(t) {
+                continue;
+            }
+            if pp_states.get(idx).map(|s| s.dead).unwrap_or(false) {
+                continue;
+            }
+            if MIDDLEWARE_MARKERS.iter().any(|m| t.contains(*m)) {
+                out.middleware_total += 1;
+                if out.middleware.len() < MAX_HITS {
+                    let text = originals.get(idx).copied().unwrap_or("").trim();
+                    out.provenance.push(prov(path, (idx + 1) as u32, id));
+                    out.middleware.push(json!({
+                        "line": idx + 1,
+                        "text": text.chars().take(200).collect::<String>(),
+                        "file_role": role,
+                    }));
+                }
+            }
+        }
+        out.routes.sort_by_key(|r| r["line"].as_u64().unwrap_or(0));
+        out.routes.truncate(MAX_HITS);
+        return out;
+    }
+
     for (idx, code_line) in code.iter().enumerate() {
         let ln = (idx + 1) as u32;
         let text = originals.get(idx).copied().unwrap_or("");

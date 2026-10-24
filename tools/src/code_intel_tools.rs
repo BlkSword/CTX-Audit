@@ -25,6 +25,8 @@ mod locus;
 pub(crate) use locus::*;
 mod framework;
 pub(crate) use framework::*;
+mod routes_syntax;
+pub(crate) use routes_syntax::*;
 mod index;
 pub use index::*;
 mod symbols;
@@ -57,6 +59,50 @@ const MAX_FUNCTION_SUMMARIES: usize = 8;
 /// 单函数口径用 `MAX_DISPATCH_SITES`；项目级口径的站点来源是"所有已索引 C 类函数的体"，
 /// 数量不可预估，因此必须另设上限并如实上报截断（`sites_truncated_at_limit`）。
 const MAX_PROJECT_DISPATCH_SITES: usize = 64;
+/// 策略来源包：生产文件、被排除的策略文件、模块图。按索引 build_id 缓存，
+/// 避免每次工具调用都克隆全项目内容（否则逐文件扫描会退化回 O(N²)）。
+pub(crate) struct PolicyBundle {
+    pub(crate) files: Vec<(String, String)>,
+    pub(crate) excluded: Vec<(String, String)>,
+    pub(crate) graph: ModuleGraph,
+}
+
+static POLICY_BUNDLE_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(String, std::sync::Arc<PolicyBundle>)>>,
+> = std::sync::OnceLock::new();
+
+/// 取当前项目的策略包（首次调用构建，之后按 build_id 命中）。
+pub(crate) fn policy_bundle(
+    root: &Path,
+    files: &[(String, String)],
+    build_id: &str,
+) -> std::sync::Arc<PolicyBundle> {
+    let key = format!(
+        "{}::{}",
+        root.to_string_lossy(),
+        build_id
+    );
+    let cache = POLICY_BUNDLE_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((id, bundle)) = guard.as_ref() {
+            if id == &key {
+                return bundle.clone();
+            }
+        }
+    }
+    let (used, excluded) = policy_sources(files);
+    let graph = ModuleGraph::from_files(&used);
+    let bundle = std::sync::Arc::new(PolicyBundle {
+        files: used,
+        excluded,
+        graph,
+    });
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((key, bundle.clone()));
+    }
+    bundle
+}
+
 /// 项目级端点表一次调用返回的条数上限（超限必须上报 `total_hits`/`truncated_at_limit`）。
 const MAX_PROJECT_ROUTE_HITS: usize = 400;
 const SKIP_DIRS: [&str; 8] = [
@@ -221,7 +267,12 @@ impl CodeIntelTool {
 
     fn params(&self) -> Vec<ToolParameter> {
         let mut params = match self.kind {
-            IntelKind::ProjectIndex | IntelKind::IncrementalStatus | IntelKind::ProjectRoutes => vec![],
+            IntelKind::ProjectIndex | IntelKind::IncrementalStatus => vec![],
+            IntelKind::ProjectRoutes => vec![
+                str_param("min_role", "只保留该文件角色（默认 production；any=不过滤）", false),
+                str_param("route_pattern", "只保留路径包含该子串的端点", false),
+                bool_param("only_uncovered", "只返回未被声明规则覆盖的端点"),
+            ],
             IntelKind::SymbolDefinition | IntelKind::SymbolReferences => {
                 vec![str_param("symbol", "符号名", true)]
             }
@@ -1717,8 +1768,9 @@ impl Tool for CodeIntelTool {
                 // 策略来源只取**生产源码/配置**：文档示例、测试夹具与示例工程不得充当"项目策略"。
                 // 实测：文档里的示例会被读成"已保护"，对消费者就是假安全（私有台账 R247）。
                 // 被排除的文件有界上报，不静默。
-                let (policy_files_owned, excluded_policy_sources) = policy_sources(evidence_files);
-                let policy_files: &[(String, String)] = &policy_files_owned;
+                let bundle = policy_bundle(root, evidence_files, &id);
+                let policy_files: &[(String, String)] = &bundle.files;
+                let excluded_policy_sources = bundle.excluded.clone();
                 let mut all_chains = security_config_chains(policy_files);
                     all_chains.extend(reactive_security_chains(policy_files));
                     all_chains.extend(spring_xml_security_chains(policy_files));
@@ -1768,7 +1820,10 @@ all_chains.extend(sa_token_security_chains(policy_files));
                 frame_preproc_note = scan.preproc_note;
                 provenance = scan.provenance;
                 // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
-                annotate_route_coverage(&mut routes, &all_chains);
+                // 多模块：只保留**作用于本文件**的链（同模块 / 依赖方向）；无依据时回退全量并标注。
+                let (scoped_chains, coverage_scope) =
+                    bundle.graph.scoped_chains(&all_chains, &file);
+                annotate_route_coverage(&mut routes, &scoped_chains);
                 // 安全配置声明并入中间件链：**只上报与本文件相关者**——本文件自身（若它是配置）
                 // 以及实际为端点提供覆盖判定的配置（来自 global_match.chain_file），
                 // 按文件去重并封顶，避免把整个项目里所有配置都当成这个文件的证据。
@@ -2258,8 +2313,13 @@ all_chains.extend(sa_token_security_chains(policy_files));
                             "excluded": excluded_policy_json,
                         },
                         "middleware": middleware,
+                        "coverage_scope": coverage_scope,
                         "total_hits": {
                             "routes": routes_total,
+                            // 端点计数与类级声明分开：类级 @RequestMapping/@Path 只是前缀，不是端点
+                            "method_routes": routes.iter().filter(|r| r.get("scope").and_then(|v| v.as_str()) != Some("class")).count(),
+                            "class_declarations": routes.iter().filter(|r| r.get("scope").and_then(|v| v.as_str()) == Some("class")).count(),
+                            "counts_scope": if routes_total + middleware_total > MAX_HITS { "returned" } else { "all" },
                             "middleware": middleware_total,
                         },
                         "limit": MAX_HITS,
@@ -2331,7 +2391,9 @@ all_chains.extend(sa_token_security_chains(policy_files));
             IntelKind::ProjectRoutes => {
                 // 一次调用返回全项目端点表：策略链**只构建一次**，再扫已加载的文件，
                 // 避免"逐文件调用"那种 O(N^2) 成本（每次调用都重扫模块配置）。
-                let (policy_files, excluded_policy_sources) = policy_sources(files);
+                let bundle = policy_bundle(root, files, &id);
+                let policy_files: &[(String, String)] = &bundle.files;
+                let excluded_policy_sources = bundle.excluded.clone();
                 let mut all_chains = security_config_chains(&policy_files);
                 all_chains.extend(reactive_security_chains(&policy_files));
                 all_chains.extend(spring_xml_security_chains(&policy_files));
@@ -2391,9 +2453,28 @@ all_chains.extend(sa_token_security_chains(policy_files));
                         break;
                     }
                 }
-                annotate_route_coverage(&mut routes, &all_chains);
-                annotate_container_filters(&mut routes, &container_filters);
-                annotate_interceptors(&mut routes, &interceptor_regs);
+                // 多模块：按端点所在文件挑生效链，逐文件标注 `coverage_scope`
+                let graph = &bundle.graph;
+                let mut by_file: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+                for (i, r) in routes.iter().enumerate() {
+                    if let Some(f) = r.get("file").and_then(|v| v.as_str()) {
+                        by_file.entry(f.to_string()).or_default().push(i);
+                    }
+                }
+                for (file, idxs) in by_file.iter() {
+                    let (scoped, scope_label) = graph.scoped_chains(&all_chains, file);
+                    let mut group: Vec<Value> = idxs.iter().map(|i| routes[*i].clone()).collect();
+                    annotate_route_coverage(&mut group, &scoped);
+                    annotate_container_filters(&mut group, &container_filters);
+                    annotate_interceptors(&mut group, &interceptor_regs);
+                    for (k, i) in idxs.iter().enumerate() {
+                        let mut v = std::mem::take(&mut group[k]);
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("coverage_scope".to_string(), json!(scope_label));
+                        }
+                        routes[*i] = v;
+                    }
+                }
                 let route_paths_unresolved = routes
                     .iter()
                     .filter(|r| r.get("route").map(|v| v.is_null()).unwrap_or(true))
@@ -2402,7 +2483,96 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     .iter()
                     .map(|(p, role)| json!({"file": p, "role": role}))
                     .collect();
-                let mut reasons: Vec<&str> = vec!["project_level_scan", "marker_scan_only"];
+                // 未建模保护栈（如 JAX-RS 过滤器）：项目级同样不得报"没有保护"，
+                // 与单文件口径保持一致 —— 改写为 framework_not_modeled 并带 caveat。
+                let unmodeled_signals = unmodeled_protection_signals(&policy_files);
+                if !unmodeled_signals.is_empty() && all_chains.is_empty() {
+                    let (fw_name, fw_file, fw_line) = unmodeled_signals[0].clone();
+                    for r in routes.iter_mut() {
+                        if r.get("scope").and_then(|v| v.as_str()) == Some("class") {
+                            continue;
+                        }
+                        if r.get("global_coverage").and_then(|v| v.as_str())
+                            == Some("no_global_config_found")
+                        {
+                            if let Some(obj) = r.as_object_mut() {
+                                obj.insert(
+                                    "global_coverage".to_string(),
+                                    json!("framework_not_modeled"),
+                                );
+                                obj.insert(
+                                    "coverage_caveat".to_string(),
+                                    json!("unmodeled_protection_signal"),
+                                );
+                                obj.insert("unmodeled_framework".to_string(), json!(fw_name));
+                                obj.insert(
+                                    "unmodeled_source".to_string(),
+                                    json!({"file": fw_file, "line": fw_line}),
+                                );
+                            }
+                        }
+                    }
+                }
+                // A1：端点过滤（默认只保留生产角色）与「未覆盖清单」
+                let min_role = input["min_role"].as_str().unwrap_or("production").to_lowercase();
+                let route_pattern = input["route_pattern"].as_str().unwrap_or("").to_lowercase();
+                let only_uncovered = input["only_uncovered"].as_bool().unwrap_or(false);
+                let total_before_filter = routes.len();
+                let mut filtered_by_role = 0usize;
+                let mut filtered_by_pattern = 0usize;
+                let mut kept: Vec<Value> = Vec::new();
+                for r in routes.into_iter() {
+                    let role = r
+                        .get("file_role")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("production");
+                    if min_role != "any" && role != min_role {
+                        filtered_by_role += 1;
+                        continue;
+                    }
+                    if !route_pattern.is_empty() {
+                        let rt = r
+                            .get("route")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        if !rt.contains(&route_pattern) {
+                            filtered_by_pattern += 1;
+                            continue;
+                        }
+                    }
+                    kept.push(r);
+                }
+                let key = |r: &Value| {
+                    (
+                        r.get("file").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        r.get("line").and_then(|v| v.as_u64()).unwrap_or(0),
+                    )
+                };
+                kept.sort_by_key(key);
+                let mut verdict_counts: std::collections::BTreeMap<String, usize> = Default::default();
+                let mut uncovered: Vec<Value> = Vec::new();
+                for r in kept.iter() {
+                    let v = r
+                        .get("global_coverage")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    *verdict_counts.entry(v.clone()).or_default() += 1;
+                    if v == "no_global_config_found" || v == "no_global_match_found" {
+                        uncovered.push(r.clone());
+                    }
+                }
+                let routes: Vec<Value> = if only_uncovered {
+                    uncovered.clone()
+                } else {
+                    kept
+                };
+                let class_declarations = routes
+                    .iter()
+                    .filter(|r| r.get("scope").and_then(|v| v.as_str()) == Some("class"))
+                    .count();
+                let mut reasons: Vec<&str> = vec!["project_level_scan", "syntax_scan"];
                 if truncated_at_limit {
                     reasons.push("truncated_at_limit");
                 }
@@ -2424,9 +2594,25 @@ all_chains.extend(sa_token_security_chains(policy_files));
                         "files_indexed": files.len(),
                         "files_with_routes": files_with_routes,
                         "routes": routes,
+                        "uncovered_endpoints": uncovered,
+                        "verdict_counts": verdict_counts,
+                        "filter": {
+                            "min_role": min_role,
+                            "route_pattern": route_pattern,
+                            "only_uncovered": only_uncovered,
+                            "total_before": total_before_filter,
+                            "filtered_by_role": filtered_by_role,
+                            "filtered_by_pattern": filtered_by_pattern,
+                        },
                         "route_roles": route_roles,
                         "route_paths_unresolved": route_paths_unresolved,
-                        "total_hits": {"routes": routes_total},
+                        "total_hits": {
+                            "routes": routes.len(),
+                            "method_routes": routes.len() - class_declarations,
+                            "class_declarations": class_declarations,
+                            "counts_scope": "returned",
+                            "scanned_routes": routes_total,
+                        },
                         "limit": MAX_PROJECT_ROUTE_HITS,
                         "truncated_at_limit": truncated_at_limit,
                         "unmodelled_route_files": unparsed_route_files,
