@@ -2160,6 +2160,48 @@ use super::super::*;
         assert!(got.contains(&("GET", "/authors/{name}/page/{page}")), "{got:?}");
     }
 
+    /// 函数式路由的前缀作用域：`nest(path(...))` 与 `.path("/p", b -> ...)` 必须拼接。
+    #[test]
+    fn test_functional_routes_nest_and_path_prefix() {
+        // nest(path("/pat"), () -> route().POST(handler))：动词没有自己的路径 ⇒ 端点就是前缀
+        let nest_only = concat!(
+            "class R {\n",
+            "  RouterFunction<ServerResponse> r() {\n",
+            "    return route().nest(\n",
+            "        path(\"/personalaccesstokens\"),\n",
+            "        () -> route().POST(handler));\n",
+            "  }\n",
+            "}\n",
+        );
+        let rs = functional_routes(nest_only);
+        let got: Vec<(String, String)> = rs.iter().map(|(_, m, p)| (m.clone(), p.clone())).collect();
+        assert!(got.contains(&("POST".into(), "/personalaccesstokens".into())), "{got:?}");
+
+        // nest(path("/p"), () -> route().GET("/{name}", h))：拼接前缀
+        let nest_child = concat!(
+            "class R {\n",
+            "  RouterFunction<ServerResponse> r() {\n",
+            "    return route().nest(path(\"/p\"), () -> route().GET(\"/{name}\", h));\n",
+            "  }\n",
+            "}\n",
+        );
+        let rs = functional_routes(nest_child);
+        let got: Vec<(String, String)> = rs.iter().map(|(_, m, p)| (m.clone(), p.clone())).collect();
+        assert!(got.contains(&("GET".into(), "/p/{name}".into())), "{got:?}");
+
+        // route().path("/x", b -> b.GET("/y", h))
+        let path_scope = concat!(
+            "class R {\n",
+            "  RouterFunction<ServerResponse> r() {\n",
+            "    return route().path(\"/x\", b -> b.GET(\"/y\", h));\n",
+            "  }\n",
+            "}\n",
+        );
+        let rs = functional_routes(path_scope);
+        let got: Vec<(String, String)> = rs.iter().map(|(_, m, p)| (m.clone(), p.clone())).collect();
+        assert!(got.contains(&("GET".into(), "/x/y".into())), "{got:?}");
+    }
+
     /// 非 Java：接收者感知的动词 + 组/mount 前缀 + 跨行字面量；HTTP 客户端调用不算路由。
     #[test]
     fn test_scan_non_java_express() {

@@ -421,8 +421,12 @@ pub(crate) fn scan_non_java_routes(path: &str, content: &str) -> Vec<Value> {
 
 /// 函数式路由：`RouterFunctions.route(...)` / builder 风格 `.GET("/x", ...)`。
 ///
-/// 窗口法：动词（`GET(`/`POST(`…）出现在**代码视图**里，但路径字面量必须从**原文**取；
-/// 允许**跨多行**与 `.or(...)` 嵌套（每个动词各自成一条），窗口上限 240 字符 / 5 行。
+/// 两件事：
+/// 1. **前缀作用域**：`route().nest(path("/p"), () -> route()...)` 与
+///    `route().path("/p", b -> b.GET(...))` 里的动词声明要带上前缀（Spring 语义是拼接）；
+///    作用域用**括号配平**在代码视图上求，路径字面量从原文取（代码视图会抹掉字符串）。
+/// 2. **动词窗口**：不在前缀作用域里的动词，从本行起向后最多 5 行 / 240 字符找路径字面量，
+///    覆盖跨行与 `.or()` 嵌套；同一次声明去重。
 pub(crate) fn functional_routes_window(content: &str) -> Vec<(u32, String, String)> {
     let looks_functional = content.contains("RouterFunction")
         || content.contains("RouterFunctions")
@@ -432,7 +436,50 @@ pub(crate) fn functional_routes_window(content: &str) -> Vec<(u32, String, Strin
     }
     let code = code_lines(content, hash_comment_language("FunctionalRoutes.java"));
     let raw_lines: Vec<&str> = content.lines().collect();
-    let mut out: Vec<(u32, String, String)> = Vec::new();
+    // 行首在扁平文本里的偏移（代码视图；用于括号配平与位置→行号映射）
+    let mut offsets: Vec<usize> = Vec::with_capacity(code.len());
+    let mut flat = String::new();
+    for line in code.iter() {
+        offsets.push(flat.len());
+        flat.push_str(line);
+        flat.push('\n');
+    }
+    let line_of = |pos: usize| -> usize {
+        match offsets.binary_search(&pos) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        }
+    };
+
+    // ① 前缀作用域：nest(path("/p"), ...) 与 .path("/p", ...)
+    let mut scopes: Vec<(usize, usize, String)> = Vec::new(); // (start, end, prefix)
+    for kw in [".nest(", ".path("] {
+        let mut from = 0usize;
+        while let Some(p) = flat[from..].find(kw) {
+            let open = from + p + kw.len() - 1; // '(' 的位置
+            if let Some(close) = matching_paren(&flat, open) {
+                let line = line_of(from + p);
+                // 前缀字面量：作用域开头附近最多 4 行内取 `path("...")` 或 `.path("...")` 的首个字面量
+                let mut prefix: Option<String> = None;
+                for off in 0..4usize {
+                    if let Some(raw) = raw_lines.get(line + off) {
+                        if let Some(v) = literal_in(raw) {
+                            prefix = Some(normalize_path(&v));
+                            break;
+                        }
+                    }
+                }
+                if let Some(px) = prefix {
+                    scopes.push((open, close, px));
+                }
+                from = close.max(from + 1);
+            } else {
+                from = from + p + kw.len();
+            }
+        }
+    }
+
+    // ② 动词声明：取最近的**最内层**前缀作用域
     const VERBS: [(&str, &str); 5] = [
         ("GET(", "GET"),
         ("POST(", "POST"),
@@ -440,44 +487,81 @@ pub(crate) fn functional_routes_window(content: &str) -> Vec<(u32, String, Strin
         ("DELETE(", "DELETE"),
         ("PATCH(", "PATCH"),
     ];
-    for (idx, line) in code.iter().enumerate() {
-        let t = line.trim();
-        if t.is_empty() || is_import_or_package_line(t) {
-            continue;
-        }
-        let first = raw_lines.get(idx).copied().unwrap_or("");
-        // 原文窗口：本行 + 后续 4 行（跨行声明与 .or() 嵌套）
-        let mut window = String::new();
-        for off in 0..5 {
-            if let Some(l) = raw_lines.get(idx + off) {
-                window.push_str(l);
-                window.push('\n');
+    let mut out: Vec<(u32, String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<(usize, String, String)> = std::collections::HashSet::new();
+    for (marker, method) in VERBS {
+        let mut from = 0usize;
+        while let Some(p) = flat[from..].find(marker) {
+            let abs = from + p;
+            let line = line_of(abs);
+            // 只认**行内**的动词（跨行匹配由窗口负责）
+            if abs < offsets[line] || abs >= offsets.get(line + 1).copied().unwrap_or(flat.len()) {
+                from = abs + marker.len();
+                continue;
             }
-        }
-        for (marker, method) in VERBS {
-            let mut from = 0usize;
-            while let Some(pos) = first[from..].find(marker) {
-                let abs = from + pos;
-                let after_start = abs + marker.len();
-                if after_start < window.len() {
-                    let after = &window[after_start..];
-                    let slice = &after[..after.len().min(240)];
-                    if let Some(p) = url_patterns_in(slice).into_iter().next() {
-                        if !out.iter().any(|(l, m, path)| {
-                            *l == (idx + 1) as u32 && m == method && *path == p
-                        }) {
-                            out.push(((idx + 1) as u32, method.to_string(), p));
+            let mut prefix: Option<&str> = None;
+            let mut best = usize::MAX;
+            for (s0, s1, px) in scopes.iter() {
+                if abs > *s0 && abs < *s1 && (*s0) < best {
+                    best = *s0;
+                    prefix = Some(px.as_str());
+                }
+            }
+            // 路径字面量：本行优先，其次向后最多 4 行（跨行声明）
+            let mut path: Option<String> = None;
+            for off in 0..5usize {
+                if let Some(raw) = raw_lines.get(line + off) {
+                    if off == 0 {
+                        // 本行：从动词之后找，避免把接收者里的字符串当路径
+                        let seg_start = raw.find(marker).map(|x| x + marker.len()).unwrap_or(0);
+                        if let Some(v) = literal_in(&raw[seg_start..]) {
+                            path = Some(v);
+                            break;
+                        }
+                    } else if !raw.trim().is_empty() {
+                        if let Some(v) = literal_in(raw) {
+                            path = Some(v);
+                            break;
                         }
                     }
                 }
-                from = abs + marker.len();
-                if from >= first.len() {
-                    break;
-                }
             }
+            let full = match (&path, prefix) {
+                (Some(p), Some(px)) => join_route_path(Some(px), p),
+                (Some(p), None) => normalize_path(p),
+                // 只有前缀、动词本身没有路径：端点就是前缀（Spring `nest` 语义）
+                (None, Some(px)) => px.to_string(),
+                (None, None) => String::new(),
+            };
+            if !full.is_empty() && seen.insert((line, method.to_string(), full.clone())) {
+                out.push((line as u32 + 1, method.to_string(), full));
+            }
+            from = abs + marker.len();
         }
     }
+    out.sort_by_key(|(l, _, _)| *l);
     out
+}
+
+/// 在扁平代码文本上做括号配平（代码视图已抹掉字符串与注释，所以括号计数安全）。
+fn matching_paren(flat: &str, open: usize) -> Option<usize> {
+    if flat.as_bytes().get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (i, ch) in flat.char_indices().skip_while(|(i, _)| *i < open) {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // ────────────────────────────── 模块图（多模块配置归属）──────────────────────────────
