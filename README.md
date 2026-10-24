@@ -118,7 +118,7 @@ report_finding / finish_analysis                   → 回写结论
 
 > 两个易踩的点：`slice_backward` 是**后向前缀**切片，`window.end_line` 基本停在目标行，而边界检查/危险操作常在目标行**之后**，需要配合 `read_file` 把下文补齐；`read_file` 的参数名是 `file_path`（不是 `path`）。
 
-默认工具面（**13 个 = 9 高阶能力 + 4 基础工具**）：
+默认工具面（**14 个 = 10 高阶能力 + 4 基础工具**）：
 
 | 高阶能力 | 语义 | 主要返回 |
 |---------|------|---------|
@@ -130,6 +130,7 @@ report_finding / finish_analysis                   → 回写结论
 | `get_dataflow_path` | source→sink 路径与经过的守卫 | 路径步骤 + barriers |
 | `get_sanitizer_guards` | 变量路径上的条件分支/校验逻辑 | guard 列表 |
 | `get_framework_context` | 路由 handler 的前置中间件/拦截器链 | 中间件链 + 未识别部分 |
+| `get_project_routes` | 项目级端点表：一次调用返回全项目路由与覆盖判定 | 端点表 + 覆盖判定 + 提取形态 + 证据出处 |
 | `get_incremental_status` | 索引状态、缓存新鲜度与 SLO 位 | 状态 + 缓存指标 |
 
 基础工具：`read_file` / `list_files` / `report_finding` / `finish_analysis`。
@@ -172,7 +173,7 @@ report_finding / finish_analysis                   → 回写结论
 
 **控制台能做什么**
 
-- **状态总览**：MCP 配置、MCP 引擎（实时 stdio 握手，列出 13 个工具）、日志、证据产物、路线图、Agent 预设。
+- **状态总览**：MCP 配置、MCP 引擎（实时 stdio 握手，列出 14 个工具）、日志、证据产物、路线图、Agent 预设。
 - **指向任意项目**：右上角「工作目录」可把项目根换成任意目录（含跨盘、逐级进入），并在其中选目标；面板的产物 / 日志 / 体检都跟随该目标。
 - **目标体检**：以所选目录为 cwd 真调 `get_project_index`，返回扫描文件数、是否具备语义分析、主语言、构建上下文与耗时。
 - **工具卡**：会话里调用 `mcp__ctxaudit__*` 时，调用处渲染 CTX-Audit 卡片（工具名 / 完成或失败 / 行数 / 可展开结果）。
@@ -203,7 +204,7 @@ dsh --profile ctx-audit-web --port 3081 --no-open
 ### `mcp` — 证据供应主线（推荐）
 
 ```bash
-ctx-audit mcp                 # 默认工具面：9 高阶能力 + 4 基础工具 = 13 个
+ctx-audit mcp                 # 默认工具面：10 高阶能力 + 4 基础工具 = 14 个
 ctx-audit mcp --legacy-tools  # 兼容：额外注册遗留的细粒度工具面
 ```
 

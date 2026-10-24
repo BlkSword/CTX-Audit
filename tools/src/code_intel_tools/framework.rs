@@ -1971,3 +1971,364 @@ pub(crate) const LOCUS_CHECK_TOKENS: [&str; 12] = [
     "if ", "if(", ">=", "<=", "==", "!=", "sizeof", "assert", "return", "break", "continue", "switch",
 ];
 
+// ── 策略来源与路由声明的共用判定 ──────────────────────────────────────────────
+
+/// 文件角色：在 core 的路径角色（test/build/vendor）之上，把**文档与示例**单列。
+///
+/// 安全策略只能来自生产源码/配置：文档里的示例代码、测试夹具与示例工程都不是"项目策略"。
+/// 实测：把 `.adoc` 文档里的示例当策略，会让端点被判成"已保护"（假安全）。
+pub(crate) fn policy_file_role(path: &str) -> &'static str {
+    let role = deepaudit_core::scanning::classify_file_role(path);
+    if role != "production" {
+        return role;
+    }
+    let normalized = path.replace('\\', "/").to_lowercase();
+    // 路径首段也要能命中（`docs/x.adoc`、`sample/x.java`）：统一补一个前导 `/` 再匹配
+    let padded = format!("/{normalized}");
+    let file_name = normalized.rsplit('/').next().unwrap_or("");
+    let ext = file_name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    if matches!(
+        ext,
+        "adoc" | "asciidoc" | "md" | "markdown" | "rst" | "txt" | "org" | "textile"
+    ) {
+        return "documentation";
+    }
+    // 只收**目录形态**明确表示示例/文档的标记：`/demo/`、`/example/`、`/sample/` 太宽
+    // （常见包名就是 `com.example.demo`、`demo`），会把生产代码误降级成示例。
+    for marker in [
+        "/docs/",
+        "/doc/",
+        "/documentation/",
+        "/examples/",
+        "/samples/",
+        "/sample-data/",
+        "/testdata/",
+        "/fixtures-examples/",
+    ] {
+        if padded.contains(marker) {
+            return "example";
+        }
+    }
+    "production"
+}
+
+/// 被排除的非生产策略来源上限（有界上报，不静默）。
+pub(crate) const MAX_EXCLUDED_POLICY_SOURCES: usize = 8;
+
+/// 策略来源：只保留生产源码/配置。
+///
+/// 返回 `(可用文件, 被排除的策略文件)`；后者**有界**，用于在响应里如实上报"读到了但没当策略"。
+pub(crate) fn policy_sources(
+    project_files: &[(String, String)],
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let mut used: Vec<(String, String)> = Vec::new();
+    let mut excluded: Vec<(String, String)> = Vec::new();
+    for (path, content) in project_files.iter().take(MAX_FILES) {
+        let role = policy_file_role(path);
+        if role == "production" {
+            used.push((path.clone(), content.clone()));
+        } else if excluded.len() < MAX_EXCLUDED_POLICY_SOURCES && looks_like_security_config(content) {
+            excluded.push((path.clone(), role.to_string()));
+        }
+    }
+    (used, excluded)
+}
+
+/// 识别"声明式路由但本引擎未建模"的文件形态（返回框架名）。
+///
+/// 这类文件里端点**一定存在**，但语法没被解析；上层必须据此报"未建模"，不能给出空端点表让人读成
+/// "没有攻击面"。当前识别：Django（`urls.py` + `urlpatterns`）、Rails（`routes.rb` + `get '`）。
+pub(crate) fn unmodelled_route_declaration(path: &str, content: &str) -> Option<&'static str> {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    let file_name = normalized.rsplit('/').next().unwrap_or("");
+    if (file_name == "urls.py" || normalized.contains("/urls/")) && content.contains("urlpatterns") {
+        return Some("django");
+    }
+    if file_name == "routes.rb" && (content.contains(" get '") || content.contains(" post '") || content.contains("resources ")) {
+        return Some("rails");
+    }
+    None
+}
+
+/// 从一行原始文本里取路由字面量：双引号优先，其次单引号；非空时保证以 `/` 开头。
+///
+/// 只认双引号会让 JS/Python 的 `'/path'` 变成 `route=None`
+/// （实测：Express/Flask 的路由条目全部没有路径，消费者无法知道是哪个端点）。
+pub(crate) fn extract_route_literal(line: &str) -> Option<String> {
+    let raw = line
+        .split('"')
+        .nth(1)
+        .or_else(|| line.split('\'').nth(1))?
+        .trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(if raw.starts_with('/') {
+        raw.to_string()
+    } else {
+        format!("/{raw}")
+    })
+}
+
+/// 非注解式声明（Express/Gin/Flask 等）的 HTTP 动词推断。
+///
+/// 只对**已命中路由标记**的行调用，因此误判面很小；拿不到就返回 `None`（由上层如实标注）。
+pub(crate) fn infer_http_method(code_line: &str) -> Option<&'static str> {
+    const VERBS: [(&str, &str); 7] = [
+        ("GET", "GET"),
+        ("POST", "POST"),
+        ("PUT", "PUT"),
+        ("DELETE", "DELETE"),
+        ("PATCH", "PATCH"),
+        ("HEAD", "HEAD"),
+        ("OPTIONS", "OPTIONS"),
+    ];
+    for (name, method) in VERBS {
+        if code_line.contains(&format!(".{name}(")) {
+            return Some(method);
+        }
+    }
+    for (name, method) in VERBS {
+        let lower = format!(".{}(", name.to_lowercase());
+        if code_line.contains(&lower)
+            && (code_line.contains("app.")
+                || code_line.contains("router.")
+                || code_line.contains("route(")
+                || code_line.contains("@app.")
+                || code_line.contains("@router.")
+                || code_line.contains("@bp."))
+        {
+            return Some(method);
+        }
+    }
+    None
+}
+
+/// 路由声明标记（字面子串）。
+///
+/// 精度要求：`Route::` 必须带动词（PHP 框架的 `Route::get(`），否则会命中任意
+/// `SomeRoute::method` 引用（实测：Java 测试代码里的 `HelloRoute::handle` 被当成 8 条路由）。
+pub(crate) const ROUTE_MARKERS: [&str; 21] = [
+    "@app.route",
+    "@router.",
+    "@RequestMapping",
+    "app.get(",
+    "router.get(",
+    "r.GET(",
+    "Route::get(",
+    "Route::post(",
+    "Route::put(",
+    "Route::patch(",
+    "Route::delete(",
+    "Route::any(",
+    "Route::match(",
+    "#[get(",
+    "#[post(",
+    "@GetMapping",
+    "@PostMapping",
+    "@PutMapping",
+    "@DeleteMapping",
+    "@PatchMapping",
+    "@Path(",
+];
+
+/// 中间件/保护声明标记。
+pub(crate) const MIDDLEWARE_MARKERS: [&str; 26] = [
+    "middleware",
+    "before_action",
+    "@UseGuards",
+    "interceptor",
+    "filter_chain",
+    "login_required",
+    "permission_required",
+    "before_request",
+    "app.use(",
+    ".use(",
+    "@PreAuthorize",
+    "@PostAuthorize",
+    "@Secured",
+    "@RolesAllowed",
+    "@PermitAll",
+    "@DenyAll",
+    "@EnableWebSecurity",
+    "@EnableMethodSecurity",
+    "SecurityFilterChain",
+    "WebSecurityConfigurerAdapter",
+    "authorizeHttpRequests",
+    "authorizeRequests",
+    "addFilterBefore",
+    "addFilterAfter",
+    "OncePerRequestFilter",
+    "HttpSecurity",
+];
+
+/// 单文件路由扫描结果（`get_framework_context` 与项目级端点表共用同一套口径）。
+pub(crate) struct FileRouteScan {
+    pub routes: Vec<Value>,
+    pub middleware: Vec<Value>,
+    pub provenance: Vec<Provenance>,
+    pub routes_total: usize,
+    pub middleware_total: usize,
+    pub preproc_note: Option<String>,
+    pub cpp_fallback: bool,
+}
+
+/// 逐行扫描单个文件里的路由/中间件声明。
+///
+/// 口径（与旧实现逐字一致，除下列显式修正）：
+/// - 注释/字符串里出现的标记不算（走代码视图）；未激活的预处理分支不算；
+/// - JAX-RS 动词注解只有在"该方法没有自己的 `@Path`"时才是路由声明；
+/// - 路由字面量：双引号优先、其次单引号，并补前导 `/`；
+/// - 每条路由带 `file_role`，消费者可据此区分生产/测试/示例；
+/// - 路径解析不出时给 `route_path_unresolved: true`（不静默）。
+pub(crate) fn scan_routes_in_file(
+    path: &str,
+    content: &str,
+    handler: &str,
+    id: &str,
+) -> FileRouteScan {
+    let code = code_lines(content, hash_comment_language(path));
+    let originals: Vec<&str> = content.lines().collect();
+    let (pp_states, pp_note) = preproc_view(path, content, false);
+    let jaxrs_resource = code.iter().any(|l| l.trim().contains("@Path("));
+    let role = policy_file_role(path);
+    let mut out = FileRouteScan {
+        routes: Vec::new(),
+        middleware: Vec::new(),
+        provenance: Vec::new(),
+        routes_total: 0,
+        middleware_total: 0,
+        preproc_note: pp_note.clone(),
+        cpp_fallback: pp_note.is_some(),
+    };
+    for (idx, code_line) in code.iter().enumerate() {
+        let ln = (idx + 1) as u32;
+        let text = originals.get(idx).copied().unwrap_or("");
+        let trimmed = text.trim();
+        let code_trimmed = code_line.trim();
+        if code_trimmed.is_empty() {
+            continue;
+        }
+        if is_import_or_package_line(code_trimmed) {
+            continue;
+        }
+        if pp_states.get(idx).map(|s| s.dead).unwrap_or(false) {
+            continue;
+        }
+        // JAX-RS 动词注解只有在"该方法没有自己的 `@Path`"时才是路由声明
+        let jaxrs_verb = if jaxrs_resource {
+            jaxrs_verb_only_route(content, ln)
+        } else {
+            None
+        };
+        if (ROUTE_MARKERS.iter().any(|m| code_trimmed.contains(*m)) || jaxrs_verb.is_some())
+            && (handler.is_empty() || trimmed.contains(handler))
+        {
+            out.routes_total += 1;
+            if out.routes.len() + out.middleware.len() < MAX_HITS {
+                out.provenance.push(prov(path, ln, id));
+                // 动词注解本身没有实参 ⇒ 路由完全由类级前缀给出（行内注释里的字符串也不得被当成路径）
+                let route_value = if jaxrs_verb.is_some() && !code_trimmed.contains("@Path(") {
+                    None
+                } else {
+                    // 非 Java 栈的声明常跨行（`router.get(` 与路径字面量分行）：做**有界前瞻**（≤3 行），
+                    // 否则路径会静默为空。Java/注解式不前瞻（类级前缀语义由前缀函数负责）。
+                    let marker_only_file = !(path.ends_with(".java")
+                        || path.ends_with(".kt")
+                        || path.ends_with(".xml"));
+                    extract_route_literal(trimmed).or_else(|| {
+                        if !marker_only_file {
+                            return None;
+                        }
+                        for off in 1..=3usize {
+                            let next = originals.get(idx + off).copied().unwrap_or("");
+                            if next.trim().is_empty() {
+                                continue;
+                            }
+                            if let Some(v) = extract_route_literal(next) {
+                                return Some(v);
+                            }
+                        }
+                        None
+                    })
+                };
+                let http_method = [
+                    ("@GetMapping", "GET"),
+                    ("@PostMapping", "POST"),
+                    ("@PutMapping", "PUT"),
+                    ("@DeleteMapping", "DELETE"),
+                    ("@PatchMapping", "PATCH"),
+                    ("@RequestMapping", "ANY"),
+                ]
+                .iter()
+                .find(|(m, _)| code_trimmed.contains(*m))
+                .map(|(_, v)| v.to_string())
+                .or_else(|| {
+                    (jaxrs_verb.is_some() || (jaxrs_resource && code_trimmed.contains("@Path(")))
+                        .then(|| jaxrs_http_method(content, ln).unwrap_or("ANY").to_string())
+                })
+                .or_else(|| infer_http_method(code_trimmed).map(|m| m.to_string()));
+                let route = if jaxrs_verb.is_some() && !code_trimmed.contains("@Path(") {
+                    // 仅动词路由：路径继承类级前缀，由前缀函数补齐
+                    annotate_route_with_prefix(content, ln, None)
+                } else {
+                    annotate_route_with_prefix(content, ln, route_value.as_deref())
+                };
+                out.routes.push(json!({
+                    "line": ln,
+                    "text": trimmed.chars().take(200).collect::<String>(),
+                    "route": route,
+                    "route_raw": route_value,
+                    // 类级映射只提供前缀，不是端点
+                    "scope": route_scope(content, ln),
+                    "http_method": http_method,
+                    "file_role": role,
+                    "route_path_unresolved": route.is_none(),
+                }));
+            }
+        }
+        if MIDDLEWARE_MARKERS.iter().any(|m| code_trimmed.contains(*m)) {
+            out.middleware_total += 1;
+            if out.routes.len() + out.middleware.len() < MAX_HITS {
+                out.provenance.push(prov(path, ln, id));
+                out.middleware.push(json!({
+                    "line": ln,
+                    "text": trimmed.chars().take(200).collect::<String>(),
+                    "file_role": role,
+                }));
+            }
+        }
+    }
+    // 函数式路由（WebFlux RouterFunctions 风格）：与注解式并列的端点声明方式
+    for (fln, fmethod, fpath) in functional_routes(content) {
+        if out.routes.iter().any(|r| {
+            r["line"].as_u64() == Some(fln as u64) && r["route"].as_str() == Some(fpath.as_str())
+        }) {
+            continue;
+        }
+        if out.routes.len() + out.middleware.len() >= MAX_HITS {
+            break;
+        }
+        out.provenance.push(prov(path, fln, id));
+        out.routes.push(json!({
+            "line": fln,
+            "text": content
+                .lines()
+                .nth(fln as usize - 1)
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(200)
+                .collect::<String>(),
+            "route": fpath,
+            "route_raw": fpath,
+            "scope": "method",
+            "http_method": fmethod,
+            "route_source": "functional",
+            "file_role": role,
+            "route_path_unresolved": false,
+        }));
+    }
+    out
+}
+

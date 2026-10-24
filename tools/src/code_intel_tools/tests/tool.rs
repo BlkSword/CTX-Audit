@@ -83,9 +83,11 @@ use super::super::*;
     }
 
     #[test]
-    fn test_tool_surface_is_ten() {
-        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 10);
-        assert_eq!(IntelKind::all().len(), 9);
+    fn test_tool_surface_shape() {
+        // 10 个高阶能力（9 个原能力 + `get_project_routes`）+ `report_finding` = 11
+        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 11);
+        assert_eq!(IntelKind::all().len(), 10);
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"get_project_routes"));
     }
 
     /// 缩进语言：callee 扫描必须止于函数体（同文件无关函数不得计入）

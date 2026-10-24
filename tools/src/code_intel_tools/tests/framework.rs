@@ -2007,3 +2007,128 @@ use super::super::*;
             capped[0]
         );
     }
+
+    // ── 策略来源 / 路由提取形态（R247 实测后新增）────────────────────────────
+
+    /// 文件角色：文档/测试/示例不得与生产源码同等对待。
+    #[test]
+    fn test_policy_file_role() {
+        assert_eq!(policy_file_role("src/main/java/app/SecurityConfig.java"), "production");
+        assert_eq!(policy_file_role("docs/modules/pages/java.adoc"), "documentation");
+        assert_eq!(policy_file_role("README.md"), "documentation");
+        assert_eq!(policy_file_role("src/test/java/app/SecurityConfigTest.java"), "test");
+        assert_eq!(policy_file_role("examples/demo/SecurityConfig.java"), "example");
+        assert_eq!(policy_file_role("samples/x/SecurityConfig.java"), "example");
+        // 回归：常见包名不是"示例目录"（`com.example.demo` 是生产代码的默认包名）
+        assert_eq!(
+            policy_file_role("src/main/java/com/example/demo/SecurityConfig.java"),
+            "production"
+        );
+        assert_eq!(policy_file_role("src/main/java/demo/Config.java"), "production");
+    }
+
+    /// 文档里的示例配置**不能**建链：否则端点会被误判成"已保护"。
+    #[test]
+    fn test_policy_sources_excludes_documentation_config() {
+        let files = vec![
+            (
+                "docs/pages/java.adoc".to_string(),
+                "public class Cfg { SecurityFilterChain chain(HttpSecurity http) { http.authorizeHttpRequests(a -> a.anyRequest().authenticated()); return null; } }".to_string(),
+            ),
+            (
+                "src/main/java/app/SecurityConfig.java".to_string(),
+                "public class Cfg { @Bean SecurityFilterChain chain(HttpSecurity http) { http.authorizeHttpRequests(a -> a.anyRequest().authenticated()); return null; } }".to_string(),
+            ),
+        ];
+        let (used, excluded) = policy_sources(&files);
+        assert_eq!(used.len(), 1, "只有生产配置可用");
+        assert_eq!(excluded.len(), 1, "文档示例必须被排除且有界上报");
+        assert_eq!(excluded[0].1, "documentation");
+        // 只用生产配置建链：文档那份不得贡献规则
+        let chains = security_config_chains(&used);
+        assert!(!chains.is_empty());
+        for c in &chains {
+            assert!(!c.file.contains("docs/"), "文档不得成为策略来源: {}", c.file);
+        }
+    }
+
+    /// 路由字面量：双引号优先，其次单引号，并补前导 `/`。
+    #[test]
+    fn test_extract_route_literal_quotes() {
+        assert_eq!(extract_route_literal("router.get('/users', h)"), Some("/users".to_string()));
+        assert_eq!(extract_route_literal("@GetMapping(\"/admin\")"), Some("/admin".to_string()));
+        assert_eq!(extract_route_literal("app.get('health', h)"), Some("/health".to_string()));
+        assert_eq!(extract_route_literal("@GetMapping"), None);
+    }
+
+    /// 非注解式声明的动词推断。
+    #[test]
+    fn test_infer_http_method() {
+        assert_eq!(infer_http_method("router.post('/x', h)"), Some("POST"));
+        assert_eq!(infer_http_method("r.GET(\"/health\", h)"), Some("GET"));
+        assert_eq!(infer_http_method("@bp.route('/x')"), None);
+    }
+
+    /// 单引号路由现在能出路径；条目必须带 file_role；测试文件不得标成 production。
+    #[test]
+    fn test_scan_routes_single_quoted_path_and_role() {
+        let js = "const router = express.Router();\nrouter.get('/users', list);\n";
+        let scan = scan_routes_in_file("src/routes.js", js, "", "test-id");
+        assert_eq!(scan.routes_total, 1);
+        assert_eq!(scan.routes[0]["route"], "/users", "{:?}", scan.routes[0]);
+        assert_eq!(scan.routes[0]["http_method"], "GET");
+        assert_eq!(scan.routes[0]["file_role"], "production");
+        assert_eq!(scan.routes[0]["route_path_unresolved"], false);
+
+        let scan_test = scan_routes_in_file("src/routes.test.js", js, "", "test-id");
+        assert_eq!(scan_test.routes[0]["file_role"], "test");
+    }
+
+    /// `Route::` 必须带动词：Java 里的 `HelloRoute::handle` 不得被当成路由。
+    #[test]
+    fn test_route_marker_not_matched_inside_identifier() {
+        let java = "class T {\n  Endpoint e = new Endpoint(\"/Hello\", HelloRoute::handle);\n}\n";
+        let scan = scan_routes_in_file("src/T.java", java, "", "test-id");
+        assert_eq!(scan.routes_total, 0, "{:?}", scan.routes);
+        // 正例：PHP 风格的 Route::get( 仍然成立
+        let php = "<?php\nRoute::get('/x', fn() => 1);\n";
+        let scan_php = scan_routes_in_file("routes/web.php", php, "", "test-id");
+        assert_eq!(scan_php.routes_total, 1, "{:?}", scan_php.routes);
+        assert_eq!(scan_php.routes[0]["route"], "/x");
+    }
+
+    /// Django 的路由声明语法未建模：扫描结果必须是 0 条（由上层如实标注"未建模"）。
+    #[test]
+    fn test_django_routes_not_parsed() {
+        let py = "from django.urls import path\nurlpatterns = [path('users/', views.users)]\n";
+        let scan = scan_routes_in_file("app/urls.py", py, "", "test-id");
+        assert_eq!(scan.routes_total, 0, "{:?}", scan.routes);
+    }
+
+
+    /// 未建模路由声明：Django/Rails 的声明式路由文件必须被识别（上层据此报"未建模"）。
+    #[test]
+    fn test_unmodelled_route_declaration() {
+        assert_eq!(
+            unmodelled_route_declaration("app/urls.py", "urlpatterns = [path('x/', v)]"),
+            Some("django")
+        );
+        assert_eq!(
+            unmodelled_route_declaration("config/routes.rb", "Rails.application.routes.draw do\n  get 'home'\nend"),
+            Some("rails")
+        );
+        assert_eq!(unmodelled_route_declaration("app/views.py", "x = 1"), None);
+        assert_eq!(unmodelled_route_declaration("src/a.java", "class A {}"), None);
+    }
+
+    /// 非 Java 栈的路由声明跨行时，路径字面量必须有界前瞻（否则路径静默为空）。
+    #[test]
+    fn test_scan_routes_multiline_nonjava_literal() {
+        let js = "const router = express.Router();\nrouter.get(\n  '/articles',\n  list,\n);\n";
+        let scan = scan_routes_in_file("src/routes.js", js, "", "test-id");
+        assert_eq!(scan.routes_total, 1);
+        assert_eq!(scan.routes[0]["route"], "/articles", "{:?}", scan.routes[0]);
+        assert_eq!(scan.routes[0]["route_path_unresolved"], false);
+        assert_eq!(scan.routes[0]["http_method"], "GET");
+    }
+

@@ -57,6 +57,8 @@ const MAX_FUNCTION_SUMMARIES: usize = 8;
 /// 单函数口径用 `MAX_DISPATCH_SITES`；项目级口径的站点来源是"所有已索引 C 类函数的体"，
 /// 数量不可预估，因此必须另设上限并如实上报截断（`sites_truncated_at_limit`）。
 const MAX_PROJECT_DISPATCH_SITES: usize = 64;
+/// 项目级端点表一次调用返回的条数上限（超限必须上报 `total_hits`/`truncated_at_limit`）。
+const MAX_PROJECT_ROUTE_HITS: usize = 400;
 const SKIP_DIRS: [&str; 8] = [
     ".git",
     "node_modules",
@@ -144,10 +146,12 @@ pub enum IntelKind {
     SanitizerGuards,
     FrameworkContext,
     IncrementalStatus,
+    /// 项目级端点表（一次调用返回全项目路由 + 覆盖判定）
+    ProjectRoutes,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 9] {
+    pub fn all() -> [IntelKind; 10] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -158,6 +162,7 @@ impl IntelKind {
             IntelKind::SanitizerGuards,
             IntelKind::FrameworkContext,
             IntelKind::IncrementalStatus,
+            IntelKind::ProjectRoutes,
         ]
     }
 
@@ -172,6 +177,7 @@ impl IntelKind {
             IntelKind::SanitizerGuards => "get_sanitizer_guards",
             IntelKind::FrameworkContext => "get_framework_context",
             IntelKind::IncrementalStatus => "get_incremental_status",
+            IntelKind::ProjectRoutes => "get_project_routes",
         }
     }
 
@@ -186,6 +192,7 @@ impl IntelKind {
             IntelKind::SanitizerGuards => "变量路径上的条件分支/校验逻辑",
             IntelKind::FrameworkContext => "路由 handler 的前置中间件/拦截器链",
             IntelKind::IncrementalStatus => "增量索引状态：冷启动/缓存命中/待重编译清单（stat 指纹 + TTL 缓存）",
+            IntelKind::ProjectRoutes => "项目级端点表：一次调用返回全项目路由与覆盖判定（含证据出处与提取形态，有界上报）",
         }
     }
 }
@@ -214,7 +221,7 @@ impl CodeIntelTool {
 
     fn params(&self) -> Vec<ToolParameter> {
         let mut params = match self.kind {
-            IntelKind::ProjectIndex | IntelKind::IncrementalStatus => vec![],
+            IntelKind::ProjectIndex | IntelKind::IncrementalStatus | IntelKind::ProjectRoutes => vec![],
             IntelKind::SymbolDefinition | IntelKind::SymbolReferences => {
                 vec![str_param("symbol", "符号名", true)]
             }
@@ -1707,55 +1714,36 @@ impl Tool for CodeIntelTool {
                 } else {
                     &scoped_evidence
                 };
-                let mut all_chains = security_config_chains(evidence_files);
-                    all_chains.extend(reactive_security_chains(evidence_files));
-                    all_chains.extend(spring_xml_security_chains(evidence_files));
-all_chains.extend(sa_token_security_chains(evidence_files));
+                // 策略来源只取**生产源码/配置**：文档示例、测试夹具与示例工程不得充当"项目策略"。
+                // 实测：文档里的示例会被读成"已保护"，对消费者就是假安全（私有台账 R247）。
+                // 被排除的文件有界上报，不静默。
+                let (policy_files_owned, excluded_policy_sources) = policy_sources(evidence_files);
+                let policy_files: &[(String, String)] = &policy_files_owned;
+                let mut all_chains = security_config_chains(policy_files);
+                    all_chains.extend(reactive_security_chains(policy_files));
+                    all_chains.extend(spring_xml_security_chains(policy_files));
+all_chains.extend(sa_token_security_chains(policy_files));
                 // 跨文件证据面必须在 `files` 被"按需单文件"遮蔽**之前**预取：
                 // 否则只会扫描被请求的那个文件（实测：容器过滤器与拦截器注册因此整批漏掉）
-                let container_filters = container_filter_registrations(evidence_files);
-                let interceptor_regs = interceptor_registrations(evidence_files);
+                let container_filters = container_filter_registrations(policy_files);
+                let interceptor_regs = interceptor_registrations(policy_files);
                 // 反应式配置未建模：需要被发现才能如实标注（同样在"按需单文件"遮蔽之前取）
-                let reactive_cfg = reactive_security_config(evidence_files);
+                let reactive_cfg = reactive_security_config(policy_files);
                 // 未建模保护栈信号（Sa-Token 等）：必须能在遮蔽前取到，才能如实标注
-                let unmodeled_signals = unmodeled_protection_signals(evidence_files);
-                all_chains.extend(shiro_filter_chains(evidence_files));
-                let security_config_decls = security_config_declarations(evidence_files);
+                let unmodeled_signals = unmodeled_protection_signals(policy_files);
+                all_chains.extend(shiro_filter_chains(policy_files));
+                let security_config_decls = security_config_declarations(policy_files);
                 let file = input["file"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArgument("缺少 file 参数".to_string()))?;
                 let handler = input["handler"].as_str().unwrap_or("");
-                let route_markers = [
-                    "@app.route", "@router.", "@RequestMapping", "app.get(", "router.get(",
-                    "r.GET(", "Route::", "#[get(", "#[post(",
-                // Java：Spring MVC 注解式映射与 JAX-RS
-                "@GetMapping", "@PostMapping", "@PutMapping", "@DeleteMapping", "@PatchMapping",
-                "@Path(",
-                ];
-                let middleware_markers = [
-                    "middleware",
-                    "before_action",
-                    "@UseGuards",
-                    "interceptor",
-                    "filter_chain",
-                    "login_required",
-                    "permission_required",
-                    "before_request",
-                    "app.use(",
-                    ".use(",
-                // Java：Spring Security 方法级/全局配置与过滤器链接入
-                "@PreAuthorize", "@PostAuthorize", "@Secured", "@RolesAllowed", "@PermitAll",
-                "@DenyAll", "@EnableWebSecurity", "@EnableMethodSecurity", "SecurityFilterChain",
-                "WebSecurityConfigurerAdapter", "authorizeHttpRequests", "authorizeRequests",
-                "addFilterBefore", "addFilterAfter", "OncePerRequestFilter", "HttpSecurity",
-                ];
-                let mut routes: Vec<Value> = Vec::new();
-                let mut middleware: Vec<Value> = Vec::new();
-                let mut routes_total = 0usize;
-                let mut middleware_total = 0usize;
-                let mut frame_cpp_fallback = false;
-                let mut frame_preproc_note: Option<String> = None;
-                let mut provenance: Vec<Provenance> = Vec::new();
+                let mut routes: Vec<Value>;
+                let mut middleware: Vec<Value>;
+                let mut routes_total: usize;
+                let mut middleware_total: usize;
+                let mut frame_cpp_fallback: bool;
+                let mut frame_preproc_note: Option<String>;
+                let mut provenance: Vec<Provenance>;
                 // 点名文件解析：索引未收录时按需读盘（见 read_requested_file）
                 let on_demand: Vec<(String, String)> =
                     match files.iter().find(|entry| entry.0.as_str() == file) {
@@ -1766,141 +1754,20 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                     if on_demand.is_empty() { "project-index" } else { "on-demand-read" };
                 let files: &[(String, String)] =
                     if on_demand.is_empty() { files } else { &on_demand };
-                match files.iter().find(|entry| entry.0.as_str() == file) {
-                    Some((path, content)) => {
-                        // 标记匹配走**代码段**：注释或字符串里出现的 `@app.route` / "middleware"
-                        // 不是真实路由/中间件（YAML 配置里的 `#` 注释同样会被剥掉，值本身保留）
-                        let code = code_lines(content, hash_comment_language(path));
-                        let originals: Vec<&str> = content.lines().collect();
-                        // 路由/中间件同样是"证据"：未激活分支里的绑定不算
-                        let (pp_states, pp_note) = preproc_view(path, content, false);
-                        frame_cpp_fallback = pp_note.is_some();
-                        frame_preproc_note = pp_note;
-                        // JAX-RS 资源类的门控：只有这类文件里"动词注解本身就是路由声明"
-                        // （方法级没有 `@Path` 时路由继承类级路径）。按代码段判定，注释/字符串不算。
-                        let jaxrs_resource = code.iter().any(|l| l.trim().contains("@Path("));
-                        for (idx, code_line) in code.iter().enumerate() {
-                            let ln = (idx + 1) as u32;
-                            let text = originals.get(idx).copied().unwrap_or("");
-                            let trimmed = text.trim();
-                            let code_trimmed = code_line.trim();
-                            if code_trimmed.is_empty() {
-                                continue;
-                            }
-                            if is_import_or_package_line(code_trimmed) {
-                                continue;
-                            }
-                            if pp_states.get(idx).map(|s| s.dead).unwrap_or(false) {
-                                continue; // 未激活分支里的路由/中间件不是证据
-                            }
-                            // JAX-RS 动词注解只有在"该方法没有自己的 `@Path`"时才是路由声明
-                            let jaxrs_verb = if jaxrs_resource {
-                                jaxrs_verb_only_route(content, ln)
-                            } else {
-                                None
-                            };
-                            if (route_markers.iter().any(|m| code_trimmed.contains(*m))
-                                || jaxrs_verb.is_some())
-                                && (handler.is_empty() || trimmed.contains(handler))
-                            {
-                                routes_total += 1;
-                                if routes.len() + middleware.len() < MAX_HITS {
-                                    provenance.push(prov(path, ln, &id));
-                                    // 路由值：取注解实参里的首个字符串字面量（原文里取，避免被代码视图抹空）
-                                    // 动词注解本身没有实参 ⇒ 路由完全由类级前缀给出（行内注释里的
-                                    // 字符串也不得被当成路径）。HTTP 方法：Spring 由注解名给出；
-                                    // JAX-RS 的动词通常与 `@Path` 不同行 ⇒ 交给注解块解析
-                                    let route_value = if jaxrs_verb.is_some() && !code_trimmed.contains("@Path(") {
-                                        None
-                                    } else {
-                                        trimmed
-                                            .split('"')
-                                            .nth(1)
-                                            .map(|s| s.to_string())
-                                            .filter(|s| !s.is_empty())
-                                    };
-                                    let http_method = [
-                                        ("@GetMapping", "GET"),
-                                        ("@PostMapping", "POST"),
-                                        ("@PutMapping", "PUT"),
-                                        ("@DeleteMapping", "DELETE"),
-                                        ("@PatchMapping", "PATCH"),
-                                        ("@RequestMapping", "ANY"),
-                                    ]
-                                    .iter()
-                                    .find(|(m, _)| code_trimmed.contains(*m))
-                                    .map(|(_, v)| v.to_string())
-                                    .or_else(|| {
-                                        (jaxrs_verb.is_some()
-                                            || (jaxrs_resource && code_trimmed.contains("@Path(")))
-                                        .then(|| {
-                                            jaxrs_http_method(content, ln).unwrap_or("ANY").to_string()
-                                        })
-                                    });
-                                    routes.push(json!({
-                                        "line": ln,
-                                        "text": trimmed.chars().take(200).collect::<String>(),
-                                        // Spring 语义：类级前缀与方法级路径拼接（空实参的方法级映射继承类级路径）
-                                        "route": annotate_route_with_prefix(
-                                            content,
-                                            ln,
-                                            route_value.as_deref(),
-                                        ),
-                                        "route_raw": route_value,
-                                        // 类级映射只提供前缀，不是端点
-                                        "scope": route_scope(content, ln),
-                                        "http_method": http_method,
-                                    }));
-                                }
-                            }
-                            if middleware_markers.iter().any(|m| code_trimmed.contains(*m)) {
-                                middleware_total += 1;
-                                if routes.len() + middleware.len() < MAX_HITS {
-                                    provenance.push(prov(path, ln, &id));
-                                    middleware.push(json!({"line": ln, "text": trimmed.chars().take(200).collect::<String>()}));
-                                }
-                            }
-                        }
-                    }
+                let scan = match files.iter().find(|entry| entry.0.as_str() == file) {
+                    Some((path, content)) => scan_routes_in_file(path, content, handler, &id),
                     None => {
                         return Err(ToolError::InvalidArgument(format!("文件不存在: {}", file)))
                     }
-                }
-                // 函数式路由（WebFlux RouterFunctions 风格）：与注解式并列的端点声明方式
-                let (fcontent, froutes) = read_requested_file(root, file)
-                    .map(|c| {
-                        let rs = functional_routes(&c);
-                        (c, rs)
-                    })
-                    .unwrap_or_default();
-                for (fln, fmethod, fpath) in froutes {
-                    if routes
-                        .iter()
-                        .any(|r| r["line"].as_u64() == Some(fln as u64) && r["route"].as_str() == Some(fpath.as_str()))
-                    {
-                        continue;
-                    }
-                    if routes.len() + middleware.len() >= MAX_HITS {
-                        break;
-                    }
-                    provenance.push(prov(file, fln, &id));
-                    routes.push(json!({
-                        "line": fln,
-                        "text": fcontent
-                            .lines()
-                            .nth(fln as usize - 1)
-                            .unwrap_or("")
-                            .trim()
-                            .chars()
-                            .take(200)
-                            .collect::<String>(),
-                        "route": fpath,
-                        "route_raw": fpath,
-                        "scope": "method",
-                        "http_method": fmethod,
-                        "route_source": "functional",
-                    }));
-                }                // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
+                };
+                routes = scan.routes;
+                middleware = scan.middleware;
+                routes_total = scan.routes_total;
+                middleware_total = scan.middleware_total;
+                frame_cpp_fallback = scan.cpp_fallback;
+                frame_preproc_note = scan.preproc_note;
+                provenance = scan.provenance;
+                // 端点的全局覆盖判定（与安全配置的路径匹配器比对）。
                 annotate_route_coverage(&mut routes, &all_chains);
                 // 安全配置声明并入中间件链：**只上报与本文件相关者**——本文件自身（若它是配置）
                 // 以及实际为端点提供覆盖判定的配置（来自 global_match.chain_file），
@@ -2151,9 +2018,9 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                                 }
                                 let kind = if auth_markers.iter().any(|m| prev.contains(*m)) {
                                     "auth"
-                                } else if route_markers.iter().any(|m| prev.contains(*m)) {
+                                } else if ROUTE_MARKERS.iter().any(|m| prev.contains(*m)) {
                                     "route"
-                                } else if middleware_markers.iter().any(|m| prev.contains(*m)) {
+                                } else if MIDDLEWARE_MARKERS.iter().any(|m| prev.contains(*m)) {
                                     "middleware"
                                 } else {
                                     "other"
@@ -2316,6 +2183,54 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                 if fw != "flask" && fw != "express" && fw != "django" {
                     reasons.push("ordering_rule_not_ground_truth_verified");
                 }
+                // ── 端点提取形态与可信度（消费者必须能分清：声明式 / 仅标记 / 框架未建模）──
+                let marker_only = !(file.ends_with(".java")
+                    || file.ends_with(".kt")
+                    || file.ends_with(".xml"));
+                // 声明式路由但语法未建模的文件（如 Django 的 urls.py）：必须显式标注，
+                // 不能让"0 条路由"被读成"没有攻击面"。
+                let unmodelled_framework = std::fs::read_to_string(root.join(&file))
+                    .ok()
+                    .and_then(|c| unmodelled_route_declaration(&file, &c));
+                let route_extraction = if fw == "django" || unmodelled_framework.is_some() {
+                    "framework_not_modeled"
+                } else if routes.is_empty() {
+                    "none_detected"
+                } else if marker_only {
+                    "marker_only"
+                } else {
+                    "declared_annotations"
+                };
+                // 路径没解析出来的条目数：非 Java 栈常见（无组前缀/非常规字面量），必须如实报
+                let route_paths_unresolved = routes
+                    .iter()
+                    .filter(|r| r.get("route").map(|v| v.is_null()).unwrap_or(true))
+                    .count();
+                let mut route_roles: std::collections::BTreeMap<String, usize> =
+                    std::collections::BTreeMap::new();
+                for r in routes.iter() {
+                    let role = r
+                        .get("file_role")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("production");
+                    *route_roles.entry(role.to_string()).or_insert(0) += 1;
+                }
+                let excluded_policy_json: Vec<Value> = excluded_policy_sources
+                    .iter()
+                    .map(|(p, role)| json!({"file": p, "role": role}))
+                    .collect();
+                if route_extraction == "framework_not_modeled" {
+                    reasons.push("route_extraction_framework_not_modeled");
+                }
+                if route_extraction == "marker_only" {
+                    reasons.push("route_extraction_marker_only");
+                }
+                if route_paths_unresolved > 0 {
+                    reasons.push("route_paths_unresolved");
+                }
+                if !excluded_policy_json.is_empty() {
+                    reasons.push("policy_sources_excluded_nonproduction");
+                }
                 IntelEnvelope {
                     data: json!({
                         "file": file,
@@ -2333,6 +2248,15 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                         "django_middleware_order": django_middleware,
                         "decorator_application_order": "bottom_up_wrapping",
                         "routes": routes,
+                        "route_extraction": route_extraction,
+                        "unmodelled_framework": unmodelled_framework,
+                        "route_paths_unresolved": route_paths_unresolved,
+                        "route_roles": route_roles,
+                        "policy_sources": {
+                            "used": policy_files.len(),
+                            "excluded_total": excluded_policy_json.len(),
+                            "excluded": excluded_policy_json,
+                        },
                         "middleware": middleware,
                         "total_hits": {
                             "routes": routes_total,
@@ -2404,6 +2328,124 @@ all_chains.extend(sa_token_security_chains(evidence_files));
                     uncertainty: Uncertainty::new("medium", &reasons, 0),
                 }
             }
+            IntelKind::ProjectRoutes => {
+                // 一次调用返回全项目端点表：策略链**只构建一次**，再扫已加载的文件，
+                // 避免"逐文件调用"那种 O(N^2) 成本（每次调用都重扫模块配置）。
+                let (policy_files, excluded_policy_sources) = policy_sources(files);
+                let mut all_chains = security_config_chains(&policy_files);
+                all_chains.extend(reactive_security_chains(&policy_files));
+                all_chains.extend(spring_xml_security_chains(&policy_files));
+                all_chains.extend(shiro_filter_chains(&policy_files));
+                all_chains.extend(sa_token_security_chains(&policy_files));
+                let container_filters = container_filter_registrations(&policy_files);
+                let interceptor_regs = interceptor_registrations(&policy_files);
+                let mut routes: Vec<Value> = Vec::new();
+                let mut provenance: Vec<Provenance> = Vec::new();
+                let mut routes_total = 0usize;
+                let mut files_with_routes = 0usize;
+                let mut truncated_at_limit = false;
+                let mut nonproduction_files_present = 0usize;
+                let mut unparsed_route_files = 0usize;
+                let mut unparsed_route_samples: Vec<Value> = Vec::new();
+                let mut route_roles: std::collections::BTreeMap<String, usize> =
+                    std::collections::BTreeMap::new();
+                let (sindex, _, _) = crate::symbol_index::get_or_build(root, refresh, None);
+                for (path, content) in files.iter() {
+                    if !crate::symbol_index::is_code_file(path) {
+                        continue;
+                    }
+                    if policy_file_role(path) != "production" {
+                        nonproduction_files_present += 1;
+                    }
+                    if let Some(fw_name) = unmodelled_route_declaration(path, content) {
+                        unparsed_route_files += 1;
+                        if unparsed_route_samples.len() < 5 {
+                            unparsed_route_samples.push(json!({"file": path, "framework": fw_name}));
+                        }
+                    }
+                    let scan = scan_routes_in_file(path, content, "", &id);
+                    if scan.routes_total > 0 {
+                        files_with_routes += 1;
+                    }
+                    routes_total += scan.routes_total;
+                    for mut r in scan.routes {
+                        if routes.len() >= MAX_PROJECT_ROUTE_HITS {
+                            truncated_at_limit = true;
+                            break;
+                        }
+                        if let Some(obj) = r.as_object_mut() {
+                            obj.insert("file".to_string(), json!(path));
+                        }
+                        let role = r
+                            .get("file_role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("production")
+                            .to_string();
+                        *route_roles.entry(role).or_insert(0) += 1;
+                        if let Some(line) = r.get("line").and_then(|v| v.as_u64()) {
+                            provenance.push(prov(path, line as u32, &id));
+                        }
+                        routes.push(r);
+                    }
+                    if truncated_at_limit {
+                        break;
+                    }
+                }
+                annotate_route_coverage(&mut routes, &all_chains);
+                annotate_container_filters(&mut routes, &container_filters);
+                annotate_interceptors(&mut routes, &interceptor_regs);
+                let route_paths_unresolved = routes
+                    .iter()
+                    .filter(|r| r.get("route").map(|v| v.is_null()).unwrap_or(true))
+                    .count();
+                let excluded_policy_json: Vec<Value> = excluded_policy_sources
+                    .iter()
+                    .map(|(p, role)| json!({"file": p, "role": role}))
+                    .collect();
+                let mut reasons: Vec<&str> = vec!["project_level_scan", "marker_scan_only"];
+                if truncated_at_limit {
+                    reasons.push("truncated_at_limit");
+                }
+                if route_paths_unresolved > 0 {
+                    reasons.push("route_paths_unresolved");
+                }
+                if !excluded_policy_json.is_empty() {
+                    reasons.push("policy_sources_excluded_nonproduction");
+                }
+                if nonproduction_files_present > 0 {
+                    reasons.push("nonproduction_files_present_see_route_roles");
+                }
+                if unparsed_route_files > 0 {
+                    reasons.push("unmodelled_route_declarations_present");
+                }
+                provenance.truncate(MAX_PROJECT_ROUTE_HITS);
+                IntelEnvelope {
+                    data: json!({
+                        "files_indexed": files.len(),
+                        "files_with_routes": files_with_routes,
+                        "routes": routes,
+                        "route_roles": route_roles,
+                        "route_paths_unresolved": route_paths_unresolved,
+                        "total_hits": {"routes": routes_total},
+                        "limit": MAX_PROJECT_ROUTE_HITS,
+                        "truncated_at_limit": truncated_at_limit,
+                        "unmodelled_route_files": unparsed_route_files,
+                        "unmodelled_route_samples": unparsed_route_samples,
+                        "policy_sources": {
+                            "used": policy_files.len(),
+                            "excluded_total": excluded_policy_json.len(),
+                            "excluded": excluded_policy_json,
+                        },
+                        "index": symbol_index_stats(&sindex, crate::symbol_index::HitSource::Miss, 0),
+                    }),
+                    provenance,
+                    uncertainty: Uncertainty::new(
+                        if truncated_at_limit { "high" } else { "medium" },
+                        &reasons,
+                        0,
+                    ),
+                }
+            }
         };
         let text = format!("{}: {} files scanned", self.kind.name(), files.len());
         Ok(ToolResult::json(
@@ -2413,7 +2455,7 @@ all_chains.extend(sa_token_security_chains(evidence_files));
     }
 }
 
-/// 注册高阶代码智能工具（9 个；report_finding 由 built-in 提供）。
+/// 注册高阶代码智能工具（10 个；report_finding 由 built-in 提供）。
 pub async fn register_code_intel_tools(registry: &Arc<ToolRegistry>, project_path: String) {
     for kind in IntelKind::all() {
         let tool: Arc<dyn Tool> = Arc::new(CodeIntelTool::new(project_path.clone(), kind));
@@ -2429,7 +2471,7 @@ pub fn is_code_intel_tool(name: &str) -> bool {
 }
 
 /// 目标工具面名单（9 + report_finding）。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 10] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 11] = [
     "get_project_index",
     "get_symbol_definition",
     "get_symbol_references",
@@ -2439,6 +2481,7 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 10] = [
     "get_sanitizer_guards",
     "get_framework_context",
     "get_incremental_status",
+    "get_project_routes",
     "report_finding",
 ];
 

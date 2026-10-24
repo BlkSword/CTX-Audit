@@ -32,7 +32,7 @@
 | 启动 | `ctx-audit mcp`（stdio JSON-RPC，一行一个请求） |
 | **项目根** | **启动该进程时的工作目录**。没有 `--project` 参数；所有 `file` 参数都相对它 |
 | 必须先扫描吗 | **不需要**。证据工具按需建立索引：首次调用返回 `index.hit_source=miss` + `build_ms` + `files_indexed`；索引落盘复用；改完代码传 `refresh: true` |
-| 默认工具面 | **13 个** = 9 个高阶能力 + `read_file` / `list_files` / `report_finding` / `finish_analysis`。旧细粒度工具面需 `--legacy-tools` |
+| 默认工具面 | **14 个** = 10 个高阶能力 + `read_file` / `list_files` / `report_finding` / `finish_analysis`。旧细粒度工具面需 `--legacy-tools` |
 | 谁判定 | 你。finding 是候选，每条结论都必须追溯到工具输出 |
 
 ---
@@ -235,7 +235,7 @@ finding 是**候选**：`candidate: true`、`decision_required: true`。读 `det
 
 ## 7. 工具清单
 
-**默认面（13）**
+**默认面（14）**
 
 | 工具 | 必填 | 可选 |
 |---|---|---|
@@ -247,6 +247,7 @@ finding 是**候选**：`candidate: true`、`decision_required: true`。读 `det
 | `get_dataflow_path` | `source` | `sink`、`file`、`refresh` |
 | `get_sanitizer_guards` | `file` | `line`、`refresh` |
 | `get_framework_context` | `file` | `handler`、`refresh` |
+| `get_project_routes` | — | — |
 | `get_incremental_status` | — | `refresh` |
 | `read_file` | `file_path` | `start_line`、`end_line` |
 | `list_files` | — | `path`、`pattern` |

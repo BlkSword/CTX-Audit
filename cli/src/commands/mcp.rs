@@ -4069,7 +4069,7 @@ fn evidence_step_params(
 
 /// 默认工具面名单。
 ///
-/// 10 个高阶 code-intel 能力 + 3 个基础读写工具；其余（遗留细粒度工具、
+/// 11 个高阶 code-intel 能力 + 3 个基础读写工具；其余（遗留细粒度工具、
 /// MCP 审计脚手架）只有 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1` 时才暴露。
 fn is_default_surface_tool(name: &str) -> bool {
     ctx_audit_tools::is_code_intel_tool(name)
@@ -4919,7 +4919,7 @@ mod tests {
         assert!(inv.input_schema["properties"]["vuln_type"].is_object());
     }
 
-    /// 默认工具面 = 10 个高阶能力 + 3 个基础读写工具。
+    /// 默认工具面 = 11 个高阶能力 + 3 个基础读写工具。
     #[test]
     fn test_default_surface_membership() {
         for name in ctx_audit_tools::CODE_INTEL_TOOL_SURFACE {
@@ -4942,7 +4942,7 @@ mod tests {
         }
     }
 
-    /// 默认工具面名单无重复，且为 10 + 3。
+    /// 默认工具面名单无重复，且为 11 + 3。
     #[test]
     fn test_default_surface_shape() {
         let mut names: Vec<&str> = ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.to_vec();
@@ -4951,7 +4951,7 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "默认工具面名单存在重复项");
-        assert_eq!(before, 13, "默认工具面应为 10 高阶 + 3 基础");
+        assert_eq!(before, 14, "默认工具面应为 11 高阶 + 3 基础");
     }
 
     /// legacy gate：默认 state 的 registry 只含默认面工具；legacy 打开后严格更多。

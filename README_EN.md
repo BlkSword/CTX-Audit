@@ -66,7 +66,7 @@ cargo install --path cli --locked
 
 ## LLM Collaboration via MCP
 
-`ctx-audit mcp` is the evidence-supply main line. It exposes **13 tools = 9 high-level capabilities + 4 basic tools** by default, so the model does not have to pick between dozens of fine-grained node operations:
+`ctx-audit mcp` is the evidence-supply main line. It exposes **14 tools = 10 high-level capabilities + 4 basic tools** by default, so the model does not have to pick between dozens of fine-grained node operations:
 
 | High-level capability | Semantics | Main payload |
 |-----------------------|-----------|--------------|
@@ -78,6 +78,7 @@ cargo install --path cli --locked
 | `get_dataflow_path` | source→sink path and the guards on it | path steps + barriers |
 | `get_sanitizer_guards` | Conditional branches / checks on the path | guard list |
 | `get_framework_context` | Middleware/interceptor chain before a route handler | chain + unrecognised parts |
+| `get_project_routes` | Project-wide endpoint table in one call (bounded) | routes + coverage verdicts + extraction shape |
 | `get_incremental_status` | Index state, cache freshness, SLO slots | status + cache metrics |
 
 Basic tools: `read_file` / `list_files` / `report_finding` / `finish_analysis`.
@@ -137,7 +138,7 @@ CTX-Audit also ships as an out-of-tree plugin for the [DeepSeek Harness](https:/
 
 **What the panel does**
 
-- **Status at a glance**: MCP configuration, the MCP engine (a real stdio handshake listing the 13 tools), logs, evidence artifacts, roadmap, agent presets.
+- **Status at a glance**: MCP configuration, the MCP engine (a real stdio handshake listing the 14 tools), logs, evidence artifacts, roadmap, agent presets.
 - **Point it anywhere**: the working-directory control in the top-right corner switches the project root to any directory (across drives, walking down level by level) and picks a target inside it; artifacts, logs and the health readout all follow that target.
 - **Project health**: calling `get_project_index` with the selected directory as the working directory reports files scanned, whether semantic analysis backs the result, primary languages, build context and timing.
 - **Tool cards**: when a session calls an `mcp__ctxaudit__*` tool, the call renders as a CTX-Audit card (tool name, outcome, line count, expandable result).
@@ -169,7 +170,7 @@ Full details live in [`harness/plugins/ctx-audit-web/README.md`](harness/plugins
 ### `mcp` — evidence-supply main line
 
 ```bash
-ctx-audit mcp                 # default surface: 9 high-level capabilities + 4 basic tools = 13
+ctx-audit mcp                 # default surface: 10 high-level capabilities + 4 basic tools = 14
 ctx-audit mcp --legacy-tools  # also register the legacy fine-grained surface
 ```
 

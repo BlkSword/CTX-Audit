@@ -37,7 +37,7 @@ weakly to the first, and does not own the last.
 | Start | `ctx-audit mcp` (stdio JSON-RPC, one request per line) |
 | **Project root** | **The working directory the process was started in.** There is no `--project` flag; every `file` argument is relative to it |
 | Must I scan first? | **No.** Evidence tools build the index on demand: the first call returns `index.hit_source=miss` plus `build_ms` and `files_indexed`; the index is persisted and reused. Pass `refresh: true` after editing code |
-| Default tool surface | **13 tools** = 9 high-level capabilities + `read_file` / `list_files` / `report_finding` / `finish_analysis`. The legacy fine-grained surface needs `--legacy-tools` |
+| Default tool surface | **14 tools** = 10 high-level capabilities + `read_file` / `list_files` / `report_finding` / `finish_analysis`. The legacy fine-grained surface needs `--legacy-tools` |
 | Who judges | You. Findings are candidates; every conclusion must trace back to tool output |
 
 ---
@@ -257,7 +257,7 @@ a look — the engine never removes a candidate silently, and neither should you
 
 ## 7. Tool reference
 
-**Default surface (13)**
+**Default surface (14)**
 
 | Tool | Required | Optional |
 |---|---|---|
@@ -269,6 +269,7 @@ a look — the engine never removes a candidate silently, and neither should you
 | `get_dataflow_path` | `source` | `sink`, `file`, `refresh` |
 | `get_sanitizer_guards` | `file` | `line`, `refresh` |
 | `get_framework_context` | `file` | `handler`, `refresh` |
+| `get_project_routes` | — | — |
 | `get_incremental_status` | — | `refresh` |
 | `read_file` | `file_path` | `start_line`, `end_line` |
 | `list_files` | — | `path`, `pattern` |
