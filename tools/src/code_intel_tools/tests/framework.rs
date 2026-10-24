@@ -2328,6 +2328,28 @@ use super::super::*;
     }
 
 
+    /// 回归：Go 嵌套 Group 的前缀必须累加（`v1 := api.Group("/v1")` 在 `/api` 之下）。
+    #[test]
+    fn test_scan_non_java_gin_nested_group() {
+        let go = concat!(
+            "func main() {\n",
+            "  r := gin.New()\n",
+            "  api := r.Group(\"/api\")\n",
+            "  v1 := api.Group(\"/v1\")\n",
+            "  v1.PUT(\"/users/:id\", h)\n",
+            "}\n",
+        );
+        let rs = scan_non_java_routes("main.go", go);
+        let got: Vec<(String, String)> = rs
+            .iter()
+            .map(|x| (
+                x["http_method"].as_str().unwrap_or("").to_string(),
+                x["route"].as_str().unwrap_or("").to_string(),
+            ))
+            .collect();
+        assert!(got.contains(&("PUT".into(), "/api/v1/users/:id".into())), "{got:?}");
+    }
+
     /// 回归：Cypress 的 `cy.get(...)` 与含插值的模板字符串都不是可静态确定的路由。
     #[test]
     fn test_scan_non_java_ignores_cypress_and_templated_paths() {

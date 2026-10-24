@@ -217,18 +217,16 @@ pub(crate) fn scan_non_java_routes(path: &str, content: &str) -> Vec<Value> {
         if is_go {
             // `api := r.Group("/api")`
             if let Some(g) = raw_t.find(".Group(") {
-                // `lhs := parent.Group("/prefix")`：lhs 是新组变量，parent 是父接收者
+                // `lhs := parent.Group("/prefix")`：lhs 是新组变量，parent 是父接收者。
+                // 注意：`:=` 里含 `:`，必须先按 `:=`/`=` 切分再取 parent，
+                // 否则 `v1 := api.Group(...)` 的 parent 会被切成空串（嵌套组前缀丢失）。
                 let head = &raw_t[..g];
-                let lhs = head
-                    .split([':', '='])
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                let parent = head
-                    .split([':', '='])
-                    .nth(1)
-                    .unwrap_or("")
+                let (lhs_raw, rhs_raw) = match head.split_once(":=") {
+                    Some((l, r)) => (l, r),
+                    None => head.split_once('=').unwrap_or((head, "")),
+                };
+                let lhs = lhs_raw.trim().to_string();
+                let parent = rhs_raw
                     .trim()
                     .split('.')
                     .next()
