@@ -4,8 +4,11 @@
 //! CLI 命令实现
 
 pub mod analyze;
+pub mod baseline;
 pub mod config;
 pub mod daemon;
+pub mod diff_routes;
+pub mod explain_route;
 pub mod findings;
 pub mod mcp;
 pub mod rules;

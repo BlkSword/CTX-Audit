@@ -288,6 +288,74 @@ enum Commands {
         from_advisory: Option<String>,
     },
 
+    /// 鉴权基线卡（链/规则/过滤器/注解消费者/被关闭的钩子）
+    ///
+    /// 把"这个项目的'受保护'是什么意思"压成一屏可复核的事实，
+    /// 替代审计员重新读一遍安全配置的固定成本。
+    Baseline {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 输出格式 (text, json)
+        #[arg(short = 'o', long = "output", default_value = "text")]
+        output: String,
+    },
+
+    /// 单条路由判定（verbatim 证据 + 可机械证伪的 --assert 退出码）
+    #[command(after_help = "退出码：--assert 不匹配时返回 1，可用于 CI/脚本化复核。")]
+    ExplainRoute {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 路由（含类级前缀，如 /data/export）
+        #[arg(value_name = "ROUTE")]
+        route: Option<String>,
+
+        /// 相对文件路径（与 ROUTE 二选一或并用）
+        #[arg(long)]
+        file: Option<String>,
+
+        /// handler 方法名（需配合 --file）
+        #[arg(long)]
+        handler: Option<String>,
+
+        /// 断言：covered | uncovered | permitted | any（不匹配则退出码 1）
+        #[arg(long, value_name = "EXPECT")]
+        assert: Option<String>,
+
+        /// 输出格式 (text, json)
+        #[arg(short = 'o', long = "output", default_value = "text")]
+        output: String,
+    },
+
+    /// 端点与覆盖判定的基线 diff（CI 门禁）
+    ///
+    /// 重复审计里真正昂贵的不是"再看一遍"，而是"判断哪些是新变的"。
+    #[command(after_help = "退出码：--fail-on-new-uncovered 且存在新增未覆盖端点时返回 1。")]
+    DiffRoutes {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 基线文件（默认 <PATH>/.ctx-audit/routes-baseline.json）
+        #[arg(long, value_name = "FILE")]
+        since: Option<String>,
+
+        /// 把当前端点表写成基线
+        #[arg(long)]
+        write_baseline: bool,
+
+        /// 新增且未覆盖的端点存在时返回退出码 1
+        #[arg(long)]
+        fail_on_new_uncovered: bool,
+
+        /// 输出格式 (text, json)
+        #[arg(short = 'o', long = "output", default_value = "text")]
+        output: String,
+    },
+
     /// 规则管理
     ///
     /// 列出、验证自定义检测规则
@@ -618,6 +686,36 @@ async fn main() -> Result<()> {
                 from_advisory,
             )
                 .await
+        }
+
+        Commands::Baseline { path, output } => commands::baseline::execute(path, output).await,
+
+        Commands::ExplainRoute {
+            path,
+            route,
+            file,
+            handler,
+            assert,
+            output,
+        } => {
+            commands::explain_route::execute(path, route, file, handler, assert, output).await
+        }
+
+        Commands::DiffRoutes {
+            path,
+            since,
+            write_baseline,
+            fail_on_new_uncovered,
+            output,
+        } => {
+            commands::diff_routes::execute(
+                path,
+                since,
+                write_baseline,
+                fail_on_new_uncovered,
+                output,
+            )
+            .await
         }
 
         Commands::Rules { action } => match action {
