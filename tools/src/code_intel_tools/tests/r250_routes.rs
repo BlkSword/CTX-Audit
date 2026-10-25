@@ -487,3 +487,76 @@ async fn test_fully_qualified_annotation_is_detected() {
     assert_eq!(ann["result"], "present_and_consumed", "{ann}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 跨文件 Express mount：`app.use('/api', posts)` + `require('./routes/posts')`
+/// ⇒ 子路由文件里的 `router.get('/x')` 合成 `/api/x`（R252 T3 的漏项）。
+#[test]
+fn test_express_cross_file_mount_prefix() {
+    let root = std::env::temp_dir().join("ctx-audit-r253-mount");
+    let _ = std::fs::remove_dir_all(&root);
+    let app = concat!(
+        "const express = require('express');\n",
+        "const app = express();\n",
+        "const posts = require('./routes/posts');\n",
+        "app.use('/api', posts);\n",
+        "app.listen(3000);\n",
+    );
+    let posts = concat!(
+        "const express = require('express');\n",
+        "const router = express.Router();\n",
+        "router.get('/posts', (req, res) => res.send([]));\n",
+        "router.delete('/posts/:id', (req, res) => res.send('ok'));\n",
+        "module.exports = router;\n",
+    );
+    write_file(&root, "src/app.js", app);
+    write_file(&root, "src/routes/posts.js", posts);
+    let files = loaded(&[("src/app.js", app), ("src/routes/posts.js", posts)]);
+    let table = compute_routes(&root, &files, "statv1:test", false, &RouteFilter::default(), false);
+    let routes: Vec<String> = table.data["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["route"].as_str().map(|s| s.to_string()))
+        .collect();
+    assert!(
+        routes.iter().any(|r| r == "/api/posts"),
+        "跨文件 mount 前缀应被合成: {routes:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 非建模栈必须有信号：PHP/Rust/C# 的路由声明要出现在 `unmodelled_route_stacks` 里，
+/// 而不是沉默（R252 T3 的洞：`unmodelled_route_files=0` 会让人读成"没有端点"）。
+#[test]
+fn test_unmodelled_stack_signal() {
+    let root = std::env::temp_dir().join("ctx-audit-r253-unmodelled");
+    let _ = std::fs::remove_dir_all(&root);
+    let php = "<?php\nRoute::get('/php/ping', function () { return 'pong'; });\n";
+    let rust = "#[get(\"/rust/ping\")]\nasync fn ping() -> impl Responder { \"pong\" }\n";
+    let cs = "var app = builder.Build();\napp.MapGet(\"/cs/ping\", () => \"pong\");\n";
+    write_file(&root, "php/routes/web.php", php);
+    write_file(&root, "rust/src/main.rs", rust);
+    write_file(&root, "cs/Program.cs", cs);
+    let files = loaded(&[
+        ("php/routes/web.php", php),
+        ("rust/src/main.rs", rust),
+        ("cs/Program.cs", cs),
+    ]);
+    let table = compute_routes(&root, &files, "statv1:test", false, &RouteFilter::default(), false);
+    assert_eq!(
+        table.data["unmodelled_route_files"], 3,
+        "{}", table.data["unmodelled_route_files"]
+    );
+    let stacks = table.data["unmodelled_route_stacks"].as_object().unwrap();
+    assert!(stacks.contains_key("php-laravel"), "{stacks:?}");
+    assert!(stacks.contains_key("rust-web"), "{stacks:?}");
+    assert!(stacks.contains_key("csharp-aspnet"), "{stacks:?}");
+    // 这些栈里"顺带"报出的路由必须打上栈名，消费者才知道它未被建模
+    for r in table.data["routes"].as_array().unwrap() {
+        assert!(
+            r.get("unmodelled_stack").is_some(),
+            "非建模栈的路由必须带 unmodelled_stack: {r}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -2116,6 +2116,49 @@ pub(crate) fn unmodelled_route_declaration(path: &str, content: &str) -> Option<
     if file_name == "routes.rb" && (content.contains(" get '") || content.contains(" post '") || content.contains("resources ")) {
         return Some("rails");
     }
+    // 以下栈**没有**路由解析器：只给"这里有端点声明但未建模"的信号。
+    // 否则消费者会把空端点表读成"没有攻击面"（R252 T3 实测：PHP/Rust/C# 完全静默）。
+    let ext = normalized.rsplit('.').next().unwrap_or("");
+    if ext == "php"
+        && (content.contains("Route::get")
+            || content.contains("Route::post")
+            || content.contains("Route::put")
+            || content.contains("Route::delete")
+            || content.contains("Route::match")
+            || content.contains("->get('")
+            || content.contains("->post('"))
+    {
+        return Some("php-laravel");
+    }
+    if ext == "rs"
+        && (content.contains("#[get(\"/")
+            || content.contains("#[post(\"/")
+            || content.contains(".route(\"/")
+            || content.contains("web::resource("))
+    {
+        return Some("rust-web");
+    }
+    if ext == "cs"
+        && (content.contains("MapGet(")
+            || content.contains("MapPost(")
+            || content.contains("MapPut(")
+            || content.contains("MapDelete(")
+            || content.contains("[HttpGet")
+            || content.contains("[HttpPost"))
+    {
+        return Some("csharp-aspnet");
+    }
+    if (ext == "ex" || ext == "exs")
+        && (content.contains("get \"/") || content.contains("post \"/") || content.contains("resources \""))
+    {
+        return Some("elixir-phoenix");
+    }
+    if ext == "kt" && (content.contains("routing {") || content.contains("get(\"/")) {
+        return Some("kotlin-ktor");
+    }
+    if ext == "scala" && (content.contains("path(\"") || content.contains("get {")) {
+        return Some("scala-play");
+    }
     None
 }
 
@@ -2256,6 +2299,17 @@ pub(crate) fn scan_routes_in_file(
     handler: &str,
     id: &str,
 ) -> FileRouteScan {
+    scan_routes_in_file_prefixed(path, content, handler, id, "")
+}
+
+/// 带 mount 前缀的文件级扫描（跨文件 Express `app.use` 前缀由调用方传入）。
+pub(crate) fn scan_routes_in_file_prefixed(
+    path: &str,
+    content: &str,
+    handler: &str,
+    id: &str,
+    mount_prefix: &str,
+) -> FileRouteScan {
     let code = code_lines(content, hash_comment_language(path));
     let originals: Vec<&str> = content.lines().collect();
     let (pp_states, pp_note) = preproc_view(path, content, false);
@@ -2276,7 +2330,7 @@ pub(crate) fn scan_routes_in_file(
         cpp_fallback: pp_note.is_some(),
     };
     if non_java && has_syntax_scanner(path) {
-        out.routes = scan_non_java_routes(path, content);
+        out.routes = scan_non_java_routes_with_prefix(path, content, mount_prefix);
         out.routes_total = out.routes.len();
         for (idx, code_line) in code.iter().enumerate() {
             let t = code_line.trim();

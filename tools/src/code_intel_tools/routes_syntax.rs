@@ -194,6 +194,15 @@ pub(crate) fn has_syntax_scanner(path: &str) -> bool {
 ///
 /// 只对**代码视图**做调用识别（注释里的不算），路径字面量从**原文**取（代码视图会抹字符串）。
 pub(crate) fn scan_non_java_routes(path: &str, content: &str) -> Vec<Value> {
+    scan_non_java_routes_with_prefix(path, content, "")
+}
+
+/// 带跨文件 mount 前缀的语法扫描：`app.use('/api', posts)` 挂载的子路由文件整体加前缀。
+pub(crate) fn scan_non_java_routes_with_prefix(
+    path: &str,
+    content: &str,
+    mount_prefix: &str,
+) -> Vec<Value> {
     let role = policy_file_role(path);
     let raw: Vec<&str> = content.lines().collect();
     let code = code_lines(content, hash_comment_language(path));
@@ -409,6 +418,24 @@ pub(crate) fn scan_non_java_routes(path: &str, content: &str) -> Vec<Value> {
                     }
                 }
                 let _ = found;
+            }
+        }
+    }
+    // 跨文件 mount 前缀：整个文件的相对路由再拼一层
+    if !mount_prefix.is_empty() && mount_prefix != "/" {
+        for r in out.iter_mut() {
+            if let Some(obj) = r.as_object_mut() {
+                let cur = obj
+                    .get("route")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !cur.is_empty() {
+                    obj.insert(
+                        "route".to_string(),
+                        json!(join_route_path(Some(mount_prefix), &cur)),
+                    );
+                }
             }
         }
     }
@@ -696,4 +723,193 @@ impl ModuleGraph {
         }
         (keep, "module_affinity")
     }
+}
+
+
+// ────────────────────────── 跨文件 Express mount 前缀（R253）──────────────────────────
+
+fn is_js_like(path: &str) -> bool {
+    matches!(
+        path.rsplit('.').next().unwrap_or(""),
+        "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx"
+    )
+}
+
+fn is_ident_str(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .next()
+            .map(|c| c.is_alphabetic() || c == '_' || c == '$')
+            .unwrap_or(false)
+        && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+}
+
+/// `require('...')` / `require("...")` 里的模块说明符。
+fn require_spec(text: &str) -> Option<String> {
+    let pos = text.find("require(")?;
+    let rest = text[pos + "require(".len()..].trim_start();
+    let quote = rest.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    let after = &rest[1..];
+    let end = after.find(quote)?;
+    Some(after[..end].to_string())
+}
+
+/// `import x from './x'` 的模块说明符。
+fn import_spec(line: &str) -> Option<String> {
+    let t = line.trim();
+    if !t.starts_with("import ") {
+        return None;
+    }
+    let pos = t.find(" from ")?;
+    let rest = t[pos + " from ".len()..].trim();
+    let quote = rest.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    let after = &rest[1..];
+    let end = after.find(quote)?;
+    Some(after[..end].to_string())
+}
+
+/// 相对模块说明符 → 项目内文件路径（尝试常见扩展名与 index 文件）。
+fn resolve_js_module(from_path: &str, spec: &str, files: &[(String, String)]) -> Option<String> {
+    if !spec.starts_with('.') {
+        return None;
+    }
+    let dir = match from_path.rsplit_once('/') {
+        Some((d, _)) => d.to_string(),
+        None => String::new(),
+    };
+    let joined_raw = if dir.is_empty() {
+        spec.to_string()
+    } else {
+        format!("{dir}/{spec}")
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in joined_raw.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    let joined = parts.join("/");
+    let candidates = [
+        joined.clone(),
+        format!("{joined}.js"),
+        format!("{joined}.mjs"),
+        format!("{joined}.cjs"),
+        format!("{joined}.ts"),
+        format!("{joined}.tsx"),
+        format!("{joined}/index.js"),
+        format!("{joined}/index.ts"),
+    ];
+    let set: std::collections::BTreeSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    candidates.into_iter().find(|c| set.contains(c.as_str()))
+}
+
+/// 跨文件 Express mount 前缀：`app.use('/api', posts)` + `const posts = require('./routes/posts')`
+/// ⇒ `routes/posts.js` 里的 `router.get('/x')` 合成 `/api/x`。
+///
+/// 只处理相对模块说明符，嵌套深度上限 5；同一文件多处挂载时取首个前缀（更复杂的场景保留待办）。
+pub(crate) fn express_mount_prefixes(
+    files: &[(String, String)],
+) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    let mut bindings: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for (path, content) in files.iter() {
+        if !is_js_like(path) {
+            continue;
+        }
+        let mut map: HashMap<String, String> = HashMap::new();
+        for line in content.lines() {
+            let t = line.trim();
+            if let Some((lhs, rhs)) = t.split_once('=') {
+                let ident = lhs
+                    .trim()
+                    .trim_start_matches("const ")
+                    .trim_start_matches("let ")
+                    .trim_start_matches("var ")
+                    .trim();
+                if is_ident_str(ident) {
+                    if let Some(spec) = require_spec(rhs) {
+                        if let Some(target) = resolve_js_module(path, &spec, files) {
+                            map.insert(ident.to_string(), target);
+                        }
+                    }
+                }
+            }
+            if let Some(spec) = import_spec(t) {
+                let head = t.trim_start_matches("import ").trim();
+                let ident = head.split_whitespace().next().unwrap_or("");
+                if is_ident_str(ident) {
+                    if let Some(target) = resolve_js_module(path, &spec, files) {
+                        map.insert(ident.to_string(), target);
+                    }
+                }
+            }
+        }
+        if !map.is_empty() {
+            bindings.insert(path.clone(), map);
+        }
+    }
+
+    let mut edges: Vec<(String, String, String)> = Vec::new();
+    for (path, content) in files.iter() {
+        if !is_js_like(path) {
+            continue;
+        }
+        for line in content.lines() {
+            let t = line.trim();
+            let Some(u) = t.find(".use(") else { continue };
+            let Some(pre) = literal_in(&t[u..]) else { continue };
+            let after = &t[u..];
+            let child_expr = after
+                .split_once(',')
+                .map(|(_, r)| r.trim().trim_end_matches(')').trim())
+                .unwrap_or("");
+            if child_expr.is_empty() {
+                continue;
+            }
+            let child_file = if let Some(spec) = require_spec(child_expr) {
+                resolve_js_module(path, &spec, files)
+            } else {
+                let ident = child_expr
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                    .next()
+                    .unwrap_or("");
+                bindings.get(path).and_then(|b| b.get(ident)).cloned()
+            };
+            if let Some(cf) = child_file {
+                edges.push((path.clone(), pre, cf));
+            }
+        }
+    }
+
+    let mut prefix: HashMap<String, String> = HashMap::new();
+    for _ in 0..5 {
+        let mut changed = false;
+        for (parent, pre, child) in edges.iter() {
+            if prefix.contains_key(child) {
+                continue;
+            }
+            let base = prefix.get(parent).cloned().unwrap_or_default();
+            let full = if base.is_empty() {
+                join_route_path(None, pre)
+            } else {
+                join_route_path(Some(&base), pre)
+            };
+            prefix.insert(child.clone(), full);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    prefix
 }

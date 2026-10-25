@@ -116,10 +116,13 @@ pub(crate) fn compute_routes(
     let mut nonproduction_files_present = 0usize;
     let mut unparsed_route_files = 0usize;
     let mut unparsed_route_samples: Vec<Value> = Vec::new();
+    let mut unmodelled_stacks: std::collections::BTreeMap<&'static str, usize> = Default::default();
     let mut route_roles: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let (sindex, _, _) = crate::symbol_index::get_or_build(root, refresh, None);
     let route_cap = max_project_route_hits();
+    // 跨文件 Express mount 前缀（`app.use('/api', posts)` → posts 文件整体加 /api）
+    let mount_prefixes = express_mount_prefixes(files);
     for (path, content) in files.iter() {
         if !crate::symbol_index::is_code_file(path) {
             continue;
@@ -127,13 +130,25 @@ pub(crate) fn compute_routes(
         if policy_file_role(path) != "production" {
             nonproduction_files_present += 1;
         }
-        if let Some(fw_name) = unmodelled_route_declaration(path, content) {
+        let unmodelled = unmodelled_route_declaration(path, content);
+        if let Some(fw_name) = unmodelled {
             unparsed_route_files += 1;
+            *unmodelled_stacks.entry(fw_name).or_default() += 1;
             if unparsed_route_samples.len() < 5 {
                 unparsed_route_samples.push(json!({"file": path, "framework": fw_name}));
             }
         }
-        let scan = scan_routes_in_file(path, content, "", id);
+        let mount_prefix = mount_prefixes.get(path).map(|s| s.as_str()).unwrap_or("");
+        let mut scan = scan_routes_in_file_prefixed(path, content, "", id, mount_prefix);
+        // 未建模栈里"顺带"报出来的路由，必须在条目上标明栈名：
+        // 否则消费者会把 method=ANY 的疑似路由当成已建模结论。
+        if let Some(fw_name) = unmodelled {
+            for r in scan.routes.iter_mut() {
+                if let Some(obj) = r.as_object_mut() {
+                    obj.insert("unmodelled_stack".to_string(), json!(fw_name));
+                }
+            }
+        }
         if scan.routes_total > 0 {
             files_with_routes += 1;
         }
@@ -388,6 +403,7 @@ pub(crate) fn compute_routes(
             "max_project_routes": route_cap,
         },
         "unmodelled_route_files": unparsed_route_files,
+        "unmodelled_route_stacks": unmodelled_stacks,
         "unmodelled_route_samples": unparsed_route_samples,
         "policy_sources": {
             "used": policy_files.len(),
@@ -544,6 +560,9 @@ pub(crate) fn lines_data(data: &Value) -> Value {
         "filter": data.get("filter").cloned().unwrap_or(Value::Null),
         "total_hits": data.get("total_hits").cloned().unwrap_or(Value::Null),
         "uncovered_suppressed_by_truncation": data.get("uncovered_suppressed_by_truncation").cloned().unwrap_or(Value::Null),
+        "unmodelled_route_files": data.get("unmodelled_route_files").cloned().unwrap_or(Value::Null),
+        "unmodelled_route_stacks": data.get("unmodelled_route_stacks").cloned().unwrap_or(Value::Null),
+        "not_an_endpoint_routes": data.get("not_an_endpoint_routes").cloned().unwrap_or(Value::Null),
         "routes_total": routes.len(),
         "routes_text": text,
         "format": "METHOD route  file:line  verdict  [<- matched_pattern @ file:line]",
