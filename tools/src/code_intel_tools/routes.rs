@@ -121,6 +121,7 @@ pub(crate) fn compute_routes(
         std::collections::BTreeMap::new();
     let (sindex, _, _) = crate::symbol_index::get_or_build(root, refresh, None);
     let route_cap = max_project_route_hits();
+    let mut annotation_covered_count = 0usize;
     // 跨文件 Express mount 前缀（`app.use('/api', posts)` → posts 文件整体加 /api）
     let mount_prefixes = express_mount_prefixes(files);
     for (path, content) in files.iter() {
@@ -191,6 +192,34 @@ pub(crate) fn compute_routes(
         annotate_container_filters(&mut group, &container_filters);
         annotate_interceptors(&mut group, &interceptor_regs);
         annotate_interceptor_excludes(&mut group, &exclude_patterns);
+        // 注解级覆盖：`@SaCheckLogin` / `@PreAuthorize` 等只有**有消费者**时才算数。
+        // 实测缺口（R254）：未覆盖清单原先只看路径规则，把 3 条注解覆盖的端点算成"未覆盖"。
+        let content_opt = files
+            .iter()
+            .find(|(p, _)| p.as_str() == file.as_str())
+            .map(|(_, c)| c.as_str());
+        if let Some(content) = content_opt {
+            for (k, i) in idxs.iter().enumerate() {
+                if group[k].get("scope").and_then(|v| v.as_str()) != Some("method") {
+                    continue;
+                }
+                let line = routes[*i].get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let anns = auth_annotations_near(content, line);
+                if anns.is_empty() {
+                    continue;
+                }
+                let effective = anns.iter().find_map(|a| {
+                    let name = a.get("annotation").and_then(|v| v.as_str()).unwrap_or("");
+                    annotation_effective(name, files).then(|| name.to_string())
+                });
+                if let Some(name) = effective {
+                    if let Some(obj) = group[k].as_object_mut() {
+                        obj.insert("annotation_covered".to_string(), json!(true));
+                        obj.insert("annotation_covered_by".to_string(), json!(name));
+                    }
+                }
+            }
+        }
         // 类不是 Spring Bean ⇒ 映射注解不会被注册：与 explain_route 口径保持一致，
         // 否则端点表会说"未覆盖"、单条判定会说"非端点"（R250 实测到的自相矛盾）。
         if let Some((_, content)) = files.iter().find(|(p, _)| p == file) {
@@ -319,12 +348,17 @@ pub(crate) fn compute_routes(
     let mut verdict_counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut uncovered: Vec<Value> = Vec::new();
     let mut not_an_endpoint_count = 0usize;
+    let mut annotation_covered_count = 0usize;
     for r in kept.iter() {
         if r.get("not_an_endpoint").and_then(|v| v.as_bool()) == Some(true) {
             not_an_endpoint_count += 1;
             *verdict_counts
                 .entry("not_an_endpoint".to_string())
                 .or_default() += 1;
+            continue;
+        }
+        if r.get("annotation_covered").and_then(|v| v.as_bool()) == Some(true) {
+            annotation_covered_count += 1;
             continue;
         }
         let v = r
@@ -388,6 +422,7 @@ pub(crate) fn compute_routes(
         "route_roles": route_roles,
         "route_paths_unresolved": route_paths_unresolved,
         "not_an_endpoint_routes": not_an_endpoint_count,
+        "annotation_covered_routes": annotation_covered_count,
         "total_hits": {
             "routes": routes.len(),
             "method_routes": routes.len() - class_declarations,
@@ -576,10 +611,23 @@ fn line_at<'a>(content: &'a str, line: usize) -> Option<&'a str> {
 /// 在路由声明行附近（含类级区域）扫描鉴权注解。只报**读到**的行，不推断。
 fn auth_annotations_near(content: &str, line: usize) -> Vec<Value> {
     let lines: Vec<&str> = content.lines().collect();
-    let start = line.saturating_sub(90);
+    // 方法级注解紧贴映射行（实测 @SaCheckLogin 在 @GetMapping 上方 1–3 行）。
+    // 早期用 ±90 行窗口会把邻近方法/类注释里的注解算到本条路由上（R254 实测：3 条被算成 5 条）。
+    let start = line.saturating_sub(6);
+    // 类级注解：从类声明往上 30 行内找（与 Bean 判定同一锚点）
+    let class_line = class_decl_line_before(&lines, line);
+    let class_start = class_line.map(|c| c.saturating_sub(30)).unwrap_or(lines.len());
     let end = (line + 2).min(lines.len());
     let mut out: Vec<Value> = Vec::new();
-    for (i, text) in lines.iter().enumerate().take(end).skip(start) {
+    let mut indices: Vec<usize> = (start..end).collect();
+    if let Some(cl) = class_line {
+        for i in class_start..cl {
+            indices.push(i);
+        }
+    }
+    indices.sort_unstable();
+    for i in indices {
+        let text = lines.get(i).copied().unwrap_or("");
         let t = text.trim();
         if t.starts_with("import ") || t.starts_with("package ") {
             continue;
