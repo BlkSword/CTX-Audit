@@ -1,0 +1,65 @@
+# CTX-Audit 端点覆盖门禁（模板）
+#
+# 用法：
+#   1. 把本文件复制到目标仓库 `.github/workflows/route-coverage-gate.yml`
+#   2. 在目标仓库里生成并提交基线（只做一次，之后按需刷新）：
+#        ctx-audit diff-routes . --write-baseline \
+#          --since .github/ctx-audit/routes-baseline.json
+#        git add .github/ctx-audit/routes-baseline.json
+#   3. 打开 PR，工作流会在"新增端点没有任何声明式鉴权覆盖"时失败（退出码 1）
+#
+# 为什么门禁比"审计加速器"可靠：它不需要任何人相信引擎的枚举结果，
+# 只比较同一份引擎输出在两个提交上的差异——结论可机械复核，误报可用一条命令证伪：
+#   ctx-audit explain-route . <route> --assert covered|uncovered
+name: CTX-Audit Route Coverage Gate
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  route-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # 从本次 checkout 构建：门禁判定的引擎版本必须与仓库代码一致
+      - name: Build ctx-audit
+        run: |
+          cargo build --release -p ctx-audit
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+
+      # 大仓库必须放大索引上限：默认 2000 文件会截断，
+      # 此时引擎会把结论降级为 coverage_unknown（诚实但无法门禁）而不是给出错的判定。
+      - name: Configure index limits
+        run: |
+          echo "CTX_AUDIT_INDEX_MAX_FILES=${CTX_AUDIT_INDEX_MAX_FILES:-20000}" >> "$GITHUB_ENV"
+
+      - name: Route coverage gate
+        id: gate
+        run: |
+          set -o pipefail
+          ctx-audit diff-routes . \
+            --since .github/ctx-audit/routes-baseline.json \
+            --fail-on-new-uncovered \
+            -o text | tee route-diff.log
+          ctx-audit diff-routes . \
+            --since .github/ctx-audit/routes-baseline.json \
+            -o json > route-diff.json
+
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-coverage-diff
+          path: |
+            route-diff.log
+            route-diff.json

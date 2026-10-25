@@ -26,12 +26,21 @@ fn snapshot(project: &Path) -> Result<Value> {
         .into_iter()
         .filter(|r| r["scope"].as_str() != Some("class"))
         .map(|r| {
+            // 非 Spring Bean 类上的映射不是端点：与 explain_route 保持同一口径，
+            // 否则门禁会被"幽灵端点"触发（R251 实测到）。
+            let not_an_endpoint = r["not_an_endpoint"].as_bool() == Some(true);
+            let verdict = if not_an_endpoint {
+                "not_an_endpoint"
+            } else {
+                r["global_coverage"].as_str().unwrap_or("unknown")
+            };
             json!({
                 "method": r["http_method"].as_str().unwrap_or("ANY"),
                 "route": r["route"].as_str().unwrap_or(""),
                 "file": r["file"].as_str().unwrap_or(""),
                 "line": r["line"],
-                "verdict": r["global_coverage"].as_str().unwrap_or("unknown"),
+                "verdict": verdict,
+                "not_an_endpoint": not_an_endpoint,
                 "coverage_scope": r["coverage_scope"].as_str().unwrap_or(""),
             })
         })
