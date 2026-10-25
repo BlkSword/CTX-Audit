@@ -10,10 +10,11 @@ use miette::{miette, IntoDiagnostic, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-const UNCOVERED: [&str; 3] = [
+const UNCOVERED: [&str; 4] = [
     "no_global_config_found",
     "no_global_match_found",
     "coverage_unknown",
+    "excluded_from_interceptor",
 ];
 
 fn snapshot(project: &Path) -> Result<Value> {

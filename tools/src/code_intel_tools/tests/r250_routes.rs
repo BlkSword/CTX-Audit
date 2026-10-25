@@ -408,3 +408,82 @@ fn test_file_route_is_bean_unit() {
     );
     assert_eq!(file_route_is_bean(ctrl, 4, "src/C.java"), Some(true));
 }
+
+/// xcludePathPatterns 命中 ⇒ 该路径不进拦截器，链内规则不生效（实测缺口，R252 修复）。
+#[tokio::test]
+async fn test_interceptor_exclude_downgrades_coverage() {
+    let root = std::env::temp_dir().join("ctx-audit-r252-exclude");
+    let _ = std::fs::remove_dir_all(&root);
+    let satoken = concat!(
+        "package app;\n",
+        "import cn.dev33.satoken.interceptor.SaInterceptor;\n",
+        "import cn.dev33.satoken.router.SaRouter;\n",
+        "import cn.dev33.satoken.stp.StpUtil;\n",
+        "@Configuration\n",
+        "public class SaTokenConfigure implements WebMvcConfigurer {\n",
+        "    @Override\n",
+        "    public void addInterceptors(InterceptorRegistry registry) {\n",
+        "        registry.addInterceptor(new SaInterceptor(handle -> {\n",
+        "            SaRouter.match(\"/admin/**\", () -> {\n",
+        "                StpUtil.checkLogin();\n",
+        "            });\n",
+        "        })).addPathPatterns(\"/**\").excludePathPatterns(\"/admin\", \"/admin/export\");\n",
+        "    }\n",
+        "}\n",
+    );
+    write_file(&root, "src/SaTokenConfigure.java", satoken);
+    write_file(&root, "src/AdminController.java", protected_controller());
+    let project = root.to_string_lossy().to_string();
+    let out = CodeIntelTool::new(project, IntelKind::ExplainRoute)
+        .execute(json!({"route": "/admin/export"}))
+        .await
+        .unwrap();
+    let d = out.data.clone().expect("envelope");
+    assert_eq!(d["data"]["verdict"], "excluded_from_interceptor", "{d}");
+    assert_eq!(d["data"]["asserted_verdict"], "uncovered", "{d}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 全限定注解（@pkg.SaCheckLogin）必须被识别为"有注解 + 有消费者"。
+#[tokio::test]
+async fn test_fully_qualified_annotation_is_detected() {
+    let root = std::env::temp_dir().join("ctx-audit-r252-fq-annotation");
+    let _ = std::fs::remove_dir_all(&root);
+    let satoken = concat!(
+        "package app;\n",
+        "@Configuration\n",
+        "public class SaTokenConfigure {\n",
+        "    public void addInterceptors(InterceptorRegistry registry) {\n",
+        "        registry.addInterceptor(new SaInterceptor(handle -> {\n",
+        "            SaRouter.match(\"/admin/**\", () -> StpUtil.checkLogin());\n",
+        "        })).addPathPatterns(\"/**\");\n",
+        "    }\n",
+        "}\n",
+    );
+    write_file(&root, "src/SaTokenConfigure.java", satoken);
+    let controller = concat!(
+        "package app;\n",
+        "@RestController\n",
+        "@RequestMapping(\"/user\")\n",
+        "public class UserController {\n",
+        "    @cn.dev33.satoken.annotation.SaCheckLogin\n",
+        "    @PostMapping(\"/updatePwd\")\n",
+        "    public String updatePwd() { return \"ok\"; }\n",
+        "}\n",
+    );
+    write_file(&root, "src/UserController.java", controller);
+    let project = root.to_string_lossy().to_string();
+    let out = CodeIntelTool::new(project, IntelKind::ExplainRoute)
+        .execute(json!({"route": "/user/updatePwd"}))
+        .await
+        .unwrap();
+    let d = out.data.clone().expect("envelope");
+    assert_eq!(d["data"]["asserted_verdict"], "covered", "{d}");
+    let checks = d["data"]["decided_by"].as_array().unwrap();
+    let ann = checks
+        .iter()
+        .find(|c| c["check"] == "method/class auth annotation")
+        .expect("应有注解检查");
+    assert_eq!(ann["result"], "present_and_consumed", "{ann}");
+    let _ = std::fs::remove_dir_all(&root);
+}

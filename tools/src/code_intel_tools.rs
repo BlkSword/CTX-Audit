@@ -110,6 +110,18 @@ pub(crate) fn policy_bundle(
 
 /// 项目级端点表一次调用返回的条数上限（超限必须上报 `total_hits`/`truncated_at_limit`）。
 const MAX_PROJECT_ROUTE_HITS: usize = 400;
+
+/// 项目级端点表的条数上限：`CTX_AUDIT_MAX_PROJECT_ROUTES` 可覆盖（0/非法值回落默认）。
+///
+/// 大仓库（数千端点）必须放大，否则端点表会在 400 条处截断——此时 `truncated_at_limit`
+/// 会如实置位、`uncertainty` 升到 high，但下游拿不到完整清单。
+pub fn max_project_route_hits() -> usize {
+    std::env::var("CTX_AUDIT_MAX_PROJECT_ROUTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(MAX_PROJECT_ROUTE_HITS)
+}
 const SKIP_DIRS: [&str; 8] = [
     ".git",
     "node_modules",

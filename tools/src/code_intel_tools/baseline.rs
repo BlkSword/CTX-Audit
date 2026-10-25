@@ -91,7 +91,7 @@ fn annotation_consumers(project_files: &[(String, String)]) -> Vec<Value> {
                 if present.contains_key(ann) {
                     continue;
                 }
-                if t.contains(&format!("@{ann}")) {
+                if mentions_annotation(t, ann) {
                     present.insert(ann, (path.clone(), lineno));
                 }
             }

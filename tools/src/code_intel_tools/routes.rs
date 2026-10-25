@@ -107,6 +107,7 @@ pub(crate) fn compute_routes(
     all_chains.extend(sa_token_security_chains(policy_files));
     let container_filters = container_filter_registrations(policy_files);
     let interceptor_regs = interceptor_registrations(policy_files);
+    let exclude_patterns = interceptor_exclude_patterns(policy_files);
     let mut routes: Vec<Value> = Vec::new();
     let mut provenance: Vec<Provenance> = Vec::new();
     let mut routes_total = 0usize;
@@ -118,6 +119,7 @@ pub(crate) fn compute_routes(
     let mut route_roles: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let (sindex, _, _) = crate::symbol_index::get_or_build(root, refresh, None);
+    let route_cap = max_project_route_hits();
     for (path, content) in files.iter() {
         if !crate::symbol_index::is_code_file(path) {
             continue;
@@ -137,7 +139,7 @@ pub(crate) fn compute_routes(
         }
         routes_total += scan.routes_total;
         for mut r in scan.routes {
-            if routes.len() >= MAX_PROJECT_ROUTE_HITS {
+            if routes.len() >= route_cap {
                 truncated_at_limit = true;
                 break;
             }
@@ -173,6 +175,7 @@ pub(crate) fn compute_routes(
         annotate_route_coverage(&mut group, &scoped);
         annotate_container_filters(&mut group, &container_filters);
         annotate_interceptors(&mut group, &interceptor_regs);
+        annotate_interceptor_excludes(&mut group, &exclude_patterns);
         // 类不是 Spring Bean ⇒ 映射注解不会被注册：与 explain_route 口径保持一致，
         // 否则端点表会说"未覆盖"、单条判定会说"非端点"（R250 实测到的自相矛盾）。
         if let Some((_, content)) = files.iter().find(|(p, _)| p == file) {
@@ -315,7 +318,10 @@ pub(crate) fn compute_routes(
             .unwrap_or("unknown")
             .to_string();
         *verdict_counts.entry(v.clone()).or_default() += 1;
-        if v == "no_global_config_found" || v == "no_global_match_found" {
+        if v == "no_global_config_found"
+            || v == "no_global_match_found"
+            || v == "excluded_from_interceptor"
+        {
             uncovered.push(r.clone());
         }
     }
@@ -347,7 +353,7 @@ pub(crate) fn compute_routes(
     if unparsed_route_files > 0 {
         reasons.push("unmodelled_route_declarations_present");
     }
-    provenance.truncate(MAX_PROJECT_ROUTE_HITS);
+    provenance.truncate(route_cap);
     let data = json!({
         "files_indexed": files.len(),
         "files_with_routes": files_with_routes,
@@ -374,12 +380,12 @@ pub(crate) fn compute_routes(
             "counts_scope": "returned",
             "scanned_routes": routes_total,
         },
-        "limit": MAX_PROJECT_ROUTE_HITS,
+        "limit": route_cap,
         "truncated_at_limit": truncated_at_limit,
         "index_truncated_at_limit": index_truncated,
         "limits": {
             "max_files": max_index_files(),
-            "max_project_routes": MAX_PROJECT_ROUTE_HITS,
+            "max_project_routes": route_cap,
         },
         "unmodelled_route_files": unparsed_route_files,
         "unmodelled_route_samples": unparsed_route_samples,
@@ -560,7 +566,7 @@ fn auth_annotations_near(content: &str, line: usize) -> Vec<Value> {
             continue;
         }
         for ann in AUTH_ANNOTATIONS {
-            if t.contains(&format!("@{ann}")) {
+            if mentions_annotation(t, ann) {
                 out.push(json!({
                     "annotation": ann,
                     "file_line": (i + 1) as u64,
@@ -1060,6 +1066,7 @@ pub(crate) fn explain_route(
             "covered_by_global_config" => "covered",
             "permitted_by_global_config" => "permitted",
             "coverage_unknown" => "unknown",
+            "excluded_from_interceptor" => "uncovered",
             _ => {
                 if effective_annotation.is_some() {
                     "covered"

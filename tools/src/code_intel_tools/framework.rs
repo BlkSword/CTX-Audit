@@ -438,6 +438,121 @@ pub(crate) struct ContainerFilter {
     pub(crate) dispatcher: Option<String>,
 }
 
+/// 文本里是否提到了某个注解（支持 `@X` 与全限定 `@pkg.X` 两种写法）。
+///
+/// 实测缺口：`@cn.dev33.satoken.annotation.SaCheckLogin` 不含子串 `@SaCheckLogin`，
+/// 旧的 `contains("@X")` 会漏判，把"有注解的方法"当成无注解。
+pub(crate) fn mentions_annotation(text: &str, annotation: &str) -> bool {
+    if text.contains(&format!("@{annotation}")) {
+        return true;
+    }
+    let mut from = 0usize;
+    while let Some(pos) = text[from..].find(annotation) {
+        let abs = from + pos;
+        let before_ok = abs > 0 && text.as_bytes()[abs - 1] == b'.';
+        let after = abs + annotation.len();
+        let after_ok = text
+            .as_bytes()
+            .get(after)
+            .map(|b| !(b.is_ascii_alphanumeric() || *b == b'_'))
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = abs + annotation.len();
+        if from >= text.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// `excludePathPatterns(...)` 的解析结果：`(配置文件, 被排除的路径模式)`。
+///
+/// 被排除的路径**不会进入拦截器**，因此链内规则对它不生效。实测缺口：`/admin/**` 规则 +
+/// `excludePathPatterns("/admin/log/download")` 时，该路径实际未被拦截，而旧实现仍判 covered。
+pub(crate) fn interceptor_exclude_patterns(
+    project_files: &[(String, String)],
+) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for (f, content) in project_files.iter().take(max_index_files()) {
+        if !content.contains("excludePathPatterns") {
+            continue;
+        }
+        let mut patterns: Vec<String> = Vec::new();
+        for line in content.lines() {
+            if line.trim_start().starts_with("import ") {
+                continue;
+            }
+            // 只取 `excludePathPatterns(...)` **之后**的字面量：
+            // 同一行前面的 `addPathPatterns("/**")` 不是排除项（实测踩过：
+            // 把 `/**` 当 exclude 会把整项目都判成被排除）。
+            if let Some((_, after)) = line.split_once("excludePathPatterns") {
+                patterns.extend(url_patterns_in(after));
+            }
+        }
+        if !patterns.is_empty() {
+            out.push((f.clone(), patterns));
+        }
+    }
+    out
+}
+
+/// 把"被拦截器排除"的路由从 covered/permitted 改写为 `excluded_from_interceptor`。
+pub(crate) fn annotate_interceptor_excludes(
+    routes: &mut [Value],
+    excludes_by_file: &[(String, Vec<String>)],
+) {
+    for entry in routes.iter_mut() {
+        if entry.get("scope").and_then(|v| v.as_str()) != Some("method") {
+            continue;
+        }
+        let route = entry
+            .get("route")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if route.is_empty() {
+            continue;
+        }
+        let chain_file = entry
+            .get("global_match")
+            .and_then(|m| m.get("chain_file"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let verdict = entry
+            .get("global_coverage")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let Some(chain_file) = chain_file else { continue };
+        for (file, patterns) in excludes_by_file {
+            if *file != chain_file {
+                continue;
+            }
+            if !patterns
+                .iter()
+                .any(|p| route_matches_pattern(&route, p) || servlet_pattern_matches(&route, p))
+            {
+                continue;
+            }
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("excluded_from_interceptor".to_string(), json!(true));
+                obj.insert("excluded_by".to_string(), json!(patterns));
+                if verdict == "covered_by_global_config" || verdict == "permitted_by_global_config"
+                {
+                    obj.insert("global_coverage".to_string(), json!("excluded_from_interceptor"));
+                    obj.insert(
+                        "coverage_caveat".to_string(),
+                        json!("route_excluded_from_interceptor"),
+                    );
+                }
+            }
+            break;
+        }
+    }
+}
+
 /// Servlet 风格的 URL 模式匹配：`/*` 全匹配、`/x/*` 前缀、`*.ext` 后缀、其余精确匹配。
 pub(crate) fn servlet_pattern_matches(route: &str, pattern: &str) -> bool {
     if pattern == "/*" || pattern == "*" || pattern == "/**" || pattern == "**" {
@@ -617,7 +732,7 @@ pub(crate) fn container_filter_registrations(project_files: &[(String, String)])
                         name,
                         basis: "url-pattern".to_string(),
                         dispatcher: dispatcher.clone(),
-                    });
+                        });
                 }
             }
             continue;
@@ -1666,6 +1781,8 @@ pub(crate) fn interceptor_registrations(project_files: &[(String, String)]) -> V
                         .filter(|s| !s.is_empty())
                 })
                 .map(|s| s.to_string());
+            // 适用路径：本行或其后 3 行内的 addPathPatterns(...)
+            let mut patterns: Vec<String> = Vec::new();
             // 适用路径：本行或其后 3 行内的 addPathPatterns(...)
             let mut patterns: Vec<String> = Vec::new();
             for l in lines.iter().skip(idx).take(4) {
