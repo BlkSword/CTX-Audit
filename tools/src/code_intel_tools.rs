@@ -33,6 +33,11 @@ mod symbols;
 pub use symbols::*;
 mod dispatch;
 pub use dispatch::*;
+mod routes;
+pub(crate) use routes::*;
+mod baseline;
+#[allow(unused_imports)]
+pub(crate) use baseline::*;
 
 const MAX_FILES: usize = 2000;
 const MAX_FILE_BYTES: usize = 512 * 1024;
@@ -194,10 +199,14 @@ pub enum IntelKind {
     IncrementalStatus,
     /// 项目级端点表（一次调用返回全项目路由 + 覆盖判定）
     ProjectRoutes,
+    /// 鉴权基线卡：链/规则/过滤器/注解消费者/被关闭的钩子（一屏可复核）
+    SecurityBaseline,
+    /// 单条路由判定 + 可机械证伪命令 + 敏感返回面
+    ExplainRoute,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 10] {
+    pub fn all() -> [IntelKind; 12] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -209,6 +218,8 @@ impl IntelKind {
             IntelKind::FrameworkContext,
             IntelKind::IncrementalStatus,
             IntelKind::ProjectRoutes,
+            IntelKind::SecurityBaseline,
+            IntelKind::ExplainRoute,
         ]
     }
 
@@ -224,6 +235,8 @@ impl IntelKind {
             IntelKind::FrameworkContext => "get_framework_context",
             IntelKind::IncrementalStatus => "get_incremental_status",
             IntelKind::ProjectRoutes => "get_project_routes",
+            IntelKind::SecurityBaseline => "get_security_baseline",
+            IntelKind::ExplainRoute => "explain_route",
         }
     }
 
@@ -239,6 +252,8 @@ impl IntelKind {
             IntelKind::FrameworkContext => "路由 handler 的前置中间件/拦截器链",
             IntelKind::IncrementalStatus => "增量索引状态：冷启动/缓存命中/待重编译清单（stat 指纹 + TTL 缓存）",
             IntelKind::ProjectRoutes => "项目级端点表：一次调用返回全项目路由与覆盖判定（含证据出处与提取形态，有界上报）",
+            IntelKind::SecurityBaseline => "鉴权基线卡：链/规则/过滤器/注解消费者/被关闭的钩子（一屏可复核，≤3KB）",
+            IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
     }
 }
@@ -268,10 +283,23 @@ impl CodeIntelTool {
     fn params(&self) -> Vec<ToolParameter> {
         let mut params = match self.kind {
             IntelKind::ProjectIndex | IntelKind::IncrementalStatus => vec![],
+            IntelKind::SecurityBaseline => vec![],
+            IntelKind::ExplainRoute => vec![
+                str_param("route", "路由（含类级前缀；与 file/handler 至少给一个）", false),
+                str_param("file", "相对路径（可选；配合 handler 可精确定位）", false),
+                str_param("handler", "handler 方法名（可选，需配合 file）", false),
+            ],
             IntelKind::ProjectRoutes => vec![
                 str_param("min_role", "只保留该文件角色（默认 production；any=不过滤）", false),
                 str_param("route_pattern", "只保留路径包含该子串的端点", false),
                 bool_param("only_uncovered", "只返回未被声明规则覆盖的端点"),
+                str_param(
+                    "detail",
+                    "brief（默认，结构化判定字段）| lines（纯文本行，最小成本）| full（含拦截器/过滤器/链证据）",
+                    false,
+                ),
+                int_param("limit", "brief 模式分页大小（0=全部）", 0),
+                int_param("offset", "brief 模式分页起点（默认 0）", 0),
             ],
             IntelKind::SymbolDefinition | IntelKind::SymbolReferences => {
                 vec![str_param("symbol", "符号名", true)]
@@ -285,6 +313,11 @@ impl CodeIntelTool {
                 int_param("line", "目标行号（可选）", 0),
                 str_param("symbol", "目标符号（可选）", false),
                 int_param("depth", "向前行数窗口（默认 40）", 40),
+                str_param(
+                    "detail",
+                    "full（默认，含逐行 provenance）| code（纯文本窗口，~6KB，成本降约 10×）",
+                    false,
+                ),
             ],
             IntelKind::DataflowPath => vec![
                 str_param("source", "源符号/变量", true),
@@ -2389,249 +2422,96 @@ all_chains.extend(sa_token_security_chains(policy_files));
                 }
             }
             IntelKind::ProjectRoutes => {
-                // 一次调用返回全项目端点表：策略链**只构建一次**，再扫已加载的文件，
-                // 避免"逐文件调用"那种 O(N^2) 成本（每次调用都重扫模块配置）。
-                let bundle = policy_bundle(root, files, &id);
-                let policy_files: &[(String, String)] = &bundle.files;
-                let excluded_policy_sources = bundle.excluded.clone();
-                let mut all_chains = security_config_chains(&policy_files);
-                all_chains.extend(reactive_security_chains(&policy_files));
-                all_chains.extend(spring_xml_security_chains(&policy_files));
-                all_chains.extend(shiro_filter_chains(&policy_files));
-                all_chains.extend(sa_token_security_chains(&policy_files));
-                let container_filters = container_filter_registrations(&policy_files);
-                let interceptor_regs = interceptor_registrations(&policy_files);
-                let mut routes: Vec<Value> = Vec::new();
-                let mut provenance: Vec<Provenance> = Vec::new();
-                let mut routes_total = 0usize;
-                let mut files_with_routes = 0usize;
-                let mut truncated_at_limit = false;
-                let mut nonproduction_files_present = 0usize;
-                let mut unparsed_route_files = 0usize;
-                let mut unparsed_route_samples: Vec<Value> = Vec::new();
-                let mut route_roles: std::collections::BTreeMap<String, usize> =
-                    std::collections::BTreeMap::new();
-                let (sindex, _, _) = crate::symbol_index::get_or_build(root, refresh, None);
-                for (path, content) in files.iter() {
-                    if !crate::symbol_index::is_code_file(path) {
-                        continue;
-                    }
-                    if policy_file_role(path) != "production" {
-                        nonproduction_files_present += 1;
-                    }
-                    if let Some(fw_name) = unmodelled_route_declaration(path, content) {
-                        unparsed_route_files += 1;
-                        if unparsed_route_samples.len() < 5 {
-                            unparsed_route_samples.push(json!({"file": path, "framework": fw_name}));
-                        }
-                    }
-                    let scan = scan_routes_in_file(path, content, "", &id);
-                    if scan.routes_total > 0 {
-                        files_with_routes += 1;
-                    }
-                    routes_total += scan.routes_total;
-                    for mut r in scan.routes {
-                        if routes.len() >= MAX_PROJECT_ROUTE_HITS {
-                            truncated_at_limit = true;
-                            break;
-                        }
-                        if let Some(obj) = r.as_object_mut() {
-                            obj.insert("file".to_string(), json!(path));
-                        }
-                        let role = r
-                            .get("file_role")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("production")
-                            .to_string();
-                        *route_roles.entry(role).or_insert(0) += 1;
-                        if let Some(line) = r.get("line").and_then(|v| v.as_u64()) {
-                            provenance.push(prov(path, line as u32, &id));
-                        }
-                        routes.push(r);
-                    }
-                    if truncated_at_limit {
-                        break;
-                    }
-                }
-                // 多模块：按端点所在文件挑生效链，逐文件标注 `coverage_scope`
-                let graph = &bundle.graph;
-                let mut by_file: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
-                for (i, r) in routes.iter().enumerate() {
-                    if let Some(f) = r.get("file").and_then(|v| v.as_str()) {
-                        by_file.entry(f.to_string()).or_default().push(i);
-                    }
-                }
-                for (file, idxs) in by_file.iter() {
-                    let (scoped, scope_label) = graph.scoped_chains(&all_chains, file);
-                    let mut group: Vec<Value> = idxs.iter().map(|i| routes[*i].clone()).collect();
-                    annotate_route_coverage(&mut group, &scoped);
-                    annotate_container_filters(&mut group, &container_filters);
-                    annotate_interceptors(&mut group, &interceptor_regs);
-                    for (k, i) in idxs.iter().enumerate() {
-                        let mut v = std::mem::take(&mut group[k]);
-                        if let Some(obj) = v.as_object_mut() {
-                            obj.insert("coverage_scope".to_string(), json!(scope_label));
-                        }
-                        routes[*i] = v;
-                    }
-                }
-                let route_paths_unresolved = routes
-                    .iter()
-                    .filter(|r| r.get("route").map(|v| v.is_null()).unwrap_or(true))
-                    .count();
-                let excluded_policy_json: Vec<Value> = excluded_policy_sources
-                    .iter()
-                    .map(|(p, role)| json!({"file": p, "role": role}))
-                    .collect();
-                // 未建模保护栈（如 JAX-RS 过滤器）：项目级同样不得报"没有保护"，
-                // 与单文件口径保持一致 —— 改写为 framework_not_modeled 并带 caveat。
-                let unmodeled_signals = unmodeled_protection_signals(&policy_files);
-                if !unmodeled_signals.is_empty() && all_chains.is_empty() {
-                    let (fw_name, fw_file, fw_line) = unmodeled_signals[0].clone();
-                    for r in routes.iter_mut() {
-                        if r.get("scope").and_then(|v| v.as_str()) == Some("class") {
-                            continue;
-                        }
-                        if r.get("global_coverage").and_then(|v| v.as_str())
-                            == Some("no_global_config_found")
-                        {
-                            if let Some(obj) = r.as_object_mut() {
-                                obj.insert(
-                                    "global_coverage".to_string(),
-                                    json!("framework_not_modeled"),
-                                );
-                                obj.insert(
-                                    "coverage_caveat".to_string(),
-                                    json!("unmodeled_protection_signal"),
-                                );
-                                obj.insert("unmodeled_framework".to_string(), json!(fw_name));
-                                obj.insert(
-                                    "unmodeled_source".to_string(),
-                                    json!({"file": fw_file, "line": fw_line}),
-                                );
-                            }
-                        }
-                    }
-                }
-                // A1：端点过滤（默认只保留生产角色）与「未覆盖清单」
-                let min_role = input["min_role"].as_str().unwrap_or("production").to_lowercase();
-                let route_pattern = input["route_pattern"].as_str().unwrap_or("").to_lowercase();
-                let only_uncovered = input["only_uncovered"].as_bool().unwrap_or(false);
-                let total_before_filter = routes.len();
-                let mut filtered_by_role = 0usize;
-                let mut filtered_by_pattern = 0usize;
-                let mut kept: Vec<Value> = Vec::new();
-                for r in routes.into_iter() {
-                    let role = r
-                        .get("file_role")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("production");
-                    if min_role != "any" && role != min_role {
-                        filtered_by_role += 1;
-                        continue;
-                    }
-                    if !route_pattern.is_empty() {
-                        let rt = r
-                            .get("route")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_lowercase();
-                        if !rt.contains(&route_pattern) {
-                            filtered_by_pattern += 1;
-                            continue;
-                        }
-                    }
-                    kept.push(r);
-                }
-                let key = |r: &Value| {
-                    (
-                        r.get("file").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        r.get("line").and_then(|v| v.as_u64()).unwrap_or(0),
-                    )
+                let filter = routes::RouteFilter {
+                    min_role: input["min_role"].as_str().unwrap_or("production").to_string(),
+                    route_pattern: input["route_pattern"].as_str().unwrap_or("").to_string(),
+                    only_uncovered: input["only_uncovered"].as_bool().unwrap_or(false),
                 };
-                kept.sort_by_key(key);
-                let mut verdict_counts: std::collections::BTreeMap<String, usize> = Default::default();
-                let mut uncovered: Vec<Value> = Vec::new();
-                for r in kept.iter() {
-                    let v = r
-                        .get("global_coverage")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    *verdict_counts.entry(v.clone()).or_default() += 1;
-                    if v == "no_global_config_found" || v == "no_global_match_found" {
-                        uncovered.push(r.clone());
-                    }
-                }
-                let routes: Vec<Value> = if only_uncovered {
-                    uncovered.clone()
+                // 默认 brief：完整信封 2.9KB/路由（154 路由 ≈ 451KB）无法进任何上下文。
+                let detail = input["detail"].as_str().unwrap_or("brief").to_ascii_lowercase();
+                let limit = input["limit"].as_i64().unwrap_or(0).max(0) as usize;
+                let offset = input["offset"].as_i64().unwrap_or(0).max(0) as usize;
+                let table = routes::compute_routes(
+                    root,
+                    files,
+                    &id,
+                    refresh,
+                    &filter,
+                    index.truncated_at_limit,
+                );
+                let route_truncated = table
+                    .data
+                    .get("truncated_at_limit")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let (data, provenance) = if detail == "full" {
+                    (table.data, table.provenance)
+                } else if detail == "lines" {
+                    (routes::lines_data(&table.data), Vec::new())
                 } else {
-                    kept
+                    (routes::brief_data(&table.data, limit, offset), Vec::new())
                 };
-                let class_declarations = routes
-                    .iter()
-                    .filter(|r| r.get("scope").and_then(|v| v.as_str()) == Some("class"))
-                    .count();
-                let mut reasons: Vec<&str> = vec!["project_level_scan", "syntax_scan"];
-                if truncated_at_limit {
-                    reasons.push("truncated_at_limit");
-                }
-                if route_paths_unresolved > 0 {
-                    reasons.push("route_paths_unresolved");
-                }
-                if !excluded_policy_json.is_empty() {
-                    reasons.push("policy_sources_excluded_nonproduction");
-                }
-                if nonproduction_files_present > 0 {
-                    reasons.push("nonproduction_files_present_see_route_roles");
-                }
-                if unparsed_route_files > 0 {
-                    reasons.push("unmodelled_route_declarations_present");
-                }
-                provenance.truncate(MAX_PROJECT_ROUTE_HITS);
                 IntelEnvelope {
-                    data: json!({
-                        "files_indexed": files.len(),
-                        "files_with_routes": files_with_routes,
-                        "routes": routes,
-                        "uncovered_endpoints": uncovered,
-                        "verdict_counts": verdict_counts,
-                        "filter": {
-                            "min_role": min_role,
-                            "route_pattern": route_pattern,
-                            "only_uncovered": only_uncovered,
-                            "total_before": total_before_filter,
-                            "filtered_by_role": filtered_by_role,
-                            "filtered_by_pattern": filtered_by_pattern,
-                        },
-                        "route_roles": route_roles,
-                        "route_paths_unresolved": route_paths_unresolved,
-                        "total_hits": {
-                            "routes": routes.len(),
-                            "method_routes": routes.len() - class_declarations,
-                            "class_declarations": class_declarations,
-                            "counts_scope": "returned",
-                            "scanned_routes": routes_total,
-                        },
-                        "limit": MAX_PROJECT_ROUTE_HITS,
-                        "truncated_at_limit": truncated_at_limit,
-                        "unmodelled_route_files": unparsed_route_files,
-                        "unmodelled_route_samples": unparsed_route_samples,
-                        "policy_sources": {
-                            "used": policy_files.len(),
-                            "excluded_total": excluded_policy_json.len(),
-                            "excluded": excluded_policy_json,
-                        },
-                        "index": symbol_index_stats(&sindex, crate::symbol_index::HitSource::Miss, 0),
-                    }),
+                    data,
                     provenance,
                     uncertainty: Uncertainty::new(
-                        if truncated_at_limit { "high" } else { "medium" },
-                        &reasons,
+                        if table.index_truncated || route_truncated {
+                            "high"
+                        } else {
+                            "medium"
+                        },
+                        &table.reasons,
                         0,
                     ),
                 }
             }
+            IntelKind::SecurityBaseline => {
+                let (data, level, reasons) =
+                    baseline::security_baseline(files, index.truncated_at_limit);
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new(level, &reasons, 0),
+                }
+            }
+            IntelKind::ExplainRoute => {
+                let data = routes::explain_route(
+                    root,
+                    files,
+                    &id,
+                    refresh,
+                    input["file"].as_str(),
+                    input["route"].as_str(),
+                    input["handler"].as_str(),
+                    index.truncated_at_limit,
+                )?;
+                let matched = data
+                    .get("matched")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new(
+                        if matched { "medium" } else { "high" },
+                        &["route_table_lookup", "syntax_scan"],
+                        0,
+                    ),
+                }
+            }
+        };
+        // `slice_backward detail=code`：把逐行 provenance 与 JSON 化 snippets 压成纯文本窗口。
+        // R249 实测：真实项目单次切片 27–74KB（provenance 每行一条），而裸读同区域仅 5.8KB
+        // ⇒ 默认成本吃掉全部收益，所以给一个 ~6KB 的判定视图。
+        let env = if matches!(self.kind, IntelKind::SliceBackward)
+            && input["detail"]
+                .as_str()
+                .unwrap_or("full")
+                .eq_ignore_ascii_case("code")
+        {
+            slim_slice_envelope(env)
+        } else {
+            env
         };
         let text = format!("{}: {} files scanned", self.kind.name(), files.len());
         Ok(ToolResult::json(
@@ -2641,7 +2521,32 @@ all_chains.extend(sa_token_security_chains(policy_files));
     }
 }
 
-/// 注册高阶代码智能工具（10 个；report_finding 由 built-in 提供）。
+/// 切片压缩视图：纯文本窗口 + 决策事实，去掉逐行 provenance 与拓扑附加字段。
+///
+/// 判定需要的是"哪几行代码 + 有哪些守卫"，不需要 134 条 provenance 记账。
+fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
+    let mut code = String::new();
+    if let Some(snips) = env.data.get("snippets").and_then(|v| v.as_array()).cloned() {
+        for s in snips {
+            let line = s.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let text = s.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            code.push_str(&format!("{line:>5}| {text}\n"));
+        }
+    }
+    if let Some(obj) = env.data.as_object_mut() {
+        obj.insert("code".to_string(), json!(code));
+        obj.remove("snippets");
+        obj.remove("reachability");
+        obj.remove("dispatch_candidates");
+        obj.remove("nearest_declaration");
+        obj.insert("detail".to_string(), json!("code"));
+        obj.insert("provenance_omitted".to_string(), json!(true));
+    }
+    env.provenance = Vec::new();
+    env
+}
+
+/// 注册高阶代码智能工具（12 个；report_finding 由 built-in 提供）。
 pub async fn register_code_intel_tools(registry: &Arc<ToolRegistry>, project_path: String) {
     for kind in IntelKind::all() {
         let tool: Arc<dyn Tool> = Arc::new(CodeIntelTool::new(project_path.clone(), kind));
@@ -2656,8 +2561,59 @@ pub fn is_code_intel_tool(name: &str) -> bool {
     CODE_INTEL_TOOL_SURFACE.contains(&name)
 }
 
-/// 目标工具面名单（9 + report_finding）。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 11] = [
+/// CLI/工具共用：项目端点报告（`brief` 默认 / `full`）。
+///
+/// 与 MCP `get_project_routes` 走**同一份** `routes::compute_routes`，避免两条口径漂移。
+pub fn project_route_report(project: &Path, detail: &str) -> Result<Value, String> {
+    let loaded = index::load_files(project);
+    let id = index::build_id(&loaded.files);
+    let table = routes::compute_routes(
+        project,
+        &loaded.files,
+        &id,
+        false,
+        &routes::RouteFilter::default(),
+        loaded.truncated_at_limit,
+    );
+    Ok(if detail.eq_ignore_ascii_case("full") {
+        table.data
+    } else {
+        routes::brief_data(&table.data, 0, 0)
+    })
+}
+
+/// CLI `explain-route`：单条路由判定（与 MCP `explain_route` 同一实现）。
+pub fn explain_route_report(
+    project: &Path,
+    route: Option<&str>,
+    file: Option<&str>,
+    handler: Option<&str>,
+) -> Result<Value, String> {
+    let loaded = index::load_files(project);
+    let id = index::build_id(&loaded.files);
+    routes::explain_route(
+        project,
+        &loaded.files,
+        &id,
+        false,
+        file,
+        route,
+        handler,
+        loaded.truncated_at_limit,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// CLI `baseline`：鉴权基线卡（与 MCP `get_security_baseline` 同一实现）。
+pub fn security_baseline_report(project: &Path) -> Result<Value, String> {
+    let loaded = index::load_files(project);
+    let (data, _level, _reasons) =
+        baseline::security_baseline(&loaded.files, loaded.truncated_at_limit);
+    Ok(data)
+}
+
+/// 目标工具面名单（12 + report_finding）。
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 13] = [
     "get_project_index",
     "get_symbol_definition",
     "get_symbol_references",
@@ -2668,6 +2624,8 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 11] = [
     "get_framework_context",
     "get_incremental_status",
     "get_project_routes",
+    "get_security_baseline",
+    "explain_route",
     "report_finding",
 ];
 

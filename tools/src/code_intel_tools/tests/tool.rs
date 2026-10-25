@@ -84,9 +84,9 @@ use super::super::*;
 
     #[test]
     fn test_tool_surface_shape() {
-        // 10 个高阶能力（9 个原能力 + `get_project_routes`）+ `report_finding` = 11
-        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 11);
-        assert_eq!(IntelKind::all().len(), 10);
+        // 12 个高阶能力（含 `get_project_routes` / `get_security_baseline` / `explain_route`）+ `report_finding` = 13
+        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 13);
+        assert_eq!(IntelKind::all().len(), 12);
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"get_project_routes"));
     }
 

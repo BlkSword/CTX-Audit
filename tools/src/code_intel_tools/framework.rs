@@ -107,7 +107,7 @@ pub(crate) fn parse_order_value(text: &str) -> Option<i64> {
 /// 这里只做**行窗**启发式切分（不做括号配平），因此每条链都带出可复核的声明位置。
 pub(crate) fn security_config_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
     let mut chains: Vec<SecurityChain> = Vec::new();
-    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+    for (cfg_path, cfg_content) in project_files.iter().take(max_index_files()) {
         if !looks_like_security_config(cfg_content) {
             continue;
         }
@@ -216,7 +216,7 @@ pub(crate) fn security_config_declarations(
     project_files: &[(String, String)],
 ) -> Vec<(String, u32, String)> {
     let mut out = Vec::new();
-    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+    for (cfg_path, cfg_content) in project_files.iter().take(max_index_files()) {
         if !looks_like_security_config(cfg_content) {
             continue;
         }
@@ -544,7 +544,7 @@ pub(crate) fn csrf_declaration_at(
 /// 覆盖判定**分开陈述**，不用它去改 `global_coverage`。
 pub(crate) fn container_filter_registrations(project_files: &[(String, String)]) -> Vec<ContainerFilter> {
     let mut out: Vec<ContainerFilter> = Vec::new();
-    for (f, content) in project_files.iter().take(MAX_FILES) {
+    for (f, content) in project_files.iter().take(max_index_files()) {
         let lines: Vec<&str> = content.lines().collect();
         if f.ends_with(".xml") {
             // 按**区段**归类：只有 <filter-mapping> 是过滤器证据，<security-constraint> 是声明式约束证据，
@@ -933,7 +933,7 @@ pub(crate) fn looks_like_shiro_config(content: &str) -> bool {
 /// 链没有"适用范围"与 `@Order`，因此 `matcher`/`order` 均为 None、顺序依据为声明序。
 pub(crate) fn shiro_filter_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
     let mut chains: Vec<SecurityChain> = Vec::new();
-    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+    for (cfg_path, cfg_content) in project_files.iter().take(max_index_files()) {
         if !looks_like_shiro_config(cfg_content) {
             continue;
         }
@@ -1174,7 +1174,7 @@ pub(crate) fn xml_access_clause(access: &str) -> String {
 pub(crate) fn spring_xml_security_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
     let mut chains: Vec<SecurityChain> = Vec::new();
     let mut decl_index = 0usize;
-    for (path, content) in project_files.iter().take(MAX_FILES) {
+    for (path, content) in project_files.iter().take(max_index_files()) {
         if !path.ends_with(".xml") {
             continue;
         }
@@ -1325,7 +1325,7 @@ fn sa_token_clause(window: &str) -> String {
 pub(crate) fn sa_token_security_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
     let mut chains: Vec<SecurityChain> = Vec::new();
     let mut decl_index = 0usize;
-    for (path, content) in project_files.iter().take(MAX_FILES) {
+    for (path, content) in project_files.iter().take(max_index_files()) {
         let has_rule = content.lines().any(|l| {
             let t = l.trim();
             !is_import_or_package_line(t) && t.contains("SaRouter.match(")
@@ -1399,7 +1399,7 @@ pub(crate) fn sa_token_security_chains(project_files: &[(String, String)]) -> Ve
 pub(crate) fn reactive_security_chains(project_files: &[(String, String)]) -> Vec<SecurityChain> {
     let mut chains: Vec<SecurityChain> = Vec::new();
     let mut decl_index = 0usize;
-    for (cfg_path, cfg_content) in project_files.iter().take(MAX_FILES) {
+    for (cfg_path, cfg_content) in project_files.iter().take(max_index_files()) {
         let has_marker = cfg_content.lines().any(|l| {
             let t = l.trim();
             !is_import_or_package_line(t)
@@ -1519,7 +1519,7 @@ pub(crate) fn security_starter_without_config(
         "shiro-spring",
         "sa-token",
     ];
-    for (path, content) in project_files.iter().take(MAX_FILES) {
+    for (path, content) in project_files.iter().take(max_index_files()) {
         let name = path.rsplit('/').next().unwrap_or(path);
         if name != "pom.xml" && name != "build.gradle" && name != "build.gradle.kts" {
             continue;
@@ -1557,7 +1557,7 @@ pub(crate) const UNMODELED_PROTECTION_SIGNALS: [(&str, &str); 5] = [
 /// 扫描取数范围内的未建模保护栈信号（按框架去重，返回 (框架, 文件, 行)）。
 pub(crate) fn unmodeled_protection_signals(project_files: &[(String, String)]) -> Vec<(String, String, u32)> {
     let mut out: Vec<(String, String, u32)> = Vec::new();
-    for (path, content) in project_files.iter().take(MAX_FILES) {
+    for (path, content) in project_files.iter().take(max_index_files()) {
         for (idx, raw) in content.lines().enumerate() {
             let t = raw.trim();
             if is_import_or_package_line(t) {
@@ -1578,7 +1578,7 @@ pub(crate) fn unmodeled_protection_signals(project_files: &[(String, String)]) -
 /// 该类配置当前**未建模**；把它探测出来是为了能**如实**说"未建模"，而不是给出会被读成
 /// "没有保护"的 `no_global_config_found`。导入行不算（`import ...ServerHttpSecurity;` 到处都是）。
 pub(crate) fn reactive_security_config(project_files: &[(String, String)]) -> Option<(String, u32)> {
-    for (f, content) in project_files.iter().take(MAX_FILES) {
+    for (f, content) in project_files.iter().take(max_index_files()) {
         if !content.contains("ServerHttpSecurity") && !content.contains("@EnableWebFluxSecurity") {
             continue;
         }
@@ -1640,7 +1640,7 @@ pub(crate) fn filter_class_name(window: &[&str]) -> Option<String> {
 /// 它与容器过滤器、安全配置并列，构成第三条保护面。
 pub(crate) fn interceptor_registrations(project_files: &[(String, String)]) -> Vec<ContainerFilter> {
     let mut out: Vec<ContainerFilter> = Vec::new();
-    for (f, content) in project_files.iter().take(MAX_FILES) {
+    for (f, content) in project_files.iter().take(max_index_files()) {
         if !content.contains("addInterceptor(") {
             continue;
         }
@@ -1975,7 +1975,7 @@ pub(crate) fn policy_sources(
 ) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let mut used: Vec<(String, String)> = Vec::new();
     let mut excluded: Vec<(String, String)> = Vec::new();
-    for (path, content) in project_files.iter().take(MAX_FILES) {
+    for (path, content) in project_files.iter().take(max_index_files()) {
         let role = policy_file_role(path);
         if role == "production" {
             used.push((path.clone(), content.clone()));

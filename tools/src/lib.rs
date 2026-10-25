@@ -30,7 +30,8 @@ pub mod text_scan;
 pub use ast_tools::register_ast_tools;
 pub use bridge::{legacy_tools_enabled, register_all_tools, register_built_in_tools};
 pub use code_intel_tools::{
-    is_code_intel_tool, register_code_intel_tools, CODE_INTEL_TOOL_SURFACE,
+    explain_route_report, is_code_intel_tool, project_route_report,
+    register_code_intel_tools, security_baseline_report, CODE_INTEL_TOOL_SURFACE,
 };
 pub use executor::ToolExecutor;
 #[cfg(feature = "legacy-tools")]
