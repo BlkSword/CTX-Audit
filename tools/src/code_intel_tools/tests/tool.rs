@@ -84,12 +84,15 @@ use super::super::*;
 
     #[test]
     fn test_tool_surface_shape() {
-        // 14 个高阶能力（R257 增补 coverage_summary / coverage_triage）+ `report_finding` = 15
-        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 15);
-        assert_eq!(IntelKind::all().len(), 14);
+        // R257：默认面收敛为 9 个协议工具；其余 7 个细粒度工具进 legacy 面
+        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 9);
+        assert_eq!(IntelKind::all().len(), 15);
+        assert_eq!(CODE_INTEL_LEGACY_SURFACE.len(), 7);
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"get_project_routes"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_summary"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_triage"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"assert_verdict"));
+        assert!(CODE_INTEL_LEGACY_SURFACE.contains(&"get_incremental_status"));
     }
 
     /// 缩进语言：callee 扫描必须止于函数体（同文件无关函数不得计入）

@@ -30,9 +30,12 @@ pub mod text_scan;
 pub use ast_tools::register_ast_tools;
 pub use bridge::{legacy_tools_enabled, register_all_tools, register_built_in_tools};
 pub use code_intel_tools::{
-    audit_bundle, audit_write, coverage_summary_report, coverage_triage_report,
+    audit_bundle, audit_write, audit_write_from_bundle, coverage_summary_report,
+    coverage_triage_report,
     explain_route_report, is_code_intel_tool, project_route_report,
-    register_code_intel_tools, security_baseline_report, CODE_INTEL_TOOL_SURFACE,
+    register_code_intel_tools, register_code_intel_tools_with_legacy, security_baseline_report,
+    CODE_INTEL_LEGACY_SURFACE,
+    CODE_INTEL_TOOL_SURFACE,
 };
 pub use executor::ToolExecutor;
 #[cfg(feature = "legacy-tools")]

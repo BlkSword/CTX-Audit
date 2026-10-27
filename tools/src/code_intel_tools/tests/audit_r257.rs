@@ -3,6 +3,8 @@
 //! R257 审计驾驶舱测试：覆盖率摘要、排序、证据包写盘。
 
 use super::*;
+use crate::code_intel_tools::{CodeIntelTool, IntelKind};
+use crate::registry::Tool;
 use crate::code_intel_tools::audit_bundle;
 use crate::code_intel_tools::audit_write;
 use serde_json::json;
@@ -129,5 +131,38 @@ fn test_dynamic_registration_signal_reported() {
         "必须报告动态注册端点: {}",
         bundle["coverage"]
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// assert_verdict：机械证伪必须给出 pass/fail，断言与事实不一致时 pass=false。
+#[tokio::test]
+async fn test_assert_verdict_pass_and_fail() {
+    let root = fixture("assert");
+    // 未覆盖端点：断言 uncovered → pass
+    let tool = CodeIntelTool::new(
+        root.to_string_lossy().to_string(),
+        IntelKind::AssertVerdict,
+    );
+    let ok = tool
+        .execute(json!({"route": "/a/danger", "expect": "uncovered"}))
+        .await
+        .expect("execute");
+    let data = ok.data.expect("envelope")["data"].clone();
+    assert_eq!(data["asserted_verdict"], "uncovered", "{data}");
+    assert_eq!(data["pass"], true, "{data}");
+    // 同一路由断言 covered → fail（不静默通过）
+    let bad = tool
+        .execute(json!({"route": "/a/danger", "expect": "covered"}))
+        .await
+        .expect("execute");
+    let data = bad.data.expect("envelope")["data"].clone();
+    assert_eq!(data["pass"], false, "{data}");
+    // 受保护路由：/admin/export 断言 covered → pass
+    let admin = tool
+        .execute(json!({"route": "/admin/export", "expect": "covered"}))
+        .await
+        .expect("execute");
+    let data = admin.data.expect("envelope")["data"].clone();
+    assert_eq!(data["pass"], true, "{data}");
     let _ = std::fs::remove_dir_all(&root);
 }

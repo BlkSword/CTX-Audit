@@ -11,9 +11,10 @@ pub async fn execute(path: String, out: String, limit: usize, output: String) ->
         return Err(miette!("路径不存在: {}", path));
     }
     let out_dir = PathBuf::from(&out);
-    let written = ctx_audit_tools::audit_write(&root, &out_dir, limit)
-        .map_err(|e| miette!("{}", e))?;
+    // 一次全量扫描：同一份 bundle 既用于打印摘要，也用于写全部产物
     let bundle = ctx_audit_tools::audit_bundle(&root).map_err(|e| miette!("{}", e))?;
+    let written = ctx_audit_tools::audit_write_from_bundle(&root, &out_dir, limit, &bundle)
+        .map_err(|e| miette!("{}", e))?;
 
     if output.eq_ignore_ascii_case("json") {
         println!(

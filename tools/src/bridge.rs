@@ -951,7 +951,12 @@ pub async fn register_all_tools(
     register_built_in_tools(registry, project_path.clone()).await;
 
     // 高阶代码智能工具（9 个高阶语义能力 + provenance/uncertainty）
-    crate::code_intel_tools::register_code_intel_tools(registry, project_path.clone()).await;
+    crate::code_intel_tools::register_code_intel_tools_with_legacy(
+        registry,
+        project_path.clone(),
+        legacy_tools,
+    )
+    .await;
 
     if !legacy_tools {
         return;

@@ -4951,7 +4951,7 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "默认工具面名单存在重复项");
-        assert_eq!(before, 18, "默认工具面应为 15 高阶 + 3 基础");
+        assert_eq!(before, 12, "默认工具面应为 9 协议工具 + 3 基础");
     }
 
     /// legacy gate：默认 state 的 registry 只含默认面工具；legacy 打开后严格更多。
@@ -5054,23 +5054,21 @@ mod tests {
         assert!(!reasons.contains(&"daemon_incremental_index_not_wired"));
     }
 
-    /// 装饰器必须是默认工具面的一员，且沿用原实现的定义（参数/类目不变）。
+    /// R257：细粒度工具（get_incremental_status）已移入 legacy 面，默认面不再暴露。
     #[tokio::test]
-    async fn test_incremental_status_decorator_keeps_definition() {
+    async fn test_incremental_status_decorator_moved_to_legacy_surface() {
         let state = McpServerState::new(false).await;
-        let tool = state
-            .tool_registry
-            .get_tool("get_incremental_status")
-            .expect("默认面应注册该工具");
-        assert_eq!(tool.name(), "get_incremental_status");
-        assert!(is_default_surface_tool(tool.name()));
-        let def = tool.definition();
-        assert_eq!(def.name, "get_incremental_status");
-        // 原实现带 refresh 参数；装饰器应原样沿用
         assert!(
-            def.parameters.iter().any(|p| p.name == "refresh"),
-            "装饰器不应丢失原工具参数: {:?}",
-            def.parameters.iter().map(|p| &p.name).collect::<Vec<_>>()
+            state.tool_registry.get_tool("get_incremental_status").is_none(),
+            "默认面应收敛到 9 个协议工具，不含 get_incremental_status"
+        );
+        let legacy_state = McpServerState::new(true).await;
+        assert!(
+            legacy_state
+                .tool_registry
+                .get_tool("get_incremental_status")
+                .is_some(),
+            "legacy 面应保留 get_incremental_status"
         );
     }
 }

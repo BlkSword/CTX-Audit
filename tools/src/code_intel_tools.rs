@@ -219,10 +219,12 @@ pub enum IntelKind {
     CoverageSummary,
     /// 排序后的待审清单（不含证据正文）
     CoverageTriage,
+    /// 机械证伪：断言某条路由的覆盖判定，返回 pass/fail
+    AssertVerdict,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 14] {
+    pub fn all() -> [IntelKind; 15] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -238,6 +240,7 @@ impl IntelKind {
             IntelKind::ExplainRoute,
             IntelKind::CoverageSummary,
             IntelKind::CoverageTriage,
+            IntelKind::AssertVerdict,
         ]
     }
 
@@ -257,6 +260,7 @@ impl IntelKind {
             IntelKind::ExplainRoute => "explain_route",
             IntelKind::CoverageSummary => "coverage_summary",
             IntelKind::CoverageTriage => "coverage_triage",
+            IntelKind::AssertVerdict => "assert_verdict",
         }
     }
 
@@ -274,6 +278,7 @@ impl IntelKind {
             IntelKind::ProjectRoutes => "项目级端点表：一次调用返回全项目路由与覆盖判定（含证据出处与提取形态，有界上报）",
             IntelKind::SecurityBaseline => "鉴权基线卡：链/规则/过滤器/注解消费者/被关闭的钩子（一屏可复核，≤3KB）",
             IntelKind::CoverageSummary => "审计协议第一步：覆盖率摘要（按 verdict 分布 + 边界：未建模/动态注册/截断，≤2KB）",
+            IntelKind::AssertVerdict => "机械证伪：断言路由覆盖判定（covered/uncovered/permitted/any），返回 pass/fail + 证据",
             IntelKind::CoverageTriage => "排序后的待审清单（写方法/高危路径/未覆盖优先，不含证据正文，≤8KB）",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
@@ -307,6 +312,30 @@ impl CodeIntelTool {
             IntelKind::ProjectIndex | IntelKind::IncrementalStatus => vec![],
             IntelKind::SecurityBaseline => vec![],
             IntelKind::CoverageSummary => vec![],
+            IntelKind::AssertVerdict => vec![
+                ToolParameter {
+                    name: "route".to_string(),
+                    param_type: ToolParameterType::String,
+                    description: "路由（含类级前缀）".to_string(),
+                    required: true,
+                    default: None,
+                    enum_values: None,
+                    format: None,
+                    items: None,
+                    properties: None,
+                },
+                ToolParameter {
+                    name: "expect".to_string(),
+                    param_type: ToolParameterType::String,
+                    description: "期望判定：covered | uncovered | permitted | any".to_string(),
+                    required: false,
+                    default: Some(json!("uncovered")),
+                    enum_values: None,
+                    format: None,
+                    items: None,
+                    properties: None,
+                },
+            ],
             IntelKind::CoverageTriage => vec![ToolParameter {
                 name: "limit".to_string(),
                 param_type: ToolParameterType::Integer,
@@ -2568,6 +2597,37 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new(level, &refs, 0),
                 }
             }
+            IntelKind::AssertVerdict => {
+                let expect = input["expect"].as_str().unwrap_or("uncovered").to_string();
+                let detail = routes::explain_route(
+                    root,
+                    files,
+                    &id,
+                    refresh,
+                    input["file"].as_str(),
+                    input["route"].as_str(),
+                    input["handler"].as_str(),
+                    index.truncated_at_limit,
+                )?;
+                let asserted = detail["asserted_verdict"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string();
+                let pass = asserted == expect || expect == "any";
+                IntelEnvelope {
+                    data: json!({
+                        "route": input["route"].clone(),
+                        "expected": expect,
+                        "asserted_verdict": asserted,
+                        "pass": pass,
+                        "matched": detail.get("matched").cloned().unwrap_or(Value::Null),
+                        "decided_by": detail.get("decided_by").cloned().unwrap_or(Value::Null),
+                        "falsify": detail.get("falsify").cloned().unwrap_or(Value::Null),
+                    }),
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new("low", &[], 0),
+                }
+            }
             IntelKind::ExplainRoute => {
                 let data = routes::explain_route(
                     root,
@@ -2608,6 +2668,7 @@ all_chains.extend(sa_token_security_chains(policy_files));
             env
         };
         let text = format!("{}: {} files scanned", self.kind.name(), files.len());
+        let env = apply_payload_budget(env);
         Ok(ToolResult::json(
             serde_json::to_value(env).unwrap_or(Value::Null),
             Some(text),
@@ -2640,9 +2701,97 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
     env
 }
 
-/// 注册高阶代码智能工具（12 个；report_finding 由 built-in 提供）。
+/// 审计加速器协议工具面（9 个）：LLM 默认只看到这一组，其余走 `--legacy-tools`。
+///
+/// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
+/// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
+/// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
+pub const PROTOCOL_TOOL_SURFACE: [&str; 9] = CODE_INTEL_TOOL_SURFACE;
+
+/// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
+fn max_tool_bytes() -> usize {
+    std::env::var("CTX_AUDIT_MAX_TOOL_BYTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v >= 1024)
+        .unwrap_or(64 * 1024)
+}
+
+/// 把超预算的响应数组截断到保留 `keep` 条，返回移除条数。
+fn truncate_arrays(v: &mut Value, keep: usize) -> usize {
+    let mut removed = 0usize;
+    match v {
+        Value::Array(items) => {
+            if items.len() > keep {
+                removed += items.len() - keep;
+                items.truncate(keep);
+            }
+            for item in items.iter_mut() {
+                removed += truncate_arrays(item, keep);
+            }
+        }
+        Value::Object(map) => {
+            for (_k, val) in map.iter_mut() {
+                removed += truncate_arrays(val, keep);
+            }
+        }
+        _ => {}
+    }
+    removed
+}
+
+/// 载荷预算：超过预算时逐级截断数组并显式标注（不静默丢数据）。
+fn apply_payload_budget(mut env: IntelEnvelope) -> IntelEnvelope {
+    let budget = max_tool_bytes();
+    let size = serde_json::to_string(&env).map(|s| s.len()).unwrap_or(0);
+    if size <= budget {
+        return env;
+    }
+    let mut removed_total = 0usize;
+    for keep in [200usize, 100, 50, 20, 10, 5, 3] {
+        removed_total += truncate_arrays(&mut env.data, keep);
+        let now = serde_json::to_string(&env).map(|s| s.len()).unwrap_or(0);
+        if now <= budget {
+            break;
+        }
+    }
+    if let Some(obj) = env.data.as_object_mut() {
+        obj.insert("truncated_by_budget".to_string(), json!(true));
+        obj.insert(
+            "budget_bytes".to_string(),
+            json!(budget),
+        );
+        obj.insert("items_removed".to_string(), json!(removed_total));
+    }
+    env.uncertainty
+        .reasons
+        .push("truncated_by_payload_budget".to_string());
+    env
+}
+
+/// 注册高阶代码智能工具（默认只注册协议工具面；`legacy_tools_enabled()` 时注册全部）。
+
 pub async fn register_code_intel_tools(registry: &Arc<ToolRegistry>, project_path: String) {
+    register_code_intel_tools_with_legacy(registry, project_path, crate::bridge::legacy_tools_enabled())
+        .await;
+}
+
+/// 带显式 legacy 开关的注册入口（MCP server 的 `--legacy-tools` 据此展开细粒度工具）。
+pub async fn register_code_intel_tools_with_legacy(
+    registry: &Arc<ToolRegistry>,
+    project_path: String,
+    legacy: bool,
+) {
     for kind in IntelKind::all() {
+        let name = kind.name();
+        let allowed = if legacy {
+            CODE_INTEL_TOOL_SURFACE.contains(&name) || CODE_INTEL_LEGACY_SURFACE.contains(&name)
+        } else {
+            CODE_INTEL_TOOL_SURFACE.contains(&name)
+        };
+        if !allowed {
+            continue;
+        }
         let tool: Arc<dyn Tool> = Arc::new(CodeIntelTool::new(project_path.clone(), kind));
         if let Err(e) = registry.register(tool).await {
             tracing::warn!("Failed to register code-intel tool: {}", e);
@@ -2972,6 +3121,16 @@ fn audit_evidence_markdown(project: &Path, item: &Value) -> String {
 /// 写审计驾驶舱产物（worklist/coverage/证据包/快照），返回写出的文件列表。
 pub fn audit_write(project: &Path, out_dir: &Path, limit: usize) -> Result<Vec<String>, String> {
     let bundle = audit_bundle(project)?;
+    audit_write_from_bundle(project, out_dir, limit, &bundle)
+}
+
+/// 写盘入口（复用已构建的 bundle）：CLI 一次扫描同时打印摘要与写产物，避免重复全量扫描。
+pub fn audit_write_from_bundle(
+    project: &Path,
+    out_dir: &Path,
+    limit: usize,
+    bundle: &Value,
+) -> Result<Vec<String>, String> {
     std::fs::create_dir_all(out_dir).map_err(|e| e.to_string())?;
     let evidence_dir = out_dir.join("evidence");
     std::fs::create_dir_all(&evidence_dir).map_err(|e| e.to_string())?;
@@ -3085,23 +3244,30 @@ pub fn audit_write(project: &Path, out_dir: &Path, limit: usize) -> Result<Vec<S
     Ok(written)
 }
 
-/// 目标工具面名单（12 + report_finding）。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 15] = [
+/// LLM 默认工具面（9 个）：审计协议所需的最小集合。
+///
+/// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 9] = [
+    "coverage_summary",
+    "coverage_triage",
+    "get_project_routes",
+    "explain_route",
+    "assert_verdict",
+    "slice_backward",
+    "get_sanitizer_guards",
+    "get_framework_context",
+    "report_finding",
+];
+
+/// 默认面之外的细粒度高阶工具（legacy 模式下注册，避免上下文被工具定义占满）。
+pub const CODE_INTEL_LEGACY_SURFACE: [&str; 7] = [
     "get_project_index",
     "get_symbol_definition",
     "get_symbol_references",
     "get_call_hierarchy",
-    "slice_backward",
     "get_dataflow_path",
-    "get_sanitizer_guards",
-    "get_framework_context",
     "get_incremental_status",
-    "get_project_routes",
     "get_security_baseline",
-    "explain_route",
-    "coverage_summary",
-    "coverage_triage",
-    "report_finding",
 ];
 
 #[cfg(test)]
