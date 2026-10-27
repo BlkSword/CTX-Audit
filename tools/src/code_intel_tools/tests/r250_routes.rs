@@ -560,3 +560,33 @@ fn test_unmodelled_stack_signal() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 自定义 Servlet `Filter` 承载鉴权时，基线卡必须指出它在哪（R255 实测缺口：
+/// 某项目鉴权全在 AuthFilter.doFilter 里，基线卡却报 `unmodeled_protection_frameworks: []`）。
+#[test]
+fn test_custom_filter_reported_as_unmodelled_protection() {
+    let filter = concat!(
+        "package app;\n",
+        "import javax.servlet.*;\n",
+        "public class AuthFilter implements Filter {\n",
+        "    private AuthConfigs authConfigs;\n",
+        "    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) {\n",
+        "        if (!authConfigs.isAuthEnabled()) { chain.doFilter(request, response); return; }\n",
+        "        throw new AccessException(\"unauthorized\");\n",
+        "    }\n",
+        "}\n",
+    );
+    let files = loaded(&[("src/main/java/app/AuthFilter.java", filter)]);
+    let (data, _, _) = security_baseline(&files, false);
+    let unmodelled = data["summary"]["unmodeled_protection_frameworks"]
+        .as_array()
+        .expect("unmodeled_protection_frameworks should be an array");
+    let hit = unmodelled.iter().any(|u| {
+        u["framework"] == "servlet-filter"
+            && u["file"]
+                .as_str()
+                .map(|f| f.ends_with("AuthFilter.java"))
+                .unwrap_or(false)
+    });
+    assert!(hit, "custom auth filter must be reported: {unmodelled:?}");
+}

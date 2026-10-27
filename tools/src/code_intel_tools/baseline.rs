@@ -9,6 +9,53 @@
 
 use super::*;
 
+/// 自定义 Servlet `Filter`（`implements Filter`）也可能承载鉴权，但它的判定逻辑不在声明式配置里，
+/// 引擎不建模。**必须指出它在哪**，否则消费者会把"没有声明式规则"读成"没有鉴权"。
+///
+/// 实测场景（R255）：某项目鉴权全在 `AuthFilter.doFilter` 里，基线卡却报
+/// `unmodeled_protection_frameworks: []`，等于把唯一的保护层隐去了。
+fn custom_filter_protection_signals(
+    files: &[(String, String)],
+) -> Vec<(String, String, u32)> {
+    const AUTH_TOKENS: [&str; 9] = [
+        "isAuthEnabled",
+        "authConfigs",
+        "AccessException",
+        "checkLogin",
+        "authenticate",
+        "Unauthorized",
+        "UNAUTHORIZED",
+        "Login",
+        "Secured",
+    ];
+    let mut out: Vec<(String, String, u32)> = Vec::new();
+    for (path, content) in files.iter().take(max_index_files()) {
+        if !path.ends_with(".java") || !content.contains("implements Filter") {
+            continue;
+        }
+        let auth_hits = AUTH_TOKENS.iter().filter(|t| content.contains(**t)).count();
+        if auth_hits == 0 {
+            continue;
+        }
+        let line = content
+            .lines()
+            .position(|l| l.contains("doFilter("))
+            .map(|i| (i + 1) as u32)
+            .unwrap_or(1);
+        if out
+            .iter()
+            .any(|(_, f, _)| f == path)
+        {
+            continue;
+        }
+        out.push(("servlet-filter".to_string(), path.clone(), line));
+        if out.len() >= 4 {
+            break;
+        }
+    }
+    out
+}
+
 /// 把一条过滤器链压成基线卡里的一行。
 fn chain_json(c: &SecurityChain) -> Value {
     let rules: Vec<Value> = c
@@ -180,7 +227,8 @@ pub(crate) fn security_baseline(
     filters.extend(container_filter_registrations(policy_files));
     filters.extend(interceptor_registrations(policy_files));
     let filters_total = filters.len();
-    let unmodeled = unmodeled_protection_signals(policy_files);
+    let mut unmodeled = unmodeled_protection_signals(policy_files);
+    unmodeled.extend(custom_filter_protection_signals(files));
     let consumers = annotation_consumers(policy_files);
     let disabled = disabled_hooks(policy_files);
     let unconsumed: Vec<&str> = consumers
