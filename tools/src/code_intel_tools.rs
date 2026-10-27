@@ -215,10 +215,14 @@ pub enum IntelKind {
     SecurityBaseline,
     /// 单条路由判定 + 可机械证伪命令 + 敏感返回面
     ExplainRoute,
+    /// 覆盖率摘要（审计协议第一步：先声明覆盖边界）
+    CoverageSummary,
+    /// 排序后的待审清单（不含证据正文）
+    CoverageTriage,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 12] {
+    pub fn all() -> [IntelKind; 14] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -232,6 +236,8 @@ impl IntelKind {
             IntelKind::ProjectRoutes,
             IntelKind::SecurityBaseline,
             IntelKind::ExplainRoute,
+            IntelKind::CoverageSummary,
+            IntelKind::CoverageTriage,
         ]
     }
 
@@ -249,6 +255,8 @@ impl IntelKind {
             IntelKind::ProjectRoutes => "get_project_routes",
             IntelKind::SecurityBaseline => "get_security_baseline",
             IntelKind::ExplainRoute => "explain_route",
+            IntelKind::CoverageSummary => "coverage_summary",
+            IntelKind::CoverageTriage => "coverage_triage",
         }
     }
 
@@ -265,6 +273,8 @@ impl IntelKind {
             IntelKind::IncrementalStatus => "增量索引状态：冷启动/缓存命中/待重编译清单（stat 指纹 + TTL 缓存）",
             IntelKind::ProjectRoutes => "项目级端点表：一次调用返回全项目路由与覆盖判定（含证据出处与提取形态，有界上报）",
             IntelKind::SecurityBaseline => "鉴权基线卡：链/规则/过滤器/注解消费者/被关闭的钩子（一屏可复核，≤3KB）",
+            IntelKind::CoverageSummary => "审计协议第一步：覆盖率摘要（按 verdict 分布 + 边界：未建模/动态注册/截断，≤2KB）",
+            IntelKind::CoverageTriage => "排序后的待审清单（写方法/高危路径/未覆盖优先，不含证据正文，≤8KB）",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
     }
@@ -296,6 +306,18 @@ impl CodeIntelTool {
         let mut params = match self.kind {
             IntelKind::ProjectIndex | IntelKind::IncrementalStatus => vec![],
             IntelKind::SecurityBaseline => vec![],
+            IntelKind::CoverageSummary => vec![],
+            IntelKind::CoverageTriage => vec![ToolParameter {
+                name: "limit".to_string(),
+                param_type: ToolParameterType::Integer,
+                description: "返回条数上限（默认 20，0=全部）".to_string(),
+                required: false,
+                default: None,
+                enum_values: None,
+                format: None,
+                items: None,
+                properties: None,
+            }],
             IntelKind::ExplainRoute => vec![
                 str_param("route", "路由（含类级前缀；与 file/handler 至少给一个）", false),
                 str_param("file", "相对路径（可选；配合 handler 可精确定位）", false),
@@ -2486,6 +2508,66 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new(level, &reasons, 0),
                 }
             }
+            IntelKind::CoverageSummary => {
+                let (data, level, reasons) = match audit_bundle(root) {
+                    Ok(bundle) => (
+                        json!({
+                            "project": bundle["project"].clone(),
+                            "files_indexed": bundle["files_indexed"].clone(),
+                            "coverage": bundle["coverage"].clone(),
+                            "worklist_size": bundle["worklist"].as_array().map(|a| a.len()).unwrap_or(0),
+                        }),
+                        "medium",
+                        Vec::new(),
+                    ),
+                    Err(e) => (
+                        json!({"error": e}),
+                        "high",
+                        vec!["coverage_summary_failed".to_string()],
+                    ),
+                };
+                let refs: Vec<&str> = reasons.iter().map(|s| s.as_str()).collect();
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new(level, &refs, 0),
+                }
+            }
+            IntelKind::CoverageTriage => {
+                let limit = input["limit"].as_u64().unwrap_or(20) as usize;
+                let (data, level, reasons) = match audit_bundle(root) {
+                    Ok(bundle) => {
+                        let items = bundle["worklist"].as_array().cloned().unwrap_or_default();
+                        let take = if limit == 0 {
+                            items.len()
+                        } else {
+                            limit.min(items.len())
+                        };
+                        (
+                            json!({
+                                "project": bundle["project"].clone(),
+                                "coverage": bundle["coverage"].clone(),
+                                "total": items.len(),
+                                "returned": take,
+                                "items": items[..take].to_vec(),
+                            }),
+                            "medium",
+                            Vec::new(),
+                        )
+                    }
+                    Err(e) => (
+                        json!({"error": e}),
+                        "high",
+                        vec!["coverage_triage_failed".to_string()],
+                    ),
+                };
+                let refs: Vec<&str> = reasons.iter().map(|s| s.as_str()).collect();
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new(level, &refs, 0),
+                }
+            }
             IntelKind::ExplainRoute => {
                 let data = routes::explain_route(
                     root,
@@ -2624,8 +2706,387 @@ pub fn security_baseline_report(project: &Path) -> Result<Value, String> {
     Ok(data)
 }
 
+
+/// 一条未覆盖/放行端点的风险打分：把"先看哪条"变成确定性排序。
+///
+/// 依据：写方法 > 读方法；高危路径词；覆盖状态（uncovered > excluded > permitted > unknown）；
+/// 带路径参数（更可能是对象级访问）。
+fn route_risk_score(route: &Value) -> (u32, Vec<&'static str>) {
+    let method = route
+        .get("http_method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ANY")
+        .to_ascii_uppercase();
+    let path = route
+        .get("route")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let verdict = route
+        .get("global_coverage")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let mut score = 0u32;
+    let mut signals: Vec<&'static str> = Vec::new();
+    if matches!(method.as_str(), "POST" | "PUT" | "DELETE" | "PATCH") {
+        score += 30;
+        signals.push("state_changing");
+    } else if method == "GET" {
+        score += 10;
+    }
+    const RISKY: [&str; 14] = [
+        "admin", "user", "token", "upload", "export", "reset", "delete", "exec", "backup",
+        "download", "install", "share", "proxy", "callback",
+    ];
+    if RISKY.iter().any(|k| path.contains(k)) {
+        score += 8;
+        signals.push("high_risk_path");
+    }
+    match verdict {
+        "no_global_config_found" | "no_global_match_found" => {
+            score += 40;
+            signals.push("uncovered");
+        }
+        "excluded_from_interceptor" => {
+            score += 35;
+            signals.push("excluded_from_interceptor");
+        }
+        "permitted_by_global_config" => {
+            score += 15;
+            signals.push("explicitly_permitted");
+        }
+        "coverage_unknown" | "ambiguous_across_chains" | "framework_not_modeled" => {
+            score += 5;
+            signals.push("unknown");
+        }
+        _ => {}
+    }
+    if path.contains('{') {
+        score += 5;
+        signals.push("has_path_param");
+    }
+    (score, signals)
+}
+
+/// 审计驾驶舱数据：覆盖率摘要 + 排序后的待审清单（人用 CLI 与 MCP 共用）。
+pub fn audit_bundle(project: &Path) -> Result<Value, String> {
+    let loaded = index::load_files(project);
+    let id = index::build_id(&loaded.files);
+    let table = routes::compute_routes(
+        project,
+        &loaded.files,
+        &id,
+        false,
+        &routes::RouteFilter::default(),
+        loaded.truncated_at_limit,
+    );
+    let (baseline, level, reasons) =
+        baseline::security_baseline(&loaded.files, loaded.truncated_at_limit);
+    let data = &table.data;
+    let empty: Vec<Value> = Vec::new();
+    let all_routes = data["routes"].as_array().unwrap_or(&empty);
+    let baseline_summary = &baseline["summary"];
+
+    let mut by_verdict: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut method_routes = 0usize;
+    for r in all_routes {
+        if r.get("scope").and_then(|v| v.as_str()) != Some("method") {
+            continue;
+        }
+        method_routes += 1;
+        let v = r
+            .get("global_coverage")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown");
+        *by_verdict.entry(v.to_string()).or_default() += 1;
+    }
+
+    let mut items: Vec<Value> = Vec::new();
+    for r in all_routes {
+        if r.get("scope").and_then(|v| v.as_str()) != Some("method") {
+            continue;
+        }
+        if r.get("not_an_endpoint").and_then(|v| v.as_bool()) == Some(true) {
+            continue;
+        }
+        if r.get("annotation_covered").and_then(|v| v.as_bool()) == Some(true) {
+            continue;
+        }
+        let verdict = r
+            .get("global_coverage")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let relevant = matches!(
+            verdict,
+            "no_global_config_found"
+                | "no_global_match_found"
+                | "excluded_from_interceptor"
+                | "permitted_by_global_config"
+                | "coverage_unknown"
+                | "ambiguous_across_chains"
+                | "framework_not_modeled"
+        );
+        if !relevant {
+            continue;
+        }
+        let (score, signals) = route_risk_score(r);
+        items.push(json!({
+            "score": score,
+            "signals": signals,
+            "method": r.get("http_method").cloned().unwrap_or(Value::Null),
+            "route": r.get("route").cloned().unwrap_or(Value::Null),
+            "file": r.get("file").cloned().unwrap_or(Value::Null),
+            "line": r.get("line").cloned().unwrap_or(Value::Null),
+            "verdict": verdict,
+            "global_match": r.get("global_match").cloned().unwrap_or(Value::Null),
+            "coverage_caveat": r.get("coverage_caveat").cloned().unwrap_or(Value::Null),
+            "annotation_covered_by": r.get("annotation_covered_by").cloned().unwrap_or(Value::Null),
+            "unmodelled_stack": r.get("unmodelled_stack").cloned().unwrap_or(Value::Null),
+        }));
+    }
+    items.sort_by(|a, b| {
+        let sa = a["score"].as_u64().unwrap_or(0);
+        let sb = b["score"].as_u64().unwrap_or(0);
+        sb.cmp(&sa)
+            .then_with(|| {
+                a["file"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(b["file"].as_str().unwrap_or(""))
+            })
+            .then_with(|| a["line"].as_u64().unwrap_or(0).cmp(&b["line"].as_u64().unwrap_or(0)))
+    });
+    for (i, item) in items.iter_mut().enumerate() {
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("id".to_string(), json!(format!("F{:03}", i + 1)));
+        }
+    }
+
+    Ok(json!({
+        "project": project.to_string_lossy(),
+        "coverage": {
+            "method_routes": method_routes,
+            "by_verdict": by_verdict,
+            "uncovered": data.get("uncovered_endpoints").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+            "annotation_covered": data.get("annotation_covered_routes").cloned().unwrap_or(json!(0)),
+            "not_an_endpoint": data.get("not_an_endpoint_routes").cloned().unwrap_or(json!(0)),
+            "unmodelled_route_files": data.get("unmodelled_route_files").cloned().unwrap_or(json!(0)),
+            "unmodelled_route_stacks": data.get("unmodelled_route_stacks").cloned().unwrap_or(Value::Null),
+            "dynamic_endpoint_registrations": data.get("dynamic_endpoint_registrations").cloned().unwrap_or(json!(0)),
+            "dynamic_registration_samples": data.get("dynamic_registration_samples").cloned().unwrap_or(Value::Null),
+            "index_truncated_at_limit": data.get("index_truncated_at_limit").cloned().unwrap_or(Value::Bool(false)),
+            "chain_count": baseline_summary.get("chains").cloned().unwrap_or(json!(0)),
+            "rule_count": baseline_summary.get("rules").cloned().unwrap_or(json!(0)),
+            "container_filters": baseline_summary.get("container_filters").cloned().unwrap_or(json!(0)),
+            "has_path_level_policy": baseline_summary.get("has_path_level_policy").cloned().unwrap_or(Value::Bool(false)),
+            "unmodelled_protection_frameworks": baseline_summary.get("unmodeled_protection_frameworks").cloned().unwrap_or(Value::Null),
+            "confidence": level,
+            "reasons": reasons,
+        },
+        "worklist": items,
+        "files_indexed": loaded.files.len(),
+    }))
+}
+
+/// `coverage_summary`（MCP/CLI 共用）：只给覆盖率摘要，强制作为审计流程第一步。
+pub fn coverage_summary_report(project: &Path) -> Result<Value, String> {
+    let bundle = audit_bundle(project)?;
+    Ok(json!({
+        "project": bundle["project"].clone(),
+        "files_indexed": bundle["files_indexed"].clone(),
+        "coverage": bundle["coverage"].clone(),
+        "worklist_size": bundle["worklist"].as_array().map(|a| a.len()).unwrap_or(0),
+    }))
+}
+
+/// `coverage_triage`（MCP/CLI 共用）：只给排序后的待审清单（不含证据正文）。
+pub fn coverage_triage_report(project: &Path, limit: usize) -> Result<Value, String> {
+    let bundle = audit_bundle(project)?;
+    let items = bundle["worklist"].as_array().cloned().unwrap_or_default();
+    let take = if limit == 0 { items.len() } else { limit.min(items.len()) };
+    Ok(json!({
+        "project": bundle["project"].clone(),
+        "coverage": bundle["coverage"].clone(),
+        "total": items.len(),
+        "returned": take,
+        "items": items[..take].to_vec(),
+    }))
+}
+
+fn audit_evidence_markdown(project: &Path, item: &Value) -> String {
+    let method = item["method"].as_str().unwrap_or("ANY");
+    let route = item["route"].as_str().unwrap_or("");
+    let file = item["file"].as_str().unwrap_or("");
+    let line = item["line"].as_u64().unwrap_or(0);
+    let verdict = item["verdict"].as_str().unwrap_or("unknown");
+    let signals = item["signals"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default();
+    let mut out = String::new();
+    out.push_str(&format!(
+        "## {} {}  ({}, score {})\n\n",
+        method,
+        route,
+        verdict,
+        item["score"].as_u64().unwrap_or(0)
+    ));
+    out.push_str(&format!("- 位置: `{}:{}`\n", file, line));
+    out.push_str(&format!("- 信号: {}\n", signals));
+    if let Some(m) = item.get("global_match").filter(|m| m.is_object()) {
+        out.push_str(&format!(
+            "- 最接近的规则: `{}`（{}:{}，clause={}）\n",
+            m["pattern"].as_str().unwrap_or(""),
+            m["chain_file"].as_str().unwrap_or(""),
+            m["chain_line"].as_u64().unwrap_or(0),
+            m["clause"].as_str().unwrap_or(""),
+        ));
+    } else {
+        out.push_str("- 最接近的规则: 无（没有任何声明式规则匹配）\n");
+    }
+    if let Some(c) = item.get("coverage_caveat").and_then(|v| v.as_str()) {
+        out.push_str(&format!("- 覆盖告警: `{}`\n", c));
+    }
+    if let Some(s) = item.get("unmodelled_stack").and_then(|v| v.as_str()) {
+        out.push_str(&format!("- 未建模栈: `{}`（结论不可当作完整）\n", s));
+    }
+    out.push_str(&format!(
+        "- 反证: `ctx-audit explain-route . {} --assert {}`\n",
+        route,
+        match verdict {
+            "permitted_by_global_config" => "permitted",
+            "coverage_unknown" | "ambiguous_across_chains" | "framework_not_modeled" => "any",
+            _ => "uncovered",
+        }
+    ));
+    out.push_str(&format!(
+        "- 源码: `sed -n '{},{}p' {}`\n",
+        line.saturating_sub(2).max(1),
+        line + 20,
+        file
+    ));
+    let _ = project;
+    out
+}
+
+/// 写审计驾驶舱产物（worklist/coverage/证据包/快照），返回写出的文件列表。
+pub fn audit_write(project: &Path, out_dir: &Path, limit: usize) -> Result<Vec<String>, String> {
+    let bundle = audit_bundle(project)?;
+    std::fs::create_dir_all(out_dir).map_err(|e| e.to_string())?;
+    let evidence_dir = out_dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).map_err(|e| e.to_string())?;
+    let mut written: Vec<String> = Vec::new();
+
+    let cov = &bundle["coverage"];
+    let mut cov_md = String::new();
+    cov_md.push_str("# 覆盖摘要（Coverage）\n\n");
+    cov_md.push_str(&format!("- 项目: `{}`\n", bundle["project"].as_str().unwrap_or("")));
+    cov_md.push_str(&format!(
+        "- method 级端点: **{}**\n- 索引文件: {}\n- 置信: {}\n",
+        cov["method_routes"].as_u64().unwrap_or(0),
+        bundle["files_indexed"].as_u64().unwrap_or(0),
+        cov["confidence"].as_str().unwrap_or("unknown"),
+    ));
+    cov_md.push_str(&format!("\n## 覆盖分布\n\n| verdict | 数量 |\n|---|---|\n"));
+    if let Some(m) = cov["by_verdict"].as_object() {
+        for (k, v) in m {
+            cov_md.push_str(&format!("| `{}` | {} |\n", k, v.as_u64().unwrap_or(0)));
+        }
+    }
+    cov_md.push_str(&format!(
+        "\n## 必须声明的边界\n\n- 未覆盖端点: **{}**\n- 注解覆盖: {}\n- 非端点(非 Bean): {}\n- 动态注册端点: {}\n- 未建模路由文件: {}（栈: {}）\n- 未建模保护框架: {}\n- 索引截断: {}\n",
+        cov["uncovered"].as_u64().unwrap_or(0),
+        cov["annotation_covered"].as_u64().unwrap_or(0),
+        cov["not_an_endpoint"].as_u64().unwrap_or(0),
+        cov["dynamic_endpoint_registrations"].as_u64().unwrap_or(0),
+        cov["unmodelled_route_files"].as_u64().unwrap_or(0),
+        cov["unmodelled_route_stacks"],
+        cov["unmodelled_protection_frameworks"],
+        cov["index_truncated_at_limit"].as_bool().unwrap_or(false),
+    ));
+    if let Some(reasons) = cov["reasons"].as_array() {
+        if !reasons.is_empty() {
+            let list: Vec<String> = reasons.iter().map(|r| format!("`{}`", r)).collect();
+            cov_md.push_str(&format!("\n- 不确定原因: {}\n", list.join(", ")));
+        }
+    }
+    let p = out_dir.join("coverage.md");
+    std::fs::write(&p, cov_md).map_err(|e| e.to_string())?;
+    written.push(p.to_string_lossy().to_string());
+
+    let items = bundle["worklist"].as_array().cloned().unwrap_or_default();
+    let take = if limit == 0 { items.len() } else { limit.min(items.len()) };
+    let mut wl = String::new();
+    wl.push_str("# 待审清单（Worklist）\n\n");
+    wl.push_str(&format!("共 {} 条，按风险分排序（写方法/高危路径/未覆盖优先）。\n\n", items.len()));
+    wl.push_str("| # | score | METHOD | 路径 | verdict | 位置 | 证据 |\n|---|---|---|---|---|---|---|\n");
+    for (i, item) in items[..take].iter().enumerate() {
+        let id = item["id"].as_str().unwrap_or("");
+        wl.push_str(&format!(
+            "| {} | {} | {} | `{}` | `{}` | {}:{} | [{}](evidence/{}.md) |\n",
+            i + 1,
+            item["score"].as_u64().unwrap_or(0),
+            item["method"].as_str().unwrap_or("ANY"),
+            item["route"].as_str().unwrap_or(""),
+            item["verdict"].as_str().unwrap_or(""),
+            item["file"].as_str().unwrap_or(""),
+            item["line"].as_u64().unwrap_or(0),
+            id,
+            id,
+        ));
+    }
+    let p = out_dir.join("worklist.md");
+    std::fs::write(&p, wl).map_err(|e| e.to_string())?;
+    written.push(p.to_string_lossy().to_string());
+
+    let p = out_dir.join("worklist.json");
+    std::fs::write(
+        &p,
+        serde_json::to_string_pretty(&json!({
+            "coverage": bundle["coverage"].clone(),
+            "items": items,
+        }))
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    written.push(p.to_string_lossy().to_string());
+
+    for item in items[..take].iter() {
+        let id = item["id"].as_str().unwrap_or("F000");
+        let md = audit_evidence_markdown(project, item);
+        let p = evidence_dir.join(format!("{}.md", id));
+        std::fs::write(&p, md).map_err(|e| e.to_string())?;
+        written.push(p.to_string_lossy().to_string());
+    }
+
+    // 快照：用于下一轮 diff（与 diff-routes 的 snapshot 同口径：method + route + verdict）
+    let snapshot: Vec<Value> = items
+        .iter()
+        .map(|i| json!({
+            "method": i["method"].clone(),
+            "route": i["route"].clone(),
+            "verdict": i["verdict"].clone(),
+            "file": i["file"].clone(),
+            "line": i["line"].clone(),
+        }))
+        .collect();
+    let p = out_dir.join("snapshot.json");
+    std::fs::write(
+        &p,
+        serde_json::to_string_pretty(&json!({
+            "generated_by": "ctx-audit audit",
+            "routes": snapshot,
+        }))
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    written.push(p.to_string_lossy().to_string());
+
+    Ok(written)
+}
+
 /// 目标工具面名单（12 + report_finding）。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 13] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 15] = [
     "get_project_index",
     "get_symbol_definition",
     "get_symbol_references",
@@ -2638,6 +3099,8 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 13] = [
     "get_project_routes",
     "get_security_baseline",
     "explain_route",
+    "coverage_summary",
+    "coverage_triage",
     "report_finding",
 ];
 

@@ -1871,6 +1871,236 @@ pub(crate) fn annotate_route_with_prefix(content: &str, line: u32, route: Option
     }
     join_route_paths(class_route_prefix(content).as_deref(), route)
 }
+
+/// 同文件里的 `static final String NAME = "...";` 常量表（用于解析映射注解里的常量引用）。
+pub(crate) fn string_constants(content: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if !t.contains("static") || !t.contains("final") || !t.contains("String ") {
+            continue;
+        }
+        let Some(eq) = t.find('=') else { continue };
+        let lhs = t[..eq].trim();
+        let name = lhs
+            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+            .next()
+            .unwrap_or("")
+            .trim();
+        if name.is_empty() {
+            continue;
+        }
+        let rhs = t[eq + 1..].trim();
+        let Some(q) = rhs.find('"') else { continue };
+        let after = &rhs[q + 1..];
+        let Some(end) = after.find('"') else { continue };
+        out.insert(name.to_string(), after[..end].to_string());
+    }
+    out
+}
+
+/// 注解实参里的路由字面量列表（支持 `{"a","b"}` 多前缀，以及 `static final String` 常量引用）。
+///
+/// 例：`@RequestMapping(value = {"/onedrive", "/onedirve"})` → 两条前缀；
+///     `@RequestMapping(Open115UrlController.URL_PREFIX)` → 解析同文件常量。
+pub(crate) fn mapping_route_values(content: &str, raw: &str) -> Vec<String> {
+    let Some(open) = raw.find('(') else {
+        return Vec::new();
+    };
+    let seg = &raw[open + 1..];
+    let seg = seg.trim_end().trim_end_matches(')');
+    let constants = string_constants(content);
+
+    // 解析单个表达式：字面量 + 常量 + 字符串拼接（`PREFIX + "x"`）
+    let resolve_expr = |expr: &str| -> Option<String> {
+        let mut out = String::new();
+        for term in expr.split('+') {
+            let t = term.trim().trim_matches(|c: char| {
+                c == '{' || c == '}' || c == ',' || c == ' ' || c == '\n' || c == '\r'
+            });
+            if t.is_empty() {
+                continue;
+            }
+            if let Some(q) = t.find('"') {
+                let after = &t[q + 1..];
+                let end = after.find('"').unwrap_or(after.len());
+                out.push_str(&after[..end]);
+            } else {
+                let name = t
+                    .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if let Some(v) = constants.get(name) {
+                    out.push_str(v);
+                }
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    };
+
+    // 顶层逗号切分（数组形式 `{"/a","/b"}` 每项一条；拼接表达式内部无顶层逗号）
+    let mut items: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    for ch in seg.chars() {
+        match ch {
+            '"' => {
+                in_quote = !in_quote;
+                cur.push(ch);
+            }
+            ',' if !in_quote => {
+                items.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        items.push(cur);
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        if let Some(v) = resolve_expr(&item) {
+            let v = v.trim().to_string();
+            if !v.is_empty() && !out.contains(&v) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// 类级路由前缀**列表**：`@RequestMapping({"/a","/b"})` 返回两条；单个返回一条；常量引用解析后返回。
+pub(crate) fn class_route_prefixes(content: &str) -> Vec<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let code = code_lines(content, false);
+    let mut class_idx: Option<usize> = None;
+    for (idx, code_line) in code.iter().enumerate() {
+        if is_type_declaration(&code, idx, code_line.trim()) {
+            class_idx = Some(idx);
+            break;
+        }
+    }
+    let Some(ci) = class_idx else {
+        return Vec::new();
+    };
+    let mut i = ci;
+    let mut jaxrs: Option<String> = None;
+    while i > 0 {
+        i -= 1;
+        let raw = lines.get(i).copied().unwrap_or("");
+        let t = raw.trim();
+        if t.is_empty() {
+            break;
+        }
+        if !t.starts_with('@') {
+            break;
+        }
+        if t.contains("@RequestMapping") {
+            let vals = mapping_route_values(content, raw);
+            if !vals.is_empty() {
+                return vals;
+            }
+        }
+        if jaxrs.is_none() && t.contains("@Path(") {
+            if let Some(p) = raw.split('"').nth(1) {
+                if !p.is_empty() {
+                    jaxrs = Some(p.to_string());
+                }
+            }
+        }
+    }
+    jaxrs.map(|v| vec![v]).unwrap_or_default()
+}
+
+/// 多前缀版：类级前缀 × 方法级路径，返回该声明展开后的全部路由。
+pub(crate) fn annotate_route_with_prefixes(
+    content: &str,
+    line: u32,
+    route_values: &[String],
+) -> Vec<Option<String>> {
+    let class_line = type_declaration_line(content);
+    if class_line > 0 && line <= class_line {
+        // 类声明自身保留为 scope=class 的条目（下游只取 scope=method），不参与端点展开
+        let mut out: Vec<Option<String>> = class_route_prefixes(content)
+            .into_iter()
+            .take(1)
+            .map(Some)
+            .collect();
+        if out.is_empty() {
+            out.push(None);
+        }
+        return out;
+    }
+    let prefixes = class_route_prefixes(content);
+    let mut out: Vec<Option<String>> = Vec::new();
+    let routes: Vec<Option<String>> = if route_values.is_empty() {
+        vec![None]
+    } else {
+        route_values.iter().map(|v| Some(v.clone())).collect()
+    };
+    for rv in routes {
+        if prefixes.is_empty() {
+            out.push(join_route_paths(None, rv.as_deref()));
+        } else {
+            for p in &prefixes {
+                out.push(join_route_paths(Some(p), rv.as_deref()));
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(None);
+    }
+    out
+}
+
+/// 运行期动态注册端点的信号（这些端点**不在**注解扫描结果里，必须如实告警，不能沉默）。
+///
+/// 识别：`RequestMappingInfo` + (`ApplicationReadyEvent` | `registerMapping` | `RequestMappingHandlerMapping`)、
+/// `addViewControllers(`、`registerHandlerMethod(`。返回 (kind, 行号)。
+pub(crate) fn dynamic_registration_sites(path: &str, content: &str) -> Vec<(&'static str, u32)> {
+    if !(path.ends_with(".java") || path.ends_with(".kt")) {
+        return Vec::new();
+    }
+    let mut out: Vec<(&'static str, u32)> = Vec::new();
+    let mut push = |kind: &'static str, line: u32| {
+        if !out.iter().any(|(k, _)| *k == kind) {
+            out.push((kind, line));
+        }
+    };
+    for (idx, line) in content.lines().enumerate() {
+        let ln = (idx + 1) as u32;
+        if line.trim_start().starts_with("import ") || line.trim_start().starts_with("//") {
+            continue;
+        }
+        if line.contains("addViewControllers(") {
+            push("add_view_controllers", ln);
+        }
+        if line.contains("registerHandlerMethod(") || line.contains("registerMapping(") {
+            push("runtime_mapping_registration", ln);
+        }
+        if line.contains("RequestMappingInfo") {
+            push("request_mapping_info", ln);
+        }
+    }
+    if out.iter().any(|(k, _)| *k == "request_mapping_info")
+        && content.contains("ApplicationReadyEvent")
+    {
+        for (idx, line) in content.lines().enumerate() {
+            if line.contains("ApplicationReadyEvent") {
+                out.insert(0, ("startup_registration", (idx + 1) as u32));
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// 类级路由前缀：`@RequestMapping("...")`（Spring MVC）或 `@Path("...")`（JAX-RS 资源类）。
 ///
 /// 只扫描**类声明正上方**那段连续注解，避免把方法级映射当类级前缀；
@@ -2425,23 +2655,40 @@ pub(crate) fn scan_routes_in_file_prefixed(
                         .then(|| jaxrs_http_method(content, ln).unwrap_or("ANY").to_string())
                 })
                 .or_else(|| infer_http_method(code_trimmed).map(|m| m.to_string()));
-                let route = if jaxrs_verb.is_some() && !code_trimmed.contains("@Path(") {
-                    // 仅动词路由：路径继承类级前缀，由前缀函数补齐
-                    annotate_route_with_prefix(content, ln, None)
+                // 方法级路径字面量：支持 `{"a","b"}` 与常量引用（R256 实测漏 4 条别名端点）
+                let raw_for_literals = originals.get(idx).copied().unwrap_or("");
+                let mut route_values: Vec<String> = if jaxrs_verb.is_some()
+                    && !code_trimmed.contains("@Path(")
+                {
+                    Vec::new()
                 } else {
-                    annotate_route_with_prefix(content, ln, route_value.as_deref())
+                    mapping_route_values(content, raw_for_literals)
                 };
-                out.routes.push(json!({
-                    "line": ln,
-                    "text": trimmed.chars().take(200).collect::<String>(),
-                    "route": route,
-                    "route_raw": route_value,
-                    // 类级映射只提供前缀，不是端点
-                    "scope": route_scope(content, ln),
-                    "http_method": http_method,
-                    "file_role": role,
-                    "route_path_unresolved": route.is_none(),
-                }));
+                if route_values.is_empty() {
+                    if let Some(rv) = route_value.clone() {
+                        route_values.push(rv);
+                    }
+                }
+                let expanded = annotate_route_with_prefixes(content, ln, &route_values);
+                if expanded.is_empty() {
+                    // 类声明自身：只提供前缀，不产出端点
+                    continue;
+                }
+                for route in expanded {
+                    if out.routes.len() + out.middleware.len() >= MAX_HITS {
+                        break;
+                    }
+                    out.routes.push(json!({
+                        "line": ln,
+                        "text": trimmed.chars().take(200).collect::<String>(),
+                        "route": route,
+                        "route_raw": route_value,
+                        "scope": route_scope(content, ln),
+                        "http_method": http_method,
+                        "file_role": role,
+                        "route_path_unresolved": route.is_none(),
+                    }));
+                }
             }
         }
         if MIDDLEWARE_MARKERS.iter().any(|m| code_trimmed.contains(*m)) {

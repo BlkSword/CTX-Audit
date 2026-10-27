@@ -270,3 +270,26 @@ finding 是**候选**：`candidate: true`、`decision_required: true`。读 `det
 4. 不修改被审计项目。
 5. 不把引擎候选当结论；也不把"引擎没报"当"没有问题"——先看 `truncated_at_limit` 与语言能力上报。
 6. 只输出 JSON（除非任务明确要求散文）。
+
+## 审计加速器协议（R257，人机共用）
+
+**先声明覆盖边界，再产出结论；每条结论必须可机械证伪。**
+
+### 人（CLI，一条命令）
+```bash
+ctx-audit audit <repo> --out report/ --limit 100
+# report/coverage.md    覆盖摘要 + 必须声明的边界（未建模/动态注册/截断）
+# report/worklist.md    排序后的待审清单（写方法/高危路径/未覆盖优先）
+# report/worklist.json  机器可读
+# report/evidence/*.md  每条端点的证据包（规则原文 + 反证命令 + 源码定位）
+# report/snapshot.json  下一轮 diff 的基线
+```
+
+### LLM（MCP，强制顺序）
+1. `coverage_summary` —— 先拿覆盖率与边界；若 `coverage_unknown`/`unmodelled_*`/`dynamic_endpoint_registrations` > 0，必须在报告开头声明；
+2. `coverage_triage` —— 取排序后的待审清单（默认 top-20）；
+3. 逐条 `explain_route` + `slice_backward` —— 规则原文与 handler 证据；
+4. 结论前用 CLI 反证：`ctx-audit explain-route . <route> --assert <covered|uncovered|permitted>`（退出码 0=一致）；
+5. `report_finding` 落库；报告必须附 `file:line` 与反证命令。
+
+**禁止**：仅凭工具输出下结论（工具可能锚错，R252 实测）；跳过 `coverage_summary` 直接给结论。

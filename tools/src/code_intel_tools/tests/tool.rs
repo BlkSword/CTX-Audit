@@ -84,10 +84,12 @@ use super::super::*;
 
     #[test]
     fn test_tool_surface_shape() {
-        // 12 个高阶能力（含 `get_project_routes` / `get_security_baseline` / `explain_route`）+ `report_finding` = 13
-        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 13);
-        assert_eq!(IntelKind::all().len(), 12);
+        // 14 个高阶能力（R257 增补 coverage_summary / coverage_triage）+ `report_finding` = 15
+        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 15);
+        assert_eq!(IntelKind::all().len(), 14);
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"get_project_routes"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_summary"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_triage"));
     }
 
     /// 缩进语言：callee 扫描必须止于函数体（同文件无关函数不得计入）

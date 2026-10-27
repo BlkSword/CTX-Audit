@@ -302,6 +302,25 @@ enum Commands {
         output: String,
     },
 
+    /// 审计驾驶舱：覆盖率摘要 + 排序待审清单 + 证据包（人用加速器）
+    Audit {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 输出目录
+        #[arg(short = 'O', long = "out", default_value = "report")]
+        out: String,
+
+        /// 待审/证据条数上限（0 = 全部）
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+
+        /// 输出格式 (text, json)
+        #[arg(short = 'o', long = "output", default_value = "text")]
+        output: String,
+    },
+
     /// 单条路由判定（verbatim 证据 + 可机械证伪的 --assert 退出码）
     #[command(after_help = "退出码：--assert 不匹配时返回 1，可用于 CI/脚本化复核。")]
     ExplainRoute {
@@ -689,6 +708,12 @@ async fn main() -> Result<()> {
         }
 
         Commands::Baseline { path, output } => commands::baseline::execute(path, output).await,
+        Commands::Audit {
+            path,
+            out,
+            limit,
+            output,
+        } => commands::audit::execute(path, out, limit, output).await,
 
         Commands::ExplainRoute {
             path,

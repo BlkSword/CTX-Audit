@@ -122,6 +122,8 @@ pub(crate) fn compute_routes(
     let (sindex, _, _) = crate::symbol_index::get_or_build(root, refresh, None);
     let route_cap = max_project_route_hits();
     let mut annotation_covered_count = 0usize;
+    let mut dynamic_registration_files = 0usize;
+    let mut dynamic_registration_samples: Vec<Value> = Vec::new();
     // 跨文件 Express mount 前缀（`app.use('/api', posts)` → posts 文件整体加 /api）
     let mount_prefixes = express_mount_prefixes(files);
     for (path, content) in files.iter() {
@@ -137,6 +139,19 @@ pub(crate) fn compute_routes(
             *unmodelled_stacks.entry(fw_name).or_default() += 1;
             if unparsed_route_samples.len() < 5 {
                 unparsed_route_samples.push(json!({"file": path, "framework": fw_name}));
+            }
+        }
+        // 运行期动态注册端点（注解扫描看不到）——必须告警，不能沉默
+        for (kind, line) in dynamic_registration_sites(path, content) {
+            if !dynamic_registration_samples
+                .iter()
+                .any(|v| v.get("file").and_then(|f| f.as_str()) == Some(path.as_str()))
+            {
+                dynamic_registration_files += 1;
+            }
+            if dynamic_registration_samples.len() < 5 {
+                dynamic_registration_samples
+                    .push(json!({"kind": kind, "file": path, "line": line}));
             }
         }
         let mount_prefix = mount_prefixes.get(path).map(|s| s.as_str()).unwrap_or("");
@@ -423,6 +438,8 @@ pub(crate) fn compute_routes(
         "route_paths_unresolved": route_paths_unresolved,
         "not_an_endpoint_routes": not_an_endpoint_count,
         "annotation_covered_routes": annotation_covered_count,
+        "dynamic_endpoint_registrations": dynamic_registration_files,
+        "dynamic_registration_samples": dynamic_registration_samples,
         "total_hits": {
             "routes": routes.len(),
             "method_routes": routes.len() - class_declarations,
