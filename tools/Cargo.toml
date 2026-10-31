@@ -15,6 +15,7 @@ default = ["legacy-tools"]
 legacy-tools = []
 
 [dependencies]
+rayon = "1"
 # 序列化
 serde = { workspace = true }
 serde_json = { workspace = true }

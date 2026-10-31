@@ -173,6 +173,14 @@ fn exported_names(content: &str, lang: &str) -> Vec<(String, u32)> {
                     if !name.is_empty() {
                         out.push((name, ln));
                     }
+                } else if let Some(rest) = t.strip_prefix("export const ") {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                        .collect();
+                    if !name.is_empty() {
+                        out.push((name, ln));
+                    }
                 } else if t.starts_with("export {") {
                     // 支持单行与多行导出块（React 源码的 `export { ... }` 常跨多行）
                     let mut inner = t.trim_start_matches("export {").to_string();
@@ -250,7 +258,7 @@ pub(crate) fn nextjs_entries(files: &[(String, String)]) -> Vec<Value> {
                 || path.ends_with("/route.js")
                 || path.ends_with("/route.tsx")
                 || path.ends_with("/route.jsx"));
-        let head: String = content.lines().take(5).collect::<Vec<_>>().join("\n");
+        let head: String = content.lines().take(10).collect::<Vec<_>>().join("\n");
         let is_server_action = head.contains("'use server'")
             || head.contains("\"use server\"")
             || (path.contains("/app/") && content.contains("'use server'"));
@@ -339,18 +347,22 @@ pub(crate) fn import_graph(files: &[(String, String)]) -> BTreeMap<String, BTree
     graph
 }
 
-fn resolve_js_target(from: &str, spec: &str, all: &BTreeSet<String>) -> Option<String> {
-    if !spec.starts_with('.') {
-        return None;
-    }
-    let dir = match from.rsplit_once('/') {
-        Some((d, _)) => d,
-        None => "",
-    };
-    let raw = if dir.is_empty() {
-        spec.to_string()
+pub(crate) fn resolve_js_target(from: &str, spec: &str, all: &BTreeSet<String>) -> Option<String> {
+    // `@/x` 是 Next.js/TS 常见的项目根别名；非相对、非别名一律不解析
+    let raw = if let Some(rest) = spec.strip_prefix("@/") {
+        rest.to_string()
+    } else if spec.starts_with('.') {
+        let dir = match from.rsplit_once('/') {
+            Some((d, _)) => d,
+            None => "",
+        };
+        if dir.is_empty() {
+            spec.to_string()
+        } else {
+            format!("{dir}/{spec}")
+        }
     } else {
-        format!("{dir}/{spec}")
+        return None;
     };
     let mut parts: Vec<&str> = Vec::new();
     for seg in raw.split('/') {

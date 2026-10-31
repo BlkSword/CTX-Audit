@@ -36,9 +36,11 @@ pub use dispatch::*;
 mod routes;
 pub(crate) use routes::*;
 mod chain;
+mod chain_scan;
 mod chain_vocab;
 pub use chain_vocab::learn_vocab;
 pub(crate) use chain::*;
+pub(crate) use chain_scan::*;
 pub(crate) use chain_vocab::load_vocab;
 mod baseline;
 #[allow(unused_imports)]
@@ -2693,7 +2695,7 @@ all_chains.extend(sa_token_security_chains(policy_files));
                 let entry = input["entry"].as_str();
                 let auth = chain::auth_map(root, files, &id);
                 let entries = chain::collect_entries(files, &id);
-                let (chains, stats) = chain::candidates(files, &entries, &auth, sink, entry, None, true, limit);
+                let (chains, stats) = chain_scan::candidates(files, &entries, &auth, sink, entry, None, true, limit);
                 IntelEnvelope {
                     data: json!({"schema": "chain-candidates/v1", "stats": stats, "chains": chains}),
                     provenance: vec![prov(".", 0, &id)],
@@ -2704,7 +2706,7 @@ all_chains.extend(sa_token_security_chains(policy_files));
                 let chain_id = input["chain_id"].as_str().unwrap_or("");
                 let auth = chain::auth_map(root, files, &id);
                 let entries = chain::collect_entries(files, &id);
-                let (chains, _stats) = chain::candidates(files, &entries, &auth, None, None, None, true, 0);
+                let (chains, _stats) = chain_scan::candidates(files, &entries, &auth, None, None, None, true, 0);
                 let found = chains
                     .into_iter()
                     .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id));
@@ -2727,7 +2729,7 @@ all_chains.extend(sa_token_security_chains(policy_files));
                 let expect = input["expect"].as_str().unwrap_or("line_present");
                 let auth = chain::auth_map(root, files, &id);
                 let entries = chain::collect_entries(files, &id);
-                let (chains, _stats) = chain::candidates(files, &entries, &auth, None, None, None, true, 0);
+                let (chains, _stats) = chain_scan::candidates(files, &entries, &auth, None, None, None, true, 0);
                 let detail = chains
                     .into_iter()
                     .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id));
@@ -3417,7 +3419,12 @@ pub fn chain_candidates_report(
 ) -> Result<Value, String> {
     let loaded = index::load_files(project);
     let id = index::build_id(&loaded.files);
-    let auth = chain::auth_map(project, &loaded.files, &id);
+    let skip_routes = std::env::var("CTX_AUDIT_CHAIN_SKIP_ROUTES").is_ok();
+    let auth = if skip_routes {
+        std::collections::BTreeMap::new()
+    } else {
+        chain::auth_map(project, &loaded.files, &id)
+    };
     let entries = chain::collect_entries(&loaded.files, &id);
     let vocab_owned = match vocab_path {
         Some(p) => std::fs::read_to_string(p)
@@ -3426,7 +3433,7 @@ pub fn chain_candidates_report(
         None => chain_vocab::load_vocab(project),
     };
     let vocab = vocab_owned.as_ref();
-    let (chains, stats) = chain::candidates(
+    let (chains, stats) = chain_scan::candidates(
         &loaded.files,
         &entries,
         &auth,
@@ -3450,7 +3457,7 @@ pub fn chain_dossier_report(project: &Path, chain_id: &str) -> Result<Value, Str
     let id = index::build_id(&loaded.files);
     let auth = chain::auth_map(project, &loaded.files, &id);
     let entries = chain::collect_entries(&loaded.files, &id);
-    let (chains, _stats) = chain::candidates(&loaded.files, &entries, &auth, None, None, chain_vocab::load_vocab(project).as_ref(), true, 0);
+    let (chains, _stats) = chain_scan::candidates(&loaded.files, &entries, &auth, None, None, chain_vocab::load_vocab(project).as_ref(), true, 0);
     let found = chains
         .into_iter()
         .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id))

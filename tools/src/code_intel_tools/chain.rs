@@ -30,7 +30,7 @@ pub(crate) fn stable_hash(s: &str) -> String {
     format!("{h:016x}")
 }
 
-fn language_of(path: &str) -> &'static str {
+pub(crate) fn chain_language_of(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
         "js" | "mjs" | "cjs" | "jsx" => "js",
         "ts" | "tsx" => "ts",
@@ -76,7 +76,7 @@ const KEYWORDS: [&str; 30] = [
     "println", "print", "log", "require", "import", "assert", "super", "this", "yield",
 ];
 
-fn definitions(content: &str, lang: &str) -> Vec<(String, u32)> {
+pub(crate) fn definitions(content: &str, lang: &str) -> Vec<(String, u32)> {
     let mut out = Vec::new();
     for (idx, raw) in content.lines().enumerate() {
         if !is_code_line(raw) {
@@ -160,14 +160,41 @@ fn definitions(content: &str, lang: &str) -> Vec<(String, u32)> {
     out
 }
 
-fn calls(content: &str) -> Vec<(String, u32, bool)> {
+pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool)> {
     let mut out = Vec::new();
     for (idx, raw) in content.lines().enumerate() {
         if !is_code_line(raw) {
             continue;
         }
         let ln = (idx + 1) as u32;
-        // 按 char 索引扫描（避免字节切片落在 UTF-8 字符中间）
+        if raw.is_ascii() {
+            // ASCII 快路径：按字节扫描，零分配
+            let b = raw.as_bytes();
+            let n = b.len();
+            let mut i = 0usize;
+            while i < n {
+                let c = b[i];
+                if c.is_ascii_alphabetic() || c == b'_' || c == b'$' {
+                    let start = i;
+                    while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$') {
+                        i += 1;
+                    }
+                    let name = &raw[start..i];
+                    let mut j = i;
+                    while j < n && b[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j < n && b[j] == b'(' && !KEYWORDS.contains(&name) {
+                        let member = start > 0 && b[start - 1] == b'.';
+                        out.push((name.to_string(), ln, member));
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // 非 ASCII：保底 char 扫描
         let chars: Vec<(usize, char)> = raw.char_indices().collect();
         let n = chars.len();
         let mut k = 0usize;
@@ -228,28 +255,65 @@ pub(crate) fn scan_sinks_with(
         (
             "exec",
             &[
-                "child_process.exec", "execSync(", "spawnSync(", "execFile(", "Runtime.getRuntime",
-                "ProcessBuilder", "exec.Command(", "os.system(", "subprocess.",
+                "child_process.exec",
+                "execSync(",
+                "spawnSync(",
+                "execFile(",
+                "Runtime.getRuntime",
+                "ProcessBuilder",
+                "exec.Command(",
+                "os.system(",
+                "subprocess.",
             ],
         ),
         (
             "eval",
-            &["eval(", "new Function(", "Function(\"", "ScriptEngine", "vm.runInNewContext", "vm.runInThisContext"],
+            &[
+                "eval(",
+                "new Function(",
+                "Function(\"",
+                "ScriptEngine",
+                "vm.runInNewContext",
+                "vm.runInThisContext",
+            ],
         ),
         (
             "deserialize",
             &[
-                "ObjectInputStream", "readObject(", "JSON.parse(", "yaml.load(", "pickle.loads(",
-                "unserialize(", "readValue(", "parseObject(", "decodeReply(", "decodeAction(",
+                "ObjectInputStream",
+                "readObject(",
+                "JSON.parse(",
+                "yaml.load(",
+                "pickle.loads(",
+                "unserialize(",
+                "readValue(",
+                "parseObject(",
+                "decodeReply(",
+                "decodeAction(",
             ],
         ),
         (
             "reflect",
-            &["Class.forName(", "getDeclaredMethod(", "getMethod(", "newInstance(", "Module._load(", "process.binding("],
+            &[
+                "Class.forName(",
+                "getDeclaredMethod(",
+                "getMethod(",
+                "newInstance(",
+                "Module._load(",
+                "process.binding(",
+            ],
         ),
         (
             "file_write",
-            &["writeFile(", "writeFileSync(", "createWriteStream(", "Files.write(", "FileOutputStream", "os.WriteFile", "write_text("],
+            &[
+                "writeFile(",
+                "writeFileSync(",
+                "createWriteStream(",
+                "Files.write(",
+                "FileOutputStream",
+                "os.WriteFile",
+                "write_text(",
+            ],
         ),
         (
             "sql",
@@ -257,66 +321,101 @@ pub(crate) fn scan_sinks_with(
         ),
         (
             "template",
-            &["render_template_string(", "compileTemplate(", "Handlebars.compile(", "nunjucks.renderString(", "ScriptEngine", "velocity.evaluate"],
+            &[
+                "render_template_string(",
+                "compileTemplate(",
+                "Handlebars.compile(",
+                "nunjucks.renderString(",
+                "ScriptEngine",
+                "velocity.evaluate",
+            ],
         ),
         (
             "ssrf",
-            &["axios.get(", "axios.post(", "fetch(", "http.get(", "https.get(", "requests.get(", "requests.post(", "HttpClient.newHttpClient(", "OkHttpClient"],
+            &[
+                "axios.get(",
+                "axios.post(",
+                "fetch(",
+                "http.get(",
+                "https.get(",
+                "requests.get(",
+                "requests.post(",
+                "HttpClient.newHttpClient(",
+                "OkHttpClient",
+            ],
         ),
         (
             "module_access",
             &["moduleExports[", "serverManifest[", "metadata[NAME]", "clientManifest["],
         ),
     ];
-    let mut out = Vec::new();
-    for (path, content) in files.iter().take(max_index_files()) {
-        let lang = language_of(path);
-        if !matches!(lang, "js" | "ts" | "java" | "py") {
-            continue;
-        }
-        for (idx, raw) in content.lines().enumerate() {
-            if !is_code_line(raw) {
-                continue;
+    use rayon::prelude::*;
+    let indexed: Vec<(String, String)> = files.iter().take(max_index_files()).cloned().collect();
+    let extra_owned: Vec<(String, String)> = extra.to_vec();
+    let mut out: Vec<Value> = indexed
+        .par_iter()
+        .flat_map(|(path, content)| {
+            let mut local: Vec<Value> = Vec::new();
+            let lang = chain_language_of(path);
+            if !matches!(lang, "js" | "ts" | "java" | "py") {
+                return local;
             }
-            let mut hit = false;
-            if include_builtin {
-                for (kind, pats) in PATTERNS.iter() {
-                    if pats.iter().any(|p| raw.contains(p)) {
-                        out.push(json!({
-                            "kind": kind,
-                            "file": path,
-                            "line": (idx + 1) as u32,
-                            "expr": raw.trim().chars().take(160).collect::<String>(),
-                            "language": lang,
-                        }));
-                        hit = true;
-                        break;
+            for (idx, raw) in content.lines().enumerate() {
+                if !is_code_line(raw) {
+                    continue;
+                }
+                let expr: String = raw.trim().chars().take(160).collect();
+                let mut hit = false;
+                if include_builtin {
+                    for (kind, pats) in PATTERNS.iter() {
+                        if pats.iter().any(|p| raw.contains(p)) {
+                            local.push(json!({
+                                "kind": kind,
+                                "file": path,
+                                "line": (idx + 1) as u32,
+                                "expr": expr,
+                                "language": lang,
+                            }));
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+                if !hit {
+                    for (kind, pat) in extra_owned.iter() {
+                        if raw.contains(pat.as_str()) {
+                            local.push(json!({
+                                "kind": kind,
+                                "file": path,
+                                "line": (idx + 1) as u32,
+                                "expr": expr,
+                                "language": lang,
+                                "derived_from": "learned_vocab",
+                            }));
+                            break;
+                        }
                     }
                 }
             }
-            if !hit {
-                for (kind, pat) in extra.iter() {
-                    if raw.contains(pat.as_str()) {
-                        out.push(json!({
-                            "kind": kind,
-                            "file": path,
-                            "line": (idx + 1) as u32,
-                            "expr": raw.trim().chars().take(160).collect::<String>(),
-                            "language": lang,
-                            "derived_from": "learned_vocab",
-                        }));
-                        break;
-                    }
-                }
-            }
-        }
-    }
+            local
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        (
+            a["file"].as_str().unwrap_or(""),
+            a["line"].as_u64().unwrap_or(0),
+            a["kind"].as_str().unwrap_or(""),
+        )
+            .cmp(&(
+                b["file"].as_str().unwrap_or(""),
+                b["line"].as_u64().unwrap_or(0),
+                b["kind"].as_str().unwrap_or(""),
+            ))
+    });
     out
 }
 
-/// 库级入口：框架内部"请求可达"的导出函数（用于框架 CVE 取证）。
-///
-/// 这类仓库没有 HTTP 路由注解，入口是 `decodeReply` / `decodeAction` 这类被框架调用的导出函数。
+/// 库级入口：框架内部"请求可达"的导出函数（框架 CVE 取证用）。
 pub(crate) const LIB_ENTRY_NAMES: [&str; 9] = [
     "decodeReply",
     "decodeReplyFromBusboy",
@@ -333,7 +432,7 @@ pub(crate) const LIB_ENTRY_NAMES: [&str; 9] = [
 pub(crate) fn collect_entries(files: &[(String, String)], id: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for (path, content) in files.iter().take(max_index_files()) {
-        let lang = language_of(path);
+        let lang = chain_language_of(path);
         if !(path.ends_with(".java") || matches!(lang, "js" | "ts")) {
             continue;
         }
@@ -388,7 +487,7 @@ pub(crate) fn auth_map(root: &Path, files: &[(String, String)], id: &str) -> BTr
     out
 }
 
-fn guards_in(content: &str, center: u32, file: &str) -> Vec<Value> {
+pub(crate) fn guards_in(content: &str, center: u32, file: &str) -> Vec<Value> {
     const GUARDS: [(&str, &[&str]); 6] = [
         ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth"]),
         ("permission_check", &["@CheckPassword", "@StoragePermissionCheck", "checkRole(", "hasRole(", "hasPermission(", "isAdmin"]),
@@ -423,7 +522,7 @@ fn guards_in(content: &str, center: u32, file: &str) -> Vec<Value> {
     out
 }
 
-fn fnv_chain_id(sink_file: &str, sink_line: u32, steps: &[Value]) -> String {
+pub(crate) fn fnv_chain_id(sink_file: &str, sink_line: u32, steps: &[Value]) -> String {
     let src = format!(
         "{}|{}|{}",
         sink_file,
@@ -442,7 +541,8 @@ fn fnv_chain_id(sink_file: &str, sink_line: u32, steps: &[Value]) -> String {
 }
 
 /// 生成候选链（只保留"能到入口"的链）。
-pub(crate) fn candidates(
+#[allow(dead_code)]
+pub(crate) fn candidates_legacy(
     files: &[(String, String)],
     entries: &[Value],
     auth: &BTreeMap<(String, u32), String>,
@@ -500,7 +600,7 @@ pub(crate) fn candidates(
     let mut call_sites: BTreeMap<String, Vec<(String, u32, bool)>> = BTreeMap::new();
     let mut contents: BTreeMap<String, String> = BTreeMap::new();
     for (path, content) in files.iter().take(max_index_files()) {
-        let lang = language_of(path);
+        let lang = chain_language_of(path);
         if !matches!(lang, "js" | "ts" | "java" | "py" | "go") {
             continue;
         }
