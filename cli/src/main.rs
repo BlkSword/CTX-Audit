@@ -325,6 +325,26 @@ enum Commands {
         #[arg(long)]
         entry: Option<String>,
 
+        /// 从"漏洞版 → 修复版"的 diff 自动派生词表（需配合 --before/--after）
+        #[arg(long)]
+        learn: bool,
+
+        /// 漏洞版目录（--learn 用）
+        #[arg(long)]
+        before: Option<String>,
+
+        /// 修复版目录（--learn 用）
+        #[arg(long)]
+        after: Option<String>,
+
+        /// 外部词表 JSON（默认读 <PATH>/.ctx-audit/chain-vocab.json 或 CTX_AUDIT_CHAIN_VOCAB）
+        #[arg(long)]
+        vocab: Option<String>,
+
+        /// 只用派生词表，不使用内置汇模式（验证泛化性）
+        #[arg(long)]
+        no_builtin_vocab: bool,
+
         /// 条数上限（0=全部）
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -752,9 +772,30 @@ async fn main() -> Result<()> {
             id,
             sink,
             entry,
+            learn,
+            before,
+            after,
+            vocab,
+            no_builtin_vocab,
             limit,
             output,
-        } => commands::chain::execute(path, list, id, sink, entry, limit, output).await,
+        } => {
+            commands::chain::execute(
+                path,
+                list,
+                id,
+                sink,
+                entry,
+                learn,
+                before,
+                after,
+                vocab,
+                no_builtin_vocab,
+                limit,
+                output,
+            )
+            .await
+        }
 
         Commands::ExplainRoute {
             path,

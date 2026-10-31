@@ -6,18 +6,37 @@
 use miette::{miette, IntoDiagnostic, Result};
 use std::path::PathBuf;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     path: String,
     list: bool,
     id: Option<String>,
     sink: Option<String>,
     entry: Option<String>,
+    learn: bool,
+    before: Option<String>,
+    after: Option<String>,
+    vocab: Option<String>,
+    no_builtin_vocab: bool,
     limit: usize,
     output: String,
 ) -> Result<()> {
     let root = PathBuf::from(&path);
     if !root.exists() {
         return Err(miette!("路径不存在: {}", path));
+    }
+
+    // `chain learn`：从 漏洞版→修复版 的 diff 派生词表
+    if learn {
+        let (Some(b), Some(a)) = (before, after) else {
+            return Err(miette!("--learn 需要同时提供 --before 与 --after"));
+        };
+        let before_root = PathBuf::from(b);
+        let after_root = PathBuf::from(a);
+        let vocab = ctx_audit_tools::learn_vocab(&before_root, &after_root)
+            .map_err(|e| miette!("{}", e))?;
+        println!("{}", serde_json::to_string_pretty(&vocab).into_diagnostic()?);
+        return Ok(());
     }
 
     if let Some(chain_id) = id {
@@ -35,7 +54,14 @@ pub async fn execute(
 
     // 默认：列出候选链
     let _ = list;
-    let data = ctx_audit_tools::chain_candidates_report(&root, limit, sink.as_deref(), entry.as_deref())
+    let data = ctx_audit_tools::chain_candidates_report(
+        &root,
+        limit,
+        sink.as_deref(),
+        entry.as_deref(),
+        vocab.as_deref(),
+        !no_builtin_vocab,
+    )
         .map_err(|e| miette!("{}", e))?;
     if output.eq_ignore_ascii_case("md") {
         println!("# 候选链（入口→危险汇）\n");

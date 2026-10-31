@@ -11,12 +11,13 @@
 //! - **不做判定**：只给 `verdict_candidates`。
 
 use super::*;
+use super::chain_vocab;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub(crate) const DOSSIER_SCHEMA: &str = "chain-dossier/v1";
 pub(crate) const MAX_STEPS: usize = 40;
 pub(crate) const MAX_DOSSIER_BYTES: usize = 12 * 1024;
-const MAX_DEPTH: usize = 8;
+const MAX_DEPTH: usize = 12;
 const MAX_FANOUT: usize = 6;
 
 /// FNV-1a：确定性链 ID（不依赖 std 随机化 hasher）。
@@ -213,6 +214,16 @@ fn enclosing_def(defs: &[(String, u32)], line: u32) -> Option<(String, u32)> {
 
 /// 危险汇清单（首版：JS/TS/Java/Python）。
 pub(crate) fn scan_sinks(files: &[(String, String)]) -> Vec<Value> {
+    scan_sinks_with(files, &[], true)
+}
+
+/// 附加词汇扫描：`extra` 来自 `chain learn` 的派生结果；`include_builtin=false` 时只用派生词汇
+/// （用于验证"换靶不加内置 pattern 也能找到"，即泛化性）。
+pub(crate) fn scan_sinks_with(
+    files: &[(String, String)],
+    extra: &[(String, String)],
+    include_builtin: bool,
+) -> Vec<Value> {
     const PATTERNS: [(&str, &[&str]); 9] = [
         (
             "exec",
@@ -267,16 +278,35 @@ pub(crate) fn scan_sinks(files: &[(String, String)]) -> Vec<Value> {
             if !is_code_line(raw) {
                 continue;
             }
-            for (kind, pats) in PATTERNS.iter() {
-                if pats.iter().any(|p| raw.contains(p)) {
-                    out.push(json!({
-                        "kind": kind,
-                        "file": path,
-                        "line": (idx + 1) as u32,
-                        "expr": raw.trim().chars().take(160).collect::<String>(),
-                        "language": lang,
-                    }));
-                    break;
+            let mut hit = false;
+            if include_builtin {
+                for (kind, pats) in PATTERNS.iter() {
+                    if pats.iter().any(|p| raw.contains(p)) {
+                        out.push(json!({
+                            "kind": kind,
+                            "file": path,
+                            "line": (idx + 1) as u32,
+                            "expr": raw.trim().chars().take(160).collect::<String>(),
+                            "language": lang,
+                        }));
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+            if !hit {
+                for (kind, pat) in extra.iter() {
+                    if raw.contains(pat.as_str()) {
+                        out.push(json!({
+                            "kind": kind,
+                            "file": path,
+                            "line": (idx + 1) as u32,
+                            "expr": raw.trim().chars().take(160).collect::<String>(),
+                            "language": lang,
+                            "derived_from": "learned_vocab",
+                        }));
+                        break;
+                    }
                 }
             }
         }
@@ -418,8 +448,54 @@ pub(crate) fn candidates(
     auth: &BTreeMap<(String, u32), String>,
     sink_kind: Option<&str>,
     entry_filter: Option<&str>,
+    vocab: Option<&Value>,
+    include_builtin_sinks: bool,
     limit: usize,
 ) -> (Vec<Value>, BTreeMap<String, usize>) {
+    // 入口扩展：Next.js 隐式入口（'use server' / route.ts）+ 词表派生入口
+    let mut entries: Vec<Value> = entries.to_vec();
+    entries.extend(chain_vocab::nextjs_entries(files));
+    if let Some(v) = vocab {
+        if let Some(names) = v.get("entry_names").and_then(|x| x.as_array()) {
+            for n in names.iter().take(200) {
+                let name = n.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                let file = n.get("file").and_then(|x| x.as_str()).unwrap_or("");
+                let line = n.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
+                if name.is_empty() || file.is_empty() {
+                    continue;
+                }
+                const REQUEST_STEMS: [&str; 12] = [
+                    "decode", "action", "request", "handler", "route", "render", "create",
+                    "fetch", "stream", "dispatch", "endpoint", "invoke",
+                ];
+                let lower = name.to_ascii_lowercase();
+                if !REQUEST_STEMS.iter().any(|s| lower.contains(s)) {
+                    continue;
+                }
+                entries.push(json!({
+                    "file": file,
+                    "line": line,
+                    "method": "LIB",
+                    "route": name,
+                    "entry_kind": "library_entry",
+                }));
+            }
+        }
+    }
+    // 附加汇模式（来自派生词表）
+    let extra_sinks: Vec<(String, String)> = vocab
+        .and_then(|v| v.get("sink_patterns").and_then(|x| x.as_array()))
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let kind = p.get("kind").and_then(|x| x.as_str())?;
+                    let pat = p.get("pattern").and_then(|x| x.as_str())?;
+                    Some((kind.to_string(), pat.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let imports = chain_vocab::import_graph(files);
     let mut defs: BTreeMap<String, Vec<(String, u32)>> = BTreeMap::new();
     let mut call_sites: BTreeMap<String, Vec<(String, u32, bool)>> = BTreeMap::new();
     let mut contents: BTreeMap<String, String> = BTreeMap::new();
@@ -437,14 +513,26 @@ pub(crate) fn candidates(
 
     // entry 映射行 → handler 定义（同文件下方最近定义）
     let mut handler_of: BTreeMap<(String, u32), (String, u32, String, Value)> = BTreeMap::new();
-    for e in entries {
+    for e in entries.iter() {
         let file = e.get("file").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let line = e.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let Some(ds) = defs.get(&file) else { continue };
-        let mut best: Option<(String, u32)> = None;
-        for (name, ln) in ds {
-            if *ln >= line && best.as_ref().map(|(_, b)| *ln < *b).unwrap_or(true) {
-                best = Some((name.clone(), *ln));
+        // 优先按**入口名**在文件里找定义（词表/框架入口给的是函数名，行号可能是导出语句行）；
+        // 找不到再退化为"映射注解下方最近的函数定义"。
+        let route_name = e.get("route").and_then(|v| v.as_str()).unwrap_or("");
+        let by_name: Option<(String, u32)> = if route_name.is_empty() {
+            None
+        } else {
+            ds.iter()
+                .find(|(n, _)| n == route_name)
+                .map(|(n, l)| (n.clone(), *l))
+        };
+        let mut best: Option<(String, u32)> = by_name;
+        if best.is_none() {
+            for (name, ln) in ds {
+                if *ln >= line && best.as_ref().map(|(_, b)| *ln < *b).unwrap_or(true) {
+                    best = Some((name.clone(), *ln));
+                }
             }
         }
         if let Some((name, ln)) = best {
@@ -476,7 +564,7 @@ pub(crate) fn candidates(
     }
 
     let mut stats: BTreeMap<String, usize> = BTreeMap::new();
-    let sinks = scan_sinks(files);
+    let sinks = scan_sinks_with(files, &extra_sinks, include_builtin_sinks);
     stats.insert("sinks_scanned".to_string(), sinks.len());
     let mut chains: Vec<Value> = Vec::new();
     let mut reached = 0usize;
@@ -492,6 +580,17 @@ pub(crate) fn candidates(
         let Some(ds) = defs.get(&file) else { continue };
         let Some((sink_def, sink_def_line)) = enclosing_def(ds, line) else { continue };
 
+        // 汇所在函数本身即入口（Spring Controller 方法直接调 exec、Next Server Action 直接执行命令）
+        let direct_entry: Option<Vec<(String, u32, String)>> =
+            if entry_by_handler.contains_key(&(file.clone(), sink_def_line)) {
+                Some(vec![
+                    (file.clone(), sink_def_line, sink_def.clone()),
+                    (file.clone(), sink_def_line, sink_def.clone()),
+                ])
+            } else {
+                None
+            };
+
         let mut visited: BTreeSet<(String, u32)> = BTreeSet::new();
         let mut queue: VecDeque<(String, u32, String, Vec<(String, u32, String)>)> = VecDeque::new();
         queue.push_back((
@@ -500,20 +599,39 @@ pub(crate) fn candidates(
             sink_def.clone(),
             vec![(file.clone(), sink_def_line, sink_def.clone())],
         ));
-        let mut found: Vec<(Vec<(String, u32, String)>, Vec<Value>)> = Vec::new();
+        let mut found: Vec<(Vec<(String, u32, String)>, Vec<Value>, Value)> = Vec::new();
 
+        if let Some(p) = direct_entry {
+            let entry_info = entry_by_handler
+                .get(&(file.clone(), sink_def_line))
+                .cloned()
+                .unwrap_or(Value::Null);
+            found.push((p, Vec::new(), entry_info));
+        }
+        if found.is_empty() {
         while let Some((cur_file, cur_line, cur_name, path)) = queue.pop_front() {
             if visited.contains(&(cur_file.clone(), cur_line)) {
                 continue;
             }
             visited.insert((cur_file.clone(), cur_line));
-            if entry_by_handler.contains_key(&(cur_file.clone(), cur_line)) && found.len() < 12 {
-                found.push((path.clone(), Vec::new()));
+            let is_sink_self = cur_file == sink.get("file").and_then(|v| v.as_str()).unwrap_or("")
+                && cur_line == sink.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let is_sink_def = cur_file == file && cur_line == sink_def_line;
+            if !is_sink_self
+                && !is_sink_def
+                && entry_by_handler.contains_key(&(cur_file.clone(), cur_line))
+                && found.len() < 12
+            {
+                let entry_info = entry_by_handler
+                    .get(&(cur_file.clone(), cur_line))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                found.push((path.clone(), Vec::new(), entry_info));
                 // 继续搜索：同一 sink 可能同时可达客户端与服务端入口（框架 CVE 取证需要后者）
                 continue;
             }
             if path.len() >= MAX_DEPTH {
-                if found.is_empty() && found.len() < 1 {
+                if found.is_empty() {
                     found.push((
                         path.clone(),
                         vec![json!({
@@ -522,6 +640,7 @@ pub(crate) fn candidates(
                             "candidates": [],
                             "confidence": "low",
                         })],
+                        Value::Null,
                     ));
                 }
                 continue;
@@ -553,6 +672,7 @@ pub(crate) fn candidates(
                 // 记录扇出截断（不影响继续搜索，但要在最终档里标注）
                 let _ = cur_name;
             }
+        }
         }
 
         if found.is_empty() {
@@ -604,7 +724,7 @@ pub(crate) fn candidates(
             continue;
         }
         let found_paths = found;
-        for (path, mut breakpoints) in found_paths {
+        for (path, mut breakpoints, entry_info) in found_paths {
         reached += 1;
         let mut rev = path;
         rev.reverse();
@@ -626,6 +746,31 @@ pub(crate) fn candidates(
                 "certainty": certainty,
             }));
         }
+        // 用 import 图重估每一步的确定性：同文件/被 import ⇒ certain；同名唯一定义 ⇒ inferred；否则 ambiguous
+        for i in 1..steps.len() {
+            let caller_file = steps[i - 1]["file"].as_str().unwrap_or("").to_string();
+            let callee_file = steps[i]["file"].as_str().unwrap_or("").to_string();
+            let symbol = steps[i]["symbol"].as_str().unwrap_or("").to_string();
+            let same_file = caller_file == callee_file;
+            let imported = imports
+                .get(&caller_file)
+                .map(|t| t.contains(&callee_file))
+                .unwrap_or(false);
+            let def_count = defs
+                .values()
+                .filter(|v| v.iter().any(|(n, _)| n == &symbol))
+                .count();
+            let conf = if same_file || imported {
+                "certain"
+            } else if def_count <= 1 {
+                "inferred"
+            } else {
+                "ambiguous"
+            };
+            if let Some(obj) = steps[i].as_object_mut() {
+                obj.insert("certainty".to_string(), json!(conf));
+            }
+        }
         if steps.len() > MAX_STEPS {
             steps.truncate(MAX_STEPS);
             breakpoints.push(json!({
@@ -644,10 +789,7 @@ pub(crate) fn candidates(
         }
 
         // 入口信息与守卫
-        let entry = entry_by_handler
-            .get(&(rev[0].0.clone(), rev[0].1))
-            .cloned()
-            .unwrap_or(Value::Null);
+        let entry = entry_info;
         let mut guards: Vec<Value> = Vec::new();
         if let Some(c) = contents.get(&rev[0].0) {
             guards.extend(guards_in(c, rev[0].1, &rev[0].0));
@@ -708,13 +850,15 @@ pub(crate) fn candidates(
         });
     }
 
-    // 排序：步骤少、入口 unauthorized 优先
+    // 排序：已连到入口的链优先（兜底档最后），再按入口鉴权/步数/位置
     chains.sort_by(|a, b| {
+        let reached_a = !a["entry"].is_null() as u8;
+        let reached_b = !b["entry"].is_null() as u8;
         let ua = a["entry"]["auth"].as_str().unwrap_or("unknown");
         let ub = b["entry"]["auth"].as_str().unwrap_or("unknown");
         let wa = if matches!(ua, "uncovered" | "no_global_match_found" | "unknown") { 0 } else { 1 };
         let wb = if matches!(ub, "uncovered" | "no_global_match_found" | "unknown") { 0 } else { 1 };
-        wa.cmp(&wb)
+        reached_b.cmp(&reached_a).then_with(|| wa.cmp(&wb))
             .then_with(|| {
                 a["steps"].as_array().map(|v| v.len()).unwrap_or(0)
                     .cmp(&b["steps"].as_array().map(|v| v.len()).unwrap_or(0))
@@ -728,9 +872,21 @@ pub(crate) fn candidates(
     });
     stats.insert("chains_found".to_string(), chains.len());
     stats.insert("sinks_reached".to_string(), reached);
-    let take = if limit == 0 { chains.len() } else { limit.min(chains.len()) };
-    chains.truncate(take);
-    (chains, stats)
+    // 兜底档（entry=null）限量，避免淹没真实链
+    let mut kept: Vec<Value> = Vec::new();
+    let mut fallback = 0usize;
+    for c in chains.into_iter() {
+        if c["entry"].is_null() {
+            if fallback >= 20 {
+                continue;
+            }
+            fallback += 1;
+        }
+        kept.push(c);
+    }
+    let take = if limit == 0 { kept.len() } else { limit.min(kept.len()) };
+    kept.truncate(take);
+    (kept, stats)
 }
 
 fn rev_len(entry: &Value) -> usize {
