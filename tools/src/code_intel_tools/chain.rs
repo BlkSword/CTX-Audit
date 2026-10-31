@@ -679,11 +679,27 @@ pub(crate) fn candidates(
             // 无法把汇连到入口：输出"汇级链档"，断点显式（framework_magic / ambiguous_chain）。
             // 框架回调/异步调度（如 RSC 的 createResponse→requireModule）本身不在静态调用图上，
             // 诚实做法是给出候选入口并标注断点，而不是静默丢弃或假装可达。
-            let cands: Vec<String> = entries
+            let cand_entries: Vec<Value> = entries
                 .iter()
-                .filter(|e| e.get("entry_kind").and_then(|v| v.as_str()) == Some("library_entry"))
+                .filter(|e| {
+                    matches!(
+                        e.get("entry_kind").and_then(|v| v.as_str()),
+                        Some("library_entry") | Some("server_action") | Some("route_handler")
+                    )
+                })
                 .take(3)
-                .map(|e| e.get("route").and_then(|v| v.as_str()).unwrap_or("").to_string())
+                .map(|e| {
+                    json!({
+                        "route": e.get("route").cloned().unwrap_or(Value::Null),
+                        "file": e.get("file").cloned().unwrap_or(Value::Null),
+                        "line": e.get("line").cloned().unwrap_or(Value::Null),
+                        "entry_kind": e.get("entry_kind").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect();
+            let cands: Vec<String> = cand_entries
+                .iter()
+                .filter_map(|c| c.get("route").and_then(|v| v.as_str()).map(|s| s.to_string()))
                 .filter(|s| !s.is_empty())
                 .collect();
             let kind = if cands.is_empty() { "ambiguous_chain" } else { "framework_magic" };
@@ -714,6 +730,7 @@ pub(crate) fn candidates(
                     "kind": kind,
                     "at": format!("{}:{}", file, line),
                     "candidates": cands,
+                    "candidate_entries": cand_entries,
                     "confidence": "low",
                 }],
                 "uncertainty": {"level": "high", "reasons": reasons},

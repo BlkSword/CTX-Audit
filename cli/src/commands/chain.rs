@@ -17,6 +17,7 @@ pub async fn execute(
     before: Option<String>,
     after: Option<String>,
     vocab: Option<String>,
+    out: Option<String>,
     no_builtin_vocab: bool,
     limit: usize,
     output: String,
@@ -35,7 +36,21 @@ pub async fn execute(
         let after_root = PathBuf::from(a);
         let vocab = ctx_audit_tools::learn_vocab(&before_root, &after_root)
             .map_err(|e| miette!("{}", e))?;
-        println!("{}", serde_json::to_string_pretty(&vocab).into_diagnostic()?);
+        let text = serde_json::to_string_pretty(&vocab).into_diagnostic()?;
+        if let Some(out_path) = out {
+            if let Some(parent) = std::path::Path::new(&out_path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&out_path, &text).into_diagnostic()?;
+            eprintln!(
+                "vocab written: {} (sinks={}, entries={})",
+                out_path,
+                vocab["sink_patterns"].as_array().map(|a| a.len()).unwrap_or(0),
+                vocab["entry_names"].as_array().map(|a| a.len()).unwrap_or(0)
+            );
+        } else {
+            println!("{text}");
+        }
         return Ok(());
     }
 

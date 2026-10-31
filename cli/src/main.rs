@@ -341,6 +341,10 @@ enum Commands {
         #[arg(long)]
         vocab: Option<String>,
 
+        /// 词表落盘路径（--learn 用；默认打印到 stdout）
+        #[arg(long)]
+        out: Option<String>,
+
         /// 只用派生词表，不使用内置汇模式（验证泛化性）
         #[arg(long)]
         no_builtin_vocab: bool,
@@ -776,6 +780,7 @@ async fn main() -> Result<()> {
             before,
             after,
             vocab,
+            out,
             no_builtin_vocab,
             limit,
             output,
@@ -790,6 +795,7 @@ async fn main() -> Result<()> {
                 before,
                 after,
                 vocab,
+                out,
                 no_builtin_vocab,
                 limit,
                 output,
