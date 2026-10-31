@@ -30,7 +30,8 @@ pub mod text_scan;
 pub use ast_tools::register_ast_tools;
 pub use bridge::{legacy_tools_enabled, register_all_tools, register_built_in_tools};
 pub use code_intel_tools::{
-    audit_bundle, audit_write, audit_write_from_bundle, coverage_summary_report,
+    audit_bundle, audit_write, audit_write_from_bundle, chain_assert_step_report,
+    chain_candidates_report, chain_dossier_markdown, chain_dossier_report, coverage_summary_report,
     coverage_triage_report,
     explain_route_report, is_code_intel_tool, project_route_report,
     register_code_intel_tools, register_code_intel_tools_with_legacy, security_baseline_report,

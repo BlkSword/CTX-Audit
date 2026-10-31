@@ -4951,7 +4951,7 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "默认工具面名单存在重复项");
-        assert_eq!(before, 12, "默认工具面应为 9 协议工具 + 3 基础");
+        assert_eq!(before, 15, "默认工具面应为 12 协议工具 + 3 基础");
     }
 
     /// legacy gate：默认 state 的 registry 只含默认面工具；legacy 打开后严格更多。

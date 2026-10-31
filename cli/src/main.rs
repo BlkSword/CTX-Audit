@@ -302,6 +302,38 @@ enum Commands {
         output: String,
     },
 
+    /// 法医台：候选链 / 链档 / 步骤证伪
+    #[command(after_help = "链 ID 来自 --list；--format md 输出人读链档。")]
+    Chain {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 列出候选链（入口→危险汇）
+        #[arg(long)]
+        list: bool,
+
+        /// 链 ID（输出该链档）
+        #[arg(long)]
+        id: Option<String>,
+
+        /// 只保留某类危险汇（exec|eval|deserialize|reflect|file_write|sql|template|ssrf|module_access）
+        #[arg(long)]
+        sink: Option<String>,
+
+        /// 只保留某类入口（如 decodeReply / 文件名子串）
+        #[arg(long)]
+        entry: Option<String>,
+
+        /// 条数上限（0=全部）
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        /// 输出格式 (json, md)
+        #[arg(short = 'o', long = "output", default_value = "json")]
+        output: String,
+    },
+
     /// 审计驾驶舱：覆盖率摘要 + 排序待审清单 + 证据包（人用加速器）
     Audit {
         /// 项目路径
@@ -714,6 +746,15 @@ async fn main() -> Result<()> {
             limit,
             output,
         } => commands::audit::execute(path, out, limit, output).await,
+        Commands::Chain {
+            path,
+            list,
+            id,
+            sink,
+            entry,
+            limit,
+            output,
+        } => commands::chain::execute(path, list, id, sink, entry, limit, output).await,
 
         Commands::ExplainRoute {
             path,

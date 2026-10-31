@@ -85,8 +85,8 @@ use super::super::*;
     #[test]
     fn test_tool_surface_shape() {
         // R257：默认面收敛为 9 个协议工具；其余 7 个细粒度工具进 legacy 面
-        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 9);
-        assert_eq!(IntelKind::all().len(), 15);
+        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 12);
+        assert_eq!(IntelKind::all().len(), 18);
         assert_eq!(CODE_INTEL_LEGACY_SURFACE.len(), 7);
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"get_project_routes"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_summary"));

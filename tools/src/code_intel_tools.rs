@@ -35,6 +35,8 @@ mod dispatch;
 pub use dispatch::*;
 mod routes;
 pub(crate) use routes::*;
+mod chain;
+pub(crate) use chain::*;
 mod baseline;
 #[allow(unused_imports)]
 pub(crate) use baseline::*;
@@ -221,10 +223,16 @@ pub enum IntelKind {
     CoverageTriage,
     /// 机械证伪：断言某条路由的覆盖判定，返回 pass/fail
     AssertVerdict,
+    /// 候选链：入口→危险汇的可达链（法医台）
+    CandidateChains,
+    /// 单条链档（步骤/守卫/断点/不确定性/反证）
+    ChainDossier,
+    /// 链步骤证伪
+    AssertChainStep,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 15] {
+    pub fn all() -> [IntelKind; 18] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -241,6 +249,9 @@ impl IntelKind {
             IntelKind::CoverageSummary,
             IntelKind::CoverageTriage,
             IntelKind::AssertVerdict,
+            IntelKind::CandidateChains,
+            IntelKind::ChainDossier,
+            IntelKind::AssertChainStep,
         ]
     }
 
@@ -261,6 +272,9 @@ impl IntelKind {
             IntelKind::CoverageSummary => "coverage_summary",
             IntelKind::CoverageTriage => "coverage_triage",
             IntelKind::AssertVerdict => "assert_verdict",
+            IntelKind::CandidateChains => "candidate_chains",
+            IntelKind::ChainDossier => "chain_dossier",
+            IntelKind::AssertChainStep => "assert_chain_step",
         }
     }
 
@@ -280,6 +294,9 @@ impl IntelKind {
             IntelKind::CoverageSummary => "审计协议第一步：覆盖率摘要（按 verdict 分布 + 边界：未建模/动态注册/截断，≤2KB）",
             IntelKind::AssertVerdict => "机械证伪：断言路由覆盖判定（covered/uncovered/permitted/any），返回 pass/fail + 证据",
             IntelKind::CoverageTriage => "排序后的待审清单（写方法/高危路径/未覆盖优先，不含证据正文，≤8KB）",
+            IntelKind::CandidateChains => "候选链：入口→危险汇的可达链（法医台起点）",
+            IntelKind::ChainDossier => "链档：步骤/守卫/断点/不确定性/反证（≤12KB）",
+            IntelKind::AssertChainStep => "链步骤证伪：检查第 N 步符号是否仍在源码中",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
     }
@@ -312,6 +329,76 @@ impl CodeIntelTool {
             IntelKind::ProjectIndex | IntelKind::IncrementalStatus => vec![],
             IntelKind::SecurityBaseline => vec![],
             IntelKind::CoverageSummary => vec![],
+            IntelKind::CandidateChains => vec![
+                ToolParameter {
+                    name: "limit".to_string(),
+                    param_type: ToolParameterType::Integer,
+                    description: "返回条数上限（默认 20，0=全部）".to_string(),
+                    required: false,
+                    default: Some(serde_json::json!(20)),
+                    enum_values: None,
+                    format: None,
+                    items: None,
+                    properties: None,
+                },
+                ToolParameter {
+                    name: "sink".to_string(),
+                    param_type: ToolParameterType::String,
+                    description: "只保留某类危险汇：exec|eval|deserialize|reflect|file_write|sql|template|ssrf".to_string(),
+                    required: false,
+                    default: None,
+                    enum_values: None,
+                    format: None,
+                    items: None,
+                    properties: None,
+                },
+            ],
+            IntelKind::ChainDossier => vec![ToolParameter {
+                name: "chain_id".to_string(),
+                param_type: ToolParameterType::String,
+                description: "链 ID（来自 candidate_chains）".to_string(),
+                required: true,
+                default: None,
+                enum_values: None,
+                format: None,
+                items: None,
+                properties: None,
+            }],
+            IntelKind::AssertChainStep => vec![
+                ToolParameter {
+                    name: "chain_id".to_string(),
+                    param_type: ToolParameterType::String,
+                    description: "链 ID".to_string(),
+                    required: true,
+                    default: None,
+                    enum_values: None,
+                    format: None,
+                    items: None,
+                    properties: None,
+                },
+                ToolParameter {
+                    name: "step".to_string(),
+                    param_type: ToolParameterType::Integer,
+                    description: "第几步（1-based）".to_string(),
+                    required: true,
+                    default: None,
+                    enum_values: None,
+                    format: None,
+                    items: None,
+                    properties: None,
+                },
+                ToolParameter {
+                    name: "expect".to_string(),
+                    param_type: ToolParameterType::String,
+                    description: "line_present | line_absent".to_string(),
+                    required: false,
+                    default: Some(serde_json::json!("line_present")),
+                    enum_values: None,
+                    format: None,
+                    items: None,
+                    properties: None,
+                },
+            ],
             IntelKind::AssertVerdict => vec![
                 ToolParameter {
                     name: "route".to_string(),
@@ -2597,6 +2684,78 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new(level, &refs, 0),
                 }
             }
+            IntelKind::CandidateChains => {
+                let limit = input["limit"].as_u64().unwrap_or(20) as usize;
+                let sink = input["sink"].as_str();
+                let entry = input["entry"].as_str();
+                let auth = chain::auth_map(root, files, &id);
+                let entries = chain::collect_entries(files, &id);
+                let (chains, stats) = chain::candidates(files, &entries, &auth, sink, entry, limit);
+                IntelEnvelope {
+                    data: json!({"schema": "chain-candidates/v1", "stats": stats, "chains": chains}),
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new("medium", &["call_graph_reachability"], 0),
+                }
+            }
+            IntelKind::ChainDossier => {
+                let chain_id = input["chain_id"].as_str().unwrap_or("");
+                let auth = chain::auth_map(root, files, &id);
+                let entries = chain::collect_entries(files, &id);
+                let (chains, _stats) = chain::candidates(files, &entries, &auth, None, None, 0);
+                let found = chains
+                    .into_iter()
+                    .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id));
+                match found {
+                    Some(d) => IntelEnvelope {
+                        data: d,
+                        provenance: vec![prov(".", 0, &id)],
+                        uncertainty: Uncertainty::new("medium", &["call_graph_reachability"], 0),
+                    },
+                    None => IntelEnvelope {
+                        data: json!({"error": format!("chain not found: {chain_id}")}),
+                        provenance: vec![prov(".", 0, &id)],
+                        uncertainty: Uncertainty::new("high", &["chain_not_found"], 0),
+                    },
+                }
+            }
+            IntelKind::AssertChainStep => {
+                let chain_id = input["chain_id"].as_str().unwrap_or("");
+                let step = input["step"].as_u64().unwrap_or(0) as usize;
+                let expect = input["expect"].as_str().unwrap_or("line_present");
+                let auth = chain::auth_map(root, files, &id);
+                let entries = chain::collect_entries(files, &id);
+                let (chains, _stats) = chain::candidates(files, &entries, &auth, None, None, 0);
+                let detail = chains
+                    .into_iter()
+                    .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id));
+                let (pass, data) = match detail {
+                    None => (false, json!({"error": format!("chain not found: {chain_id}")})),
+                    Some(d) => {
+                        let steps = d.get("steps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                        let idx = step.saturating_sub(1);
+                        if idx >= steps.len() {
+                            (false, json!({"error": "step_out_of_range", "steps": steps.len()}))
+                        } else {
+                            let st = &steps[idx];
+                            let file = st.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                            let line = st.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let symbol = st.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+                            let mut present = false;
+                            if let Some((_, content)) = files.iter().find(|(p, _)| p == file) {
+                                let text = content.lines().nth(line.saturating_sub(1) as usize).unwrap_or("");
+                                present = !symbol.is_empty() && text.contains(symbol);
+                            }
+                            let want = expect != "line_absent";
+                            (present == want, json!({"file": file, "line": line, "symbol": symbol, "present": present, "expect": expect}))
+                        }
+                    }
+                };
+                IntelEnvelope {
+                    data: json!({"chain_id": chain_id, "step": step, "pass": pass, "detail": data}),
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new("low", &[], 0),
+                }
+            }
             IntelKind::AssertVerdict => {
                 let expect = input["expect"].as_str().unwrap_or("uncovered").to_string();
                 let detail = routes::explain_route(
@@ -2706,7 +2865,7 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
 /// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
 /// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
 /// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
-pub const PROTOCOL_TOOL_SURFACE: [&str; 9] = CODE_INTEL_TOOL_SURFACE;
+pub const PROTOCOL_TOOL_SURFACE: [&str; 12] = CODE_INTEL_TOOL_SURFACE;
 
 /// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
 fn max_tool_bytes() -> usize {
@@ -3244,10 +3403,93 @@ pub fn audit_write_from_bundle(
     Ok(written)
 }
 
+/// 候选链清单（CLI/MCP 共用）：入口→危险汇的可达链。
+pub fn chain_candidates_report(
+    project: &Path,
+    limit: usize,
+    sink: Option<&str>,
+    entry: Option<&str>,
+) -> Result<Value, String> {
+    let loaded = index::load_files(project);
+    let id = index::build_id(&loaded.files);
+    let auth = chain::auth_map(project, &loaded.files, &id);
+    let entries = chain::collect_entries(&loaded.files, &id);
+    let (chains, stats) = chain::candidates(&loaded.files, &entries, &auth, sink, entry, limit);
+    Ok(json!({
+        "schema": "chain-candidates/v1",
+        "files_indexed": loaded.files.len(),
+        "stats": stats,
+        "chains": chains,
+    }))
+}
+
+/// 单条链档（按 chain_id）。
+pub fn chain_dossier_report(project: &Path, chain_id: &str) -> Result<Value, String> {
+    let loaded = index::load_files(project);
+    let id = index::build_id(&loaded.files);
+    let auth = chain::auth_map(project, &loaded.files, &id);
+    let entries = chain::collect_entries(&loaded.files, &id);
+    let (chains, _stats) = chain::candidates(&loaded.files, &entries, &auth, None, None, 0);
+    let found = chains
+        .into_iter()
+        .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id))
+        .ok_or_else(|| format!("chain not found: {chain_id}"))?;
+    Ok(found)
+}
+
+/// 链步骤证伪：检查第 `step`（1-based）步仍能在源码里找到对应符号。
+pub fn chain_assert_step_report(
+    project: &Path,
+    chain_id: &str,
+    step: usize,
+    expect: &str,
+) -> Result<Value, String> {
+    let dossier = chain_dossier_report(project, chain_id)?;
+    let steps = dossier
+        .get("steps")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let idx = step.saturating_sub(1);
+    let (pass, detail) = if idx >= steps.len() {
+        (false, json!({"reason": "step_out_of_range", "steps": steps.len()}))
+    } else {
+        let st = &steps[idx];
+        let file = st.get("file").and_then(|v| v.as_str()).unwrap_or("");
+        let line = st.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+        let symbol = st.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+        let path = project.join(file);
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = content
+            .lines()
+            .nth(line.saturating_sub(1) as usize)
+            .unwrap_or("")
+            .to_string();
+        let present = !symbol.is_empty() && text.contains(symbol);
+        let want_present = expect != "line_absent";
+        (
+            present == want_present,
+            json!({"file": file, "line": line, "symbol": symbol, "line_text": text.chars().take(160).collect::<String>(), "expect": expect, "present": present}),
+        )
+    };
+    Ok(json!({
+        "chain_id": chain_id,
+        "step": step,
+        "pass": pass,
+        "detail": detail,
+    }))
+}
+
+/// 链档 Markdown（CLI `chain --format md`）。
+pub fn chain_dossier_markdown(project: &Path, chain_id: &str) -> Result<String, String> {
+    let d = chain_dossier_report(project, chain_id)?;
+    Ok(chain::dossier_markdown(&d))
+}
+
 /// LLM 默认工具面（9 个）：审计协议所需的最小集合。
 ///
 /// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 9] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 12] = [
     "coverage_summary",
     "coverage_triage",
     "get_project_routes",
@@ -3256,6 +3498,9 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 9] = [
     "slice_backward",
     "get_sanitizer_guards",
     "get_framework_context",
+    "candidate_chains",
+    "chain_dossier",
+    "assert_chain_step",
     "report_finding",
 ];
 
