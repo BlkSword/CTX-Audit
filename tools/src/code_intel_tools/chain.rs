@@ -365,8 +365,12 @@ pub(crate) fn scan_sinks_with(
                     continue;
                 }
                 let expr: String = raw.trim().chars().take(160).collect();
+                let is_compare = raw.contains("===")
+                    || raw.contains("!==")
+                    || raw.contains("==")
+                    || raw.contains("!=");
                 let mut hit = false;
-                if include_builtin {
+                if include_builtin && !is_compare {
                     for (kind, pats) in PATTERNS.iter() {
                         if pats.iter().any(|p| raw.contains(p)) {
                             local.push(json!({
@@ -381,7 +385,12 @@ pub(crate) fn scan_sinks_with(
                         }
                     }
                 }
-                if !hit {
+                // `metadata[NAME] === '*'` 这类比较不是动态取值，不能当 module_access 汇
+                let is_compare = raw.contains("===")
+                    || raw.contains("!==")
+                    || raw.contains("==")
+                    || raw.contains("!=");
+                if !hit && !is_compare {
                     for (kind, pat) in extra_owned.iter() {
                         if raw.contains(pat.as_str()) {
                             local.push(json!({

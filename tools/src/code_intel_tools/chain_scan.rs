@@ -30,6 +30,14 @@ struct Extracted {
     calls: Vec<(String, u32)>,
 }
 
+/// 测试/构建产物目录不作为链证据来源（避免 __tests__ 噪声与 dist 干扰）。
+fn skipped_path(path: &str) -> bool {
+    const BAD: [&str; 8] = [
+        "/__tests__/", "/__mocks__/", "/node_modules/", "/dist/", "/build/", "/.next/", "/test/", "/tests/",
+    ];
+    BAD.iter().any(|seg| path.contains(seg))
+}
+
 fn enclosing_line(lines: &[u32], line: u32) -> Option<u32> {
     // lines 已升序：找 <= line 的最后一个
     let idx = lines.partition_point(|l| *l <= line);
@@ -53,42 +61,56 @@ fn def_line_of(defs: &[(String, u32)], name: &str, after: u32) -> Option<u32> {
 /// 解析 JS/TS import：返回 (本地名, 模块说明符, 目标导出名)。
 fn parse_js_imports(content: &str) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
-    for raw in content.lines() {
-        let t = raw.trim();
-        if !t.starts_with("import ") {
+    let mut cursor = 0usize;
+    while let Some(rel) = content[cursor..].find("import ") {
+        let start = cursor + rel;
+        let rest = &content[start..];
+        // 只在合理窗口内找 ` from '...'`，避免跨语句误配
+        let window = &rest[..rest.len().min(1200)];
+        let Some(fp) = window.find(" from ") else {
+            cursor = start + 7;
             continue;
-        }
-        let Some(pos) = t.find(" from ") else { continue };
-        let (head, rest) = (&t[6..pos], t[pos + 6..].trim());
-        let Some(q) = rest.chars().next() else { continue };
+        };
+        let head = &window[7..fp].trim();
+        let after = &window[fp + 6..];
+        let mut chars = after.chars();
+        let q = chars.next().unwrap_or(' ');
         if q != '\'' && q != '"' {
+            cursor = start + 7;
             continue;
         }
-        let spec = rest[1..].split(q).next().unwrap_or("").to_string();
-        let head = head.trim();
-        if let Some(inner) = head.strip_prefix('{') {
-            let inner = inner.trim_end_matches('}');
-            for part in inner.split(',') {
-                let part = part.trim();
-                if part.is_empty() {
-                    continue;
-                }
-                let mut it = part.split_whitespace();
-                let imported = it.next().unwrap_or("").to_string();
-                let local = match (it.next(), it.next()) {
-                    (Some("as"), Some(l)) => l.to_string(),
-                    _ => imported.clone(),
-                };
-                if !local.is_empty() {
-                    out.push((local, spec.clone(), imported));
+        let spec = after[1..].split(q).next().unwrap_or("").to_string();
+        if spec.is_empty() {
+            cursor = start + 7;
+            continue;
+        }
+        // head 可能是 `{a, b as c}`、`X`、`X, {..}`、`* as ns`
+        if let Some(bstart) = head.find('{') {
+            if let Some(bend) = head.rfind('}') {
+                let inner = &head[bstart + 1..bend];
+                for part in inner.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let mut it = part.split_whitespace();
+                    let imported = it.next().unwrap_or("").to_string();
+                    let local = match (it.next(), it.next()) {
+                        (Some("as"), Some(l)) => l.to_string(),
+                        _ => imported.clone(),
+                    };
+                    if !local.is_empty() && !imported.is_empty() {
+                        out.push((local, spec.clone(), imported));
+                    }
                 }
             }
-        } else if let Some(local) = head.split(',').next() {
-            let local = local.trim();
-            if !local.is_empty() && local != "type" {
+        } else {
+            let local = head.trim().trim_start_matches("type ").trim();
+            if !local.is_empty() && !local.starts_with('*') {
                 out.push((local.to_string(), spec.clone(), "default".to_string()));
             }
         }
+        cursor = start + 7;
     }
     out
 }
@@ -111,7 +133,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
         .par_iter()
         .map(|(path, content)| {
             let lang = language_of(path);
-            if !matches!(lang, "js" | "ts" | "java" | "py" | "go") {
+            if skipped_path(path) || !matches!(lang, "js" | "ts" | "java" | "py" | "go") {
                 return Extracted {
                     defs: Vec::new(),
                     calls: Vec::new(),
@@ -160,11 +182,17 @@ fn build_pre(files: &[(String, String)]) -> Pre {
     }
     let mut bindings: BTreeMap<(usize, String), (usize, String)> = BTreeMap::new();
     let mut imports: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    // 从无法解析的模块（包名/缺失文件）导入的本地名：禁止按同名跨文件兜底连边
+    let mut unresolved_imports: BTreeSet<(usize, String)> = BTreeSet::new();
     for (idx, (path, content)) in files.iter().enumerate() {
         let lang = language_of(path);
         if lang == "js" || lang == "ts" {
             for (local, spec, imported) in parse_js_imports(content) {
-                if let Some(target) = chain_vocab::resolve_js_target(path, &spec, &all_paths) {
+                let resolved = chain_vocab::resolve_js_target(path, &spec, &all_paths);
+                if resolved.is_none() {
+                    unresolved_imports.insert((idx, local.clone()));
+                }
+                if let Some(target) = resolved {
                     if let Some(&ti) = pos.get(&target) {
                         imports.entry(idx).or_default().insert(ti);
                         if imported != "default" {
@@ -197,11 +225,25 @@ fn build_pre(files: &[(String, String)]) -> Pre {
     let mut incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool)>> = BTreeMap::new();
     for (idx, e) in extracted.iter().enumerate() {
         for (name, line) in e.calls.iter() {
+            if unresolved_imports.contains(&(idx, name.clone())) {
+                continue;
+            }
             if let Some((tf, tname)) = bindings.get(&(idx, name.clone())) {
-                incoming
-                    .entry((*tf, tname.clone()))
-                    .or_default()
-                    .push((idx, *line, true));
+                let has_def = defs.get(*tf).map(|d| d.iter().any(|(n, _)| n == tname)).unwrap_or(false);
+                if has_def {
+                    incoming
+                        .entry((*tf, tname.clone()))
+                        .or_default()
+                        .push((idx, *line, true));
+                } else if let Some(targets) = name_defs.get(tname) {
+                    // 绑定目标只做 re-export（fork/config 文件）：退化为全局同名，但标 ambiguous
+                    for (df, _dl) in targets.iter().take(4) {
+                        incoming
+                            .entry((*df, tname.clone()))
+                            .or_default()
+                            .push((idx, *line, false));
+                    }
+                }
             } else if let Some(targets) = name_defs.get(name) {
                 for (tf, _dl) in targets.iter().take(4) {
                     incoming
@@ -247,15 +289,25 @@ fn entry_index(pre: &Pre, entries: &[Value]) -> BTreeMap<(usize, u32), Value> {
             .or(Some(line));
         let Some(dl) = dl else { continue };
         let auth = e.get("auth").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        let kind_label = e
+            .get("entry_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("http")
+            .to_string();
+        let auth_label = if kind_label == "library_entry" || auth.is_empty() {
+            if kind_label == "library_entry" { "not_applicable".to_string() } else { "unknown".to_string() }
+        } else {
+            auth
+        };
         let info = json!({
-            "kind": "http",
+            "kind": kind_label,
             "method": e.get("method").cloned().unwrap_or(Value::Null),
             "route": if route.is_empty() { e.get("route").cloned().unwrap_or(Value::Null) } else { json!(route) },
             "file": file,
             "mapping_line": line,
             "handler_line": dl,
             "entry_kind": e.get("entry_kind").cloned().unwrap_or(Value::Null),
-            "auth": if auth.is_empty() { "unknown".to_string() } else { auth },
+            "auth": auth_label,
         });
         out.insert((fi, dl), info);
     }
@@ -606,9 +658,10 @@ pub(crate) fn candidates(
                 reasons.push("unmodelled_framework".to_string());
             }
             let steps_total = steps.len();
+            let cid = fnv_chain_id(file, line, &steps);
             chains.push(json!({
                 "schema": DOSSIER_SCHEMA,
-                "chain_id": fnv_chain_id(file, line, &steps),
+                "chain_id": cid,
                 "entry": entry_info,
                 "sink": {
                     "kind": kind,
@@ -621,7 +674,7 @@ pub(crate) fn candidates(
                 "breakpoints": breakpoints,
                 "uncertainty": {"level": if reasons.is_empty() { "low" } else { "medium" }, "reasons": reasons},
                 "verdict_candidates": ["reachable_unauthenticated", "reachable_authenticated", "unreachable"],
-                "falsify": [format!("ctx-audit chain <ROOT> --id {}", fnv_chain_id(file, line, &[]))],
+                "falsify": [format!("ctx-audit chain <ROOT> --id {cid}")],
                 "steps_total": steps_total,
             }));
         } else {
@@ -640,9 +693,10 @@ pub(crate) fn candidates(
             if let Some((p, c)) = files.get(fi) {
                 guards.extend(guards_in(c, line, p));
             }
+            let cid_fb = fnv_chain_id(file, line, &[]);
             chains.push(json!({
                 "schema": DOSSIER_SCHEMA,
-                "chain_id": fnv_chain_id(file, line, &[]),
+                "chain_id": cid_fb,
                 "entry": Value::Null,
                 "sink": {
                     "kind": kind,
@@ -664,7 +718,7 @@ pub(crate) fn candidates(
                 }],
                 "uncertainty": {"level": "high", "reasons": ["unmodelled_framework"]},
                 "verdict_candidates": ["reachable_unauthenticated", "reachable_authenticated", "unreachable"],
-                "falsify": [format!("ctx-audit chain <ROOT> --id {}", fnv_chain_id(file, line, &[]))],
+                "falsify": [format!("ctx-audit chain <ROOT> --id {cid_fb}")],
                 "steps_total": 1,
             }));
         }

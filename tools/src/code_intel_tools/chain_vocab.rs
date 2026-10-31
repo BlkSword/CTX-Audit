@@ -383,7 +383,26 @@ pub(crate) fn resolve_js_target(from: &str, spec: &str, all: &BTreeSet<String>) 
         format!("{joined}/index.js"),
         format!("{joined}/index.ts"),
     ];
-    cands.into_iter().find(|c| all.contains(c))
+    if let Some(hit) = cands.into_iter().find(|c| all.contains(c)) {
+        return Some(hit);
+    }
+    // 非相对、非别名的模块说明符（如 react-client/src/ReactFlightClient）：
+    // 在 monorepo 内通常就是仓库根相对路径，按后缀补齐尝试
+    let not_relative = !spec.starts_with('.') && !spec.starts_with("@/");
+    if not_relative {
+        let cands2 = [
+            spec.to_string(),
+            format!("{spec}.js"),
+            format!("{spec}.ts"),
+            format!("{spec}.tsx"),
+            format!("{spec}.mjs"),
+            format!("{spec}.cjs"),
+            format!("{spec}/index.js"),
+            format!("{spec}/index.ts"),
+        ];
+        return cands2.into_iter().find(|c| all.contains(c));
+    }
+    None
 }
 
 /// 读取外部词表（`--vocab` / `CTX_AUDIT_CHAIN_VOCAB` / `.ctx-audit/chain-vocab.json`）。
