@@ -539,6 +539,96 @@ fn files_path(pre: &Pre, idx: usize) -> String {
 
 /// 数据可控性（启发式）：sink 表达式/所在函数签名/前几步是否出现"请求侧"标识符。
 /// 只判断"看起来来自请求"，不判断能否注入；basis 显式标注为 name_heuristic。
+/// 从函数签名行解析参数名（Java/Python/JS 通用近似）。
+fn params_of(sig: &str) -> Vec<String> {
+    let Some(open) = sig.find('(') else { return Vec::new() };
+    let Some(close) = sig[open..].find(')').map(|i| open + i) else { return Vec::new() };
+    let inner = &sig[open + 1..close];
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for ch in inner.chars() {
+        match ch {
+            '<' | '[' | '{' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            '>' | ']' | '}' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                push_param(&cur, &mut out);
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    push_param(&cur, &mut out);
+    out
+}
+
+fn push_param(seg: &str, out: &mut Vec<String>) {
+    let seg = seg.trim();
+    if seg.is_empty() {
+        return;
+    }
+    // 去掉注解/默认值，取最后的标识符
+    let seg = seg.split('=').next().unwrap_or(seg);
+    let name: String = seg
+        .chars()
+        .rev()
+        .skip_while(|c| c.is_whitespace())
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if name.is_empty() || name == "self" || name == "cls" {
+        return;
+    }
+    if name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+        return; // 类型名（Java 参数 `String cmd` 里最后是变量名，已由反向取词处理；纯类型不是参数）
+    }
+    out.push(name);
+}
+
+/// 在 handler 到 sink 之间找"从请求参数派生出来的变量"（简易 def-use）。
+fn derived_from_params(content: &str, start_line: u32, end_line: u32, params: &[String]) -> BTreeSet<String> {
+    let mut derived: BTreeSet<String> = BTreeSet::new();
+    let lines: Vec<&str> = content.lines().collect();
+    for i in start_line.saturating_sub(1) as usize..(end_line as usize).min(lines.len()) {
+        let line = lines[i];
+        if let Some(eq) = line.find('=') {
+            let lhs: String = line[..eq]
+                .trim()
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let rhs = &line[eq + 1..];
+            if !lhs.is_empty()
+                && (params.iter().any(|p| rhs.contains(p.as_str()))
+                    || derived.iter().any(|d| rhs.contains(d.as_str())))
+            {
+                derived.insert(lhs);
+            }
+        }
+    }
+    derived
+}
+
+/// 判断 sink 表达式是否使用参数（或由参数派生的变量）。
+fn sink_uses_params(sink_expr: &str, params: &[String], derived: &BTreeSet<String>) -> bool {
+    if params.iter().any(|p| sink_expr.contains(p.as_str())) {
+        return true;
+    }
+    derived.iter().any(|d| sink_expr.contains(d.as_str()))
+}
+
 fn request_sourced(sink_expr: &str, sink_def_sig: &str, context: &str, steps: &[Value]) -> bool {
     // 证据优先级：函数签名（参数/注解）> 表达式里的高信号请求对象。
     // 只看签名可避免把"远程响应 body"误判成请求输入（zfile 的 /115、/sharepoint 即此误报）。
@@ -570,13 +660,13 @@ fn request_sourced(sink_expr: &str, sink_def_sig: &str, context: &str, steps: &[
 }
 
 fn injection_kind(kind: &str) -> bool {
-    matches!(kind, "exec" | "eval" | "sql" | "template" | "ssrf" | "file_write")
+    matches!(kind, "exec" | "eval" | "sql" | "template" | "ssrf" | "file_write" | "jndi")
 }
 
 fn sensitive(kind: &str) -> bool {
     matches!(
         kind,
-        "exec" | "eval" | "deserialize" | "reflect" | "module_access" | "template" | "sql" | "file_write"
+        "exec" | "eval" | "deserialize" | "reflect" | "module_access" | "template" | "sql" | "file_write" | "jndi"
     )
 }
 
@@ -610,7 +700,10 @@ fn chain_score(c: &Value) -> i32 {
 fn is_shown(c: &Value) -> bool {
     let kind = c["sink"]["kind"].as_str().unwrap_or("");
     let steps = c["steps"].as_array().map(|a| a.len()).unwrap_or(0);
-    let controllable = c["controllability"].as_str() == Some("request_sourced");
+    let controllable = matches!(
+        c["controllability"].as_str(),
+        Some("request_sourced") | Some("parameter_mapped")
+    );
     !c["entry"].is_null()
         && sensitive(kind)
         && steps <= 12
@@ -642,10 +735,10 @@ pub(crate) fn candidates(
                 let name = n.get("name").and_then(|x| x.as_str()).unwrap_or("");
                 let file = n.get("file").and_then(|x| x.as_str()).unwrap_or("");
                 let line = n.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
-                const STEMS: [&str; 18] = [
+                const STEMS: [&str; 21] = [
                     "decode", "action", "request", "handler", "route", "render", "create",
                     "fetch", "stream", "dispatch", "endpoint", "invoke", "parse",
-                    "deserialize", "read", "exec", "from", "unmarshal",
+                    "deserialize", "read", "exec", "from", "unmarshal", "format", "lookup", "substitute",
                 ];
                 let lower = name.to_ascii_lowercase();
                 if name.is_empty() || file.is_empty() || !STEMS.iter().any(|s| lower.contains(s)) {
@@ -860,7 +953,25 @@ pub(crate) fn candidates(
                         .join("\n")
                 })
                 .unwrap_or_default();
-            let controllable = request_sourced(sink_expr, sink_sig, &ctx, &steps);
+            // 参数级可控性 v2：入口 handler 的参数 →（def-use）→ sink 表达式
+            let entry_handler_line = entry_info
+                .get("handler_line")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0);
+            let entry_sig = files
+                .get(rev[0].0)
+                .and_then(|(_, c)| c.lines().nth(entry_handler_line.saturating_sub(1) as usize))
+                .unwrap_or("");
+            let params = params_of(entry_sig);
+            let derived = files
+                .get(rev[0].0)
+                .map(|(_, c)| derived_from_params(c, entry_handler_line, line, &params))
+                .unwrap_or_default();
+            let param_mapped = !params.is_empty() && sink_uses_params(sink_expr, &params, &derived);
+            let controllable = param_mapped || request_sourced(sink_expr, sink_sig, &ctx, &steps);
+            let ctrl_label = if param_mapped { "parameter_mapped" } else { "request_sourced" };
+            let ctrl_basis = if param_mapped { "param_def_use" } else { "name_heuristic" };
             let cid = fnv_chain_id(file, line, &steps);
             chains.push(json!({
                 "schema": DOSSIER_SCHEMA,
@@ -875,8 +986,8 @@ pub(crate) fn candidates(
                 "steps": steps,
                 "guards": guards,
                 "breakpoints": breakpoints,
-                "controllability": if controllable { "request_sourced" } else { "unknown" },
-                "controllability_basis": "name_heuristic",
+                "controllability": if controllable { ctrl_label } else { "unknown" },
+                "controllability_basis": if controllable { ctrl_basis } else { "none" },
                 "uncertainty": {"level": if reasons.is_empty() { "low" } else { "medium" }, "reasons": reasons},
                 "verdict_candidates": ["reachable_unauthenticated", "reachable_authenticated", "unreachable"],
                 "falsify": [format!("ctx-audit chain <ROOT> --id {cid}")],
