@@ -489,17 +489,18 @@ fn request_sourced(sink_expr: &str, sink_def_sig: &str, context: &str, steps: &[
     if STRONG_SIG.iter().any(|t| sig.contains(t)) {
         return true;
     }
-    const WEAK_SIG: [&str; 6] = ["body", "input", "data", "path", "url", "params"];
-    if WEAK_SIG.iter().any(|t| sig.contains(t)) {
-        return true;
-    }
-    // Python 等无显式签名注解：sink 表达式或上方几行出现 request/req. 才认
+    // Python 等无签名注解：只认明确的请求取值访问器（避免把 HttpRequest 之类的
+    // 上游 HTTP 客户端误判为请求输入）
+    const ACCESSORS: [&str; 8] = [
+        "request.args", "request.form", "request.get_json", "request.query",
+        "request.json", "request.values", "request.headers", "request.data",
+    ];
     let ctx = context.to_ascii_lowercase();
-    if ctx.contains("request") || ctx.contains("req.") {
+    if ACCESSORS.iter().any(|t| ctx.contains(t)) {
         return true;
     }
     let expr = sink_expr.to_ascii_lowercase();
-    if expr.contains("request") || expr.contains("req.") {
+    if ACCESSORS.iter().any(|t| expr.contains(t)) {
         return true;
     }
     let _ = steps;
@@ -708,6 +709,20 @@ pub(crate) fn candidates(
             }
             // 守卫：入口与汇窗口
             let mut guards: Vec<Value> = Vec::new();
+            // 守卫扫描：入口区间 + 汇区间 + 链上每个中间步骤的窗口
+            // （CVE 修复的闸门常落在中间步骤，如 fastjson 的 checkAutoType）
+            let mut seen_guard: BTreeSet<(String, u64)> = BTreeSet::new();
+            let mut push_guards = |c: &str, lo: u32, hi: u32, p: &str, guards: &mut Vec<Value>| {
+                for g in super::chain::guards_range(c, lo, hi, p) {
+                    let key = (
+                        g.get("file").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        g.get("line").and_then(|v| v.as_u64()).unwrap_or(0),
+                    );
+                    if seen_guard.insert(key) {
+                        guards.push(g);
+                    }
+                }
+            };
             let (f0, l0) = (rev[0].0, rev[0].1);
             if let Some((p, c)) = files.get(f0) {
                 let handler_line = entry_info
@@ -715,10 +730,15 @@ pub(crate) fn candidates(
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32)
                     .unwrap_or(l0);
-                guards.extend(super::chain::guards_range(c, l0, handler_line, p));
+                push_guards(c, l0, handler_line, p, &mut guards);
             }
             if let Some((p, c)) = files.get(fi) {
-                guards.extend(super::chain::guards_range(c, sink_def_line, line, p));
+                push_guards(c, sink_def_line, line, p, &mut guards);
+            }
+            for (sf, sl, _sym, _conf) in rev.iter().take(8) {
+                if let Some((p, c)) = files.get(*sf) {
+                    push_guards(c, sl.saturating_sub(2), sl + 2, p, &mut guards);
+                }
             }
             let mut reasons: Vec<String> = Vec::new();
             for b in breakpoints.iter() {

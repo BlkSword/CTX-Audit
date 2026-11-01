@@ -501,7 +501,7 @@ pub(crate) fn guards_range(content: &str, start: u32, end: u32, file: &str) -> V
     const GUARDS: [(&str, &[&str]); 6] = [
         ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth", "login_required", "jwt_required", "permission_required", "requires_auth", "get_current_user", "@requires_login"]),
         ("permission_check", &["@CheckPassword", "@StoragePermissionCheck", "checkRole(", "hasRole(", "hasPermission(", "isAdmin"]),
-        ("allowlist", &["allowlist", "whitelist", "ALLOWED_", "startsWith(", "matchesPattern", "Pattern.compile", "hasOwnProperty"]),
+        ("allowlist", &["allowlist", "whitelist", "ALLOWED_", "startsWith(", "matchesPattern", "Pattern.compile", "hasOwnProperty", "checkAutoType", "ObjectInputFilter", "allowTypes", "denyList", "acceptList", "autoTypeSupport"]),
         ("sanitize", &["sanitize", "escapeHtml", "escape(", "encodeURI", "HtmlUtils", "StringEscapeUtils"]),
         ("signature", &["validSignature", "hmac", "HmacSHA", "constantTimeEqual"]),
         ("bounds", &["maxLength", "Preconditions", "assertNotNull"]),
@@ -536,7 +536,7 @@ pub(crate) fn guards_in(content: &str, center: u32, file: &str) -> Vec<Value> {
     const GUARDS: [(&str, &[&str]); 6] = [
         ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth", "login_required", "jwt_required", "permission_required", "requires_auth", "get_current_user", "@requires_login"]),
         ("permission_check", &["@CheckPassword", "@StoragePermissionCheck", "checkRole(", "hasRole(", "hasPermission(", "isAdmin"]),
-        ("allowlist", &["allowlist", "whitelist", "ALLOWED_", "startsWith(", "matchesPattern", "Pattern.compile", "hasOwnProperty"]),
+        ("allowlist", &["allowlist", "whitelist", "ALLOWED_", "startsWith(", "matchesPattern", "Pattern.compile", "hasOwnProperty", "checkAutoType", "ObjectInputFilter", "allowTypes", "denyList", "acceptList", "autoTypeSupport"]),
         ("sanitize", &["sanitize", "escapeHtml", "escape(", "encodeURI", "HtmlUtils", "StringEscapeUtils"]),
         ("signature", &["validSignature", "hmac", "HmacSHA", "constantTimeEqual"]),
         ("bounds", &["maxLength", "Preconditions", "assertNotNull"]),
