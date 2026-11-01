@@ -27,7 +27,7 @@ const MAX_ENTRY_HITS: usize = 6;
 
 struct Extracted {
     defs: Vec<(String, u32)>,
-    calls: Vec<(String, u32)>,
+    calls: Vec<(String, u32, bool)>, // (name, line, member)
 }
 
 /// 测试/构建产物目录不作为链证据来源（避免 __tests__ 噪声与 dist 干扰）。
@@ -136,8 +136,8 @@ struct Pre {
     defs: Vec<Vec<(String, u32)>>,
     def_lines: Vec<Vec<u32>>,
     name_defs: BTreeMap<String, Vec<(usize, u32)>>,
-    // 反向调用索引：被调 (文件 idx, 定义名) → 调用点 (文件 idx, 行, 绑定边?)
-    incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool)>>,
+    // 反向调用索引：被调 (文件 idx, 定义名) → 调用点 (文件 idx, 行, 绑定边?, 直接调用?)
+    incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool, bool)>>,
     contents_bytes: Vec<usize>,
     bindings: BTreeMap<(usize, String), (usize, String)>,
     imports: BTreeMap<usize, BTreeSet<usize>>,
@@ -156,7 +156,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
             }
             Extracted {
                 defs: definitions(content, lang),
-                calls: calls(content).into_iter().map(|(n, l, _m)| (n, l)).collect(),
+                calls: calls(content),
             }
         })
         .collect();
@@ -244,26 +244,26 @@ fn build_pre(files: &[(String, String)]) -> Pre {
     }
 
     // 反向调用索引
-    let mut incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool)>> = BTreeMap::new();
+    let mut incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool, bool)>> = BTreeMap::new();
     for (idx, e) in extracted.iter().enumerate() {
-        for (name, line) in e.calls.iter() {
+        for (name, line, member) in e.calls.iter() {
             if blocked_imports.contains(&(idx, name.clone())) {
                 continue;
             }
+            let direct = !*member;
             if let Some((tf, tname)) = bindings.get(&(idx, name.clone())) {
                 let has_def = defs.get(*tf).map(|d| d.iter().any(|(n, _)| n == tname)).unwrap_or(false);
                 if has_def {
                     incoming
                         .entry((*tf, tname.clone()))
                         .or_default()
-                        .push((idx, *line, true));
+                        .push((idx, *line, true, direct));
                 } else if let Some(targets) = name_defs.get(tname) {
-                    // 绑定目标只做 re-export（fork/config 文件）：退化为全局同名，但标 ambiguous
                     for (df, _dl) in targets.iter().take(4) {
                         incoming
                             .entry((*df, tname.clone()))
                             .or_default()
-                            .push((idx, *line, false));
+                            .push((idx, *line, false, direct));
                     }
                 }
             } else if let Some(targets) = name_defs.get(name) {
@@ -271,7 +271,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
                     incoming
                         .entry((*tf, name.clone()))
                         .or_default()
-                        .push((idx, *line, false));
+                        .push((idx, *line, false, direct));
                 }
             }
         }
@@ -336,8 +336,8 @@ fn entry_index(pre: &Pre, entries: &[Value]) -> BTreeMap<(usize, u32), Value> {
     out
 }
 
-fn confidence_of(pre: &Pre, caller: usize, callee: usize, bound: bool) -> &'static str {
-    if bound || caller == callee {
+fn confidence_of(pre: &Pre, caller: usize, callee: usize, bound: bool, direct: bool) -> &'static str {
+    if bound || caller == callee || direct {
         "certain"
     } else if pre
         .imports
@@ -436,7 +436,7 @@ fn reverse_reach(
         let Some(callers) = pre.incoming.get(&(cf, cn.clone())) else {
             continue;
         };
-        let mut next: Vec<(usize, u32, bool)> = callers.clone();
+        let mut next: Vec<(usize, u32, bool, bool)> = callers.clone();
         next.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
         next.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
         if next.len() > MAX_FANOUT {
@@ -448,7 +448,7 @@ fn reverse_reach(
                 "confidence": "low",
             }));
         }
-        for (sf, sl, bound) in next {
+        for (sf, sl, bound, direct) in next {
             let Some(caller_def) = enclosing_line(&pre.def_lines[sf], sl) else {
                 continue;
             };
@@ -457,7 +457,7 @@ fn reverse_reach(
                 .find(|(_, l)| *l == caller_def)
                 .map(|(n, _)| n.clone())
                 .unwrap_or_default();
-            let conf = confidence_of(pre, sf, cf, bound);
+            let conf = confidence_of(pre, sf, cf, bound, direct);
             let mut p = path.clone();
             p.push((sf, caller_def, caller_name.clone(), conf));
             queue.push_back(((sf, caller_def, caller_name), p));
@@ -580,10 +580,10 @@ pub(crate) fn candidates(
                 let name = n.get("name").and_then(|x| x.as_str()).unwrap_or("");
                 let file = n.get("file").and_then(|x| x.as_str()).unwrap_or("");
                 let line = n.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
-                const STEMS: [&str; 16] = [
+                const STEMS: [&str; 19] = [
                     "decode", "action", "request", "handler", "route", "render", "create",
                     "fetch", "stream", "dispatch", "endpoint", "invoke", "parse",
-                    "deserialize", "read", "exec",
+                    "deserialize", "read", "exec", "from", "unmarshal", "load",
                 ];
                 let lower = name.to_ascii_lowercase();
                 if name.is_empty() || file.is_empty() || !STEMS.iter().any(|s| lower.contains(s)) {
@@ -650,6 +650,13 @@ pub(crate) fn candidates(
     stats.insert("entries_python".to_string(), python_count);
 
     let t2 = Instant::now();
+    // 入边集合：用于过滤"无人 import 的死代码文件"的兜底候选
+    let mut inbound: BTreeSet<usize> = BTreeSet::new();
+    for targets in pre.imports.values() {
+        for t in targets.iter() {
+            inbound.insert(*t);
+        }
+    }
     let mut budget = WorkBudget { visits: 0 };
     let mut chains: Vec<Value> = Vec::new();
     let mut reached = 0usize;
@@ -740,6 +747,24 @@ pub(crate) fn candidates(
                     push_guards(c, sl.saturating_sub(2), sl + 2, p, &mut guards);
                 }
             }
+            // 断点降噪：只保留贴着链上步骤的断点，其余只作为 uncertainty 理由
+            let step_pos: Vec<(String, u64)> = steps
+                .iter()
+                .map(|st| {
+                    (
+                        st.get("file").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        st.get("line").and_then(|v| v.as_u64()).unwrap_or(0),
+                    )
+                })
+                .collect();
+            breakpoints.retain(|b| {
+                let at = b.get("at").and_then(|v| v.as_str()).unwrap_or("");
+                let Some((f, l)) = at.rsplit_once(':') else { return false };
+                let Ok(line) = l.parse::<u64>() else { return false };
+                step_pos.iter().any(|(sf, sl)| {
+                    sf.ends_with(f.rsplit('/').next().unwrap_or(f)) && (*sl as i64 - line as i64).abs() <= 2
+                })
+            });
             let mut reasons: Vec<String> = Vec::new();
             for b in breakpoints.iter() {
                 if let Some(k) = b.get("kind").and_then(|v| v.as_str()) {
@@ -791,6 +816,14 @@ pub(crate) fn candidates(
                 "steps_total": steps_total,
             }));
         } else {
+            // 死代码过滤：无人 import 且无路由/框架入口指向的文件，不产出兜底档
+            if !inbound.contains(&fi)
+                && !all_entries.iter().any(|e| {
+                    e.get("file").and_then(|v| v.as_str()) == files.get(fi).map(|(p, _)| p.as_str())
+                })
+            {
+                continue;
+            }
             // 汇级兜底档
             let cand_entries: Vec<Value> = all_entries
                 .iter()
@@ -840,6 +873,10 @@ pub(crate) fn candidates(
     stats.insert("t_extract_ms".to_string(), t_extract as usize);
     stats.insert("t_sinks_ms".to_string(), t_sinks as usize);
     stats.insert("t_bfs_ms".to_string(), t2.elapsed().as_millis() as usize);
+    stats.insert(
+        "chains_linked".to_string(),
+        chains.iter().filter(|c| !c["entry"].is_null()).count(),
+    );
     stats.insert("chains_raw".to_string(), chains.len());
     stats.insert("sinks_reached".to_string(), reached);
 
