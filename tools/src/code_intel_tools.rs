@@ -3451,6 +3451,127 @@ pub fn chain_candidates_report(
     }))
 }
 
+/// 修复闸门增量：对比"漏洞版 vs 修复版"链上守卫，找出修复新增/删除的闸门。
+/// 解决"修复在函数内部硬化"（两版都有同名守卫、但新增保护行）无法用存在性区分的问题。
+pub fn chain_guard_delta_report(project: &Path, fixed: &Path) -> Result<Value, String> {
+    // 用"从这一对 diff 学到的词汇"分别扫描两侧，保证修复引入的汇形态被纳入
+    let learned = chain_vocab::learn_vocab(project, fixed).ok();
+    fn guard_set(root: &Path, vocab: Option<&Value>) -> Result<(Value, std::collections::BTreeSet<String>), String> {
+        let loaded = index::load_files(root);
+        let id = index::build_id(&loaded.files);
+        let auth = chain::auth_map(root, &loaded.files, &id);
+        let entries = chain::collect_entries(&loaded.files, &id);
+        let (chains, stats) = chain_scan::candidates(
+            &loaded.files,
+            &entries,
+            &auth,
+            None,
+            None,
+            vocab,
+            true,
+            0,
+        );
+        let mut set = std::collections::BTreeSet::new();
+        for c in chains.iter() {
+            if let Some(guards) = c.get("guards").and_then(|v| v.as_array()) {
+                for g in guards {
+                    let kind = g.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    let ev = g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    if !ev.is_empty() {
+                        set.insert(format!("{kind}|{ev}"));
+                    }
+                }
+            }
+        }
+        let report = json!({
+            "files_indexed": loaded.files.len(),
+            "chains_raw": chains.len(),
+            "chains_shown": chains.iter().filter(|c| c["tier"] == "shown").count(),
+            "stats": stats,
+        });
+        Ok((report, set))
+    }
+    let (vuln_report, vuln_guards) = guard_set(project, learned.as_ref())?;
+    let (fixed_report, fixed_guards) = guard_set(fixed, learned.as_ref())?;
+
+    // 另一种修复形态：删除硬编码密钥/危险默认值，改为安全生成（如 Shiro rememberMe）
+    let vuln_files = index::load_files(project);
+    let fixed_files = index::load_files(fixed);
+    let fixed_map: std::collections::BTreeMap<&str, &str> = fixed_files
+        .files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let risk_tokens = [
+        "CipherKey", "cipherKey", "DEFAULT_", "Secret", "secret", "hardcoded",
+        "password =", "privateKey", "aesKey",
+    ];
+    let hardening_tokens = [
+        "generateNewKey", "SecureRandom", "randomUUID", "KeyGenerator", "secureRandom",
+        "addPermission", "allowTypeHierarchy", "NoTypePermission", "denyTypes", "allowTypes",
+    ];
+    let mut removed_risky: Vec<Value> = Vec::new();
+    let mut added_hardening: Vec<Value> = Vec::new();
+    for (path, vcontent) in vuln_files.files.iter() {
+        let Some(fcontent) = fixed_map.get(path.as_str()) else { continue };
+        if vcontent == *fcontent {
+            continue;
+        }
+        // removed = 反向 added
+        for (line, text) in chain_vocab::added_lines(fcontent, vcontent) {
+            if risk_tokens.iter().any(|t| text.contains(t)) {
+                removed_risky.push(json!({"file": path, "line": line, "evidence": text.trim().chars().take(120).collect::<String>()}));
+            }
+        }
+        for (line, text) in chain_vocab::added_lines(vcontent, fcontent) {
+            if hardening_tokens.iter().any(|t| text.contains(t)) {
+                added_hardening.push(json!({"file": path, "line": line, "evidence": text.trim().chars().take(120).collect::<String>()}));
+            }
+        }
+    }
+    removed_risky.truncate(20);
+    added_hardening.truncate(20);
+    let new_guards: Vec<Value> = fixed_guards
+        .difference(&vuln_guards)
+        .map(|g| {
+            let mut parts = g.splitn(2, '|');
+            json!({
+                "kind": parts.next().unwrap_or(""),
+                "evidence": parts.next().unwrap_or(""),
+                "source": "fixed_only",
+            })
+        })
+        .collect();
+    let removed_guards: Vec<Value> = vuln_guards
+        .difference(&fixed_guards)
+        .map(|g| {
+            let mut parts = g.splitn(2, '|');
+            json!({
+                "kind": parts.next().unwrap_or(""),
+                "evidence": parts.next().unwrap_or(""),
+                "source": "vuln_only",
+            })
+        })
+        .collect();
+    Ok(json!({
+        "schema": "chain-guard-delta/v1",
+        "vuln": vuln_report,
+        "fixed": fixed_report,
+        "learned_stats": learned.as_ref().and_then(|v| v.get("stats")).cloned().unwrap_or(Value::Null),
+        "new_guards": new_guards,
+        "removed_guards": removed_guards,
+        "removed_risky": removed_risky,
+        "added_hardening": added_hardening,
+        "summary": {
+            "new_guard_count": new_guards.len(),
+            "removed_guard_count": removed_guards.len(),
+            "removed_risky_count": removed_risky.len(),
+            "added_hardening_count": added_hardening.len(),
+            "fix_gate_detected": !new_guards.is_empty() || !removed_risky.is_empty() || !added_hardening.is_empty(),
+        }
+    }))
+}
+
 /// 单条链档（按 chain_id）。
 pub fn chain_dossier_report(project: &Path, chain_id: &str) -> Result<Value, String> {
     let loaded = index::load_files(project);

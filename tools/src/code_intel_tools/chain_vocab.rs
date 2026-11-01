@@ -14,7 +14,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 修复补丁里"守卫形态"的词汇（用于从 diff 反推被保护的汇）。
-pub(crate) const GUARD_TOKENS: [&str; 28] = [
+pub(crate) const GUARD_TOKENS: [&str; 32] = [
     "hasOwnProperty",
     "Object.hasOwn",
     "allowlist",
@@ -44,6 +44,10 @@ pub(crate) const GUARD_TOKENS: [&str; 28] = [
     "TypeFilter",
     "isAllow",
     "setAutoTypeSupport",
+    "addPermission",
+    "allowTypeHierarchy",
+    "NoTypePermission",
+    "denyTypes",
 ];
 
 /// 从修复 diff 的**新增行**里提炼汇模式。
@@ -117,7 +121,7 @@ fn sink_pattern_in(line: &str) -> Option<(String, &'static str)> {
 ///
 /// 大文件（行数乘积过大）退化为"不在 before 行集合里"的近似——慢一点也没有关系，
 /// 因为只对**内容变化过的文件**调用。
-fn added_lines(before: &str, after: &str) -> Vec<(u32, String)> {
+pub(crate) fn added_lines(before: &str, after: &str) -> Vec<(u32, String)> {
     let a: Vec<&str> = before.lines().collect();
     let b: Vec<&str> = after.lines().collect();
     if a.len().saturating_mul(b.len()) > 6_000_000 {

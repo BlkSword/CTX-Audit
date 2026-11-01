@@ -31,7 +31,8 @@ pub use ast_tools::register_ast_tools;
 pub use bridge::{legacy_tools_enabled, register_all_tools, register_built_in_tools};
 pub use code_intel_tools::{
     audit_bundle, audit_write, audit_write_from_bundle, chain_assert_step_report,
-    chain_candidates_report, chain_dossier_markdown, chain_dossier_report, coverage_summary_report,
+    chain_candidates_report, chain_dossier_markdown, chain_dossier_report, chain_guard_delta_report,
+    coverage_summary_report,
     learn_vocab,
     coverage_triage_report,
     explain_route_report, is_code_intel_tool, project_route_report,

@@ -349,6 +349,10 @@ enum Commands {
         #[arg(long)]
         no_builtin_vocab: bool,
 
+        /// 与修复版目录对比，输出修复新增的闸门（guard delta）
+        #[arg(long)]
+        compare: Option<String>,
+
         /// 条数上限（0=全部）
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -782,6 +786,7 @@ async fn main() -> Result<()> {
             vocab,
             out,
             no_builtin_vocab,
+            compare,
             limit,
             output,
         } => {
@@ -797,6 +802,7 @@ async fn main() -> Result<()> {
                 vocab,
                 out,
                 no_builtin_vocab,
+                compare,
                 limit,
                 output,
             )

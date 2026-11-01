@@ -19,12 +19,22 @@ pub async fn execute(
     vocab: Option<String>,
     out: Option<String>,
     no_builtin_vocab: bool,
+    compare: Option<String>,
     limit: usize,
     output: String,
 ) -> Result<()> {
     let root = PathBuf::from(&path);
     if !root.exists() {
         return Err(miette!("路径不存在: {}", path));
+    }
+
+    // `chain --compare <fixed>`：输出修复新增闸门
+    if let Some(fixed) = compare {
+        let fixed_root = PathBuf::from(&fixed);
+        let data = ctx_audit_tools::chain_guard_delta_report(&root, &fixed_root)
+            .map_err(|e| miette!("{}", e))?;
+        println!("{}", serde_json::to_string_pretty(&data).into_diagnostic()?);
+        return Ok(());
     }
 
     // `chain learn`：从 漏洞版→修复版 的 diff 派生词表

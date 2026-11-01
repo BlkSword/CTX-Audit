@@ -373,6 +373,21 @@ pub(crate) fn scan_sinks_with(
                 if include_builtin && !is_compare {
                     for (kind, pats) in PATTERNS.iter() {
                         if pats.iter().any(|p| raw.contains(p)) {
+                            // module_access 只收动态键：`moduleExports['*']` 常量键、
+                            // `name = metadata[NAME]` 纯赋值都不是动态取值
+                            if *kind == "module_access" {
+                                let is_const = raw.contains("moduleExports['")
+                                    || raw.contains("moduleExports[\"")
+                                    || raw.contains("clientManifest['")
+                                    || raw.contains("serverManifest['");
+                                let assign_before = raw
+                                    .find("moduleExports[")
+                                    .map(|pos| raw[..pos].contains('=') && !raw[..pos].contains("=="))
+                                    .unwrap_or(false);
+                                if is_const || assign_before {
+                                    continue;
+                                }
+                            }
                             local.push(json!({
                                 "kind": kind,
                                 "file": path,
