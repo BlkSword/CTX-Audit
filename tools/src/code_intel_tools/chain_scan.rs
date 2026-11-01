@@ -18,7 +18,7 @@ use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
 
-const MAX_DEPTH: usize = 12;
+const MAX_DEPTH: usize = 16;
 const MAX_FANOUT: usize = 8;
 const MAX_VISIT_PER_SINK: usize = 160;
 const MAX_TOTAL_VISITS: usize = 400_000;
@@ -259,7 +259,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
                         .or_default()
                         .push((idx, *line, true, direct, *install, *ctor));
                 } else if let Some(targets) = name_defs.get(tname) {
-                    for (df, _dl) in targets.iter().take(4) {
+                    for (df, _dl) in targets.iter().take(12) {
                         incoming
                             .entry((*df, tname.clone()))
                             .or_default()
@@ -267,7 +267,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
                     }
                 }
             } else if let Some(targets) = name_defs.get(name) {
-                for (tf, _dl) in targets.iter().take(4) {
+                for (tf, _dl) in targets.iter().take(12) {
                     incoming
                         .entry((*tf, name.clone()))
                         .or_default()
@@ -667,7 +667,7 @@ fn injection_kind(kind: &str) -> bool {
 fn sensitive(kind: &str) -> bool {
     matches!(
         kind,
-        "exec" | "eval" | "deserialize" | "reflect" | "module_access" | "template" | "sql" | "file_write" | "jndi"
+        "exec" | "eval" | "deserialize" | "reflect" | "module_access" | "template" | "sql" | "file_write" | "jndi" | "ssrf"
     )
 }
 

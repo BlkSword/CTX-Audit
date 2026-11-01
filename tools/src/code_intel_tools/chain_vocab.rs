@@ -14,7 +14,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 修复补丁里"守卫形态"的词汇（用于从 diff 反推被保护的汇）。
-pub(crate) const GUARD_TOKENS: [&str; 32] = [
+pub(crate) const GUARD_TOKENS: [&str; 36] = [
     "hasOwnProperty",
     "Object.hasOwn",
     "allowlist",
@@ -48,6 +48,10 @@ pub(crate) const GUARD_TOKENS: [&str; 32] = [
     "allowTypeHierarchy",
     "NoTypePermission",
     "denyTypes",
+    "isJndiLookupAllowed",
+    "noFormatMsgLookup",
+    "jndiEnabled",
+    "JndiManager",
 ];
 
 /// 从修复 diff 的**新增行**里提炼汇模式。

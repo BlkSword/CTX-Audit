@@ -3510,6 +3510,7 @@ pub fn chain_guard_delta_report(project: &Path, fixed: &Path) -> Result<Value, S
         "generateNewKey", "SecureRandom", "randomUUID", "KeyGenerator", "secureRandom",
         "addPermission", "allowTypeHierarchy", "NoTypePermission", "denyTypes", "allowTypes",
         "autoTypeSupport", "checkAutoType", "expectClassFlag", "addDeny", "addAccept",
+        "isJndiLookupAllowed", "noFormatMsgLookup", "jndiEnabled", "JndiManager",
     ];
     let mut removed_risky: Vec<Value> = Vec::new();
     let mut added_hardening: Vec<Value> = Vec::new();
