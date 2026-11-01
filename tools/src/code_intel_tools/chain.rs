@@ -496,6 +496,42 @@ pub(crate) fn auth_map(root: &Path, files: &[(String, String)], id: &str) -> BTr
     out
 }
 
+/// 按行区间扫描守卫（入口装饰器行 → handler 定义行），避免扫到相邻函数的装饰器。
+pub(crate) fn guards_range(content: &str, start: u32, end: u32, file: &str) -> Vec<Value> {
+    const GUARDS: [(&str, &[&str]); 6] = [
+        ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth", "login_required", "jwt_required", "permission_required", "requires_auth", "get_current_user", "@requires_login"]),
+        ("permission_check", &["@CheckPassword", "@StoragePermissionCheck", "checkRole(", "hasRole(", "hasPermission(", "isAdmin"]),
+        ("allowlist", &["allowlist", "whitelist", "ALLOWED_", "startsWith(", "matchesPattern", "Pattern.compile", "hasOwnProperty"]),
+        ("sanitize", &["sanitize", "escapeHtml", "escape(", "encodeURI", "HtmlUtils", "StringEscapeUtils"]),
+        ("signature", &["validSignature", "hmac", "HmacSHA", "constantTimeEqual"]),
+        ("bounds", &["maxLength", "Preconditions", "assertNotNull"]),
+    ];
+    let lines: Vec<&str> = content.lines().collect();
+    let lo = start.saturating_sub(2) as usize;
+    let hi = (end as usize + 2).min(lines.len());
+    let mut out = Vec::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for i in lo..hi {
+        let Some(raw) = lines.get(i) else { continue };
+        if !is_code_line(raw) {
+            continue;
+        }
+        for (kind, pats) in GUARDS.iter() {
+            if pats.iter().any(|p| raw.contains(p)) && !seen.contains(kind) {
+                seen.insert(kind);
+                out.push(json!({
+                    "kind": kind,
+                    "file": file,
+                    "line": (i + 1) as u32,
+                    "verdict": "partial",
+                    "evidence": raw.trim().chars().take(120).collect::<String>(),
+                }));
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn guards_in(content: &str, center: u32, file: &str) -> Vec<Value> {
     const GUARDS: [(&str, &[&str]); 6] = [
         ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth", "login_required", "jwt_required", "permission_required", "requires_auth", "get_current_user", "@requires_login"]),

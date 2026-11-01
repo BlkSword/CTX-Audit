@@ -77,7 +77,11 @@ fn parse_js_imports(content: &str) -> Vec<(String, String, String)> {
         let start = cursor + rel;
         let rest = &content[start..];
         // 只在合理窗口内找 ` from '...'`，避免跨语句误配
-        let window = &rest[..rest.len().min(1200)];
+        let mut win_end = rest.len().min(1200);
+        while win_end > 0 && !rest.is_char_boundary(win_end) {
+            win_end -= 1;
+        }
+        let window = &rest[..win_end];
         let Some(fp) = window.find(" from ") else {
             cursor = start + 7;
             continue;
@@ -467,6 +471,35 @@ fn files_path(pre: &Pre, idx: usize) -> String {
     pre.paths.get(idx).cloned().unwrap_or_default()
 }
 
+/// 数据可控性（启发式）：sink 表达式/所在函数签名/前几步是否出现"请求侧"标识符。
+/// 只判断"看起来来自请求"，不判断能否注入；basis 显式标注为 name_heuristic。
+fn request_sourced(sink_expr: &str, sink_def_sig: &str, steps: &[Value]) -> bool {
+    const TOKENS: [&str; 16] = [
+        "request", "req.", "body", "params", "query", "input", "cmd", "target", "filename",
+        "url", "data", "payload", "args", "form", "path", "user",
+    ];
+    let mut text = String::new();
+    text.push_str(sink_expr);
+    text.push(' ');
+    text.push_str(sink_def_sig);
+    for st in steps.iter().rev().take(3) {
+        if let Some(sym) = st.get("symbol").and_then(|v| v.as_str()) {
+            text.push(' ');
+            text.push_str(sym);
+        }
+        if let Some(e) = st.get("expr").and_then(|v| v.as_str()) {
+            text.push(' ');
+            text.push_str(e);
+        }
+    }
+    let lower = text.to_ascii_lowercase();
+    TOKENS.iter().any(|t| lower.contains(t))
+}
+
+fn injection_kind(kind: &str) -> bool {
+    matches!(kind, "exec" | "eval" | "sql" | "template" | "ssrf" | "file_write")
+}
+
 fn sensitive(kind: &str) -> bool {
     matches!(
         kind,
@@ -504,7 +537,11 @@ fn chain_score(c: &Value) -> i32 {
 fn is_shown(c: &Value) -> bool {
     let kind = c["sink"]["kind"].as_str().unwrap_or("");
     let steps = c["steps"].as_array().map(|a| a.len()).unwrap_or(0);
-    !c["entry"].is_null() && sensitive(kind) && steps <= 12
+    let controllable = c["controllability"].as_str() == Some("request_sourced");
+    !c["entry"].is_null()
+        && sensitive(kind)
+        && steps <= 12
+        && (!injection_kind(kind) || controllable)
 }
 
 /// 生成候选链 v2。
@@ -662,10 +699,15 @@ pub(crate) fn candidates(
             let mut guards: Vec<Value> = Vec::new();
             let (f0, l0) = (rev[0].0, rev[0].1);
             if let Some((p, c)) = files.get(f0) {
-                guards.extend(guards_in(c, l0, p));
+                let handler_line = entry_info
+                    .get("handler_line")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .unwrap_or(l0);
+                guards.extend(super::chain::guards_range(c, l0, handler_line, p));
             }
             if let Some((p, c)) = files.get(fi) {
-                guards.extend(guards_in(c, line, p));
+                guards.extend(super::chain::guards_range(c, sink_def_line, line, p));
             }
             let mut reasons: Vec<String> = Vec::new();
             for b in breakpoints.iter() {
@@ -680,6 +722,12 @@ pub(crate) fn candidates(
                 reasons.push("unmodelled_framework".to_string());
             }
             let steps_total = steps.len();
+            let sink_expr = sink.get("expr").and_then(|v| v.as_str()).unwrap_or("");
+            let sink_sig = files
+                .get(fi)
+                .and_then(|(_, c)| c.lines().nth(sink_def_line.saturating_sub(1) as usize))
+                .unwrap_or("");
+            let controllable = request_sourced(sink_expr, sink_sig, &steps);
             let cid = fnv_chain_id(file, line, &steps);
             chains.push(json!({
                 "schema": DOSSIER_SCHEMA,
@@ -694,6 +742,8 @@ pub(crate) fn candidates(
                 "steps": steps,
                 "guards": guards,
                 "breakpoints": breakpoints,
+                "controllability": if controllable { "request_sourced" } else { "unknown" },
+                "controllability_basis": "name_heuristic",
                 "uncertainty": {"level": if reasons.is_empty() { "low" } else { "medium" }, "reasons": reasons},
                 "verdict_candidates": ["reachable_unauthenticated", "reachable_authenticated", "unreachable"],
                 "falsify": [format!("ctx-audit chain <ROOT> --id {cid}")],

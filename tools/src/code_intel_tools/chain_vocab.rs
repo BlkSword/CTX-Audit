@@ -321,6 +321,23 @@ pub(crate) fn python_entries(files: &[(String, String)]) -> Vec<Value> {
                         break;
                     }
                 }
+                // Flask 的 methods=["POST"] / FastAPI 的 methods 关键字
+                if method == "ANY" {
+                    if let Some(mpos) = lower.find("methods=") {
+                        let after = &lower[mpos..];
+                        let mut picked = "ANY";
+                        for (tok, label) in [
+                            ("post", "POST"), ("put", "PUT"), ("delete", "DELETE"),
+                            ("patch", "PATCH"), ("get", "GET"),
+                        ] {
+                            if after.contains(tok) {
+                                picked = label;
+                                break;
+                            }
+                        }
+                        method = picked;
+                    }
+                }
                 if method == "ANY" && !lower.contains(".route(") && !lower.contains("add_url_rule") {
                     continue;
                 }
