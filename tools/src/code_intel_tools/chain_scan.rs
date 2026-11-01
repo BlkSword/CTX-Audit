@@ -373,8 +373,12 @@ fn reverse_reach(
         .map(|(n, _)| n.clone())
         .unwrap_or_default();
 
-    // 汇所在函数即入口
+    // 汇所在函数即入口（但不能是"汇自身所在函数"被词表误列为入口）
     if let Some(info) = entries.get(&(sink_file, start_def)).cloned() {
+        let route = info.get("route").and_then(|v| v.as_str()).unwrap_or("");
+        if route == start_name {
+            return (Vec::new(), Vec::new(), Value::Null);
+        }
         return (
             vec![
                 (sink_file, start_def, start_name.clone(), "certain"),
@@ -473,27 +477,33 @@ fn files_path(pre: &Pre, idx: usize) -> String {
 
 /// 数据可控性（启发式）：sink 表达式/所在函数签名/前几步是否出现"请求侧"标识符。
 /// 只判断"看起来来自请求"，不判断能否注入；basis 显式标注为 name_heuristic。
-fn request_sourced(sink_expr: &str, sink_def_sig: &str, steps: &[Value]) -> bool {
-    const TOKENS: [&str; 16] = [
-        "request", "req.", "body", "params", "query", "input", "cmd", "target", "filename",
-        "url", "data", "payload", "args", "form", "path", "user",
+fn request_sourced(sink_expr: &str, sink_def_sig: &str, context: &str, steps: &[Value]) -> bool {
+    // 证据优先级：函数签名（参数/注解）> 表达式里的高信号请求对象。
+    // 只看签名可避免把"远程响应 body"误判成请求输入（zfile 的 /115、/sharepoint 即此误报）。
+    let sig = sink_def_sig.to_ascii_lowercase();
+    const STRONG_SIG: [&str; 14] = [
+        "request", "req.", "getparameter", "httpservletrequest", "requestbody",
+        "requestparam", "multipartfile", "form", "query", "args", "cmd", "target",
+        "filename", "payload",
     ];
-    let mut text = String::new();
-    text.push_str(sink_expr);
-    text.push(' ');
-    text.push_str(sink_def_sig);
-    for st in steps.iter().rev().take(3) {
-        if let Some(sym) = st.get("symbol").and_then(|v| v.as_str()) {
-            text.push(' ');
-            text.push_str(sym);
-        }
-        if let Some(e) = st.get("expr").and_then(|v| v.as_str()) {
-            text.push(' ');
-            text.push_str(e);
-        }
+    if STRONG_SIG.iter().any(|t| sig.contains(t)) {
+        return true;
     }
-    let lower = text.to_ascii_lowercase();
-    TOKENS.iter().any(|t| lower.contains(t))
+    const WEAK_SIG: [&str; 6] = ["body", "input", "data", "path", "url", "params"];
+    if WEAK_SIG.iter().any(|t| sig.contains(t)) {
+        return true;
+    }
+    // Python 等无显式签名注解：sink 表达式或上方几行出现 request/req. 才认
+    let ctx = context.to_ascii_lowercase();
+    if ctx.contains("request") || ctx.contains("req.") {
+        return true;
+    }
+    let expr = sink_expr.to_ascii_lowercase();
+    if expr.contains("request") || expr.contains("req.") {
+        return true;
+    }
+    let _ = steps;
+    false
 }
 
 fn injection_kind(kind: &str) -> bool {
@@ -569,9 +579,10 @@ pub(crate) fn candidates(
                 let name = n.get("name").and_then(|x| x.as_str()).unwrap_or("");
                 let file = n.get("file").and_then(|x| x.as_str()).unwrap_or("");
                 let line = n.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
-                const STEMS: [&str; 12] = [
+                const STEMS: [&str; 16] = [
                     "decode", "action", "request", "handler", "route", "render", "create",
-                    "fetch", "stream", "dispatch", "endpoint", "invoke",
+                    "fetch", "stream", "dispatch", "endpoint", "invoke", "parse",
+                    "deserialize", "read", "exec",
                 ];
                 let lower = name.to_ascii_lowercase();
                 if name.is_empty() || file.is_empty() || !STEMS.iter().any(|s| lower.contains(s)) {
@@ -727,7 +738,17 @@ pub(crate) fn candidates(
                 .get(fi)
                 .and_then(|(_, c)| c.lines().nth(sink_def_line.saturating_sub(1) as usize))
                 .unwrap_or("");
-            let controllable = request_sourced(sink_expr, sink_sig, &steps);
+            let ctx: String = files
+                .get(fi)
+                .map(|(_, c)| {
+                    c.lines()
+                        .skip(line.saturating_sub(6) as usize)
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            let controllable = request_sourced(sink_expr, sink_sig, &ctx, &steps);
             let cid = fnv_chain_id(file, line, &steps);
             chains.push(json!({
                 "schema": DOSSIER_SCHEMA,

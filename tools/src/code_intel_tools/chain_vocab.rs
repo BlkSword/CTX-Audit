@@ -14,7 +14,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 修复补丁里"守卫形态"的词汇（用于从 diff 反推被保护的汇）。
-pub(crate) const GUARD_TOKENS: [&str; 18] = [
+pub(crate) const GUARD_TOKENS: [&str; 28] = [
     "hasOwnProperty",
     "Object.hasOwn",
     "allowlist",
@@ -33,6 +33,17 @@ pub(crate) const GUARD_TOKENS: [&str; 18] = [
     "validate",
     "encodeURI",
     "instanceof",
+    // Java 反序列化/类型加载类守卫（fastjson/jackson/Shiro/XStream 修复常见形态）
+    "checkAutoType",
+    "autoTypeSupport",
+    "addDeny",
+    "addAccept",
+    "acceptList",
+    "denyList",
+    "ObjectInputFilter",
+    "TypeFilter",
+    "isAllow",
+    "setAutoTypeSupport",
 ];
 
 /// 从修复 diff 的**新增行**里提炼汇模式。
@@ -51,7 +62,7 @@ fn kind_for_expr(expr: &str) -> &'static str {
         || e.contains("decodereply")
     {
         "deserialize"
-    } else if e.contains("forname") || e.contains("getdeclaredmethod") || e.contains("newinstance") {
+    } else if e.contains("forname") || e.contains("getdeclaredmethod") || e.contains("newinstance") || e.contains("loadclass") {
         "reflect"
     } else if e.contains("writefile") || e.contains("files.write") || e.contains("fileoutputstream") {
         "file_write"
@@ -93,6 +104,7 @@ fn sink_pattern_in(line: &str) -> Option<(String, &'static str)> {
     for name in [
         "execSync(", "execFile(", "spawnSync(", "child_process.exec", "Runtime.getRuntime",
         "eval(", "new Function(", "JSON.parse(", "readValue(", "parseObject(", "ObjectInputStream",
+        "Class.forName(", "loadClass(", "newInstance(", "getDeclaredMethod(", "readObject(",
     ] {
         if line.contains(name) {
             return Some((name.to_string(), kind_for_expr(name)));
