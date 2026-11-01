@@ -369,7 +369,7 @@ pub(crate) fn scan_sinks_with(
         .flat_map(|(path, content)| {
             let mut local: Vec<Value> = Vec::new();
             let lang = chain_language_of(path);
-            if !matches!(lang, "js" | "ts" | "java" | "py") {
+            if !matches!(lang, "js" | "ts" | "java" | "py" | "go") {
                 return local;
             }
             for (idx, raw) in content.lines().enumerate() {
@@ -524,13 +524,16 @@ pub(crate) fn auth_map(root: &Path, files: &[(String, String)], id: &str) -> BTr
 
 /// 按行区间扫描守卫（入口装饰器行 → handler 定义行），避免扫到相邻函数的装饰器。
 pub(crate) fn guards_range(content: &str, start: u32, end: u32, file: &str) -> Vec<Value> {
-    const GUARDS: [(&str, &[&str]); 6] = [
+    const GUARDS: [(&str, &[&str]); 9] = [
         ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth", "login_required", "jwt_required", "permission_required", "requires_auth", "get_current_user", "@requires_login", "Depends(get_current_user", "Depends(current_user", "current_user.is_authenticated"]),
         ("permission_check", &["@CheckPassword", "@StoragePermissionCheck", "checkRole(", "hasRole(", "hasPermission(", "isAdmin"]),
         ("allowlist", &["allowlist", "whitelist", "ALLOWED_", "startsWith(", "matchesPattern", "Pattern.compile", "hasOwnProperty", "checkAutoType", "ObjectInputFilter", "allowTypes", "denyList", "acceptList", "autoTypeSupport"]),
         ("sanitize", &["sanitize", "escapeHtml", "escape(", "encodeURI", "HtmlUtils", "StringEscapeUtils"]),
         ("signature", &["validSignature", "hmac", "HmacSHA", "constantTimeEqual"]),
         ("bounds", &["maxLength", "Preconditions", "assertNotNull"]),
+        ("path_check", &["filepath.Clean", "path.Clean", ".normalize(", "getCanonicalPath", "secureJoin"]),
+        ("ssrf_check", &["isAllowedHost", "hostAllowlist", "ALLOWED_HOSTS", "validateUrl", "isInternalAddress", "InetAddress", "getByName("]),
+        ("template_escape", &["autoescape", "escapeHtml", "html.EscapeString"]),
     ];
     let lines: Vec<&str> = content.lines().collect();
     let lo = start.saturating_sub(2) as usize;
@@ -559,13 +562,16 @@ pub(crate) fn guards_range(content: &str, start: u32, end: u32, file: &str) -> V
 }
 
 pub(crate) fn guards_in(content: &str, center: u32, file: &str) -> Vec<Value> {
-    const GUARDS: [(&str, &[&str]); 6] = [
+    const GUARDS: [(&str, &[&str]); 9] = [
         ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth", "login_required", "jwt_required", "permission_required", "requires_auth", "get_current_user", "@requires_login", "Depends(get_current_user", "Depends(current_user", "current_user.is_authenticated"]),
         ("permission_check", &["@CheckPassword", "@StoragePermissionCheck", "checkRole(", "hasRole(", "hasPermission(", "isAdmin"]),
         ("allowlist", &["allowlist", "whitelist", "ALLOWED_", "startsWith(", "matchesPattern", "Pattern.compile", "hasOwnProperty", "checkAutoType", "ObjectInputFilter", "allowTypes", "denyList", "acceptList", "autoTypeSupport"]),
         ("sanitize", &["sanitize", "escapeHtml", "escape(", "encodeURI", "HtmlUtils", "StringEscapeUtils"]),
         ("signature", &["validSignature", "hmac", "HmacSHA", "constantTimeEqual"]),
         ("bounds", &["maxLength", "Preconditions", "assertNotNull"]),
+        ("path_check", &["filepath.Clean", "path.Clean", ".normalize(", "getCanonicalPath", "secureJoin"]),
+        ("ssrf_check", &["isAllowedHost", "hostAllowlist", "ALLOWED_HOSTS", "validateUrl", "isInternalAddress", "InetAddress", "getByName("]),
+        ("template_escape", &["autoescape", "escapeHtml", "html.EscapeString"]),
     ];
     let lines: Vec<&str> = content.lines().collect();
     let start = center.saturating_sub(4) as usize;

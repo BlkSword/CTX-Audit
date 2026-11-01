@@ -302,7 +302,8 @@ fn entry_index(pre: &Pre, entries: &[Value]) -> BTreeMap<(usize, u32), Value> {
         let line = e.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let Some(&fi) = pre.pos.get(file) else { continue };
         let route = e.get("route").and_then(|v| v.as_str()).unwrap_or("");
-        let dl = def_line_of(&pre.defs[fi], route, 0)
+        let lookup_name = e.get("handler").and_then(|v| v.as_str()).unwrap_or(route);
+        let dl = def_line_of(&pre.defs[fi], lookup_name, 0)
             .or_else(|| {
                 // 注解在方法上方：取映射行之后最近的函数定义
                 pre.def_lines[fi].iter().copied().find(|l| *l > line)
@@ -729,6 +730,9 @@ pub(crate) fn candidates(
     let python = chain_vocab::python_entries(files);
     let python_count = python.len();
     all_entries.extend(python);
+    let go = chain_vocab::go_entries(files);
+    let go_count = go.len();
+    all_entries.extend(go);
     if let Some(v) = vocab {
         if let Some(names) = v.get("entry_names").and_then(|x| x.as_array()) {
             for n in names.iter().take(300) {
@@ -803,6 +807,7 @@ pub(crate) fn candidates(
     stats.insert("entries".to_string(), all_entries.len());
     stats.insert("entries_nextjs".to_string(), nextjs_count);
     stats.insert("entries_python".to_string(), python_count);
+    stats.insert("entries_go".to_string(), go_count);
 
     let t2 = Instant::now();
     // 入边集合：用于过滤"无人 import 的死代码文件"的兜底候选

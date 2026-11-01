@@ -391,6 +391,75 @@ pub(crate) fn python_entries(files: &[(String, String)]) -> Vec<Value> {
     out
 }
 
+/// Go 枚举入口：Gin/Echo/chi/net-http 的注册调用（只枚举，不承诺链语义）。
+pub(crate) fn go_entries(files: &[(String, String)]) -> Vec<Value> {
+    const METHODS: [(&str, &str); 8] = [
+        (".GET(", "GET"),
+        (".POST(", "POST"),
+        (".PUT(", "PUT"),
+        (".DELETE(", "DELETE"),
+        (".PATCH(", "PATCH"),
+        (".Get(", "GET"),
+        (".Post(", "POST"),
+        (".Put(", "PUT"),
+    ];
+    let mut out = Vec::new();
+    for (path, content) in files.iter().take(max_index_files()) {
+        if !path.ends_with(".go") {
+            continue;
+        }
+        for (idx, raw) in content.lines().enumerate() {
+            let t = raw.trim();
+            if t.starts_with("//") {
+                continue;
+            }
+            let mut method = "ANY";
+            let mut matched = false;
+            for (pat, m) in METHODS.iter() {
+                if t.contains(pat) {
+                    method = *m;
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched && (t.contains("HandleFunc(") || t.contains(".Handle(")) {
+                matched = true;
+            }
+            if !matched {
+                continue;
+            }
+            let Some(q) = t.find(|c: char| c == '"' || c == '`') else { continue };
+            let quote = t.as_bytes()[q] as char;
+            let rest = &t[q + 1..];
+            let route = rest.split(quote).next().unwrap_or("");
+            if route.is_empty() || !route.starts_with('/') {
+                continue;
+            }
+            // 注册行形如 r.POST("/run", runCmd) / HandleFunc("/x", handler)
+            let tail = rest.split(quote).nth(1).unwrap_or("");
+            let handler: String = tail
+                .trim_start_matches([')', ' '])
+                .trim_start_matches(',')
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                .collect();
+            let mut obj = json!({
+                "file": path,
+                "line": (idx + 1) as u32,
+                "method": method,
+                "route": route,
+                "entry_kind": "http",
+            });
+            if !handler.is_empty() {
+                obj["handler"] = json!(handler);
+            }
+            out.push(obj);
+        }
+    }
+    out
+}
+
 /// 文件级 import 图（JS/TS 相对模块 + Java 类名），用于给调用边定置信度。
 pub(crate) fn import_graph(files: &[(String, String)]) -> BTreeMap<String, BTreeSet<String>> {
     let all: BTreeSet<String> = files.iter().map(|(p, _)| p.clone()).collect();

@@ -3503,12 +3503,13 @@ pub fn chain_guard_delta_report(project: &Path, fixed: &Path) -> Result<Value, S
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect();
     let risk_tokens = [
-        "CipherKey", "cipherKey", "DEFAULT_", "Secret", "secret", "hardcoded",
-        "password =", "privateKey", "aesKey",
+        "CipherKey", "cipherKey", "SecretKey", "privateKey", "aesKey", "hardcoded",
+        "password =", "DEFAULT_CIPHER", "DEFAULT_SECRET",
     ];
     let hardening_tokens = [
         "generateNewKey", "SecureRandom", "randomUUID", "KeyGenerator", "secureRandom",
         "addPermission", "allowTypeHierarchy", "NoTypePermission", "denyTypes", "allowTypes",
+        "autoTypeSupport", "checkAutoType", "expectClassFlag", "addDeny", "addAccept",
     ];
     let mut removed_risky: Vec<Value> = Vec::new();
     let mut added_hardening: Vec<Value> = Vec::new();
