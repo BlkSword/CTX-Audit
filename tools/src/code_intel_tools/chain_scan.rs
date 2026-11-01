@@ -259,7 +259,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
                         .or_default()
                         .push((idx, *line, true, direct, *install, *ctor));
                 } else if let Some(targets) = name_defs.get(tname) {
-                    for (df, _dl) in targets.iter().take(12) {
+                    for (df, _dl) in targets.iter().take(64) {
                         incoming
                             .entry((*df, tname.clone()))
                             .or_default()
@@ -267,7 +267,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
                     }
                 }
             } else if let Some(targets) = name_defs.get(name) {
-                for (tf, _dl) in targets.iter().take(12) {
+                for (tf, _dl) in targets.iter().take(64) {
                     incoming
                         .entry((*tf, name.clone()))
                         .or_default()
@@ -411,6 +411,7 @@ fn reverse_reach(
         dist.insert((sink_file, start_def), 0);
         heap.push(Reverse((0, 0, sink_file, start_def)));
         let mut hit: Option<((usize, u32), Value)> = None;
+        let mut weak_hit: Option<((usize, u32), Value)> = None;
 
         while let Some(Reverse((cost, hops, cf, cl))) = heap.pop() {
             budget.visits += 1;
@@ -420,9 +421,19 @@ fn reverse_reach(
             if dist.get(&(cf, cl)).map(|c| *c < cost).unwrap_or(false) {
                 continue;
             }
-            if entries.contains_key(&(cf, cl)) {
-                hit = Some(((cf, cl), entries.get(&(cf, cl)).cloned().unwrap_or(Value::Null)));
-                break;
+            if let Some(info) = entries.get(&(cf, cl)) {
+                const STRONG: [&str; 10] = [
+                    "format", "substitute", "replace", "process", "decode", "parse",
+                    "deserialize", "unmarshal", "execute", "render",
+                ];
+                let route = info.get("route").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+                if STRONG.iter().any(|t| route.contains(t)) {
+                    hit = Some(((cf, cl), info.clone()));
+                    break;
+                }
+                if weak_hit.is_none() {
+                    weak_hit = Some(((cf, cl), info.clone()));
+                }
             }
             if hops as usize > MAX_DEPTH {
                 continue;
@@ -474,6 +485,7 @@ fn reverse_reach(
             }
         }
 
+        let hit = hit.or(weak_hit);
         let Some(((ef, el), info)) = hit else { break };
         let mut rev: Vec<(usize, u32, String, &'static str)> = Vec::new();
         let mut cur = (ef, el);
@@ -771,6 +783,51 @@ pub(crate) fn candidates(
     let t0 = Instant::now();
     let pre = build_pre(files);
     let t_extract = t0.elapsed().as_millis() as u64;
+
+    // 库级入口补充：无 HTTP 路由的库代码（如 log4j2/React）按"请求/载荷入口"函数名收集，
+    // 让链能止于 format/substitute/process 这类框架入口，而不是悬空（entry=null）。
+    {
+        const LIB_STEMS: [&str; 16] = [
+            "format", "convert", "substitute", "replace", "process", "handle", "decode",
+            "parse", "deserialize", "unmarshal", "render", "execute", "lookup", "read",
+            "resolve", "consume",
+        ];
+        let mut added = 0usize;
+        for (fi, defs) in pre.defs.iter().enumerate() {
+            if added >= 2000 {
+                break;
+            }
+            let path = &pre.paths[fi];
+            // 只对 Java 库补库级入口（JS/Python/Go 的入口启发式已单独处理，避免污染）
+            let lang_ok = path.ends_with(".java");
+            if !lang_ok {
+                continue;
+            }
+            for (name, line) in defs.iter() {
+                let lower = name.to_ascii_lowercase();
+                if lower.len() < 4 || !LIB_STEMS.iter().any(|t| lower.contains(t)) {
+                    continue;
+                }
+                if all_entries.iter().any(|e| {
+                    e.get("file").and_then(|v| v.as_str()) == Some(path.as_str())
+                        && e.get("route").and_then(|v| v.as_str()) == Some(name.as_str())
+                }) {
+                    continue;
+                }
+                all_entries.push(json!({
+                    "file": path,
+                    "line": line,
+                    "method": "LIB",
+                    "route": name,
+                    "entry_kind": "library_entry",
+                }));
+                added += 1;
+                if added >= 2000 {
+                    break;
+                }
+            }
+        }
+    }
     let entry_idx = entry_index(&pre, &all_entries);
 
     let extra_sinks: Vec<(String, String)> = vocab
