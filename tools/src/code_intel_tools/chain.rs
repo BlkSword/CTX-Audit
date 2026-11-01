@@ -160,7 +160,7 @@ pub(crate) fn definitions(content: &str, lang: &str) -> Vec<(String, u32)> {
     out
 }
 
-pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool)> {
+pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool, bool, bool)> {
     let mut out = Vec::new();
     for (idx, raw) in content.lines().enumerate() {
         if !is_code_line(raw) {
@@ -186,7 +186,11 @@ pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool)> {
                     }
                     if j < n && b[j] == b'(' && !KEYWORDS.contains(&name) {
                         let member = start > 0 && b[start - 1] == b'.';
-                        out.push((name.to_string(), ln, member));
+                        let before = raw[..start].trim_end();
+                        let install = before.ends_with("this.") || before.ends_with("this._");
+                        let ctor = name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+                            || before.ends_with("new");
+                        out.push((name.to_string(), ln, member, install, ctor));
                     }
                 } else {
                     i += 1;
@@ -218,7 +222,11 @@ pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool)> {
                 }
                 if j < n && chars[j].1 == '(' && !KEYWORDS.contains(&name) {
                     let member = start_byte > 0 && raw.as_bytes()[start_byte - 1] == b'.';
-                    out.push((name.to_string(), ln, member));
+                    let before = raw[..start_byte].trim_end();
+                    let install = before.ends_with("this.") || before.ends_with("this._");
+                    let ctor = name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+                        || before.ends_with("new");
+                    out.push((name.to_string(), ln, member, install, ctor));
                 }
                 k = end_k + 1;
             } else {
@@ -440,7 +448,7 @@ pub(crate) fn scan_sinks_with(
 }
 
 /// 库级入口：框架内部"请求可达"的导出函数（框架 CVE 取证用）。
-pub(crate) const LIB_ENTRY_NAMES: [&str; 9] = [
+pub(crate) const LIB_ENTRY_NAMES: [&str; 8] = [
     "decodeReply",
     "decodeReplyFromBusboy",
     "decodeAction",
@@ -449,7 +457,6 @@ pub(crate) const LIB_ENTRY_NAMES: [&str; 9] = [
     "renderToReadableStream",
     "createFromFetch",
     "createFromReadableStream",
-    "resolveModelChunk",
 ];
 
 /// 入口清单：method 级路由（文件/行）+ 覆盖判定（来自端点表）。
@@ -665,7 +672,7 @@ pub(crate) fn candidates_legacy(
             continue;
         }
         defs.insert(path.clone(), definitions(content, lang));
-        for (name, line, member) in calls(content) {
+        for (name, line, member, _install, _ctor) in calls(content) {
             call_sites.entry(name).or_default().push((path.clone(), line, member));
         }
         contents.insert(path.clone(), content.clone());

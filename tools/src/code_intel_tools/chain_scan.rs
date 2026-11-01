@@ -27,7 +27,7 @@ const MAX_ENTRY_HITS: usize = 6;
 
 struct Extracted {
     defs: Vec<(String, u32)>,
-    calls: Vec<(String, u32, bool)>, // (name, line, member)
+    calls: Vec<(String, u32, bool, bool, bool)>, // (name, line, member, install, ctor)
 }
 
 /// 测试/构建产物目录不作为链证据来源（避免 __tests__ 噪声与 dist 干扰）。
@@ -137,7 +137,7 @@ struct Pre {
     def_lines: Vec<Vec<u32>>,
     name_defs: BTreeMap<String, Vec<(usize, u32)>>,
     // 反向调用索引：被调 (文件 idx, 定义名) → 调用点 (文件 idx, 行, 绑定边?, 直接调用?)
-    incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool, bool)>>,
+    incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool, bool, bool, bool)>>,
     contents_bytes: Vec<usize>,
     bindings: BTreeMap<(usize, String), (usize, String)>,
     imports: BTreeMap<usize, BTreeSet<usize>>,
@@ -244,9 +244,9 @@ fn build_pre(files: &[(String, String)]) -> Pre {
     }
 
     // 反向调用索引
-    let mut incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool, bool)>> = BTreeMap::new();
+    let mut incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool, bool, bool, bool)>> = BTreeMap::new();
     for (idx, e) in extracted.iter().enumerate() {
-        for (name, line, member) in e.calls.iter() {
+        for (name, line, member, install, ctor) in e.calls.iter() {
             if blocked_imports.contains(&(idx, name.clone())) {
                 continue;
             }
@@ -257,13 +257,13 @@ fn build_pre(files: &[(String, String)]) -> Pre {
                     incoming
                         .entry((*tf, tname.clone()))
                         .or_default()
-                        .push((idx, *line, true, direct));
+                        .push((idx, *line, true, direct, *install, *ctor));
                 } else if let Some(targets) = name_defs.get(tname) {
                     for (df, _dl) in targets.iter().take(4) {
                         incoming
                             .entry((*df, tname.clone()))
                             .or_default()
-                            .push((idx, *line, false, direct));
+                            .push((idx, *line, false, direct, *install, *ctor));
                     }
                 }
             } else if let Some(targets) = name_defs.get(name) {
@@ -271,7 +271,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
                     incoming
                         .entry((*tf, name.clone()))
                         .or_default()
-                        .push((idx, *line, false, direct));
+                        .push((idx, *line, false, direct, *install, *ctor));
                 }
             }
         }
@@ -357,6 +357,15 @@ struct WorkBudget {
 
 /// 从 sink 反向可达入口；返回 (path, breakpoints, entry, sink_def)。
 #[allow(clippy::type_complexity)]
+fn payload_name(name: &str) -> bool {
+    const TOK: [&str; 8] = [
+        "process", "parse", "resolve", "read", "decode", "deserialize", "unmarshal", "convert",
+    ];
+    let lower = name.to_ascii_lowercase();
+    TOK.iter().any(|t| lower.contains(t))
+}
+
+#[allow(clippy::type_complexity)]
 fn reverse_reach(
     pre: &Pre,
     sink_file: usize,
@@ -364,6 +373,9 @@ fn reverse_reach(
     entries: &BTreeMap<(usize, u32), Value>,
     budget: &mut WorkBudget,
 ) -> (Vec<(usize, u32, String, &'static str)>, Vec<Value>, Value) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
     let Some(start_def) = enclosing_line(&pre.def_lines[sink_file], sink_line) else {
         return (Vec::new(), Vec::new(), Value::Null);
     };
@@ -373,7 +385,6 @@ fn reverse_reach(
         .map(|(n, _)| n.clone())
         .unwrap_or_default();
 
-    // 汇所在函数即入口（但不能是"汇自身所在函数"被词表误列为入口）
     if let Some(info) = entries.get(&(sink_file, start_def)).cloned() {
         let route = info.get("route").and_then(|v| v.as_str()).unwrap_or("");
         if route == start_name {
@@ -381,93 +392,144 @@ fn reverse_reach(
         }
         return (
             vec![
-                (sink_file, start_def, start_name.clone(), "certain"),
-                (sink_file, start_def, start_name, "certain"),
+                (sink_file, start_def, start_name.clone(), "dataflow"),
+                (sink_file, start_def, start_name, "dataflow"),
             ],
             Vec::new(),
             info,
         );
     }
 
-    let mut visited: BTreeSet<(usize, u32)> = BTreeSet::new();
-    let mut queue: VecDeque<((usize, u32, String), Vec<(usize, u32, String, &'static str)>)> =
-        VecDeque::new();
-    queue.push_back((
-        (sink_file, start_def, start_name.clone()),
-        vec![(sink_file, start_def, start_name, "certain")],
-    ));
-    let mut hits: Vec<(Vec<(usize, u32, String, &'static str)>, Value)> = Vec::new();
-    let mut breakpoints: Vec<Value> = Vec::new();
+    let mut banned: BTreeSet<(usize, u32)> = BTreeSet::new();
+    let mut best: Option<(Vec<(usize, u32, String, &'static str)>, Value, usize)> = None;
 
-    while let Some(((cf, cl, cn), path)) = queue.pop_front() {
-        if visited.contains(&(cf, cl)) {
-            continue;
-        }
-        visited.insert((cf, cl));
-        budget.visits += 1;
-        if budget.visits > MAX_TOTAL_VISITS {
-            break;
-        }
-        if visited.len() > MAX_VISIT_PER_SINK {
-            breakpoints.push(json!({
-                "kind": "ambiguous_chain",
-                "at": format!("{}:{}", files_path(pre, cf), cl),
-                "candidates": [],
-                "confidence": "low",
-            }));
-            break;
-        }
-        if path.len() > MAX_DEPTH {
-            breakpoints.push(json!({
-                "kind": "ambiguous_chain",
-                "at": format!("{}:{}", files_path(pre, cf), cl),
-                "candidates": [],
-                "confidence": "low",
-            }));
-            break;
-        }
-        // 命中入口
-        if let Some(info) = entries.get(&(cf, cl)) {
-            hits.push((path.clone(), info.clone()));
-            if hits.len() >= MAX_ENTRY_HITS {
+    for _attempt in 0..2 {
+        let mut dist: BTreeMap<(usize, u32), u32> = BTreeMap::new();
+        let mut prev: BTreeMap<(usize, u32), ((usize, u32), String, &'static str)> = BTreeMap::new();
+        let mut heap: BinaryHeap<Reverse<(u32, u32, usize, u32)>> = BinaryHeap::new();
+        dist.insert((sink_file, start_def), 0);
+        heap.push(Reverse((0, 0, sink_file, start_def)));
+        let mut hit: Option<((usize, u32), Value)> = None;
+
+        while let Some(Reverse((cost, hops, cf, cl))) = heap.pop() {
+            budget.visits += 1;
+            if budget.visits > MAX_TOTAL_VISITS {
                 break;
             }
-        }
-        let Some(callers) = pre.incoming.get(&(cf, cn.clone())) else {
-            continue;
-        };
-        let mut next: Vec<(usize, u32, bool, bool)> = callers.clone();
-        next.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-        next.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-        if next.len() > MAX_FANOUT {
-            next.truncate(MAX_FANOUT);
-            breakpoints.push(json!({
-                "kind": "dynamic_dispatch",
-                "at": format!("{}:{}", files_path(pre, cf), cl),
-                "candidates": [],
-                "confidence": "low",
-            }));
-        }
-        for (sf, sl, bound, direct) in next {
-            let Some(caller_def) = enclosing_line(&pre.def_lines[sf], sl) else {
+            if dist.get(&(cf, cl)).map(|c| *c < cost).unwrap_or(false) {
                 continue;
-            };
-            let caller_name = pre.defs[sf]
+            }
+            if entries.contains_key(&(cf, cl)) {
+                hit = Some(((cf, cl), entries.get(&(cf, cl)).cloned().unwrap_or(Value::Null)));
+                break;
+            }
+            if hops as usize > MAX_DEPTH {
+                continue;
+            }
+            let name = pre.defs[cf]
                 .iter()
-                .find(|(_, l)| *l == caller_def)
+                .find(|(_, l)| *l == cl)
                 .map(|(n, _)| n.clone())
                 .unwrap_or_default();
-            let conf = confidence_of(pre, sf, cf, bound, direct);
-            let mut p = path.clone();
-            p.push((sf, caller_def, caller_name.clone(), conf));
-            queue.push_back(((sf, caller_def, caller_name), p));
+            let Some(callers) = pre.incoming.get(&(cf, name)) else { continue };
+            for (sf, sl, _bound, direct, install, ctor) in callers.iter() {
+                if banned.contains(&(*sf, *sl)) {
+                    continue;
+                }
+                let Some(caller_def) = enclosing_line(&pre.def_lines[*sf], *sl) else { continue };
+                if banned.contains(&(*sf, caller_def)) {
+                    continue;
+                }
+                let Some(caller_name) = pre.defs[*sf]
+                    .iter()
+                    .find(|(_, l)| *l == caller_def)
+                    .map(|(n, _)| n.clone())
+                else {
+                    continue;
+                };
+                let edge_kind: &'static str = if *install || *ctor {
+                    "construction"
+                } else if *direct {
+                    "dataflow"
+                } else {
+                    "call"
+                };
+                // 载荷转换函数优先（边代价 0），普通数据流 6，间接调用 40，构造/安装 100；
+                // 若最短路径不含载荷跳，则 ban 掉首跳重搜，偏好"含 process/parse/read 跳"的证据链。
+                let w: u32 = match edge_kind {
+                    "construction" => 100,
+                    "dataflow" if payload_name(&caller_name) => 0,
+                    "dataflow" => 6,
+                    _ => 40,
+                };
+                let ncost = cost + w;
+                let key = (*sf, caller_def);
+                if dist.get(&key).map(|c| *c <= ncost).unwrap_or(false) {
+                    continue;
+                }
+                dist.insert(key, ncost);
+                prev.insert(key, ((cf, cl), caller_name, edge_kind));
+                heap.push(Reverse((ncost, hops + 1, *sf, caller_def)));
+            }
+        }
+
+        let Some(((ef, el), info)) = hit else { break };
+        let mut rev: Vec<(usize, u32, String, &'static str)> = Vec::new();
+        let mut cur = (ef, el);
+        let mut guard = 0;
+        loop {
+            let name = pre.defs[cur.0]
+                .iter()
+                .find(|(_, l)| *l == cur.1)
+                .map(|(n, _)| n.clone())
+                .unwrap_or_default();
+            let edge = prev.get(&cur).map(|(_, _, k)| *k).unwrap_or("entry");
+            rev.push((cur.0, cur.1, name, edge));
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+            match prev.get(&cur) {
+                Some((p, _, _)) => cur = *p,
+                None => break,
+            }
+        }
+        let payload_hops = rev.iter().filter(|(_, _, n, _)| payload_name(n)).count();
+        if best.as_ref().map(|(_, _, p)| payload_hops > *p).unwrap_or(true) {
+            best = Some((rev.clone(), info.clone(), payload_hops));
+        }
+        if payload_hops >= 2 {
+            return (rev, Vec::new(), info);
+        }
+        // 重搜：ban 掉入口之后的第一跳
+        if rev.len() > 1 {
+            banned.insert((rev[1].0, rev[1].1));
+        } else {
+            break;
         }
     }
 
-    if let Some((path, info)) = hits.into_iter().next() {
-        (path, breakpoints, info)
-    } else {
-        (Vec::new(), breakpoints, Value::Null)
+    match best {
+        Some((rev, info, hops)) if hops >= 2 => (rev, Vec::new(), info),
+        Some((rev, info, _)) => {
+            // 没有找到含载荷转换跳的证据链：显式标注"载荷边界未解析"，
+            // 不假装这是完整数据流链（宁缺勿假）。
+            let at = rev
+                .get(1)
+                .map(|(f, l, _, _)| format!("{}:{}", pre.paths.get(*f).cloned().unwrap_or_default(), l))
+                .unwrap_or_default();
+            (
+                rev,
+                vec![json!({
+                    "kind": "payload_boundary",
+                    "at": at,
+                    "candidates": [],
+                    "confidence": "low",
+                })],
+                info,
+            )
+        }
+        None => (Vec::new(), Vec::new(), Value::Null),
     }
 }
 
@@ -580,10 +642,10 @@ pub(crate) fn candidates(
                 let name = n.get("name").and_then(|x| x.as_str()).unwrap_or("");
                 let file = n.get("file").and_then(|x| x.as_str()).unwrap_or("");
                 let line = n.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
-                const STEMS: [&str; 19] = [
+                const STEMS: [&str; 18] = [
                     "decode", "action", "request", "handler", "route", "render", "create",
                     "fetch", "stream", "dispatch", "endpoint", "invoke", "parse",
-                    "deserialize", "read", "exec", "from", "unmarshal", "load",
+                    "deserialize", "read", "exec", "from", "unmarshal",
                 ];
                 let lower = name.to_ascii_lowercase();
                 if name.is_empty() || file.is_empty() || !STEMS.iter().any(|s| lower.contains(s)) {
@@ -682,10 +744,9 @@ pub(crate) fn candidates(
 
         if !entry_info.is_null() && path.len() >= 2 {
             reached += 1;
-            let mut rev: Vec<(usize, u32, String, &'static str)> = path;
-            rev.reverse();
+            let rev: Vec<(usize, u32, String, &'static str)> = path;
             let mut steps: Vec<Value> = Vec::new();
-            for (i, (f, l, name, conf)) in rev.iter().enumerate() {
+            for (i, (f, l, name, edge)) in rev.iter().enumerate() {
                 let role = if i == 0 {
                     "source"
                 } else if i + 1 == rev.len() {
@@ -698,7 +759,13 @@ pub(crate) fn candidates(
                     "line": l,
                     "symbol": name,
                     "role": role,
-                    "certainty": if i == 0 { "certain" } else { conf },
+                    "edge": edge,
+                    "certainty": match *edge {
+                        "dataflow" => "certain",
+                        "construction" => "construction",
+                        "entry" => "certain",
+                        _ => "inferred",
+                    },
                 }));
             }
             if steps.len() > MAX_STEPS {
