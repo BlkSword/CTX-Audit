@@ -288,6 +288,76 @@ pub(crate) fn nextjs_entries(files: &[(String, String)]) -> Vec<Value> {
     out
 }
 
+/// Python 隐式入口：FastAPI/Flask/Django 的路由装饰器与 urlpatterns。
+pub(crate) fn python_entries(files: &[(String, String)]) -> Vec<Value> {
+    const ROUTE_DECORATORS: [&str; 10] = [
+        ".get(", ".post(", ".put(", ".delete(", ".patch(", ".route(", "app.add_url_rule(",
+        "path(", "re_path(", "url(",
+    ];
+    let mut out = Vec::new();
+    for (path, content) in files.iter().take(max_index_files()) {
+        if !path.ends_with(".py") {
+            continue;
+        }
+        let lines: Vec<&str> = content.lines().collect();
+        for (i, raw) in lines.iter().enumerate() {
+            let t = raw.trim();
+            if !t.starts_with('@') && !t.contains("urlpatterns") && !t.contains("path(") {
+                continue;
+            }
+            let is_decorator = t.starts_with('@');
+            if !is_decorator && !t.contains("path(") && !t.contains("url(") {
+                continue;
+            }
+            let (method, route) = if is_decorator {
+                let mut method = "ANY";
+                let lower = t.to_ascii_lowercase();
+                for m in ["get", "post", "put", "delete", "patch"] {
+                    if lower.contains(&format!(".{m}(")) {
+                        method = match m {
+                            "get" => "GET", "post" => "POST", "put" => "PUT",
+                            "delete" => "DELETE", _ => "PATCH",
+                        };
+                        break;
+                    }
+                }
+                if method == "ANY" && !lower.contains(".route(") && !lower.contains("add_url_rule") {
+                    continue;
+                }
+                let q = t.find(|c: char| c == '\'' || c == '"');
+                let route = match q {
+                    Some(pos) => {
+                        let rest = &t[pos + 1..];
+                        let quote = t.as_bytes()[pos] as char;
+                        rest.split(quote).next().unwrap_or("").to_string()
+                    }
+                    None => "/".to_string(),
+                };
+                (method, route)
+            } else {
+                let q = t.find(|c: char| c == '\'' || c == '"');
+                let route = match q {
+                    Some(pos) => {
+                        let rest = &t[pos + 1..];
+                        let quote = t.as_bytes()[pos] as char;
+                        rest.split(quote).next().unwrap_or("").to_string()
+                    }
+                    None => continue,
+                };
+                ("GET", route)
+            };
+            out.push(json!({
+                "file": path,
+                "line": (i + 1) as u32,
+                "method": method,
+                "route": route,
+                "entry_kind": "http",
+            }));
+        }
+    }
+    out
+}
+
 /// 文件级 import 图（JS/TS 相对模块 + Java 类名），用于给调用边定置信度。
 pub(crate) fn import_graph(files: &[(String, String)]) -> BTreeMap<String, BTreeSet<String>> {
     let all: BTreeSet<String> = files.iter().map(|(p, _)| p.clone()).collect();

@@ -38,6 +38,17 @@ fn skipped_path(path: &str) -> bool {
     BAD.iter().any(|seg| path.contains(seg))
 }
 
+/// 非相对、非别名、且包目录在仓库里根本不存在 → 视为"跨包未知"，禁止同名兜底。
+/// 相对路径解析失败（React 的 virtual `./ReactFlightClientConfig` 之类）→ 允许同名兜底，
+/// 但该边只会被标为 ambiguous（不冒充 certain）。
+fn blocked_import_spec(spec: &str, top_dirs: &BTreeSet<String>) -> bool {
+    if spec.starts_with('.') || spec.starts_with("@/") {
+        return false;
+    }
+    let first = spec.split('/').next().unwrap_or("");
+    !top_dirs.contains(first)
+}
+
 fn enclosing_line(lines: &[u32], line: u32) -> Option<u32> {
     // lines 已升序：找 <= line 的最后一个
     let idx = lines.partition_point(|l| *l <= line);
@@ -182,15 +193,22 @@ fn build_pre(files: &[(String, String)]) -> Pre {
     }
     let mut bindings: BTreeMap<(usize, String), (usize, String)> = BTreeMap::new();
     let mut imports: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    // 从无法解析的模块（包名/缺失文件）导入的本地名：禁止按同名跨文件兜底连边
-    let mut unresolved_imports: BTreeSet<(usize, String)> = BTreeSet::new();
+    // 顶部目录（用于判断"包是否存在"）
+    let mut top_dirs: BTreeSet<String> = BTreeSet::new();
+    for (p, _) in files.iter() {
+        if let Some(seg) = p.split('/').next() {
+            top_dirs.insert(seg.to_string());
+        }
+    }
+    // 从"仓库里不存在的包"导入的本地名：禁止按同名跨文件兜底连边
+    let mut blocked_imports: BTreeSet<(usize, String)> = BTreeSet::new();
     for (idx, (path, content)) in files.iter().enumerate() {
         let lang = language_of(path);
         if lang == "js" || lang == "ts" {
             for (local, spec, imported) in parse_js_imports(content) {
                 let resolved = chain_vocab::resolve_js_target(path, &spec, &all_paths);
-                if resolved.is_none() {
-                    unresolved_imports.insert((idx, local.clone()));
+                if resolved.is_none() && blocked_import_spec(&spec, &top_dirs) {
+                    blocked_imports.insert((idx, local.clone()));
                 }
                 if let Some(target) = resolved {
                     if let Some(&ti) = pos.get(&target) {
@@ -225,7 +243,7 @@ fn build_pre(files: &[(String, String)]) -> Pre {
     let mut incoming: BTreeMap<(usize, String), Vec<(usize, u32, bool)>> = BTreeMap::new();
     for (idx, e) in extracted.iter().enumerate() {
         for (name, line) in e.calls.iter() {
-            if unresolved_imports.contains(&(idx, name.clone())) {
+            if blocked_imports.contains(&(idx, name.clone())) {
                 continue;
             }
             if let Some((tf, tname)) = bindings.get(&(idx, name.clone())) {
@@ -505,6 +523,9 @@ pub(crate) fn candidates(
     let nextjs = chain_vocab::nextjs_entries(files);
     let nextjs_count = nextjs.len();
     all_entries.extend(nextjs);
+    let python = chain_vocab::python_entries(files);
+    let python_count = python.len();
+    all_entries.extend(python);
     if let Some(v) = vocab {
         if let Some(names) = v.get("entry_names").and_then(|x| x.as_array()) {
             for n in names.iter().take(300) {
@@ -577,6 +598,7 @@ pub(crate) fn candidates(
     stats.insert("sinks_scanned".to_string(), sinks.len());
     stats.insert("entries".to_string(), all_entries.len());
     stats.insert("entries_nextjs".to_string(), nextjs_count);
+    stats.insert("entries_python".to_string(), python_count);
 
     let t2 = Instant::now();
     let mut budget = WorkBudget { visits: 0 };

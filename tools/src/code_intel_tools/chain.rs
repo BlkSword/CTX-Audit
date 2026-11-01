@@ -498,7 +498,7 @@ pub(crate) fn auth_map(root: &Path, files: &[(String, String)], id: &str) -> BTr
 
 pub(crate) fn guards_in(content: &str, center: u32, file: &str) -> Vec<Value> {
     const GUARDS: [(&str, &[&str]); 6] = [
-        ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth"]),
+        ("auth_check", &["@SaCheckLogin", "@PreAuthorize", "@RequiresPermissions", "@RequiresRoles", "isAuthenticated(", "checkLogin(", "getLoginId(", "requireAuth", "login_required", "jwt_required", "permission_required", "requires_auth", "get_current_user", "@requires_login"]),
         ("permission_check", &["@CheckPassword", "@StoragePermissionCheck", "checkRole(", "hasRole(", "hasPermission(", "isAdmin"]),
         ("allowlist", &["allowlist", "whitelist", "ALLOWED_", "startsWith(", "matchesPattern", "Pattern.compile", "hasOwnProperty"]),
         ("sanitize", &["sanitize", "escapeHtml", "escape(", "encodeURI", "HtmlUtils", "StringEscapeUtils"]),
