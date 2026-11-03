@@ -1,0 +1,65 @@
+name: PR Security Drift Gate
+
+# CTX-Audit PR 安全漂移闸门（示例工作流）
+# 目的：只拦截"本次 PR 引入的安全漂移"：
+#   - 新增/变更后未鉴权的 HTTP 入口
+#   - 既有入口鉴权覆盖从有到无
+#   - 声明式鉴权配置回退（覆盖路径删除 / 排除路径新增）
+#   - 入口守卫从有到无
+#   - 新增危险汇（已连到未鉴权入口）
+# 不报存量告警、不做漏洞定性，因此可以直接作为 required check。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-drift-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build ctx-audit
+        run: cargo build --release -p ctx-audit
+
+      - name: Run PR drift gate
+        id: gate
+        continue-on-error: true
+        run: |
+          set +e
+          ./target/release/ctx-audit gate \
+            --git . \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            -o md > gate.md
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          cat gate.md >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Comment on PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## CTX-Audit PR 安全漂移闸门\n';
+            try { body = fs.readFileSync('gate.md', 'utf8'); } catch (e) { body += '\n（未生成报告）'; }
+            body += `\n\n> exit_code=${{ steps.gate.outputs.exit_code }}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Fail on drift
+        if: steps.gate.outputs.exit_code == '2'
+        run: |
+          echo "::error::PR 引入了安全漂移（见上方评论）"
+          exit 1

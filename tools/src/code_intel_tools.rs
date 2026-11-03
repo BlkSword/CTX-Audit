@@ -38,6 +38,7 @@ pub(crate) use routes::*;
 mod chain;
 mod chain_scan;
 mod chain_vocab;
+pub mod gate;
 pub use chain_vocab::learn_vocab;
 pub(crate) use chain::*;
 pub(crate) use chain_scan::*;

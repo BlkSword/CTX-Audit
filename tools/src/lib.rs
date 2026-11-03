@@ -40,6 +40,7 @@ pub use code_intel_tools::{
     CODE_INTEL_LEGACY_SURFACE,
     CODE_INTEL_TOOL_SURFACE,
 };
+pub use code_intel_tools::gate::{gate_markdown, gate_report};
 pub use executor::ToolExecutor;
 #[cfg(feature = "legacy-tools")]
 pub use pattern_tools::register_pattern_tools;

@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod diff_routes;
 pub mod explain_route;
 pub mod findings;
+pub mod gate;
 pub mod mcp;
 pub mod rules;
 pub mod scan;

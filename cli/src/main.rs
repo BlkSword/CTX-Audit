@@ -362,6 +362,30 @@ enum Commands {
         output: String,
     },
 
+    /// PR 安全漂移闸门：对比 base/head 两棵源码树，输出阻断判决
+    #[command(after_help = "base/head 为源码目录；--format md 输出 PR 评论；有 block 时退出码 2。")]
+    Gate {
+        /// 基线源码目录（PR base / 合并目标）
+        #[arg(long, value_name = "DIR")]
+        base: String,
+
+        /// 变更后源码目录（PR head / 当前分支）
+        #[arg(long, value_name = "DIR")]
+        head: String,
+
+        /// 输出格式 (json, md)
+        #[arg(short = 'o', long = "output", default_value = "json")]
+        output: String,
+
+        /// 关闭"有 block 时退出码 2"（CI 中默认开启）
+        #[arg(long)]
+        no_fail_on_block: bool,
+
+        /// git 仓库模式：--base/--head 视为 git ref（自动 worktree 导出到临时目录）
+        #[arg(long, value_name = "REPO")]
+        git: Option<String>,
+    },
+
     /// 审计驾驶舱：覆盖率摘要 + 排序待审清单 + 证据包（人用加速器）
     Audit {
         /// 项目路径
@@ -808,6 +832,14 @@ async fn main() -> Result<()> {
             )
             .await
         }
+
+        Commands::Gate {
+            base,
+            head,
+            output,
+            no_fail_on_block,
+            git,
+        } => commands::gate::execute(base, head, output, !no_fail_on_block, git).await,
 
         Commands::ExplainRoute {
             path,
