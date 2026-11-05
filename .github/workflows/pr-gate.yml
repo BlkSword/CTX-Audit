@@ -28,6 +28,14 @@ jobs:
       - name: Build ctx-audit
         run: cargo build --release -p ctx-audit
 
+      - name: Cache gate snapshots (base tree)
+        uses: actions/cache@v4
+        with:
+          path: .ctx-audit/gate-cache
+          key: gate-${{ github.event.pull_request.base.sha }}-${{ hashFiles('tools/src/code_intel_tools/gate.rs') }}
+          restore-keys: |
+            gate-${{ github.event.pull_request.base.sha }}-
+
       - name: Run PR drift gate
         id: gate
         continue-on-error: true
@@ -37,6 +45,7 @@ jobs:
             --git . \
             --base "${{ github.event.pull_request.base.sha }}" \
             --head "${{ github.event.pull_request.head.sha }}" \
+            --cache-dir .ctx-audit/gate-cache \
             -o md > gate.md
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           cat gate.md >> "$GITHUB_STEP_SUMMARY"
