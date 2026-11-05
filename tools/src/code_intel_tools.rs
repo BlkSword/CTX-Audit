@@ -39,6 +39,7 @@ mod chain;
 mod chain_scan;
 mod chain_vocab;
 pub mod gate;
+pub mod harness;
 pub mod probe;
 pub use chain_vocab::learn_vocab;
 pub(crate) use chain::*;
@@ -242,10 +243,12 @@ pub enum IntelKind {
     CanReach,
     /// 路径切片：沿可达路径按需切代码窗口（路线 B 原语）
     SliceBetween,
+    /// Harness 骨架：为 route handler 生成最小验证骨架（curl/MockMvc）
+    HarnessSkeleton,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 21] {
+    pub fn all() -> [IntelKind; 22] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -268,6 +271,7 @@ impl IntelKind {
             IntelKind::PrDriftGate,
             IntelKind::CanReach,
             IntelKind::SliceBetween,
+            IntelKind::HarnessSkeleton,
         ]
     }
 
@@ -294,6 +298,7 @@ impl IntelKind {
             IntelKind::PrDriftGate => "pr_drift_gate",
             IntelKind::CanReach => "can_reach",
             IntelKind::SliceBetween => "slice_between",
+            IntelKind::HarnessSkeleton => "harness_skeleton",
         }
     }
 
@@ -319,6 +324,7 @@ impl IntelKind {
             IntelKind::PrDriftGate => "PR 安全漂移闸门：对比 base/head，输出新增未鉴权路由/鉴权配置回退/守卫丢失/新增危险汇（block 时 exit_code=2）",
             IntelKind::CanReach => "拓扑可达查询：从 file:line 到 file:line 是否存在调用路径（名字级图，返回路径与不确定性）",
             IntelKind::SliceBetween => "路径切片：沿 can_reach 路径按需切出每步代码窗口（≤12KB，替代一次性链档）",
+            IntelKind::HarnessSkeleton => "Harness 骨架：为 handler 生成路由/参数/守卫/curl/MockMvc 最小验证骨架（静态，不执行）",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
     }
@@ -363,6 +369,10 @@ impl CodeIntelTool {
                 str_param("to_file", "目标文件（相对 project 根）", true),
                 int_param("to_line", "目标行号", 1),
                 int_param("radius", "每步代码窗口行数（默认 20）", 20),
+            ],
+            IntelKind::HarnessSkeleton => vec![
+                str_param("file", "handler 所在文件（相对 project 根）", true),
+                int_param("line", "handler 定义行或函数体内任意行", 1),
             ],
             IntelKind::PrDriftGate => vec![
                 str_param("base", "基线源码目录或 git ref（相对 project 根）", true),
@@ -2836,6 +2846,22 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new("medium", &["name_level_graph"], 0),
                 }
             }
+            IntelKind::HarnessSkeleton => {
+                let file = input["file"].as_str().unwrap_or("");
+                let line = input["line"].as_u64().unwrap_or(1) as u32;
+                if file.is_empty() {
+                    return Err(ToolError::InvalidArgument(
+                        "harness_skeleton 需要 file".to_string(),
+                    ));
+                }
+                let data = harness::harness_skeleton_report(root, file, line)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("harness_skeleton: {e}")))?;
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(file, line, &id)],
+                    uncertainty: Uncertainty::new("medium", &["static_skeleton"], 0),
+                }
+            }
             IntelKind::PrDriftGate => {
                 let base_in = input["base"].as_str().unwrap_or("");
                 let head_in = input["head"].as_str().unwrap_or("");
@@ -2977,7 +3003,7 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
 /// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
 /// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
 /// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
-pub const PROTOCOL_TOOL_SURFACE: [&str; 15] = CODE_INTEL_TOOL_SURFACE;
+pub const PROTOCOL_TOOL_SURFACE: [&str; 16] = CODE_INTEL_TOOL_SURFACE;
 
 /// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
 fn max_tool_bytes() -> usize {
@@ -3747,7 +3773,7 @@ pub fn chain_dossier_markdown(project: &Path, chain_id: &str) -> Result<String, 
 /// LLM 默认工具面（9 个）：审计协议所需的最小集合。
 ///
 /// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 15] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 16] = [
     "coverage_summary",
     "coverage_triage",
     "get_project_routes",
@@ -3763,6 +3789,7 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 15] = [
     "pr_drift_gate",
     "can_reach",
     "slice_between",
+    "harness_skeleton",
 ];
 
 /// 默认面之外的细粒度高阶工具（legacy 模式下注册，避免上下文被工具定义占满）。

@@ -317,3 +317,9 @@ ctx-audit probe slice  <ROOT> --from-file A.java --from-line 37 --to-file A.java
 不确定性（强制标注）：can_reach 是名字级图（无接收者类型解析），
 eachable=true 只代表拓扑可能；
 earest_def_fallback=true 表示行号不在函数体内已回退到最近定义。探针不回答"是不是漏洞"。
+
+### Harness 骨架（把候选变成可执行验证）
+
+- MCP `harness_skeleton(file, line)`：返回 route/method/params/guards/curl（参数 `MARKER` 占位）/MockMvc 骨架/验证计划；
+- 边界：只生成骨架，不编译不执行；Spring 语义启发式，业务约束需人工补全；
+- 典型流程：probe 定位 → harness_skeleton 生成请求 → 本地执行确认 sink 是否被触达 → 回填三事实。

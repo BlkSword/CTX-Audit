@@ -22,7 +22,7 @@ const NEIGHBOR_CAP: usize = 8;
 
 /// 定义抽取加强版：在 chain::definitions 基础上补多行签名
 /// （`public Foo bar(\n  String a,\n  int b) {` 这类），并做去重。
-fn definitions_multi(content: &str, lang: &str) -> Vec<(String, u32)> {
+pub(crate) fn definitions_multi(content: &str, lang: &str) -> Vec<(String, u32)> {
     let mut out = chain::definitions(content, lang);
     const KW: [&str; 12] = [
         "if", "for", "while", "switch", "catch", "return", "new", "throw", "else", "try", "do",
