@@ -470,6 +470,166 @@ pub struct GateOptions {
     pub cache_dir: Option<std::path::PathBuf>,
     /// git tree sha（base, head）：提供后缓存 key 不再依赖读文件，热启动可跳过索引
     pub cache_keys: Option<(String, String)>,
+    /// 轻量快照：只做路由/守卫/汇，不做反向可达 BFS（大仓库用，判决口径略保守）
+    pub light: bool,
+}
+
+/// 轻量快照：路由/守卫/汇 + 鉴权模式，不做反向可达 BFS。
+///
+/// 判决口径：新增汇只有"落在路由 handler 同一函数内"才算已连到入口；
+/// 服务/切面层的汇一律按 indirect 处理（info），与完整模式的长链规则一致。
+fn load_snapshot_light(root: &Path) -> Result<Snapshot, String> {
+    let loaded = super::index::load_files(root);
+    let id = super::index::build_id(&loaded.files);
+    let auth = super::chain::auth_map(root, &loaded.files, &id);
+    let entries = super::chain::collect_entries(&loaded.files, &id);
+
+    let content_of: BTreeMap<&str, &str> = loaded
+        .files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+
+    let mut routes: BTreeMap<String, Value> = BTreeMap::new();
+    let mut route_guards: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut route_auth: BTreeMap<String, String> = BTreeMap::new();
+    // file -> [(handler_line, key, auth)]
+    let mut handlers_by_file: BTreeMap<String, Vec<(u32, String, String)>> = BTreeMap::new();
+
+    for e in entries.iter() {
+        let kind = e.get("entry_kind").and_then(|v| v.as_str()).unwrap_or("http");
+        let route = e.get("route").and_then(|v| v.as_str()).unwrap_or("");
+        if kind == "library_entry" || !route.starts_with('/') {
+            continue;
+        }
+        let file = e.get("file").and_then(|v| v.as_str()).unwrap_or("");
+        let line = e.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        // 轻量模式没有 entry_index，按 handler 名/first def after mapping 自行推导 handler_line
+        let handler_line = {
+            let defs: Vec<(String, u32)> = content_of
+                .get(file)
+                .map(|c| {
+                    super::chain::definitions(c, super::chain::chain_language_of(file))
+                })
+                .unwrap_or_default();
+            let by_name = e
+                .get("handler")
+                .and_then(|v| v.as_str())
+                .and_then(|h| defs.iter().find(|(n, _)| n == h).map(|(_, l)| *l));
+            by_name
+                .or_else(|| defs.iter().filter(|(_, l)| *l >= line).map(|(_, l)| *l).min())
+                .unwrap_or(line)
+        };
+        let method = e.get("method").and_then(|v| v.as_str()).unwrap_or("ANY").to_string();
+        let key = format!("{method} {route}");
+        let label = auth
+            .get(&(file.to_string(), line))
+            .or_else(|| auth.get(&(file.to_string(), handler_line)))
+            .cloned()
+            .or_else(|| e.get("auth").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| "unknown".to_string());
+        route_auth.insert(key.clone(), label.clone());
+        routes.insert(
+            key.clone(),
+            json!({"file": file, "line": line, "handler_line": handler_line, "route": route, "method": method}),
+        );
+        handlers_by_file.entry(file.to_string()).or_default().push((
+            handler_line,
+            key.clone(),
+            label,
+        ));
+        if let Some(content) = content_of.get(file) {
+            let end_line = content_of
+                .get(file)
+                .map(|c| super::chain::definitions(c, super::chain::chain_language_of(file)))
+                .unwrap_or_default()
+                .iter()
+                .filter(|(_, l)| *l > handler_line)
+                .map(|(_, l)| *l)
+                .min()
+                .map(|n| n.saturating_sub(1))
+                .unwrap_or(handler_line.saturating_add(120));
+            let gs = super::chain::guards_range(
+                content,
+                line.min(handler_line),
+                end_line.max(handler_line),
+                file,
+            );
+            let set = route_guards.entry(key).or_default();
+            for g in gs {
+                if let Some(k) = g.get("kind").and_then(|v| v.as_str()) {
+                    set.insert(k.to_string());
+                }
+            }
+        }
+    }
+
+    // 汇扫描（无 BFS）：direct = 汇与路由 handler 在同一函数
+    let sinks_all = super::chain::scan_sinks_with(&loaded.files, &[], true);
+    let mut sinks: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut shown_sinks: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut linked_sinks: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut indirect_sinks: BTreeSet<(String, String)> = BTreeSet::new();
+    let defs_cache: std::sync::Mutex<BTreeMap<String, Vec<(String, u32)>>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    for sw in sinks_all.iter() {
+        let Some(file) = sw.get("file").and_then(|v| v.as_str()) else { continue };
+        let kind = sw.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let line = sw.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        sinks.insert((file.to_string(), kind.to_string()));
+        let def_line = {
+            let mut cache = defs_cache.lock().unwrap();
+            let defs = cache.entry(file.to_string()).or_insert_with(|| {
+                content_of
+                    .get(file)
+                    .map(|c| super::chain::definitions(c, super::chain::chain_language_of(file)))
+                    .unwrap_or_default()
+            });
+            defs.iter().filter(|(_, l)| *l <= line).map(|(_, l)| *l).max()
+        };
+        let direct = def_line
+            .and_then(|dl| {
+                handlers_by_file
+                    .get(file)
+                    .and_then(|hs| hs.iter().find(|(hl, _, _)| *hl == dl).cloned())
+            });
+        match direct {
+            Some((_hl, key, label)) => {
+                linked_sinks.insert((file.to_string(), kind.to_string()));
+                let gated = label != "not_applicable" && !label.starts_with("covered");
+                if gated {
+                    shown_sinks.insert((file.to_string(), kind.to_string()));
+                } else {
+                    indirect_sinks.insert((file.to_string(), kind.to_string()));
+                }
+                let _ = key;
+            }
+            None => {
+                indirect_sinks.insert((file.to_string(), kind.to_string()));
+            }
+        }
+    }
+
+    let mut file_hash = BTreeMap::new();
+    for (p, c) in loaded.files.iter() {
+        file_hash.insert(p.clone(), fnv64(c));
+    }
+    let auth_patterns = extract_auth_patterns(&loaded.files);
+    let chain_count = 0usize;
+    let shown_count = shown_sinks.len();
+    Ok(Snapshot {
+        file_hash,
+        routes,
+        route_guards,
+        route_auth,
+        sinks,
+        shown_sinks,
+        linked_sinks,
+        indirect_sinks,
+        auth_patterns,
+        chain_count,
+        shown_count,
+    })
 }
 
 fn tree_key(file_hash: &BTreeMap<String, u64>) -> u64 {
@@ -486,15 +646,24 @@ fn tree_key(file_hash: &BTreeMap<String, u64>) -> u64 {
     acc
 }
 
+fn load_snapshot_or_light(root: &Path, light: bool) -> Result<Snapshot, String> {
+    if light {
+        load_snapshot_light(root)
+    } else {
+        load_snapshot(root)
+    }
+}
+
 fn load_snapshot_cached(
     root: &Path,
     cache_dir: Option<&Path>,
     explicit_key: Option<&str>,
+    light: bool,
 ) -> Result<Snapshot, String> {
-    let Some(dir) = cache_dir else { return load_snapshot(root) };
+    let Some(dir) = cache_dir else { return load_snapshot_or_light(root, light) };
     // 有 git tree sha 时完全不用读文件即可判缓存；否则回退到"读文件 + 哈希"。
     let key = match explicit_key {
-        Some(ns) => fnv64("gate-snapshot-v3").wrapping_mul(0x100000001b3) ^ fnv64(ns),
+        Some(ns) => fnv64(if light { "gate-snapshot-light-v1" } else { "gate-snapshot-v3" }).wrapping_mul(0x100000001b3) ^ fnv64(ns),
         None => {
             let loaded = super::index::load_files(root);
             let mut file_hash: BTreeMap<String, u64> = BTreeMap::new();
@@ -513,7 +682,7 @@ fn load_snapshot_cached(
             }
         }
     }
-    let snap = load_snapshot(root)?;
+    let snap = load_snapshot_or_light(root, light)?;
     if let Ok(text) = serde_json::to_string(&snap) {
         let _ = std::fs::write(&path, text);
     }
@@ -589,14 +758,15 @@ pub fn gate_report_with_options(
     let t0 = std::time::Instant::now();
     // 双树并行扫描：两棵树互不依赖，用 thread scope 同时构建快照（可选快照缓存）。
     let cache = opts.cache_dir.as_deref();
+    let opts_light = opts.light;
     let (bkey, hkey) = opts
         .cache_keys
         .as_ref()
         .map(|(b, h)| (Some(b.as_str()), Some(h.as_str())))
         .unwrap_or((None, None));
     let (bsnap, hsnap) = std::thread::scope(|scope| {
-        let h = scope.spawn(|| load_snapshot_cached(head, cache, hkey));
-        let b = load_snapshot_cached(base, cache, bkey);
+        let h = scope.spawn(|| load_snapshot_cached(head, cache, hkey, opts_light));
+        let b = load_snapshot_cached(base, cache, bkey, opts_light);
         (b, h.join().unwrap())
     });
     let bsnap = bsnap?;
@@ -659,6 +829,7 @@ pub fn gate_report_with_options(
                 .filter(|v| v["severity"].as_str() == Some("waived"))
                 .count(),
             "strict_sinks": opts.strict_sinks,
+            "light": opts.light,
             "cache_dir": opts.cache_dir.as_ref().map(|p| p.display().to_string()),
             "exit_code": if blocks > 0 { 2 } else { 0 },
         },
@@ -812,7 +983,7 @@ public class AdminController {
         let strict = gate_report_with_options(
             &base,
             &head,
-            &GateOptions { strict_sinks: true, allow_path: None, cache_dir: None, cache_keys: None },
+            &GateOptions { strict_sinks: true, allow_path: None, cache_dir: None, cache_keys: None, light: false },
         )
         .unwrap();
         let kinds: Vec<&str> = strict["verdicts"]
@@ -861,7 +1032,7 @@ public class B {
         let r = gate_report_with_options(
             &base,
             &head,
-            &GateOptions { strict_sinks: false, allow_path: Some(allow), cache_dir: None, cache_keys: None },
+            &GateOptions { strict_sinks: false, allow_path: Some(allow), cache_dir: None, cache_keys: None, light: false },
         )
         .unwrap();
         assert_eq!(r["summary"]["blocks"], 0);

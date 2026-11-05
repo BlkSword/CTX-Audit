@@ -235,10 +235,12 @@ pub enum IntelKind {
     ChainDossier,
     /// 链步骤证伪
     AssertChainStep,
+    /// PR 安全漂移闸门：对比 base/head 两棵源码树（四类阻断判决）
+    PrDriftGate,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 18] {
+    pub fn all() -> [IntelKind; 19] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -258,6 +260,7 @@ impl IntelKind {
             IntelKind::CandidateChains,
             IntelKind::ChainDossier,
             IntelKind::AssertChainStep,
+            IntelKind::PrDriftGate,
         ]
     }
 
@@ -281,6 +284,7 @@ impl IntelKind {
             IntelKind::CandidateChains => "candidate_chains",
             IntelKind::ChainDossier => "chain_dossier",
             IntelKind::AssertChainStep => "assert_chain_step",
+            IntelKind::PrDriftGate => "pr_drift_gate",
         }
     }
 
@@ -303,6 +307,7 @@ impl IntelKind {
             IntelKind::CandidateChains => "候选链：入口→危险汇的可达链（法医台起点）",
             IntelKind::ChainDossier => "链档：步骤/守卫/断点/不确定性/反证（≤12KB）",
             IntelKind::AssertChainStep => "链步骤证伪：检查第 N 步符号是否仍在源码中",
+            IntelKind::PrDriftGate => "PR 安全漂移闸门：对比 base/head，输出新增未鉴权路由/鉴权配置回退/守卫丢失/新增危险汇（block 时 exit_code=2）",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
     }
@@ -335,6 +340,12 @@ impl CodeIntelTool {
             IntelKind::ProjectIndex | IntelKind::IncrementalStatus => vec![],
             IntelKind::SecurityBaseline => vec![],
             IntelKind::CoverageSummary => vec![],
+            IntelKind::PrDriftGate => vec![
+                str_param("base", "基线源码目录或 git ref（相对 project 根）", true),
+                str_param("head", "变更后源码目录或 git ref（相对 project 根）", true),
+                bool_param("strict_sinks", "受保护接口新增危险汇也阻断"),
+                bool_param("light", "轻量快照（只做路由/守卫/汇，不做反向可达 BFS）"),
+            ],
             IntelKind::CandidateChains => vec![
                 ToolParameter {
                     name: "limit".to_string(),
@@ -2762,6 +2773,38 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new("low", &[], 0),
                 }
             }
+            IntelKind::PrDriftGate => {
+                let base_in = input["base"].as_str().unwrap_or("");
+                let head_in = input["head"].as_str().unwrap_or("");
+                if base_in.is_empty() || head_in.is_empty() {
+                    return Err(ToolError::InvalidArgument(
+                        "pr_drift_gate 需要 base 与 head 参数".to_string(),
+                    ));
+                }
+                let resolve = |raw: &str| -> std::path::PathBuf {
+                    let p = std::path::PathBuf::from(raw);
+                    if p.is_absolute() {
+                        p
+                    } else {
+                        root.join(p)
+                    }
+                };
+                let opts = gate::GateOptions {
+                    strict_sinks: input["strict_sinks"].as_bool().unwrap_or(false),
+                    allow_path: None,
+                    cache_dir: None,
+                    cache_keys: None,
+                    light: input["light"].as_bool().unwrap_or(false),
+                };
+                let report =
+                    gate::gate_report_with_options(&resolve(base_in), &resolve(head_in), &opts)
+                        .map_err(|e| ToolError::ExecutionFailed(format!("gate: {e}")))?;
+                IntelEnvelope {
+                    data: report,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new("medium", &["gate_heuristic_guards"], 0),
+                }
+            }
             IntelKind::AssertVerdict => {
                 let expect = input["expect"].as_str().unwrap_or("uncovered").to_string();
                 let detail = routes::explain_route(
@@ -2871,7 +2914,7 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
 /// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
 /// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
 /// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
-pub const PROTOCOL_TOOL_SURFACE: [&str; 12] = CODE_INTEL_TOOL_SURFACE;
+pub const PROTOCOL_TOOL_SURFACE: [&str; 13] = CODE_INTEL_TOOL_SURFACE;
 
 /// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
 fn max_tool_bytes() -> usize {
@@ -3641,7 +3684,7 @@ pub fn chain_dossier_markdown(project: &Path, chain_id: &str) -> Result<String, 
 /// LLM 默认工具面（9 个）：审计协议所需的最小集合。
 ///
 /// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 12] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 13] = [
     "coverage_summary",
     "coverage_triage",
     "get_project_routes",
@@ -3654,6 +3697,7 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 12] = [
     "chain_dossier",
     "assert_chain_step",
     "report_finding",
+    "pr_drift_gate",
 ];
 
 /// 默认面之外的细粒度高阶工具（legacy 模式下注册，避免上下文被工具定义占满）。

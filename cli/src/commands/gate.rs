@@ -73,6 +73,7 @@ pub async fn execute(
     strict_sinks: bool,
     allow: Option<String>,
     cache_dir: Option<String>,
+    light: bool,
 ) -> Result<()> {
     let (base_root, head_root, cleanup, cache_keys) = if let Some(repo) = git {
         let repo = PathBuf::from(&repo);
@@ -104,6 +105,7 @@ pub async fn execute(
         allow_path: allow.map(std::path::PathBuf::from),
         cache_dir: cache_dir.map(std::path::PathBuf::from),
         cache_keys,
+        light,
     };
     let report = ctx_audit_tools::gate_report_with_options(&base_root, &head_root, &opts)
         .map_err(|e| miette!("{}", e))?;

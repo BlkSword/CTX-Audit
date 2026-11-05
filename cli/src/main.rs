@@ -396,6 +396,10 @@ enum Commands {
         /// 快照缓存目录（CI 中配合 cache action 复用 base/head 快照）
         #[arg(long, value_name = "DIR")]
         cache_dir: Option<String>,
+
+        /// 轻量快照模式：只做路由/守卫/汇，不做反向可达 BFS（大仓库用）
+        #[arg(long)]
+        light: bool,
     },
 
     /// 审计驾驶舱：覆盖率摘要 + 排序待审清单 + 证据包（人用加速器）
@@ -854,6 +858,7 @@ async fn main() -> Result<()> {
             strict_sinks,
             allow,
             cache_dir,
+            light,
         } => {
             commands::gate::execute(
                 base,
@@ -864,6 +869,7 @@ async fn main() -> Result<()> {
                 strict_sinks,
                 allow,
                 cache_dir,
+                light,
             )
             .await
         }
