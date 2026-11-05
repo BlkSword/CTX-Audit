@@ -16,6 +16,7 @@
 use super::chain::{auth_map, collect_entries};
 use super::chain_scan;
 use super::index;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -43,20 +44,22 @@ fn fnv64(s: &str) -> u64 {
     h
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 struct AuthPatterns {
     include: BTreeSet<String>,
     exclude: BTreeSet<String>,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Snapshot {
-    files: Vec<(String, String)>,
     file_hash: BTreeMap<String, u64>,
     routes: BTreeMap<String, Value>,
     route_guards: BTreeMap<String, BTreeSet<String>>,
     route_auth: BTreeMap<String, String>,
     sinks: BTreeSet<(String, String)>,
     shown_sinks: BTreeSet<(String, String)>,
+    linked_sinks: BTreeSet<(String, String)>,
+    indirect_sinks: BTreeSet<(String, String)>,
     auth_patterns: BTreeMap<String, AuthPatterns>,
     chain_count: usize,
     shown_count: usize,
@@ -75,6 +78,8 @@ fn load_snapshot(root: &Path) -> Result<Snapshot, String> {
     let mut route_auth: BTreeMap<String, String> = BTreeMap::new();
     let mut sinks: BTreeSet<(String, String)> = BTreeSet::new();
     let mut shown_sinks: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut linked_sinks: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut indirect_sinks: BTreeSet<(String, String)> = BTreeSet::new();
 
     for e in entries.iter() {
         let kind = e.get("entry_kind").and_then(|v| v.as_str()).unwrap_or("http");
@@ -137,6 +142,7 @@ fn load_snapshot(root: &Path) -> Result<Snapshot, String> {
                 sink.get("kind").and_then(|v| v.as_str()),
             ) {
                 sinks.insert((f.to_string(), k.to_string()));
+                linked_sinks.insert((f.to_string(), k.to_string()));
                 let entry_auth = entry
                     .get("auth")
                     .and_then(|v| v.as_str())
@@ -144,8 +150,14 @@ fn load_snapshot(root: &Path) -> Result<Snapshot, String> {
                 let gated = c.get("tier").and_then(|v| v.as_str()) == Some("shown")
                     && entry_auth != "not_applicable"
                     && !entry_auth.starts_with("covered");
+                let steps = c.get("steps").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
                 if gated {
-                    shown_sinks.insert((f.to_string(), k.to_string()));
+                    if steps <= 3 {
+                        shown_sinks.insert((f.to_string(), k.to_string()));
+                    } else {
+                        // 服务层/切面里的新增汇：链较长，先记为 info，避免把框架切面误判为阻断
+                        indirect_sinks.insert((f.to_string(), k.to_string()));
+                    }
                 }
             }
         }
@@ -158,13 +170,14 @@ fn load_snapshot(root: &Path) -> Result<Snapshot, String> {
     let auth_patterns = extract_auth_patterns(&loaded.files);
 
     Ok(Snapshot {
-        files: loaded.files,
         file_hash,
         routes,
         route_guards,
         route_auth,
         sinks,
         shown_sinks,
+        linked_sinks,
+        indirect_sinks,
         auth_patterns,
         chain_count: chains.len(),
         shown_count: chains
@@ -289,6 +302,7 @@ fn verdict(kind: &str, severity: &str, title: &str, evidence: String, extra: Val
 fn diff_fields(
     base: &Snapshot,
     head: &Snapshot,
+    strict_sinks: bool,
 ) -> (
     Vec<String>,
     Vec<String>,
@@ -400,9 +414,14 @@ fn diff_fields(
     //    base 未出现、但仅 candidate 的新汇记为 info，避免把修复 PR 里的加固代码当阻断。
     let mut new_sinks: BTreeSet<(String, String)> = BTreeSet::new();
     let mut new_unshown: BTreeSet<(String, String)> = BTreeSet::new();
+    let candidate_sinks: &BTreeSet<(String, String)> = if strict_sinks {
+        &head.linked_sinks
+    } else {
+        &head.shown_sinks
+    };
     for (f, k) in head.sinks.iter() {
         if !base.sinks.contains(&(f.clone(), k.clone())) {
-            if head.shown_sinks.contains(&(f.clone(), k.clone())) {
+            if candidate_sinks.contains(&(f.clone(), k.clone())) {
                 new_sinks.insert((f.clone(), k.clone()));
             } else {
                 new_unshown.insert((f.clone(), k.clone()));
@@ -414,7 +433,7 @@ fn diff_fields(
             verdicts.push(verdict(
                 "dangerous_sink_added",
                 "block",
-                "新增危险汇（已连到入口）",
+                if strict_sinks { "新增危险汇（严格模式：任意可达入口）" } else { "新增危险汇（已连到未鉴权入口）" },
                 format!("{}:{}", file, kind),
                 json!({"sink_file": file, "sink_kind": kind}),
             ));
@@ -422,10 +441,11 @@ fn diff_fields(
     }
     for (file, kind) in new_unshown.iter() {
         if SENSITIVE_KINDS.contains(&kind.as_str()) {
+            let long_chain = head.indirect_sinks.contains(&(file.clone(), kind.clone()));
             verdicts.push(verdict(
                 "new_sink_candidate",
                 "info",
-                "新增危险汇（仅 candidate，未阻断）",
+                if long_chain { "新增危险汇（服务/切面层，链较长，未阻断）" } else { "新增危险汇（仅 candidate，未阻断）" },
                 format!("{}:{}", file, kind),
                 json!({"sink_file": file, "sink_kind": kind}),
             ));
@@ -439,16 +459,169 @@ fn diff_fields(
     (added, modified, deleted, verdicts)
 }
 
-/// PR 漂移闸门：对比 base/head 两棵源码树。
+/// 闸门选项：严格汇模式与豁免规则文件。
+#[derive(Default, Clone, Debug)]
+pub struct GateOptions {
+    /// 受保护接口新增危险汇也阻断（默认只拦未鉴权入口 + shown 链）
+    pub strict_sinks: bool,
+    /// 豁免规则 JSON（也可放在 <head>/.ctx-audit/gate-allow.json 自动加载）
+    pub allow_path: Option<std::path::PathBuf>,
+    /// 快照缓存目录（CI 里对 base/head 分别缓存可把冷启动降到热启动）
+    pub cache_dir: Option<std::path::PathBuf>,
+    /// git tree sha（base, head）：提供后缓存 key 不再依赖读文件，热启动可跳过索引
+    pub cache_keys: Option<(String, String)>,
+}
+
+fn tree_key(file_hash: &BTreeMap<String, u64>) -> u64 {
+    // 版本盐：快照结构/判定规则变化时让旧缓存失效
+    let mut acc: u64 = fnv64("gate-snapshot-v3");
+    let mut items: Vec<(&String, &u64)> = file_hash.iter().collect();
+    items.sort();
+    for (p, h) in items {
+        acc ^= fnv64(p);
+        acc = acc.wrapping_mul(0x100000001b3);
+        acc ^= *h;
+        acc = acc.wrapping_mul(0x100000001b3);
+    }
+    acc
+}
+
+fn load_snapshot_cached(
+    root: &Path,
+    cache_dir: Option<&Path>,
+    explicit_key: Option<&str>,
+) -> Result<Snapshot, String> {
+    let Some(dir) = cache_dir else { return load_snapshot(root) };
+    // 有 git tree sha 时完全不用读文件即可判缓存；否则回退到"读文件 + 哈希"。
+    let key = match explicit_key {
+        Some(ns) => fnv64("gate-snapshot-v3").wrapping_mul(0x100000001b3) ^ fnv64(ns),
+        None => {
+            let loaded = super::index::load_files(root);
+            let mut file_hash: BTreeMap<String, u64> = BTreeMap::new();
+            for (p, c) in loaded.files.iter() {
+                file_hash.insert(p.clone(), fnv64(c));
+            }
+            tree_key(&file_hash)
+        }
+    };
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join(format!("{:016x}.json", key));
+    if path.exists() {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(cached) = serde_json::from_str::<Snapshot>(&text) {
+                return Ok(cached);
+            }
+        }
+    }
+    let snap = load_snapshot(root)?;
+    if let Ok(text) = serde_json::to_string(&snap) {
+        let _ = std::fs::write(&path, text);
+    }
+    Ok(snap)
+}
+
+fn load_waivers(head: &Path, allow: Option<&Path>) -> Vec<Value> {
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(p) = allow {
+        files.push(p.to_path_buf());
+    }
+    let auto = head.join(".ctx-audit").join("gate-allow.json");
+    if auto.exists() && allow.map(|p| p != auto).unwrap_or(true) {
+        files.push(auto);
+    }
+    let mut out = Vec::new();
+    for f in files {
+        let Ok(text) = std::fs::read_to_string(&f) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+        match v {
+            Value::Array(items) => out.extend(items),
+            Value::Object(obj) => {
+                if let Some(items) = obj.get("rules").and_then(|v| v.as_array()) {
+                    out.extend(items.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn waived(v: &Value, waivers: &[Value]) -> Option<String> {
+    for w in waivers {
+        let kind_ok = w.get("kind").and_then(|x| x.as_str()).map(|k| v["kind"].as_str() == Some(k)).unwrap_or(true);
+        let route_ok = w
+            .get("route")
+            .and_then(|x| x.as_str())
+            .map(|r| v["evidence"].as_str().unwrap_or("").contains(r) || v["route"].as_str() == Some(r))
+            .unwrap_or(true);
+        let file_ok = w
+            .get("file")
+            .and_then(|x| x.as_str())
+            .map(|f| {
+                v["evidence"].as_str().unwrap_or("").contains(f)
+                    || v["sink_file"].as_str() == Some(f)
+                    || v["file"].as_str() == Some(f)
+            })
+            .unwrap_or(true);
+        if kind_ok && route_ok && file_ok {
+            return Some(
+                w.get("reason")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("waived by gate-allow")
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+/// PR 漂移闸门：对比 base/head 两棵源码树（默认选项）。
 pub fn gate_report(base: &Path, head: &Path) -> Result<Value, String> {
+    gate_report_with_options(base, head, &GateOptions::default())
+}
+
+/// PR 漂移闸门（带选项）。
+pub fn gate_report_with_options(
+    base: &Path,
+    head: &Path,
+    opts: &GateOptions,
+) -> Result<Value, String> {
     let t0 = std::time::Instant::now();
-    let bsnap = load_snapshot(base)?;
-    let hsnap = load_snapshot(head)?;
-    let (added, modified, deleted, verdicts) = diff_fields(&bsnap, &hsnap);
+    // 双树并行扫描：两棵树互不依赖，用 thread scope 同时构建快照（可选快照缓存）。
+    let cache = opts.cache_dir.as_deref();
+    let (bkey, hkey) = opts
+        .cache_keys
+        .as_ref()
+        .map(|(b, h)| (Some(b.as_str()), Some(h.as_str())))
+        .unwrap_or((None, None));
+    let (bsnap, hsnap) = std::thread::scope(|scope| {
+        let h = scope.spawn(|| load_snapshot_cached(head, cache, hkey));
+        let b = load_snapshot_cached(base, cache, bkey);
+        (b, h.join().unwrap())
+    });
+    let bsnap = bsnap?;
+    let hsnap = hsnap?;
+    let (added, modified, deleted, mut verdicts) =
+        diff_fields(&bsnap, &hsnap, opts.strict_sinks);
+    let waivers = load_waivers(head, opts.allow_path.as_deref());
+    let mut waived_count = 0usize;
+    for v in verdicts.iter_mut() {
+        if let Some(reason) = waived(v, &waivers) {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("waived".to_string(), json!(true));
+                obj.insert("waive_reason".to_string(), json!(reason));
+                if obj.get("severity").and_then(|s| s.as_str()) == Some("block") {
+                    obj.insert("severity".to_string(), json!("waived"));
+                    waived_count += 1;
+                }
+            }
+        }
+    }
     let blocks = verdicts
         .iter()
         .filter(|v| v["severity"].as_str() == Some("block"))
         .count();
+    let _ = waived_count;
     let warns = verdicts
         .iter()
         .filter(|v| v["severity"].as_str() == Some("warn"))
@@ -481,6 +654,12 @@ pub fn gate_report(base: &Path, head: &Path) -> Result<Value, String> {
             "blocks": blocks,
             "warns": warns,
             "infos": infos,
+            "waived": verdicts
+                .iter()
+                .filter(|v| v["severity"].as_str() == Some("waived"))
+                .count(),
+            "strict_sinks": opts.strict_sinks,
+            "cache_dir": opts.cache_dir.as_ref().map(|p| p.display().to_string()),
             "exit_code": if blocks > 0 { 2 } else { 0 },
         },
         "verdicts": verdicts,
@@ -594,6 +773,100 @@ public class B {
         assert!(kinds.contains(&"new_unauthenticated_route"), "kinds={kinds:?}");
         assert!(kinds.contains(&"dangerous_sink_added"), "kinds={kinds:?}");
         assert_eq!(r["summary"]["exit_code"], 2);
+    }
+
+    #[test]
+    fn strict_sinks_blocks_covered_route_sink() {
+        let base = tmp("base3");
+        let head = tmp("head3");
+        let cfg = r#"
+@Configuration
+public class SaTokenConfigure implements WebMvcConfigurer {
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(new SaInterceptor(handle -> {
+            SaRouter.match("/admin/**", () -> {
+                StpUtil.checkLogin();
+                StpUtil.checkRole("admin");
+            });
+        })).addPathPatterns("/**").excludePathPatterns("/admin");
+    }
+}
+"#;
+        let ctrl = r#"
+@RestController
+@RequestMapping("/admin")
+public class AdminController {
+    @GetMapping("/run")
+    public String run(String cmd) { return "ok"; }
+}
+"#;
+        let head_ctrl = ctrl.replace(
+            "public String run(String cmd) { return \"ok\"; }",
+            "public String run(String cmd) throws Exception { return Runtime.getRuntime().exec(cmd).toString(); }",
+        );
+        write_tree(&base, &[("src/SaTokenConfigure.java", cfg), ("src/AdminController.java", ctrl)]);
+        write_tree(&head, &[("src/SaTokenConfigure.java", cfg), ("src/AdminController.java", &head_ctrl)]);
+        let default = gate_report(&base, &head).unwrap();
+        assert_eq!(default["summary"]["blocks"], 0, "covered route should not block by default");
+        let strict = gate_report_with_options(
+            &base,
+            &head,
+            &GateOptions { strict_sinks: true, allow_path: None, cache_dir: None, cache_keys: None },
+        )
+        .unwrap();
+        let kinds: Vec<&str> = strict["verdicts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["kind"].as_str().unwrap_or(""))
+            .collect();
+        assert!(kinds.contains(&"dangerous_sink_added"), "kinds={kinds:?}");
+    }
+
+    #[test]
+    fn waivers_downgrade_block() {
+        let base = tmp("base4");
+        let head = tmp("head4");
+        let f = r#"
+@RestController
+public class A {
+    @GetMapping("/ok")
+    public String ok() { return "ok"; }
+}
+"#;
+        write_tree(&base, &[("src/A.java", f)]);
+        write_tree(
+            &head,
+            &[
+                ("src/A.java", f),
+                (
+                    "src/B.java",
+                    r#"
+@RestController
+public class B {
+    @GetMapping("/anon/new")
+    public String run() { return "ok"; }
+}
+"#,
+                ),
+            ],
+        );
+        let allow = head.join("allow.json");
+        std::fs::write(
+            &allow,
+            r#"{"rules":[{"kind":"new_unauthenticated_route","route":"/anon/new","reason":"public by design"}]}"#,
+        )
+        .unwrap();
+        let r = gate_report_with_options(
+            &base,
+            &head,
+            &GateOptions { strict_sinks: false, allow_path: Some(allow), cache_dir: None, cache_keys: None },
+        )
+        .unwrap();
+        assert_eq!(r["summary"]["blocks"], 0);
+        assert_eq!(r["summary"]["waived"], 1);
+        assert_eq!(r["summary"]["exit_code"], 0);
     }
 
     #[test]

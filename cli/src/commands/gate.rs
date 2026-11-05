@@ -7,6 +7,20 @@ use miette::{miette, IntoDiagnostic, Result};
 use std::path::{Path, PathBuf};
 
 /// 用 git worktree 把某个 ref 导出成临时目录。
+fn rev_tree(repo: &Path, reference: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .arg("rev-parse")
+        .arg(format!("{}^{{tree}}", reference))
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 fn export_ref(repo: &Path, reference: &str) -> Result<PathBuf> {
     let pid = std::process::id();
     let safe: String = reference
@@ -56,15 +70,24 @@ pub async fn execute(
     format: String,
     fail_on_block: bool,
     git: Option<String>,
+    strict_sinks: bool,
+    allow: Option<String>,
+    cache_dir: Option<String>,
 ) -> Result<()> {
-    let (base_root, head_root, cleanup) = if let Some(repo) = git {
+    let (base_root, head_root, cleanup, cache_keys) = if let Some(repo) = git {
         let repo = PathBuf::from(&repo);
         if !repo.exists() {
             return Err(miette!("git 仓库路径不存在: {}", repo.display()));
         }
+        let bkey = rev_tree(&repo, &base);
+        let hkey = rev_tree(&repo, &head);
         let b = export_ref(&repo, &base)?;
         let h = export_ref(&repo, &head)?;
-        (b.clone(), h.clone(), Some((repo, vec![b, h])))
+        let keys = match (bkey, hkey) {
+            (Some(bk), Some(hk)) => Some((bk, hk)),
+            _ => None,
+        };
+        (b.clone(), h.clone(), Some((repo, vec![b, h])), keys)
     } else {
         let b = PathBuf::from(&base);
         let h = PathBuf::from(&head);
@@ -73,10 +96,17 @@ pub async fn execute(
                 return Err(miette!("{} 路径不存在: {}", name, p.display()));
             }
         }
-        (b, h, None)
+        (b, h, None, None)
     };
 
-    let report = ctx_audit_tools::gate_report(&base_root, &head_root).map_err(|e| miette!("{}", e))?;
+    let opts = ctx_audit_tools::GateOptions {
+        strict_sinks,
+        allow_path: allow.map(std::path::PathBuf::from),
+        cache_dir: cache_dir.map(std::path::PathBuf::from),
+        cache_keys,
+    };
+    let report = ctx_audit_tools::gate_report_with_options(&base_root, &head_root, &opts)
+        .map_err(|e| miette!("{}", e))?;
     let blocks = report["summary"]["blocks"].as_u64().unwrap_or(0);
 
     match format.to_ascii_lowercase().as_str() {

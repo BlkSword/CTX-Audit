@@ -384,6 +384,18 @@ enum Commands {
         /// git 仓库模式：--base/--head 视为 git ref（自动 worktree 导出到临时目录）
         #[arg(long, value_name = "REPO")]
         git: Option<String>,
+
+        /// 严格汇模式：受保护接口新增危险汇也阻断（默认只拦未鉴权入口）
+        #[arg(long)]
+        strict_sinks: bool,
+
+        /// 豁免规则 JSON（也可放 <head>/.ctx-audit/gate-allow.json 自动加载）
+        #[arg(long, value_name = "FILE")]
+        allow: Option<String>,
+
+        /// 快照缓存目录（CI 中配合 cache action 复用 base/head 快照）
+        #[arg(long, value_name = "DIR")]
+        cache_dir: Option<String>,
     },
 
     /// 审计驾驶舱：覆盖率摘要 + 排序待审清单 + 证据包（人用加速器）
@@ -839,7 +851,22 @@ async fn main() -> Result<()> {
             output,
             no_fail_on_block,
             git,
-        } => commands::gate::execute(base, head, output, !no_fail_on_block, git).await,
+            strict_sinks,
+            allow,
+            cache_dir,
+        } => {
+            commands::gate::execute(
+                base,
+                head,
+                output,
+                !no_fail_on_block,
+                git,
+                strict_sinks,
+                allow,
+                cache_dir,
+            )
+            .await
+        }
 
         Commands::ExplainRoute {
             path,
