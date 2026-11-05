@@ -41,6 +41,7 @@ pub use code_intel_tools::{
     CODE_INTEL_TOOL_SURFACE,
 };
 pub use code_intel_tools::gate::{gate_markdown, gate_report, gate_report_with_options, GateOptions};
+pub use code_intel_tools::probe::{can_reach_report, slice_between_report};
 pub use executor::ToolExecutor;
 #[cfg(feature = "legacy-tools")]
 pub use pattern_tools::register_pattern_tools;
