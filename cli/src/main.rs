@@ -59,7 +59,52 @@ MAX_FLOWS 是主要的“覆盖 vs 成本”旋钮：结构链按 source 均摊�
 默认 5000→1755/7.3s；可达 source 约 1560 个，超过后不再增长）。
 注：这些旋钮主要影响候选量与结构链覆盖，对总耗时影响通常在 10-30%（跨文件搜索约占 deep 的 1/4）。";
 
-/// CLI 子命令
+/// `ctx-audit probe` 子命令。
+#[derive(Subcommand, Debug)]
+enum ProbeCommand {
+    /// 两点之间是否存在调用路径
+    Reach {
+        /// 项目根目录
+        #[arg(value_name = "ROOT")]
+        root: String,
+        /// 源文件（相对 ROOT）
+        #[arg(long)]
+        from_file: String,
+        /// 源行号
+        #[arg(long, default_value_t = 1)]
+        from_line: u32,
+        /// 目标文件（相对 ROOT）
+        #[arg(long)]
+        to_file: String,
+        /// 目标行号
+        #[arg(long, default_value_t = 1)]
+        to_line: u32,
+        /// 输出格式 (json|md)
+        #[arg(short = 'o', long, default_value = "json")]
+        output: String,
+    },
+    /// 沿可达路径切出每步代码窗口
+    Slice {
+        /// 项目根目录
+        #[arg(value_name = "ROOT")]
+        root: String,
+        #[arg(long)]
+        from_file: String,
+        #[arg(long, default_value_t = 1)]
+        from_line: u32,
+        #[arg(long)]
+        to_file: String,
+        #[arg(long, default_value_t = 1)]
+        to_line: u32,
+        /// 每步窗口行数
+        #[arg(long, default_value_t = 20)]
+        radius: u32,
+        /// 输出格式 (json|md)
+        #[arg(short = 'o', long, default_value = "json")]
+        output: String,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// 快速规则扫描（批处理）
@@ -360,6 +405,13 @@ enum Commands {
         /// 输出格式 (json, md)
         #[arg(short = 'o', long = "output", default_value = "json")]
         output: String,
+    },
+
+    /// 探针原语（路线 B）：按需可达性查询与路径切片
+    #[command(after_help = "点用 file:line 表示；-o json 输出原样 envelope。")]
+    Probe {
+        #[command(subcommand)]
+        cmd: ProbeCommand,
     },
 
     /// PR 安全漂移闸门：对比 base/head 两棵源码树，输出阻断判决
@@ -849,6 +901,7 @@ async fn main() -> Result<()> {
             .await
         }
 
+        Commands::Probe { cmd } => commands::probe::execute(cmd).await,
         Commands::Gate {
             base,
             head,

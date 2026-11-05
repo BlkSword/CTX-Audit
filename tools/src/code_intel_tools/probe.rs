@@ -20,6 +20,74 @@ const MAX_HOPS: usize = 20;
 const MAX_NODES: usize = 3000;
 const NEIGHBOR_CAP: usize = 8;
 
+/// 定义抽取加强版：在 chain::definitions 基础上补多行签名
+/// （`public Foo bar(\n  String a,\n  int b) {` 这类），并做去重。
+fn definitions_multi(content: &str, lang: &str) -> Vec<(String, u32)> {
+    let mut out = chain::definitions(content, lang);
+    const KW: [&str; 12] = [
+        "if", "for", "while", "switch", "catch", "return", "new", "throw", "else", "try", "do",
+        "case",
+    ];
+    let lines: Vec<&str> = content.lines().collect();
+    for (i, raw) in lines.iter().enumerate() {
+        let t = raw.trim();
+        if t.is_empty() || t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+            continue;
+        }
+        let Some(open) = t.find('(') else { continue };
+        let before = t[..open].trim_end();
+        if before.is_empty() {
+            continue;
+        }
+        let name: String = before
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if name.is_empty() || KW.contains(&name.as_str()) {
+            continue;
+        }
+        // 单行定义（同一行有 `)`）交给 chain::definitions；这里只补多行签名
+        if t[open..].contains(')') {
+            continue;
+        }
+        let decl_like = before.contains(' ')
+            || [
+                "public", "private", "protected", "static", "final", "abstract",
+                "synchronized", "def ", "func ", "function ", "export ",
+            ]
+            .iter()
+            .any(|k| t.starts_with(k));
+        if !decl_like {
+            continue;
+        }
+        let mut ok = false;
+        for j in i..(i + 8).min(lines.len()) {
+            let tj = lines[j];
+            if tj.contains(')') {
+                if tj.contains('{')
+                    || lines
+                        .get(j + 1)
+                        .map(|n| n.trim_start().starts_with('{'))
+                        .unwrap_or(false)
+                {
+                    ok = true;
+                }
+                break;
+            }
+        }
+        if ok {
+            out.push((name, (i + 1) as u32));
+        }
+    }
+    out.sort_by_key(|(_, l)| *l);
+    out.dedup();
+    out
+}
+
 struct Graph {
     defs: BTreeMap<String, Vec<(String, u32)>>,
     calls: BTreeMap<String, Vec<(String, u32, bool)>>,
@@ -38,7 +106,7 @@ impl Graph {
         };
         for (path, content) in loaded.files.iter() {
             let lang = chain::chain_language_of(path);
-            let defs = chain::definitions(content, lang);
+            let defs = definitions_multi(content, lang);
             let calls: Vec<(String, u32, bool)> = chain::calls(content)
                 .into_iter()
                 .map(|(name, line, member, _install, _ctor)| (name, line, member))
@@ -57,12 +125,23 @@ impl Graph {
     }
 
     fn enclosing(&self, file: &str, line: u32) -> Option<(String, u32)> {
-        self.defs.get(file).and_then(|defs| {
-            defs.iter()
-                .filter(|(_, l)| *l <= line)
-                .max_by_key(|(_, l)| *l)
-                .map(|(n, l)| (n.clone(), *l))
-        })
+        self.enclosing_with_fallback(file, line).map(|(n, l, _)| (n, l))
+    }
+
+    /// 优先取"行号之前的最近定义"；否则退化为"文件中距离最近的定义"，
+    /// 用第三个返回值标记 fallback，避免 agent 传入装饰器/调用点行号时直接判失败。
+    fn enclosing_with_fallback(&self, file: &str, line: u32) -> Option<(String, u32, bool)> {
+        let defs = self.defs.get(file)?;
+        if let Some((n, l)) = defs
+            .iter()
+            .filter(|(_, l)| *l <= line)
+            .max_by_key(|(_, l)| *l)
+        {
+            return Some((n.clone(), *l, false));
+        }
+        defs.iter()
+            .min_by_key(|(_, l)| l.abs_diff(line))
+            .map(|(n, l)| (n.clone(), *l, true))
     }
 
     fn def_end(&self, file: &str, def_line: u32) -> u32 {
@@ -120,7 +199,8 @@ pub fn can_reach_report(
     to_line: u32,
 ) -> Result<Value, String> {
     let graph = Graph::build(project);
-    let Some((from_sym, from_def)) = graph.enclosing(from_file, from_line) else {
+    let from_loc = graph.enclosing_with_fallback(from_file, from_line);
+    let Some((from_sym, from_def, from_fallback)) = from_loc else {
         return Ok(json!({
             "schema": "probe-reach/v1",
             "reachable": false,
@@ -129,7 +209,8 @@ pub fn can_reach_report(
             "to": {"file": to_file, "line": to_line},
         }));
     };
-    let Some((to_sym, to_def)) = graph.enclosing(to_file, to_line) else {
+    let to_loc = graph.enclosing_with_fallback(to_file, to_line);
+    let Some((to_sym, to_def, to_fallback)) = to_loc else {
         return Ok(json!({
             "schema": "probe-reach/v1",
             "reachable": false,
@@ -198,8 +279,8 @@ pub fn can_reach_report(
     Ok(json!({
         "schema": "probe-reach/v1",
         "reachable": found,
-        "from": {"file": from_file, "line": from_line, "symbol": from_sym, "def_line": from_def},
-        "to": {"file": to_file, "line": to_line, "symbol": to_sym, "def_line": to_def},
+        "from": {"file": from_file, "line": from_line, "symbol": from_sym, "def_line": from_def, "nearest_def_fallback": from_fallback},
+        "to": {"file": to_file, "line": to_line, "symbol": to_sym, "def_line": to_def, "nearest_def_fallback": to_fallback},
         "hops": path.len().saturating_sub(1),
         "path": path,
         "method": "name_level_bfs",
