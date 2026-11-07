@@ -2,259 +2,177 @@
 
 <div align="center">
 
-**Code Intelligence & Forensic Infrastructure for LLMs · Verification-Layer Driven**
+**Deterministic code-security fact engine · PR drift gate · MCP surface for agents**
 
-**Symbol Jump · Call Hierarchy · Backward Slicing · Framework Context · High-Level MCP Surface**
+Answers four questions deterministically: **does this PR introduce security drift**, **which endpoints are authenticated**, **is the entry-to-sink path real**, **can a payload survive to the sink**.
 
-CTX-Audit does not compete with industrial SAST on soundness, and it is not another rule stack: the engine emits **deterministic code-topology facts** (who calls whom, how arguments flow, which guards sit on the path) and marks everything it could not resolve with an explicit `uncertainty` section. Vulnerability semantics are decided by the LLM and human review; the rule corpus only serves as **candidate seeds and a regression baseline**, not a truth path.
+It is not a general vulnerability scanner: candidates and facts are for LLM/human judgement; every result carries `provenance` and `uncertainty`.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-blue?style=flat-square)](.github/workflows/ci.yml)
 
-[中文文档](README.md)
+[中文](README.md)
 
 </div>
 
 ---
 
-## Why CTX-Audit?
+## What it is
 
-Traditional SAST tools often fail at three points:
+| It does | It does not |
+|---|---|
+| Enumerate endpoints and auth coverage (declarative + middleware) | Claim "there is a vulnerability here" |
+| Diff base/head and emit PR drift verdicts | Full SAST / rule stacks |
+| Build entry-to-sink reachability and chain dossiers | Execute target code (dynamic verification is opt-in only) |
+| Walk payload state per hop (killed / may_survive / taint_lost) | Full type/alias-aware CPG dataflow |
+| Emit reproducible curl/MockMvc skeletons | Auto-generate PoCs or attack targets |
 
-- **A rule hit is not a vulnerability**: results rarely answer whether the data is truly attacker-controlled.
-- **Cross-file chains are broken**: the dangerous call is in file A while the entry point is in file B.
-- **LLMs tend to hallucinate**: dumping raw scan output to an LLM without call graphs, data-flow evidence, or middleware context produces unreliable verdicts.
-
-CTX-Audit solves this by:
-
-1. **Building the graph first**: parse ASTs, construct call graphs, compute function summaries, and make cross-file relationships queryable.
-2. **Providing evidence chains**: findings carry `enclosing_function`, `evidence_refs`, source/sink snippets, and taint paths where available.
-3. **Exposing investigation tools to LLMs**: the default MCP surface exposes **9 high-level capabilities** plus 4 basic tools (`read_file` / `list_files` / `report_finding` / `finish_analysis`), and every response carries `provenance` (file, line, resolver, index version) and `uncertainty`. Legacy fine-grained tools remain implemented but off by default (`--legacy-tools`).
-
-> **Positioning: the deterministic engine supplies evidence; the LLM makes semantic judgments.**
+**Design goals**: no build step, sub-second where possible, deterministic (identical output for identical input), every fact with provenance and uncertainty.
 
 ---
 
-## Quick Start
+## Capabilities
+
+### PR security drift gate
+Detects what this change introduced: `new_unauthenticated_route`, `auth_regression`, `auth_config_regression`, `guard_removed`, `dangerous_sink_added` (block) plus `new_route_covered`, `guard_added`, `new_sink_candidate` (info). Directory or git-ref comparison, exit code 2 on block, waivers (`--allow`), strict sinks, snapshot cache, light mode, GitHub Action with a three-line block summary.
+
+### Endpoint & auth coverage
+Declarative: Spring Security, Sa-Token, Shiro, servlet filters, interceptors. Middleware: Express `app.use([prefix,] authMw)`, Flask `before_request`, Next.js `middleware.ts` with `config.matcher`. Labels such as `covered_by_global_config`, `covered_by_middleware`, `no_global_match_found` each point to the rule that produced them.
+
+### Chains, dossiers, falsification
+Reverse reachability from sinks to entries, chain dossiers (bounded size) with per-step file/line/symbol/guards/breakpoints, `assert_chain_step` to re-check a step against the source, guard deltas between vulnerable and fixed trees (`chain --compare`), vocabulary learned from fix diffs (`chain --learn`).
+
+### On-demand probes
+`can_reach` (name-level bounded BFS) and `slice_between` (code windows along the path) instead of one-shot huge dossiers.
+
+### Intra-procedural mini-SSA
+`trace_params`: parameter → local variable → call argument binding, with implicit-sink tagging (reflection, property access, expression, JNDI, deserialization) and taint cut-off on response-body rebinding.
+
+### Payload viability
+`payload_viability` walks the reachable path for an archetype (sql / path / jndi / template / deser / command / ssrf / xss), where guards kill and decode/parse mutate. Tiers: `payload_killed`, `guard_ineffective_token`, `taint_lost`, `payload_may_survive`. The verdict is attached to chain dossiers automatically.
+
+### Verification skeleton and opt-in dynamic verification
+`harness_skeleton` builds route/params/guards/curl (`MARKER`) / MockMvc / manual plan. `verify_payload` is **disabled by default** and only runs Python fixtures inside `CTX_AUDIT_VERIFY_DIR`, injecting fake DB cursors and fake requests, returning `payload_verified` / `verified_killed`; it is not a network/filesystem sandbox and must never point at production code.
+
+---
+
+## Quick start
 
 ```bash
-git clone https://github.com/BlkSword/CTX-Audit.git
-cd CTX-Audit
 cargo build --release
 
-# Recommended main line: start the MCP server so the LLM can pull evidence
-# directly (no prior scan needed). The project root is the current directory
-# of the server process, so cd into the target project first.
-cd /path/to/myproject
+# PR drift gate: directories
+ctx-audit gate --base ./old-tree --head ./new-tree -o md
+
+# PR drift gate: git refs with cache
+ctx-audit gate --git . --base <base-sha> --head <head-sha> \
+  --cache-dir .ctx-audit/gate-cache -o md
+
+# Single route verdict (falsifiable)
+ctx-audit explain-route ./myproject /admin/users --assert uncovered
+
+# Chains and dossiers
+ctx-audit chain ./myproject --list
+ctx-audit chain ./myproject --list --id <chain-id>
+
+# On-demand probe
+ctx-audit probe reach ./myproject \
+  --from-file src/Controller.java --from-line 37 \
+  --to-file   src/Service.java    --to-line   243 -o json
+
+# MCP server (stdio)
 ctx-audit mcp
-
-# Reach for a scan only when you want candidate seeds (candidates, not verdicts)
-ctx-audit scan ./myproject                  # fast rule-based scan
-ctx-audit scan ./myproject --deep -o report.json
-
-# Daemon-backed incremental scanning
-ctx-audit daemon start
-ctx-audit scan ./myproject --daemon
-ctx-audit daemon stop
 ```
-
-Optionally install locally:
-
-```bash
-cargo install --path cli --locked
-```
-
-## LLM Collaboration via MCP
-
-`ctx-audit mcp` is the evidence-supply main line. It exposes **14 tools = 10 high-level capabilities + 4 basic tools** by default, so the model does not have to pick between dozens of fine-grained node operations:
-
-| High-level capability | Semantics | Main payload |
-|-----------------------|-----------|--------------|
-| `get_project_index` | Index status and language distribution | file/language stats, `build_id`, cache hit & limits |
-| `get_symbol_definition` | Cross-file symbol definition (hybrid precision) | location + `resolver` + confidence |
-| `get_symbol_references` | Symbol references (import aliases resolved) | location list + resolution kind |
-| `get_call_hierarchy` | Upstream/downstream call topology | structured call tree + unresolved edge count |
-| `slice_backward` | Slice backwards from a sink or variable | ≤ N relevant lines + path |
-| `get_dataflow_path` | source→sink path and the guards on it | path steps + barriers |
-| `get_sanitizer_guards` | Conditional branches / checks on the path | guard list |
-| `get_framework_context` | Middleware/interceptor chain before a route handler | chain + unrecognised parts |
-| `get_project_routes` | Project-wide endpoint table in one call (bounded) | routes + coverage verdicts + extraction shape |
-| `get_incremental_status` | Index state, cache freshness, SLO slots | status + cache metrics |
-
-Basic tools: `read_file` / `list_files` / `report_finding` / `finish_analysis`.
-
-### Fastest path: evidence without a scan
-
-Evidence tools build their own index on demand — **no prior `scan` is required**:
-
-1. Point the server at the project by setting its **working directory** to the project root (there is no `--project` flag; every `file` argument is relative to that root).
-2. Call the evidence tools directly. The first call builds the index synchronously: `index.hit_source` reports `miss` (built now) or `ttl` (cache hit), along with `build_ms` and `files_indexed`. The index is persisted and reused across processes.
-3. Pass `refresh: true` to force a rebuild after code changes.
-
-This fits situations where you already know where to look (a patch, a review lead, a suspicious line). Go back to `scan` only when you need a candidate set.
-
-### Investigation order
-
-```text
-get_project_index                                  → health check: files / language capability / limits
-get_symbol_definition   {symbol}                   → where the definition is
-get_symbol_references   {symbol}                   → who references it
-slice_backward          {file, line, depth: 40}    → enclosing function + backward prefix slice
-read_file               {file_path, start_line, end_line}  → fill in the context after the target line
-get_call_hierarchy      {function, direction}      → callers / callees
-get_sanitizer_guards    {file, line}               → guards on the path
-report_finding / finish_analysis                   → write the verdict back
-```
-
-> Two easy traps: `slice_backward` is a **backward prefix** slice — `window.end_line` stops at the target line, while bounds checks and dangerous operations often sit **after** it, so pair it with `read_file`; and `read_file` takes `file_path` (not `path`).
-
-Every response is `{data, provenance, uncertainty}`: `provenance` records which file, line, and resolver produced a conclusion (`tree-sitter` / `file-heuristic` / later `lsp`/`engine`), and `uncertainty` records what could not be resolved (`dynamic_dispatch_not_resolved`, `name_based_edges`, …). Dynamic dispatch, dependency injection, implicit interfaces, and same-name collisions are reported honestly instead of being papered over.
-
-### Legacy surface
-
-Legacy fine-grained tools are still implemented but off by default: start the server with `--legacy-tools` (or `CTX_AUDIT_LEGACY_TOOLS=1`) to expose them (`security_scan`, `query_callers`, `get_code_context`, …). Calls outside the default surface return a migration hint rather than silently executing.
-
-### Claude Code configuration
-
-`.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "ctx-audit": {
-      "command": "ctx-audit",
-      "args": ["mcp"],
-      "cwd": "/path/to/myproject"
-    }
-  }
-}
-```
-
-`cwd` selects the analysed project (otherwise the process working directory is used).
-
-## DSH Integration: Control Panel + Audit Preset
-
-CTX-Audit also ships as an out-of-tree plugin for the [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH) web GUI: a **control panel page** in the sidebar, plus an **audit-oriented agent preset**. The plugin does not modify DSH itself -- it installs into its own profile and coexists with whatever profile you normally use.
-
-**What the panel does**
-
-- **Status at a glance**: MCP configuration, the MCP engine (a real stdio handshake listing the 14 tools), logs, evidence artifacts, roadmap, agent presets.
-- **Point it anywhere**: the working-directory control in the top-right corner switches the project root to any directory (across drives, walking down level by level) and picks a target inside it; artifacts, logs and the health readout all follow that target.
-- **Project health**: calling `get_project_index` with the selected directory as the working directory reports files scanned, whether semantic analysis backs the result, primary languages, build context and timing.
-- **Tool cards**: when a session calls an `mcp__ctxaudit__*` tool, the call renders as a CTX-Audit card (tool name, outcome, line count, expandable result).
-- **Audit preset**: new sessions can pick **CTX-Audit Auditor**, a superset of the shipped capability surface (full tool surface plus skills, planning, compaction and delegation).
-
-**Install and use**
-
-```bash
-# 1) Install into $DSH_HOME/profiles/ctx-audit-web (non-destructive; FORCE=1 overwrites)
-DSH_HOME="$HOME/.dsh" bash harness/install.sh
-
-# 2) Self-checks -- neither needs a browser
-node harness/scripts/verify-ctx-audit-web.mjs --dsh <DSH package dir>   # validates every patch row
-node harness/scripts/probe-ctx-audit-web.mjs                            # component-tree probe
-
-# 3) Launch (or use the launcher: DSH_PROFILE=ctx-audit-web bash harness/bin/ctx-audit-dsh)
-dsh --profile ctx-audit-web --port 3081 --no-open
-```
-
-Prerequisites: a working DSH install and a built `ctx-audit` binary. On Windows, run the scripts from Git Bash.
-
-Full details live in [`harness/plugins/ctx-audit-web/README.md`](harness/plugins/ctx-audit-web/README.md) (prerequisites, file layout, panel usage, switching roots, uninstall, known limits).
 
 ---
 
+## MCP surface
 
-## Commands
+19 high-level tools + 3 base tools (`read_file`, `list_files`, `finish_analysis`); legacy fine-grained tools are opt-in via `--legacy-tools`. Every response uses the same envelope: `data` + `provenance` + `uncertainty`.
 
-### `mcp` — evidence-supply main line
+| Tool | Purpose |
+|---|---|
+| `get_project_routes` | endpoint table with coverage labels |
+| `coverage_summary` / `coverage_triage` | coverage overview / review queue |
+| `explain_route` / `assert_verdict` | single-route verdict and assertion |
+| `slice_backward` / `get_sanitizer_guards` / `get_framework_context` | backward slice, guard facts, framework context |
+| `candidate_chains` / `chain_dossier` / `assert_chain_step` | chain candidates, dossier (with payload verdict), step falsification |
+| `pr_drift_gate` | PR drift decision |
+| `can_reach` / `slice_between` | reachability and on-demand slices |
+| `harness_skeleton` | verification skeleton |
+| `trace_params` | intra-procedural mini-SSA |
+| `payload_viability` | payload survival walk (evidence tiers) |
+| `verify_payload` | opt-in dynamic verification (whitelisted Python fixtures) |
+| `report_finding` | result write-back for agent workflows |
 
-```bash
-ctx-audit mcp                 # default surface: 10 high-level capabilities + 4 basic tools = 14
-ctx-audit mcp --legacy-tools  # also register the legacy fine-grained surface
+---
+
+## Measured results
+
+All numbers come from reproducible benchmarks; scripts live in a private evaluation set.
+
+| Item | Result |
+|---|---|
+| Seeded PR scenarios (block/pass/strict/waiver, 14) | **7/7 blocks, 0/7 false positives** |
+| Real CVE fix PR replay (5) | **0/5 false positives** |
+| Real repository history (68 runs) | 6 blocks (8.8%), all explainable/waivable |
+| Latency | 590-file repo **772 ms**; 3357-file repo light steady state **2.82 s wall** (base cache), warm 4 ms |
+| Auth coverage corpus | 398 records, **0 false-safe** |
+| Payload viability, fixture corpus (10 chains) | **10/10**, zero false shown |
+| Payload viability, real repository chains (10) | **9/10 = 90%**, zero false flows (one 12-hop chain still lost) |
+| Dead-chain pruning (8 guarded chains + 5 real chains) | **13/13 = 100%** |
+| Determinism | five runs produce identical payload JSON (sha256) |
+| Opt-in dynamic verification (Python fixtures) | **4/4** (`payload_verified` / `verified_killed`) |
+| Cached probe latency | `can_reach` **15 ms**, `payload_viability` **39 ms** |
+
+---
+
+## Boundaries
+
+1. **Name-level graph**: no type/alias resolution; `reachable=true` means "topologically possible".
+2. **Heuristic guards**: guard attribution is function-body/token based; middleware execution order is not modelled.
+3. **`taint_lost` is not "not exploitable"**: it only means the entry parameters do not reach the sink.
+4. **Payload verdicts are static**: `payload_may_survive` is not "exploitable"; `payload_verified` requires opt-in dynamic verification.
+5. **Dynamic verification is not a sandbox**: only injected dependencies are faked; use local fixtures only.
+6. **Not a general vulnerability finder**: the fact layer serves LLM and human judgement.
+7. **No external CI pilot data yet**: real-repository observations come from internal runs.
+
+---
+
+## Architecture
+
+```
+cli/      CLI (ctx-audit): gate / chain / probe / explain-route / diff-routes / mcp ...
+core/     base analysis (AST, rules, indexing, diff)
+daemon/   resident daemon and incremental cache
+tools/    high-level MCP surface
+  framework.rs / routes.rs  endpoint enumeration, coverage, middleware modelling
+  chain.rs / chain_scan.rs  candidates, dossiers, falsification, fix deltas
+  gate.rs                   PR drift verdicts
+  ssa.rs                    mini-SSA (trace_params)
+  ant.rs                    payload viability (payload_viability)
+  verify.rs                 opt-in dynamic verification (verify_payload)
+  probe.rs                  can_reach / slice_between
+  harness.rs                verification skeleton
+  file_cache.rs             file/parse table caches
 ```
 
-stdio JSON-RPC (one request per line); the project root is the process working directory.
+---
 
-### `scan` — project scan (candidate seeds)
-
-```bash
-ctx-audit scan <PATH> [OPTIONS]
-  --deep                 Rules + AST taint + cross-file analysis
-  --taint                Single-file source→sink taint analysis
-  --cross-file           Cross-file call graph + taint (implies --taint)
-  --sca                  OSV dependency vulnerability scan
-  --min-severity <level> critical / high / medium / low
-  --min-confidence <n>   Confidence threshold (0.0 - 1.0)
-  -o, --output <file>    json / sarif / llm / markdown
-  --graph-output <path>  Export call graph for LLM/MCP use
-  --query-mode           Build call graph only, skip rule scan
-  --daemon               Reuse daemon incremental caches
-```
-
-**Engines**: RuleScanner (default) → AstTaintScanner (`--taint`) → CrossFileTaintAnalyzer (`--cross-file`).
-
-### Other commands
+## Development
 
 ```bash
-ctx-audit analyze ./src/main.py --symbols     # Single-file symbol analysis
-ctx-audit watch ./myproject                   # Continuous monitoring
-ctx-audit daemon status                       # Daemon status
-ctx-audit findings list                       # Finding database
-ctx-audit findings export report.json --format json
-ctx-audit rules list                          # List loaded rules
-ctx-audit rules validate                      # Validate YAML rules
-ctx-audit config set scan.threads 8           # Configuration
-ctx-audit completion bash                     # Shell completion
+cargo build --release
+cargo test --workspace
+cargo fmt
+cargo clippy --workspace -- -D warnings   # advisory, converging
 ```
 
-## Custom Rules
+Private evaluation sets (not in the repository): seeded PR scenarios, real-repository chains, dead-chain labels, dynamic-verification fixtures.
 
-Two kinds of YAML rules are supported:
-
-1. **Pattern rules** — regex / tree-sitter query matching, placed in `rules/` or `.ctx-audit/rules/`.
-2. **Taint rules** — source / sink / sanitizer definitions driving AST taint and cross-file tracking.
-
-Rule directory precedence: `--rules` > `.ctx-audit/rules/` > built-in `rules/`.
-
-```bash
-mkdir -p .ctx-audit/rules
-ctx-audit rules validate --rules .ctx-audit/rules
-ctx-audit scan ./myproject --rules .ctx-audit/rules --deep
-```
-
-Full field tables and worked examples: **[rules/CUSTOM-RULES.md](rules/CUSTOM-RULES.md)** (Chinese). The role and freeze policy of the built-in corpus: [rules/README.md](rules/README.md).
-
-## Detection Coverage
-
-| Type | CWE | Method |
-|------|-----|--------|
-| SQL Injection | CWE-89 | AST taint + MyBatis XML `${}` + rules |
-| Command Injection | CWE-78 | AST taint + multi-language rules |
-| Code Injection | CWE-94 | AST taint + template injection (SSTI) |
-| Path Traversal | CWE-22 | AST taint + multi-language rules |
-| XSS | CWE-79 | AST taint + sanitizer detection |
-| SSRF | CWE-918 | Cross-file tracking + Host Header rules |
-| Insecure Deserialization | CWE-502 | Rules + method param source + caller chain |
-| XXE / Log Injection / Open Redirect / Secrets / Weak Hash | Various | YAML sinks + cross-file + patterns |
-
-**Rule assets**: 80+ pattern rules with 200+ language patterns, 50+ taint sources, 100+ taint sinks, 180+ sanitizers, and framework rules for Spring, Java, Django, Flask, Express, React/Next.js, Go, PHP, C/C++, Rust, Gradio, and more.
-
-**Cross-file analysis**: import-aware alias resolution, callback registration, receiver tracking, type-hierarchy virtual dispatch, middleware modeling, cross-file BFS source→sink paths, and CPG with AccessPath matching.
-
-**Language support**: 12 AST grammars (Java, Python, JavaScript, TypeScript, Go, Rust, C, C++, PHP, HTML, CSS, JSON) plus Ruby rule coverage; 19 file extensions.
-
-## Project Status & Achievements
-
-CTX-Audit has evolved from a rule scanner into a **real-project-driven hybrid auditing platform**.
-
-- **160+ real-world audit rounds** across Java, Python, Go, JavaScript/TypeScript, PHP, Rust, and C/C++ ecosystems.
-- **49 confirmed real-world vulnerabilities (TP)** in audited projects; **40 previously undisclosed 0-days** and **17 CVEs independently verified**.
-- **Engine feedback loop**: real findings and false positives are continuously converted into YAML rules, source/sink definitions, sanitizer-window semantics, and AST/CPG fixes.
-- **MCP collaboration**: a high-level tool surface (9 capabilities + 4 basic tools = 13) returns code slices with `provenance` and `uncertainty`, so LLM analysts investigate call graphs, taint paths, and middleware context instead of guessing.
-- **Rule corpus role**: rules and taint definitions are candidate seeds and a regression baseline — not a truth path; verdicts come from LLM/human review plus reproducible validation.
-- **Honest boundaries**: the engine is an evidence provider and noise compressor; logic, authorization, and business-logic vulnerabilities still require LLM deep review and manual verification.
+---
 
 ## License
 
-Apache License 2.0
+Apache-2.0, see [LICENSE](LICENSE).

@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**面向 LLM 的代码智能与取证基础设施 · 验证层驱动**
+**确定性代码安全事实引擎 · PR 漂移闸门 · 面向 Agent 的取证工具面（MCP）**
 
-**符号跳转 · 调用层级 · 反向切片 · 框架上下文 · 高阶 MCP 工具面**
+确定性地回答四类问题：**这个 PR 是否引入安全漂移**、**这些端点谁有鉴权**、**入口到汇的路径通不通**、**载荷能否活着到达 sink**。
 
-不与工业级 SAST 比拼健全性，也不做规则堆砌：引擎输出**确定性的代码拓扑事实**（谁调用谁、参数如何传递、路径上有哪些守卫），并把"没解析出来/靠猜"的部分用 `uncertainty` 显式标注；漏洞语义判定交给 LLM 与人工复核。规则语料只作为**候选种子与回归基线**，不承担真值判定。
+不追求通用漏洞发现：候选链与事实层交给 LLM/人做最终判定；每个结论都带 `provenance` 与 `uncertainty`，可复核、可证伪。
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](LICENSE)
@@ -18,508 +18,283 @@
 
 ---
 
-## 为什么选择 CTX-Audit？
-
-传统 SAST 的主要痛点：
-
-- **规则命中不等于漏洞**：大量规则扫描结果无法回答“这条数据是否真的外部可控”。
-- **跨文件链路断裂**：危险函数在 A 文件，入口参数在 B 文件，单文件扫描只能看到局部。
-- **LLM 容易“脑补”**：直接把扫描结果丢给 LLM 判定，它没有可验证的调用图、数据流和中间件上下文，容易把 FP 当 TP。
-
-CTX-Audit 的解法：
-
-1. **先建图，再扫描**：解析 AST、构建调用图、计算函数摘要，把跨文件调用关系变成可查询的结构化数据。
-2. **用证据链说话**：每个高危 finding 携带 `enclosing_function`、`evidence_refs`、source/sink 代码片段，必要时附带污点传播路径。
-3. **把分析能力交给 LLM**：MCP 默认只暴露 **9 个高阶语义能力**（符号定义/引用、调用层级、反向切片、数据流路径、sanitizer 守卫、框架上下文、项目索引、增量状态等）+ 4 个基础工具（`read_file` / `list_files` / `report_finding` / `finish_analysis`），每个响应都携带 `provenance`（文件/行/解析方式/索引版本）与 `uncertainty`（不确定度与原因）。LLM 不必在几十个细粒度工具之间做选择；遗留的细粒度工具面保留实现，用 `--legacy-tools` 显式打开。
-
-> **核心定位：引擎负责“确定性证据供给”，LLM 负责“语义判定”，可复现验证负责“坐实”。**
-
-
-
----
-
 ## 目录
 
+- [定位](#定位)
+- [核心能力](#核心能力)
 - [快速开始](#快速开始)
-- [LLM 协作审计（推荐主线）](#llm-协作审计推荐主线)
-- [DSH 集成：控制面板 + 审计预设](#dsh-集成控制面板--审计预设)
-- [命令总览](#命令总览)
-- [配置文件](#配置文件)
-- [检测能力](#检测能力)
-- [自定义规则](#自定义规则)
-- [报告与输出](#报告与输出)
+- [PR 安全漂移闸门](#pr-安全漂移闸门)
+- [MCP 工具面](#mcp-工具面)
+- [实测数据与验证方法](#实测数据与验证方法)
+- [能力边界](#能力边界)
 - [架构](#架构)
-- [能力边界与验证方法](#能力边界与验证方法)
 - [开发与测试](#开发与测试)
 - [许可证](#许可证)
 
 ---
 
+## 定位
+
+CTX-Audit 是**事实引擎**，不是漏洞扫描器：
+
+| 它做 | 它不做 |
+|---|---|
+| 枚举端点与鉴权覆盖（声明式 + 中间件） | 宣称"这里一定有漏洞" |
+| 对比 base/head，输出 PR 漂移判决 | 全量 SAST / 规则堆砌 |
+| 给出入口→汇的可达路径与链档 | 执行目标代码（动态验证需显式开启） |
+| 逐跳推演载荷状态（killed / may_survive / taint_lost） | 类型/别名完整的 CPG 数据流 |
+| 输出可复现的 curl/MockMvc 验证骨架 | 自动生成 PoC 并攻击目标 |
+
+**设计原则**：零构建、亚秒级、确定性（同输入多次运行逐字节一致）、每条事实带出处与不确定性。
+
+---
+
+## 核心能力
+
+### 1. PR 安全漂移闸门
+
+只看"本次改动引入的变化"，回答"是否让原本受保护的路径裸奔"。
+
+- **阻断判决**：`new_unauthenticated_route`、`auth_regression`、`auth_config_regression`、`guard_removed`、`dangerous_sink_added`
+- **信息判决**：`new_route_covered`、`guard_added`、`new_sink_candidate`
+- 支持目录对比与 git ref 对比（`--git <repo>`，自动导出树）；block 时退出码 2
+- 豁免（`--allow` / `<head>/.ctx-audit/gate-allow.json`）、严格模式（`--strict-sinks`）、快照缓存（`--cache-dir`）、轻量模式（`--light`）
+- CI 集成：GitHub Action 示例（`.github/workflows/pr-gate.yml`），PR 评论先给"判决/原因/证据"三行，明细表折叠在后
+
+### 2. 端点与鉴权覆盖
+
+- 声明式：Spring Security（`SecurityFilterChain`/`requestMatchers`）、Sa-Token、Shiro、容器 Filter、拦截器
+- 中间件：Express `app.use([prefix,] authMw)`、Flask `before_request`、Next.js `middleware.ts` + `config.matcher`
+- 覆盖率标签：`covered_by_global_config` / `covered_by_middleware` / `permitted_by_global_config` / `no_global_match_found` / `coverage_unknown` 等，逐个带规则出处
+
+### 3. 候选链 / 链档 / 证伪
+
+- 反向可达（汇→入口）+ 权重（构造/数据流/载荷跳/间接调用）
+- 链档（≤12KB）：每步行号、符号、守卫、断点、不确定性、反证命令；并自动附带该链的**载荷判定**（`payload` 字段）
+- `assert_chain_step` 逐步骤核对"链条是否仍在源码中"
+- `chain --compare` 输出修复前后守卫增量（`new_guards` / `removed_risky` / `added_hardening`）
+- `chain --learn` 从修复 diff 派生词汇
+
+### 4. 按需探针
+
+- `can_reach`：两点之间是否存在调用路径（名字级 BFS，≤20 跳，显式 uncertainty）
+- `slice_between`：沿路径按需切代码窗口（≤12KB），替代一次性整档
+
+### 5. 函数内 mini-SSA
+
+- `trace_params`：参数 → 局部变量 → 调用实参绑定；标注反射/属性访问/表达式/JNDI/反序列化等隐式汇
+- 响应体重绑定（`execute().body()` / `httpResponse` / `requests.get` 等）会切断污点，避免"响应体被当成入口参数"
+
+### 6. 载荷存活判定
+
+- `payload_viability`：沿可达路径逐跳推演指定载荷类型（sql / path / jndi / template / deser / command / ssrf / xss）
+- 守卫 = 杀伤（allowlist / sanitize / path_check / ssrf_check / template_escape / 参数化查询 / 输入过滤等），decode/parse = 变异
+- 分档：`payload_killed` / `guard_ineffective_token` / `taint_lost` / `payload_may_survive`
+- 结果自动附加到链档的 `payload` 字段（无需额外调用）
+
+### 7. 验证骨架与受限动态验证
+
+- `harness_skeleton`：为 handler 生成路由/参数/守卫/curl（`MARKER` 占位）/MockMvc/人工验证计划
+- `verify_payload`（**默认关闭，需显式开启**）：仅在 `CTX_AUDIT_VERIFY_DIR` 白名单目录内的 Python fixture 上执行，注入 fake DB cursor / fake requests，返回 `payload_verified` / `verified_killed`；不做网络/文件系统沙箱，仅适用于本地 fixture
+
+---
+
 ## 快速开始
 
+### 构建
+
 ```bash
-# 获取与构建
 git clone https://github.com/BlkSword/CTX-Audit.git
 cd CTX-Audit
 cargo build --release
-
-# 推荐主线：启动 MCP Server，让 LLM 直接取证据（不需要先扫描）
-# 项目根 = 启动该进程时的当前目录，cd 到目标项目再启动即可
-cd /path/to/myproject
-ctx-audit mcp
-
-# 需要“哪里可能有问题”的候选集时再扫描（候选种子，不是漏洞结论）
-ctx-audit scan ./myproject                  # 秒级规则扫描
-ctx-audit scan ./myproject --deep           # 规则 + AST 污点 + 跨文件追踪
-ctx-audit scan ./myproject --deep -o report.json
-
-# 启动增量缓存守护进程
-ctx-audit daemon start
-ctx-audit scan ./myproject --daemon
-ctx-audit daemon stop
+# 产物：target/release/ctx-audit、target/release/ctx-audit-daemon
 ```
 
-也可以安装到本机：
+### 常用命令
 
 ```bash
-cargo install --path cli --locked
+# 1) PR 漂移闸门：两个目录
+ctx-audit gate --base ./old-tree --head ./new-tree -o md
+
+# 2) PR 漂移闸门：git ref（CI 推荐，配合缓存）
+ctx-audit gate --git . --base <base-sha> --head <head-sha> \
+  --cache-dir .ctx-audit/gate-cache -o md
+
+# 3) 单条端点判定（可机械证伪）
+ctx-audit explain-route ./myproject /admin/users --assert uncovered
+
+# 4) 候选链 / 链档
+ctx-audit chain ./myproject --list
+ctx-audit chain ./myproject --list --id <chain-id>
+
+# 5) 按需探针
+ctx-audit probe reach ./myproject \
+  --from-file src/Controller.java --from-line 37 \
+  --to-file   src/Service.java    --to-line   243 -o json
+
+# 6) MCP server（stdio）
+ctx-audit mcp
 ```
 
-然后直接使用 `ctx-audit` 命令。
+### GitHub Actions（示例）
+
+```yaml
+name: security-drift-gate
+on: [pull_request]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/cache@v4
+        with:
+          path: .ctx-audit/gate-cache
+          key: gate-${{ github.event.pull_request.base.sha }}
+      - run: cargo build --release
+      - run: ./target/release/ctx-audit gate --git . \
+          --base ${{ github.event.pull_request.base.sha }} \
+          --head ${{ github.event.pull_request.head.sha }} \
+          --cache-dir .ctx-audit/gate-cache -o md
+```
 
 ---
 
-## LLM 协作审计（推荐主线）
+## PR 安全漂移闸门
 
-CTX-Audit 不是“把扫描报告丢给 LLM 猜”，而是通过 MCP 协议为 LLM 提供**外科手术式的代码切片**：模型不必读完整仓库，也不必自己拼调用关系。
+### 判决语义
 
-### 最快路径：不扫描，直接取证据
+| 判决 | 严重度 | 含义 |
+|---|---|---|
+| `new_unauthenticated_route` | block | 新增入口没有任何声明式/中间件鉴权覆盖 |
+| `auth_regression` | block | 原本受保护的端点失去鉴权 |
+| `auth_config_regression` | block | 安全配置收紧变宽松（如规则删除/改为 permitAll） |
+| `guard_removed` | block | 端点/调用路径上的守卫被删除 |
+| `dangerous_sink_added` | block | 新增直达危险汇的链路（严格模式下含已覆盖接口） |
+| `new_route_covered` | info | 新增入口但已有覆盖 |
+| `guard_added` | info | 新增守卫（正向变化） |
+| `new_sink_candidate` | info | 新增候选汇（未确认可利用） |
 
-证据工具**按需自建索引**，不需要先跑 `scan`：
+### 豁免与严格模式
 
-1. 把 MCP Server 的**工作目录设为项目根**——这就是“指定分析哪个项目”的唯一方式（没有 `--project` 参数，工具参数里的 `file` 均为相对项目根的路径）；
-2. 直接调用证据工具，第一次调用会同步建立索引：响应里的 `index.hit_source` 会显示 `miss`（本次建立）/ `ttl`（缓存命中）、`build_ms`、`files_indexed`，索引会落盘供后续进程复用；
-3. 改完代码后可传 `refresh: true` 强制重建。
-
-适合已经知道要看哪里（补丁、评审线索、可疑行）的场景。需要“这个项目哪里可能有问题”的候选集时，才回到 `scan`。
-
-### 取证顺序（照抄即可）
-
-```text
-get_project_index                                  → 体检：文件数 / 语言能力 / 是否触顶
-get_symbol_definition   {symbol}                   → 定义在哪（符号定义声明的唯一权威）
-get_symbol_references   {symbol}                   → 谁在引用
-slice_backward          {file, line, depth: 40}    → 目标行的函数归属 + 前缀切片
-read_file               {file_path, start_line, end_line}  → 补目标行之后的上下文
-get_call_hierarchy      {function, direction}      → 上下游调用拓扑
-get_sanitizer_guards    {file, line}               → 变量路径上的守卫/校验
-report_finding / finish_analysis                   → 回写结论
-```
-
-> 两个易踩的点：`slice_backward` 是**后向前缀**切片，`window.end_line` 基本停在目标行，而边界检查/危险操作常在目标行**之后**，需要配合 `read_file` 把下文补齐；`read_file` 的参数名是 `file_path`（不是 `path`）。
-
-默认工具面（**14 个 = 10 高阶能力 + 4 基础工具**）：
-
-| 高阶能力 | 语义 | 主要返回 |
-|---------|------|---------|
-| `get_project_index` | 项目索引状态与语言分布 | 文件/语言统计、`build_id`、缓存命中与限额 |
-| `get_symbol_definition` | 符号定义（跨文件跳转，混合精度） | 位置 + `resolver` + 置信度 |
-| `get_symbol_references` | 符号引用（含 import 别名解析） | 位置列表 + 解析方式 |
-| `get_call_hierarchy` | 函数上下游调用拓扑 | 结构化调用树 + 未解析边计数 |
-| `slice_backward` | 从 sink/变量向前切片 | ≤ N 行相关代码 + 路径 |
-| `get_dataflow_path` | source→sink 路径与经过的守卫 | 路径步骤 + barriers |
-| `get_sanitizer_guards` | 变量路径上的条件分支/校验逻辑 | guard 列表 |
-| `get_framework_context` | 路由 handler 的前置中间件/拦截器链 | 中间件链 + 未识别部分 |
-| `get_project_routes` | 项目级端点表：一次调用返回全项目路由与覆盖判定 | 端点表 + 覆盖判定 + 提取形态 + 证据出处 |
-| `get_incremental_status` | 索引状态、缓存新鲜度与 SLO 位 | 状态 + 缓存指标 |
-
-基础工具：`read_file` / `list_files` / `report_finding` / `finish_analysis`。
-
-> 每个响应都是 `{data, provenance, uncertainty}`：`provenance` 说明这条结论从哪个文件、哪一行、用哪种解析方式得出（`tree-sitter` / `file-heuristic` / 未来的 `lsp`/`engine`），`uncertainty` 说明哪里没解析出来（例如 `dynamic_dispatch_not_resolved`、`name_based_edges`）。**不假装健全**——动态派发、DI、隐式接口、同符号名歧义都会如实标注。
-
-### 需要候选集时：`scan`
-
-```
-1. ctx-audit scan --deep → 规则 + AST 污点 + 跨文件候选（候选，不是结论）
-2. 对每个 high/critical 候选，按上面的取证顺序落实（定义 → 切片 → 调用链 → 守卫）
-3. 候选被坐实/证伪后回写：report_finding（供后续回归使用）
-```
-
-> 规则/污点语料是**候选种子 + 回归基线**：`scan` 的输出是"值得看的候选"，不是"漏洞结论"；认定由 LLM/人 + 可复现验证给出。
-
-### Claude Code 集成
-
-`.claude/settings.json`：
-
-```json
+```jsonc
+// .ctx-audit/gate-allow.json
 {
-  "mcpServers": {
-    "ctx-audit": {
-      "command": "ctx-audit",
-      "args": ["mcp"],
-      "cwd": "/path/to/myproject"
-    }
-  }
+  "rules": [
+    { "kind": "new_unauthenticated_route", "route": "/api/share/**", "reason": "公开分享接口（设计如此）" }
+  ]
 }
 ```
 
-`cwd` 指向被分析项目（不填则用启动进程的当前目录）；在 Claude Code 中即可直接用自然语言驱动取证与判定。
-
----
-
-## DSH 集成：控制面板 + 审计预设
-
-把 CTX-Audit 接进 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）的 Web GUI：侧边栏多一个**控制台页面**，并带一个**审计专用 agent 预设**。插件是**外置**的——不改 DSH 本体，装进独立 profile，与你日常使用的 profile 并存。
-
-**控制台能做什么**
-
-- **状态总览**：MCP 配置、MCP 引擎（实时 stdio 握手，列出 14 个工具）、日志、证据产物、路线图、Agent 预设。
-- **指向任意项目**：右上角「工作目录」可把项目根换成任意目录（含跨盘、逐级进入），并在其中选目标；面板的产物 / 日志 / 体检都跟随该目标。
-- **目标体检**：以所选目录为 cwd 真调 `get_project_index`，返回扫描文件数、是否具备语义分析、主语言、构建上下文与耗时。
-- **工具卡**：会话里调用 `mcp__ctxaudit__*` 时，调用处渲染 CTX-Audit 卡片（工具名 / 完成或失败 / 行数 / 可展开结果）。
-- **审计预设**：新建会话可选 **CTX-Audit Auditor**（内置能力面的**超集**：完整工具面 + 技能 + 计划 / 压缩 / 委派等）。
-
-**安装与使用**
-
 ```bash
-# 1) 安装（非破坏性；FORCE=1 覆盖本仓库自带的 profile 与 web bundle）
-DSH_HOME="$HOME/.dsh" bash harness/install.sh
-
-# 2) 自检：两条命令，都不需要浏览器
-node harness/scripts/verify-ctx-audit-web.mjs --dsh <DSH 包目录>   # patch 逐行校验
-node harness/scripts/probe-ctx-audit-web.mjs                      # 组件树探针
-
-# 3) 启动（也可用 launcher：DSH_PROFILE=ctx-audit-web bash harness/bin/ctx-audit-dsh）
-dsh --profile ctx-audit-web --port 3081 --no-open
-```
-
-前置条件：DSH 可用、已构建 `ctx-audit` 二进制；Windows 上请用 Git Bash 跑脚本。
-
-完整说明见 [`harness/plugins/ctx-audit-web/README.md`](harness/plugins/ctx-audit-web/README.md)（前置条件 / 文件布局 / 面板用法 / 换项目根 / 卸载 / 已知边界）。
-
----
-
-## 命令总览
-
-### `mcp` — 证据供应主线（推荐）
-
-```bash
-ctx-audit mcp                 # 默认工具面：10 高阶能力 + 4 基础工具 = 14 个
-ctx-audit mcp --legacy-tools  # 兼容：额外注册遗留的细粒度工具面
-```
-
-启动 MCP Server（stdio JSON-RPC，一行一个 JSON-RPC 请求），由 Claude Code / Cursor / 任意 MCP 客户端管理生命周期。
-**项目根 = 启动进程的当前目录**；默认工具面之外的调用会返回迁移提示而不是静默执行；也可用环境变量 `CTX_AUDIT_LEGACY_TOOLS=1` 打开遗留面（`security_scan` / `query_callers` / `get_code_context` 等旧工具面）。
-
-### `scan` — 项目扫描（候选种子）
-
-```
-ctx-audit scan <PATH> [OPTIONS]
-```
-
-| 选项 | 说明 |
-|------|------|
-| `--deep` | 启用 AST 污点 + 跨文件追踪（等价 `--taint --cross-file`） |
-| `--taint` | 仅启用单文件 AST 污点分析（source→sink） |
-| `--cross-file` | 启用跨文件调用图 + 跨文件污点追踪（隐含 `--taint`） |
-| `--sca` | 启用 SCA 依赖漏洞扫描（OSV 数据源） |
-| `--min-severity <级别>` | 最低严重程度：critical / high / medium / low |
-| `--min-confidence <0.0-1.0>` | 最低置信度阈值，过滤低置信度发现 |
-| `-o, --output <文件>` | 输出到文件，支持 `json` / `sarif` / `llm` / `markdown` |
-| `-t, --threads <N>` | 并行线程数 |
-| `-r, --rules <目录>` | 自定义规则目录 |
-| `-e, --exclude <模式>` | 追加排除目录，逗号分隔 |
-| `--graph-output <路径>` | 单独导出调用图（供 MCP / LLM 查询） |
-| `--query-mode` | 只构建调用图，不跑规则扫描 |
-| `--daemon` | 通过守护进程执行，复用增量缓存 |
-
-扫描引擎按需叠加：
-
-```
-RuleScanner（默认，快速批处理）
-  → AstTaintScanner（--taint，单文件 source→sink）
-    → CrossFileTaintAnalyzer（--cross-file，跨文件调用图 + 函数摘要）
-      → SCA 依赖扫描（--sca）
-```
-
-### `analyze` — 单文件分析
-
-```bash
-ctx-audit analyze ./src/main.py --symbols   # 符号信息
-ctx-audit analyze ./src/main.py --ast       # AST 结构
-ctx-audit analyze ./src/main.py --daemon    # 复用守护进程缓存
-```
-
-### `watch` — 持续监控
-
-```bash
-ctx-audit watch ./myproject
-ctx-audit watch ./myproject --output sarif --output-path .ctx-audit.sarif
-```
-
-监听文件变更，自动增量扫描并输出 SARIF 报告，适合集成到 CI 或本地持续检测流程。
-
-### `daemon` — 增量缓存守护进程
-
-```bash
-ctx-audit daemon start
-ctx-audit daemon status
-ctx-audit daemon stop
-```
-
-守护进程维护 AST / 调用图 / 扫描缓存，让重复扫描和 `watch` 模式更快；`scan --daemon` 可复用同一份缓存。
-
-### `findings` — 漏洞记录管理
-
-```bash
-ctx-audit findings list                     # 列出记录
-ctx-audit findings view <id>                # 查看详情
-ctx-audit findings update <id> --status fixed --note "..."
-ctx-audit findings export report.json --format json
-```
-
-扫描结果可落库，便于团队跟踪状态、复现和治理。
-
-### `rules` — 规则管理
-
-```bash
-ctx-audit rules list                        # 列出已加载规则
-ctx-audit rules validate                    # 校验规则目录 YAML 合法性
-```
-
-### `config` — 配置管理
-
-```bash
-ctx-audit config show
-ctx-audit config set scan.threads 8
-ctx-audit config list
-ctx-audit config validate
-ctx-audit config reset --confirm
-```
-
-### `completion` — Shell 自动补全
-
-```bash
-ctx-audit completion bash
-ctx-audit completion zsh
-ctx-audit completion fish
-ctx-audit completion powershell
+ctx-audit gate --base A --head B --allow .ctx-audit/gate-allow.json   # 豁免 → waived，退出码 0
+ctx-audit gate --base A --head B --strict-sinks                       # 受保护接口新增危险汇也阻断
 ```
 
 ---
 
-## 配置文件
+## MCP 工具面
 
-配置文件位置：
+默认**19 个高阶工具 + 3 个基础工具（read_file / list_files / finish_analysis）**；遗留细粒度工具面需 `--legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1` 开启。所有响应使用统一 envelope：`data` + `provenance` + `uncertainty`。
 
-- Linux：`~/.config/ctx-audit/config.toml`
-- macOS：`~/Library/Application Support/ctx-audit/config.toml`
-- Windows：`%APPDATA%\ctx-audit\config.toml`
-
-首次执行 `ctx-audit config set` 时自动生成。
-
-**常用配置**：
-
-```toml
-[scan]
-threads = 4
-min_severity = "medium"
-exclude_patterns = ["node_modules", ".git", "target", "build", "dist", "vendor", "test", "tests"]
-taint_max_candidate_files = 1000
-taint_max_file_kb = 256
-
-[daemon]
-listen_addr = "127.0.0.1:19527"
-
-[sca]
-enabled = false
-dev_dependencies = false
-severity_threshold = "high"
-```
-
-SCA 支持 OSV 漏洞库查询、依赖忽略列表、缓存 TTL、离线失败策略等配置；所有配置键可通过 `ctx-audit config list` 查看。
+| 工具 | 用途 |
+|---|---|
+| `get_project_routes` | 项目端点表（含覆盖标签与出处） |
+| `coverage_summary` | 鉴权覆盖汇总（比例、未覆盖列表、caveat） |
+| `coverage_triage` | 待审队列（按风险排序） |
+| `explain_route` | 单条端点判定 + `--assert` 可证伪 |
+| `slice_backward` | 反向切片 |
+| `get_sanitizer_guards` | 守卫识别 |
+| `get_framework_context` | 框架/中间件上下文 |
+| `assert_verdict` | 覆盖结论断言（CI/脚本化复核） |
+| `candidate_chains` | 候选链列表 |
+| `chain_dossier` | 单链链档（含 `payload` 判定） |
+| `assert_chain_step` | 链步骤证伪 |
+| `pr_drift_gate` | PR 漂移判决（base/head/strict/light） |
+| `can_reach` | 两点可达性（路径 + 不确定性） |
+| `slice_between` | 沿路径按需切片 |
+| `harness_skeleton` | 路由/参数/守卫/curl/MockMvc 骨架 |
+| `trace_params` | 函数内 mini-SSA（实参绑定 + 隐式汇） |
+| `payload_viability` | 载荷存活推演（四档证据分级） |
+| `verify_payload` | 受限动态验证（默认关闭，白名单 Python fixture） |
+| `report_finding` | 结论回写（供 agent 工作流） |
 
 ---
 
-## 检测能力
+## 实测数据与验证方法
 
-### 漏洞覆盖
+> 全部数字来自可复现 bench；评测脚本与语料在私有评测集中维护，下表为公开口径。
 
-| 类型 | CWE | 检测方式 |
-|------|-----|---------|
-| SQL 注入 | CWE-89 | AST 污点 + MyBatis XML `${}` + 规则 |
-| 命令注入 | CWE-78 | AST 污点 + 多语言规则 |
-| 代码注入 | CWE-94 | AST 污点 + 模板注入（SSTI） |
-| 路径遍历 | CWE-22 | AST 污点 + 多语言规则 |
-| XSS | CWE-79 | AST 污点 + sanitizer 检测 |
-| SSRF | CWE-918 | 跨文件追踪 + Host Header 规则 + 重定向作用域检查 |
-| 不安全反序列化 | CWE-502 | 规则 + 方法参数 source + 调用者链 |
-| XXE | CWE-611 | YAML sink 规则 |
-| 日志注入 | CWE-117 | 跨文件追踪 + logger sink |
-| 开放重定向 | CWE-601 | 规则 + sendRedirect 检测 |
-| 硬编码密码 / 密钥 | CWE-259 / CWE-798 | 模式匹配 |
-| 弱哈希 | CWE-328 | YAML sink 规则 |
-| 不安全 Cookie | CWE-614 | 规则 + sanitizer 检测 |
-| 信任边界 | CWE-501 | 跨文件追踪 |
+### 闸门
 
-### 规则资产
+| 项目 | 结果 |
+|---|---|
+| 种子 PR（拦截/放行/严格/豁免共 14 场景） | **7/7 拦截、0/7 误报** |
+| 真实 CVE 修复 PR 回放（5 个） | **0/5 误报** |
+| 真实仓库历史 PR（68 次运行） | 6 次拦截（8.8%），全部可解释/可豁免 |
+| 耗时 | 590 文件仓库 **772ms**；3357 文件仓库 light 稳态 **2.82s wall**（base 缓存命中），热启动 4ms |
+| 轻/重模式判决 | 一致 |
 
-- **80+ 条模式规则**，包含 200+ 多语言模式
-- **50+ 污点 source 定义**
-- **100+ 污点 sink 定义**
-- **180+ sanitizer 定义**
-- 框架规则覆盖 Spring / Java / Django / Flask / Express / React-Next.js / Go / PHP / C-C++ / Gradio / LLM-App / Rust 等
-- 14 个审计包（audit-packs）沉淀 CWE 家族判定判据
-- **定位说明**：以上规则/污点语料是**候选种子与回归基线**，用于召回可疑点与防止回归；
-  漏洞认定不在引擎内完成，而是由 LLM/人 + 可复现验证给出。
+### 事实与载荷判定
 
-### 跨文件追踪
-
-- **调用图构建**：Import-Aware 别名解析 + Callback 注册 + receiver 追踪 + 类型层次虚方法分发
-- **函数摘要**：自底向上计算污点签名，`param_to_calls` 多跳传播，返回值 LHS 回传
-- **路径追踪**：BFS source→sink 跨文件路径查找
-- **中间件建模**：Express `app.use()` / Django `MIDDLEWARE` 虚拟边
-- **CPG 引擎**：路径敏感分析 + AccessPath 前缀匹配 + sanitizer 净化检测
-
-### 误报控制
-
-- 文件角色标签（production / test / build / vendor）
-- Sanitizer 净化检测（前缀窗口 + 后向窗口 + 文件级豁免）
-- 安全屏障检测（shell:false、数组参数等）
-- 构造函数 FP 过滤
-- 基线抑制（`.ctx-audit/baseline.json`）
-- 置信度评分 + 多引擎交叉确认
-- YAML 规则 schema 校验失败告警
-
-### 语言支持
-
-- **AST 深度分析**：Java / Python / JavaScript / TypeScript / Go / Rust / C / C++ / PHP / HTML / CSS / JSON
-- **规则 / 污点扫描**：覆盖上述语言及 Ruby，文件类型覆盖 19 种扩展名
+| 项目 | 结果 |
+|---|---|
+| 端点鉴权判定（历史语料） | 398 条记录 **0 假安全** |
+| 载荷判定（fixture 语料，10 链） | **10/10**，假 shown 0 |
+| 载荷判定（真实仓库链，10 条） | **9/10 = 90%**，假 flow 0（1 例跨 12 跳链仍失配） |
+| 死链剪枝（8 守卫链 + 5 真实链） | **13/13 = 100%** |
+| 确定性 | 同输入 5 次运行载荷 JSON sha256 一致 |
+| 动态验证（Python fixture） | **4/4** 闭环（payload_verified / verified_killed） |
+| 探针缓存后延迟 | `can_reach` **15ms**、`payload_viability` **39ms**（复调） |
 
 ---
 
-## 自定义规则
+## 能力边界
 
-CTX-Audit 支持两类 YAML 自定义规则：
-
-1. **Pattern Rules**：正则 / tree-sitter query 模式匹配，适合快速识别固定风险模式。
-2. **Taint Rules**：定义 source / sink / sanitizer，驱动 AST 污点分析与跨文件追踪。
-
-规则目录优先级：
-
-```text
---rules 参数 > .ctx-audit/rules/ > 内置 rules/
-```
-
-示例：
-
-```bash
-# 在项目级规则目录加入自定义规则
-mkdir -p .ctx-audit/rules
-
-# 校验规则文件
-ctx-audit rules validate --rules .ctx-audit/rules
-
-# 使用自定义规则扫描
-ctx-audit scan ./myproject --rules .ctx-audit/rules --deep
-```
-
-内置规则均位于 `rules/`，可直接作为编写参考。
-
-完整字段表、两类规则的写法、放置位置与校验方式见 **[rules/CUSTOM-RULES.md](rules/CUSTOM-RULES.md)**；规则语料的定位与冻结约定见 [rules/README.md](rules/README.md)。
-
----
-
-## 报告与输出
-
-| 格式 | 用途 |
-|------|------|
-| `json` | 机器可读，便于二次分析 / 入库 |
-| `sarif` | GitHub Code Scanning / 通用 SARIF 工具链 |
-| `markdown` | 人工阅读报告 |
-| `llm` | 面向 LLM 的 JSON，包含 `enclosing_function`、`evidence_refs`、`taint_chain`、`confidence` 等结构化判定素材 |
-
-`llm` 格式专门为协作审计设计：把引擎的判断依据、代码上下文和置信度一并交给 LLM，减少无依据的猜测。
+1. **名字级图**：不做类型/别名解析；`reachable=true` 只表示"拓扑可能"。
+2. **守卫为启发式**：守卫归属按函数体与 token 匹配；中间件执行顺序未建模。
+3. **`taint_lost` ≠ 不可利用**：仅表示入口参数到不了 sink，可能仍有其他入口。
+4. **载荷判定是静态推演**：`payload_may_survive` 不等于可利用；`payload_verified` 需动态验证且仅限白名单 fixture。
+5. **动态验证不做沙箱**：只保证注入依赖不产生真实外部调用；不要指向生产代码。
+6. **不宣称通用漏洞发现**：候选链/事实层供 LLM 与人工判定；通用注入发现能力有限，已明确降级为证据层。
+7. **尚无外部团队 CI 试点数据**：真实仓库观察来自内部测试机。
 
 ---
 
 ## 架构
 
 ```
-CTX-Audit
-├── core/                              # 确定性分析引擎（deepaudit-core）
-│   ├── analysis/                      # 污点 / 数据流 / CPG / 调用图 / 攻击面 / 风险模式
-│   ├── scanner/                       # 扫描编排、文件角色与严重度调整
-│   ├── rules/                         # YAML 规则引擎（pattern → finding，含行号换算）
-│   ├── ast/                           # tree-sitter AST（12 语言）与符号提取
-│   ├── sarif/                         # SARIF 2.1.0 导出
-│   └── indexing/                      # 代码索引
-│
-├── tools/                             # MCP 工具集（ctx-audit-tools）
-│   ├── code_intel_tools.rs            # 高阶代码智能面（9 能力 + envelope）
-│   ├── symbol_index.rs                # 符号/标识符倒排索引（定义、引用、落盘持久化）
-│   ├── index_cache.rs                 # 项目索引缓存（TTL + 显式 refresh）
-│   ├── text_scan.rs                   # 代码段语义（注释/字符串剥离、标识符边界）
-│   ├── bridge.rs / registry.rs / executor.rs   # 工具注册与执行
-│   └── ast_tools.rs / call_graph_tools.rs / search_tools.rs /
-│       taint_tools.rs / pattern_tools.rs       # 细粒度工具面（Cargo feature 门控）
-│
-├── cli/                               # CLI 客户端（二进制 ctx-audit）
-│   ├── commands/                      # scan / analyze / watch / daemon / mcp / rules / config …
-│   ├── database/                      # findings SQLite 存储
-│   └── report/                        # 报告导出（json / llm / sarif / markdown）
-│
-├── daemon/                            # 守护进程（增量缓存、状态服务）
-│
-├── rules/                             # YAML 模式规则 + taint 框架规则 + audit-packs
-│
-└── harness/                           # 公共 DSH 编排框架（可安装；私有内容经本地 overlay 注入）
+cli/      命令行（ctx-audit）：gate / chain / probe / explain-route / diff-routes / mcp ...
+core/     基础分析引擎（AST/规则/索引/差异）
+daemon/   常驻进程与增量缓存
+tools/    高阶代码智能工具面（MCP）
+  code_intel_tools.rs     工具面与 envelope
+  framework.rs/routes.rs  端点枚举、鉴权覆盖、中间件建模
+  chain.rs/chain_scan.rs  候选链、链档、证伪、修复差分
+  gate.rs                 PR 漂移判决
+  ssa.rs                  mini-SSA（trace_params）
+  ant.rs                  载荷存活推演（payload_viability）
+  verify.rs               受限动态验证（verify_payload）
+  probe.rs                can_reach / slice_between
+  harness.rs              验证骨架
+  file_cache.rs           文件表/解析表缓存
 ```
-
-公共模板见 `templates/`（私有 overlay 示例），公开 DSH harness 即 `harness/`（默认极简模式；私有内容通过本地 overlay 注入）。
-
----
-
-## 能力边界与验证方法
-
-CTX-Audit 的定位是**面向 LLM 的确定性代码智能与取证基础设施**：引擎负责把代码拓扑与数据流变成可查询、可复核的结构化事实，判定由 LLM 与人工在证据之上完成。
-
-### 引擎提供什么
-
-- **符号与引用**：基于标识符的符号索引（定义、引用），按代码段语义（剥离注释与字符串）匹配，避免子串误配。
-- **调用层级**：函数上下游调用拓扑，callee 通过标识符精确解析，并区分函数作用域内的调用点。
-- **函数作用域切片**：反向切片以所在函数为界，保证包含函数头，便于阅读与引用。
-- **跨文件数据流**：调用图 + 函数摘要 + 跨文件路径查找，配合 sanitizer 守卫识别。
-- **框架上下文**：路由到处理函数的绑定、装饰器链、鉴权判据，以及各框架的中间件运行时顺序。
-- **响应契约**：每个响应携带 `provenance`（文件 / 行 / 解析方式 / 索引版本）与 `uncertainty`（不确定度与原因）；任何结果上限都会显式上报 `total_hits` / `limit` / `truncated_at_limit`，不静默截断。
-
-### 引擎不做什么
-
-- **不承担漏洞真值判定**：规则与污点命中输出的是**候选与证据**，`findings` 在 JSON / LLM 报告中标记为 `candidate`。漏洞认定由 LLM / 人工结合上下文与可复现验证给出。
-- **不承诺健全性**：不与工业级 SAST 比拼完备性；能力的意义在于“把可验证的事实供给判定者”，而不是替代判定。
-- **能力随语言分层**：项目索引会报告每种语言的分析能力（主分析语言与启发式语言的差别，以及 `analysis_backed` 标志），不具备完整分析能力的语言会在响应中显式标注不确定度。
-
-### 如何验证
-
-- **夹具回归**：仓库内提供可重复的 ground-truth 夹具与基线，比较工具输出（定义、引用、调用图、切片覆盖）是否回退。
-- **双向版本对照**：以“漏洞版本命中、修复版本豁免”的方式检验检测语义，而不是只看单侧命中数。
-- **边界显式化**：索引的规模与单文件上限、结果条数上限均可在索引元数据与响应中读到，超出即上报。
-- **不刷分**：优先使用真实代码库与可复现的对照，而非只针对人工构造样本调参。
 
 ---
 
 ## 开发与测试
 
 ```bash
-cargo build --workspace --release
+cargo build --release
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo fmt
+cargo clippy --workspace -- -D warnings   # 咨询性质，逐步收敛
 ```
 
-CI 会在 GitHub Actions 上自动执行构建、测试、CLI smoke 测试与 Clippy。
+单元/集成测试覆盖工具面、鉴权覆盖、中间件建模、链档、闸门、SSA、载荷判定、验证器；私有评测集（不随仓库公开）包含种子 PR、真实仓库链、死链标注与动态验证 fixture。
 
 ---
 
 ## 许可证
 
-Apache License 2.0
+Apache-2.0，见 [LICENSE](LICENSE)。
