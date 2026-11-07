@@ -89,6 +89,17 @@ fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<Str
         "template" | "xss" => {
             if body.contains("escapeHtml") || body.contains("autoescape") || body.contains("HtmlUtils") {
                 Some("output_escaped".to_string())
+            } else if body.contains("ALLOWED") || body.contains("allowlist") || body.contains("whitelist") {
+                Some("allowlist_guard".to_string())
+            } else {
+                None
+            }
+        }
+        "ssrf" => {
+            if body.contains("ALLOWED") || body.contains("allowlist") || body.contains("whitelist") {
+                Some("host_allowlist".to_string())
+            } else if body.contains(".getHost(") || body.contains("isAllowedHost") {
+                Some("host_check".to_string())
             } else {
                 None
             }
