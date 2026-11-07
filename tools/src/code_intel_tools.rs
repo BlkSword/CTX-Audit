@@ -39,6 +39,7 @@ mod chain;
 mod chain_scan;
 pub mod ant;
 mod chain_vocab;
+pub(crate) mod file_cache;
 pub mod gate;
 pub mod harness;
 pub mod probe;

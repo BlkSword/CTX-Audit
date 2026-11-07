@@ -43,14 +43,14 @@ struct SsaGraph {
 
 impl SsaGraph {
     fn build(project: &Path) -> SsaGraph {
-        let loaded = index::load_files(project);
+        let files = super::file_cache::project_files(project);
         let mut g = SsaGraph {
             contents: BTreeMap::new(),
             defs: BTreeMap::new(),
             calls: BTreeMap::new(),
             name_index: BTreeMap::new(),
         };
-        for (path, content) in loaded.files.iter() {
+        for (path, content) in files.iter() {
             let lang = chain::chain_language_of(path);
             let defs = probe::definitions_multi(content, lang);
             let calls: Vec<(String, u32, bool)> = chain::calls(content)

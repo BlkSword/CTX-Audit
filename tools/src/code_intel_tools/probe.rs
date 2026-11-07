@@ -97,14 +97,14 @@ struct Graph {
 
 impl Graph {
     fn build(project: &Path) -> Graph {
-        let loaded = index::load_files(project);
+        let files = super::file_cache::project_files(project);
         let mut g = Graph {
             defs: BTreeMap::new(),
             calls: BTreeMap::new(),
             contents: BTreeMap::new(),
             name_index: BTreeMap::new(),
         };
-        for (path, content) in loaded.files.iter() {
+        for (path, content) in files.iter() {
             let lang = chain::chain_language_of(path);
             let defs = definitions_multi(content, lang);
             let calls: Vec<(String, u32, bool)> = chain::calls(content)

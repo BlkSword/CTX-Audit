@@ -147,9 +147,8 @@ pub fn payload_viability_report(
             "uncertainty": {"level": "high", "reasons": ["structural_path_not_found"]},
         }));
     }
-    let loaded = index::load_files(project);
-    let contents: BTreeMap<&str, &str> = loaded
-        .files
+    let files = super::file_cache::project_files(project);
+    let contents: BTreeMap<&str, &str> = files
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect();
@@ -420,7 +419,7 @@ mod tests {
 
     #[test]
     fn payload_survives_without_guard_and_dies_with_normalize() {
-        let dir = tmp("path");
+        let dir = tmp("path-unfixed");
         write_tree(
             &dir,
             &[(
@@ -440,8 +439,9 @@ public class App {
         assert_eq!(ok["viability"], "may_survive", "{ok}");
         assert_eq!(ok["tier"], "payload_may_survive");
 
+        let dir2 = tmp("path-fixed");
         write_tree(
-            &dir,
+            &dir2,
             &[(
                 "Fixed.java",
                 r#"
@@ -455,7 +455,7 @@ public class Fixed {
 "#,
             )],
         );
-        let killed = payload_viability_report(&dir, "Fixed.java", 3, "Fixed.java", 5, "traversal").unwrap();
+        let killed = payload_viability_report(&dir2, "Fixed.java", 3, "Fixed.java", 5, "traversal").unwrap();
         assert_eq!(killed["viability"], "killed", "{killed}");
         assert_eq!(killed["tier"], "payload_killed");
     }
