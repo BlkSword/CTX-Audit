@@ -297,42 +297,6 @@ enum Commands {
         legacy_tools: bool,
     },
 
-    /// 三角色信号链候选（只读证据，不改检测）
-    ///
-    /// 扫描"循环界 / 长度实参 → 守卫检索（按构造裁剪）→ 写 sink 累积性"三步，
-    /// 输出三角色（trigger / path / effect）齐备的候选及其证据。
-    /// 只产候选与证据：不产出 findings，不影响 scan 的任何输出。
-    #[command(after_help = "输出 JSON 时候选与未升级项都会落盘（未升级项是判据本身的证据）。")]
-    SignalChain {
-        /// 项目路径或单个源文件
-        #[arg(value_name = "PATH")]
-        path: String,
-
-        /// 输出格式 (text, json)
-        #[arg(short = 'o', long = "output", default_value = "text")]
-        output: String,
-
-        /// 构造族: all | loop | lenarg | sprintf-unbounded | macro-class | signed-init | charcopy-loop
-        #[arg(long, default_value = "all")]
-        constructs: String,
-
-        /// 只列出升级候选（影响 text 输出）
-        #[arg(long)]
-        candidates_only: bool,
-
-        /// 最多扫描的源文件数（0 = 不限）
-        #[arg(long, default_value_t = 0)]
-        max_files: usize,
-
-        /// 从 git diff 取 locus（如 `HEAD~1..HEAD`）：删除行取漏洞侧原文，纯新增 hunk 取新行号
-        #[arg(long, value_name = "REVSPEC")]
-        from_diff: Option<String>,
-
-        /// 从公告/清单文件取 locus（每行 `文件:行号`）
-        #[arg(long, value_name = "FILE")]
-        from_advisory: Option<String>,
-    },
-
     /// 鉴权基线卡（链/规则/过滤器/注解消费者/被关闭的钩子）
     ///
     /// 把"这个项目的'受保护'是什么意思"压成一屏可复核的事实，
@@ -837,27 +801,6 @@ async fn main() -> Result<()> {
         Commands::Mcp { legacy_tools } => commands::mcp::run_mcp_server(legacy_tools)
             .await
             .map_err(|e| miette::miette!("MCP server error: {}", e)),
-
-        Commands::SignalChain {
-            from_diff,
-            from_advisory,
-            path,
-            output,
-            constructs,
-            candidates_only,
-            max_files,
-        } => {
-            commands::signal_chain::execute(
-                path,
-                output,
-                constructs,
-                candidates_only,
-                max_files,
-                from_diff,
-                from_advisory,
-            )
-                .await
-        }
 
         Commands::Baseline { path, output } => commands::baseline::execute(path, output).await,
         Commands::Audit {

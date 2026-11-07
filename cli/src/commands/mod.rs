@@ -17,5 +17,4 @@ pub mod mcp;
 pub mod probe;
 pub mod rules;
 pub mod scan;
-pub mod signal_chain;
 pub mod watch;

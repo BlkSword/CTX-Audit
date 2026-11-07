@@ -19,7 +19,6 @@ pub mod pattern_tools;
 pub mod registry;
 #[cfg(feature = "legacy-tools")]
 pub mod search_tools;
-pub mod signal_chain;
 pub mod symbol_index;
 #[cfg(feature = "legacy-tools")]
 pub mod taint_tools;
@@ -49,13 +48,6 @@ pub use pattern_tools::register_pattern_tools;
 pub use registry::{Tool, ToolRegistry};
 #[cfg(feature = "legacy-tools")]
 pub use search_tools::register_search_tools;
-pub use signal_chain::{
-    loci_from_advisory, loci_from_diff, scan_path as scan_signal_chain,
-    scan_source as scan_signal_chain_source, Construct,
-    ConstructSet, Locus, LocusReport, SignalChainCandidate, SignalChainOptions,
-    SignalChainReport,
-    SIGNAL_CHAIN_SCHEMA,
-};
 #[cfg(feature = "legacy-tools")]
 pub use taint_tools::register_taint_tools;
 
