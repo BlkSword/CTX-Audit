@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BOOTSTRAP: &str = r#"
-import sys, json, types
+import sys, json, types, os as _os
 try:
     import urllib.parse as _up
 except Exception:
@@ -33,9 +33,21 @@ class Cur:
 def fake_get(url, *a, **k):
     calls.append({"kind": "http", "url": str(url)})
     return Resp(url)
+def fake_open(p, *a, **k):
+    calls.append({"kind": "path", "path": str(p)})
+    class F:
+        def read(self): return "<data>"
+        def close(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    return F()
+def fake_system(cmd):
+    calls.append({"kind": "cmd", "cmd": str(cmd)})
+    return 0
 fake_requests = types.SimpleNamespace(get=fake_get, post=fake_get)
 urllib_mod = types.SimpleNamespace(parse=_up) if _up else types.SimpleNamespace()
-ns = {"cur": Cur(), "requests": fake_requests, "urllib": urllib_mod}
+os_mod = types.SimpleNamespace(system=fake_system, path=_os.path, sep=_os.sep, getcwd=lambda: "/data")
+ns = {"cur": Cur(), "requests": fake_requests, "urllib": urllib_mod, "open": fake_open, "os": os_mod}
 src = open(path, encoding="utf-8", errors="replace").read()
 exec(compile(src, path, "exec"), ns)
 raised = None
@@ -75,6 +87,31 @@ pub(crate) fn classify_verify(calls: &[Value], raised: Option<&str>, payload: &s
                     }
                 }
                 None => ("inconclusive".to_string(), json!({"reason": "no_sql_call"})),
+            }
+        }
+        "path" => {
+            let last = calls.iter().rev().find(|c| c["kind"] == "path");
+            match last {
+                Some(c) => {
+                    let raw = c["path"].as_str().unwrap_or("");
+                    let escaped = raw.contains("/../") || raw.contains("\\..\\") || !raw.starts_with("/data/");
+                    if escaped {
+                        ("payload_verified".to_string(), json!({"resolved_path": raw, "escaped_base": true}))
+                    } else {
+                        ("verified_killed".to_string(), json!({"resolved_path": raw, "escaped_base": false}))
+                    }
+                }
+                None => ("verified_killed".to_string(), json!({"raised": raised, "reason": "blocked_before_open"})),
+            }
+        }
+        "command" => {
+            let hit = calls
+                .iter()
+                .any(|c| c["cmd"].as_str().map(|v| v.contains(payload)).unwrap_or(false));
+            if hit {
+                ("payload_verified".to_string(), json!({"command_contains_payload": true}))
+            } else {
+                ("verified_killed".to_string(), json!({"raised": raised, "reason": "not_executed"}))
             }
         }
         "ssrf" => {
@@ -128,8 +165,8 @@ pub fn verify_payload_report(
         ));
     }
     let arch = match archetype {
-        "sql" | "ssrf" => archetype,
-        _ => return Err("动态验证仅支持 sql / ssrf 两类载荷".to_string()),
+        "sql" | "ssrf" | "path" | "command" => archetype,
+        _ => return Err("动态验证支持的载荷类型：sql / ssrf / path / command".to_string()),
     };
     let out = Command::new(python_cmd())
         .arg("-c")
@@ -185,6 +222,27 @@ mod tests {
         assert_eq!(t, "payload_verified");
         let calls2 = vec![json!({"kind": "sql", "sql": "SELECT * FROM t WHERE n = ?", "args": ["x"]})];
         let (t2, _) = classify_verify(&calls2, None, "x", "sql");
+        assert_eq!(t2, "verified_killed");
+    }
+
+    #[test]
+    fn path_classification() {
+        let calls = vec![json!({"kind": "path", "path": "/data/../../etc/passwd"})];
+        let (t, _) = classify_verify(&calls, None, "../../etc/passwd", "path");
+        assert_eq!(t, "payload_verified");
+        let calls2 = vec![json!({"kind": "path", "path": "/data/safe.txt"})];
+        let (t2, _) = classify_verify(&calls2, None, "../../etc/passwd", "path");
+        assert_eq!(t2, "verified_killed");
+        let (t3, _) = classify_verify(&[], Some("ValueError: blocked"), "../../etc/passwd", "path");
+        assert_eq!(t3, "verified_killed");
+    }
+
+    #[test]
+    fn command_classification() {
+        let calls = vec![json!({"kind": "cmd", "cmd": "echo pwned"})];
+        let (t, _) = classify_verify(&calls, None, "pwned", "command");
+        assert_eq!(t, "payload_verified");
+        let (t2, _) = classify_verify(&[], Some("ValueError: blocked"), "pwned", "command");
         assert_eq!(t2, "verified_killed");
     }
 

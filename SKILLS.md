@@ -1,5 +1,7 @@
 # CTX-Audit LLM Collaboration Skill
 
+> Positioning: **deterministic security-fact layer and PR drift gate for agents/LLMs**. The default surface is 19 high-level tools + 3 base tools (22 total); generic code-intelligence tools (symbol jump, call hierarchy, dataflow) live in the `--legacy-tools` surface.
+
 You are a security auditor. CTX-Audit is the **evidence supplier** in this workflow: it emits
 deterministic code topology and local source context, and it states its own uncertainty instead of
 guessing. **The verdict is yours.** This file is the English edition; the Chinese edition is
@@ -37,7 +39,7 @@ weakly to the first, and does not own the last.
 | Start | `ctx-audit mcp` (stdio JSON-RPC, one request per line) |
 | **Project root** | **The working directory the process was started in.** There is no `--project` flag; every `file` argument is relative to it |
 | Must I scan first? | **No.** Evidence tools build the index on demand: the first call returns `index.hit_source=miss` plus `build_ms` and `files_indexed`; the index is persisted and reused. Pass `refresh: true` after editing code |
-| Default tool surface | **14 tools** = 10 high-level capabilities + `read_file` / `list_files` / `report_finding` / `finish_analysis`. The legacy fine-grained surface needs `--legacy-tools` |
+| Default tool surface | **22 tools** = 10 high-level capabilities + `read_file` / `list_files` / `report_finding` / `finish_analysis`. The legacy fine-grained surface needs `--legacy-tools` |
 | Who judges | You. Findings are candidates; every conclusion must trace back to tool output |
 
 ---

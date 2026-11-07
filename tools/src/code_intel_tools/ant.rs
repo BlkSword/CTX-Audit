@@ -57,6 +57,32 @@ fn guard_kills(archetype: &str) -> &'static [&'static str] {
     }
 }
 
+/// 允许清单是否真正生效：必须存在比较/拒绝调用；仅声明常量不算守卫。
+fn allowlist_enforced(content: &str, start: u32, end: u32) -> bool {
+    let lines: Vec<&str> = content.lines().collect();
+    let lo = (start as usize).saturating_sub(1);
+    let hi = (end as usize).min(lines.len());
+    if lo >= hi {
+        return false;
+    }
+    let body = lines[lo..hi].join("\n");
+    const TOKENS: [&str; 12] = [
+        "contains(",
+        ".equals(",
+        "matches(",
+        "hasOwnProperty(",
+        "checkAutoType(",
+        "ObjectInputFilter",
+        "allowTypes",
+        "acceptTypes",
+        "acceptList",
+        "denyList",
+        "startsWith(",
+        "in ALLOWED",
+    ];
+    TOKENS.iter().any(|t| body.contains(t))
+}
+
 /// 路径守卫是否有效：仅有 normalize/Clean 不足以防穿越，必须配合基目录/前缀校验。
 fn path_guard_effective(content: &str, start: u32, end: u32) -> bool {
     let lines: Vec<&str> = content.lines().collect();
@@ -81,7 +107,10 @@ fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<Str
         return None;
     }
     let body = lines[lo..hi].join("\n");
-    if body.contains("ALLOWED") || body.contains("allowlist") || body.contains("whitelist") {
+    let declares_allowlist = body.contains("ALLOWED")
+        || body.contains("allowlist")
+        || body.contains("whitelist");
+    if declares_allowlist && allowlist_enforced(content, start, end) {
         return Some("allowlist_guard".to_string());
     }
     match archetype {
@@ -243,6 +272,10 @@ pub fn payload_viability_report(
             }
             if arch == "traversal" && kind == "path_check" && !path_guard_effective(content, caller_line, def_end) {
                 ineffective_here.push("path_check_lexical_only".to_string());
+                return false;
+            }
+            if kind == "allowlist" && !allowlist_enforced(content, caller_line, def_end) {
+                ineffective_here.push("allowlist_declaration_only".to_string());
                 return false;
             }
             true
@@ -453,6 +486,9 @@ pub fn payload_viability_report(
                 if arch == "traversal" && kind == "path_check" && !path_guard_effective(content, sl, def_end) {
                     return false;
                 }
+                if kind == "allowlist" && !allowlist_enforced(content, sl, def_end) {
+                    return false;
+                }
                 true
             });
             if let Some(g) = kill_guard {
@@ -545,6 +581,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn declared_allowlist_without_check_does_not_kill() {
+        let dir = tmp("allowlist-declared");
+        write_tree(
+            &dir,
+            &[(
+                "App.java",
+                r#"
+public class App {
+    private static final java.util.Set<String> ALLOWED = java.util.Set.of("safe");
+    public void query(String q) throws Exception {
+        java.sql.Statement st = null;
+        st.executeQuery("SELECT * FROM t WHERE name = '" + q + "'");
+    }
+}
+"#,
+            )],
+        );
+        let r = payload_viability_report(&dir, "App.java", 4, "App.java", 6, "sql").unwrap();
+        assert_ne!(r["tier"], "payload_killed", "仅声明常量不应被当作有效 allowlist: {r}");
     }
 
     #[test]
