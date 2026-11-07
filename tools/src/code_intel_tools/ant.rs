@@ -57,6 +57,21 @@ fn guard_kills(archetype: &str) -> &'static [&'static str] {
     }
 }
 
+/// 路径守卫是否有效：仅有 normalize/Clean 不足以防穿越，必须配合基目录/前缀校验。
+fn path_guard_effective(content: &str, start: u32, end: u32) -> bool {
+    let lines: Vec<&str> = content.lines().collect();
+    let lo = (start as usize).saturating_sub(1);
+    let hi = (end as usize).min(lines.len());
+    if lo >= hi {
+        return false;
+    }
+    let body = lines[lo..hi].join("\n");
+    body.contains("startsWith(")
+        || body.contains("secureJoin")
+        || body.contains(".resolve(")
+        || body.contains("getCanonicalPath(")
+}
+
 /// 函数体里的"杀伤标记"（名字级，按 archetype）。
 fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
@@ -83,8 +98,21 @@ fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<Str
             None
         }
         "traversal" => {
-            if body.contains(".normalize(") || body.contains("normalize(") || body.contains("getCanonicalPath") || body.contains("filepath.Clean") {
-                Some("path_normalized".to_string())
+            let has_normalize = body.contains(".normalize(")
+                || body.contains("normalize(")
+                || body.contains("getCanonicalPath")
+                || body.contains("filepath.Clean");
+            if has_normalize {
+                if body.contains("startsWith(")
+                    || body.contains("secureJoin")
+                    || body.contains(".resolve(")
+                    || body.contains("getCanonicalPath(")
+                {
+                    Some("path_normalized_with_prefix_check".to_string())
+                } else {
+                    // 仅词法规整，不足以阻断穿越：交给 guard_ineffective 档
+                    None
+                }
             } else {
                 None
             }
@@ -190,6 +218,7 @@ pub fn payload_viability_report(
     let mut tainted_params: Vec<String> = Vec::new();
     let mut mapping_gaps: Vec<Value> = Vec::new();
     let mut same_function_step: Option<Value> = None;
+    let mut ineffective_guards: Vec<String> = Vec::new();
     if entry_params.is_empty() {
         taint_lost_at = Some(json!({"hop": 0, "reason": "entry_has_no_params"}));
     }
@@ -206,12 +235,23 @@ pub fn payload_viability_report(
             .iter()
             .filter_map(|g| g.get("kind").and_then(|v| v.as_str()).map(|s| s.to_string()))
             .collect();
+        let mut ineffective_here: Vec<String> = Vec::new();
         let kill_guard = guards.iter().find(|g| {
-            g.get("kind")
-                .and_then(|v| v.as_str())
-                .map(|k| guard_kills(arch).contains(&k))
-                .unwrap_or(false)
+            let kind = g.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if !guard_kills(arch).contains(&kind) {
+                return false;
+            }
+            if arch == "traversal" && kind == "path_check" && !path_guard_effective(content, caller_line, def_end) {
+                ineffective_here.push("path_check_lexical_only".to_string());
+                return false;
+            }
+            true
         });
+        for g in &ineffective_here {
+            if !ineffective_guards.contains(g) {
+                ineffective_guards.push(g.clone());
+            }
+        }
         let flow = ssa::param_flow_report(project, caller_file, caller_line).ok();
         let mut tainted_args: Vec<Value> = Vec::new();
         let mut call_matched = false;
@@ -406,10 +446,14 @@ pub fn payload_viability_report(
             let def_end = precise_def_end(content, sf, sl);
             let guards = chain::guards_range(content, sl, def_end, sf);
             let kill_guard = guards.iter().find(|g| {
-                g.get("kind")
-                    .and_then(|v| v.as_str())
-                    .map(|k| guard_kills(arch).contains(&k))
-                    .unwrap_or(false)
+                let kind = g.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                if !guard_kills(arch).contains(&kind) {
+                    return false;
+                }
+                if arch == "traversal" && kind == "path_check" && !path_guard_effective(content, sl, def_end) {
+                    return false;
+                }
+                true
             });
             if let Some(g) = kill_guard {
                 killed = Some(json!({"hop": steps.len(), "file": sf, "def_line": sl, "symbol": path.last().and_then(|v| v["symbol"].as_str()).unwrap_or(""), "guard": g, "kind": arch}));
@@ -423,12 +467,15 @@ pub fn payload_viability_report(
         steps.push(st);
     }
 
-    let ineffective_guards: Vec<String> = steps
-        .iter()
-        .flat_map(|s| s["guards"].as_array().cloned().unwrap_or_default())
-        .filter_map(|g| g.as_str().map(|x| x.to_string()))
-        .filter(|g| g == "bounds" || g == "signature")
-        .collect();
+    for st in steps.iter() {
+        for g in st["guards"].as_array().cloned().unwrap_or_default() {
+            if let Some(name) = g.as_str() {
+                if (name == "bounds" || name == "signature") && !ineffective_guards.contains(&name.to_string()) {
+                    ineffective_guards.push(name.to_string());
+                }
+            }
+        }
+    }
     let (tier, viability) = if killed.is_some() {
         ("payload_killed", "killed")
     } else if taint_lost_at.is_some() {
@@ -531,6 +578,7 @@ public class App {
 public class Fixed {
     public String download(String name) {
         String p = normalize(name);
+        if (!p.startsWith("/data/")) { throw new IllegalArgumentException(); }
         return read(p);
     }
     String read(String p) { return p; }
@@ -538,7 +586,7 @@ public class Fixed {
 "#,
             )],
         );
-        let killed = payload_viability_report(&dir2, "Fixed.java", 3, "Fixed.java", 5, "traversal").unwrap();
+        let killed = payload_viability_report(&dir2, "Fixed.java", 3, "Fixed.java", 6, "traversal").unwrap();
         assert_eq!(killed["viability"], "killed", "{killed}");
         assert_eq!(killed["tier"], "payload_killed");
     }
