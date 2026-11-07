@@ -577,10 +577,20 @@ pub(crate) fn annotate_middleware_coverage(routes: &mut [Value], files: &[(Strin
         if !matches!(verdict, "no_global_match_found" | "no_global_config_found" | "") {
             continue;
         }
+        // Express 同文件：中间件必须在路由注册之前，否则不覆盖（顺序语义）
+        let route_line = entry.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let order_ok = |g: &&MiddlewareGuard| {
+            if g.framework == "express" && g.file == file && route_line > 0 {
+                g.line <= route_line
+            } else {
+                true
+            }
+        };
         if let Some(g) = guards.iter().find(|g| {
             prefix_covers(&g.prefix, route)
                 && middleware_scope_covers(&g.file, file, &g.prefix)
                 && middleware_language_matches(g.framework, file)
+                && order_ok(g)
         }) {
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("global_coverage".to_string(), json!("covered_by_middleware"));

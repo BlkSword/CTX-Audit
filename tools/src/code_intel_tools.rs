@@ -255,10 +255,12 @@ pub enum IntelKind {
     PayloadViability,
     /// 受限本地动态验证（Python fixture；需显式开启允许目录）
     VerifyPayload,
+    /// 一次性审计简报：待审队列 + 头部链档 + 载荷档位（有界）
+    AuditBrief,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 25] {
+    pub fn all() -> [IntelKind; 26] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -285,6 +287,7 @@ impl IntelKind {
             IntelKind::TraceParams,
             IntelKind::PayloadViability,
             IntelKind::VerifyPayload,
+            IntelKind::AuditBrief,
         ]
     }
 
@@ -315,6 +318,7 @@ impl IntelKind {
             IntelKind::TraceParams => "trace_params",
             IntelKind::PayloadViability => "payload_viability",
             IntelKind::VerifyPayload => "verify_payload",
+            IntelKind::AuditBrief => "audit_brief",
         }
     }
 
@@ -344,6 +348,7 @@ impl IntelKind {
             IntelKind::TraceParams => "函数内 mini-SSA：参数→局部变量→调用实参绑定，并标注反射/属性/表达式/JNDI/反序列化等隐式汇命中",
             IntelKind::PayloadViability => "载荷存活推演：沿可达路径逐跳推演 archetype 载荷状态（守卫=杀伤、decode/parse=变异），输出 payload_killed/payload_may_survive 分级",
             IntelKind::VerifyPayload => "受限本地动态验证：在允许目录内的 Python fixture 上执行入口并观察 sink 实参，返回 payload_verified/verified_killed（需 CTX_AUDIT_VERIFY_DIR）",
+            IntelKind::AuditBrief => "一次性审计简报：覆盖待审队列 + 头部链档 + 载荷档位，便于 agent 用单次调用建立工作集",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
     }
@@ -410,6 +415,7 @@ impl CodeIntelTool {
                 str_param("payload", "标记载荷（如 x' OR '1'='1）", true),
                 str_param("archetype", "载荷类型：sql | ssrf", false),
             ],
+            IntelKind::AuditBrief => vec![int_param("limit", "待审条目/链档上限（默认 10，最大 20）", 10)],
             IntelKind::PrDriftGate => vec![
                 str_param("base", "基线源码目录或 git ref（相对 project 根）", true),
                 str_param("head", "变更后源码目录或 git ref（相对 project 根）", true),
@@ -2953,6 +2959,16 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new("low", &["dynamic_fixture_only"], 0),
                 }
             }
+            IntelKind::AuditBrief => {
+                let limit = input["limit"].as_u64().unwrap_or(10) as usize;
+                let data = audit_brief_report(root, limit)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("audit_brief: {e}")))?;
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new("medium", &["name_level_graph", "heuristic_guards"], 0),
+                }
+            }
             IntelKind::PrDriftGate => {
                 let base_in = input["base"].as_str().unwrap_or("");
                 let head_in = input["head"].as_str().unwrap_or("");
@@ -3094,7 +3110,7 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
 /// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
 /// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
 /// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
-pub const PROTOCOL_TOOL_SURFACE: [&str; 19] = CODE_INTEL_TOOL_SURFACE;
+pub const PROTOCOL_TOOL_SURFACE: [&str; 20] = CODE_INTEL_TOOL_SURFACE;
 
 /// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
 fn max_tool_bytes() -> usize {
@@ -3813,6 +3829,55 @@ pub fn chain_dossier_report(project: &Path, chain_id: &str) -> Result<Value, Str
 }
 
 /// 给链档附加载荷存活判定（装配层；失败时返回 unavailable，不影响链档本身）。
+/// 一次性审计简报：覆盖待审队列 + 头部链档 + 载荷档位（有界输出）。
+pub fn audit_brief_report(project: &Path, limit: usize) -> Result<Value, String> {
+    let limit = limit.clamp(1, 20);
+    let bundle = audit_bundle(project)?;
+    let worklist = bundle["worklist"].as_array().cloned().unwrap_or_default();
+    let take = limit.min(worklist.len());
+    let items: Vec<Value> = worklist[..take].to_vec();
+
+    let loaded = index::load_files(project);
+    let id = index::build_id(&loaded.files);
+    let auth = chain::auth_map(project, &loaded.files, &id);
+    let entries = chain::collect_entries(&loaded.files, &id);
+    let (chains, _stats) = chain_scan::candidates(
+        &loaded.files,
+        &entries,
+        &auth,
+        None,
+        None,
+        chain_vocab::load_vocab(project).as_ref(),
+        true,
+        0,
+    );
+    let top: Vec<Value> = chains
+        .iter()
+        .take(limit.min(8))
+        .map(|c| {
+            let with_payload = attach_payload_verdict(project, c.clone());
+            json!({
+                "chain_id": with_payload["chain_id"].clone(),
+                "entry": with_payload["entry"].clone(),
+                "sink": with_payload["sink"].clone(),
+                "score": with_payload["score"].clone(),
+                "payload": with_payload["payload"].clone(),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "schema": "audit-brief/v1",
+        "project": bundle["project"].clone(),
+        "coverage": bundle["coverage"].clone(),
+        "worklist": items,
+        "total_worklist": worklist.len(),
+        "chains": top,
+        "limits": {"worklist": limit, "chains": limit.min(8)},
+        "uncertainty": {"level": "medium", "reasons": ["name_level_graph", "heuristic_guards"]},
+    }))
+}
+
 fn attach_payload_verdict(project: &Path, mut chain: Value) -> Value {
     let entry = chain.get("entry").cloned().unwrap_or(Value::Null);
     let sink = chain.get("sink").cloned().unwrap_or(Value::Null);
@@ -3908,7 +3973,7 @@ pub fn chain_dossier_markdown(project: &Path, chain_id: &str) -> Result<String, 
 /// LLM 默认工具面（9 个）：审计协议所需的最小集合。
 ///
 /// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 19] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 20] = [
     "coverage_summary",
     "coverage_triage",
     "get_project_routes",
@@ -3928,6 +3993,7 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 19] = [
     "trace_params",
     "payload_viability",
     "verify_payload",
+    "audit_brief",
 ];
 
 /// 默认面之外的细粒度高阶工具（legacy 模式下注册，避免上下文被工具定义占满）。

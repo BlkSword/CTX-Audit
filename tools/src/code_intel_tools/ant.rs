@@ -48,12 +48,47 @@ fn guard_kills(archetype: &str) -> &'static [&'static str] {
         "sql_quote" => &["sanitize", "allowlist"],
         "traversal" => &["path_check", "allowlist"],
         "jndi" => &["allowlist", "ssrf_check"],
-        "template" => &["template_escape", "sanitize", "allowlist"],
-        "deserialization" => &["allowlist", "bounds"],
-        "command" => &["sanitize", "allowlist"],
+        "template" => &["allowlist"],
+        "deserialization" => &["allowlist"],
+        "command" => &["allowlist"],
         "ssrf" => &["ssrf_check", "allowlist"],
         "xss" => &["template_escape", "sanitize"],
         _ => &[],
+    }
+}
+
+/// 通用 sanitize 是否对该载荷类型真正有效。
+///
+/// HTML 转义杀不掉 SQL/命令/表达式注入，长度校验杀不掉反序列化；只有
+/// archetype 相关的清洗证据才算。
+fn sanitize_effective(archetype: &str, content: &str, start: u32, end: u32) -> bool {
+    let lines: Vec<&str> = content.lines().collect();
+    let lo = (start as usize).saturating_sub(1);
+    let hi = (end as usize).min(lines.len());
+    if lo >= hi {
+        return false;
+    }
+    let body = lines[lo..hi].join("\n");
+    match archetype {
+        "sql_quote" => {
+            body.contains("escapeSql")
+                || body.contains("EscapeUtils")
+                || body.contains("replaceAll(\"'\"")
+                || body.contains("replace(\"'\"")
+                || body.contains("prepareStatement")
+                || body.contains("setString(")
+        }
+        "xss" => {
+            body.contains("escapeHtml")
+                || body.contains("HtmlUtils")
+                || body.contains("encodeForHTML")
+                || body.contains("html.EscapeString")
+                || body.contains("autoescape")
+        }
+        "command" => {
+            body.contains("shellEscape") || body.contains("quoteShell") || body.contains("escapeShellArg")
+        }
+        _ => false,
     }
 }
 
@@ -146,7 +181,17 @@ fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<Str
                 None
             }
         }
-        "template" | "xss" => {
+        "template" => {
+            if body.contains("SimpleEvaluationContext")
+                || body.contains("restricted_expression")
+                || body.contains("SimpleEvaluationContext")
+            {
+                Some("restricted_expression_context".to_string())
+            } else {
+                None
+            }
+        }
+        "xss" => {
             if body.contains("escapeHtml") || body.contains("autoescape") || body.contains("HtmlUtils") {
                 Some("output_escaped".to_string())
             } else if body.contains("ALLOWED") || body.contains("allowlist") || body.contains("whitelist") {
@@ -278,6 +323,10 @@ pub fn payload_viability_report(
                 ineffective_here.push("allowlist_declaration_only".to_string());
                 return false;
             }
+            if kind == "sanitize" && !sanitize_effective(arch, content, caller_line, def_end) {
+                ineffective_here.push("sanitize_generic".to_string());
+                return false;
+            }
             true
         });
         for g in &ineffective_here {
@@ -316,6 +365,24 @@ pub fn payload_viability_report(
             .find(|l| l.contains(&format!("{callee_sym}(")))
             .unwrap_or("");
         let mut mutations = transforms(call_text);
+        let coercion = tainted_args.iter().find(|ta| {
+            let e = ta["expr"].as_str().unwrap_or("");
+            ["parseInt(", "Integer.valueOf(", "Long.parseLong(", "Double.parseDouble(", "(int)", "(long)"]
+                .iter()
+                .any(|t| e.contains(t))
+        });
+        if killed.is_none() {
+            if let Some(c) = coercion {
+                killed = Some(json!({
+                    "hop": i,
+                    "file": caller_file,
+                    "def_line": caller_line,
+                    "symbol": caller_sym,
+                    "guard": {"kind": "numeric_coercion", "evidence": c["expr"]},
+                    "kind": arch,
+                }));
+            }
+        }
         let tainted_ok = !tainted_args.is_empty();
         if tainted_ok {
             state.push(format!("hop{i}:tainted"));
@@ -471,6 +538,34 @@ pub fn payload_viability_report(
         }
     }
 
+    // 同函数链：sink 实参若经过数值强制转换，字符串载荷无法存活
+    if killed.is_none() {
+        for st in steps.iter() {
+            if let Some(args) = st["tainted_args"].as_array() {
+                for a in args {
+                    let expr = a["expr"].as_str().unwrap_or("");
+                    if ["parseInt(", "Integer.valueOf(", "Long.parseLong(", "Double.parseDouble(", "(int)", "(long)"]
+                        .iter()
+                        .any(|t| expr.contains(t))
+                    {
+                        killed = Some(json!({
+                            "hop": st["hop"].clone(),
+                            "file": st["file"].clone(),
+                            "def_line": st["def_line"].clone(),
+                            "symbol": st["symbol"].clone(),
+                            "guard": {"kind": "numeric_coercion", "evidence": expr},
+                            "kind": arch,
+                        }));
+                        break;
+                    }
+                }
+            }
+            if killed.is_some() {
+                break;
+            }
+        }
+    }
+
     // 汇节点自身函数的守卫/杀伤标记
     if killed.is_none() {
         let sf = path.last().map(|v| v["file"].as_str().unwrap_or("")).unwrap_or(sink_file);
@@ -487,6 +582,9 @@ pub fn payload_viability_report(
                     return false;
                 }
                 if kind == "allowlist" && !allowlist_enforced(content, sl, def_end) {
+                    return false;
+                }
+                if kind == "sanitize" && !sanitize_effective(arch, content, sl, def_end) {
                     return false;
                 }
                 true
@@ -581,6 +679,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn html_escape_does_not_kill_template_payload() {
+        let dir = tmp("template-escape");
+        write_tree(
+            &dir,
+            &[(
+                "App.java",
+                r#"
+public class App {
+    public Object render(String tpl) {
+        String safe = escapeHtml(tpl);
+        return parser.parseExpression(safe).getValue();
+    }
+}
+"#,
+            )],
+        );
+        let r = payload_viability_report(&dir, "App.java", 3, "App.java", 5, "template").unwrap();
+        assert_ne!(r["tier"], "payload_killed", "HTML 转义不应杀死 SpEL 载荷: {r}");
     }
 
     #[test]

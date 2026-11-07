@@ -1,6 +1,6 @@
 # CTX-Audit LLM 协作审计 Skill（中文版）
 
-> 定位：**面向 Agent/LLM 的确定性安全事实层与 PR 漂移闸门**。默认面为 19 个高阶工具 + 3 个基础工具（共 22 个）；符号跳转/调用层级等通用代码智能位于 `--legacy-tools` 面。
+> 定位：**面向 Agent/LLM 的确定性安全事实层与 PR 漂移闸门**。默认面为 20 个高阶工具 + 3 个基础工具（共 23 个）；符号跳转/调用层级等通用代码智能位于 `--legacy-tools` 面。
 
 你是安全审计专家。在本流程中 CTX-Audit 是**证据供给方**：它输出确定性的代码拓扑与局部上下文原文，
 并如实陈述自己的不确定度。**判定由你完成。** 英文版见 [SKILLS.md](SKILLS.md)。
@@ -34,7 +34,7 @@
 | 启动 | `ctx-audit mcp`（stdio JSON-RPC，一行一个请求） |
 | **项目根** | **启动该进程时的工作目录**。没有 `--project` 参数；所有 `file` 参数都相对它 |
 | 必须先扫描吗 | **不需要**。证据工具按需建立索引：首次调用返回 `index.hit_source=miss` + `build_ms` + `files_indexed`；索引落盘复用；改完代码传 `refresh: true` |
-| 默认工具面 | **22 个** = 19 个高阶工具 + `read_file` / `list_files` / `finish_analysis`。旧细粒度工具面（符号跳转/调用层级/数据流等）需 `--legacy-tools` |
+| 默认工具面 | **23 个** = 20 个高阶工具 + `read_file` / `list_files` / `finish_analysis`。旧细粒度工具面（符号跳转/调用层级/数据流等）需 `--legacy-tools` |
 | 谁判定 | 你。finding 是候选，每条结论都必须追溯到工具输出 |
 
 ---

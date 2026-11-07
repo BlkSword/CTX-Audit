@@ -232,6 +232,20 @@ fn signature_params(content: &str, def_line: u32, symbol: &str) -> Vec<String> {
 ///
 /// 典型：`String body = execute.body()` / `String body = httpResponse.body()` /
 /// `data = requests.get(url).content` —— 左值来自网络响应，不是入口参数。
+/// 数值强制转换：字符串载荷被 parseInt/valueOf 等切断。
+fn numeric_coercion(rhs: &str) -> bool {
+    const TOKENS: [&str; 7] = [
+        "parseInt(",
+        "Integer.valueOf(",
+        "Long.parseLong(",
+        "Double.parseDouble(",
+        "Float.parseFloat(",
+        "(int)",
+        "(long)",
+    ];
+    TOKENS.iter().any(|t| rhs.contains(t))
+}
+
 fn source_switch(rhs: &str) -> bool {
     const TOKENS: [&str; 8] = [
         ".body()",
@@ -330,6 +344,16 @@ pub fn param_flow_report(project: &Path, file: &str, line: u32) -> Result<Value,
                             "from": src,
                             "line": i,
                             "taint_broken": "source_switch",
+                        }));
+                        continue;
+                    }
+                    if numeric_coercion(&rhs) {
+                        // 数值强制转换：字符串载荷在此切断
+                        assignments.push(json!({
+                            "name": lhs,
+                            "from": src,
+                            "line": i,
+                            "taint_broken": "numeric_coercion",
                         }));
                         continue;
                     }

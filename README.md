@@ -195,7 +195,7 @@ ctx-audit gate --base A --head B --strict-sinks                       # 受保�
 
 ## MCP 工具面
 
-默认**19 个高阶工具 + 3 个基础工具（read_file / list_files / finish_analysis）**；遗留细粒度工具面需 `--legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1` 开启。所有响应使用统一 envelope：`data` + `provenance` + `uncertainty`。
+默认**20 个高阶工具 + 3 个基础工具（read_file / list_files / finish_analysis）**；遗留细粒度工具面需 `--legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1` 开启。所有响应使用统一 envelope：`data` + `provenance` + `uncertainty`。
 
 | 工具 | 用途 |
 |---|---|
@@ -217,6 +217,7 @@ ctx-audit gate --base A --head B --strict-sinks                       # 受保�
 | `trace_params` | 函数内 mini-SSA（实参绑定 + 隐式汇） |
 | `payload_viability` | 载荷存活推演（四档证据分级） |
 | `verify_payload` | 受限动态验证（默认关闭，白名单 Python fixture） |
+| `audit_brief` | 一次性审计简报：待审队列 + 头部链档 + 载荷档位（有界） |
 | `report_finding` | 结论回写（供 agent 工作流） |
 
 ---

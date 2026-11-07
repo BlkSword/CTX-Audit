@@ -85,8 +85,8 @@ use super::super::*;
     #[test]
     fn test_tool_surface_shape() {
         // R280+：默认面 = 16 个高阶工具（含 PR 闸门、两个探针、harness 骨架）
-        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 19);
-        assert_eq!(IntelKind::all().len(), 25);
+        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 20);
+        assert_eq!(IntelKind::all().len(), 26);
         assert_eq!(CODE_INTEL_LEGACY_SURFACE.len(), 7);
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"get_project_routes"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_summary"));
@@ -99,6 +99,7 @@ use super::super::*;
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"trace_params"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"payload_viability"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"verify_payload"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"audit_brief"));
         assert!(CODE_INTEL_LEGACY_SURFACE.contains(&"get_incremental_status"));
     }
 

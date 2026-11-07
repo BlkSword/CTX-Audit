@@ -4,6 +4,36 @@
 //! 框架证据相关的单元测试（路由、安全链、容器与拦截器、授权落点、未建模保护栈）。
 
 use super::super::*;
+    /// Express 同文件顺序：路由先注册、鉴权后注册 → 不覆盖。
+    #[test]
+    fn test_express_middleware_order() {
+        let files = vec![(
+            "src/app.js".to_string(),
+            concat!(
+                "const app = express();\n",
+                "app.get('/api/users', handler);\n",
+                "app.use(requireAuth);\n",
+            )
+            .to_string(),
+        )];
+        let mut routes = vec![json!({"route": "/api/users", "file": "src/app.js", "line": 2, "global_coverage": "no_global_match_found"})];
+        annotate_middleware_coverage(&mut routes, &files);
+        assert_eq!(routes[0]["global_coverage"], "no_global_match_found", "{routes:?}");
+
+        let files2 = vec![(
+            "src/app.js".to_string(),
+            concat!(
+                "const app = express();\n",
+                "app.use(requireAuth);\n",
+                "app.get('/api/users', handler);\n",
+            )
+            .to_string(),
+        )];
+        let mut routes2 = vec![json!({"route": "/api/users", "file": "src/app.js", "line": 3, "global_coverage": "no_global_match_found"})];
+        annotate_middleware_coverage(&mut routes2, &files2);
+        assert_eq!(routes2[0]["global_coverage"], "covered_by_middleware", "{routes2:?}");
+    }
+
     /// Next.js `middleware.ts` + config.matcher 覆盖。
     #[test]
     fn test_next_middleware_coverage() {
