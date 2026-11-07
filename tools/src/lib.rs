@@ -42,6 +42,7 @@ pub use code_intel_tools::{
 pub use code_intel_tools::gate::{gate_markdown, gate_report, gate_report_with_options, GateOptions};
 pub use code_intel_tools::harness::harness_skeleton_report;
 pub use code_intel_tools::probe::{can_reach_report, slice_between_report};
+pub use code_intel_tools::ssa::param_flow_report;
 pub use executor::ToolExecutor;
 #[cfg(feature = "legacy-tools")]
 pub use pattern_tools::register_pattern_tools;
