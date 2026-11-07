@@ -157,6 +157,27 @@ pub fn payload_viability_report(
     let mut steps: Vec<Value> = Vec::new();
     let mut killed: Option<Value> = None;
     let mut state: Vec<String> = vec!["raw".to_string()];
+    // 入口参数与污点变量（参数 + assign 链）：无外部入参 → 载荷无从进入（taint_lost）
+    let entry_flow = ssa::param_flow_report(project, entry_file, entry_line).ok();
+    let entry_params: Vec<String> = entry_flow
+        .as_ref()
+        .and_then(|f| f["params"].as_array().cloned())
+        .map(|v| v.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let entry_taint_vars: Vec<String> = entry_flow
+        .as_ref()
+        .and_then(|f| f["taints"].as_array().cloned())
+        .map(|v| {
+            v.iter()
+                .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut taint_lost_at: Option<Value> = None;
+    let mut tainted_params: Vec<String> = Vec::new();
+    if entry_params.is_empty() {
+        taint_lost_at = Some(json!({"hop": 0, "reason": "entry_has_no_params"}));
+    }
 
     for i in 0..path.len().saturating_sub(1) {
         let caller_file = path[i]["file"].as_str().unwrap_or("");
@@ -164,7 +185,7 @@ pub fn payload_viability_report(
         let caller_sym = path[i]["symbol"].as_str().unwrap_or("");
         let callee_sym = path[i + 1]["symbol"].as_str().unwrap_or("");
         let Some(content) = contents.get(caller_file) else { continue };
-        let def_end = probe_def_end(content, caller_line);
+        let def_end = precise_def_end(content, caller_file, caller_line);
         let guards = chain::guards_range(content, caller_line, def_end, caller_file);
         let guard_kind: Vec<String> = guards
             .iter()
@@ -205,8 +226,36 @@ pub fn payload_viability_report(
             .find(|l| l.contains(&format!("{callee_sym}(")))
             .unwrap_or("");
         let mut mutations = transforms(call_text);
-        if !tainted_args.is_empty() {
+        let tainted_ok = !tainted_args.is_empty();
+        if tainted_ok {
             state.push(format!("hop{i}:tainted"));
+            let callee_file = path[i + 1]["file"].as_str().unwrap_or("");
+            let callee_line = path[i + 1]["line"].as_u64().unwrap_or(0) as u32;
+            if let Ok(cf) = ssa::param_flow_report(project, callee_file, callee_line) {
+                let params: Vec<String> = cf["params"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|x| x.to_string()))
+                    .collect();
+                for ta in tainted_args.iter() {
+                    if let Some(pos) = ta["pos"].as_u64() {
+                        if let Some(pname) = params.get(pos as usize) {
+                            if !tainted_params.contains(pname) {
+                                tainted_params.push(pname.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        } else if taint_lost_at.is_none() {
+            taint_lost_at = Some(json!({
+                "hop": i,
+                "file": caller_file,
+                "def_line": caller_line,
+                "reason": "tainted_args_not_bound_at_hop",
+            }));
         }
         if killed.is_none() {
             if let Some(g) = kill_guard {
@@ -242,12 +291,46 @@ pub fn payload_viability_report(
         }));
     }
 
+    // 同函数链（hops=0）：用调用方给的 sink 行检查是否引用入口参数
+    if steps.is_empty() && taint_lost_at.is_none() {
+        let sf = sink_file;
+        let sl = sink_line;
+        if let Some(content) = contents.get(sf) {
+            let sink_text = content
+                .lines()
+                .nth(sl.saturating_sub(1) as usize)
+                .unwrap_or("");
+            let hit = entry_taint_vars.iter().any(|p| sink_text.contains(p.as_str()));
+            if !hit {
+                taint_lost_at = Some(json!({"hop": 0, "file": sf, "def_line": sl, "reason": "sink_args_do_not_reference_entry_params"}));
+            }
+        }
+    }
+
+    // 跨跳：最终 sink 行必须引用被传递进来的污点参数名，否则 taint_lost
+    if killed.is_none() && taint_lost_at.is_none() && !steps.is_empty() && !tainted_params.is_empty() {
+        if let Some(content) = contents.get(sink_file) {
+            let sink_text = content
+                .lines()
+                .nth(sink_line.saturating_sub(1) as usize)
+                .unwrap_or("");
+            if !tainted_params.iter().any(|p| sink_text.contains(p.as_str())) {
+                taint_lost_at = Some(json!({
+                    "hop": steps.len(),
+                    "file": sink_file,
+                    "def_line": sink_line,
+                    "reason": "sink_args_do_not_reference_tainted_params",
+                }));
+            }
+        }
+    }
+
     // 汇节点自身函数的守卫/杀伤标记
     if killed.is_none() {
         let sf = path.last().map(|v| v["file"].as_str().unwrap_or("")).unwrap_or(sink_file);
         let sl = path.last().map(|v| v["line"].as_u64().unwrap_or(sink_line as u64) as u32).unwrap_or(sink_line);
         if let Some(content) = contents.get(sf) {
-            let def_end = probe_def_end(content, sl);
+            let def_end = precise_def_end(content, sf, sl);
             let guards = chain::guards_range(content, sl, def_end, sf);
             let kill_guard = guards.iter().find(|g| {
                 g.get("kind")
@@ -263,8 +346,18 @@ pub fn payload_viability_report(
         }
     }
 
+    let ineffective_guards: Vec<String> = steps
+        .iter()
+        .flat_map(|s| s["guards"].as_array().cloned().unwrap_or_default())
+        .filter_map(|g| g.as_str().map(|x| x.to_string()))
+        .filter(|g| g == "bounds" || g == "signature")
+        .collect();
     let (tier, viability) = if killed.is_some() {
         ("payload_killed", "killed")
+    } else if taint_lost_at.is_some() {
+        ("taint_lost", "taint_lost")
+    } else if !ineffective_guards.is_empty() {
+        ("guard_ineffective_token", "may_survive")
     } else {
         ("payload_may_survive", "may_survive")
     };
@@ -275,6 +368,8 @@ pub fn payload_viability_report(
         "reachable": true,
         "viability": viability,
         "tier": tier,
+        "entry_params": entry_params,
+        "taint_lost_at": taint_lost_at,
         "hops": steps.len(),
         "steps": steps,
         "killed_at": killed,
@@ -287,10 +382,17 @@ pub fn payload_viability_report(
     }))
 }
 
-fn probe_def_end(content: &str, def_line: u32) -> u32 {
+fn precise_def_end(content: &str, file: &str, def_line: u32) -> u32 {
     let total = content.lines().count() as u32;
-    // 与 probe/ssa 相同的近似：到下一条同缩进/更浅缩进的 def 为止；此处简化为 +120 上限
-    (def_line.saturating_add(120)).min(total.max(def_line))
+    let lang = chain::chain_language_of(file);
+    let defs = probe::definitions_multi(content, lang);
+    defs.iter()
+        .filter(|(_, l)| *l > def_line)
+        .map(|(_, l)| *l)
+        .min()
+        .map(|n| n.saturating_sub(1))
+        .unwrap_or(total)
+        .max(def_line)
 }
 
 #[cfg(test)]

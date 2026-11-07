@@ -232,6 +232,24 @@ fn signature_params(content: &str, def_line: u32, symbol: &str) -> Vec<String> {
     out
 }
 
+/// 响应体重绑定（source switch）：污点链在这里断开。
+///
+/// 典型：`String body = execute.body()` / `String body = httpResponse.body()` /
+/// `data = requests.get(url).content` —— 左值来自网络响应，不是入口参数。
+fn source_switch(rhs: &str) -> bool {
+    const TOKENS: [&str; 8] = [
+        ".body()",
+        "execute()",
+        "HttpResponse",
+        "HttpUtil.create",
+        "requests.get(",
+        "requests.post(",
+        "res.json(",
+        ".content",
+    ];
+    TOKENS.iter().any(|t| rhs.contains(t))
+}
+
 /// 简单赋值拆分（单 `=`，排除 `==`/`=>`/`<=`/`>=`/`!=`）。
 fn split_assignment(line: &str) -> Option<(String, String)> {
     let bytes = line.as_bytes();
@@ -309,6 +327,16 @@ pub fn param_flow_report(project: &Path, file: &str, line: u32) -> Result<Value,
                     continue;
                 }
                 if let Some(src) = taint.keys().find(|t| word_contains(&rhs, t)).cloned() {
+                    if source_switch(&rhs) {
+                        // 响应体重绑定：记录断点，但不传播污点
+                        assignments.push(json!({
+                            "name": lhs,
+                            "from": src,
+                            "line": i,
+                            "taint_broken": "source_switch",
+                        }));
+                        continue;
+                    }
                     assignments.push(json!({
                         "name": lhs,
                         "from": src,
