@@ -419,6 +419,65 @@ pub(crate) fn middleware_guards(files: &[(String, String)]) -> Vec<MiddlewareGua
             }
         }
     }
+    // Next.js `middleware.ts`：getToken/withAuth + config.matcher
+    for (path, content) in files.iter() {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if !(name.starts_with("middleware.") && is_middleware_language(path)) {
+            continue;
+        }
+        let has_auth = content.contains("getToken")
+            || content.contains("withAuth")
+            || content.contains("isAuthenticated")
+            || content.contains("next-auth")
+            || content.contains("auth(");
+        if !has_auth {
+            continue;
+        }
+        let mut prefixes: Vec<String> = Vec::new();
+        for line in content.lines() {
+            let t = line.trim();
+            if t.contains("matcher") || t.contains(":path") || t.contains(":matcher") {
+                // 取该行里所有以 '/' 开头的字面量
+                for quote in ['\'', '"', '`'] {
+                    let mut rest = t;
+                    while let Some(a) = rest.find(quote) {
+                        rest = &rest[a + 1..];
+                        let Some(b) = rest.find(quote) else { break };
+                        let lit = &rest[..b];
+                        rest = &rest[b + 1..];
+                        if lit.starts_with('/') {
+                            let mut p = lit.to_string();
+                            if let Some(idx) = p.find("/:") {
+                                p.truncate(idx);
+                            }
+                            p = p.trim_end_matches('/').to_string();
+                            if !prefixes.contains(&p) {
+                                prefixes.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if prefixes.is_empty() {
+            prefixes.push(String::new());
+        }
+        let line = content
+            .lines()
+            .position(|l| l.contains("getToken") || l.contains("withAuth") || l.contains("isAuthenticated"))
+            .map(|i| i + 1)
+            .unwrap_or(1) as u32;
+        for prefix in prefixes {
+            guards.push(MiddlewareGuard {
+                framework: "next",
+                prefix,
+                name: "middleware".to_string(),
+                file: path.clone(),
+                line,
+            });
+        }
+    }
+
     guards
 }
 
@@ -475,7 +534,7 @@ fn middleware_scope_covers(guard_file: &str, route_file: &str, prefix: &str) -> 
 fn middleware_language_matches(framework: &str, route_file: &str) -> bool {
     match framework {
         "flask" => route_file.ends_with(".py"),
-        "express" => {
+        "next" | "express" => {
             route_file.ends_with(".js")
                 || route_file.ends_with(".jsx")
                 || route_file.ends_with(".ts")

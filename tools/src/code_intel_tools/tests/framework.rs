@@ -4,6 +4,31 @@
 //! 框架证据相关的单元测试（路由、安全链、容器与拦截器、授权落点、未建模保护栈）。
 
 use super::super::*;
+    /// Next.js `middleware.ts` + config.matcher 覆盖。
+    #[test]
+    fn test_next_middleware_coverage() {
+        let files = vec![(
+            "middleware.ts".to_string(),
+            concat!(
+                "import { getToken } from 'next-auth/jwt';\n",
+                "export async function middleware(req: Request) {\n",
+                "  const token = await getToken({ req });\n",
+                "  if (!token) { return NextResponse.redirect('/login'); }\n",
+                "}\n",
+                "export const config = { matcher: ['/admin/:path*'] };\n",
+            )
+            .to_string(),
+        )];
+        let mut routes = vec![
+            json!({"route": "/admin/users", "file": "app/admin/page.tsx", "global_coverage": "no_global_match_found"}),
+            json!({"route": "/public/info", "file": "app/public/page.tsx", "global_coverage": "no_global_match_found"}),
+        ];
+        annotate_middleware_coverage(&mut routes, &files);
+        assert_eq!(routes[0]["global_coverage"], "covered_by_middleware", "{routes:?}");
+        assert_eq!(routes[0]["middleware_match"]["framework"], "next");
+        assert_eq!(routes[1]["global_coverage"], "no_global_match_found", "{routes:?}");
+    }
+
     /// 中间件鉴权覆盖：Express `app.use` 与 Flask `before_request`。
     #[test]
     fn test_middleware_auth_coverage() {

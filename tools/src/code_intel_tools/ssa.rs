@@ -15,6 +15,7 @@ use super::index;
 use super::probe;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::path::Path;
 
 /// 隐式汇 / 伪守卫基因库 v0（名字级；后续从 CVE diff 扩充并标注出处）。
@@ -36,8 +37,8 @@ pub(crate) fn implicit_sink_kind(name: &str) -> Option<&'static str> {
 
 struct SsaGraph {
     contents: BTreeMap<String, String>,
-    defs: BTreeMap<String, Vec<(String, u32)>>,
-    calls: BTreeMap<String, Vec<(String, u32, bool)>>,
+    defs: BTreeMap<String, Arc<Vec<(String, u32)>>>,
+    calls: BTreeMap<String, Arc<Vec<(String, u32, bool)>>>,
     name_index: BTreeMap<String, Vec<(String, u32)>>,
 }
 
@@ -51,20 +52,15 @@ impl SsaGraph {
             name_index: BTreeMap::new(),
         };
         for (path, content) in files.iter() {
-            let lang = chain::chain_language_of(path);
-            let defs = probe::definitions_multi(content, lang);
-            let calls: Vec<(String, u32, bool)> = chain::calls(content)
-                .into_iter()
-                .map(|(name, line, member, _install, _ctor)| (name, line, member))
-                .collect();
-            for (name, line) in defs.iter() {
+            let parsed = super::file_cache::parsed_file(path, content);
+            for (name, line) in parsed.defs.iter() {
                 g.name_index
                     .entry(name.clone())
                     .or_default()
                     .push((path.clone(), *line));
             }
-            g.defs.insert(path.clone(), defs);
-            g.calls.insert(path.clone(), calls);
+            g.defs.insert(path.clone(), parsed.defs.clone());
+            g.calls.insert(path.clone(), parsed.calls.clone());
             g.contents.insert(path.clone(), content.clone());
         }
         g

@@ -14,6 +14,7 @@ use super::chain;
 use super::index;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 use std::path::Path;
 
 const MAX_HOPS: usize = 20;
@@ -89,8 +90,8 @@ pub(crate) fn definitions_multi(content: &str, lang: &str) -> Vec<(String, u32)>
 }
 
 struct Graph {
-    defs: BTreeMap<String, Vec<(String, u32)>>,
-    calls: BTreeMap<String, Vec<(String, u32, bool)>>,
+    defs: BTreeMap<String, Arc<Vec<(String, u32)>>>,
+    calls: BTreeMap<String, Arc<Vec<(String, u32, bool)>>>,
     contents: BTreeMap<String, String>,
     name_index: BTreeMap<String, Vec<(String, u32)>>,
 }
@@ -105,20 +106,15 @@ impl Graph {
             name_index: BTreeMap::new(),
         };
         for (path, content) in files.iter() {
-            let lang = chain::chain_language_of(path);
-            let defs = definitions_multi(content, lang);
-            let calls: Vec<(String, u32, bool)> = chain::calls(content)
-                .into_iter()
-                .map(|(name, line, member, _install, _ctor)| (name, line, member))
-                .collect();
-            for (name, line) in defs.iter() {
+            let parsed = super::file_cache::parsed_file(path, content);
+            for (name, line) in parsed.defs.iter() {
                 g.name_index
                     .entry(name.clone())
                     .or_default()
                     .push((path.clone(), *line));
             }
-            g.defs.insert(path.clone(), defs);
-            g.calls.insert(path.clone(), calls);
+            g.defs.insert(path.clone(), parsed.defs.clone());
+            g.calls.insert(path.clone(), parsed.calls.clone());
             g.contents.insert(path.clone(), content.clone());
         }
         g
