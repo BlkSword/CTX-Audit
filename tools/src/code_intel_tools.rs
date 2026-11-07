@@ -37,6 +37,7 @@ mod routes;
 pub(crate) use routes::*;
 mod chain;
 mod chain_scan;
+pub mod ant;
 mod chain_vocab;
 pub mod gate;
 pub mod harness;
@@ -248,10 +249,12 @@ pub enum IntelKind {
     HarnessSkeleton,
     /// 函数内 mini-SSA：参数 def-use → 调用实参绑定 + 隐式汇基因库命中
     TraceParams,
+    /// 载荷存活推演：沿可达路径逐跳推演 payload 状态，输出证据分级
+    PayloadViability,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 23] {
+    pub fn all() -> [IntelKind; 24] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -276,6 +279,7 @@ impl IntelKind {
             IntelKind::SliceBetween,
             IntelKind::HarnessSkeleton,
             IntelKind::TraceParams,
+            IntelKind::PayloadViability,
         ]
     }
 
@@ -304,6 +308,7 @@ impl IntelKind {
             IntelKind::SliceBetween => "slice_between",
             IntelKind::HarnessSkeleton => "harness_skeleton",
             IntelKind::TraceParams => "trace_params",
+            IntelKind::PayloadViability => "payload_viability",
         }
     }
 
@@ -331,6 +336,7 @@ impl IntelKind {
             IntelKind::SliceBetween => "路径切片：沿 can_reach 路径按需切出每步代码窗口（≤12KB，替代一次性链档）",
             IntelKind::HarnessSkeleton => "Harness 骨架：为 handler 生成路由/参数/守卫/curl/MockMvc 最小验证骨架（静态，不执行）",
             IntelKind::TraceParams => "函数内 mini-SSA：参数→局部变量→调用实参绑定，并标注反射/属性/表达式/JNDI/反序列化等隐式汇命中",
+            IntelKind::PayloadViability => "载荷存活推演：沿可达路径逐跳推演 archetype 载荷状态（守卫=杀伤、decode/parse=变异），输出 payload_killed/payload_may_survive 分级",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
     }
@@ -383,6 +389,13 @@ impl CodeIntelTool {
             IntelKind::TraceParams => vec![
                 str_param("file", "目标函数所在文件（相对 project 根）", true),
                 int_param("line", "函数体内任意行（自动定位最近定义）", 1),
+            ],
+            IntelKind::PayloadViability => vec![
+                str_param("entry_file", "入口函数文件（相对 project 根）", true),
+                int_param("entry_line", "入口函数定义行或函数体内行", 1),
+                str_param("sink_file", "汇所在文件", true),
+                int_param("sink_line", "汇行", 1),
+                str_param("archetype", "载荷类型：sql/path/jndi/template/deser/command/ssrf/xss", false),
             ],
             IntelKind::PrDriftGate => vec![
                 str_param("base", "基线源码目录或 git ref（相对 project 根）", true),
@@ -2888,6 +2901,27 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new("medium", &["name_level_dataflow"], 0),
                 }
             }
+            IntelKind::PayloadViability => {
+                let entry_file = input["entry_file"].as_str().unwrap_or("");
+                let sink_file = input["sink_file"].as_str().unwrap_or("");
+                let entry_line = input["entry_line"].as_u64().unwrap_or(1) as u32;
+                let sink_line = input["sink_line"].as_u64().unwrap_or(1) as u32;
+                let archetype = input["archetype"].as_str().unwrap_or("generic");
+                if entry_file.is_empty() || sink_file.is_empty() {
+                    return Err(ToolError::InvalidArgument(
+                        "payload_viability 需要 entry_file 与 sink_file".to_string(),
+                    ));
+                }
+                let data = ant::payload_viability_report(
+                    root, entry_file, entry_line, sink_file, sink_line, archetype,
+                )
+                .map_err(|e| ToolError::ExecutionFailed(format!("payload_viability: {e}")))?;
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(entry_file, entry_line, &id)],
+                    uncertainty: Uncertainty::new("medium", &["name_level_dataflow", "no_dynamic_verification"], 0),
+                }
+            }
             IntelKind::PrDriftGate => {
                 let base_in = input["base"].as_str().unwrap_or("");
                 let head_in = input["head"].as_str().unwrap_or("");
@@ -3029,7 +3063,7 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
 /// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
 /// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
 /// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
-pub const PROTOCOL_TOOL_SURFACE: [&str; 17] = CODE_INTEL_TOOL_SURFACE;
+pub const PROTOCOL_TOOL_SURFACE: [&str; 18] = CODE_INTEL_TOOL_SURFACE;
 
 /// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
 fn max_tool_bytes() -> usize {
@@ -3799,7 +3833,7 @@ pub fn chain_dossier_markdown(project: &Path, chain_id: &str) -> Result<String, 
 /// LLM 默认工具面（9 个）：审计协议所需的最小集合。
 ///
 /// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 17] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 18] = [
     "coverage_summary",
     "coverage_triage",
     "get_project_routes",
@@ -3817,6 +3851,7 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 17] = [
     "slice_between",
     "harness_skeleton",
     "trace_params",
+    "payload_viability",
 ];
 
 /// 默认面之外的细粒度高阶工具（legacy 模式下注册，避免上下文被工具定义占满）。
