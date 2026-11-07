@@ -207,6 +207,8 @@ pub(crate) fn compute_routes(
         annotate_container_filters(&mut group, &container_filters);
         annotate_interceptors(&mut group, &interceptor_regs);
         annotate_interceptor_excludes(&mut group, &exclude_patterns);
+        // 中间件鉴权（Express app.use / Flask before_request）：补声明式配置覆盖不到的短板
+        annotate_middleware_coverage(&mut group, files);
         // 注解级覆盖：`@SaCheckLogin` / `@PreAuthorize` 等只有**有消费者**时才算数。
         // 实测缺口（R254）：未覆盖清单原先只看路径规则，把 3 条注解覆盖的端点算成"未覆盖"。
         let content_opt = files
@@ -1147,7 +1149,7 @@ pub(crate) fn explain_route(
         "not_an_endpoint"
     } else {
         match verdict.as_str() {
-            "covered_by_global_config" => "covered",
+            "covered_by_global_config" | "covered_by_middleware" => "covered",
             "permitted_by_global_config" => "permitted",
             "coverage_unknown" => "unknown",
             "excluded_from_interceptor" => "uncovered",

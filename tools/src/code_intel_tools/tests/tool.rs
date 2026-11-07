@@ -84,14 +84,18 @@ use super::super::*;
 
     #[test]
     fn test_tool_surface_shape() {
-        // R257：默认面收敛为 9 个协议工具；其余 7 个细粒度工具进 legacy 面
-        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 12);
-        assert_eq!(IntelKind::all().len(), 18);
+        // R280+：默认面 = 16 个高阶工具（含 PR 闸门、两个探针、harness 骨架）
+        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 16);
+        assert_eq!(IntelKind::all().len(), 22);
         assert_eq!(CODE_INTEL_LEGACY_SURFACE.len(), 7);
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"get_project_routes"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_summary"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_triage"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"assert_verdict"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"pr_drift_gate"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"can_reach"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"slice_between"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"harness_skeleton"));
         assert!(CODE_INTEL_LEGACY_SURFACE.contains(&"get_incremental_status"));
     }
 

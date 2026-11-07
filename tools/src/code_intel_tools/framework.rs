@@ -266,6 +266,281 @@ pub(crate) fn rule_for_route(route: &str, chain: &SecurityChain) -> Option<Secur
 /// 顺序语义按实际行为：多条链按 `@Order` 升序求值（未声明顺序者排后），链的 `securityMatcher`
 /// 不匹配则跳过，链内首个匹配的规则生效。**只有当胜出链没有声明顺序、且与其它链的结论矛盾时**，
 /// 才如实报 `ambiguous_across_chains` —— 不挑乐观的那条。
+/// 中间件鉴权守卫（Express `app.use` / Flask `before_request`）。
+#[derive(Debug, Clone)]
+pub(crate) struct MiddlewareGuard {
+    pub framework: &'static str,
+    pub prefix: String,
+    pub name: String,
+    pub file: String,
+    pub line: u32,
+}
+
+fn auth_middleware_name(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    const TOK: [&str; 12] = [
+        "auth", "jwt", "session", "passport", "login", "guard", "acl", "token",
+        "permission", "role", "isauthenticated", "requirelogin",
+    ];
+    TOK.iter().any(|t| lower.contains(t))
+}
+
+fn quoted_prefix(line: &str) -> String {
+    for quote in ['\'', '"', '`'] {
+        if let Some(a) = line.find(quote) {
+            let rest = &line[a + 1..];
+            if let Some(b) = rest.find(quote) {
+                let lit = &rest[..b];
+                if lit.starts_with('/') {
+                    return lit.trim_end_matches('/').to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn first_ident(s: &str) -> String {
+    s.trim()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
+}
+
+/// 扫描 Express/Flask 中间件鉴权守卫（跨文件）。
+pub(crate) fn middleware_guards(files: &[(String, String)]) -> Vec<MiddlewareGuard> {
+    let mut guards: Vec<MiddlewareGuard> = Vec::new();
+    let mut bp_prefix: std::collections::BTreeMap<String, String> = Default::default();
+    // 第一遍：blueprint 注册（`app.register_blueprint(bp, url_prefix='/x')`）
+    for (path, content) in files.iter() {
+        if !is_middleware_language(path) {
+            continue;
+        }
+        for (idx, raw) in content.lines().enumerate() {
+            let t = raw.trim();
+            if t.starts_with("//") || t.starts_with('#') || t.starts_with('*') {
+                continue;
+            }
+            if t.contains("register_blueprint(") {
+                if let Some(open) = t.find('(') {
+                    let inner = &t[open + 1..];
+                    let bp = first_ident(inner);
+                    if !bp.is_empty() {
+                        let prefix = if let Some(p) = t.find("url_prefix") {
+                            quoted_prefix(&t[p..])
+                        } else {
+                            String::new()
+                        };
+                        bp_prefix.insert(bp, prefix);
+                    }
+                }
+                let _ = idx;
+            }
+        }
+    }
+    // 第二遍：中间件/钩子
+    for (path, content) in files.iter() {
+        if !is_middleware_language(path) {
+            continue;
+        }
+        let lines: Vec<&str> = content.lines().collect();
+        for (idx, raw) in lines.iter().enumerate() {
+            let t = raw.trim();
+            if t.starts_with("//") || t.starts_with('#') || t.starts_with('*') {
+                continue;
+            }
+            // Express: app.use([prefix,] mw) / router.use(...)
+            if t.contains(".use(") {
+                let prefix = quoted_prefix(t);
+                let open = t.find(".use(").map(|p| p + 5).unwrap_or(0);
+                let inner = &t[open..];
+                for part in split_top_commas(inner) {
+                    let p = part.trim();
+                    if p.is_empty() || p.starts_with('\'') || p.starts_with('"') || p.starts_with('`') {
+                        continue;
+                    }
+                    if auth_middleware_name(p) {
+                        guards.push(MiddlewareGuard {
+                            framework: "express",
+                            prefix: prefix.clone(),
+                            name: first_ident(p).to_string(),
+                            file: path.clone(),
+                            line: (idx + 1) as u32,
+                        });
+                        break;
+                    }
+                }
+                continue;
+            }
+            // Flask: @app.before_request / @bp.before_request
+            if t.contains(".before_request") {
+                let var = t
+                    .split('@')
+                    .nth(1)
+                    .map(|rest| first_ident(rest))
+                    .unwrap_or_default();
+                let prefix = if var == "app" { String::new() } else { bp_prefix.get(&var).cloned().unwrap_or_default() };
+                // 找函数定义（后 1-4 行），再扫函数体找鉴权 token
+                let mut name = String::new();
+                let mut hit = false;
+                for j in idx..(idx + 6).min(lines.len()) {
+                    let tj = lines[j].trim();
+                    if let Some(rest) = tj.strip_prefix("def ") {
+                        name = first_ident(rest);
+                        for k in j..(j + 45).min(lines.len()) {
+                            let tk = lines[k];
+                            if tk.contains("is_authenticated")
+                                || tk.contains("login_required")
+                                || tk.contains("abort(401")
+                                || tk.contains("abort(403")
+                                || tk.contains("check_login")
+                                || tk.contains("get_login_id")
+                                || tk.contains("verify_")
+                                || tk.contains("jwt.")
+                                || tk.contains("session[")
+                                || tk.contains("current_user")
+                            {
+                                hit = true;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+                if hit {
+                    guards.push(MiddlewareGuard {
+                        framework: "flask",
+                        prefix,
+                        name,
+                        file: path.clone(),
+                        line: (idx + 1) as u32,
+                    });
+                }
+            }
+        }
+    }
+    guards
+}
+
+fn is_middleware_language(path: &str) -> bool {
+    path.ends_with(".js")
+        || path.ends_with(".jsx")
+        || path.ends_with(".ts")
+        || path.ends_with(".tsx")
+        || path.ends_with(".mjs")
+        || path.ends_with(".py")
+}
+
+fn split_top_commas(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for ch in s.chars() {
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                out.push(cur.clone());
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn dir_of(path: &str) -> String {
+    path.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default()
+}
+
+/// 全局中间件（无前缀）只覆盖"同一目录/子目录"下的路由文件，避免 monorepo 跨 app 误覆盖。
+fn middleware_scope_covers(guard_file: &str, route_file: &str, prefix: &str) -> bool {
+    if !prefix.is_empty() {
+        return true;
+    }
+    let gdir = dir_of(guard_file);
+    let rdir = dir_of(route_file);
+    rdir == gdir || (!gdir.is_empty() && rdir.starts_with(&format!("{gdir}/")))
+}
+
+fn middleware_language_matches(framework: &str, route_file: &str) -> bool {
+    match framework {
+        "flask" => route_file.ends_with(".py"),
+        "express" => {
+            route_file.ends_with(".js")
+                || route_file.ends_with(".jsx")
+                || route_file.ends_with(".ts")
+                || route_file.ends_with(".tsx")
+                || route_file.ends_with(".mjs")
+        }
+        _ => true,
+    }
+}
+
+fn prefix_covers(prefix: &str, route: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    route == prefix || route.starts_with(&format!("{prefix}/"))
+}
+
+/// 中间件鉴权覆盖：仅对"未读到声明式覆盖"的 JS/TS/Python 路由生效。
+///
+/// 语义：`app.use([prefix,] authMw)` 与 Flask `before_request` 中的鉴权钩子，
+/// 覆盖其前缀下的路由。顺序语义未建模（`order_note` 字段显式标注）。
+pub(crate) fn annotate_middleware_coverage(routes: &mut [Value], files: &[(String, String)]) {
+    let guards = middleware_guards(files);
+    if guards.is_empty() {
+        return;
+    }
+    for entry in routes.iter_mut() {
+        let Some(route) = entry.get("route").and_then(|v| v.as_str()) else { continue };
+        if route.is_empty() {
+            continue;
+        }
+        let file = entry.get("file").and_then(|v| v.as_str()).unwrap_or("");
+        if file.ends_with(".java") || file.ends_with(".kt") || file.ends_with(".xml") {
+            continue;
+        }
+        let verdict = entry
+            .get("global_coverage")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !matches!(verdict, "no_global_match_found" | "no_global_config_found" | "") {
+            continue;
+        }
+        if let Some(g) = guards.iter().find(|g| {
+            prefix_covers(&g.prefix, route)
+                && middleware_scope_covers(&g.file, file, &g.prefix)
+                && middleware_language_matches(g.framework, file)
+        }) {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("global_coverage".to_string(), json!("covered_by_middleware"));
+                obj.insert(
+                    "middleware_match".to_string(),
+                    json!({
+                        "framework": g.framework,
+                        "name": g.name,
+                        "file": g.file,
+                        "line": g.line,
+                        "prefix": g.prefix,
+                        "order_note": "declared_order_not_verified",
+                    }),
+                );
+            }
+        }
+    }
+}
+
 pub(crate) fn annotate_route_coverage(routes: &mut [Value], chains: &[SecurityChain]) {
     let total_rules: usize = chains.iter().map(|c| c.rules.len()).sum();
     for entry in routes.iter_mut() {
@@ -539,7 +814,9 @@ pub(crate) fn annotate_interceptor_excludes(
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("excluded_from_interceptor".to_string(), json!(true));
                 obj.insert("excluded_by".to_string(), json!(patterns));
-                if verdict == "covered_by_global_config" || verdict == "permitted_by_global_config"
+                if verdict == "covered_by_global_config"
+                    || verdict == "permitted_by_global_config"
+                    || verdict == "covered_by_middleware"
                 {
                     obj.insert("global_coverage".to_string(), json!("excluded_from_interceptor"));
                     obj.insert(

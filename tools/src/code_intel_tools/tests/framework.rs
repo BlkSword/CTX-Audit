@@ -4,6 +4,62 @@
 //! 框架证据相关的单元测试（路由、安全链、容器与拦截器、授权落点、未建模保护栈）。
 
 use super::super::*;
+    /// 中间件鉴权覆盖：Express `app.use` 与 Flask `before_request`。
+    #[test]
+    fn test_middleware_auth_coverage() {
+        let files = vec![
+            (
+                "src/app.js".to_string(),
+                concat!(
+                    "const app = express();\n",
+                    "app.use(requireAuth);\n",
+                    "app.get('/admin/users', handler);\n",
+                )
+                .to_string(),
+            ),
+            (
+                "src/api/routes.js".to_string(),
+                concat!(
+                    "const api = express.Router();\n",
+                    "api.use('/v1', jwtMiddleware);\n",
+                    "api.get('/v1/items', handler);\n",
+                )
+                .to_string(),
+            ),
+            (
+                "other/public.js".to_string(),
+                "app.get('/public/info', handler);\n".to_string(),
+            ),
+            (
+                "src/flask_app.py".to_string(),
+                concat!(
+                    "@app.before_request\n",
+                    "def check_login():\n",
+                    "    if not current_user.is_authenticated:\n",
+                    "        abort(401)\n",
+                    "@app.route('/flask/admin')\n",
+                    "def admin():\n",
+                    "    return 'ok'\n",
+                )
+                .to_string(),
+            ),
+        ];
+        let mut routes = vec![
+            json!({"route": "/admin/users", "file": "src/app.js", "global_coverage": "no_global_match_found"}),
+            json!({"route": "/v1/items", "file": "src/api/routes.js", "global_coverage": "no_global_match_found"}),
+            json!({"route": "/public/info", "file": "other/public.js", "global_coverage": "no_global_match_found"}),
+            json!({"route": "/flask/admin", "file": "src/flask_app.py", "global_coverage": "no_global_match_found"}),
+        ];
+        annotate_middleware_coverage(&mut routes, &files);
+        assert_eq!(routes[0]["global_coverage"], "covered_by_middleware", "{routes:?}");
+        assert_eq!(routes[0]["middleware_match"]["framework"], "express");
+        assert_eq!(routes[1]["global_coverage"], "covered_by_middleware", "{routes:?}");
+        // 不同目录的 app.js 全局中间件不应覆盖 other/ 下的路由
+        assert_eq!(routes[2]["global_coverage"], "no_global_match_found", "{routes:?}");
+        assert_eq!(routes[3]["global_coverage"], "covered_by_middleware", "{routes:?}");
+        assert_eq!(routes[3]["middleware_match"]["framework"], "flask");
+    }
+
     /// 路径匹配：精确、`/**` 前缀、`/*` 单段。
     #[test]
     fn test_route_matches_pattern() {

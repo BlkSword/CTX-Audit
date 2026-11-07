@@ -863,6 +863,18 @@ pub fn gate_markdown(report: &Value) -> String {
             out.push_str("本次改动未发现安全漂移。\n");
             return out;
         }
+        // 三行化：先给"判决 / 原因 / 证据"，细节表折叠在后
+        out.push_str("### 阻断判决\n\n");
+        for v in verdicts.iter().filter(|v| v["severity"].as_str() == Some("block")) {
+            out.push_str(&format!(
+                "- ❌ **BLOCK** `{}` — {}\n  - 原因：{}\n  - 证据：{}\n",
+                v["kind"].as_str().unwrap_or(""),
+                v["evidence"].as_str().unwrap_or("").replace('|', "\\|"),
+                v["title"].as_str().unwrap_or(""),
+                v["evidence"].as_str().unwrap_or("").replace('|', "\\|"),
+            ));
+        }
+        out.push_str("\n### 明细\n\n");
         out.push_str("| 严重度 | 类型 | 证据 |\n|---|---|---|\n");
         for v in verdicts {
             let sev = match v["severity"].as_str().unwrap_or("info") {
