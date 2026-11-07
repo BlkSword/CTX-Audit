@@ -66,6 +66,9 @@ fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<Str
         return None;
     }
     let body = lines[lo..hi].join("\n");
+    if body.contains("ALLOWED") || body.contains("allowlist") || body.contains("whitelist") {
+        return Some("allowlist_guard".to_string());
+    }
     match archetype {
         "sql_quote" => {
             if body.contains("prepareStatement") || body.contains("setString(") || body.contains("setObject(") {
@@ -185,6 +188,8 @@ pub fn payload_viability_report(
         .unwrap_or_default();
     let mut taint_lost_at: Option<Value> = None;
     let mut tainted_params: Vec<String> = Vec::new();
+    let mut mapping_gaps: Vec<Value> = Vec::new();
+    let mut same_function_step: Option<Value> = None;
     if entry_params.is_empty() {
         taint_lost_at = Some(json!({"hop": 0, "reason": "entry_has_no_params"}));
     }
@@ -209,6 +214,7 @@ pub fn payload_viability_report(
         });
         let flow = ssa::param_flow_report(project, caller_file, caller_line).ok();
         let mut tainted_args: Vec<Value> = Vec::new();
+        let mut call_matched = false;
         if let Some(flow) = &flow {
             if let Some(calls) = flow["calls"].as_array() {
                 for c in calls {
@@ -220,6 +226,7 @@ pub fn payload_viability_report(
                                 && cd["line"].as_u64() == path[i + 1]["line"].as_u64()
                         });
                     if matched {
+                        call_matched = true;
                         if let Some(ta) = c["tainted_args"].as_array() {
                             tainted_args = ta.clone();
                         }
@@ -260,12 +267,21 @@ pub fn payload_viability_report(
                 }
             }
         } else if taint_lost_at.is_none() {
-            taint_lost_at = Some(json!({
-                "hop": i,
-                "file": caller_file,
-                "def_line": caller_line,
-                "reason": "tainted_args_not_bound_at_hop",
-            }));
+            if call_matched && path.len() <= 3 {
+                taint_lost_at = Some(json!({
+                    "hop": i,
+                    "file": caller_file,
+                    "def_line": caller_line,
+                    "reason": "tainted_args_not_bound_at_hop",
+                }));
+            } else {
+                mapping_gaps.push(json!({
+                    "hop": i,
+                    "file": caller_file,
+                    "def_line": caller_line,
+                    "reason": if call_matched { "tainted_args_not_bound_long_chain" } else { "call_not_matched" },
+                }));
+            }
         }
         if killed.is_none() {
             if let Some(g) = kill_guard {
@@ -301,6 +317,42 @@ pub fn payload_viability_report(
         }));
     }
 
+    // 同函数链（hops=0）：补一条同函数 step，携带 guards/tainted_args，避免"结构事实无守卫"的误导
+    if steps.is_empty() {
+        if let Some(content) = contents.get(entry_file) {
+            let def_end = precise_def_end(content, entry_file, entry_line);
+            let guards_all = chain::guards_range(content, entry_line, def_end, entry_file);
+            let guard_kinds: Vec<String> = guards_all
+                .iter()
+                .filter_map(|g| g.get("kind").and_then(|v| v.as_str()).map(|x| x.to_string()))
+                .collect();
+            let mut same_args: Vec<Value> = Vec::new();
+            if let Some(flow) = &entry_flow {
+                if let Some(calls) = flow["calls"].as_array() {
+                    for c in calls {
+                        if c["line"].as_u64() == Some(sink_line as u64) {
+                            if let Some(ta) = c["tainted_args"].as_array() {
+                                same_args = ta.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            same_function_step = Some(json!({
+                "hop": 0,
+                "same_function": true,
+                "file": entry_file,
+                "def_line": entry_line,
+                "symbol": path.first().and_then(|v| v["symbol"].as_str()).unwrap_or(""),
+                "next": path.first().and_then(|v| v["symbol"].as_str()).unwrap_or(""),
+                "guards": guard_kinds,
+                "tainted_args": same_args,
+                "mutations": [],
+                "state": state.clone(),
+            }));
+        }
+    }
+
     // 同函数链（hops=0）：用调用方给的 sink 行检查是否引用入口参数
     if steps.is_empty() && taint_lost_at.is_none() {
         let sf = sink_file;
@@ -317,14 +369,25 @@ pub fn payload_viability_report(
         }
     }
 
-    // 跨跳：最终 sink 行必须引用被传递进来的污点参数名，否则 taint_lost
+    // 跨跳：最终 sink 所在函数体内必须引用被传递进来的污点参数名，否则 taint_lost
     if killed.is_none() && taint_lost_at.is_none() && !steps.is_empty() && !tainted_params.is_empty() {
         if let Some(content) = contents.get(sink_file) {
-            let sink_text = content
+            let lang = chain::chain_language_of(sink_file);
+            let defs = probe::definitions_multi(content, lang);
+            let def_line = defs
+                .iter()
+                .filter(|(_, l)| *l <= sink_line)
+                .map(|(_, l)| *l)
+                .max()
+                .unwrap_or(sink_line);
+            let def_end = precise_def_end(content, sink_file, def_line);
+            let body: String = content
                 .lines()
-                .nth(sink_line.saturating_sub(1) as usize)
-                .unwrap_or("");
-            if !tainted_params.iter().any(|p| sink_text.contains(p.as_str())) {
+                .skip(def_line.saturating_sub(1) as usize)
+                .take((def_end.saturating_sub(def_line) + 1) as usize)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !tainted_params.iter().any(|p| body.contains(p.as_str())) {
                 taint_lost_at = Some(json!({
                     "hop": steps.len(),
                     "file": sink_file,
@@ -356,6 +419,10 @@ pub fn payload_viability_report(
         }
     }
 
+    if let Some(st) = same_function_step {
+        steps.push(st);
+    }
+
     let ineffective_guards: Vec<String> = steps
         .iter()
         .flat_map(|s| s["guards"].as_array().cloned().unwrap_or_default())
@@ -385,9 +452,14 @@ pub fn payload_viability_report(
         "killed_at": killed,
         "method": "deterministic_payload_state_machine_v1",
         "evidence_tiers": ["payload_killed", "guard_ineffective_token", "payload_may_survive", "payload_verified"],
+        "mapping_gaps": mapping_gaps,
         "uncertainty": {
-            "level": "medium",
-            "reasons": ["name_level_dataflow", "guard_kill_table_v1", "no_dynamic_verification"],
+            "level": if mapping_gaps.is_empty() { "medium" } else { "high" },
+            "reasons": if mapping_gaps.is_empty() {
+                json!(["name_level_dataflow", "guard_kill_table_v1", "no_dynamic_verification"])
+            } else {
+                json!(["name_level_dataflow", "guard_kill_table_v1", "no_dynamic_verification", "hop_call_mapping_failed"])
+            },
         },
     }))
 }

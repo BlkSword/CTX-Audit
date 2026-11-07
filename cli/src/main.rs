@@ -371,6 +371,28 @@ enum Commands {
         output: String,
     },
 
+    /// 受限动态验证（Python fixture；需设置 CTX_AUDIT_VERIFY_DIR）
+    Verify {
+        /// 项目根目录
+        #[arg(value_name = "ROOT")]
+        root: String,
+        /// fixture 文件（相对 ROOT）
+        #[arg(long)]
+        file: String,
+        /// 入口函数名
+        #[arg(long)]
+        function: String,
+        /// 标记载荷
+        #[arg(long)]
+        payload: String,
+        /// 载荷类型 (sql|ssrf)
+        #[arg(long, default_value = "sql")]
+        archetype: String,
+        /// 输出格式 (json|md)
+        #[arg(short = 'o', long, default_value = "json")]
+        output: String,
+    },
+
     /// 探针原语（路线 B）：按需可达性查询与路径切片
     #[command(after_help = "点用 file:line 表示；-o json 输出原样 envelope。")]
     Probe {
@@ -845,6 +867,9 @@ async fn main() -> Result<()> {
         }
 
         Commands::Probe { cmd } => commands::probe::execute(cmd).await,
+        Commands::Verify { root, file, function, payload, archetype, output } => {
+            commands::verify::execute(root, file, function, payload, archetype, output).await
+        }
         Commands::Gate {
             base,
             head,

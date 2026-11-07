@@ -98,8 +98,18 @@ pub fn verify_payload_report(
     payload: &str,
     archetype: &str,
 ) -> Result<Value, String> {
-    let allow_env = std::env::var("CTX_AUDIT_VERIFY_DIR")
-        .map_err(|_| "动态验证未启用：需设置 CTX_AUDIT_VERIFY_DIR 指向允许的 fixture 目录".to_string())?;
+    let allow_env = match std::env::var("CTX_AUDIT_VERIFY_DIR") {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(json!({
+                "schema": "verify/v1",
+                "tier": "disabled",
+                "reason": "dynamic_verification_not_enabled",
+                "enable": "设置 CTX_AUDIT_VERIFY_DIR 指向允许的本地 fixture 目录",
+                "sandbox": {"network_enforced": false},
+            }));
+        }
+    };
     let allow = PathBuf::from(&allow_env)
         .canonicalize()
         .map_err(|e| format!("CTX_AUDIT_VERIFY_DIR 无效: {e}"))?;
