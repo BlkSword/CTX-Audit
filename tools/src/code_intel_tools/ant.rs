@@ -118,6 +118,64 @@ fn allowlist_enforced(content: &str, start: u32, end: u32) -> bool {
     TOKENS.iter().any(|t| body.contains(t))
 }
 
+/// SQL 上下文：参数化查询保护不到的拼接位置（ORDER BY / IN 列表 / LIKE）。
+fn sql_clause_context(line: &str) -> Option<&'static str> {
+    let up = line.to_ascii_uppercase();
+    if up.contains("ORDER BY") {
+        Some("order_by")
+    } else if up.contains(" IN (") || up.contains(" IN(") {
+        Some("in_list")
+    } else if up.contains("LIKE") {
+        Some("like")
+    } else {
+        None
+    }
+}
+
+/// 反序列化传输包装层（仅作证据标注，不改变"是否被过滤"的判定）。
+fn deserialization_wrappers(content: &str, start: u32, end: u32) -> Vec<&'static str> {
+    let lines: Vec<&str> = content.lines().collect();
+    let lo = (start as usize).saturating_sub(1);
+    let hi = (end as usize).min(lines.len());
+    let body = lines[lo..hi].join("\n");
+    let mut out: Vec<&'static str> = Vec::new();
+    if body.contains("Base64") || body.contains("base64") {
+        out.push("base64");
+    }
+    if body.contains("GZIP") || body.contains("Gzip") || body.contains("Inflater") {
+        out.push("gzip");
+    }
+    if body.contains("JSON.parse") || body.contains("ObjectMapper") || body.contains("readValue") {
+        out.push("json");
+    }
+    out
+}
+
+/// 路径校验顺序问题：先 startsWith/resolve 校验、后 normalize → 可被 ../ 绕过。
+fn path_order_issue(content: &str, start: u32, end: u32) -> Option<&'static str> {
+    let lines: Vec<&str> = content.lines().collect();
+    let lo = (start as usize).saturating_sub(1);
+    let hi = (end as usize).min(lines.len());
+    let mut norm_idx: Option<usize> = None;
+    let mut check_idx: Option<usize> = None;
+    for i in lo..hi {
+        let l = lines[i];
+        if norm_idx.is_none() && (l.contains("normalize(") || l.contains("path.Clean") || l.contains("filepath.Clean")) {
+            norm_idx = Some(i);
+        }
+        if check_idx.is_none()
+            && (l.contains("startsWith(") || l.contains(".resolve(") || l.contains("getCanonicalPath("))
+            && !l.contains("normalize(")
+        {
+            check_idx = Some(i);
+        }
+    }
+    match (norm_idx, check_idx) {
+        (Some(n), Some(c)) if c < n => Some("validate_before_normalize"),
+        _ => None,
+    }
+}
+
 /// 路径守卫是否有效：仅有 normalize/Clean 不足以防穿越，必须配合基目录/前缀校验。
 fn path_guard_effective(content: &str, start: u32, end: u32) -> bool {
     let lines: Vec<&str> = content.lines().collect();
@@ -127,10 +185,18 @@ fn path_guard_effective(content: &str, start: u32, end: u32) -> bool {
         return false;
     }
     let body = lines[lo..hi].join("\n");
-    body.contains("startsWith(")
+    let has_check = body.contains("startsWith(")
         || body.contains("secureJoin")
         || body.contains(".resolve(")
-        || body.contains("getCanonicalPath(")
+        || body.contains("getCanonicalPath(");
+    if !has_check {
+        return false;
+    }
+    // 校验必须在 normalize 之后；先校验后 normalize 可被 "../" 绕过
+    if path_order_issue(content, start, end).is_some() {
+        return false;
+    }
+    true
 }
 
 /// 函数体里的"杀伤标记"（名字级，按 archetype）。
@@ -167,10 +233,11 @@ fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<Str
                 || body.contains("getCanonicalPath")
                 || body.contains("filepath.Clean");
             if has_normalize {
-                if body.contains("startsWith(")
+                if (body.contains("startsWith(")
                     || body.contains("secureJoin")
                     || body.contains(".resolve(")
-                    || body.contains("getCanonicalPath(")
+                    || body.contains("getCanonicalPath("))
+                    && path_order_issue(content, start, end).is_none()
                 {
                     Some("path_normalized_with_prefix_check".to_string())
                 } else {
@@ -291,6 +358,7 @@ pub fn payload_viability_report(
     let mut taint_lost_at: Option<Value> = None;
     let mut tainted_params: Vec<String> = Vec::new();
     let mut mapping_gaps: Vec<Value> = Vec::new();
+    let mut context_notes: Vec<Value> = Vec::new();
     let mut same_function_step: Option<Value> = None;
     let mut ineffective_guards: Vec<String> = Vec::new();
     if entry_params.is_empty() {
@@ -317,6 +385,15 @@ pub fn payload_viability_report(
             }
             if arch == "traversal" && kind == "path_check" && !path_guard_effective(content, caller_line, def_end) {
                 ineffective_here.push("path_check_lexical_only".to_string());
+                return false;
+            }
+            if arch == "traversal"
+                && kind == "allowlist"
+                && (g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("startsWith(")
+                    || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("secureJoin"))
+                && !path_guard_effective(content, caller_line, def_end)
+            {
+                ineffective_here.push("path_check_validate_before_normalize".to_string());
                 return false;
             }
             if kind == "allowlist" && !allowlist_enforced(content, caller_line, def_end) {
@@ -581,6 +658,14 @@ pub fn payload_viability_report(
                 if arch == "traversal" && kind == "path_check" && !path_guard_effective(content, sl, def_end) {
                     return false;
                 }
+                if arch == "traversal"
+                    && kind == "allowlist"
+                    && (g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("startsWith(")
+                        || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("secureJoin"))
+                    && !path_guard_effective(content, sl, def_end)
+                {
+                    return false;
+                }
                 if kind == "allowlist" && !allowlist_enforced(content, sl, def_end) {
                     return false;
                 }
@@ -610,6 +695,65 @@ pub fn payload_viability_report(
             }
         }
     }
+    // B1 上下文矩阵：沿链条收集函数体（入口 + 每个 hop + 汇所在函数），
+    // 用于 SQL 子句上下文、路径校验顺序与反序列化包装层证据。
+    let mut bodies: Vec<String> = Vec::new();
+    {
+        let mut ranges: Vec<(String, u32)> = Vec::new();
+        ranges.push((entry_file.to_string(), entry_line));
+        for st in path.iter() {
+            if let (Some(f), Some(l)) = (st["file"].as_str(), st["line"].as_u64()) {
+                ranges.push((f.to_string(), l as u32));
+            }
+        }
+        for st in steps.iter() {
+            if let (Some(f), Some(l)) = (st["file"].as_str(), st["def_line"].as_u64()) {
+                ranges.push((f.to_string(), l as u32));
+            }
+        }
+        let mut seen: Vec<(String, u32)> = Vec::new();
+        for (f, l) in ranges {
+            if seen.contains(&(f.clone(), l)) {
+                continue;
+            }
+            seen.push((f.clone(), l));
+            if let Some(content) = contents.get(f.as_str()) {
+                let end = precise_def_end(content, &f, l);
+                let body: String = content
+                    .lines()
+                    .skip(l.saturating_sub(1) as usize)
+                    .take((end.saturating_sub(l) + 1) as usize)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                bodies.push(body);
+            }
+        }
+    }
+    let combined = bodies.join("\n");
+    if arch == "sql_quote" {
+        if let Some(clause) = sql_clause_context(&combined) {
+            if let Some(k) = killed.clone() {
+                let guard_kind = k["guard"]["kind"].as_str().unwrap_or("");
+                let evidence = k["guard"]["evidence"].as_str().unwrap_or("");
+                if guard_kind == "body_token" && evidence == "parameterized_query" {
+                    context_notes.push(json!({"kind": "sql_clause", "clause": clause,
+                        "note": "parameterized_query_does_not_cover_clause"}));
+                    killed = None;
+                }
+            }
+        }
+    }
+    if arch == "deserialization" {
+        let wrappers = deserialization_wrappers(&combined, 1, combined.lines().count() as u32);
+        if !wrappers.is_empty() {
+            context_notes.push(json!({"kind": "deserialization_wrapper", "wrappers": wrappers}));
+        }
+    }
+    if arch == "traversal" {
+        if let Some(issue) = path_order_issue(&combined, 1, combined.lines().count() as u32) {
+            context_notes.push(json!({"kind": "path_check_order", "issue": issue}));
+        }
+    }
     let (tier, viability) = if killed.is_some() {
         ("payload_killed", "killed")
     } else if taint_lost_at.is_some() {
@@ -634,6 +778,7 @@ pub fn payload_viability_report(
         "method": "deterministic_payload_state_machine_v1",
         "evidence_tiers": ["payload_killed", "guard_ineffective_token", "payload_may_survive", "payload_verified"],
         "mapping_gaps": mapping_gaps,
+        "context": context_notes,
         "uncertainty": {
             "level": if mapping_gaps.is_empty() { "medium" } else { "high" },
             "reasons": if mapping_gaps.is_empty() {
@@ -679,6 +824,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn sql_clause_context_detection() {
+        assert_eq!(sql_clause_context(r#"SELECT * FROM t ORDER BY " + q"#), Some("order_by"));
+        assert_eq!(sql_clause_context(r#"SELECT * FROM t WHERE id IN (" + q + ")"#), Some("in_list"));
+        assert_eq!(sql_clause_context(r#"SELECT * FROM t WHERE n LIKE '" + q + "'"#), Some("like"));
+        assert_eq!(sql_clause_context("SELECT * FROM t WHERE n = ?"), None);
+    }
+
+    #[test]
+    fn path_order_and_wrappers() {
+        let body = "String raw = \"/data/\" + q;\nif (!raw.startsWith(\"/data/\")) throw new RuntimeException();\njava.nio.file.Path n = Paths.get(raw).normalize();\n";
+        assert_eq!(path_order_issue(body, 1, 3), Some("validate_before_normalize"));
+        let ok = "java.nio.file.Path n = Paths.get(q).normalize();\nif (!n.startsWith(\"/data/\")) throw new RuntimeException();\n";
+        assert_eq!(path_order_issue(ok, 1, 2), None);
+        let w = "byte[] b = Base64.getDecoder().decode(in);\nreturn new ObjectInputStream(new ByteArrayInputStream(b)).readObject();\n";
+        assert!(deserialization_wrappers(w, 1, 2).contains(&"base64"));
     }
 
     #[test]
