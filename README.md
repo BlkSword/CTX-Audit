@@ -95,7 +95,7 @@ CTX-Audit 是**事实引擎**，不是漏洞扫描器：
 ### 7. 验证骨架与受限动态验证
 
 - `harness_skeleton`：为 handler 生成路由/参数/守卫/curl（`MARKER` 占位）/MockMvc/人工验证计划
-- `verify_payload`（**默认关闭，需显式开启**）：仅在 `CTX_AUDIT_VERIFY_DIR` 白名单目录内的 Python fixture 上执行，注入 fake DB cursor / fake requests，返回 `payload_verified` / `verified_killed`；不做网络/文件系统沙箱，仅适用于本地 fixture
+- `verify_payload`（**默认关闭，需显式开启**）：仅在 `CTX_AUDIT_VERIFY_DIR` 白名单目录内的 Python fixture 上执行，支持 **sql / ssrf / path / command / template / deserialize** 六类，注入 fake DB cursor / requests / open / os.system / jinja2 / pickle，返回 `payload_verified` / `verified_killed`；不做网络/文件系统沙箱，仅适用于本地 fixture
 
 ---
 
@@ -235,6 +235,7 @@ ctx-audit gate --base A --head B --strict-sinks                       # 受保�
 | 真实仓库历史 PR（68 次运行） | 6 次拦截（8.8%），全部可解释/可豁免 |
 | 耗时 | 590 文件仓库 **772ms**；3357 文件仓库 light 稳态 **2.82s wall**（base 缓存命中），热启动 4ms |
 | 轻/重模式判决 | 一致 |
+| 快速外部观察（3 个公开应用仓库 60 个 PR + 既有语料 43 个 PR） | 公开仓库 **0 拦截**；既有语料 **4 次拦截 / 14 verdicts（全部可解释、可豁免）**；总 block 率 3.9%；单次 **43–79ms** |
 
 ### 事实与载荷判定
 
@@ -258,7 +259,7 @@ ctx-audit gate --base A --head B --strict-sinks                       # 受保�
 4. **载荷判定是静态推演**：`payload_may_survive` 不等于可利用；`payload_verified` 需动态验证且仅限白名单 fixture。
 5. **动态验证不做沙箱**：只保证注入依赖不产生真实外部调用；不要指向生产代码。
 6. **不宣称通用漏洞发现**：候选链/事实层供 LLM 与人工判定；通用注入发现能力有限，已明确降级为证据层。
-7. **尚无外部团队 CI 试点数据**：真实仓库观察来自内部测试机。
+7. **尚无外部团队 CI 试点数据**：真实仓库观察来自内部测试机；Next.js app-router 的路由枚举尚未覆盖（试点中该类仓库出现 0 路由，不能据此判安全）。
 
 ---
 

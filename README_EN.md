@@ -103,7 +103,7 @@ ctx-audit mcp
 | `harness_skeleton` | verification skeleton |
 | `trace_params` | intra-procedural mini-SSA |
 | `payload_viability` | payload survival walk (evidence tiers) |
-| `verify_payload` | opt-in dynamic verification (whitelisted Python fixtures) |
+| `verify_payload` | opt-in dynamic verification (whitelisted Python fixtures; sql/ssrf/path/command/template/deserialize) |
 | `audit_brief` | bounded audit brief: triage queue + top chains + payload tiers |
 | `report_finding` | result write-back for agent workflows |
 
@@ -126,6 +126,7 @@ All numbers come from reproducible benchmarks; scripts live in a private evaluat
 | Determinism | five runs produce identical payload JSON (sha256) |
 | Opt-in dynamic verification (Python fixtures) | **4/4** (`payload_verified` / `verified_killed`) |
 | Cached probe latency | `can_reach` **15 ms**, `payload_viability` **39 ms** |
+| Quick external observation (3 public app repos, 60 PRs + 43 existing PRs) | **0 blocks** on public repos; **4 blocked runs / 14 verdicts** (all explainable/waivable) on existing corpora; 3.9% total block rate; **43–79 ms** per check |
 
 ---
 
@@ -137,7 +138,7 @@ All numbers come from reproducible benchmarks; scripts live in a private evaluat
 4. **Payload verdicts are static**: `payload_may_survive` is not "exploitable"; `payload_verified` requires opt-in dynamic verification.
 5. **Dynamic verification is not a sandbox**: only injected dependencies are faked; use local fixtures only.
 6. **Not a general vulnerability finder**: the fact layer serves LLM and human judgement.
-7. **No external CI pilot data yet**: real-repository observations come from internal runs.
+7. **No external CI pilot data yet**: real-repository observations come from internal runs; Next.js app-router endpoints are not enumerated yet (one pilot repo showed 0 routes, which must not be read as safe).
 
 ---
 

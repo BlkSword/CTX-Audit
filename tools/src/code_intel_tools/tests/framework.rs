@@ -4,6 +4,52 @@
 //! 框架证据相关的单元测试（路由、安全链、容器与拦截器、授权落点、未建模保护栈）。
 
 use super::super::*;
+    /// Flask before_request 与路由注册顺序无关（钩子在请求期统一执行）。
+    #[test]
+    fn test_flask_before_request_order_insensitive() {
+        let files = vec![(
+            "src/app.py".to_string(),
+            concat!(
+                "app.route('/admin')\n",
+                "def admin(): return 'ok'\n",
+                "@app.before_request\n",
+                "def check():\n",
+                "    if not current_user.is_authenticated: abort(401)\n",
+            )
+            .to_string(),
+        )];
+        let mut routes = vec![json!({"route": "/admin", "file": "src/app.py", "line": 2, "global_coverage": "no_global_match_found"})];
+        annotate_middleware_coverage(&mut routes, &files);
+        assert_eq!(routes[0]["global_coverage"], "covered_by_middleware", "{routes:?}");
+    }
+
+    /// Spring 匹配器顺序：先声明者优先（permitAll 在前则放行）。
+    #[test]
+    fn test_spring_matcher_order_first_wins() {
+        let files = vec![(
+            "src/SecurityConfig.java".to_string(),
+            concat!(
+                "package app;\n",
+                "@Configuration\n",
+                "@EnableWebSecurity\n",
+                "public class SecurityConfig {\n",
+                "    @Bean\n",
+                "    public SecurityFilterChain chain(HttpSecurity http) throws Exception {\n",
+                "        http.authorizeHttpRequests(auth -> auth\n",
+                "            .requestMatchers(\"/admin/**\").permitAll()\n",
+                "            .requestMatchers(\"/admin/**\").hasRole(\"ADMIN\"));\n",
+                "        return http.build();\n",
+                "    }\n",
+                "}\n",
+            )
+            .to_string(),
+        )];
+        let chains = security_config_chains(&files);
+        let mut routes = vec![json!({"line": 1, "route": "/admin/users", "http_method": "GET"})];
+        annotate_route_coverage(&mut routes, &chains);
+        assert_eq!(routes[0]["global_coverage"], "permitted_by_global_config", "{routes:?}");
+    }
+
     /// Express 同文件顺序：路由先注册、鉴权后注册 → 不覆盖。
     #[test]
     fn test_express_middleware_order() {

@@ -44,10 +44,30 @@ def fake_open(p, *a, **k):
 def fake_system(cmd):
     calls.append({"kind": "cmd", "cmd": str(cmd)})
     return 0
+def fake_render(src):
+    calls.append({"kind": "template", "src": str(src)})
+    return str(src)
+class Tpl:
+    def __init__(self, src):
+        self.src = str(src)
+    def render(self, *a, **k):
+        calls.append({"kind": "template", "src": self.src})
+        return self.src
+class Env:
+    def from_string(self, s):
+        return Tpl(s)
+    def get_template(self, s):
+        return Tpl(s)
+jinja_mod = types.SimpleNamespace(Environment=Env, Template=Tpl, render_template_string=fake_render)
+def fake_pickle_loads(data):
+    calls.append({"kind": "deserialize", "data": str(data)})
+    return data
+pickle_mod = types.SimpleNamespace(loads=fake_pickle_loads, load=fake_pickle_loads)
 fake_requests = types.SimpleNamespace(get=fake_get, post=fake_get)
 urllib_mod = types.SimpleNamespace(parse=_up) if _up else types.SimpleNamespace()
 os_mod = types.SimpleNamespace(system=fake_system, path=_os.path, sep=_os.sep, getcwd=lambda: "/data")
-ns = {"cur": Cur(), "requests": fake_requests, "urllib": urllib_mod, "open": fake_open, "os": os_mod}
+ns = {"cur": Cur(), "requests": fake_requests, "urllib": urllib_mod, "open": fake_open, "os": os_mod,
+      "jinja2": jinja_mod, "pickle": pickle_mod, "render_template_string": fake_render}
 src = open(path, encoding="utf-8", errors="replace").read()
 exec(compile(src, path, "exec"), ns)
 raised = None
@@ -114,6 +134,26 @@ pub(crate) fn classify_verify(calls: &[Value], raised: Option<&str>, payload: &s
                 ("verified_killed".to_string(), json!({"raised": raised, "reason": "not_executed"}))
             }
         }
+        "template" => {
+            let hit = calls
+                .iter()
+                .any(|c| c["kind"] == "template" && c["src"].as_str().map(|v| v.contains(payload)).unwrap_or(false));
+            if hit {
+                ("payload_verified".to_string(), json!({"template_source_contains_payload": true}))
+            } else {
+                ("verified_killed".to_string(), json!({"raised": raised, "reason": "never_rendered"}))
+            }
+        }
+        "deserialize" => {
+            let hit = calls
+                .iter()
+                .any(|c| c["kind"] == "deserialize" && c["data"].as_str().map(|v| v.contains(payload)).unwrap_or(false));
+            if hit {
+                ("payload_verified".to_string(), json!({"sink_received_payload": true}))
+            } else {
+                ("verified_killed".to_string(), json!({"raised": raised, "reason": "blocked_before_sink"}))
+            }
+        }
         "ssrf" => {
             let sent = calls.iter().any(|c| c["url"].as_str() == Some(payload));
             if sent {
@@ -165,8 +205,13 @@ pub fn verify_payload_report(
         ));
     }
     let arch = match archetype {
-        "sql" | "ssrf" | "path" | "command" => archetype,
-        _ => return Err("动态验证支持的载荷类型：sql / ssrf / path / command".to_string()),
+        "sql" | "ssrf" | "path" | "command" | "template" | "deserialize" => archetype,
+        _ => {
+            return Err(
+                "动态验证支持的载荷类型：sql / ssrf / path / command / template / deserialize"
+                    .to_string(),
+            )
+        }
     };
     let out = Command::new(python_cmd())
         .arg("-c")
@@ -243,6 +288,24 @@ mod tests {
         let (t, _) = classify_verify(&calls, None, "pwned", "command");
         assert_eq!(t, "payload_verified");
         let (t2, _) = classify_verify(&[], Some("ValueError: blocked"), "pwned", "command");
+        assert_eq!(t2, "verified_killed");
+    }
+
+    #[test]
+    fn template_classification() {
+        let calls = vec![json!({"kind": "template", "src": "{{payload}}"})];
+        let (t, _) = classify_verify(&calls, None, "payload", "template");
+        assert_eq!(t, "payload_verified");
+        let (t2, _) = classify_verify(&[], Some("ValueError: blocked"), "payload", "template");
+        assert_eq!(t2, "verified_killed");
+    }
+
+    #[test]
+    fn deserialize_classification() {
+        let calls = vec![json!({"kind": "deserialize", "data": "payload-bytes"})];
+        let (t, _) = classify_verify(&calls, None, "payload", "deserialize");
+        assert_eq!(t, "payload_verified");
+        let (t2, _) = classify_verify(&[], Some("ValueError: blocked"), "payload", "deserialize");
         assert_eq!(t2, "verified_killed");
     }
 

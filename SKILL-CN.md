@@ -36,6 +36,7 @@
 | 必须先扫描吗 | **不需要**。证据工具按需建立索引：首次调用返回 `index.hit_source=miss` + `build_ms` + `files_indexed`；索引落盘复用；改完代码传 `refresh: true` |
 | 默认工具面 | **23 个** = 20 个高阶工具 + `read_file` / `list_files` / `finish_analysis`。旧细粒度工具面（符号跳转/调用层级/数据流等）需 `--legacy-tools` |
 | 谁判定 | 你。finding 是候选，每条结论都必须追溯到工具输出 |
+| 动态验证（可选） | `verify_payload` 支持 sql/ssrf/path/command/template/deserialize 六类，需设置 `CTX_AUDIT_VERIFY_DIR` 指向白名单 fixture 目录；默认关闭，不是沙箱 |
 
 ---
 
