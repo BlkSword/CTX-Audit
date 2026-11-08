@@ -258,10 +258,12 @@ pub enum IntelKind {
     VerifyPayload,
     /// 一次性审计简报：待审队列 + 头部链档 + 载荷档位（有界）
     AuditBrief,
+    /// SOP 级链路追踪：链档 + 载荷档位 + SSA + 最小切片 + 下一步动作
+    TraceVulnerabilityChain,
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 26] {
+    pub fn all() -> [IntelKind; 27] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -289,6 +291,7 @@ impl IntelKind {
             IntelKind::PayloadViability,
             IntelKind::VerifyPayload,
             IntelKind::AuditBrief,
+            IntelKind::TraceVulnerabilityChain,
         ]
     }
 
@@ -320,6 +323,7 @@ impl IntelKind {
             IntelKind::PayloadViability => "payload_viability",
             IntelKind::VerifyPayload => "verify_payload",
             IntelKind::AuditBrief => "audit_brief",
+            IntelKind::TraceVulnerabilityChain => "trace_vulnerability_chain",
         }
     }
 
@@ -350,6 +354,7 @@ impl IntelKind {
             IntelKind::PayloadViability => "载荷存活推演：沿可达路径逐跳推演 archetype 载荷状态（守卫=杀伤、decode/parse=变异），输出 payload_killed/payload_may_survive 分级",
             IntelKind::VerifyPayload => "受限本地动态验证：在允许目录内的 Python fixture 上执行入口并观察 sink 实参，返回 payload_verified/verified_killed（需 CTX_AUDIT_VERIFY_DIR）",
             IntelKind::AuditBrief => "一次性审计简报：覆盖待审队列 + 头部链档 + 载荷档位，便于 agent 用单次调用建立工作集",
+            IntelKind::TraceVulnerabilityChain => "SOP 级链路追踪：给定 chain_id 或 entry/sink，一次返回链档、载荷档位、SSA 参数流、最小证伪切片与下一步动作",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
         }
     }
@@ -417,6 +422,14 @@ impl CodeIntelTool {
                 str_param("archetype", "载荷类型：sql | ssrf", false),
             ],
             IntelKind::AuditBrief => vec![int_param("limit", "待审条目/链档上限（默认 10，最大 20）", 10)],
+            IntelKind::TraceVulnerabilityChain => vec![
+                str_param("chain_id", "链 ID（与 entry+sink 二选一）", false),
+                str_param("entry_file", "入口文件（相对项目根）", false),
+                int_param("entry_line", "入口行号", 1),
+                str_param("sink_file", "汇文件（相对项目根）", false),
+                int_param("sink_line", "汇行号", 1),
+                str_param("archetype", "载荷类型（缺省按 sink 推断）", false),
+            ],
             IntelKind::PrDriftGate => vec![
                 str_param("base", "基线源码目录或 git ref（相对 project 根）", true),
                 str_param("head", "变更后源码目录或 git ref（相对 project 根）", true),
@@ -2970,6 +2983,27 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new("medium", &["name_level_graph", "heuristic_guards"], 0),
                 }
             }
+            IntelKind::TraceVulnerabilityChain => {
+                let chain_id = input["chain_id"].as_str();
+                let entry_file = input["entry_file"].as_str();
+                let entry_line = input["entry_line"].as_u64().map(|v| v as u32);
+                let sink_file = input["sink_file"].as_str();
+                let sink_line = input["sink_line"].as_u64().map(|v| v as u32);
+                let archetype = input["archetype"].as_str();
+                let data = trace_vulnerability_chain_report(
+                    root, chain_id, entry_file, entry_line, sink_file, sink_line, archetype,
+                )
+                .map_err(|e| ToolError::ExecutionFailed(format!("trace_vulnerability_chain: {e}")))?;
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(entry_file.unwrap_or("."), entry_line.unwrap_or(0), &id)],
+                    uncertainty: Uncertainty::new(
+                        "medium",
+                        &["name_level_graph", "heuristic_guards", "static_only"],
+                        0,
+                    ),
+                }
+            }
             IntelKind::PrDriftGate => {
                 let base_in = input["base"].as_str().unwrap_or("");
                 let head_in = input["head"].as_str().unwrap_or("");
@@ -3111,7 +3145,7 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
 /// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
 /// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
 /// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
-pub const PROTOCOL_TOOL_SURFACE: [&str; 20] = CODE_INTEL_TOOL_SURFACE;
+pub const PROTOCOL_TOOL_SURFACE: [&str; 21] = CODE_INTEL_TOOL_SURFACE;
 
 /// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
 fn max_tool_bytes() -> usize {
@@ -3879,6 +3913,163 @@ pub fn audit_brief_report(project: &Path, limit: usize) -> Result<Value, String>
     }))
 }
 
+/// 按 sink kind 推断载荷类型。
+fn archetype_for_sink(kind: &str) -> &'static str {
+    match kind {
+        "deserialize" => "deser",
+        "exec" | "exec_command" => "command",
+        "ssrf_http" | "ssrf" => "ssrf",
+        "jndi" | "lookup" => "jndi",
+        "template_eval" | "expression_eval" => "template",
+        "file_write" | "file_read" | "file" => "path",
+        "sql_execute" | "sql" => "sql",
+        "xss_output" | "html_write" => "xss",
+        "module_access" => "deser",
+        _ => "generic",
+    }
+}
+
+fn cap_array(v: &mut Value, max: usize) {
+    if let Some(arr) = v.as_array_mut() {
+        if arr.len() > max {
+            let extra = arr.len() - max;
+            arr.truncate(max);
+            arr.push(json!({"truncated": extra}));
+        }
+    }
+}
+
+/// SOP 级链路追踪：一次调用返回链档、载荷档位、SSA 参数流、最小切片与下一步动作。
+pub fn trace_vulnerability_chain_report(
+    project: &Path,
+    chain_id: Option<&str>,
+    entry_file: Option<&str>,
+    entry_line: Option<u32>,
+    sink_file: Option<&str>,
+    sink_line: Option<u32>,
+    archetype: Option<&str>,
+) -> Result<Value, String> {
+    let mut chain_obj: Option<Value> = None;
+    let (ef, el, sf, sl, sink_kind, cid) = match (entry_file, entry_line, sink_file, sink_line) {
+        (Some(ef), Some(el), Some(sf), Some(sl)) => (
+            ef.to_string(),
+            el,
+            sf.to_string(),
+            sl,
+            String::new(),
+            chain_id.map(|s| s.to_string()),
+        ),
+        _ => {
+            let cid = chain_id.ok_or_else(|| {
+                "需要 chain_id，或同时提供 entry_file/entry_line/sink_file/sink_line".to_string()
+            })?;
+            let loaded = index::load_files(project);
+            let id = index::build_id(&loaded.files);
+            let auth = chain::auth_map(project, &loaded.files, &id);
+            let entries = chain::collect_entries(&loaded.files, &id);
+            let (chains, _stats) = chain_scan::candidates(
+                &loaded.files,
+                &entries,
+                &auth,
+                None,
+                None,
+                chain_vocab::load_vocab(project).as_ref(),
+                true,
+                0,
+            );
+            let found = chains
+                .iter()
+                .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(cid))
+                .cloned()
+                .ok_or_else(|| format!("未找到链 {cid}（当前候选 {} 条）", chains.len()))?;
+            let entry = found.get("entry").cloned().unwrap_or(Value::Null);
+            let sink = found.get("sink").cloned().unwrap_or(Value::Null);
+            let ef = entry.get("file").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let el = entry
+                .get("handler_line")
+                .or_else(|| entry.get("line"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let sf = sink.get("file").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let sl = sink.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let sk = sink.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            chain_obj = Some(found);
+            (ef, el, sf, sl, sk, Some(cid.to_string()))
+        }
+    };
+    if ef.is_empty() || sf.is_empty() || el == 0 || sl == 0 {
+        return Err("入口/汇坐标不完整，无法追踪".to_string());
+    }
+    let arch = archetype
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| archetype_for_sink(&sink_kind).to_string());
+
+    let payload = ant::payload_viability_report(project, &ef, el, &sf, sl, &arch)
+        .unwrap_or_else(|e| json!({"tier": "error", "error": e }));
+    let mut ssa = ssa::param_flow_report(project, &ef, el).unwrap_or_else(|_| json!({}));
+    for key in ["calls", "assignments", "params"] {
+        if let Some(v) = ssa.get_mut(key) {
+            cap_array(v, 12);
+        }
+    }
+    let slice = probe::slice_between_report(project, &ef, el, &sf, sl, 2)
+        .unwrap_or_else(|e| json!({"reachable": false, "error": e}));
+    let mut steps = chain_obj
+        .as_ref()
+        .and_then(|c| c.get("steps").cloned())
+        .unwrap_or_else(|| payload.get("steps").cloned().unwrap_or(json!([])));
+    cap_array(&mut steps, 8);
+    let tier = payload.get("tier").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let mut next_actions: Vec<Value> = Vec::new();
+    if matches!(tier, "payload_may_survive" | "guard_ineffective_token" | "taint_lost") {
+        if ef.ends_with(".py") {
+            next_actions.push(json!({
+                "kind": "dynamic_verify",
+                "tool": "verify_payload",
+                "hint": format!("--file {ef} --payload <PAYLOAD> --archetype {arch}（需 CTX_AUDIT_VERIFY_DIR）"),
+            }));
+        } else {
+            next_actions.push(json!({
+                "kind": "harness",
+                "tool": "harness_skeleton",
+                "hint": "生成 route/params/guards/curl(MARKER)/MockMvc 骨架后人工验证",
+            }));
+        }
+    }
+    if let Some(id) = cid.as_deref() {
+        next_actions.push(json!({"kind": "falsify", "tool": "assert_chain_step", "hint": format!("chain_id {id}")}));
+    }
+    let mut slice_small = slice;
+    if let Some(slices) = slice_small.get_mut("slices") {
+        cap_array(slices, 3);
+    }
+    Ok(json!({
+        "schema": "trace-vuln-chain/v1",
+        "chain": {
+            "chain_id": cid,
+            "entry": {"file": ef, "line": el},
+            "sink": {"file": sf, "line": sl, "kind": sink_kind},
+            "steps": steps,
+        },
+        "verdict": {
+            "reachable": payload.get("reachable").cloned().unwrap_or(json!(false)),
+            "payload_tier": tier,
+            "viability": payload.get("viability").cloned().unwrap_or(Value::Null),
+            "killed_at": payload.get("killed_at").cloned().unwrap_or(Value::Null),
+            "taint_lost_at": payload.get("taint_lost_at").cloned().unwrap_or(Value::Null),
+            "context": payload.get("context").cloned().unwrap_or(json!([])),
+        },
+        "ssa": ssa,
+        "slice": slice_small,
+        "next_actions": next_actions,
+        "limits": {"steps": 8, "slices": 3, "ssa_arrays": 12},
+        "uncertainty": {
+            "level": "medium",
+            "reasons": ["name_level_graph", "heuristic_guards", "static_only"],
+        },
+    }))
+}
+
 fn attach_payload_verdict(project: &Path, mut chain: Value) -> Value {
     let entry = chain.get("entry").cloned().unwrap_or(Value::Null);
     let sink = chain.get("sink").cloned().unwrap_or(Value::Null);
@@ -3974,7 +4165,7 @@ pub fn chain_dossier_markdown(project: &Path, chain_id: &str) -> Result<String, 
 /// LLM 默认工具面（9 个）：审计协议所需的最小集合。
 ///
 /// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 20] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 21] = [
     "coverage_summary",
     "coverage_triage",
     "get_project_routes",
@@ -3995,6 +4186,7 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 20] = [
     "payload_viability",
     "verify_payload",
     "audit_brief",
+    "trace_vulnerability_chain",
 ];
 
 /// 默认面之外的细粒度高阶工具（legacy 模式下注册，避免上下文被工具定义占满）。
