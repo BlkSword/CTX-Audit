@@ -89,7 +89,7 @@ ctx-audit mcp
 
 ## MCP surface
 
-20 high-level tools + 3 base tools (`read_file`, `list_files`, `finish_analysis`); legacy fine-grained tools are opt-in via `--legacy-tools`. Every response uses the same envelope: `data` + `provenance` + `uncertainty`.
+21 high-level tools + 3 base tools (`read_file`, `list_files`, `finish_analysis`); legacy fine-grained tools are opt-in via `--legacy-tools`. Every response uses the same envelope: `data` + `provenance` + `uncertainty`.
 
 | Tool | Purpose |
 |---|---|
@@ -105,6 +105,7 @@ ctx-audit mcp
 | `payload_viability` | payload survival walk (evidence tiers) |
 | `verify_payload` | opt-in dynamic verification (whitelisted Python fixtures; sql/ssrf/path/command/template/deserialize) |
 | `audit_brief` | bounded audit brief: triage queue + top chains + payload tiers |
+| `trace_vulnerability_chain` | SOP trace: steps + payload tier + SSA + minimal slice + next actions in one call |
 | `report_finding` | result write-back for agent workflows |
 
 ---

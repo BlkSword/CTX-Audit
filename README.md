@@ -228,7 +228,7 @@ ctx-audit report --from .ctx-audit/gate-artifacts -o json  # 机器可读 gate-r
 
 ## MCP 工具面
 
-默认**20 个高阶工具 + 3 个基础工具（read_file / list_files / finish_analysis）**；遗留细粒度工具面需 `--legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1` 开启。所有响应使用统一 envelope：`data` + `provenance` + `uncertainty`。
+默认**21 个高阶工具 + 3 个基础工具（read_file / list_files / finish_analysis）**；遗留细粒度工具面需 `--legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1` 开启。所有响应使用统一 envelope：`data` + `provenance` + `uncertainty`。
 
 | 工具 | 用途 |
 |---|---|
@@ -251,6 +251,7 @@ ctx-audit report --from .ctx-audit/gate-artifacts -o json  # 机器可读 gate-r
 | `payload_viability` | 载荷存活推演（四档证据分级） |
 | `verify_payload` | 受限动态验证（默认关闭，白名单 Python fixture） |
 | `audit_brief` | 一次性审计简报：待审队列 + 头部链档 + 载荷档位（有界） |
+| `trace_vulnerability_chain` | SOP 级链路追踪：链档 + 载荷档位 + SSA + 最小切片 + 下一步动作（单次调用） |
 | `report_finding` | 结论回写（供 agent 工作流） |
 
 ---
