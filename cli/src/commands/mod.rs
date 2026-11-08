@@ -15,6 +15,7 @@ pub mod findings;
 pub mod gate;
 pub mod mcp;
 pub mod probe;
+pub mod report;
 pub mod verify;
 pub mod rules;
 pub mod scan;

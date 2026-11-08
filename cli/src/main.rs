@@ -438,6 +438,20 @@ enum Commands {
         /// 轻量快照模式：只做路由/守卫/汇，不做反向可达 BFS（大仓库用）
         #[arg(long)]
         light: bool,
+
+        /// 从本次报告生成 gate-allow.json 草稿（仅新增未鉴权入口，危险类不自动豁免）
+        #[arg(long, value_name = "FILE")]
+        suggest_waivers: Option<String>,
+    },
+
+    /// 汇总多份 gate JSON 报告（CI artifact）：block 率、类型分布、Top 路由、耗时
+    Report {
+        /// 包含 gate JSON 的目录
+        #[arg(long, value_name = "DIR")]
+        from: String,
+        /// 输出格式 (md, json)
+        #[arg(short = 'o', long, default_value = "md")]
+        output: String,
     },
 
     /// 审计驾驶舱：覆盖率摘要 + 排序待审清单 + 证据包（人用加速器）
@@ -867,6 +881,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Probe { cmd } => commands::probe::execute(cmd).await,
+        Commands::Report { from, output } => commands::report::execute(from, output).await,
         Commands::Verify { root, file, function, payload, archetype, output } => {
             commands::verify::execute(root, file, function, payload, archetype, output).await
         }
@@ -880,6 +895,7 @@ async fn main() -> Result<()> {
             allow,
             cache_dir,
             light,
+            suggest_waivers,
         } => {
             commands::gate::execute(
                 base,
@@ -891,6 +907,7 @@ async fn main() -> Result<()> {
                 allow,
                 cache_dir,
                 light,
+                suggest_waivers,
             )
             .await
         }

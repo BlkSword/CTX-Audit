@@ -1,0 +1,125 @@
+# CTX-Audit PR 安全漂移闸门（Composite Action）
+#
+# 用法：
+#   - uses: BlkSword/CTX-Audit/.github/actions/pr-gate@v1
+#     with:
+#       base: ${{ github.event.pull_request.base.sha }}
+#       head: ${{ github.event.pull_request.head.sha }}
+#
+# 说明：优先下载 release 二进制；下载失败时回退到 cargo build。
+name: "CTX-Audit PR Gate"
+description: "PR 安全漂移闸门：对比 base/head，block 时阻断合并并评论证据"
+inputs:
+  base:
+    description: "基线 ref（PR base / 合并目标）"
+    required: true
+  head:
+    description: "变更 ref（PR head / 当前分支）"
+    required: true
+  strict:
+    description: "严格汇模式：受保护接口新增危险汇也阻断"
+    required: false
+    default: "false"
+  allow:
+    description: "豁免规则 JSON 路径（默认自动读取 .ctx-audit/gate-allow.json）"
+    required: false
+    default: ""
+  cache-dir:
+    description: "快照缓存目录"
+    required: false
+    default: ".ctx-audit/gate-cache"
+  comment:
+    description: "是否在 PR 上评论"
+    required: false
+    default: "true"
+  fail-on-block:
+    description: "block 时是否让 action 失败（required check）"
+    required: false
+    default: "true"
+  version:
+    description: "二进制版本（release tag，默认 latest）"
+    required: false
+    default: "latest"
+outputs:
+  exit-code:
+    description: "gate 退出码（0 通过 / 2 block）"
+    value: ${{ steps.gate.outputs.exit_code }}
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve binary
+      id: bin
+      shell: bash
+      run: |
+        set -euo pipefail
+        BIN="$RUNNER_TEMP/ctx-audit"
+        VER="${{ inputs.version }}"
+        if [ "$VER" = "latest" ]; then
+          URL="https://github.com/BlkSword/CTX-Audit/releases/latest/download/ctx-audit-linux-x64"
+        else
+          URL="https://github.com/BlkSword/CTX-Audit/releases/download/${VER}/ctx-audit-linux-x64"
+        fi
+        if curl -fsSL "$URL" -o "$BIN" 2>/dev/null; then
+          chmod +x "$BIN"
+        else
+          echo "release binary unavailable, building from source" >&2
+          cargo build --release -p ctx-audit
+          BIN="$GITHUB_WORKSPACE/target/release/ctx-audit"
+        fi
+        echo "bin=$BIN" >> "$GITHUB_OUTPUT"
+
+    - name: Run gate
+      id: gate
+      shell: bash
+      continue-on-error: true
+      run: |
+        set +e
+        ARGS=(gate --git "$GITHUB_WORKSPACE" --base "${{ inputs.base }}" --head "${{ inputs.head }}"
+              --cache-dir "${{ inputs.cache-dir }}" -o json)
+        if [ "${{ inputs.strict }}" = "true" ]; then ARGS+=(--strict-sinks); fi
+        if [ -n "${{ inputs.allow }}" ]; then ARGS+=(--allow "${{ inputs.allow }}"); fi
+        "${{ steps.bin.outputs.bin }}" "${ARGS[@]}" > "$RUNNER_TEMP/gate.json"
+        echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+        MD_ARGS=(gate --git "$GITHUB_WORKSPACE" --base "${{ inputs.base }}" --head "${{ inputs.head }}"
+                 --cache-dir "${{ inputs.cache-dir }}" -o md)
+        if [ "${{ inputs.strict }}" = "true" ]; then MD_ARGS+=(--strict-sinks); fi
+        if [ -n "${{ inputs.allow }}" ]; then MD_ARGS+=(--allow "${{ inputs.allow }}"); fi
+        "${{ steps.bin.outputs.bin }}" "${MD_ARGS[@]}" > "$RUNNER_TEMP/gate.md" || true
+        cp "$RUNNER_TEMP/gate.json" "$GITHUB_WORKSPACE/gate.json" || true
+
+    - name: Publish summary
+      shell: bash
+      run: |
+        if [ -f "$RUNNER_TEMP/gate.md" ]; then
+          cat "$RUNNER_TEMP/gate.md" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Comment on PR
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ -f "$RUNNER_TEMP/gate.md" ]; then
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/gate.md" || true
+        fi
+
+    - name: Upload gate artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ctx-audit-gate
+        path: |
+          ${{ runner.temp }}/gate.json
+          ${{ runner.temp }}/gate.md
+        if-no-files-found: ignore
+
+    - name: Enforce verdict
+      shell: bash
+      run: |
+        RC="${{ steps.gate.outputs.exit_code }}"
+        if [ "${{ inputs.fail-on-block }}" = "true" ] && [ "$RC" = "2" ]; then
+          echo "CTX-Audit gate blocked this change (exit code 2)." >&2
+          exit 2
+        fi
+        exit 0

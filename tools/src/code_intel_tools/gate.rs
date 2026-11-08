@@ -893,6 +893,58 @@ pub fn gate_markdown(report: &Value) -> String {
     out
 }
 
+/// 从一次 gate 报告生成 `gate-allow.json` 草稿。
+///
+/// 安全边界：只对"新增未鉴权入口"生成候选；鉴权回退、配置回退、守卫删除
+/// 必须人工判断，只记录到 `skipped` 统计里。
+pub fn suggest_waivers(report: &Value) -> Value {
+    let mut rules: Vec<Value> = Vec::new();
+    let mut skipped: std::collections::BTreeMap<String, usize> = Default::default();
+    if let Some(vs) = report.get("verdicts").and_then(|v| v.as_array()) {
+        for v in vs {
+            if v.get("severity").and_then(|x| x.as_str()) != Some("block") {
+                continue;
+            }
+            let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+            if kind != "new_unauthenticated_route" {
+                *skipped.entry(kind.to_string()).or_default() += 1;
+                continue;
+            }
+            let route = v
+                .get("route")
+                .and_then(|x| x.as_str())
+                .or_else(|| v.get("evidence").and_then(|x| x.as_str()))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if route.is_empty() || rules.iter().any(|r| r["route"].as_str() == Some(route.as_str())) {
+                continue;
+            }
+            rules.push(json!({
+                "kind": kind,
+                "route": route,
+                "reason": "<填理由：为何该路由设计上公开>",
+                "owner": "",
+                "expires": "",
+                "evidence": v.get("evidence").cloned().unwrap_or(Value::Null),
+            }));
+        }
+    }
+    rules.sort_by(|a, b| {
+        a["route"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["route"].as_str().unwrap_or(""))
+    });
+    json!({
+        "schema": "gate-allow/v1",
+        "source": "gate_observe",
+        "rules": rules,
+        "skipped": skipped,
+        "note": "仅路由级新入口可自动建议；鉴权回退/配置回退/守卫删除必须人工判断",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,6 +1057,21 @@ public class AdminController {
             .map(|v| v["kind"].as_str().unwrap_or(""))
             .collect();
         assert!(kinds.contains(&"dangerous_sink_added"), "kinds={kinds:?}");
+    }
+
+    #[test]
+    fn suggest_waivers_only_route_level() {
+        let report = json!({"verdicts": [
+            {"severity": "block", "kind": "new_unauthenticated_route", "route": "GET /api/share/list", "evidence": "GET /api/share/list auth=no_global_match_found"},
+            {"severity": "block", "kind": "auth_regression", "route": "POST /admin", "evidence": "POST /admin"},
+            {"severity": "block", "kind": "new_unauthenticated_route", "route": "GET /api/share/list", "evidence": "dup"},
+            {"severity": "info", "kind": "new_route_covered", "route": "GET /ok"}
+        ]});
+        let draft = suggest_waivers(&report);
+        let rules = draft["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1, "{draft}");
+        assert_eq!(rules[0]["route"], "GET /api/share/list");
+        assert_eq!(draft["skipped"]["auth_regression"], 1);
     }
 
     #[test]

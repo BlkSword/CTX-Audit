@@ -74,6 +74,7 @@ pub async fn execute(
     allow: Option<String>,
     cache_dir: Option<String>,
     light: bool,
+    suggest_waivers: Option<String>,
 ) -> Result<()> {
     let (base_root, head_root, cleanup, cache_keys) = if let Some(repo) = git {
         let repo = PathBuf::from(&repo);
@@ -114,6 +115,18 @@ pub async fn execute(
     match format.to_ascii_lowercase().as_str() {
         "md" | "markdown" => println!("{}", ctx_audit_tools::gate_markdown(&report)),
         _ => println!("{}", serde_json::to_string_pretty(&report).into_diagnostic()?),
+    }
+
+    if let Some(path) = suggest_waivers {
+        let draft = ctx_audit_tools::suggest_waivers(&report);
+        let p = PathBuf::from(&path);
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&p, serde_json::to_string_pretty(&draft).into_diagnostic()?)
+            .into_diagnostic()?;
+        let n = draft["rules"].as_array().map(|a| a.len()).unwrap_or(0);
+        eprintln!("已写入豁免草稿 {}（{} 条候选，需人工 review）", p.display(), n);
     }
 
     if let Some((repo, dirs)) = cleanup {

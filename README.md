@@ -59,7 +59,7 @@ CTX-Audit 是**事实引擎**，不是漏洞扫描器：
 - **信息判决**：`new_route_covered`、`guard_added`、`new_sink_candidate`
 - 支持目录对比与 git ref 对比（`--git <repo>`，自动导出树）；block 时退出码 2
 - 豁免（`--allow` / `<head>/.ctx-audit/gate-allow.json`）、严格模式（`--strict-sinks`）、快照缓存（`--cache-dir`）、轻量模式（`--light`）
-- CI 集成：GitHub Action 示例（`.github/workflows/pr-gate.yml`），PR 评论先给"判决/原因/证据"三行，明细表折叠在后
+- CI 集成：workflow 示例（`.github/workflows/pr-gate.yml`）+ **composite 一键 Action**（`.github/actions/pr-gate/action.yml`，下载 release 二进制、PR 评论、artifact、required check）；PR 评论先给"判决/原因/证据"三行，明细表折叠在后
 
 ### 2. 端点与鉴权覆盖
 
@@ -158,6 +158,21 @@ jobs:
           --cache-dir .ctx-audit/gate-cache -o md
 ```
 
+### 一键 Action（composite）
+
+```yaml
+- uses: BlkSword/CTX-Audit/.github/actions/pr-gate@v1
+  with:
+    base: ${{ github.event.pull_request.base.sha }}
+    head: ${{ github.event.pull_request.head.sha }}
+    strict: "false"          # true = 受保护接口新增危险汇也阻断
+    comment: "true"          # PR 三行证据评论
+    fail-on-block: "true"    # block 时 required check 失败
+```
+
+- 优先下载 release 二进制（缓存），下载失败回退 `cargo build`；
+- 输出 `gate.json` / `gate.md` 为 artifact，并把三行判决写入 step summary。
+
 ---
 
 ## PR 安全漂移闸门
@@ -189,6 +204,24 @@ jobs:
 ```bash
 ctx-audit gate --base A --head B --allow .ctx-audit/gate-allow.json   # 豁免 → waived，退出码 0
 ctx-audit gate --base A --head B --strict-sinks                       # 受保护接口新增危险汇也阻断
+```
+
+### 豁免生成器（首次接入）
+
+```bash
+# observe 结果 → gate-allow.json 草稿（只生成路由级候选，危险类只统计不自动豁免）
+ctx-audit gate --git . --base <base> --head <head> \
+  --no-fail-on-block --suggest-waivers .ctx-audit/gate-allow.draft.json
+```
+
+- 只对 `new_unauthenticated_route` 生成候选（含 reason/owner/expires 占位，需人工 review）；
+- `auth_regression` / `auth_config_regression` / `guard_removed` 只进入 `skipped` 统计，必须人工判断。
+
+### 汇总报告（CI artifact）
+
+```bash
+ctx-audit report --from .ctx-audit/gate-artifacts -o md    # 运行数/block 率/类型分布/Top 路由/耗时
+ctx-audit report --from .ctx-audit/gate-artifacts -o json  # 机器可读 gate-report/v1
 ```
 
 ---
@@ -236,6 +269,7 @@ ctx-audit gate --base A --head B --strict-sinks                       # 受保�
 | 耗时 | 590 文件仓库 **772ms**；3357 文件仓库 light 稳态 **2.82s wall**（base 缓存命中），热启动 4ms |
 | 轻/重模式判决 | 一致 |
 | 快速外部观察（3 个公开应用仓库 60 个 PR + 既有语料 43 个 PR） | 公开仓库 **0 拦截**；既有语料 **4 次拦截 / 14 verdicts（全部可解释、可豁免）**；总 block 率 3.9%；单次 **43–79ms** |
+| 豁免生成器 / 汇总报告（4 份真实 artifact） | 生成 **8 条候选草稿**（仅路由级）；汇总 **4 次运行 / 13 verdicts / 547ms 均值** |
 
 ### 事实与载荷判定
 
