@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::chain;
+use super::di;
 use super::index;
 use super::probe;
 
@@ -31,6 +32,7 @@ pub(crate) struct ParsedFile {
 }
 
 static PARSED: OnceLock<Mutex<HashMap<u64, Arc<ParsedFile>>>> = OnceLock::new();
+static DI_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, Arc<di::DiIndex>)>>> = OnceLock::new();
 const PARSED_CAP: usize = 50_000;
 
 /// 解析单文件（定义/调用）；同一内容重复查询直接命中缓存。
@@ -83,6 +85,25 @@ pub(crate) fn project_files(root: &Path) -> FileTable {
         return files;
     }
     Arc::new(index::load_files(root).files)
+}
+
+/// 取项目级 Spring DI 索引（按 canonical 根缓存，TTL 与文件表一致）。
+pub(crate) fn project_di(root: &Path) -> Arc<di::DiIndex> {
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let files = project_files(root);
+    let cache = DI_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = Instant::now();
+    if let Ok(mut m) = cache.lock() {
+        if let Some((t, idx)) = m.get(&key) {
+            if now.duration_since(*t) < TTL {
+                return idx.clone();
+            }
+        }
+        let idx = Arc::new(di::parse(&files));
+        m.insert(key, (now, idx.clone()));
+        return idx;
+    }
+    Arc::new(di::parse(&files))
 }
 
 #[cfg(test)]

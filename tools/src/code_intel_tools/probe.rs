@@ -95,7 +95,9 @@ struct Graph {
     ext_calls: BTreeMap<String, Vec<(String, u32, bool, bool, bool, Option<String>)>>,
     contents: BTreeMap<String, String>,
     name_index: BTreeMap<String, Vec<(String, u32)>>,
-    di: super::di::DiIndex,
+    di: std::sync::Arc<super::di::DiIndex>,
+    imports: BTreeMap<String, std::collections::BTreeSet<String>>,
+    imports_unresolved: std::collections::BTreeSet<String>,
     di_narrowed: std::cell::Cell<usize>,
 }
 
@@ -108,7 +110,9 @@ impl Graph {
             ext_calls: BTreeMap::new(),
             contents: BTreeMap::new(),
             name_index: BTreeMap::new(),
-            di: super::di::DiIndex::default(),
+            di: std::sync::Arc::new(super::di::DiIndex::default()),
+            imports: BTreeMap::new(),
+            imports_unresolved: std::collections::BTreeSet::new(),
             di_narrowed: std::cell::Cell::new(0),
         };
         for (path, content) in files.iter() {
@@ -123,7 +127,10 @@ impl Graph {
             g.calls.insert(path.clone(), parsed.calls.clone());
             g.contents.insert(path.clone(), content.clone());
         }
-        g.di = super::di::parse(&files);
+        g.di = super::file_cache::project_di(project);
+        let (imports, unresolved) = build_imports(&files);
+        g.imports = imports;
+        g.imports_unresolved = unresolved;
         for path in g.di.var_types.keys() {
             if let Some(c) = g.contents.get(path) {
                 g.ext_calls
@@ -254,20 +261,160 @@ impl Graph {
         out: &mut Vec<(String, u32, String)>,
         seen: &mut std::collections::BTreeSet<(String, u32)>,
     ) {
-        if let Some(cands) = self.name_index.get(name) {
-            let mut same_file: Vec<&(String, u32)> =
-                cands.iter().filter(|(f, _)| f == file).collect();
-            let mut others: Vec<&(String, u32)> =
-                cands.iter().filter(|(f, _)| f != file).collect();
-            same_file.extend(others.drain(..));
-            for (cf, cl) in same_file.into_iter().take(NEIGHBOR_CAP) {
+        let Some(cands) = self.name_index.get(name) else { return };
+        let dir = dir_of(file);
+        let imports = self.imports.get(file);
+        let allowed = |other: &str| {
+            other == file
+                || (!dir.is_empty() && dir_of(other) == dir)
+                || imports.map(|s| s.contains(other)).unwrap_or(false)
+        };
+        // 作用域剪枝：同名定义分布在多个文件时，优先只保留"同文件 + 同目录 + 被 import"的候选；
+        // 若没有作用域内候选（例如跨包动态调用），回退全量名字级。
+        let scoped: Vec<&(String, u32)> = cands.iter().filter(|(f, _)| allowed(f)).collect();
+        if self.imports_unresolved.contains(file) {
+            // import 关系不可靠（Java static import/通配/构建路径差异）时不做剪枝
+        } else if !scoped.is_empty() && scoped.len() < cands.len() {
+            for (cf, cl) in scoped.into_iter().take(NEIGHBOR_CAP) {
                 if seen.insert((cf.clone(), *cl)) {
                     let edge = if member { "call" } else { "dataflow" };
                     out.push((cf.clone(), *cl, edge.to_string()));
                 }
             }
+            return;
+        }
+        let mut same_file: Vec<&(String, u32)> =
+            cands.iter().filter(|(f, _)| f == file).collect();
+        let mut others: Vec<&(String, u32)> =
+            cands.iter().filter(|(f, _)| f != file).collect();
+        same_file.extend(others.drain(..));
+        for (cf, cl) in same_file.into_iter().take(NEIGHBOR_CAP) {
+            if seen.insert((cf.clone(), *cl)) {
+                let edge = if member { "call" } else { "dataflow" };
+                out.push((cf.clone(), *cl, edge.to_string()));
+            }
         }
     }
+}
+
+fn dir_of(path: &str) -> &str {
+    path.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
+}
+
+fn normalize_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
+}
+
+/// 解析 import/require 关系（JS/TS/Python 相对与别名路径、Java 类 import）。
+fn build_imports(
+    files: &[(String, String)],
+) -> (BTreeMap<String, std::collections::BTreeSet<String>>, std::collections::BTreeSet<String>) {
+    use std::collections::BTreeSet;
+    let paths: BTreeSet<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    let mut unresolved: BTreeSet<String> = BTreeSet::new();
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (path, content) in files.iter() {
+        let dir = dir_of(path);
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        for line in content.lines() {
+            let t = line.trim();
+            let mut specs: Vec<String> = Vec::new();
+            if let Some(pos) = t.find(" from ") {
+                specs.push(t[pos + 6..].to_string());
+            }
+            if let Some(pos) = t.find("require(") {
+                specs.push(t[pos + 8..].to_string());
+            }
+            if let Some(rest) = t.strip_prefix("import ") {
+                if !rest.contains(" from ") {
+                    specs.push(rest.to_string());
+                }
+            }
+            for raw in specs {
+                let spec = raw
+                    .trim()
+                    .trim_matches(|c: char| c == '\'' || c == '"' || c == '`' || c == ';' || c == ')' || c == '(')
+                    .trim();
+                if spec.is_empty() {
+                    continue;
+                }
+                if spec.starts_with('.') {
+                    let base = if dir.is_empty() {
+                        spec.to_string()
+                    } else {
+                        format!("{dir}/{spec}")
+                    };
+                    let base = normalize_path(&base);
+                    let mut hit = false;
+                    for ext in [".ts", ".tsx", ".js", ".jsx", ".mjs", ".py", ".java"] {
+                        let cand = format!("{base}{ext}");
+                        if paths.contains(cand.as_str()) {
+                            set.insert(cand);
+                            hit = true;
+                        }
+                        let idx = format!("{base}/index{ext}");
+                        if paths.contains(idx.as_str()) {
+                            set.insert(idx);
+                            hit = true;
+                        }
+                    }
+                    if !hit {
+                        unresolved.insert(path.clone());
+                    }
+                    continue;
+                }
+                if spec.contains('.') && !spec.contains('/') && !spec.contains(' ') {
+                    let (spec, is_static) = match spec.strip_prefix("static ") {
+                        Some(rest) => (rest.trim(), true),
+                        None => (spec, false),
+                    };
+                    let parts: Vec<&str> = spec.split('.').collect();
+                    let cls = if is_static && parts.len() >= 2 {
+                        parts[parts.len() - 2]
+                    } else {
+                        parts[parts.len() - 1]
+                    };
+                    if cls == "*" || cls.is_empty() {
+                        continue;
+                    }
+                    let suffix = format!("/{cls}.java");
+                    let mut hit = false;
+                    for p in paths.iter() {
+                        if p.ends_with(&suffix) {
+                            set.insert((*p).to_string());
+                            hit = true;
+                        }
+                    }
+                    if !hit {
+                        unresolved.insert(path.clone());
+                    }
+                    continue;
+                }
+                let spec2 = spec.trim_start_matches("@/").trim_start_matches('/');
+                for ext in [".ts", ".tsx", ".js", ".jsx", ".mjs", ".py"] {
+                    for suf in [format!("/{spec2}{ext}"), format!("/{spec2}/index{ext}")] {
+                        for p in paths.iter() {
+                            if p.ends_with(&suf) {
+                                set.insert((*p).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out.insert(path.clone(), set);
+    }
+    (out, unresolved)
 }
 
 /// 两点之间的可达性（名字级调用图 BFS）。
@@ -579,6 +726,54 @@ public class Other {
         // 仅同名、非注入类型的类不应再被连上（DI 收窄）
         let other = can_reach_report(&dir, "Controller.java", 6, "Other.java", 4).unwrap();
         assert_eq!(other["reachable"], false, "{other}");
+    }
+
+    #[test]
+    fn scope_prunes_unimported_same_name() {
+        let dir = tmp("scope");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "app/A.java",
+                    r#"
+import app.b.B;
+public class A {
+    public void entry(String q) {
+        B.run(q);
+    }
+}
+"#,
+                ),
+                (
+                    "app/b/B.java",
+                    r#"
+package app.b;
+public class B {
+    public static void run(String q) {
+        Runtime.getRuntime().exec(q);
+    }
+}
+"#,
+                ),
+                (
+                    "app/c/C.java",
+                    r#"
+package app.c;
+public class C {
+    public static void run(String q) {
+        System.out.println(q);
+    }
+}
+"#,
+                ),
+            ],
+        );
+        let b = can_reach_report(&dir, "app/A.java", 4, "app/b/B.java", 4).unwrap();
+        assert_eq!(b["reachable"], true, "{b}");
+        // C 与 A 不在同目录、也未被 import → 作用域剪枝后不应连通（名字级否则会误连）
+        let c = can_reach_report(&dir, "app/A.java", 4, "app/c/C.java", 4).unwrap();
+        assert_eq!(c["reachable"], false, "{c}");
     }
 
     #[test]
