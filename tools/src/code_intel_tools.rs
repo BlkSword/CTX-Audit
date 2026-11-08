@@ -38,6 +38,7 @@ pub(crate) use routes::*;
 mod chain;
 mod chain_scan;
 pub mod ant;
+pub mod di;
 mod chain_vocab;
 pub(crate) mod file_cache;
 pub mod gate;

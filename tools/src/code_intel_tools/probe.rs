@@ -92,8 +92,11 @@ pub(crate) fn definitions_multi(content: &str, lang: &str) -> Vec<(String, u32)>
 struct Graph {
     defs: BTreeMap<String, Arc<Vec<(String, u32)>>>,
     calls: BTreeMap<String, Arc<Vec<(String, u32, bool)>>>,
+    ext_calls: BTreeMap<String, Vec<(String, u32, bool, bool, bool, Option<String>)>>,
     contents: BTreeMap<String, String>,
     name_index: BTreeMap<String, Vec<(String, u32)>>,
+    di: super::di::DiIndex,
+    di_narrowed: std::cell::Cell<usize>,
 }
 
 impl Graph {
@@ -102,8 +105,11 @@ impl Graph {
         let mut g = Graph {
             defs: BTreeMap::new(),
             calls: BTreeMap::new(),
+            ext_calls: BTreeMap::new(),
             contents: BTreeMap::new(),
             name_index: BTreeMap::new(),
+            di: super::di::DiIndex::default(),
+            di_narrowed: std::cell::Cell::new(0),
         };
         for (path, content) in files.iter() {
             let parsed = super::file_cache::parsed_file(path, content);
@@ -116,6 +122,13 @@ impl Graph {
             g.defs.insert(path.clone(), parsed.defs.clone());
             g.calls.insert(path.clone(), parsed.calls.clone());
             g.contents.insert(path.clone(), content.clone());
+        }
+        g.di = super::di::parse(&files);
+        for path in g.di.var_types.keys() {
+            if let Some(c) = g.contents.get(path) {
+                g.ext_calls
+                    .insert(path.clone(), super::chain::calls_ext(c));
+            }
         }
         g
     }
@@ -160,29 +173,100 @@ impl Graph {
     }
 
     fn neighbors(&self, file: &str, def_line: u32) -> Vec<(String, u32, String)> {
+        if let Some(ext) = self.ext_calls.get(file) {
+            return self.neighbors_ext(file, def_line, ext);
+        }
+        self.neighbors_plain(file, def_line)
+    }
+
+    fn neighbors_plain(&self, file: &str, def_line: u32) -> Vec<(String, u32, String)> {
         let Some(calls) = self.calls.get(file) else { return Vec::new() };
         let end = self.def_end(file, def_line);
         let mut out: Vec<(String, u32, String)> = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
+        let self_sym = self
+            .defs
+            .get(file)
+            .and_then(|d| d.iter().find(|(_, l)| *l == def_line).map(|(n, _)| n.clone()));
         for (name, line, member) in calls.iter() {
             if *line < def_line || *line > end {
                 continue;
             }
-            if let Some(cands) = self.name_index.get(name) {
-                let mut same_file: Vec<&(String, u32)> =
-                    cands.iter().filter(|(f, _)| f == file).collect();
-                let mut others: Vec<&(String, u32)> =
-                    cands.iter().filter(|(f, _)| f != file).collect();
-                same_file.extend(others.drain(..));
-                for (cf, cl) in same_file.into_iter().take(NEIGHBOR_CAP) {
-                    if seen.insert((cf.clone(), *cl)) {
-                        let edge = if *member { "call" } else { "dataflow" };
-                        out.push((cf.clone(), *cl, edge.to_string()));
+            if *line == def_line && self_sym.as_deref() == Some(name.as_str()) {
+                continue;
+            }
+            self.push_name_edges(file, name, *member, &mut out, &mut seen);
+        }
+        out
+    }
+
+    /// 带接收者的邻接：优先 DI 收窄，无法解析时回退名字级。
+    fn neighbors_ext(
+        &self,
+        file: &str,
+        def_line: u32,
+        calls: &[(String, u32, bool, bool, bool, Option<String>)],
+    ) -> Vec<(String, u32, String)> {
+        let end = self.def_end(file, def_line);
+        let mut out: Vec<(String, u32, String)> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let self_sym = self
+            .defs
+            .get(file)
+            .and_then(|d| d.iter().find(|(_, l)| *l == def_line).map(|(n, _)| n.clone()));
+        for (name, line, member, _install, _ctor, receiver) in calls.iter() {
+            if *line < def_line || *line > end {
+                continue;
+            }
+            // 跳过"函数声明行被当成同名调用"造成的自环假边
+            if *line == def_line && self_sym.as_deref() == Some(name.as_str()) {
+                continue;
+            }
+            if *member {
+                if let Some(rcv) = receiver {
+                    if let Some(target_file) = self.di.resolve_type_file(file, rcv, name) {
+                        self.di_narrowed.set(self.di_narrowed.get() + 1);
+                        let mut pushed = false;
+                        if let Some(cands) = self.name_index.get(name) {
+                            for (cf, cl) in cands.iter().filter(|(f, _)| f == &target_file) {
+                                if seen.insert((cf.clone(), *cl)) {
+                                    out.push((cf.clone(), *cl, "call".to_string()));
+                                    pushed = true;
+                                }
+                            }
+                        }
+                        if pushed {
+                            continue;
+                        }
                     }
                 }
             }
+            self.push_name_edges(file, name, *member, &mut out, &mut seen);
         }
         out
+    }
+
+    fn push_name_edges(
+        &self,
+        file: &str,
+        name: &str,
+        member: bool,
+        out: &mut Vec<(String, u32, String)>,
+        seen: &mut std::collections::BTreeSet<(String, u32)>,
+    ) {
+        if let Some(cands) = self.name_index.get(name) {
+            let mut same_file: Vec<&(String, u32)> =
+                cands.iter().filter(|(f, _)| f == file).collect();
+            let mut others: Vec<&(String, u32)> =
+                cands.iter().filter(|(f, _)| f != file).collect();
+            same_file.extend(others.drain(..));
+            for (cf, cl) in same_file.into_iter().take(NEIGHBOR_CAP) {
+                if seen.insert((cf.clone(), *cl)) {
+                    let edge = if member { "call" } else { "dataflow" };
+                    out.push((cf.clone(), *cl, edge.to_string()));
+                }
+            }
+        }
     }
 }
 
@@ -195,6 +279,7 @@ pub fn can_reach_report(
     to_line: u32,
 ) -> Result<Value, String> {
     let graph = Graph::build(project);
+    let di_bindings = graph.di.bindings_count();
     let from_loc = graph.enclosing_with_fallback(from_file, from_line);
     let Some((from_sym, from_def, from_fallback)) = from_loc else {
         return Ok(json!({
@@ -272,7 +357,7 @@ pub fn can_reach_report(
         path.reverse();
     }
 
-    Ok(json!({
+    let mut out = json!({
         "schema": "probe-reach/v1",
         "reachable": found,
         "from": {"file": from_file, "line": from_line, "symbol": from_sym, "def_line": from_def, "nearest_def_fallback": from_fallback},
@@ -284,7 +369,10 @@ pub fn can_reach_report(
             "level": "medium",
             "reasons": ["name_level_graph", "no_type_receiver_resolution"],
         },
-    }))
+        "di_bindings": di_bindings,
+        "di_narrowed_calls": graph.di_narrowed.get(),
+    });
+    Ok(out)
 }
 
 /// 沿可达路径切出每一步的代码窗口（按需索取，不主动推送大档）。
@@ -434,6 +522,63 @@ public class C {
         let slice = slice_between_report(&dir, "A.java", 3, "C.java", 3, 10).unwrap();
         assert_eq!(slice["reachable"], true);
         assert!(!(slice["slices"].as_array().unwrap().is_empty()));
+    }
+
+    #[test]
+    fn di_narrows_receiver_calls() {
+        let dir = tmp("di");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "Controller.java",
+                    r#"
+public class Controller {
+    @Autowired
+    private Svc svc;
+    public void handle(String q) {
+        svc.run(q);
+    }
+}
+"#,
+                ),
+                (
+                    "Svc.java",
+                    r#"
+public interface Svc {
+    void run(String q);
+}
+"#,
+                ),
+                (
+                    "GoodImpl.java",
+                    r#"
+@Service
+public class GoodImpl implements Svc {
+    public void run(String q) {
+        Runtime.getRuntime().exec(q);
+    }
+}
+"#,
+                ),
+                (
+                    "Other.java",
+                    r#"
+public class Other {
+    public void run(String q) {
+        System.out.println(q);
+    }
+}
+"#,
+                ),
+            ],
+        );
+        // 目标实现可达
+        let good = can_reach_report(&dir, "Controller.java", 6, "GoodImpl.java", 4).unwrap();
+        assert_eq!(good["reachable"], true, "{good}");
+        // 仅同名、非注入类型的类不应再被连上（DI 收窄）
+        let other = can_reach_report(&dir, "Controller.java", 6, "Other.java", 4).unwrap();
+        assert_eq!(other["reachable"], false, "{other}");
     }
 
     #[test]

@@ -161,6 +161,14 @@ pub(crate) fn definitions(content: &str, lang: &str) -> Vec<(String, u32)> {
 }
 
 pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool, bool, bool)> {
+    calls_ext(content)
+        .into_iter()
+        .map(|(n, l, m, i, c, _r)| (n, l, m, i, c))
+        .collect()
+}
+
+/// 带接收者的调用扫描：`receiver.method()` 额外返回 `Some("receiver")`。
+pub(crate) fn calls_ext(content: &str) -> Vec<(String, u32, bool, bool, bool, Option<String>)> {
     let mut out = Vec::new();
     for (idx, raw) in content.lines().enumerate() {
         if !is_code_line(raw) {
@@ -186,11 +194,12 @@ pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool, bool, bool)> {
                     }
                     if j < n && b[j] == b'(' && !KEYWORDS.contains(&name) {
                         let member = start > 0 && b[start - 1] == b'.';
+                        let receiver = receiver_before(raw, start);
                         let before = raw[..start].trim_end();
                         let install = before.ends_with("this.") || before.ends_with("this._");
                         let ctor = name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
                             || before.ends_with("new");
-                        out.push((name.to_string(), ln, member, install, ctor));
+                        out.push((name.to_string(), ln, member, install, ctor, receiver));
                     }
                 } else {
                     i += 1;
@@ -222,11 +231,12 @@ pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool, bool, bool)> {
                 }
                 if j < n && chars[j].1 == '(' && !KEYWORDS.contains(&name) {
                     let member = start_byte > 0 && raw.as_bytes()[start_byte - 1] == b'.';
+                    let receiver = receiver_before(raw, start_byte);
                     let before = raw[..start_byte].trim_end();
                     let install = before.ends_with("this.") || before.ends_with("this._");
                     let ctor = name.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
                         || before.ends_with("new");
-                    out.push((name.to_string(), ln, member, install, ctor));
+                    out.push((name.to_string(), ln, member, install, ctor, receiver));
                 }
                 k = end_k + 1;
             } else {
@@ -235,6 +245,39 @@ pub(crate) fn calls(content: &str) -> Vec<(String, u32, bool, bool, bool)> {
         }
     }
     out
+}
+
+/// 取 `receiver.method(` 中 `.` 之前的接收者变量名（支持 `this.` 与简单标识符）。
+fn receiver_before(raw: &str, start: usize) -> Option<String> {
+    let bytes = raw.as_bytes();
+    if start == 0 || bytes[start - 1] != b'.' {
+        return None;
+    }
+    let mut k = start - 1;
+    while k > 0 && bytes[k - 1].is_ascii_whitespace() {
+        k -= 1;
+    }
+    if k == 0 {
+        return None;
+    }
+    let mut end = k;
+    while end > 0 {
+        let c = bytes[end - 1];
+        if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    if end == k {
+        return None;
+    }
+    let word = &raw[end..k];
+    if word == "this" || word == "new" || word.is_empty() {
+        None
+    } else {
+        Some(word.to_string())
+    }
 }
 
 fn enclosing_def(defs: &[(String, u32)], line: u32) -> Option<(String, u32)> {
