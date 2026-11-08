@@ -274,6 +274,8 @@ pub(crate) struct MiddlewareGuard {
     pub name: String,
     pub file: String,
     pub line: u32,
+    /// 明确排除的前缀（Next matcher 负向前瞻），匹配到的路由不算覆盖
+    pub excluded: Vec<String>,
 }
 
 fn auth_middleware_name(s: &str) -> bool {
@@ -366,6 +368,7 @@ pub(crate) fn middleware_guards(files: &[(String, String)]) -> Vec<MiddlewareGua
                             name: first_ident(p).to_string(),
                             file: path.clone(),
                             line: (idx + 1) as u32,
+                            excluded: Vec::new(),
                         });
                         break;
                     }
@@ -414,12 +417,13 @@ pub(crate) fn middleware_guards(files: &[(String, String)]) -> Vec<MiddlewareGua
                         name,
                         file: path.clone(),
                         line: (idx + 1) as u32,
+                        excluded: Vec::new(),
                     });
                 }
             }
         }
     }
-    // Next.js `middleware.ts`：getToken/withAuth + config.matcher
+    // Next.js `middleware.ts`：鉴权判定 + 保护范围（protectedRoutes/startsWith）或 config.matcher
     for (path, content) in files.iter() {
         let name = path.rsplit('/').next().unwrap_or(path);
         if !(name.starts_with("middleware.") && is_middleware_language(path)) {
@@ -429,31 +433,102 @@ pub(crate) fn middleware_guards(files: &[(String, String)]) -> Vec<MiddlewareGua
             || content.contains("withAuth")
             || content.contains("isAuthenticated")
             || content.contains("next-auth")
-            || content.contains("auth(");
+            || content.contains("auth(")
+            || (content.contains("cookies.get(")
+                && content.contains("redirect(")
+                && (content.contains("sign-in")
+                    || content.contains("signin")
+                    || content.contains("login")
+                    || content.contains("session")));
         if !has_auth {
             continue;
         }
+        let line = content
+            .lines()
+            .position(|l| {
+                l.contains("getToken")
+                    || l.contains("withAuth")
+                    || l.contains("isAuthenticated")
+                    || l.contains("cookies.get(")
+            })
+            .map(|i| i + 1)
+            .unwrap_or(1) as u32;
+        // 保护范围优先：`protectedRoutes = '/dashboard'` / `pathname.startsWith('/x')`
+        let mut protected: Vec<String> = Vec::new();
+        for line_text in content.lines() {
+            let t = line_text.trim();
+            let low = t.to_ascii_lowercase();
+            if !(low.contains("protectedroutes")
+                || low.contains("starts_with")
+                || low.contains("startswith("))
+            {
+                continue;
+            }
+            for quote in ['\'', '"', '`'] {
+                let mut rest = t;
+                while let Some(a) = rest.find(quote) {
+                    rest = &rest[a + 1..];
+                    let Some(b) = rest.find(quote) else { break };
+                    let lit = &rest[..b];
+                    rest = &rest[b + 1..];
+                    if lit.starts_with('/') && !protected.iter().any(|p| p == lit) {
+                        protected.push(lit.to_string());
+                    }
+                }
+            }
+        }
+        if !protected.is_empty() {
+            for prefix in protected {
+                guards.push(MiddlewareGuard {
+                    framework: "next",
+                    prefix: prefix.trim_end_matches('/').to_string(),
+                    name: "middleware".to_string(),
+                    file: path.clone(),
+                    line,
+                    excluded: Vec::new(),
+                });
+            }
+            continue;
+        }
+        // matcher 解析（支持负向前瞻排除：/((?!api|_next/static|...).*)）
         let mut prefixes: Vec<String> = Vec::new();
-        for line in content.lines() {
-            let t = line.trim();
-            if t.contains("matcher") || t.contains(":path") || t.contains(":matcher") {
-                // 取该行里所有以 '/' 开头的字面量
-                for quote in ['\'', '"', '`'] {
-                    let mut rest = t;
-                    while let Some(a) = rest.find(quote) {
-                        rest = &rest[a + 1..];
-                        let Some(b) = rest.find(quote) else { break };
-                        let lit = &rest[..b];
-                        rest = &rest[b + 1..];
-                        if lit.starts_with('/') {
-                            let mut p = lit.to_string();
-                            if let Some(idx) = p.find("/:") {
-                                p.truncate(idx);
+        let mut excluded: Vec<String> = Vec::new();
+        for line_text in content.lines() {
+            let t = line_text.trim();
+            if !(t.contains("matcher") || t.contains(":path") || t.contains(":matcher")) {
+                continue;
+            }
+            for quote in ['\'', '"', '`'] {
+                let mut rest = t;
+                while let Some(a) = rest.find(quote) {
+                    rest = &rest[a + 1..];
+                    let Some(b) = rest.find(quote) else { break };
+                    let lit = &rest[..b];
+                    rest = &rest[b + 1..];
+                    if !lit.starts_with('/') {
+                        continue;
+                    }
+                    if let Some(idx) = lit.find("?!") {
+                        let tail = &lit[idx + 2..];
+                        if let Some(end) = tail.find(')') {
+                            for ex in tail[..end].split('|') {
+                                let ex = ex.trim().trim_start_matches('/');
+                                if !ex.is_empty() && !excluded.iter().any(|e| e == ex) {
+                                    excluded.push(ex.to_string());
+                                }
                             }
-                            p = p.trim_end_matches('/').to_string();
-                            if !prefixes.contains(&p) {
-                                prefixes.push(p);
-                            }
+                        }
+                        if !prefixes.iter().any(|p| p.is_empty()) {
+                            prefixes.push(String::new());
+                        }
+                    } else {
+                        let mut p = lit.to_string();
+                        if let Some(i2) = p.find("/:") {
+                            p.truncate(i2);
+                        }
+                        p = p.trim_end_matches('/').to_string();
+                        if !prefixes.contains(&p) {
+                            prefixes.push(p);
                         }
                     }
                 }
@@ -462,11 +537,6 @@ pub(crate) fn middleware_guards(files: &[(String, String)]) -> Vec<MiddlewareGua
         if prefixes.is_empty() {
             prefixes.push(String::new());
         }
-        let line = content
-            .lines()
-            .position(|l| l.contains("getToken") || l.contains("withAuth") || l.contains("isAuthenticated"))
-            .map(|i| i + 1)
-            .unwrap_or(1) as u32;
         for prefix in prefixes {
             guards.push(MiddlewareGuard {
                 framework: "next",
@@ -474,6 +544,7 @@ pub(crate) fn middleware_guards(files: &[(String, String)]) -> Vec<MiddlewareGua
                 name: "middleware".to_string(),
                 file: path.clone(),
                 line,
+                excluded: excluded.clone(),
             });
         }
     }
@@ -586,11 +657,18 @@ pub(crate) fn annotate_middleware_coverage(routes: &mut [Value], files: &[(Strin
                 true
             }
         };
+        let excluded = |g: &&MiddlewareGuard| {
+            g.excluded.iter().any(|ex| {
+                let full = format!("/{ex}");
+                route == full || route.starts_with(&format!("{full}/"))
+            })
+        };
         if let Some(g) = guards.iter().find(|g| {
             prefix_covers(&g.prefix, route)
                 && middleware_scope_covers(&g.file, file, &g.prefix)
                 && middleware_language_matches(g.framework, file)
                 && order_ok(g)
+                && !excluded(g)
         }) {
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("global_coverage".to_string(), json!("covered_by_middleware"));

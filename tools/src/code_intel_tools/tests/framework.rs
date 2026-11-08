@@ -4,6 +4,84 @@
 //! 框架证据相关的单元测试（路由、安全链、容器与拦截器、授权落点、未建模保护栈）。
 
 use super::super::*;
+    /// Next.js app-router：page/route 文件枚举、动态段归一、组/私有目录/并行槽排除。
+    #[test]
+    fn test_next_app_router_enumeration() {
+        let files = vec![
+            (
+                "src/app/(marketing)/page.tsx".to_string(),
+                "export default function Home() { return null; }\n".to_string(),
+            ),
+            (
+                "src/app/dashboard/page.tsx".to_string(),
+                "export default async function Dashboard() { return null; }\n".to_string(),
+            ),
+            (
+                "src/app/shop/[slug]/page.tsx".to_string(),
+                "export default function Product() { return null; }\n".to_string(),
+            ),
+            (
+                "src/app/api/hello/route.ts".to_string(),
+                "export async function GET(req: Request) {}\nexport async function POST(req: Request) {}\n".to_string(),
+            ),
+            (
+                "src/app/_private/page.tsx".to_string(),
+                "export default function Hidden() { return null; }\n".to_string(),
+            ),
+            (
+                "src/app/@modal/page.tsx".to_string(),
+                "export default function Modal() { return null; }\n".to_string(),
+            ),
+            (
+                "src/app/layout.tsx".to_string(),
+                "export default function Layout() { return null; }\n".to_string(),
+            ),
+        ];
+        let mut all: Vec<Value> = Vec::new();
+        for (p, c) in files.iter() {
+            all.extend(super::super::routes::next_app_router_routes(p, c));
+        }
+        let routes: Vec<String> = all.iter().filter_map(|r| r["route"].as_str().map(|s| s.to_string())).collect();
+        assert!(routes.contains(&"/".to_string()), "{routes:?}");
+        assert!(routes.contains(&"/dashboard".to_string()), "{routes:?}");
+        assert!(routes.contains(&"/shop/{slug}".to_string()), "{routes:?}");
+        assert!(routes.contains(&"/api/hello".to_string()), "{routes:?}");
+        assert!(!routes.iter().any(|r| r.contains("_private")), "{routes:?}");
+        assert!(!routes.iter().any(|r| r.contains("@modal")), "{routes:?}");
+        let methods: Vec<String> = all.iter().map(|r| r["http_method"].as_str().unwrap_or("").to_string()).collect();
+        assert!(methods.contains(&"GET".to_string()) && methods.contains(&"POST".to_string()), "{methods:?}");
+    }
+
+    /// Next middleware：protectedRoutes 限定范围 + matcher 负向前瞻排除。
+    #[test]
+    fn test_next_middleware_protected_scope() {
+        let files = vec![(
+            "middleware.ts".to_string(),
+            concat!(
+                "import { NextResponse } from 'next/server';\n",
+                "const protectedRoutes = '/dashboard';\n",
+                "export async function middleware(request: any) {\n",
+                "  const isProtected = request.nextUrl.pathname.startsWith(protectedRoutes);\n",
+                "  const sessionCookie = request.cookies.get('session');\n",
+                "  if (isProtected && !sessionCookie) { return NextResponse.redirect(new URL('/sign-in', request.url)); }\n",
+                "}\n",
+                "export const config = { matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'] };\n",
+            )
+            .to_string(),
+        )];
+        let mut routes = vec![
+            json!({"route": "/dashboard", "file": "app/dashboard/page.tsx", "line": 2, "global_coverage": "no_global_match_found"}),
+            json!({"route": "/dashboard/activity", "file": "app/dashboard/activity/page.tsx", "line": 2, "global_coverage": "no_global_match_found"}),
+            json!({"route": "/sign-in", "file": "app/login/sign-in/page.tsx", "line": 2, "global_coverage": "no_global_match_found"}),
+            json!({"route": "/api/stripe", "file": "app/api/stripe/route.ts", "line": 2, "global_coverage": "no_global_match_found"}),
+        ];
+        annotate_middleware_coverage(&mut routes, &files);
+        assert_eq!(routes[0]["global_coverage"], "covered_by_middleware", "{routes:?}");
+        assert_eq!(routes[1]["global_coverage"], "covered_by_middleware", "{routes:?}");
+        assert_eq!(routes[2]["global_coverage"], "no_global_match_found", "{routes:?}");
+        assert_eq!(routes[3]["global_coverage"], "no_global_match_found", "{routes:?}");
+    }
+
     /// Flask before_request 与路由注册顺序无关（钩子在请求期统一执行）。
     #[test]
     fn test_flask_before_request_order_insensitive() {

@@ -156,6 +156,12 @@ pub(crate) fn compute_routes(
         }
         let mount_prefix = mount_prefixes.get(path).map(|s| s.as_str()).unwrap_or("");
         let mut scan = scan_routes_in_file_prefixed(path, content, "", id, mount_prefix);
+        // Next.js app-router：page/route 文件即路由（文件系统路由，注解扫描看不到）
+        let mut next_routes = next_app_router_routes(path, content);
+        if !next_routes.is_empty() {
+            scan.routes_total += next_routes.len();
+            scan.routes.append(&mut next_routes);
+        }
         // 未建模栈里"顺带"报出来的路由，必须在条目上标明栈名：
         // 否则消费者会把 method=ANY 的疑似路由当成已建模结论。
         if let Some(fw_name) = unmodelled {
@@ -1204,4 +1210,111 @@ pub(crate) fn route_fingerprint(r: &Value) -> String {
     let route = r.get("route").and_then(|v| v.as_str()).unwrap_or("");
     let file = r.get("file").and_then(|v| v.as_str()).unwrap_or("");
     format!("{method} {route} ({file})")
+}
+
+/// Next.js app-router 文件系统路由：`app/**/page.(tsx|ts|jsx|js)` 与 `route.(ts|js)`。
+///
+/// 语义：
+/// - 路由组 `(group)`、私有目录 `_folder`、并行槽 `@slot` 不参与 URL；
+/// - `[param]` / `[...slug]` / `[[...slug]]` 归一为 `{param}`；
+/// - `page` 记 GET；`route` 按导出的 HTTP 动词展开（无导出时回退 GET）。
+pub(crate) fn next_app_router_routes(path: &str, content: &str) -> Vec<Value> {
+    let p = path.replace('\\', "/");
+    let lower = p.to_ascii_lowercase();
+    let app_idx = if let Some(i) = lower.rfind("/app/") {
+        i + 5
+    } else if lower.starts_with("app/") {
+        4
+    } else {
+        return Vec::new();
+    };
+    let rel = &p[app_idx..];
+    let mut parts: Vec<&str> = rel.split('/').collect();
+    let Some(file) = parts.pop() else { return Vec::new() };
+    let segments: Vec<&str> = file.split('.').collect();
+    if segments.len() < 2 {
+        return Vec::new();
+    }
+    let stem = segments[0];
+    let ext = segments[segments.len() - 1];
+    if !matches!(ext, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") {
+        return Vec::new();
+    }
+    if stem != "page" && stem != "route" {
+        return Vec::new();
+    }
+    let mut segs: Vec<String> = Vec::new();
+    for seg in parts {
+        if seg.is_empty() {
+            continue;
+        }
+        if seg.starts_with('(') && seg.ends_with(')') {
+            continue; // 路由组
+        }
+        if seg.starts_with('@') {
+            return Vec::new(); // 并行槽不是独立路由
+        }
+        if seg.starts_with('_') {
+            return Vec::new(); // 私有目录不路由
+        }
+        if seg.starts_with('[') {
+            let inner = seg.trim_start_matches('[').trim_end_matches(']');
+            let name = inner.trim_start_matches("...").trim_start_matches('[').trim_end_matches(']');
+            if !name.is_empty() {
+                segs.push(format!("{{{name}}}"));
+            }
+        } else {
+            segs.push(seg.to_string());
+        }
+    }
+    let route = if segs.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segs.join("/"))
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    if stem == "page" {
+        let line = lines
+            .iter()
+            .position(|l| l.contains("export default"))
+            .or_else(|| {
+                lines
+                    .iter()
+                    .position(|l| l.contains("export function") || l.contains("export async function"))
+            })
+            .map(|i| (i + 1) as u32)
+            .unwrap_or(1);
+        return vec![json!({"http_method": "GET", "route": route, "line": line, "scope": "method"})];
+    }
+    const VERBS: [&str; 7] = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
+    let mut out: Vec<Value> = Vec::new();
+    for (i, raw) in lines.iter().enumerate() {
+        let t = raw.trim();
+        for v in VERBS {
+            let pats = [
+                format!("export async function {v}"),
+                format!("export function {v}"),
+                format!("export const {v}"),
+                format!("export async const {v}"),
+            ];
+            if pats.iter().any(|p| t.starts_with(p.as_str())) {
+                out.push(json!({
+                    "http_method": v,
+                    "route": route,
+                    "line": (i + 1) as u32,
+                    "scope": "method",
+                }));
+                break;
+            }
+        }
+    }
+    if out.is_empty() {
+        let line = lines
+            .iter()
+            .position(|l| l.contains("export "))
+            .map(|i| (i + 1) as u32)
+            .unwrap_or(1);
+        out.push(json!({"http_method": "GET", "route": route, "line": line, "scope": "method"}));
+    }
+    out
 }
