@@ -15,6 +15,7 @@
 //! - **敏感返回面**是启发式：只报在 handler 窗口里**读到**的字段名命中，不推断泄漏。
 
 use super::*;
+use std::collections::BTreeMap;
 
 /// 敏感字段命名线索（小写匹配）。只做"读到即报"，不做推断。
 pub(crate) const SENSITIVE_FIELD_HINTS: [&str; 17] = [
@@ -268,6 +269,7 @@ pub(crate) fn compute_routes(
             }
         }
         // 路由内 helper 鉴权：handler 直接调用或一跳内调用的函数含鉴权/session 校验
+        let mut def_index: Option<BTreeMap<String, Vec<(String, u32)>>> = None;
         for (k, i) in idxs.iter().enumerate() {
             if group[k].get("annotation_covered").and_then(|v| v.as_bool()) == Some(true) {
                 continue;
@@ -280,7 +282,21 @@ pub(crate) fn compute_routes(
                 continue;
             }
             let line = routes[*i].get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            if let Some(via) = internal_auth_via(files, &sindex, file, line) {
+            if def_index.is_none() {
+                let mut idx: BTreeMap<String, Vec<(String, u32)>> = BTreeMap::new();
+                for (p, c) in files.iter() {
+                    let lang = chain::chain_language_of(p);
+                    if lang.is_empty() {
+                        continue;
+                    }
+                    for (n, l) in chain::definitions(c, lang) {
+                        idx.entry(n).or_default().push((p.clone(), l));
+                    }
+                }
+                def_index = Some(idx);
+            }
+            let idx_ref = def_index.as_ref().unwrap();
+            if let Some(via) = internal_auth_via(files, idx_ref, file, line) {
                 if let Some(obj) = group[k].as_object_mut() {
                     obj.insert("global_coverage".to_string(), json!("covered_by_internal_auth"));
                     obj.insert("internal_auth_via".to_string(), json!(via));
@@ -361,7 +377,7 @@ pub(crate) fn compute_routes(
     let mut filtered_by_role = 0usize;
     let mut filtered_by_pattern = 0usize;
     let mut kept: Vec<Value> = Vec::new();
-    for r in routes.into_iter() {
+    for mut r in routes.into_iter() {
         let role = r
             .get("file_role")
             .and_then(|v| v.as_str())
@@ -369,6 +385,11 @@ pub(crate) fn compute_routes(
         if min_role != "any" && role != min_role {
             filtered_by_role += 1;
             continue;
+        }
+        if min_role == "any" && role != "production" {
+            if let Some(obj) = r.as_object_mut() {
+                obj.insert("non_production".to_string(), json!(true));
+            }
         }
         if !route_pattern.is_empty() {
             let rt = r
@@ -692,7 +713,11 @@ pub(crate) fn aspect_backed_annotations(files: &[(String, String)]) -> std::coll
                     None => ann.clone(),
                 }
             };
-            if c.contains("@Aspect") && (c.contains(&ann) || c.contains(&lower_first)) {
+            let mentions = c.contains(&ann) || c.contains(&lower_first);
+            // @Aspect 字面量，或切面方法签名（ProceedingJoinPoint）兜底：
+            // 覆盖 @Aspect 由父类/组合提供、注解经元注解间接处理的场景。
+            let aspect_like = c.contains("@Aspect") || c.contains("ProceedingJoinPoint");
+            if mentions && aspect_like {
                 out.insert(ann.clone());
                 break;
             }
@@ -746,7 +771,7 @@ const INTERNAL_AUTH_TOKENS: [&str; 17] = [
 /// 路由内 helper 鉴权：handler 调用（一跳）的函数体内含鉴权/session/签名校验。
 pub(crate) fn internal_auth_via(
     files: &[(String, String)],
-    sindex: &crate::symbol_index::SymbolIndex,
+    def_index: &BTreeMap<String, Vec<(String, u32)>>,
     file: &str,
     line: usize,
 ) -> Option<String> {
@@ -756,7 +781,10 @@ pub(crate) fn internal_auth_via(
         .map(|(_, c)| c.as_str())?;
     let (start, end) = handler_window(content, line);
     let lines: Vec<&str> = content.lines().collect();
-    let window = lines.get(start..=end.min(lines.len().saturating_sub(1))).unwrap_or(&[]).join("\n");
+    let window = lines
+        .get(start.saturating_sub(1)..=end.saturating_sub(1).min(lines.len().saturating_sub(1)))
+        .unwrap_or(&[])
+        .join("\n");
     // handler 自身含强认证/签名校验（如 Stripe webhook constructEvent）
     const SELF_TOKENS: [&str; 8] = [
         "constructEvent", "verifyToken", "isAuthenticated", "requireAuth",
@@ -765,18 +793,62 @@ pub(crate) fn internal_auth_via(
     if SELF_TOKENS.iter().any(|t| window.contains(t)) {
         return Some("handler_self_auth".to_string());
     }
-    let mut names: Vec<String> = chain::calls(&window).into_iter().map(|(n, _, _, _, _)| n).collect();
-    names.sort();
-    names.dedup();
-    for name in names {
-        for hit in sindex.definitions(&name, 3) {
-            let target = sindex.file_path(hit.file);
-            let Some((_, target_content)) = files.iter().find(|(p, _)| p == target) else { continue };
+    // 多跳（≤3 跳）：handler → helper → helper → 鉴权/session
+    #[derive(Clone)]
+    struct Step {
+        file: String,
+        name: String,
+        path: Vec<String>,
+    }
+    let mut queue: Vec<Step> = Vec::new();
+    let mut visited: std::collections::BTreeSet<(String, String)> = Default::default();
+    let mut seed: Vec<String> = chain::calls(&window).into_iter().map(|(n, _, _, _, _)| n).collect();
+    seed.sort();
+    seed.dedup();
+    for name in seed {
+        queue.push(Step { file: file.to_string(), name: name.clone(), path: vec![name] });
+    }
+    const MAX_HOPS: usize = 3;
+
+    while let Some(step) = queue.pop() {
+        if visited.len() > 400 {
+            break;
+        }
+        if !visited.insert((step.file.clone(), step.name.clone())) {
+            continue;
+        }
+        if step.path.len() > MAX_HOPS {
+            continue;
+        }
+        let sites: Vec<(String, u32)> = def_index
+            .get(&step.name)
+            .map(|v| v.iter().take(3).cloned().collect())
+            .unwrap_or_default();
+        for (target, hit_line) in sites {
+            let target = target;
+            let Some((_, target_content)) = files.iter().find(|(p, _)| p == &target) else { continue };
+            let (s2, e2) = handler_window(target_content, hit_line as usize);
             let target_lines: Vec<&str> = target_content.lines().collect();
-            let (s2, e2) = handler_window(target_content, hit.line as usize);
-            let body = target_lines.get(s2..=e2.min(target_lines.len().saturating_sub(1))).unwrap_or(&[]).join("\n");
+            let body = target_lines
+                .get(s2.saturating_sub(1)..=e2.saturating_sub(1).min(target_lines.len().saturating_sub(1)))
+                .unwrap_or(&[])
+                .join("\n");
             if INTERNAL_AUTH_TOKENS.iter().any(|t| body.contains(t)) {
-                return Some(name);
+                return Some(step.path.join(">"));
+            }
+            if step.path.len() < MAX_HOPS {
+                let mut next: Vec<String> =
+                    chain::calls(&body).into_iter().map(|(n, _, _, _, _)| n).collect();
+                next.sort();
+                next.dedup();
+                for n in next {
+                    if visited.contains(&(target.clone(), n.clone())) {
+                        continue;
+                    }
+                    let mut p = step.path.clone();
+                    p.push(n.clone());
+                    queue.push(Step { file: target.clone(), name: n, path: p });
+                }
             }
         }
     }

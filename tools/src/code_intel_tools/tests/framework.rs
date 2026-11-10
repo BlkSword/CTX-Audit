@@ -28,6 +28,66 @@ use super::super::*;
         assert_eq!(hit.as_deref(), Some("StoragePermissionCheck"));
     }
 
+
+    /// 切面兜底：没有 @Aspect 字面量、但有 ProceedingJoinPoint 切面方法签名时也视为切面注解。
+    #[test]
+    fn test_aspect_fallback_joinpoint_signature() {
+        let files = vec![
+            (
+                "src/ann/AuditCheck.java".to_string(),
+                "package x;\npublic @interface AuditCheck {}\n".to_string(),
+            ),
+            (
+                "src/aspect/ParentAspect.java".to_string(),
+                "package x;\npublic class ParentAspect {\n  public Object around(ProceedingJoinPoint p, AuditCheck a) { return null; }\n}\n".to_string(),
+            ),
+        ];
+        let anns = super::super::routes::aspect_backed_annotations(&files);
+        assert!(anns.contains("AuditCheck"), "{anns:?}");
+    }
+
+    /// 路由内 helper 鉴权：多跳（handler → helper → helper → session）应被识别。
+    #[test]
+    fn test_multi_hop_helper_auth() {
+        let root = std::env::temp_dir().join(format!("ctx-audit-multihop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let files_src = [
+            (
+                "A.java",
+                "@RestController\npublic class A {\n  @GetMapping(\"/x\")\n  public String x() { return HelperA.load(); }\n}\n",
+            ),
+            (
+                "HelperA.java",
+                "public class HelperA {\n  static String load() { return HelperB.fetch(); }\n}\n",
+            ),
+            (
+                "HelperB.java",
+                "public class HelperB {\n  static String fetch() { return TokenUtil.getSession(); }\n}\n",
+            ),
+            (
+                "TokenUtil.java",
+                "public class TokenUtil {\n  static String getSession() { return \"s\"; }\n}\n",
+            ),
+        ];
+        let mut files: Vec<(String, String)> = Vec::new();
+        for (name, content) in files_src.iter() {
+            let p = root.join("src").join(name);
+            std::fs::write(&p, content).unwrap();
+            files.push((format!("src/{name}"), content.to_string()));
+        }
+        let mut def_index: std::collections::BTreeMap<String, Vec<(String, u32)>> = Default::default();
+        for (p, c) in files.iter() {
+            for (n, l) in super::super::chain::definitions(c, super::super::chain::chain_language_of(p)) {
+                def_index.entry(n).or_default().push((p.clone(), l));
+            }
+        }
+        let via = super::super::routes::internal_auth_via(&files, &def_index, "src/A.java", 4);
+        let via = via.expect("multi-hop helper auth not detected");
+        assert!(via.contains("load"), "{via}");
+        assert!(!via.is_empty());
+    }
+
     /// Next.js app-router：page/route 文件枚举、动态段归一、组/私有目录/并行槽排除。
     #[test]
     fn test_next_app_router_enumeration() {
