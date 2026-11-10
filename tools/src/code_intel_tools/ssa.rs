@@ -307,6 +307,11 @@ fn call_args(line: &str, name: &str) -> Option<String> {
 /// 函数内参数 def-use 报告（mini-SSA v0）。
 pub fn param_flow_report(project: &Path, file: &str, line: u32) -> Result<Value, String> {
     let g = SsaGraph::build(project);
+    flow_of(&g, file, line)
+}
+
+/// 在已构建的图上计算单函数参数流（供批量摘要复用）。
+fn flow_of(g: &SsaGraph, file: &str, line: u32) -> Result<Value, String> {
     let Some((symbol, def_line)) = g.enclosing(file, line) else {
         return Err(format!("{file}:{line} 不在任何函数定义内"));
     };
@@ -437,6 +442,121 @@ pub fn param_flow_report(project: &Path, file: &str, line: u32) -> Result<Value,
     }))
 }
 
+/// 函数级轻量摘要：参数 → 调用实参的污点转移、断污点、守卫（KilledBy）、return 是否带污点。
+fn summary_from_flow(g: &SsaGraph, flow: &Value) -> Value {
+    let file = flow["file"].as_str().unwrap_or("");
+    let symbol = flow["symbol"].as_str().unwrap_or("");
+    let def_line = flow["def_line"].as_u64().unwrap_or(0) as u32;
+    let end = g.def_end(file, def_line);
+    let content = g.contents.get(file).map(|s| s.as_str()).unwrap_or("");
+    let mut transfers: Vec<Value> = Vec::new();
+    if let Some(calls) = flow["calls"].as_array() {
+        for c in calls.iter().take(12) {
+            let tainted: Vec<Value> = c["tainted_args"]
+                .as_array()
+                .map(|a| a.iter().take(4).cloned().collect())
+                .unwrap_or_default();
+            let candidates: Vec<Value> = c["candidates"]
+                .as_array()
+                .map(|a| a.iter().take(2).cloned().collect())
+                .unwrap_or_default();
+            transfers.push(json!({
+                "callee": c["callee"].clone(),
+                "line": c["line"].clone(),
+                "implicit_sink": c["implicit_sink"].clone(),
+                "tainted_args": tainted,
+                "candidates": candidates,
+            }));
+        }
+    }
+    let mut broken: Vec<Value> = Vec::new();
+    if let Some(assigns) = flow["assignments"].as_array() {
+        for a in assigns {
+            if let Some(kind) = a.get("taint_broken").and_then(|v| v.as_str()) {
+                broken.push(json!({
+                    "name": a["name"].clone(),
+                    "from": a["from"].clone(),
+                    "line": a["line"].clone(),
+                    "kind": kind,
+                }));
+            }
+        }
+    }
+    let mut kills: Vec<Value> = Vec::new();
+    let mut seen_kinds: Vec<String> = Vec::new();
+    for gv in chain::guards_range(content, def_line, end, file) {
+        let kind = gv.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if kind.is_empty() || seen_kinds.contains(&kind) {
+            continue;
+        }
+        seen_kinds.push(kind.clone());
+        kills.push(json!({
+            "kind": kind,
+            "line": gv.get("line").cloned().unwrap_or(Value::Null),
+            "evidence": gv.get("evidence").cloned().unwrap_or(Value::Null),
+        }));
+        if kills.len() >= 6 {
+            break;
+        }
+    }
+    let tainted: Vec<String> = flow["taints"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let return_taint = content
+        .lines()
+        .skip(def_line.saturating_sub(1) as usize)
+        .take((end.saturating_sub(def_line) + 1) as usize)
+        .any(|l| {
+            let t = l.trim_start();
+            t.starts_with("return ")
+                && tainted.iter().any(|name| !name.is_empty() && t.contains(name.as_str()))
+        });
+    json!({
+        "schema": "func-summary/v1",
+        "file": file,
+        "line": def_line,
+        "symbol": symbol,
+        "params": flow["params"].clone(),
+        "taint_transfers": transfers,
+        "taint_broken": broken,
+        "return_taint": return_taint,
+        "killed_by": kills,
+        "body_lines": end.saturating_sub(def_line) + 1,
+        "uncertainty": {"level": "medium", "reasons": ["name_level_dataflow", "no_type_or_alias_resolution"]},
+    })
+}
+
+/// 单函数摘要（独立构图）。
+pub fn summary_report(project: &Path, file: &str, line: u32) -> Result<Value, String> {
+    let g = SsaGraph::build(project);
+    let flow = flow_of(&g, file, line)?;
+    Ok(summary_from_flow(&g, &flow))
+}
+
+/// 批量函数摘要：一次构图，供链路追踪等场景复用。
+pub fn summaries_for(project: &Path, targets: &[(String, u32)], cap: usize) -> Vec<Value> {
+    let g = SsaGraph::build(project);
+    let mut out: Vec<Value> = Vec::new();
+    let mut seen: std::collections::BTreeSet<(String, u32)> = std::collections::BTreeSet::new();
+    for (file, line) in targets.iter() {
+        if out.len() >= cap.max(1) {
+            break;
+        }
+        if !seen.insert((file.clone(), *line)) {
+            continue;
+        }
+        if let Ok(flow) = flow_of(&g, file, *line) {
+            out.push(summary_from_flow(&g, &flow));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +578,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn function_summary_reports_transfer_and_kill() {
+        let dir = tmp("summary");
+        write_tree(
+            &dir,
+            &[
+                (
+                    "A.java",
+                    r#"
+public class A {
+    public void entry(String q) {
+        B.run(q);
+    }
+}
+"#,
+                ),
+                (
+                    "B.java",
+                    r#"
+public class B {
+    public static void run(String q) {
+        String ALLOWED_SET = "x";
+        if (!ALLOWED_SET.contains(q)) { throw new RuntimeException(); }
+        Runtime.getRuntime().exec(q);
+    }
+}
+"#,
+                ),
+            ],
+        );
+        let sums = summaries_for(&dir, &[("A.java".to_string(), 3)], 4);
+        assert_eq!(sums.len(), 1, "{sums:?}");
+        let tr = sums[0]["taint_transfers"].as_array().unwrap();
+        assert!(tr.iter().any(|t| t["callee"] == "run"), "{sums:?}");
+        let b = summary_report(&dir, "B.java", 3).unwrap();
+        let kills = b["killed_by"].as_array().unwrap();
+        assert!(kills.iter().any(|k| k["kind"] == "allowlist"), "{b:?}");
     }
 
     #[test]

@@ -4014,6 +4014,19 @@ pub fn trace_vulnerability_chain_report(
     }
     let slice = probe::slice_between_report(project, &ef, el, &sf, sl, 2)
         .unwrap_or_else(|e| json!({"reachable": false, "error": e}));
+    // A4：过程间函数摘要（入口 + 载荷步骤所在函数，一次构图批量计算）
+    let mut targets: Vec<(String, u32)> = vec![(ef.clone(), el)];
+    if let Some(ps) = payload.get("steps").and_then(|v| v.as_array()) {
+        for st in ps.iter().take(6) {
+            if let (Some(f), Some(l)) = (
+                st.get("file").and_then(|v| v.as_str()),
+                st.get("def_line").and_then(|v| v.as_u64()),
+            ) {
+                targets.push((f.to_string(), l as u32));
+            }
+        }
+    }
+    let summaries = ssa::summaries_for(project, &targets, 5);
     let mut steps = chain_obj
         .as_ref()
         .and_then(|c| c.get("steps").cloned())
@@ -4060,6 +4073,7 @@ pub fn trace_vulnerability_chain_report(
             "context": payload.get("context").cloned().unwrap_or(json!([])),
         },
         "ssa": ssa,
+        "summaries": summaries,
         "slice": slice_small,
         "next_actions": next_actions,
         "limits": {"steps": 8, "slices": 3, "ssa_arrays": 12},

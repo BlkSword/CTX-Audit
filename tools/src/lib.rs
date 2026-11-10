@@ -47,6 +47,7 @@ pub use code_intel_tools::ssa::param_flow_report;
 pub use code_intel_tools::verify::verify_payload_report;
 pub use code_intel_tools::audit_brief_report;
 pub use code_intel_tools::trace_vulnerability_chain_report;
+pub use code_intel_tools::ssa::{summary_report, summaries_for};
 pub use code_intel_tools::gate::suggest_waivers;
 pub use executor::ToolExecutor;
 #[cfg(feature = "legacy-tools")]
