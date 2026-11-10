@@ -282,7 +282,7 @@ ctx-audit report --from .ctx-audit/gate-artifacts -o json  # 机器可读 gate-r
 | 载荷判定（真实仓库链，10 条） | **9/10 = 90%**，假 flow 0（1 例跨 12 跳链仍失配） |
 | 死链剪枝（8 守卫链 + 5 真实链） | **13/13 = 100%** |
 | 确定性 | 同输入 5 次运行载荷 JSON sha256 一致 |
-| 动态验证（Python fixture） | **4/4** 闭环（payload_verified / verified_killed） |
+| 动态验证（Python + Node fixture） | **12/12 + 5/5** 闭环（payload_verified / verified_killed） |
 | 探针缓存后延迟 | `can_reach` **15ms**、`payload_viability` **39ms**（复调） |
 
 ---
