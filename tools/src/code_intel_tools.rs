@@ -392,6 +392,7 @@ impl CodeIntelTool {
                 int_param("from_line", "源行号", 1),
                 str_param("to_file", "目标文件（相对 project 根）", true),
                 int_param("to_line", "目标行号", 1),
+                str_param("graph", "scoped（默认，含 DI/作用域剪枝）| name（纯名字级诊断）", false),
             ],
             IntelKind::SliceBetween => vec![
                 str_param("from_file", "源文件（相对 project 根）", true),
@@ -2873,8 +2874,11 @@ all_chains.extend(sa_token_security_chains(policy_files));
                         "can_reach 需要 from_file 与 to_file".to_string(),
                     ));
                 }
-                let data = probe::can_reach_report(root, from_file, from_line, to_file, to_line)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("can_reach: {e}")))?;
+                let scope = input["graph"].as_str() != Some("name");
+                let data = probe::can_reach_report_with(
+                    root, from_file, from_line, to_file, to_line, scope,
+                )
+                .map_err(|e| ToolError::ExecutionFailed(format!("can_reach: {e}")))?;
                 IntelEnvelope {
                     data,
                     provenance: vec![prov(".", 0, &id)],

@@ -98,11 +98,16 @@ struct Graph {
     di: std::sync::Arc<super::di::DiIndex>,
     imports: BTreeMap<String, std::collections::BTreeSet<String>>,
     imports_unresolved: std::collections::BTreeSet<String>,
+    scope_pruning: bool,
     di_narrowed: std::cell::Cell<usize>,
 }
 
 impl Graph {
     fn build(project: &Path) -> Graph {
+        Graph::build_with(project, true)
+    }
+
+    fn build_with(project: &Path, scope_pruning: bool) -> Graph {
         let files = super::file_cache::project_files(project);
         let mut g = Graph {
             defs: BTreeMap::new(),
@@ -113,6 +118,7 @@ impl Graph {
             di: std::sync::Arc::new(super::di::DiIndex::default()),
             imports: BTreeMap::new(),
             imports_unresolved: std::collections::BTreeSet::new(),
+            scope_pruning,
             di_narrowed: std::cell::Cell::new(0),
         };
         for (path, content) in files.iter() {
@@ -180,6 +186,9 @@ impl Graph {
     }
 
     fn neighbors(&self, file: &str, def_line: u32) -> Vec<(String, u32, String)> {
+        if !self.scope_pruning {
+            return self.neighbors_plain(file, def_line);
+        }
         if let Some(ext) = self.ext_calls.get(file) {
             return self.neighbors_ext(file, def_line, ext);
         }
@@ -425,7 +434,19 @@ pub fn can_reach_report(
     to_file: &str,
     to_line: u32,
 ) -> Result<Value, String> {
-    let graph = Graph::build(project);
+    can_reach_report_with(project, from_file, from_line, to_file, to_line, true)
+}
+
+/// `scope_pruning=false` 时退回纯名字级图（用于候选-探针对照/诊断）。
+pub fn can_reach_report_with(
+    project: &Path,
+    from_file: &str,
+    from_line: u32,
+    to_file: &str,
+    to_line: u32,
+    scope_pruning: bool,
+) -> Result<Value, String> {
+    let graph = Graph::build_with(project, scope_pruning);
     let di_bindings = graph.di.bindings_count();
     let from_loc = graph.enclosing_with_fallback(from_file, from_line);
     let Some((from_sym, from_def, from_fallback)) = from_loc else {

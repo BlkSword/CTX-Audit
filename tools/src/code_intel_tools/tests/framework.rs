@@ -4,6 +4,30 @@
 //! 框架证据相关的单元测试（路由、安全链、容器与拦截器、授权落点、未建模保护栈）。
 
 use super::super::*;
+    /// 切面注解：自定义 @interface + @Aspect 处理 → 视为认证注解。
+    #[test]
+    fn test_aspect_annotation_detection() {
+        let files = vec![
+            (
+                "src/ann/StoragePermissionCheck.java".to_string(),
+                "package x;\npublic @interface StoragePermissionCheck { int action(); }\n".to_string(),
+            ),
+            (
+                "src/aspect/CheckAspect.java".to_string(),
+                "package x;\n@Aspect\n@Component\npublic class CheckAspect {\n  @Around(\"@annotation(storagePermissionCheck)\")\n  public Object check(ProceedingJoinPoint p, StoragePermissionCheck ann) { return null; }\n}\n".to_string(),
+            ),
+            (
+                "src/ctrl/C.java".to_string(),
+                "package x;\n@RestController\npublic class C {\n  @PostMapping(\"/api/x\")\n  @StoragePermissionCheck(action = 1)\n  public void x() {}\n}\n".to_string(),
+            ),
+        ];
+        let anns = super::super::routes::aspect_backed_annotations(&files);
+        assert!(anns.contains("StoragePermissionCheck"), "{anns:?}");
+        let content = &files[2].1;
+        let hit = super::super::routes::custom_auth_annotation_near(content, 4, &anns);
+        assert_eq!(hit.as_deref(), Some("StoragePermissionCheck"));
+    }
+
     /// Next.js app-router：page/route 文件枚举、动态段归一、组/私有目录/并行槽排除。
     #[test]
     fn test_next_app_router_enumeration() {

@@ -120,6 +120,7 @@ pub(crate) fn compute_routes(
     let mut route_roles: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let (sindex, _, _) = crate::symbol_index::get_or_build(root, refresh, None);
+    let aspect_annotations = aspect_backed_annotations(files);
     let route_cap = max_project_route_hits();
     let mut annotation_covered_count = 0usize;
     let mut dynamic_registration_files = 0usize;
@@ -228,17 +229,21 @@ pub(crate) fn compute_routes(
                 }
                 let line = routes[*i].get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let anns = auth_annotations_near(content, line);
-                if anns.is_empty() {
-                    continue;
-                }
-                let effective = anns.iter().find_map(|a| {
+                let mut effective = anns.iter().find_map(|a| {
                     let name = a.get("annotation").and_then(|v| v.as_str()).unwrap_or("");
                     annotation_effective(name, files).then(|| name.to_string())
                 });
+                if effective.is_none() {
+                    effective = custom_auth_annotation_near(content, line, &aspect_annotations);
+                }
                 if let Some(name) = effective {
                     if let Some(obj) = group[k].as_object_mut() {
                         obj.insert("annotation_covered".to_string(), json!(true));
                         obj.insert("annotation_covered_by".to_string(), json!(name));
+                        let cov = obj.get("global_coverage").and_then(|v| v.as_str()).unwrap_or("");
+                        if cov.starts_with("no_global") || cov == "coverage_unknown" || cov == "unknown" || cov.is_empty() {
+                            obj.insert("global_coverage".to_string(), json!("covered_by_annotation"));
+                        }
                     }
                 }
             }
@@ -259,6 +264,26 @@ pub(crate) fn compute_routes(
                             json!("declaring_class_not_a_bean"),
                         );
                     }
+                }
+            }
+        }
+        // 路由内 helper 鉴权：handler 直接调用或一跳内调用的函数含鉴权/session 校验
+        for (k, i) in idxs.iter().enumerate() {
+            if group[k].get("annotation_covered").and_then(|v| v.as_bool()) == Some(true) {
+                continue;
+            }
+            let cov = group[k]
+                .get("global_coverage")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !(cov.starts_with("no_global") || cov == "coverage_unknown" || cov == "unknown" || cov.is_empty()) {
+                continue;
+            }
+            let line = routes[*i].get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            if let Some(via) = internal_auth_via(files, &sindex, file, line) {
+                if let Some(obj) = group[k].as_object_mut() {
+                    obj.insert("global_coverage".to_string(), json!("covered_by_internal_auth"));
+                    obj.insert("internal_auth_via".to_string(), json!(via));
                 }
             }
         }
@@ -634,6 +659,130 @@ fn line_at<'a>(content: &'a str, line: usize) -> Option<&'a str> {
 }
 
 /// 在路由声明行附近（含类级区域）扫描鉴权注解。只报**读到**的行，不推断。
+/// 项目里"自定义注解 + 切面处理"的注解集合（如 @StoragePermissionCheck + @Aspect）。
+pub(crate) fn aspect_backed_annotations(files: &[(String, String)]) -> std::collections::BTreeSet<String> {
+    let mut declared: Vec<String> = Vec::new();
+    for (p, c) in files.iter() {
+        if !p.ends_with(".java") {
+            continue;
+        }
+        for line in c.lines() {
+            let t = line.trim();
+            if let Some(pos) = t.find("@interface ") {
+                let name: String = t[pos + 11..]
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                    .collect();
+                if !name.is_empty() && !declared.contains(&name) {
+                    declared.push(name);
+                }
+            }
+        }
+    }
+    let mut out: std::collections::BTreeSet<String> = Default::default();
+    for ann in declared {
+        for (p, c) in files.iter() {
+            if !p.ends_with(".java") {
+                continue;
+            }
+            let lower_first = {
+                let mut ch = ann.chars();
+                match ch.next() {
+                    Some(f) => format!("{}{}", f.to_ascii_lowercase(), ch.as_str()),
+                    None => ann.clone(),
+                }
+            };
+            if c.contains("@Aspect") && (c.contains(&ann) || c.contains(&lower_first)) {
+                out.insert(ann.clone());
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// 路由方法附近的切面注解（认证/权限由切面处理）。
+pub(crate) fn custom_auth_annotation_near(
+    content: &str,
+    line: usize,
+    aspects: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    if aspects.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let start = line.saturating_sub(6);
+    let class_line = class_decl_line_before(&lines, line);
+    let class_start = class_line.map(|c| c.saturating_sub(30)).unwrap_or(lines.len());
+    // 方法级切面注解可能写在映射注解**下方**（实测 zfile @StoragePermissionCheck 在 @PostMapping 后 4 行）
+    let end = (line + 8).min(lines.len());
+    let mut indices: Vec<usize> = (start..end).collect();
+    if let Some(cl) = class_line {
+        for i in class_start..cl {
+            indices.push(i);
+        }
+    }
+    indices.sort_unstable();
+    for i in indices {
+        let t = lines.get(i).copied().unwrap_or("").trim();
+        if t.starts_with("import ") || t.starts_with("package ") {
+            continue;
+        }
+        for ann in aspects.iter() {
+            if mentions_annotation(t, ann) {
+                return Some(ann.clone());
+            }
+        }
+    }
+    None
+}
+
+const INTERNAL_AUTH_TOKENS: [&str; 17] = [
+    "isAuthenticated", "getCurrentUser", "getUser(", "getTeamForUser", "getSession",
+    "requireAuth", "redirect(", "cookies(", "getToken", "current_user", "login_required",
+    "jwt", "verifyToken", "constructEvent", "currentUser", "getServerSession", "auth(",
+];
+
+/// 路由内 helper 鉴权：handler 调用（一跳）的函数体内含鉴权/session/签名校验。
+pub(crate) fn internal_auth_via(
+    files: &[(String, String)],
+    sindex: &crate::symbol_index::SymbolIndex,
+    file: &str,
+    line: usize,
+) -> Option<String> {
+    let content = files
+        .iter()
+        .find(|(p, _)| p == file)
+        .map(|(_, c)| c.as_str())?;
+    let (start, end) = handler_window(content, line);
+    let lines: Vec<&str> = content.lines().collect();
+    let window = lines.get(start..=end.min(lines.len().saturating_sub(1))).unwrap_or(&[]).join("\n");
+    // handler 自身含强认证/签名校验（如 Stripe webhook constructEvent）
+    const SELF_TOKENS: [&str; 8] = [
+        "constructEvent", "verifyToken", "isAuthenticated", "requireAuth",
+        "getSession", "current_user", "login_required", "getServerSession",
+    ];
+    if SELF_TOKENS.iter().any(|t| window.contains(t)) {
+        return Some("handler_self_auth".to_string());
+    }
+    let mut names: Vec<String> = chain::calls(&window).into_iter().map(|(n, _, _, _, _)| n).collect();
+    names.sort();
+    names.dedup();
+    for name in names {
+        for hit in sindex.definitions(&name, 3) {
+            let target = sindex.file_path(hit.file);
+            let Some((_, target_content)) = files.iter().find(|(p, _)| p == target) else { continue };
+            let target_lines: Vec<&str> = target_content.lines().collect();
+            let (s2, e2) = handler_window(target_content, hit.line as usize);
+            let body = target_lines.get(s2..=e2.min(target_lines.len().saturating_sub(1))).unwrap_or(&[]).join("\n");
+            if INTERNAL_AUTH_TOKENS.iter().any(|t| body.contains(t)) {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
 fn auth_annotations_near(content: &str, line: usize) -> Vec<Value> {
     let lines: Vec<&str> = content.lines().collect();
     // 方法级注解紧贴映射行（实测 @SaCheckLogin 在 @GetMapping 上方 1–3 行）。
@@ -1155,7 +1304,8 @@ pub(crate) fn explain_route(
         "not_an_endpoint"
     } else {
         match verdict.as_str() {
-            "covered_by_global_config" | "covered_by_middleware" => "covered",
+            "covered_by_global_config" | "covered_by_middleware" | "covered_by_annotation"
+        | "covered_by_internal_auth" => "covered",
             "permitted_by_global_config" => "permitted",
             "coverage_unknown" => "unknown",
             "excluded_from_interceptor" => "uncovered",
