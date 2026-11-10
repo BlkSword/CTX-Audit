@@ -412,6 +412,14 @@ pub fn payload_viability_report(
                 return false;
             }
             if kind == "allowlist"
+                && (arch == "template" || arch == "command")
+                && (g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("isAssignableFrom")
+                    || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("startsWith("))
+            {
+                ineffective_here.push("type_check_not_guard".to_string());
+                return false;
+            }
+            if kind == "allowlist"
                 && arch == "deserialization"
                 && (g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("autoTypeSupport")
                     || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("checkAutoType"))
@@ -689,6 +697,13 @@ pub fn payload_viability_report(
                     return false;
                 }
                 if kind == "allowlist" && !allowlist_enforced(content, sl, def_end) {
+                    return false;
+                }
+                if kind == "allowlist"
+                    && (arch == "template" || arch == "command")
+                    && (g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("isAssignableFrom")
+                        || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("startsWith("))
+                {
                     return false;
                 }
                 if kind == "allowlist"

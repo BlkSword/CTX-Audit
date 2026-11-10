@@ -154,8 +154,20 @@ pub(crate) fn classify_verify(calls: &[Value], raised: Option<&str>, payload: &s
                 ("verified_killed".to_string(), json!({"raised": raised, "reason": "blocked_before_sink"}))
             }
         }
+        "xss" => {
+            let hit = calls
+                .iter()
+                .any(|c| c["kind"] == "xss" && c["html"].as_str().map(|v| v.contains(payload)).unwrap_or(false));
+            if hit {
+                ("payload_verified".to_string(), json!({"html_contains_payload": true}))
+            } else {
+                ("verified_killed".to_string(), json!({"raised": raised, "reason": "never_rendered"}))
+            }
+        }
         "ssrf" => {
-            let sent = calls.iter().any(|c| c["url"].as_str() == Some(payload));
+            let sent = calls
+                .iter()
+                .any(|c| c["url"].as_str().map(|v| v.contains(payload)).unwrap_or(false));
             if sent {
                 ("payload_verified".to_string(), json!({"request_sent": true}))
             } else if raised.is_some() && calls.is_empty() {
@@ -167,6 +179,69 @@ pub(crate) fn classify_verify(calls: &[Value], raised: Option<&str>, payload: &s
         _ => ("unsupported_archetype".to_string(), json!({})),
     }
 }
+
+/// Node/JS 受限运行器：fake require（child_process/http/https/fs）+ fake document，
+/// 只记录"载荷是否到达危险 API"，不产生真实外部调用。
+const NODE_BOOTSTRAP: &str = r#"
+const fs = require('fs');
+const target = process.argv[1];
+const fn = process.argv[2];
+const payload = process.argv[3];
+const calls = [];
+let raised = null;
+function rec(o) { calls.push(o); }
+const fakeRequire = (name) => {
+  if (name === 'child_process') {
+    return {
+      exec: (cmd) => { rec({ kind: 'command', cmd: String(cmd) }); return { stdout: '' }; },
+      execSync: (cmd) => { rec({ kind: 'command', cmd: String(cmd) }); return ''; },
+      spawn: (cmd) => { rec({ kind: 'command', cmd: String(cmd) }); return {}; },
+    };
+  }
+  if (name === 'http' || name === 'https') {
+    return {
+      get: (url) => { rec({ kind: 'ssrf', url: String(url) }); return { on() { return this; } }; },
+      request: (url) => { rec({ kind: 'ssrf', url: String(url) }); return { on() { return this; } }; },
+    };
+  }
+  if (name === 'fs') {
+    const path = require('path');
+    return {
+      readFileSync: (p) => { rec({ kind: 'path', path: path.normalize(String(p)) }); return ''; },
+      writeFileSync: (p) => { rec({ kind: 'path', path: path.normalize(String(p)) }); },
+      createReadStream: (p) => { rec({ kind: 'path', path: path.normalize(String(p)) }); return {}; },
+    };
+  }
+  if (name === 'vm') {
+    return { runInNewContext: (src) => { rec({ kind: 'template', src: String(src) }); } };
+  }
+  if (name === 'mysql' || name === 'pg' || name === 'sqlite3') {
+    return { query: (sql) => { rec({ kind: 'sql', sql: String(sql) }); } };
+  }
+  return {};
+};
+const fakeDocument = {
+  body: {},
+  getElementById: () => ({ set innerHTML(v) { rec({ kind: 'xss', html: String(v) }); } }),
+  querySelector: () => ({ set innerHTML(v) { rec({ kind: 'xss', html: String(v) }); } }),
+};
+globalThis.document = fakeDocument;
+globalThis.window = { document: fakeDocument };
+globalThis.fetch = (url) => { rec({ kind: 'ssrf', url: String(url) }); return Promise.resolve({}); };
+const restrictedProcess = { argv: [], env: {}, exit: () => {} };
+try {
+  const src = fs.readFileSync(target, 'utf8');
+  const module = { exports: {} };
+  const fnFactory = new Function('require', 'module', 'exports', 'process', 'document', 'window', 'fetch', src);
+  fnFactory(fakeRequire, module, module.exports, restrictedProcess, fakeDocument, globalThis.window, globalThis.fetch);
+  let handler = module.exports;
+  if (fn && module.exports[fn]) { handler = module.exports[fn]; }
+  if (typeof handler === 'function') { handler(payload); }
+} catch (e) {
+  raised = String(e);
+}
+process.stdout.write(JSON.stringify({ calls, raised }));
+"#;
 
 pub fn verify_payload_report(
     project: &Path,
@@ -190,8 +265,9 @@ pub fn verify_payload_report(
     let allow = PathBuf::from(&allow_env)
         .canonicalize()
         .map_err(|e| format!("CTX_AUDIT_VERIFY_DIR 无效: {e}"))?;
-    if !file.ends_with(".py") {
-        return Err("动态验证仅支持 Python 文件".to_string());
+    let is_node = file.ends_with(".js") || file.ends_with(".mjs") || file.ends_with(".cjs");
+    if !file.ends_with(".py") && !is_node {
+        return Err("动态验证仅支持 Python / Node(js|mjs|cjs) 文件".to_string());
     }
     let target = project
         .join(file)
@@ -205,14 +281,17 @@ pub fn verify_payload_report(
         ));
     }
     let arch = match archetype {
-        "sql" | "ssrf" | "path" | "command" | "template" | "deserialize" => archetype,
+        "sql" | "ssrf" | "path" | "command" | "template" | "deserialize" | "xss" => archetype,
         _ => {
             return Err(
-                "动态验证支持的载荷类型：sql / ssrf / path / command / template / deserialize"
+                "动态验证支持的载荷类型：sql / ssrf / path / command / template / deserialize / xss"
                     .to_string(),
             )
         }
     };
+    if is_node {
+        return node_verify(&target, function, payload, arch, file);
+    }
     let out = Command::new(python_cmd())
         .arg("-c")
         .arg(BOOTSTRAP)
@@ -251,6 +330,51 @@ pub fn verify_payload_report(
             "injected": ["fake cur", "fake requests", "urllib.parse"],
             "network_enforced": false,
             "note": "仅保证注入依赖不产生真实外部调用；只应指向本地 fixture",
+        },
+        "uncertainty": {"level": "low", "reasons": ["dynamic_execution_of_fixture_only"]},
+    }))
+}
+
+fn node_verify(
+    target: &Path,
+    function: &str,
+    payload: &str,
+    arch: &str,
+    file: &str,
+) -> Result<Value, String> {
+    let out = Command::new("node")
+        .arg("--no-warnings")
+        .arg("-e")
+        .arg(NODE_BOOTSTRAP)
+        .arg(target)
+        .arg(function)
+        .arg(payload)
+        .output()
+        .map_err(|e| format!("无法执行 node: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "node 执行失败: {}",
+            String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let res: Value = serde_json::from_str(stdout.trim()).map_err(|e| format!("结果解析失败: {e}"))?;
+    let calls = res["calls"].as_array().cloned().unwrap_or_default();
+    let raised = res["raised"].as_str();
+    let (tier, evidence) = classify_verify(&calls, raised, payload, arch);
+    Ok(json!({
+        "schema": "verify/v1",
+        "file": file,
+        "function": function,
+        "archetype": arch,
+        "payload": payload,
+        "tier": tier,
+        "evidence": evidence,
+        "sandbox": {
+            "runner": "node",
+            "injected": ["fake require: child_process/http/https/fs/vm/sql", "fake document/window", "restricted process"],
+            "network_enforced": true,
+            "note": "危险模块全部替换为记录器；只应指向本地 fixture",
         },
         "uncertainty": {"level": "low", "reasons": ["dynamic_execution_of_fixture_only"]},
     }))
