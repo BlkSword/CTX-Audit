@@ -127,6 +127,7 @@ All numbers come from reproducible benchmarks; scripts live in a private evaluat
 | Determinism | five runs produce identical payload JSON (sha256) |
 | Opt-in dynamic verification (Python fixtures) | **4/4** (`payload_verified` / `verified_killed`) |
 | Cached probe latency | `can_reach` **15 ms**, `payload_viability` **39 ms** |
+| Real CVE-source chain corpus | **119** real chains across 6 vulnerable-version repositories; probe-consistent 77/119; deterministic; 204 ms/chain |
 | Quick external observation (3 public app repos, 60 PRs + 43 existing PRs) | **0 blocks** on public repos; **4 blocked runs / 14 verdicts** (all explainable/waivable) on existing corpora; 3.9% total block rate; **43–79 ms** per check |
 
 ---
