@@ -724,10 +724,15 @@ pub(crate) fn candidates_legacy(
         if !matches!(lang, "js" | "ts" | "java" | "py" | "go") {
             continue;
         }
-        defs.insert(path.clone(), definitions(content, lang));
+        let file_defs = definitions(content, lang);
         for (name, line, member, _install, _ctor) in calls(content) {
+            // 跳过"函数声明行被当成同名调用"的伪边（与探针口径一致）
+            if file_defs.iter().any(|(n, l)| n == &name && *l == line) {
+                continue;
+            }
             call_sites.entry(name).or_default().push((path.clone(), line, member));
         }
+        defs.insert(path.clone(), file_defs);
         contents.insert(path.clone(), content.clone());
     }
 
