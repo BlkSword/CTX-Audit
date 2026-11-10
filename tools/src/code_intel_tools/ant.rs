@@ -211,7 +211,18 @@ fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<Str
     let declares_allowlist = body.contains("ALLOWED")
         || body.contains("allowlist")
         || body.contains("whitelist");
-    if declares_allowlist && allowlist_enforced(content, start, end) {
+    if archetype == "deserialization" {
+        // 反序列化：autoTypeSupport / checkAutoType 是风险标记，不是守卫；
+        // 只有真实输入过滤（ObjectInputFilter/acceptList/denyList/allowTypes）才算杀伤。
+        if body.contains("ObjectInputFilter")
+            || body.contains("setObjectInputFilter")
+            || body.contains("acceptList")
+            || body.contains("denyList")
+            || body.contains("allowTypes")
+        {
+            return Some("input_filter".to_string());
+        }
+    } else if declares_allowlist && allowlist_enforced(content, start, end) {
         return Some("allowlist_guard".to_string());
     }
     match archetype {
@@ -398,6 +409,17 @@ pub fn payload_viability_report(
             }
             if kind == "allowlist" && !allowlist_enforced(content, caller_line, def_end) {
                 ineffective_here.push("allowlist_declaration_only".to_string());
+                return false;
+            }
+            if kind == "allowlist"
+                && arch == "deserialization"
+                && (g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("autoTypeSupport")
+                    || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("checkAutoType"))
+                && !content.contains("ObjectInputFilter")
+                && !content.contains("acceptList")
+                && !content.contains("denyList")
+            {
+                ineffective_here.push("autotype_marker_not_guard".to_string());
                 return false;
             }
             if kind == "sanitize" && !sanitize_effective(arch, content, caller_line, def_end) {
@@ -667,6 +689,16 @@ pub fn payload_viability_report(
                     return false;
                 }
                 if kind == "allowlist" && !allowlist_enforced(content, sl, def_end) {
+                    return false;
+                }
+                if kind == "allowlist"
+                    && arch == "deserialization"
+                    && (g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("autoTypeSupport")
+                        || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("checkAutoType"))
+                    && !content.contains("ObjectInputFilter")
+                    && !content.contains("acceptList")
+                    && !content.contains("denyList")
+                {
                     return false;
                 }
                 if kind == "sanitize" && !sanitize_effective(arch, content, sl, def_end) {

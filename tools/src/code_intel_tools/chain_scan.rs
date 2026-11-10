@@ -337,6 +337,88 @@ fn entry_index(pre: &Pre, entries: &[Value]) -> BTreeMap<(usize, u32), Value> {
     out
 }
 
+/// 解析 `name(` 括号内参数个数；返回 (个数, 是否 varargs)。
+fn paren_count(raw: &str, name: &str) -> Option<(usize, bool)> {
+    let needle = format!("{name}(");
+    let pos = raw.find(&needle)?;
+    let start = pos + needle.len();
+    let mut depth = 1i32;
+    let mut commas = 0usize;
+    for (off, ch) in raw[start..].char_indices() {
+        match ch {
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner = &raw[start..start + off];
+                    if inner.trim().is_empty() {
+                        return Some((0, inner.contains("...")));
+                    }
+                    return Some((commas + 1, inner.contains("...")));
+                }
+            }
+            ',' if depth == 1 => commas += 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 候选链前向校验：每一步必须存在"上一步函数体内对下一步函数的真实调用"，
+/// 且实参个数与目标定义形参匹配（区分重载）。无法解析时保守放行。
+fn steps_forward_valid(pre: &Pre, files: &[(String, String)], steps: &[Value]) -> bool {
+    if steps.len() < 2 {
+        return true;
+    }
+    for w in steps.windows(2) {
+        let Some(af) = w[0].get("file").and_then(|v| v.as_str()) else { continue };
+        let Some(al) = w[0].get("line").and_then(|v| v.as_u64()) else { continue };
+        let Some(bf) = w[1].get("file").and_then(|v| v.as_str()) else { continue };
+        let Some(bl) = w[1].get("line").and_then(|v| v.as_u64()) else { continue };
+        let Some(bn) = w[1].get("symbol").and_then(|v| v.as_str()) else { continue };
+        // 同函数内的直接链（entry→sink 在同一函数体）：不要求自调用
+        if af == bf
+            && w[0].get("symbol").and_then(|v| v.as_str()) == Some(bn)
+        {
+            continue;
+        }
+        let (Some(&ai), Some(&bi)) = (pre.pos.get(af), pre.pos.get(bf)) else { continue };
+        let Some(caller_def) = enclosing_line(&pre.def_lines[ai], al as u32) else { continue };
+        let total = files[ai].1.lines().count() as u32;
+        let end = pre.def_lines[ai]
+            .iter()
+            .filter(|l| **l > caller_def)
+            .min()
+            .map(|l| l.saturating_sub(1))
+            .unwrap_or(total)
+            .max(caller_def);
+        let key = (bi, bn.to_string());
+        let Some(callers) = pre.incoming.get(&key) else { return false };
+        let Some(call_site) = callers
+            .iter()
+            .find(|(cf, cl, _, _, _, _)| *cf == ai && *cl > caller_def && *cl <= end)
+        else {
+            return false;
+        };
+        // arity 校验
+        let call_text = files[ai].1.lines().nth(call_site.1.saturating_sub(1) as usize);
+        let target_def = pre.defs[bi]
+            .iter()
+            .filter(|(n, l)| n == bn && *l <= bl as u32)
+            .map(|(_, l)| *l)
+            .max();
+        let def_text = target_def.and_then(|dl| files[bi].1.lines().nth(dl.saturating_sub(1) as usize));
+        if let (Some(ct), Some(dt)) = (call_text, def_text) {
+            if let (Some((ca, _)), Some((dp, va))) = (paren_count(ct, bn), paren_count(dt, bn)) {
+                let ok = if va { ca + 1 >= dp } else { ca == dp };
+                if !ok {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 fn confidence_of(pre: &Pre, caller: usize, callee: usize, bound: bool, direct: bool) -> &'static str {
     if bound || caller == callee || direct {
         "certain"
@@ -935,6 +1017,11 @@ pub(crate) fn candidates(
                     o.insert("line".to_string(), json!(line));
                     o.insert("expr".to_string(), sink.get("expr").cloned().unwrap_or(Value::Null));
                 }
+            }
+            // 前向校验：与探针同口径（真实调用 + 重载参数匹配），失败则丢弃
+            if !steps_forward_valid(&pre, files, &steps) {
+                *stats.entry("dropped_unverifiable".to_string()).or_default() += 1;
+                continue;
             }
             // 守卫：入口与汇窗口
             let mut guards: Vec<Value> = Vec::new();

@@ -192,7 +192,7 @@ pub(crate) fn calls_ext(content: &str) -> Vec<(String, u32, bool, bool, bool, Op
                     while j < n && b[j].is_ascii_whitespace() {
                         j += 1;
                     }
-                    if j < n && b[j] == b'(' && !KEYWORDS.contains(&name) {
+                    if j < n && b[j] == b'(' && !KEYWORDS.contains(&name) && !declaration_like(raw, start) {
                         let member = start > 0 && b[start - 1] == b'.';
                         let receiver = receiver_before(raw, start);
                         let before = raw[..start].trim_end();
@@ -229,7 +229,7 @@ pub(crate) fn calls_ext(content: &str) -> Vec<(String, u32, bool, bool, bool, Op
                 while j < n && chars[j].1.is_whitespace() {
                     j += 1;
                 }
-                if j < n && chars[j].1 == '(' && !KEYWORDS.contains(&name) {
+                if j < n && chars[j].1 == '(' && !KEYWORDS.contains(&name) && !declaration_like(raw, start_byte) {
                     let member = start_byte > 0 && raw.as_bytes()[start_byte - 1] == b'.';
                     let receiver = receiver_before(raw, start_byte);
                     let before = raw[..start_byte].trim_end();
@@ -245,6 +245,39 @@ pub(crate) fn calls_ext(content: &str) -> Vec<(String, u32, bool, bool, bool, Op
         }
     }
     out
+}
+
+/// 判断 `name(` 所在行是否是"函数/方法声明"而不是调用。
+///
+/// 名字级扫描会把 `public static <T> T parseObject(...)` 这类重载声明行当成调用，
+/// 进而把同文件重载误连成路径。规则：名字前有类型/修饰符 token、无 `=`、`.`、`(`，
+/// 且名字后存在 `{` / `;` / `throws` / `,`。
+fn declaration_like(raw: &str, start: usize) -> bool {
+    let before = raw[..start].trim_end();
+    if before.is_empty() {
+        return false;
+    }
+    let last = before.chars().last().unwrap_or(' ');
+    if !(last.is_alphanumeric() || last == '>' || last == '?' || last == ']') {
+        return false;
+    }
+    let last_word = before
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .last()
+        .unwrap_or("");
+    const KEYWORDS: [&str; 14] = [
+        "return", "new", "if", "for", "while", "switch", "catch", "throw", "case",
+        "else", "yield", "await", "typeof", "instanceof",
+    ];
+    if KEYWORDS.contains(&last_word) {
+        return false;
+    }
+    if before.contains('=') || before.contains('.') || before.contains('(') {
+        return false;
+    }
+    let rest = &raw[start..];
+    rest.contains('{') || rest.contains(';') || rest.contains("throws") || rest.contains(',')
 }
 
 /// 取 `receiver.method(` 中 `.` 之前的接收者变量名（支持 `this.` 与简单标识符）。
@@ -278,6 +311,146 @@ fn receiver_before(raw: &str, start: usize) -> Option<String> {
     } else {
         Some(word.to_string())
     }
+}
+
+/// 在文件内按函数名找最近的、位于 line 之前的定义行；找不到则退化到最近定义。
+fn def_line_for_name(
+    defs: &BTreeMap<String, Vec<(String, u32)>>,
+    file: &str,
+    name: &str,
+    line: u32,
+) -> Option<u32> {
+    let ds = defs.get(file)?;
+    if let Some((_, l)) = ds
+        .iter()
+        .filter(|(n, l)| n == name && *l <= line)
+        .max_by_key(|(_, l)| *l)
+    {
+        return Some(*l);
+    }
+    ds.iter()
+        .filter(|(_, l)| *l <= line)
+        .map(|(_, l)| *l)
+        .max()
+}
+
+/// 候选链前向边校验（caller 函数体内是否有对下一节点的真实调用）。
+/// 解析 `name(` 调用或声明括号内的参数个数；返回 (参数个数, 是否 varargs)。
+fn paren_params(raw: &str, name: &str) -> Option<(usize, bool)> {
+    let needle = format!("{name}(");
+    let pos = raw.find(&needle)?;
+    let start = pos + needle.len();
+    let bytes = raw.as_bytes();
+    let mut depth = 1i32;
+    let mut i = start;
+    let mut commas = 0usize;
+    let mut any = false;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match ch {
+            '(' | '<' if depth == 1 => {}
+            '(' => {}
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner = &raw[start..i];
+                    let varargs = inner.contains("...");
+                    if inner.trim().is_empty() {
+                        return Some((0, varargs));
+                    }
+                    return Some((commas + 1, varargs));
+                }
+            }
+            ',' if depth == 1 => {
+                commas += 1;
+                any = true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let _ = any;
+    None
+}
+
+fn path_forward_connected(
+    path: &[(String, u32, String)],
+    defs: &BTreeMap<String, Vec<(String, u32)>>,
+    file_calls: &BTreeMap<String, Vec<(String, u32)>>,
+    contents: &BTreeMap<String, String>,
+    scope_imports: &BTreeMap<String, std::collections::BTreeSet<String>>,
+    scope_unresolved: &std::collections::BTreeSet<String>,
+) -> bool {
+    if path.len() < 2 {
+        return true;
+    }
+    for w in path.windows(2) {
+        let (af, al, an) = (&w[0].0, w[0].1, w[0].2.clone());
+        let bn = w[1].2.clone();
+        if af == &w[1].0 && al == w[1].1 {
+            continue;
+        }
+        let Some(def_line) = def_line_for_name(defs, af, &an, al) else {
+            return false;
+        };
+        let total = contents.get(af).map(|c| c.lines().count() as u32).unwrap_or(def_line);
+        let end = defs
+            .get(af)
+            .and_then(|ds| ds.iter().filter(|(_, l)| *l > def_line).map(|(_, l)| *l).min())
+            .map(|n| n.saturating_sub(1))
+            .unwrap_or(total)
+            .max(def_line);
+        let Some(calls) = file_calls.get(af) else {
+            return false;
+        };
+        let call_line = calls
+            .iter()
+            .filter(|(n, l)| n == &bn && *l > def_line && *l <= end)
+            .map(|(_, l)| *l)
+            .min();
+        let Some(call_line) = call_line else {
+            return false;
+        };
+        // 参数个数校验（重载区分）：调用实参个数必须与被调定义的形参个数匹配
+        // （varargs 允许 >= 形参-1），否则是名字冲突伪边。
+        let caller_line_text = contents
+            .get(af)
+            .and_then(|c| c.lines().nth(call_line.saturating_sub(1) as usize));
+        let bf = &w[1].0;
+        let target_def_line = def_line_for_name(defs, bf, &bn, w[1].1);
+        let target_line_text = target_def_line.and_then(|dl| {
+            contents
+                .get(bf)
+                .and_then(|c| c.lines().nth(dl.saturating_sub(1) as usize))
+        });
+        if let (Some(call_text), Some(def_text)) = (caller_line_text, target_line_text) {
+            if let (Some((call_args, _)), Some((def_params, varargs))) =
+                (paren_params(call_text, &bn), paren_params(def_text, &bn))
+            {
+                let ok = if varargs {
+                    call_args + 1 >= def_params
+                } else {
+                    call_args == def_params
+                };
+                if !ok {
+                    return false;
+                }
+            }
+        }
+        // 目标文件必须在作用域内（同文件/同目录/被 caller import），否则是名字冲突伪边；
+        // import 解析不完整的文件不做此项限制（避免误删真实跨包调用）。
+        if af != &w[1].0 && !scope_unresolved.contains(af) {
+            let same_dir = af.rsplit_once('/').map(|(d, _)| d) == w[1].0.rsplit_once('/').map(|(d, _)| d);
+            let imported = scope_imports
+                .get(af)
+                .map(|s| s.contains(&w[1].0))
+                .unwrap_or(false);
+            if !same_dir && !imported {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn enclosing_def(defs: &[(String, u32)], line: u32) -> Option<(String, u32)> {
@@ -716,8 +889,10 @@ pub(crate) fn candidates_legacy(
         })
         .unwrap_or_default();
     let imports = chain_vocab::import_graph(files);
+    let (scope_imports, scope_unresolved) = super::probe::build_imports(files);
     let mut defs: BTreeMap<String, Vec<(String, u32)>> = BTreeMap::new();
     let mut call_sites: BTreeMap<String, Vec<(String, u32, bool)>> = BTreeMap::new();
+    let mut file_calls: BTreeMap<String, Vec<(String, u32)>> = BTreeMap::new();
     let mut contents: BTreeMap<String, String> = BTreeMap::new();
     for (path, content) in files.iter().take(max_index_files()) {
         let lang = chain_language_of(path);
@@ -730,6 +905,7 @@ pub(crate) fn candidates_legacy(
             if file_defs.iter().any(|(n, l)| n == &name && *l == line) {
                 continue;
             }
+            file_calls.entry(path.clone()).or_default().push((name.clone(), line));
             call_sites.entry(name).or_default().push((path.clone(), line, member));
         }
         defs.insert(path.clone(), file_defs);
@@ -899,6 +1075,15 @@ pub(crate) fn candidates_legacy(
             }
         }
         }
+
+        // 前向边校验：候选链的相邻步骤必须在 caller 函数体内存在对该函数的真实调用，
+        // 否则只是名字级伪边（同文件重载/声明行伪调用），直接丢弃。
+        let before = found.len();
+        found.retain(|(path, _, _)| {
+            path_forward_connected(path, &defs, &file_calls, &contents, &scope_imports, &scope_unresolved)
+        });
+        let dropped = before.saturating_sub(found.len());
+        *stats.entry("dropped_unverifiable".to_string()).or_default() += dropped;
 
         if found.is_empty() {
             // 无法把汇连到入口：输出"汇级链档"，断点显式（framework_magic / ambiguous_chain）。
@@ -1225,4 +1410,28 @@ pub(crate) fn dossier_markdown(d: &Value) -> String {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calls_skip_declaration_lines() {
+        let src = "public class A {\n  public static <T> T parseObject(String s) { return null; }\n  public void run(String s) {\n    parseObject(s);\n    Object x = parseObject(s);\n    JSON.parseObject(s);\n  }\n}\n";
+        let names: Vec<String> = calls(src).into_iter().map(|(n, _, _, _, _)| n).collect();
+        assert!(!names.is_empty());
+        // 声明行（第 2 行）不应产生 parseObject 调用
+        let decl_line_calls = calls(src)
+            .into_iter()
+            .filter(|(n, l, _, _, _)| n == "parseObject" && *l == 2)
+            .count();
+        assert_eq!(decl_line_calls, 0, "names={names:?}");
+        // 真实调用仍被保留（第 4/5/6 行）
+        let real = calls(src)
+            .into_iter()
+            .filter(|(n, l, _, _, _)| n == "parseObject" && *l > 2)
+            .count();
+        assert!(real >= 2, "real={real}");
+    }
 }

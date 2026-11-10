@@ -325,7 +325,7 @@ fn normalize_path(path: &str) -> String {
 }
 
 /// 解析 import/require 关系（JS/TS/Python 相对与别名路径、Java 类 import）。
-fn build_imports(
+pub(crate) fn build_imports(
     files: &[(String, String)],
 ) -> (BTreeMap<String, std::collections::BTreeSet<String>>, std::collections::BTreeSet<String>) {
     use std::collections::BTreeSet;
