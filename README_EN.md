@@ -52,7 +52,7 @@ Reverse reachability from sinks to entries, chain dossiers (bounded size) with p
 `trace_params`: parameter → local variable → call argument binding, with implicit-sink tagging (reflection, property access, expression, JNDI, deserialization) and taint cut-off on response-body rebinding.
 
 ### Payload viability
-`payload_viability` walks the reachable path for an archetype (sql / path / jndi / template / deser / command / ssrf / xss), where guards kill and decode/parse mutate. Tiers: `payload_killed`, `guard_ineffective_token`, `taint_lost`, `payload_may_survive`. The verdict is attached to chain dossiers automatically.
+`payload_viability` walks the reachable path for an archetype (sql / path / jndi / template / deser / command / ssrf / xss / xxe / redirect / header), where guards kill and decode/parse mutate. Tiers: `payload_killed`, `guard_ineffective_token`, `taint_lost`, `payload_may_survive`. The verdict is attached to chain dossiers automatically.
 
 ### Verification skeleton and opt-in dynamic verification
 `harness_skeleton` builds route/params/guards/curl (`MARKER`) / MockMvc / manual plan. `verify_payload` is **disabled by default** and only runs Python fixtures inside `CTX_AUDIT_VERIFY_DIR`, injecting fake DB cursors and fake requests, returning `payload_verified` / `verified_killed`; it is not a network/filesystem sandbox and must never point at production code.
