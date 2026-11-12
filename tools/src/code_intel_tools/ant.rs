@@ -38,6 +38,12 @@ fn normalize_archetype(s: &str) -> &'static str {
         "ssrf"
     } else if l.contains("xss") || l.contains("html") {
         "xss"
+    } else if l.contains("xxe") || l.contains("xml") {
+        "xxe"
+    } else if l.contains("redirect") {
+        "redirect"
+    } else if l.contains("header") || l.contains("crlf") {
+        "header"
     } else {
         "generic"
     }
@@ -53,6 +59,9 @@ fn guard_kills(archetype: &str) -> &'static [&'static str] {
         "command" => &["allowlist"],
         "ssrf" => &["ssrf_check", "allowlist"],
         "xss" => &["template_escape", "sanitize"],
+        "xxe" => &["allowlist", "sanitize"],
+        "redirect" => &["allowlist"],
+        "header" => &["sanitize"],
         _ => &[],
     }
 }
@@ -87,6 +96,14 @@ fn sanitize_effective(archetype: &str, content: &str, start: u32, end: u32) -> b
         }
         "command" => {
             body.contains("shellEscape") || body.contains("quoteShell") || body.contains("escapeShellArg")
+        }
+        "header" => {
+            body.contains("CRLF")
+                || body.contains("stripHeader")
+                || body.contains("sanitizeHeader")
+                || body.contains("replaceAll(\"\\r")
+                || body.contains("replaceAll(\"\\n")
+                || body.contains("replaceAll(\"[\\r\\n]")
         }
         _ => false,
     }
@@ -211,6 +228,23 @@ fn body_kill(archetype: &str, content: &str, start: u32, end: u32) -> Option<Str
     let declares_allowlist = body.contains("ALLOWED")
         || body.contains("allowlist")
         || body.contains("whitelist");
+    if archetype == "xxe"
+        && (body.contains("disallow-doctype-decl")
+            || body.contains("setEntityResolver")
+            || body.contains("ACCESS_EXTERNAL_DTD")
+            || body.contains("FEATURE_SECURE_PROCESSING")
+            || body.contains("setFeature("))
+    {
+        return Some("xxe_secure_processing".to_string());
+    }
+    if archetype == "redirect"
+        && (body.contains("startsWith(")
+            || body.contains(".equals(")
+            || body.contains("hasHost(")
+            || body.contains("allowedHost"))
+    {
+        return Some("host_allowlist".to_string());
+    }
     if archetype == "deserialization" {
         // 反序列化：autoTypeSupport / checkAutoType 是风险标记，不是守卫；
         // 只有真实输入过滤（ObjectInputFilter/acceptList/denyList/allowTypes）才算杀伤。
@@ -409,6 +443,25 @@ pub fn payload_viability_report(
             }
             if kind == "allowlist" && !allowlist_enforced(content, caller_line, def_end) {
                 ineffective_here.push("allowlist_declaration_only".to_string());
+                return false;
+            }
+            if kind == "allowlist"
+                && arch == "xxe"
+                && !(g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("doctype")
+                    || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("EntityResolver")
+                    || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("ACCESS_EXTERNAL")
+                    || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("secure_processing"))
+            {
+                ineffective_here.push("xxe_marker_not_guard".to_string());
+                return false;
+            }
+            if kind == "allowlist"
+                && arch == "redirect"
+                && !(g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("startsWith")
+                    || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("hasHost")
+                    || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("allowedHost"))
+            {
+                ineffective_here.push("redirect_allowlist_weak".to_string());
                 return false;
             }
             if kind == "allowlist"
@@ -700,6 +753,23 @@ pub fn payload_viability_report(
                     return false;
                 }
                 if kind == "allowlist"
+                    && arch == "xxe"
+                    && !(g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("doctype")
+                        || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("EntityResolver")
+                        || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("ACCESS_EXTERNAL")
+                        || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("secure_processing"))
+                {
+                    return false;
+                }
+                if kind == "allowlist"
+                    && arch == "redirect"
+                    && !(g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("startsWith")
+                        || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("hasHost")
+                        || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("allowedHost"))
+                {
+                    return false;
+                }
+                if kind == "allowlist"
                     && (arch == "template" || arch == "command")
                     && (g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("isAssignableFrom")
                         || g.get("evidence").and_then(|v| v.as_str()).unwrap_or("").contains("startsWith("))
@@ -976,5 +1046,22 @@ public class Fixed {
         let killed = payload_viability_report(&dir2, "Fixed.java", 3, "Fixed.java", 6, "traversal").unwrap();
         assert_eq!(killed["viability"], "killed", "{killed}");
         assert_eq!(killed["tier"], "payload_killed");
+    }
+}
+
+#[cfg(test)]
+mod new_archetype_tests {
+    use super::*;
+
+    #[test]
+    fn new_archetypes_normalized() {
+        assert_eq!(normalize_archetype("xxe"), "xxe");
+        assert_eq!(normalize_archetype("XML"), "xxe");
+        assert_eq!(normalize_archetype("open_redirect"), "redirect");
+        assert_eq!(normalize_archetype("header"), "header");
+        assert_eq!(normalize_archetype("CRLF"), "header");
+        assert!(guard_kills("xxe").contains(&"allowlist"));
+        assert!(guard_kills("redirect").contains(&"allowlist"));
+        assert!(guard_kills("header").contains(&"sanitize"));
     }
 }

@@ -475,7 +475,7 @@ pub(crate) fn scan_sinks_with(
     extra: &[(String, String)],
     include_builtin: bool,
 ) -> Vec<Value> {
-    const PATTERNS: [(&str, &[&str]); 10] = [
+    const PATTERNS: [(&str, &[&str]); 13] = [
         (
             "exec",
             &[
@@ -499,6 +499,22 @@ pub(crate) fn scan_sinks_with(
                 "ScriptEngine",
                 "vm.runInNewContext",
                 "vm.runInThisContext",
+            ],
+        ),
+        (
+            "xml_parse",
+            &[
+                "DocumentBuilderFactory",
+                "SAXParserFactory",
+                "XMLReader",
+                "XMLDecoder",
+                "Unmarshaller",
+                "SAXParser",
+                "parseXML",
+                "XMLInputFactory",
+                "TransformerFactory.newInstance",
+                "DocumentBuilder(",
+                "newDocumentBuilder(",
             ],
         ),
         (
@@ -575,6 +591,33 @@ pub(crate) fn scan_sinks_with(
         (
             "jndi",
             &["InitialContext(", "new InitialDirContext(", "InitialDirContext("],
+        ),
+        (
+            "redirect",
+            &[
+                "sendRedirect(",
+                "RedirectView",
+                "RedirectResponse",
+                "res.redirect(",
+                "response.redirect(",
+                "NextResponse.redirect(",
+                "redirect:(",
+                "redirectTo",
+                "Redirect(",
+            ],
+        ),
+        (
+            "header_injection",
+            &[
+                "setHeader(",
+                "addHeader(",
+                "setContentType(",
+                "addCookie(",
+                "headers.set(",
+                "headers.append(",
+                "res.setHeader(",
+                "response.headers.set(",
+            ],
         ),
     ];
     use rayon::prelude::*;
@@ -1414,6 +1457,27 @@ pub(crate) fn dossier_markdown(d: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_sinks_detects_new_kinds() {
+        let files = vec![
+            (
+                "A.java".to_string(),
+                "DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();\nresp.sendRedirect(target);\nresp.setHeader('X-Test', value);\n".to_string(),
+            ),
+            (
+                "b.js".to_string(),
+                "return NextResponse.redirect(url);\nres.setHeader('X', v);\n".to_string(),
+            ),
+        ];
+        let sinks = scan_sinks_with(&files, &[], true);
+        let kinds: Vec<&str> = sinks.iter().filter_map(|s| s["kind"].as_str()).collect();
+        assert!(kinds.contains(&"xml_parse"), "{kinds:?}");
+        assert!(kinds.contains(&"redirect"), "{kinds:?}");
+        assert!(kinds.contains(&"header_injection"), "{kinds:?}");
+    }
+
     use super::*;
 
     #[test]

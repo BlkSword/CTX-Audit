@@ -755,13 +755,18 @@ fn request_sourced(sink_expr: &str, sink_def_sig: &str, context: &str, steps: &[
 }
 
 fn injection_kind(kind: &str) -> bool {
-    matches!(kind, "exec" | "eval" | "sql" | "template" | "ssrf" | "file_write" | "jndi")
+    matches!(
+        kind,
+        "exec" | "eval" | "sql" | "template" | "ssrf" | "file_write" | "jndi"
+            | "redirect" | "header_injection"
+    )
 }
 
 fn sensitive(kind: &str) -> bool {
     matches!(
         kind,
-        "exec" | "eval" | "deserialize" | "reflect" | "module_access" | "template" | "sql" | "file_write" | "jndi" | "ssrf"
+        "exec" | "eval" | "deserialize" | "reflect" | "module_access" | "template" | "sql"
+            | "file_write" | "jndi" | "ssrf" | "xml_parse" | "redirect" | "header_injection"
     )
 }
 
@@ -774,7 +779,9 @@ fn chain_score(c: &Value) -> i32 {
     s += match kind {
         "exec" | "eval" | "deserialize" | "reflect" | "module_access" | "template" => 30,
         "sql" | "file_write" => 20,
-        "ssrf" => 8,
+        "xml_parse" => 25,
+        "header_injection" => 12,
+        "ssrf" | "redirect" => 8,
         _ => 0,
     };
     let unguarded = c["guards"]

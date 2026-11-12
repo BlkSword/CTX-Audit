@@ -414,7 +414,7 @@ impl CodeIntelTool {
                 int_param("entry_line", "入口函数定义行或函数体内行", 1),
                 str_param("sink_file", "汇所在文件", true),
                 int_param("sink_line", "汇行", 1),
-                str_param("archetype", "载荷类型：sql/path/jndi/template/deser/command/ssrf/xss", false),
+                str_param("archetype", "载荷类型：sql/path/jndi/template/deser/command/ssrf/xss/xxe/redirect/header", false),
             ],
             IntelKind::VerifyPayload => vec![
                 str_param("file", "Python fixture 文件（相对 project 根）", true),
@@ -3929,6 +3929,9 @@ fn archetype_for_sink(kind: &str) -> &'static str {
         "sql_execute" | "sql" => "sql",
         "xss_output" | "html_write" => "xss",
         "module_access" => "deser",
+        "xml_parse" => "xxe",
+        "redirect" => "redirect",
+        "header_injection" => "header",
         _ => "generic",
     }
 }
@@ -4108,6 +4111,9 @@ fn attach_payload_verdict(project: &Path, mut chain: Value) -> Value {
         "template_eval" | "expression_eval" => "template",
         "file_write" | "file_read" => "path",
         "sql_execute" => "sql",
+        "xml_parse" => "xxe",
+        "redirect" => "redirect",
+        "header_injection" => "header",
         other => other,
     };
     let payload = if entry_file.is_empty() || sink_file.is_empty() || entry_line == 0 || sink_line == 0 {
