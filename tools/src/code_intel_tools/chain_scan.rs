@@ -967,7 +967,17 @@ pub(crate) fn candidates(
     let mut chains: Vec<Value> = Vec::new();
     let mut reached = 0usize;
 
+    // 大仓候选扫描时间预算：超过后截断，避免单次审计调用不可用（统计数据显式标注）。
+    const SCAN_BUDGET_MS: u128 = 2500;
+    let scan_start = Instant::now();
+    let mut budget_truncated = false;
+    let mut sinks_processed = 0usize;
     for sink in sinks.iter() {
+        if scan_start.elapsed().as_millis() > SCAN_BUDGET_MS {
+            budget_truncated = true;
+            break;
+        }
+        sinks_processed += 1;
         if let Some(k) = sink_kind {
             if sink.get("kind").and_then(|v| v.as_str()) != Some(k) {
                 continue;
@@ -1211,6 +1221,10 @@ pub(crate) fn candidates(
         "chains_linked".to_string(),
         chains.iter().filter(|c| !c["entry"].is_null()).count(),
     );
+    if budget_truncated {
+        stats.insert("truncated_by_time_budget".to_string(), 1);
+    }
+    stats.insert("sinks_processed".to_string(), sinks_processed);
     stats.insert("chains_raw".to_string(), chains.len());
     stats.insert("sinks_reached".to_string(), reached);
 

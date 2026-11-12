@@ -443,6 +443,24 @@ pub(crate) fn compute_routes(
             uncovered.push(r.clone());
         }
     }
+    // 未覆盖之外的"待判"路由：unknown / coverage_unknown / ambiguous 不应被 only_uncovered 静默吞掉。
+    let mut needs_triage_count = 0usize;
+    let mut needs_triage_samples: Vec<Value> = Vec::new();
+    for r in kept.iter() {
+        let cov = r.get("global_coverage").and_then(|v| v.as_str()).unwrap_or("");
+        if cov == "unknown" || cov == "coverage_unknown" || cov == "ambiguous_across_chains" {
+            needs_triage_count += 1;
+            if needs_triage_samples.len() < 20 {
+                needs_triage_samples.push(json!({
+                    "route": r.get("route").cloned().unwrap_or(Value::Null),
+                    "http_method": r.get("http_method").cloned().unwrap_or(Value::Null),
+                    "file": r.get("file").cloned().unwrap_or(Value::Null),
+                    "line": r.get("line").cloned().unwrap_or(Value::Null),
+                    "global_coverage": cov,
+                }));
+            }
+        }
+    }
     let routes: Vec<Value> = if filter.only_uncovered {
         uncovered.clone()
     } else {
@@ -478,6 +496,11 @@ pub(crate) fn compute_routes(
         "routes": routes,
         // 索引截断时"未覆盖清单"不可信：显式抑制，而不是给一份残缺工单
         "uncovered_endpoints": if index_truncated { Vec::<Value>::new() } else { uncovered.clone() },
+        "needs_triage": {
+            "count": needs_triage_count,
+            "samples": needs_triage_samples,
+            "note": "global_coverage 为 unknown/coverage_unknown/ambiguous_across_chains：需要人工或 further-probe 判定，不能当作已覆盖",
+        },
         "uncovered_suppressed_by_truncation": index_truncated,
         "verdict_counts": verdict_counts,
         "filter": {
