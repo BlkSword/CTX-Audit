@@ -455,6 +455,7 @@ fn reverse_reach(
     sink_line: u32,
     entries: &BTreeMap<(usize, u32), Value>,
     budget: &mut WorkBudget,
+    deadline: Instant,
 ) -> (Vec<(usize, u32, String, &'static str)>, Vec<Value>, Value) {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
@@ -496,6 +497,10 @@ fn reverse_reach(
         let mut weak_hit: Option<((usize, u32), Value)> = None;
 
         while let Some(Reverse((cost, hops, cf, cl))) = heap.pop() {
+        // 单 sink 内部也要看预算：大仓里一个汇的反向搜索可能吃掉全部时间。
+        if Instant::now() > deadline {
+            break;
+        }
             budget.visits += 1;
             if budget.visits > MAX_TOTAL_VISITS {
                 break;
@@ -970,6 +975,7 @@ pub(crate) fn candidates(
     // 大仓候选扫描时间预算：超过后截断，避免单次审计调用不可用（统计数据显式标注）。
     const SCAN_BUDGET_MS: u128 = 2500;
     let scan_start = Instant::now();
+    let scan_deadline = scan_start + std::time::Duration::from_millis(SCAN_BUDGET_MS as u64);
     let mut budget_truncated = false;
     let mut sinks_processed = 0usize;
     for sink in sinks.iter() {
@@ -989,7 +995,7 @@ pub(crate) fn candidates(
         let Some(&fi) = pre.pos.get(file) else { continue };
         let Some(sink_def_line) = enclosing_line(&pre.def_lines[fi], line) else { continue };
 
-        let (path, mut breakpoints, entry_info) = reverse_reach(&pre, fi, line, &entry_idx, &mut budget);
+        let (path, mut breakpoints, entry_info) = reverse_reach(&pre, fi, line, &entry_idx, &mut budget, scan_deadline);
         let sink_def_name = pre.defs[fi]
             .iter()
             .find(|(_, l)| *l == sink_def_line)
