@@ -447,7 +447,11 @@ pub(crate) fn compute_routes(
     let mut needs_triage_count = 0usize;
     let mut needs_triage_samples: Vec<Value> = Vec::new();
     for r in kept.iter() {
-        let cov = r.get("global_coverage").and_then(|v| v.as_str()).unwrap_or("");
+        let cov = r
+            .get("global_coverage")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .unwrap_or("unknown");
         if cov == "unknown" || cov == "coverage_unknown" || cov == "ambiguous_across_chains" {
             needs_triage_count += 1;
             if needs_triage_samples.len() < 20 {
