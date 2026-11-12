@@ -16,6 +16,9 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const MAX_HOPS: usize = 20;
 const MAX_NODES: usize = 3000;
@@ -89,7 +92,7 @@ pub(crate) fn definitions_multi(content: &str, lang: &str) -> Vec<(String, u32)>
     out
 }
 
-struct Graph {
+pub(crate) struct Graph {
     defs: BTreeMap<String, Arc<Vec<(String, u32)>>>,
     calls: BTreeMap<String, Arc<Vec<(String, u32, bool)>>>,
     ext_calls: BTreeMap<String, Vec<(String, u32, bool, bool, bool, Option<String>)>>,
@@ -99,10 +102,36 @@ struct Graph {
     imports: BTreeMap<String, std::collections::BTreeSet<String>>,
     imports_unresolved: std::collections::BTreeSet<String>,
     scope_pruning: bool,
-    di_narrowed: std::cell::Cell<usize>,
+    di_narrowed: AtomicUsize,
 }
 
 impl Graph {
+/// 进程内图缓存：同一项目 60s 内复用已构建的名字级调用图。
+///
+/// 单次 MCP 会话里 payload/can_reach/slice 会反复构图；大仓（数百 TS 文件）每次
+/// 重建是主要耗时，缓存后除首调外接近零成本。
+fn graph_cached(project: &Path, scope_pruning: bool) -> Arc<Graph> {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<(String, bool), (Instant, Arc<Graph>)>>> =
+        OnceLock::new();
+    let key = (
+        project.canonicalize().unwrap_or_else(|_| project.to_path_buf()).to_string_lossy().to_string(),
+        scope_pruning,
+    );
+    let cache = CACHE.get_or_init(|| Mutex::new(Default::default()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, g)) = guard.get(&key) {
+            if at.elapsed() < Duration::from_secs(60) {
+                return Arc::clone(g);
+            }
+        }
+    }
+    let graph = Arc::new(Graph::build_with(project, scope_pruning));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, (Instant::now(), Arc::clone(&graph)));
+    }
+    graph
+}
+
     fn build(project: &Path) -> Graph {
         Graph::build_with(project, true)
     }
@@ -119,7 +148,7 @@ impl Graph {
             imports: BTreeMap::new(),
             imports_unresolved: std::collections::BTreeSet::new(),
             scope_pruning,
-            di_narrowed: std::cell::Cell::new(0),
+            di_narrowed: AtomicUsize::new(0),
         };
         for (path, content) in files.iter() {
             let parsed = super::file_cache::parsed_file(path, content);
@@ -241,7 +270,7 @@ impl Graph {
             if *member {
                 if let Some(rcv) = receiver {
                     if let Some(target_file) = self.di.resolve_type_file(file, rcv, name) {
-                        self.di_narrowed.set(self.di_narrowed.get() + 1);
+                        self.di_narrowed.fetch_add(1, Ordering::Relaxed);
                         let mut pushed = false;
                         if let Some(cands) = self.name_index.get(name) {
                             for (cf, cl) in cands.iter().filter(|(f, _)| f == &target_file) {
@@ -446,7 +475,7 @@ pub fn can_reach_report_with(
     to_line: u32,
     scope_pruning: bool,
 ) -> Result<Value, String> {
-    let graph = Graph::build_with(project, scope_pruning);
+    let graph = Graph::graph_cached(project, scope_pruning);
     let di_bindings = graph.di.bindings_count();
     let from_loc = graph.enclosing_with_fallback(from_file, from_line);
     let Some((from_sym, from_def, from_fallback)) = from_loc else {
@@ -538,7 +567,7 @@ pub fn can_reach_report_with(
             "reasons": ["name_level_graph", "no_type_receiver_resolution"],
         },
         "di_bindings": di_bindings,
-        "di_narrowed_calls": graph.di_narrowed.get(),
+        "di_narrowed_calls": graph.di_narrowed.load(Ordering::Relaxed),
     });
     Ok(out)
 }
@@ -554,7 +583,7 @@ pub fn slice_between_report(
 ) -> Result<Value, String> {
     let reach = can_reach_report(project, from_file, from_line, to_file, to_line)?;
     let reachable = reach["reachable"].as_bool().unwrap_or(false);
-    let graph = Graph::build(project);
+    let graph = Graph::graph_cached(project, true);
     let radius = radius.clamp(2, 60);
     let mut slices: Vec<Value> = Vec::new();
     let mut total = 0usize;

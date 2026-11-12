@@ -147,9 +147,15 @@ fn load_snapshot(root: &Path) -> Result<Snapshot, String> {
                     .get("auth")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
+                // 只有“强鉴权证据”才压掉危险汇阻断：声明式配置/中间件/切面注解。
+                // covered_by_internal_auth 是名字级启发式（helper 链），不能当作闸门放行理由，
+                // 否则可能把未鉴权入口上的新增危险汇降级成 info（假安全）。
+                let strong_covered = entry_auth.starts_with("covered_by_global_config")
+                    || entry_auth.starts_with("covered_by_middleware")
+                    || entry_auth.starts_with("covered_by_annotation");
                 let gated = c.get("tier").and_then(|v| v.as_str()) == Some("shown")
                     && entry_auth != "not_applicable"
-                    && !entry_auth.starts_with("covered");
+                    && !strong_covered;
                 let steps = c.get("steps").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
                 if gated {
                     if steps <= 3 {

@@ -124,6 +124,7 @@ pub(crate) fn compute_routes(
     let aspect_annotations = aspect_backed_annotations(files);
     let route_cap = max_project_route_hits();
     let mut annotation_covered_count = 0usize;
+    let mut helper_index: Option<HelperAuthIndex> = None;
     let mut dynamic_registration_files = 0usize;
     let mut dynamic_registration_samples: Vec<Value> = Vec::new();
     // 跨文件 Express mount 前缀（`app.use('/api', posts)` → posts 文件整体加 /api）
@@ -269,7 +270,7 @@ pub(crate) fn compute_routes(
             }
         }
         // 路由内 helper 鉴权：handler 直接调用或一跳内调用的函数含鉴权/session 校验
-        let mut def_index: Option<BTreeMap<String, Vec<(String, u32)>>> = None;
+
         for (k, i) in idxs.iter().enumerate() {
             if group[k].get("annotation_covered").and_then(|v| v.as_bool()) == Some(true) {
                 continue;
@@ -282,21 +283,24 @@ pub(crate) fn compute_routes(
                 continue;
             }
             let line = routes[*i].get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            if def_index.is_none() {
-                let mut idx: BTreeMap<String, Vec<(String, u32)>> = BTreeMap::new();
-                for (p, c) in files.iter() {
-                    let lang = chain::chain_language_of(p);
-                    if lang.is_empty() {
-                        continue;
-                    }
-                    for (n, l) in chain::definitions(c, lang) {
-                        idx.entry(n).or_default().push((p.clone(), l));
-                    }
-                }
-                def_index = Some(idx);
+            if helper_index.is_none() {
+                helper_index = Some(build_helper_auth_index(files));
             }
-            let idx_ref = def_index.as_ref().unwrap();
-            if let Some(via) = internal_auth_via(files, idx_ref, file, line) {
+            let hidx = helper_index.as_ref().unwrap();
+            let Some(content) = files.iter().find(|(p, _)| p == file).map(|(_, c)| c.as_str()) else {
+                continue;
+            };
+            if handler_self_auth(content, line) {
+                if let Some(obj) = group[k].as_object_mut() {
+                    obj.insert("global_coverage".to_string(), json!("covered_by_internal_auth"));
+                    obj.insert("internal_auth_via".to_string(), json!("handler_self_auth"));
+                }
+                continue;
+            }
+            let seeds: Vec<String> = body_of(content, line)
+                .map(|b| chain::calls(&b).into_iter().map(|(n, _, _, _, _)| n).collect())
+                .unwrap_or_default();
+            if let Some(via) = helper_auth_via(hidx, &seeds) {
                 if let Some(obj) = group[k].as_object_mut() {
                     obj.insert("global_coverage".to_string(), json!("covered_by_internal_auth"));
                     obj.insert("internal_auth_via".to_string(), json!(via));
@@ -789,97 +793,106 @@ pub(crate) fn custom_auth_annotation_near(
     None
 }
 
-const INTERNAL_AUTH_TOKENS: [&str; 17] = [
+/// 预构建的 helper 鉴权索引：一次扫描项目，得到
+///  - `auth_like`：函数体含 session/鉴权/签名校验 token 的函数名集合；
+///  - `edges`：函数名 → 其函数体内调用的函数名。
+///
+/// 逐路由只在小型名字图上做 ≤3 跳 BFS，不再对每条未覆盖路由重复扫源码窗口
+/// （大仓 TS/Java 项目上这是秒级热点）。
+#[derive(Default)]
+pub(crate) struct HelperAuthIndex {
+    pub(crate) auth_like: std::collections::BTreeSet<String>,
+    pub(crate) edges: BTreeMap<String, Vec<String>>,
+}
+
+// 只保留"强认证/session/签名校验"证据；jwt/auth(/redirect(/cookies( 这类宽泛子串
+// 在框架/示例代码里大量出现，会造成"假安全"（把公开路由标成已鉴权）。
+const INTERNAL_AUTH_TOKENS: [&str; 12] = [
     "isAuthenticated", "getCurrentUser", "getUser(", "getTeamForUser", "getSession",
-    "requireAuth", "redirect(", "cookies(", "getToken", "current_user", "login_required",
-    "jwt", "verifyToken", "constructEvent", "currentUser", "getServerSession", "auth(",
+    "requireAuth", "getToken", "current_user", "login_required", "jwt_required",
+    "verifyToken", "constructEvent",
 ];
 
-/// 路由内 helper 鉴权：handler 调用（一跳）的函数体内含鉴权/session/签名校验。
-pub(crate) fn internal_auth_via(
-    files: &[(String, String)],
-    def_index: &BTreeMap<String, Vec<(String, u32)>>,
-    file: &str,
-    line: usize,
-) -> Option<String> {
-    let content = files
-        .iter()
-        .find(|(p, _)| p == file)
-        .map(|(_, c)| c.as_str())?;
+const HANDLER_SELF_TOKENS: [&str; 8] = [
+    "constructEvent", "verifyToken", "isAuthenticated", "requireAuth",
+    "getSession", "current_user", "login_required", "getServerSession",
+];
+
+fn body_of(content: &str, line: usize) -> Option<String> {
     let (start, end) = handler_window(content, line);
     let lines: Vec<&str> = content.lines().collect();
-    let window = lines
-        .get(start.saturating_sub(1)..=end.saturating_sub(1).min(lines.len().saturating_sub(1)))
-        .unwrap_or(&[])
+    let body = lines
+        .get(start.saturating_sub(1)..=end.saturating_sub(1).min(lines.len().saturating_sub(1)))?
         .join("\n");
-    // handler 自身含强认证/签名校验（如 Stripe webhook constructEvent）
-    const SELF_TOKENS: [&str; 8] = [
-        "constructEvent", "verifyToken", "isAuthenticated", "requireAuth",
-        "getSession", "current_user", "login_required", "getServerSession",
-    ];
-    if SELF_TOKENS.iter().any(|t| window.contains(t)) {
-        return Some("handler_self_auth".to_string());
-    }
-    // 多跳（≤3 跳）：handler → helper → helper → 鉴权/session
-    #[derive(Clone)]
-    struct Step {
-        file: String,
-        name: String,
-        path: Vec<String>,
-    }
-    let mut queue: Vec<Step> = Vec::new();
-    let mut visited: std::collections::BTreeSet<(String, String)> = Default::default();
-    let mut seed: Vec<String> = chain::calls(&window).into_iter().map(|(n, _, _, _, _)| n).collect();
-    seed.sort();
-    seed.dedup();
-    for name in seed {
-        queue.push(Step { file: file.to_string(), name: name.clone(), path: vec![name] });
-    }
-    const MAX_HOPS: usize = 3;
+    Some(body)
+}
 
-    while let Some(step) = queue.pop() {
-        if visited.len() > 400 {
+pub(crate) fn build_helper_auth_index(files: &[(String, String)]) -> HelperAuthIndex {
+    let mut idx = HelperAuthIndex::default();
+    for (path, content) in files.iter() {
+        let lang = chain::chain_language_of(path);
+        if lang.is_empty() {
+            continue;
+        }
+        for (name, line) in chain::definitions(content, lang) {
+            let Some(body) = body_of(content, line as usize) else { continue };
+            if INTERNAL_AUTH_TOKENS.iter().any(|t| body.contains(t)) {
+                idx.auth_like.insert(name.clone());
+            }
+            let mut callees: Vec<String> = chain::calls(&body).into_iter().map(|(n, _, _, _, _)| n).collect();
+            callees.sort();
+            callees.dedup();
+            if !callees.is_empty() {
+                let e = idx.edges.entry(name).or_default();
+                e.extend(callees);
+                e.sort();
+                e.dedup();
+            }
+        }
+    }
+    idx
+}
+
+/// 小型名字图上的 ≤3 跳 helper 鉴权 BFS；返回调用链字符串。
+pub(crate) fn helper_auth_via(index: &HelperAuthIndex, seeds: &[String]) -> Option<String> {
+    let mut queue: std::collections::VecDeque<(String, Vec<String>)> = Default::default();
+    let mut visited: std::collections::BTreeSet<String> = Default::default();
+    for n in seeds.iter().take(24) {
+        if !n.is_empty() {
+            queue.push_back((n.clone(), vec![n.clone()]));
+        }
+    }
+    while let Some((name, path)) = queue.pop_front() {
+        if visited.len() > 300 {
             break;
         }
-        if !visited.insert((step.file.clone(), step.name.clone())) {
+        if !visited.insert(name.clone()) {
             continue;
         }
-        if step.path.len() > MAX_HOPS {
+        if index.auth_like.contains(&name) {
+            return Some(path.join(">"));
+        }
+        if path.len() >= 3 {
             continue;
         }
-        let sites: Vec<(String, u32)> = def_index
-            .get(&step.name)
-            .map(|v| v.iter().take(3).cloned().collect())
-            .unwrap_or_default();
-        for (target, hit_line) in sites {
-            let target = target;
-            let Some((_, target_content)) = files.iter().find(|(p, _)| p == &target) else { continue };
-            let (s2, e2) = handler_window(target_content, hit_line as usize);
-            let target_lines: Vec<&str> = target_content.lines().collect();
-            let body = target_lines
-                .get(s2.saturating_sub(1)..=e2.saturating_sub(1).min(target_lines.len().saturating_sub(1)))
-                .unwrap_or(&[])
-                .join("\n");
-            if INTERNAL_AUTH_TOKENS.iter().any(|t| body.contains(t)) {
-                return Some(step.path.join(">"));
-            }
-            if step.path.len() < MAX_HOPS {
-                let mut next: Vec<String> =
-                    chain::calls(&body).into_iter().map(|(n, _, _, _, _)| n).collect();
-                next.sort();
-                next.dedup();
-                for n in next {
-                    if visited.contains(&(target.clone(), n.clone())) {
-                        continue;
-                    }
-                    let mut p = step.path.clone();
-                    p.push(n.clone());
-                    queue.push(Step { file: target.clone(), name: n, path: p });
+        if let Some(next) = index.edges.get(&name) {
+            for n in next.iter().take(24) {
+                if visited.contains(n) {
+                    continue;
                 }
+                let mut p = path.clone();
+                p.push(n.clone());
+                queue.push_back((n.clone(), p));
             }
         }
     }
     None
+}
+
+fn handler_self_auth(content: &str, line: usize) -> bool {
+    body_of(content, line)
+        .map(|b| HANDLER_SELF_TOKENS.iter().any(|t| b.contains(t)))
+        .unwrap_or(false)
 }
 
 fn auth_annotations_near(content: &str, line: usize) -> Vec<Value> {
