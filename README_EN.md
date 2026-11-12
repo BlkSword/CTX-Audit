@@ -1,3 +1,5 @@
+> **⚠️ Development status**: This project is in an **experimental R&D stage**. Code and features may undergo **large-scale refactoring or changes**, and releases may not keep pace with the latest changes. Use it **with caution in production**: validate in test or staging first, and pin the version you depend on.
+
 # CTX-Audit
 
 <div align="center">
