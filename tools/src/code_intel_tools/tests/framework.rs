@@ -76,13 +76,12 @@ use super::super::*;
             std::fs::write(&p, content).unwrap();
             files.push((format!("src/{name}"), content.to_string()));
         }
-        let mut def_index: std::collections::BTreeMap<String, Vec<(String, u32)>> = Default::default();
-        for (p, c) in files.iter() {
-            for (n, l) in super::super::chain::definitions(c, super::super::chain::chain_language_of(p)) {
-                def_index.entry(n).or_default().push((p.clone(), l));
-            }
-        }
-        let via = super::super::routes::internal_auth_via(&files, &def_index, "src/A.java", 4);
+        let idx = super::super::routes::build_helper_auth_index(&files);
+        let seeds: Vec<String> = super::super::chain::calls(&files[0].1)
+            .into_iter()
+            .map(|(n, _, _, _, _)| n)
+            .collect();
+        let via = super::super::routes::helper_auth_via(&idx, &seeds);
         let via = via.expect("multi-hop helper auth not detected");
         assert!(via.contains("load"), "{via}");
         assert!(!via.is_empty());
