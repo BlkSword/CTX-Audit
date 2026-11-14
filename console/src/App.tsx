@@ -147,14 +147,32 @@ export default function App() {
         { className: 'topbar' },
         h(
           'div',
-          { className: 'crumbs' },
-          h('span', null, '工作区'),
+          { className: 'crumbs', title: active?.path ?? '' },
+          h('span', null, active?.name ?? '未选择工作区'),
           h('span', { className: 'sep' }, '/'),
-          h('span', { className: 'here' }, active?.name ?? '未选择'),
-          h('span', { className: 'sep' }, '/'),
-          h('span', null, PAGES.find((p) => p.id === page)?.label ?? ''),
+          h('span', { className: 'here' }, PAGES.find((p) => p.id === page)?.label ?? ''),
         ),
         h('div', { className: 'topbar-spacer' }),
+        overview
+          ? h(
+              'div',
+              { className: 'kpis' },
+              h('div', { className: 'kpi' }, h('span', { className: 'k' }, 'ENDPOINTS'), h('span', { className: 'v' }, String(overview.coverage.methodRoutes))),
+              h(
+                'div',
+                { className: `kpi ${overview.coverage.uncovered > 0 ? 'danger' : 'ok'}` },
+                h('span', { className: 'k' }, 'UNCOVERED'),
+                h('span', { className: 'v' }, String(overview.coverage.uncovered)),
+              ),
+              h('div', { className: 'kpi' }, h('span', { className: 'k' }, 'TRIAGE'), h('span', { className: 'v' }, String(overview.worklist.total))),
+              h(
+                'div',
+                { className: `kpi ${(overview.chains.tiers['payload_may_survive'] ?? 0) > 0 ? 'warn' : ''}` },
+                h('span', { className: 'k' }, 'CHAINS'),
+                h('span', { className: 'v' }, String(overview.chains.total)),
+              ),
+            )
+          : null,
         active
           ? h(
               'button',
@@ -193,7 +211,24 @@ export default function App() {
                         ? h(AssistantPage, { overview: overview, workspace: active })
                         : h(ReportPage, { overview }),
       ),
+      h(
+        'footer',
+        { className: 'statusbar' },
+        h('span', { className: 'tag' }, health?.ok ? 'ENGINE READY' : 'ENGINE OFFLINE'),
+        h('span', null, health?.version || '—'),
+        h('span', null, `${workspaces.length} workspaces`),
+        active ? h('span', { title: active.path }, `cwd ${active.path}`) : h('span', null, 'no workspace'),
+        h('span', { className: 'sp' }),
+        overview
+          ? h(
+              'span',
+              null,
+              `audit ${fmtMs(overview.timings.auditMs)} · chains ${fmtMs(overview.timings.chainsMs)} · ${new Date(overview.generatedAt).toLocaleTimeString()}`,
+            )
+          : null,
+      ),
     ),
+
     adding
       ? h(
           'div',
@@ -1024,7 +1059,7 @@ function ActionsPage(props: { workspace: Workspace }) {
             result.error ? h('div', { className: 'error-text' }, result.error) : null,
             h(
               'pre',
-              { className: 'mono', style: { whiteSpace: 'pre-wrap', margin: 0, maxHeight: '46vh', overflow: 'auto', fontSize: 11.5, color: 'var(--text-dim)' } },
+              { className: 'logpane mono', style: { margin: 0, maxHeight: '46vh', whiteSpace: 'pre-wrap' } },
               result.data !== undefined ? JSON.stringify(result.data, null, 2) : (result.stdout ?? result.stderr ?? ''),
             ),
           ),
@@ -1123,7 +1158,7 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
     { className: 'stack' },
     h(Card, {
       title: '审计助手',
-      sub: '把当前工作区的审计简报投喂给绑定该工作区的 DSH Agent 会话',
+      sub: '工作区会话 · 简报投递与回复回读',
       children: h(
         'div',
         { className: 'stack' },
@@ -1166,23 +1201,17 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
           ? h(
               'div',
               null,
-              h('div', { className: 'section-title' }, 'Agent 最近回复'),
-              ...replies.map((reply, i) =>
-                h(
-                  'div',
-                  {
-                    key: i,
-                    style: {
-                      margin: '6px 0',
-                      padding: '8px 10px',
-                      border: '1px solid #1e2735',
-                      borderRadius: 8,
-                      background: '#0d131c',
-                      whiteSpace: 'pre-wrap',
-                      fontSize: 12,
-                    },
-                  },
-                  reply.text,
+              h('div', { className: 'section-title' }, `Agent 回复 · ${replies.length}`),
+              h(
+                'div',
+                { className: 'logpane' },
+                ...replies.map((reply, i) =>
+                  h(
+                    'div',
+                    { key: i },
+                    h('div', { className: 'log-meta' }, reply.at ? new Date(reply.at).toLocaleTimeString() : `#${i + 1}`),
+                    h('div', { className: 'log-entry agent' }, reply.text),
+                  ),
                 ),
               ),
             )
@@ -1271,7 +1300,7 @@ function ReportPage(props: { overview: Overview | null }) {
           '复制 Agent 简报',
         ),
       ),
-      children: h('pre', { className: 'mono', style: { whiteSpace: 'pre-wrap', margin: 0, fontSize: 11.5, color: 'var(--text-dim)' } }, md),
+      children: h('pre', { className: 'logpane mono', style: { margin: 0, whiteSpace: 'pre-wrap', maxHeight: '62vh' } }, md),
     }),
   )
 }
