@@ -1,9 +1,11 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// The console is served by `server/index.mjs` in production; during development
-// Vite proxies the API to that server so the SPA and the API share an origin.
+// The console is served by `server/index.mjs` standalone (root) and by the DSH
+// host plugin under `/console`. A relative base keeps asset URLs working under
+// both mounts; the API base is derived at runtime in src/api.ts.
 export default defineConfig({
+  base: './',
   plugins: [react()],
   server: {
     port: 4318,
