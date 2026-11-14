@@ -1,0 +1,25 @@
+{
+  "name": "ctx-audit-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CTX-Audit Console — workspace-centric audit console (overview, audit stream, coverage, chains, gate, reports).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "serve": "node server/index.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
