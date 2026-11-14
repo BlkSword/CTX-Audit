@@ -4942,7 +4942,7 @@ mod tests {
         }
     }
 
-    /// 默认工具面名单无重复，且为 11 + 3。
+    /// 默认工具面名单无重复，且为 21 个高阶工具 + 3 个基础工具。
     #[test]
     fn test_default_surface_shape() {
         let mut names: Vec<&str> = ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.to_vec();
@@ -4951,7 +4951,12 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "默认工具面名单存在重复项");
-        assert_eq!(before, 15, "默认工具面应为 12 协议工具 + 3 基础");
+        assert_eq!(
+            before,
+            ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.len() + 3,
+            "默认工具面应为高阶工具 + 3 个基础工具"
+        );
+        assert_eq!(ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.len(), 21, "高阶工具面应为 21");
     }
 
     /// legacy gate：默认 state 的 registry 只含默认面工具；legacy 打开后严格更多。
