@@ -5,7 +5,7 @@ import { Icon } from './icons'
 import { ChainFlow, Donut, StackedBar } from './charts'
 import { Badge, Bar, Card, Empty, Loading, Metric, SkeletonRows, Table, fmtMs, shortPath, tierTone, verdictTone } from './ui'
 
-type Page = 'overview' | 'stream' | 'coverage' | 'chains' | 'payload' | 'actions' | 'gate' | 'report'
+type Page = 'overview' | 'stream' | 'coverage' | 'chains' | 'payload' | 'actions' | 'gate' | 'report' | 'assistant'
 
 const PAGES: Array<{ id: Page; label: string; icon: string }> = [
   { id: 'overview', label: '总览', icon: 'overview' },
@@ -16,6 +16,7 @@ const PAGES: Array<{ id: Page; label: string; icon: string }> = [
   { id: 'actions', label: '能力动作', icon: 'stream' },
   { id: 'gate', label: '漂移闸门', icon: 'gate' },
   { id: 'report', label: '报告', icon: 'report' },
+  { id: 'assistant', label: '审计助手', icon: 'stream' },
 ]
 
 export default function App() {
@@ -188,7 +189,9 @@ export default function App() {
                         ? h(ActionsPage, { workspace: active })
                       : page === 'gate'
                       ? h(GatePage, { workspace: active })
-                      : h(ReportPage, { overview }),
+                      : page === 'assistant'
+                        ? h(AssistantPage, { overview: overview, workspace: active })
+                        : h(ReportPage, { overview }),
       ),
     ),
     adding
@@ -1026,6 +1029,103 @@ function ActionsPage(props: { workspace: Workspace }) {
           ),
         })
       : null,
+  )
+}
+
+/* ── Assistant ────────────────────────────────────────────────────────── */
+
+function AssistantPage(props: { overview: Overview | null; workspace: Workspace }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; sessionId?: string; created?: boolean; accepted?: boolean; error?: string } | null>(null)
+  const [existing, setExisting] = useState<string | null>(null)
+  const [available, setAvailable] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (!props.overview) return
+    setText((current) => current || agentBrief(props.overview as Overview))
+    void api
+      .agentStatus(props.workspace.path)
+      .then((r) => {
+        setAvailable(r.available ?? true)
+        setExisting(r.sessionId ?? null)
+      })
+      .catch(() => {
+        setAvailable(false)
+        setExisting(null)
+      })
+  }, [props.overview, props.workspace.path])
+
+  const send = async () => {
+    setBusy(true)
+    setResult(null)
+    try {
+      const res = await api.agentPrompt(props.workspace.path, text)
+      setResult(res)
+      if (res.ok) {
+        setExisting(res.sessionId ?? null)
+        if ((res as { fallback?: boolean }).fallback) {
+          // The gateway blocks host-side prompt admission; hand the brief over
+          // through the clipboard so the user only has to paste and send.
+          void navigator.clipboard?.writeText(text)
+        }
+      }
+    } catch (e) {
+      setResult({ ok: false, error: (e as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const backToChat = () => {
+    try {
+      window.parent?.postMessage({ type: 'ctx-audit:open-conversation' }, '*')
+    } catch {
+      /* not embedded */
+    }
+  }
+
+  return h(
+    'div',
+    { className: 'stack' },
+    h(Card, {
+      title: '审计助手',
+      sub: '把当前工作区的审计简报投喂给绑定该工作区的 DSH Agent 会话',
+      children: h(
+        'div',
+        { className: 'stack' },
+        available === false
+          ? h('div', { className: 'error-text' }, '当前运行环境没有 DSH 会话服务：独立 Console 只提供只读分析；在 DSH 内嵌页面（/console）中使用审计助手。')
+          : null,
+        existing
+          ? h('div', { className: 'row' }, h(Badge, { tone: 'ok' }, '会话已绑定'), h('span', { className: 'mono faint' }, existing), h('button', { className: 'btn sm ghost', onClick: backToChat }, '切回对话'))
+          : null,
+        h('textarea', {
+          className: 'input',
+          value: text,
+          onChange: (e: { target: { value: string } }) => setText(e.target.value),
+          rows: 16,
+          style: { fontFamily: 'ui-monospace, monospace', fontSize: 11.5, lineHeight: 1.5, resize: 'vertical' },
+        }),
+        h(
+          'div',
+          { className: 'row' },
+          h('button', { className: 'btn primary', onClick: () => void send(), disabled: busy || !text.trim() }, busy ? h('span', { className: 'spinner' }) : h(Icon, { name: 'stream' }), '发送给 Agent'),
+          h('button', { className: 'btn ghost', onClick: () => setText(agentBrief(props.overview as Overview)) }, '重置为最新简报'),
+          result?.ok ? h(Badge, { tone: 'ok' }, result.created ? '已创建会话并发送' : '已发送到既有会话') : null,
+          result?.error ? h('span', { className: 'error-text' }, result.error) : null,
+        ),
+        result?.ok
+          ? h(
+              'div',
+              { className: 'dim', style: { fontSize: 11.5 } },
+              (result as { fallback?: boolean }).fallback
+                ? `工作区会话 ${result.sessionId ?? existing ?? ''} 已创建；自动发送受 DSH 网关限制，简报已复制到剪贴板——点“切回对话”后在输入框粘贴并发送即可。`
+                : `会话 ${result.sessionId ?? existing ?? ''} 已接收简报；点“切回对话”即可在 DSH 中查看 Agent 的推理，结论可直接回到“报告”页。`,
+            )
+          : null,
+      ),
+    }),
   )
 }
 

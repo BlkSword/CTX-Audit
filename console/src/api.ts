@@ -194,6 +194,18 @@ export const api = {
       body: JSON.stringify({ args }),
     }).then((r) => json<ActionResult>(r)),
 
+  agentStatus: (cwd: string) =>
+    fetch(`${API_BASE}/agent?cwd=${encodeURIComponent(cwd)}`).then((r) =>
+      json<{ ok: boolean; sessionId: string | null; available?: boolean; error?: string }>(r),
+    ),
+
+  agentPrompt: (cwd: string, text: string) =>
+    fetch(`${API_BASE}/agent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd, text }),
+    }).then((r) => json<{ ok: boolean; sessionId?: string; created?: boolean; accepted?: boolean; error?: string }>(r)),
+
   /** Subscribe to the audit stream; returns an unsubscribe function. */
   stream(id: string, onEvent: (event: string, data: unknown) => void): () => void {
     const es = new EventSource(`${API_BASE}/workspaces/${id}/stream`)
