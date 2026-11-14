@@ -76,3 +76,10 @@ harness-private/
 /private-overlay/
 /audit-logs/
 secrets.env
+
+# audit console / CLI generated artifacts
+console/.state/
+console/dist/
+console/node_modules/
+report/
+
