@@ -948,6 +948,7 @@ function ActionsPage(props: { workspace: Workspace }) {
     try {
       const res = await api.runAction(props.workspace.id, active.id, values)
       setResult(res)
+      if (res.ok) recordAction(active.id, res.data ?? res.stdout ?? '')
     } catch (e) {
       setResult({ ok: false, error: (e as Error).message })
     } finally {
@@ -1034,12 +1035,24 @@ function ActionsPage(props: { workspace: Workspace }) {
 
 /* ── Assistant ────────────────────────────────────────────────────────── */
 
+/** Last few executed capabilities, appended to the assistant brief on demand. */
+const recentActions: Array<{ at: string; action: string; summary: string }> = []
+
+function recordAction(action: string, data: unknown): void {
+  const summary = JSON.stringify(data).slice(0, 2000)
+  recentActions.unshift({ at: new Date().toLocaleTimeString(), action, summary })
+  if (recentActions.length > 3) recentActions.pop()
+}
+
+
+
 function AssistantPage(props: { overview: Overview | null; workspace: Workspace }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; sessionId?: string; created?: boolean; accepted?: boolean; error?: string } | null>(null)
   const [existing, setExisting] = useState<string | null>(null)
   const [available, setAvailable] = useState<boolean | null>(null)
+  const [replies, setReplies] = useState<Array<{ at?: number; text: string }>>([])
 
   useEffect(() => {
     if (!props.overview) return
@@ -1055,6 +1068,26 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
         setExisting(null)
       })
   }, [props.overview, props.workspace.path])
+
+  // Poll the bound session for assistant text while the page is open.
+  useEffect(() => {
+    if (!existing) return
+    let cancelled = false
+    const tick = () => {
+      void api
+        .agentStatus(props.workspace.path, true)
+        .then((r) => {
+          if (!cancelled && r.replies) setReplies(r.replies)
+        })
+        .catch(() => {})
+    }
+    tick()
+    const timer = setInterval(tick, 6000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [existing, props.workspace.path])
 
   const send = async () => {
     setBusy(true)
@@ -1112,9 +1145,48 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
           { className: 'row' },
           h('button', { className: 'btn primary', onClick: () => void send(), disabled: busy || !text.trim() }, busy ? h('span', { className: 'spinner' }) : h(Icon, { name: 'stream' }), '发送给 Agent'),
           h('button', { className: 'btn ghost', onClick: () => setText(agentBrief(props.overview as Overview)) }, '重置为最新简报'),
+          h(
+            'button',
+            {
+              className: 'btn ghost',
+              disabled: recentActions.length === 0,
+              title: '把最近一次能力动作的结果追加到简报末尾',
+              onClick: () =>
+                setText(
+                  (current) =>
+                    `${current}\n\n## 最近动作结果（${recentActions[0].action} @ ${recentActions[0].at}）\n\n\`\`\`json\n${recentActions[0].summary}\n\`\`\`\n`,
+                ),
+            },
+            '追加最近动作结果',
+          ),
           result?.ok ? h(Badge, { tone: 'ok' }, result.created ? '已创建会话并发送' : '已发送到既有会话') : null,
           result?.error ? h('span', { className: 'error-text' }, result.error) : null,
         ),
+        replies.length > 0
+          ? h(
+              'div',
+              null,
+              h('div', { className: 'section-title' }, 'Agent 最近回复'),
+              ...replies.map((reply, i) =>
+                h(
+                  'div',
+                  {
+                    key: i,
+                    style: {
+                      margin: '6px 0',
+                      padding: '8px 10px',
+                      border: '1px solid #1e2735',
+                      borderRadius: 8,
+                      background: '#0d131c',
+                      whiteSpace: 'pre-wrap',
+                      fontSize: 12,
+                    },
+                  },
+                  reply.text,
+                ),
+              ),
+            )
+          : null,
         result?.ok
           ? h(
               'div',

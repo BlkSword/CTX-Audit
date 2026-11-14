@@ -194,9 +194,15 @@ export const api = {
       body: JSON.stringify({ args }),
     }).then((r) => json<ActionResult>(r)),
 
-  agentStatus: (cwd: string) =>
-    fetch(`${API_BASE}/agent?cwd=${encodeURIComponent(cwd)}`).then((r) =>
-      json<{ ok: boolean; sessionId: string | null; available?: boolean; error?: string }>(r),
+  agentStatus: (cwd: string, replies = false) =>
+    fetch(`${API_BASE}/agent?cwd=${encodeURIComponent(cwd)}${replies ? '&replies=1' : ''}`).then((r) =>
+      json<{
+        ok: boolean
+        sessionId: string | null
+        available?: boolean
+        replies?: Array<{ at?: number; text: string }>
+        error?: string
+      }>(r),
     ),
 
   agentPrompt: (cwd: string, text: string) =>
