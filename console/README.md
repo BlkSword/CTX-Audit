@@ -48,7 +48,8 @@ npm run dev          # http://127.0.0.1:4318
 | 覆盖与待审 | `audit` worklist | 风险分排序的待审端点、判定徽章、信号标签 |
 | 候选链 | `chain --list` + `chain --id` | 链列表 + 点击查看链档（路径步骤/守卫/断点） |
 | 漂移闸门 | `gate --git` | base/head/严格模式，判决与 verdict 列表 |
-| 能力动作 | `actions.mjs` 注册表 | 10 个 CLI 动作（审计/链/链档/单路由/基线/信号链/diff/闸门/扫描/报告），参数服务端校验 |
+| 载荷档位 | `payload viability` | 选链 → 读链档坐标 → 选 archetype → 判定档位（payload_killed / guard_ineffective_token / taint_lost / payload_may_survive / unreachable） |
+| 能力动作 | `actions.mjs` 注册表 | **14 个 CLI 动作**（审计/链/链档/单路由/载荷/基线/可达性探针/路径切片/单文件分析/信号链/diff/闸门/扫描/报告），参数服务端校验 |
 | 报告 | 总览数据 | Markdown 预览 + 下载 `.md` + 复制 + **复制 Agent 简报**（含工作区路径与下一步动作） |
 
 ## API
