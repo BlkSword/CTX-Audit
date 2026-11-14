@@ -99,6 +99,19 @@ CTX-Audit 是**事实引擎**，不是漏洞扫描器：
 - `harness_skeleton`：为 handler 生成路由/参数/守卫/curl（`MARKER` 占位）/MockMvc/人工验证计划
 - `verify_payload`（**默认关闭，需显式开启**）：仅在 `CTX_AUDIT_VERIFY_DIR` 白名单目录内的 Python fixture 上执行，支持 **sql / ssrf / path / command / template / deserialize** 六类，注入 fake DB cursor / requests / open / os.system / jinja2 / pickle，返回 `payload_verified` / `verified_killed`；不做网络/文件系统沙箱，仅适用于本地 fixture
 
+### 8. 审计控制台（工作区中心化）
+
+`console/` 是面向审计员的 Web 控制台：每个审计项目 = 一个 workspace，包含总览、审计流、覆盖与待审、候选链（含链档路径图）、载荷档位、能力动作、漂移闸门、报告、审计助手九个视图。所有数字来自 CLI，控制台只做编排与展示。
+
+- **14 个受校验动作**：`audit` / `chains` / `chain-dossier` / `explain-route` / `payload` / `baseline` / `probe-reach` / `probe-slice` / `analyze` / `signal-chain` / `diff-routes` / `gate` / `scan` / `report`；参数在服务端按形状校验，异常值直接 400；
+- **两种运行方式**：独立 `http://127.0.0.1:4317`，或由 DSH 插件挂到 Web 面的 `/console`（独立 `ctx-audit` profile）；
+- **工作区 Agent 闭环**：控制台把审计简报发给绑定该工作区的 DSH 会话，并回读 Agent 回复；
+- 安全边界：仅回环监听、无 shell（argv spawn）、请求体/输出/耗时都有上限、只读分析。
+
+```bash
+cd console && ./scripts/start-console.ps1     # 构建 + 类型检查 + 测试 + 启动
+```
+
 ---
 
 ## 快速开始
@@ -134,7 +147,11 @@ ctx-audit probe reach ./myproject \
   --from-file src/Controller.java --from-line 37 \
   --to-file   src/Service.java    --to-line   243 -o json
 
-# 6) MCP server（stdio）
+# 6) 载荷存活判定（入口 → 汇）
+ctx-audit payload viability . --entry-file src/App.java --entry-line 12 \
+  --sink-file src/App.java --sink-line 30 --archetype command -o json
+
+# 7) MCP server（stdio）
 ctx-audit mcp
 ```
 
