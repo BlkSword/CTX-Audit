@@ -4,6 +4,19 @@
 
 ## 快速开始
 
+```powershell
+# 一键：装依赖（如需要）→ 构建 → 类型检查 → 测试 → 启动
+.\scripts\start-console.ps1
+
+# 只做检查，不启动
+.\scripts\start-console.ps1 -Check
+
+# 指定端口 / 强制重建
+.\scripts\start-console.ps1 -Port 4319 -Build
+```
+
+或手动：
+
 ```bash
 cd console
 npm install          # 首次
@@ -35,7 +48,8 @@ npm run dev          # http://127.0.0.1:4318
 | 覆盖与待审 | `audit` worklist | 风险分排序的待审端点、判定徽章、信号标签 |
 | 候选链 | `chain --list` + `chain --id` | 链列表 + 点击查看链档（路径步骤/守卫/断点） |
 | 漂移闸门 | `gate --git` | base/head/严格模式，判决与 verdict 列表 |
-| 报告 | 总览数据 | Markdown 报告预览，可一键复制 |
+| 能力动作 | `actions.mjs` 注册表 | 10 个 CLI 动作（审计/链/链档/单路由/基线/信号链/diff/闸门/扫描/报告），参数服务端校验 |
+| 报告 | 总览数据 | Markdown 预览 + 下载 `.md` + 复制 + **复制 Agent 简报**（含工作区路径与下一步动作） |
 
 ## API
 
@@ -62,3 +76,15 @@ GET    /api/workspaces/:id/stream      (SSE)
 ## 设计
 
 深色高密度界面，单一强调色（`#4f8cff`），语义色区分覆盖/风险/链档；所有指标使用等宽数字；表格粘性表头、空态与加载骨架齐备。设计令牌集中在 `src/styles.css` 的 `:root`。
+
+图表为**零依赖 SVG**（`src/charts.ts`）：链档分布环形图、覆盖分布堆叠条、链路径流程图（entry → steps → sink），渲染确定、无第三方图表库。
+
+## 测试
+
+```bash
+node --test tests/*.test.mjs     # 动作注册表与参数校验（6 项）
+```
+
+## 与 DSH 的关系
+
+同一份 API 与 SPA 既可作为独立服务运行，也可由 `dsh-ctx-audit-console` 插件挂到 DSH Web 的 `/console` 与 `/api/console`（见该插件 README）。SPA 会按自身 pathname 自动选择 API 前缀。

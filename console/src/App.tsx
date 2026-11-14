@@ -2,6 +2,7 @@ import { createElement as h, useCallback, useEffect, useMemo, useState } from 'r
 import { api } from './api'
 import type { ActionSpec, ChainDossier, Overview, Workspace } from './api'
 import { Icon } from './icons'
+import { ChainFlow, Donut, StackedBar } from './charts'
 import { Badge, Bar, Card, Empty, Loading, Metric, SkeletonRows, Table, fmtMs, shortPath, tierTone, verdictTone } from './ui'
 
 type Page = 'overview' | 'stream' | 'coverage' | 'chains' | 'actions' | 'gate' | 'report'
@@ -284,7 +285,11 @@ function OverviewPage(props: { overview: Overview | null; loading: boolean; onGo
         children: h(
           'div',
           { className: 'stack' },
-          h(Bar, { value: covered, max: total, tone: cov.uncovered > 0 ? 'warn' : 'ok' }),
+          h(StackedBar, {
+            segments: Object.entries(cov.byVerdict)
+              .sort((a, b) => b[1] - a[1])
+              .map(([k, v]) => ({ label: k, value: v, color: verdictColor(k) })),
+          }),
           h(
             'div',
             { className: 'legend' },
@@ -312,25 +317,13 @@ function OverviewPage(props: { overview: Overview | null; loading: boolean; onGo
         title: '链档分布',
         sub: '按载荷存活档位统计',
         actions: h('button', { className: 'btn sm ghost', onClick: () => props.onGoto('chains') }, '查看链'),
-        children: h(
-          'div',
-          { className: 'stack' },
-          ...Object.entries(o.chains.tiers)
+        children: h(Donut, {
+          centerValue: String(o.chains.total),
+          centerLabel: 'CHAINS',
+          segments: Object.entries(o.chains.tiers)
             .sort((a, b) => b[1] - a[1])
-            .map(([tier, n]) =>
-              h(
-                'div',
-                { key: tier },
-                h(
-                  'div',
-                  { className: 'row between', style: { marginBottom: 4 } },
-                  h(Badge, { tone: tierTone(tier) }, tier),
-                  h('span', { className: 'num dim' }, n),
-                ),
-                h(Bar, { value: n, max: Math.max(1, o.chains.total), tone: tier === 'payload_may_survive' ? 'danger' : undefined }),
-              ),
-            ),
-        ),
+            .map(([tier, n]) => ({ label: tier, value: n, color: tierColor(tier) })),
+        }),
       }),
     ),
     h(Card, {
@@ -358,6 +351,15 @@ function OverviewPage(props: { overview: Overview | null; loading: boolean; onGo
             }),
     }),
   )
+}
+
+function tierColor(tier: string): string {
+  if (tier === 'payload_may_survive') return 'var(--danger)'
+  if (tier === 'guard_ineffective_token') return 'var(--warn)'
+  if (tier === 'taint_lost') return 'var(--info)'
+  if (tier === 'payload_killed') return 'var(--ok)'
+  if (tier === 'unreachable') return 'var(--text-faint)'
+  return 'var(--violet)'
 }
 
 function verdictColor(v: string): string {
@@ -619,6 +621,14 @@ function ChainsPage(props: { overview: Overview | null; loading: boolean; worksp
                       'div',
                       null,
                       h('div', { className: 'section-title' }, '路径'),
+                      h(ChainFlow, {
+                        steps: (dossier.steps ?? []).map((st) => ({
+                          role: st.role,
+                          symbol: st.symbol,
+                          file: st.file,
+                          line: st.line,
+                        })),
+                      }),
                       h(Table, {
                         columns: [
                           {
@@ -908,16 +918,77 @@ function ReportPage(props: { overview: Overview | null }) {
     { className: 'stack' },
     h(Card, {
       title: '报告预览',
-      sub: 'Markdown，可直接复制到工单或 PR',
+      sub: 'Markdown，可直接复制到工单、PR 或 Agent 会话',
       actions: h(
-        'button',
-        {
-          className: 'btn sm',
-          onClick: () => void navigator.clipboard?.writeText(md),
-        },
-        '复制',
+        'div',
+        { className: 'row' },
+        h(
+          'button',
+          {
+            className: 'btn sm',
+            onClick: () => {
+              const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `ctx-audit-${o.workspace.name}-${new Date().toISOString().slice(0, 10)}.md`
+              a.click()
+              URL.revokeObjectURL(url)
+            },
+          },
+          '下载 .md',
+        ),
+        h(
+          'button',
+          {
+            className: 'btn sm',
+            onClick: () => void navigator.clipboard?.writeText(md),
+          },
+          '复制',
+        ),
+        h(
+          'button',
+          {
+            className: 'btn sm',
+            title: '复制面向 Agent 的审计简报（含工作区路径与下一步动作）',
+            onClick: () => void navigator.clipboard?.writeText(agentBrief(o)),
+          },
+          '复制 Agent 简报',
+        ),
       ),
       children: h('pre', { className: 'mono', style: { whiteSpace: 'pre-wrap', margin: 0, fontSize: 11.5, color: 'var(--text-dim)' } }, md),
     }),
   )
+}
+
+/** Copilot-ready brief: workspace facts plus concrete next actions. */
+function agentBrief(o: Overview): string {
+  const top = o.worklist.top.slice(0, 6)
+  const chains = o.chains.top.slice(0, 6)
+  return [
+    `# CTX-Audit 审计简报 — ${o.workspace.name}`,
+    '',
+    `工作区路径：\`${o.workspace.path}\``,
+    `生成时间：${new Date(o.generatedAt).toLocaleString()}`,
+    '',
+    '## 事实',
+    '',
+    `- 端点 ${o.coverage.methodRoutes} 个，未覆盖 ${o.coverage.uncovered}，注解覆盖 ${o.coverage.annotationCovered}`,
+    `- 置信 ${o.coverage.confidence}；索引截断 ${o.coverage.boundaries.indexTruncated ? '是' : '否'}；动态注册 ${o.coverage.boundaries.dynamicRegistrations}`,
+    `- 候选链 ${o.chains.total} 条；档位 ${Object.entries(o.chains.tiers).map(([k, v]) => `${k}=${v}`).join(' ')}`,
+    '',
+    '## 待审（按风险分）',
+    '',
+    ...top.map((w) => `- [${w.score}] ${w.method ?? 'ANY'} ${w.route ?? ''} — ${w.verdict}（${w.file}:${w.line}）`),
+    '',
+    '## 候选链',
+    '',
+    ...chains.map((c) => `- ${c.chainId} · ${c.tier} · sink=${c.sinkKind} · entry=${c.entryRoute ?? '—'} · steps=${c.steps} · guards=${c.guards}`),
+    '',
+    '## 建议下一步',
+    '',
+    '1. 对最高分待审端点运行 `explain-route <path> <route>` 复核覆盖判定；',
+    '2. 对 `payload_may_survive` 链运行 `chain <path> --id <CH-...>` 取链档，再评估动态验证；',
+    '3. 用 `gate --git <path> --base <base> --head <head>` 把本次改动纳入漂移闸门。',
+  ].join('\n')
 }
