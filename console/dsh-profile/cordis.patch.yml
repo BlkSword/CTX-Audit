@@ -1,0 +1,12 @@
+# ctx-audit profile patch: mount the CTX-Audit Console inside this profile's web
+# surface.
+#
+# The listening port stays a boot flag (`--port`), so this profile can run
+# alongside the default web profile without either one owning a fixed port.
+- insert:
+    - id: ctx-audit-console
+      name: 'dsh-ctx-audit-console'
+      config:
+        checkout: C:/project/CTX-Audit
+        mount: /console
+        apiMount: /api/console
