@@ -1,16 +1,17 @@
 import { createElement as h, useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from './api'
-import type { ChainDossier, Overview, Workspace } from './api'
+import type { ActionSpec, ChainDossier, Overview, Workspace } from './api'
 import { Icon } from './icons'
 import { Badge, Bar, Card, Empty, Loading, Metric, SkeletonRows, Table, fmtMs, shortPath, tierTone, verdictTone } from './ui'
 
-type Page = 'overview' | 'stream' | 'coverage' | 'chains' | 'gate' | 'report'
+type Page = 'overview' | 'stream' | 'coverage' | 'chains' | 'actions' | 'gate' | 'report'
 
 const PAGES: Array<{ id: Page; label: string; icon: string }> = [
   { id: 'overview', label: '总览', icon: 'overview' },
   { id: 'stream', label: '审计流', icon: 'stream' },
   { id: 'coverage', label: '覆盖与待审', icon: 'coverage' },
   { id: 'chains', label: '候选链', icon: 'chains' },
+  { id: 'actions', label: '能力动作', icon: 'stream' },
   { id: 'gate', label: '漂移闸门', icon: 'gate' },
   { id: 'report', label: '报告', icon: 'report' },
 ]
@@ -179,7 +180,9 @@ export default function App() {
                   ? h(CoveragePage, { overview, loading })
                   : page === 'chains'
                     ? h(ChainsPage, { overview, loading, workspace: active })
-                    : page === 'gate'
+                    : page === 'actions'
+                      ? h(ActionsPage, { workspace: active })
+                      : page === 'gate'
                       ? h(GatePage, { workspace: active })
                       : h(ReportPage, { overview }),
       ),
@@ -758,6 +761,115 @@ function GatePage(props: { workspace: Workspace }) {
                   rows: report.verdicts ?? [],
                   rowKey: (_r, i) => String(i),
                 }),
+          ),
+        })
+      : null,
+  )
+}
+
+/* ── Actions ──────────────────────────────────────────────────────────── */
+
+function ActionsPage(props: { workspace: Workspace }) {
+  const [specs, setSpecs] = useState<ActionSpec[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; argv?: string[]; durationMs?: number; data?: unknown; stdout?: string; stderr?: string; error?: string } | null>(null)
+
+  useEffect(() => {
+    void api
+      .actions()
+      .then((r) => setSpecs(r.actions))
+      .catch(() => setSpecs([]))
+  }, [])
+
+  const active = specs.find((s) => s.id === activeId) ?? null
+
+  const run = async () => {
+    if (!active) return
+    setBusy(true)
+    setResult(null)
+    try {
+      const res = await api.runAction(props.workspace.id, active.id, values)
+      setResult(res)
+    } catch (e) {
+      setResult({ ok: false, error: (e as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return h(
+    'div',
+    { className: 'stack' },
+    h(Card, {
+      title: '能力动作',
+      sub: '把 CLI / 工具面映射为可执行动作；参数在服务端按白名单校验',
+      children: h(
+        'div',
+        { className: 'stack' },
+        h(
+          'div',
+          { className: 'row', style: { flexWrap: 'wrap', gap: 6 } },
+          ...specs.map((spec) =>
+            h(
+              'button',
+              {
+                key: spec.id,
+                className: `btn sm${spec.id === activeId ? ' primary' : ''}`,
+                onClick: () => {
+                  setActiveId(spec.id)
+                  setValues({})
+                  setResult(null)
+                },
+                title: spec.description,
+              },
+              spec.label,
+            ),
+          ),
+        ),
+        active
+          ? h(
+              'div',
+              { className: 'stack', style: { marginTop: 8 } },
+              h('div', { className: 'dim', style: { fontSize: 12 } }, active.description),
+              ...active.args.map((arg) =>
+                h(
+                  'div',
+                  { key: arg.name },
+                  h('label', { className: 'field-label' }, `${arg.name}${arg.required ? ' *' : ''}${arg.hint ? ` — ${arg.hint}` : ''}`),
+                  h('input', {
+                    className: 'input',
+                    value: values[arg.name] ?? '',
+                    placeholder: arg.hint,
+                    onChange: (e: { target: { value: string } }) => setValues((v) => ({ ...v, [arg.name]: e.target.value })),
+                  }),
+                ),
+              ),
+              h(
+                'div',
+                { className: 'row' },
+                h('button', { className: 'btn primary', onClick: () => void run(), disabled: busy }, busy ? h('span', { className: 'spinner' }) : h(Icon, { name: 'stream' }), '执行'),
+              ),
+            )
+          : h(Empty, { title: '选择一个动作', hint: '动作覆盖审计驾驶舱、候选链、链档、单路由判定、基线卡、信号链、端点 diff、闸门、规则扫描与报告汇总。' }),
+      ),
+    }),
+    result
+      ? h(Card, {
+          title: '执行结果',
+          sub: result.argv ? result.argv.join(' ') : undefined,
+          actions: h(Badge, { tone: result.ok ? 'ok' : 'danger' }, result.ok ? 'OK' : 'FAILED'),
+          children: h(
+            'div',
+            { className: 'stack' },
+            h('div', { className: 'row' }, h('span', { className: 'dim' }, `耗时 ${fmtMs(result.durationMs)}`)),
+            result.error ? h('div', { className: 'error-text' }, result.error) : null,
+            h(
+              'pre',
+              { className: 'mono', style: { whiteSpace: 'pre-wrap', margin: 0, maxHeight: '46vh', overflow: 'auto', fontSize: 11.5, color: 'var(--text-dim)' } },
+              result.data !== undefined ? JSON.stringify(result.data, null, 2) : (result.stdout ?? result.stderr ?? ''),
+            ),
           ),
         })
       : null,

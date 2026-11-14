@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
+import { actionCatalogue, findAction, validateActionArgs } from './actions.mjs'
 
 const DEFAULT_TIMEOUT_MS = 90000
 
@@ -174,6 +175,34 @@ export function createConsoleApi(options) {
         binary: bin,
         version: (probe.stdout ?? '').trim(),
         workspaces: workspaces.length,
+      })
+    }
+
+    if (path === '/actions' && req.method === 'GET') {
+      return sendJson(res, 200, { ok: true, actions: actionCatalogue() })
+    }
+
+    const act = path.match(/^\/workspaces\/([^/]+)\/action\/([a-z-]+)$/)
+    if (act && req.method === 'POST') {
+      const ws = findWorkspace(act[1])
+      if (!ws) return sendJson(res, 404, { ok: false, error: 'workspace not found' })
+      const action = findAction(act[2])
+      if (!action) return sendJson(res, 404, { ok: false, error: 'unknown action' })
+      const body = await readBody(req)
+      const checked = validateActionArgs(action, body.args ?? body)
+      if (!checked.ok) return sendJson(res, 400, { ok: false, error: checked.error })
+      const argv = action.build(ws, checked.args)
+      const result = await runCli(ws.path, argv)
+      return sendJson(res, 200, {
+        ok: result.ok,
+        action: action.id,
+        argv,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+        data: result.data,
+        stdout: result.stdout,
+        stderr: result.stderr,
       })
     }
 

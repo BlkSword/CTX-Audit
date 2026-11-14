@@ -91,6 +91,32 @@ export interface ChainDossier {
   verdict_candidates?: unknown
 }
 
+export interface ActionArgSpec {
+  name: string
+  required: boolean
+  hint: string
+}
+
+export interface ActionSpec {
+  id: string
+  label: string
+  description: string
+  args: ActionArgSpec[]
+}
+
+export interface ActionResult {
+  ok: boolean
+  action?: string
+  argv?: string[]
+  exitCode?: number | null
+  timedOut?: boolean
+  durationMs?: number
+  data?: unknown
+  stdout?: string
+  stderr?: string
+  error?: string
+}
+
 export interface GateVerdict {
   severity: string
   kind: string
@@ -158,6 +184,15 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ base, head, strict }),
     }).then((r) => json<{ ok: boolean; report?: GateReport; error?: string; durationMs?: number }>(r)),
+
+  actions: () => fetch(`${API_BASE}/actions`).then((r) => json<{ ok: boolean; actions: ActionSpec[] }>(r)),
+
+  runAction: (id: string, actionId: string, args: Record<string, string>) =>
+    fetch(`${API_BASE}/workspaces/${id}/action/${actionId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ args }),
+    }).then((r) => json<ActionResult>(r)),
 
   /** Subscribe to the audit stream; returns an unsubscribe function. */
   stream(id: string, onEvent: (event: string, data: unknown) => void): () => void {
