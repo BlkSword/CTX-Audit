@@ -85,3 +85,5 @@ report/
 
 console/.state-test/
 
+console/.state-e2e/
+
