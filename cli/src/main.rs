@@ -105,6 +105,35 @@ enum ProbeCommand {
     },
 }
 
+/// `ctx-audit payload` 子命令（载荷存活判定）。
+#[derive(Subcommand, Debug)]
+enum PayloadCommand {
+    /// 判定入口到汇的载荷存活档位
+    Viability {
+        /// 项目根目录
+        #[arg(value_name = "ROOT")]
+        root: String,
+        /// 入口文件（相对 ROOT）
+        #[arg(long)]
+        entry_file: String,
+        /// 入口行号
+        #[arg(long, default_value_t = 1)]
+        entry_line: u32,
+        /// 汇文件（相对 ROOT）
+        #[arg(long)]
+        sink_file: String,
+        /// 汇行号
+        #[arg(long, default_value_t = 1)]
+        sink_line: u32,
+        /// 载荷 archetype（sql/path/command/deser/xxe/redirect/header/...）
+        #[arg(long, default_value = "command")]
+        archetype: String,
+        /// 输出格式 (json|md)
+        #[arg(short = 'o', long, default_value = "json")]
+        output: String,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// 快速规则扫描（批处理）
@@ -391,6 +420,15 @@ enum Commands {
         /// 输出格式 (json|md)
         #[arg(short = 'o', long, default_value = "json")]
         output: String,
+    },
+
+    /// 载荷存活判定（ant 档位）：入口 → 汇的载荷是否被现有守卫杀死
+    #[command(
+        after_help = "输出 payload-ant/v1：reachable / viability / tier / steps / guards / falsify。"
+    )]
+    Payload {
+        #[command(subcommand)]
+        cmd: PayloadCommand,
     },
 
     /// 探针原语（路线 B）：按需可达性查询与路径切片
@@ -880,6 +918,7 @@ async fn main() -> Result<()> {
             .await
         }
 
+        Commands::Payload { cmd } => commands::payload::execute(cmd).await,
         Commands::Probe { cmd } => commands::probe::execute(cmd).await,
         Commands::Report { from, output } => commands::report::execute(from, output).await,
         Commands::Verify { root, file, function, payload, archetype, output } => {

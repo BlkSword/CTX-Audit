@@ -8,7 +8,7 @@ test('catalogue exposes every action with typed arguments', () => {
   const catalogue = actionCatalogue()
   assert.ok(catalogue.length >= 10)
   const byId = new Map(catalogue.map((a) => [a.id, a]))
-  for (const id of ['audit', 'chains', 'chain-dossier', 'explain-route', 'baseline', 'signal-chain', 'diff-routes', 'gate', 'scan', 'report']) {
+  for (const id of ['audit', 'chains', 'chain-dossier', 'explain-route', 'payload', 'baseline', 'signal-chain', 'diff-routes', 'gate', 'scan', 'report']) {
     assert.ok(byId.has(id), `missing action ${id}`)
   }
   // catalogue must not leak the argv builder

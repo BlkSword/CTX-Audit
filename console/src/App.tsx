@@ -5,13 +5,14 @@ import { Icon } from './icons'
 import { ChainFlow, Donut, StackedBar } from './charts'
 import { Badge, Bar, Card, Empty, Loading, Metric, SkeletonRows, Table, fmtMs, shortPath, tierTone, verdictTone } from './ui'
 
-type Page = 'overview' | 'stream' | 'coverage' | 'chains' | 'actions' | 'gate' | 'report'
+type Page = 'overview' | 'stream' | 'coverage' | 'chains' | 'payload' | 'actions' | 'gate' | 'report'
 
 const PAGES: Array<{ id: Page; label: string; icon: string }> = [
   { id: 'overview', label: '总览', icon: 'overview' },
   { id: 'stream', label: '审计流', icon: 'stream' },
   { id: 'coverage', label: '覆盖与待审', icon: 'coverage' },
   { id: 'chains', label: '候选链', icon: 'chains' },
+  { id: 'payload', label: '载荷档位', icon: 'coverage' },
   { id: 'actions', label: '能力动作', icon: 'stream' },
   { id: 'gate', label: '漂移闸门', icon: 'gate' },
   { id: 'report', label: '报告', icon: 'report' },
@@ -181,8 +182,10 @@ export default function App() {
                   ? h(CoveragePage, { overview, loading })
                   : page === 'chains'
                     ? h(ChainsPage, { overview, loading, workspace: active })
-                    : page === 'actions'
-                      ? h(ActionsPage, { workspace: active })
+                    : page === 'payload'
+                      ? h(PayloadPage, { overview, workspace: active })
+                      : page === 'actions'
+                        ? h(ActionsPage, { workspace: active })
                       : page === 'gate'
                       ? h(GatePage, { workspace: active })
                       : h(ReportPage, { overview }),
@@ -771,6 +774,146 @@ function GatePage(props: { workspace: Workspace }) {
                   rows: report.verdicts ?? [],
                   rowKey: (_r, i) => String(i),
                 }),
+          ),
+        })
+      : null,
+  )
+}
+
+/* ── Payload ──────────────────────────────────────────────────────────── */
+
+const ARCHETYPES = ['command', 'sql', 'path', 'deser', 'jndi', 'template', 'ssrf', 'xss', 'xxe', 'redirect', 'header']
+
+function PayloadPage(props: { overview: Overview | null; workspace: Workspace }) {
+  const [selected, setSelected] = useState<string | null>(null)
+  const [dossier, setDossier] = useState<ChainDossier | null>(null)
+  const [archetype, setArchetype] = useState('command')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ tier?: string; viability?: string; reachable?: boolean; steps?: unknown[]; guards?: unknown[]; error?: string } | null>(null)
+
+  const pick = async (chainId: string, sinkKind?: string) => {
+    setSelected(chainId)
+    setResult(null)
+    try {
+      const res = await api.chain(props.workspace.id, chainId)
+      if (res.ok && res.dossier) {
+        setDossier(res.dossier)
+        const suggested = String(sinkKind ?? res.dossier.sink?.kind ?? '').toLowerCase()
+        if (ARCHETYPES.includes(suggested)) setArchetype(suggested)
+      }
+    } catch {
+      setDossier(null)
+    }
+  }
+
+  const run = async () => {
+    if (!dossier?.entry || !dossier.sink) {
+      setResult({ error: '该链没有可判定的入口/汇坐标（可能是无路由入口）' })
+      return
+    }
+    setBusy(true)
+    setResult(null)
+    try {
+      const res = await api.runAction(props.workspace.id, 'payload', {
+        entryFile: String(dossier.entry.file ?? ''),
+        entryLine: String(dossier.entry.line ?? 1),
+        sinkFile: String(dossier.sink.file ?? ''),
+        sinkLine: String(dossier.sink.line ?? 1),
+        archetype,
+      })
+      if (!res.ok) {
+        setResult({ error: res.error ?? res.stderr ?? '判定失败' })
+      } else {
+        const data = (res.data ?? {}) as Record<string, unknown>
+        setResult({
+          tier: String(data['tier'] ?? 'unknown'),
+          viability: String(data['viability'] ?? 'unknown'),
+          reachable: Boolean(data['reachable']),
+          steps: Array.isArray(data['steps']) ? data['steps'] : [],
+          guards: Array.isArray(data['guards']) ? data['guards'] : [],
+        })
+      }
+    } catch (e) {
+      setResult({ error: (e as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const chains = props.overview?.chains.top ?? []
+  return h(
+    'div',
+    { className: 'stack' },
+    h(
+      'div',
+      { className: 'grid k3' },
+      h(Metric, { label: '载荷可能存活', value: props.overview?.chains.tiers['payload_may_survive'] ?? 0, tone: 'danger', hint: '按链档统计' }),
+      h(Metric, { label: '守卫无效', value: props.overview?.chains.tiers['guard_ineffective_token'] ?? 0, tone: 'warn' }),
+      h(Metric, { label: '污点丢失', value: props.overview?.chains.tiers['taint_lost'] ?? 0 }),
+    ),
+    h(Card, {
+      title: '载荷档位判定',
+      sub: '选择候选链 → 确认入口/汇坐标 → 选载荷类型 → 判定存活档位',
+      flush: true,
+      children:
+        chains.length === 0
+          ? h(Empty, { title: '没有候选链' })
+          : h(Table, {
+              columns: [
+                { key: 'chainId', label: '链', width: '120px', render: (r) => h('span', { className: 'mono' }, r.chainId) },
+                { key: 'tier', label: '链档位', width: '190px', render: (r) => h(Badge, { tone: tierTone(r.tier) }, r.tier) },
+                { key: 'sinkKind', label: '汇', width: '110px', render: (r) => h('span', { className: 'mono' }, r.sinkKind) },
+                { key: 'entryRoute', label: '入口', render: (r) => h('span', { className: 'mono' }, r.entryRoute ?? '—') },
+                { key: 'sinkFile', label: '汇位置', render: (r) => h('span', { className: 'faint mono' }, `${shortPath(r.sinkFile)}:${r.sinkLine}`) },
+              ],
+              rows: chains,
+              rowKey: (r) => r.chainId,
+              onRowClick: (r: { chainId: string; sinkKind: string }) => void pick(r.chainId, r.sinkKind),
+            }),
+    }),
+    selected
+      ? h(Card, {
+          title: `载荷判定 ${selected}`,
+          sub: dossier?.entry ? `入口 ${dossier.entry.file}:${dossier.entry.line} → 汇 ${dossier.sink?.file}:${dossier.sink?.line}` : '正在读取链档…',
+          children: h(
+            'div',
+            { className: 'stack' },
+            h(
+              'div',
+              { className: 'row', style: { flexWrap: 'wrap', gap: 8 } },
+              h(
+                'select',
+                {
+                  className: 'input',
+                  value: archetype,
+                  onChange: (e: { target: { value: string } }) => setArchetype(e.target.value),
+                  style: { width: 180 },
+                },
+                ...ARCHETYPES.map((a) => h('option', { key: a, value: a }, a)),
+              ),
+              h('button', { className: 'btn primary', onClick: () => void run(), disabled: busy || !dossier }, busy ? h('span', { className: 'spinner' }) : h(Icon, { name: 'coverage' }), '判定载荷'),
+            ),
+            result?.error ? h('div', { className: 'error-text' }, result.error) : null,
+            result && !result.error
+              ? h(
+                  'div',
+                  { className: 'stack' },
+                  h(
+                    'div',
+                    { className: 'row', style: { flexWrap: 'wrap', gap: 8 } },
+                    h(Badge, { tone: tierTone(result.tier ?? 'unknown') }, result.tier ?? 'unknown'),
+                    h(Badge, { tone: result.reachable ? 'info' : 'muted' }, result.reachable ? 'reachable' : 'unreachable'),
+                    h(Badge, { tone: 'muted' }, `viability ${result.viability ?? '—'}`),
+                    h(Badge, { tone: 'muted' }, `steps ${result.steps?.length ?? 0}`),
+                    h(Badge, { tone: 'muted' }, `guards ${result.guards?.length ?? 0}`),
+                  ),
+                  h(
+                    'div',
+                    { className: 'dim', style: { fontSize: 11.5 } },
+                    '档位含义：payload_killed = 守卫杀死载荷；guard_ineffective_token = 守卫存在但可绕过；taint_lost = 数据流未到达汇；payload_may_survive = 载荷可能存活；unreachable = 结构不可达。',
+                  ),
+                )
+              : null,
           ),
         })
       : null,

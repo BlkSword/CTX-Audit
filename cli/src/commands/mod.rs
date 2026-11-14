@@ -14,6 +14,7 @@ pub mod explain_route;
 pub mod findings;
 pub mod gate;
 pub mod mcp;
+pub mod payload;
 pub mod probe;
 pub mod report;
 pub mod verify;
