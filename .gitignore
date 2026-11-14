@@ -83,3 +83,5 @@ console/dist/
 console/node_modules/
 report/
 
+console/.state-test/
+
