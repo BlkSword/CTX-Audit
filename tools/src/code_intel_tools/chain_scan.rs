@@ -827,6 +827,7 @@ pub(crate) fn candidates(
     vocab: Option<&Value>,
     include_builtin_sinks: bool,
     limit: usize,
+    project: Option<&std::path::Path>,
 ) -> (Vec<Value>, BTreeMap<String, usize>) {
     // 入口扩展：框架隐式入口 + 词表派生
     let mut all_entries: Vec<Value> = entries.to_vec();
@@ -1045,6 +1046,33 @@ pub(crate) fn candidates(
             if !steps_forward_valid(&pre, files, &steps) {
                 *stats.entry("dropped_unverifiable".to_string()).or_default() += 1;
                 continue;
+            }
+            // 探针校验：候选必须被探针判定为结构可达，否则不输出。
+            // 名字级候选生成与探针图不是同一套边，这里用探针结论兜底，
+            // 保证"输出的每条候选都能被同一条命令复核为可达"。
+            if let Some(root) = project {
+                let ef = steps
+                    .first()
+                    .and_then(|x| x.get("file"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let el = steps
+                    .first()
+                    .and_then(|x| x.get("line"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let sf = steps
+                    .last()
+                    .and_then(|x| x.get("file"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let reachable = super::probe::can_reach_report(root, ef, el, sf, line)
+                    .map(|v| v["reachable"].as_bool().unwrap_or(false))
+                    .unwrap_or(false);
+                if !reachable {
+                    *stats.entry("dropped_unreachable".to_string()).or_default() += 1;
+                    continue;
+                }
             }
             // 守卫：入口与汇窗口
             let mut guards: Vec<Value> = Vec::new();

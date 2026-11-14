@@ -2798,7 +2798,7 @@ all_chains.extend(sa_token_security_chains(policy_files));
                 let entry = input["entry"].as_str();
                 let auth = chain::auth_map(root, files, &id);
                 let entries = chain::collect_entries(files, &id);
-                let (chains, stats) = chain_scan::candidates(files, &entries, &auth, sink, entry, None, true, limit);
+                let (chains, stats) = chain_scan::candidates(files, &entries, &auth, sink, entry, None, true, limit, None);
                 IntelEnvelope {
                     data: json!({"schema": "chain-candidates/v1", "stats": stats, "chains": chains}),
                     provenance: vec![prov(".", 0, &id)],
@@ -2809,7 +2809,7 @@ all_chains.extend(sa_token_security_chains(policy_files));
                 let chain_id = input["chain_id"].as_str().unwrap_or("");
                 let auth = chain::auth_map(root, files, &id);
                 let entries = chain::collect_entries(files, &id);
-                let (chains, _stats) = chain_scan::candidates(files, &entries, &auth, None, None, None, true, 0);
+                let (chains, _stats) = chain_scan::candidates(files, &entries, &auth, None, None, None, true, 0, None);
                 let found = chains
                     .into_iter()
                     .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id));
@@ -2832,7 +2832,7 @@ all_chains.extend(sa_token_security_chains(policy_files));
                 let expect = input["expect"].as_str().unwrap_or("line_present");
                 let auth = chain::auth_map(root, files, &id);
                 let entries = chain::collect_entries(files, &id);
-                let (chains, _stats) = chain_scan::candidates(files, &entries, &auth, None, None, None, true, 0);
+                let (chains, _stats) = chain_scan::candidates(files, &entries, &auth, None, None, None, true, 0, None);
                 let detail = chains
                     .into_iter()
                     .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id));
@@ -3721,6 +3721,7 @@ pub fn chain_candidates_report(
         vocab,
         include_builtin_sinks,
         limit,
+        Some(project),
     );
     Ok(json!({
         "schema": "chain-candidates/v1",
@@ -3749,6 +3750,7 @@ pub fn chain_guard_delta_report(project: &Path, fixed: &Path) -> Result<Value, S
             vocab,
             true,
             0,
+            Some(root),
         );
         let mut set = std::collections::BTreeSet::new();
         for c in chains.iter() {
@@ -3859,7 +3861,7 @@ pub fn chain_dossier_report(project: &Path, chain_id: &str) -> Result<Value, Str
     let id = index::build_id(&loaded.files);
     let auth = chain::auth_map(project, &loaded.files, &id);
     let entries = chain::collect_entries(&loaded.files, &id);
-    let (chains, _stats) = chain_scan::candidates(&loaded.files, &entries, &auth, None, None, chain_vocab::load_vocab(project).as_ref(), true, 0);
+    let (chains, _stats) = chain_scan::candidates(&loaded.files, &entries, &auth, None, None, chain_vocab::load_vocab(project).as_ref(), true, 0, None);
     let found = chains
         .into_iter()
         .find(|c| c.get("chain_id").and_then(|v| v.as_str()) == Some(chain_id))
@@ -3889,6 +3891,7 @@ pub fn audit_brief_report(project: &Path, limit: usize) -> Result<Value, String>
         chain_vocab::load_vocab(project).as_ref(),
         true,
         0,
+        Some(project),
     );
     let top: Vec<Value> = chains
         .iter()
@@ -3983,6 +3986,7 @@ pub fn trace_vulnerability_chain_report(
                 chain_vocab::load_vocab(project).as_ref(),
                 true,
                 0,
+                Some(project),
             );
             let found = chains
                 .iter()

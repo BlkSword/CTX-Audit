@@ -71,7 +71,7 @@ fn load_snapshot(root: &Path) -> Result<Snapshot, String> {
     let auth = auth_map(root, &loaded.files, &id);
     let entries = collect_entries(&loaded.files, &id);
     let (chains, _stats) =
-        chain_scan::candidates(&loaded.files, &entries, &auth, None, None, None, true, 0);
+        chain_scan::candidates(&loaded.files, &entries, &auth, None, None, None, true, 0, None);
 
     let mut routes: BTreeMap<String, Value> = BTreeMap::new();
     let mut route_guards: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
