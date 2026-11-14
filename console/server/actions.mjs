@@ -82,6 +82,77 @@ export const ACTIONS = [
     build: (ws) => ['baseline', ws.path, '-o', 'json'],
   },
   {
+    id: 'probe-reach',
+    label: '可达性探针',
+    description: '两点之间是否存在调用路径（probe reach）',
+    args: [
+      { name: 'fromFile', required: true, pattern: /^[A-Za-z0-9_\-./\\]{1,300}$/, hint: '源文件（相对路径）' },
+      { name: 'fromLine', pattern: /^\d{1,6}$/, hint: '源行号' },
+      { name: 'toFile', required: true, pattern: /^[A-Za-z0-9_\-./\\]{1,300}$/, hint: '目标文件（相对路径）' },
+      { name: 'toLine', pattern: /^\d{1,6}$/, hint: '目标行号' },
+    ],
+    build: (ws, a) => [
+      'probe',
+      'reach',
+      ws.path,
+      '--from-file',
+      a.fromFile,
+      '--from-line',
+      a.fromLine ?? '1',
+      '--to-file',
+      a.toFile,
+      '--to-line',
+      a.toLine ?? '1',
+      '-o',
+      'json',
+    ],
+  },
+  {
+    id: 'probe-slice',
+    label: '路径切片',
+    description: '沿可达路径切出每步代码窗口',
+    args: [
+      { name: 'fromFile', required: true, pattern: /^[A-Za-z0-9_\-./\\]{1,300}$/, hint: '源文件（相对路径）' },
+      { name: 'fromLine', pattern: /^\d{1,6}$/, hint: '源行号' },
+      { name: 'toFile', required: true, pattern: /^[A-Za-z0-9_\-./\\]{1,300}$/, hint: '目标文件（相对路径）' },
+      { name: 'toLine', pattern: /^\d{1,6}$/, hint: '目标行号' },
+      { name: 'radius', pattern: /^\d{1,3}$/, hint: '每步窗口半径' },
+    ],
+    build: (ws, a) => {
+      const out = [
+        'probe',
+        'slice',
+        ws.path,
+        '--from-file',
+        a.fromFile,
+        '--from-line',
+        a.fromLine ?? '1',
+        '--to-file',
+        a.toFile,
+        '--to-line',
+        a.toLine ?? '1',
+        '-o',
+        'json',
+      ]
+      if (a.radius) out.push('--radius', a.radius)
+      return out
+    },
+  },
+  {
+    id: 'analyze',
+    label: '单文件分析',
+    description: 'AST / 符号信息（analyze）',
+    args: [
+      { name: 'file', required: true, pattern: /^[A-Za-z0-9_\-./\\]{1,300}$/, hint: '文件（相对路径）' },
+      { name: 'symbols', pattern: /^(1|0)$/, hint: '显示符号信息' },
+    ],
+    build: (ws, a) => {
+      const out = ['analyze', a.file, '-o', 'json']
+      if (a.symbols === '1') out.push('--symbols')
+      return out
+    },
+  },
+  {
     id: 'signal-chain',
     label: '三角色信号链',
     description: '循环界 / 守卫检索 / 写 sink 累积性候选',
