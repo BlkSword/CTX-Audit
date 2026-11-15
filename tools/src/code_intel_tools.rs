@@ -48,6 +48,7 @@ pub mod ssa;
 pub mod verify;
 pub mod verify_java;
 pub mod workflow;
+pub mod poc;
 pub use chain_vocab::learn_vocab;
 pub(crate) use chain::*;
 pub(crate) use chain_scan::*;

@@ -514,6 +514,40 @@ enum Commands {
         output: String,
     },
 
+    /// PoC 工件打包：Mermaid 拓扑 + 请求骨架 + Guard Gap + 修复建议
+    #[command(
+        after_help = "只打包证据，不执行请求；--chain-id 或 entry/sink 坐标二选一。"
+    )]
+    Poc {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 链 ID（来自 chain --list）
+        #[arg(long)]
+        chain_id: Option<String>,
+
+        /// 入口文件（与 --entry-line 一起用）
+        #[arg(long)]
+        entry_file: Option<String>,
+
+        /// 入口行号
+        #[arg(long)]
+        entry_line: Option<u32>,
+
+        /// 汇文件（与 --sink-line 一起用）
+        #[arg(long)]
+        sink_file: Option<String>,
+
+        /// 汇行号
+        #[arg(long)]
+        sink_line: Option<u32>,
+
+        /// 输出格式 (json|md)
+        #[arg(short = 'o', long, default_value = "json")]
+        output: String,
+    },
+
     /// 一键审计工作流：覆盖率 → 待审 → 候选链 → 链档 → 载荷判定（带证据 id）
     #[command(
         after_help = "阶段固定五步；--stop-after 可只跑到某阶段；证据 id 形如 EV-payload-1。"
@@ -913,6 +947,26 @@ async fn main() -> Result<()> {
             .map_err(|e| miette::miette!("MCP server error: {}", e)),
 
         Commands::Baseline { path, output } => commands::baseline::execute(path, output).await,
+        Commands::Poc {
+            path,
+            chain_id,
+            entry_file,
+            entry_line,
+            sink_file,
+            sink_line,
+            output,
+        } => {
+            commands::poc::execute(
+                path,
+                chain_id,
+                entry_file,
+                entry_line,
+                sink_file,
+                sink_line,
+                output,
+            )
+            .await
+        }
         Commands::Workflow {
             path,
             triage_limit,
