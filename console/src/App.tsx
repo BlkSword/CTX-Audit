@@ -1314,6 +1314,39 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
     }
   }, [existing, props.workspace.path])
 
+  // Attach the evidence table from the latest audit session, keeping the stable
+  // ids so the agent can cite a specific fact instead of restating prose.
+  const appendSessionEvidence = async (): Promise<void> => {
+    try {
+      const r = await api.sessions(props.workspace.id)
+      const list = r.sessions ?? []
+      const latest = list.find((item) => item.status === 'done') ?? list[0]
+      if (!latest) {
+        setResult({ ok: false, error: '该工作区还没有审计会话，请先在总览页点一键审计。' })
+        return
+      }
+      const rows = latest.evidence.slice(0, 40).map((e) => {
+        const summary = (e.summary ?? e.kind).split('|').join('\\|')
+        return `| \`${e.id}\` | ${e.stage} | ${summary} |`
+      })
+      const lines = [
+        '',
+        `## 审计会话证据（${latest.id} · ${latest.label}）`,
+        '',
+        '| 证据 ID | 阶段 | 摘要 |',
+        '| --- | --- | --- |',
+        ...rows,
+      ]
+      if (latest.evidence.length > 40) {
+        lines.push('', `> 仅列出前 40 条，共 ${latest.evidence.length} 条`)
+      }
+      lines.push('', '引用这些证据时请直接写证据 ID（如 \`EV-payload-1\`），不要改写其内容。')
+      setText((current) => `${current}\n${lines.join('\n')}\n`)
+    } catch (e) {
+      setResult({ ok: false, error: (e as Error).message })
+    }
+  }
+
   const send = async () => {
     setBusy(true)
     setResult(null)
@@ -1383,6 +1416,15 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
                 ),
             },
             '追加最近动作结果',
+          ),
+          h(
+            'button',
+            {
+              className: 'btn ghost',
+              title: '把最近一次审计会话的证据（带稳定 ID）追加到简报，Agent 可直接引用',
+              onClick: () => void appendSessionEvidence(),
+            },
+            '附上会话证据',
           ),
           result?.ok ? h(Badge, { tone: 'ok' }, result.created ? '已创建会话并发送' : '已发送到既有会话') : null,
           result?.error ? h('span', { className: 'error-text' }, result.error) : null,
