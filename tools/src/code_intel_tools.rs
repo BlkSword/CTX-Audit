@@ -46,6 +46,7 @@ pub mod harness;
 pub mod probe;
 pub mod ssa;
 pub mod verify;
+pub mod verify_java;
 pub use chain_vocab::learn_vocab;
 pub(crate) use chain::*;
 pub(crate) use chain_scan::*;

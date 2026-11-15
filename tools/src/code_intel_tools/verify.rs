@@ -266,8 +266,9 @@ pub fn verify_payload_report(
         .canonicalize()
         .map_err(|e| format!("CTX_AUDIT_VERIFY_DIR 无效: {e}"))?;
     let is_node = file.ends_with(".js") || file.ends_with(".mjs") || file.ends_with(".cjs");
-    if !file.ends_with(".py") && !is_node {
-        return Err("动态验证仅支持 Python / Node(js|mjs|cjs) 文件".to_string());
+    let is_java = file.ends_with(".java");
+    if !file.ends_with(".py") && !is_node && !is_java {
+        return Err("动态验证仅支持 Python / Node(js|mjs|cjs) / Java 文件".to_string());
     }
     let target = project
         .join(file)
@@ -281,14 +282,17 @@ pub fn verify_payload_report(
         ));
     }
     let arch = match archetype {
-        "sql" | "ssrf" | "path" | "command" | "template" | "deserialize" | "xss" => archetype,
+        "sql" | "ssrf" | "path" | "command" | "template" | "deserialize" | "xss" | "jndi" => archetype,
         _ => {
             return Err(
-                "动态验证支持的载荷类型：sql / ssrf / path / command / template / deserialize / xss"
+                "动态验证支持的载荷类型：sql / ssrf / path / command / template / deserialize / xss / jndi"
                     .to_string(),
             )
         }
     };
+    if is_java {
+        return super::verify_java::java_verify(&target, file, function, payload, arch);
+    }
     if is_node {
         return node_verify(&target, function, payload, arch, file);
     }
