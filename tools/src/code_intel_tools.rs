@@ -596,6 +596,13 @@ impl CodeIntelTool {
             "refresh",
             "强制重建索引缓存（默认 false；TTL 由 CTX_AUDIT_INDEX_TTL_MS 控制）",
         ));
+        // 目标项目覆盖：MCP 进程的 cwd 是启动目录，一个会话要审计多个仓库时
+        // 必须能按调用指定目标；缺省仍用注册时的 project_path。
+        params.push(str_param(
+            "project_path",
+            "目标项目根目录（可选；缺省用 MCP 启动目录）",
+            false,
+        ));
         params
     }
 }
@@ -623,7 +630,25 @@ impl Tool for CodeIntelTool {
     }
 
     async fn execute(&self, input: Value) -> Result<ToolResult, ToolError> {
-        let root = Path::new(&self.project_path);
+        // 调用级项目覆盖：显式 project_path 优先，其次注册时的启动目录。
+        let override_path = input
+            .get("project_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        let root_buf;
+        let root: &Path = match override_path {
+            Some(p) => {
+                root_buf = std::path::PathBuf::from(p);
+                if !root_buf.exists() {
+                    return Err(ToolError::InvalidArgument(format!(
+                        "project_path 不存在: {p}"
+                    )));
+                }
+                root_buf.as_path()
+            }
+            None => Path::new(&self.project_path),
+        };
         let refresh = input
             .get("refresh")
             .and_then(|v| v.as_bool())
