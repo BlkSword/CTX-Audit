@@ -4979,8 +4979,8 @@ mod tests {
         );
         assert_eq!(
             ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.len(),
-            24,
-            "高阶工具面应为 24（21 个能力 + 3 个 SOP 工具）"
+            25,
+            "高阶工具面应为 25（21 个能力 + 3 个 SOP + 1 个规则扫描）"
         );
     }
 

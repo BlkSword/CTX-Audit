@@ -50,6 +50,7 @@ pub mod verify_java;
 pub mod workflow;
 pub mod poc;
 pub mod autopilot;
+pub mod scan_tool;
 pub use chain_vocab::learn_vocab;
 pub(crate) use chain::*;
 pub(crate) use chain_scan::*;
@@ -233,6 +234,7 @@ pub enum IntelKind {
     AuditWorkflow,
     Autopilot,
     PocPackage,
+    Scan,
     /// 鉴权基线卡：链/规则/过滤器/注解消费者/被关闭的钩子（一屏可复核）
     SecurityBaseline,
     /// 单条路由判定 + 可机械证伪命令 + 敏感返回面
@@ -270,7 +272,7 @@ pub enum IntelKind {
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 30] {
+    pub fn all() -> [IntelKind; 31] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -285,6 +287,7 @@ impl IntelKind {
             IntelKind::AuditWorkflow,
             IntelKind::Autopilot,
             IntelKind::PocPackage,
+            IntelKind::Scan,
             IntelKind::SecurityBaseline,
             IntelKind::ExplainRoute,
             IntelKind::CoverageSummary,
@@ -337,6 +340,7 @@ impl IntelKind {
             IntelKind::AuditWorkflow => "audit_workflow",
             IntelKind::Autopilot => "autopilot",
             IntelKind::PocPackage => "poc_package",
+            IntelKind::Scan => "scan_code",
         }
     }
 
@@ -372,6 +376,7 @@ impl IntelKind {
             IntelKind::AuditWorkflow => "一键审计工作流：覆盖率→待审→候选链→链档→载荷判定，每步产出稳定证据 ID",
             IntelKind::Autopilot => "自动驾驶：按预算自主循环（工作流→排序→动态验证→PoC→结论），决策轨迹可查",
             IntelKind::PocPackage => "PoC 工件打包：Mermaid 拓扑 + 请求骨架 + Guard Gap + 修复建议 + 复现步骤",
+            IntelKind::Scan => "规则/污点/跨文件扫描：产出传统 SAST 候选集（文件/行/规则/严重度/置信度），供后续链档与载荷判定收敛",
         }
     }
 }
@@ -598,6 +603,11 @@ impl CodeIntelTool {
                 int_param("entry_line", "入口行号", 0),
                 str_param("sink_file", "汇文件（配合 sink_line）", false),
                 int_param("sink_line", "汇行号", 0),
+            ],
+            IntelKind::Scan => vec![
+                str_param("mode", "扫描档位：rules（最快）| taint（+单文件污点）| deep（+跨文件）", false),
+                str_param("min_severity", "最低严重度：critical|high|medium|low|info（默认 medium）", false),
+                int_param("limit", "返回条数上限（默认 50，0=200，上限 500）", 50),
             ],
             IntelKind::SymbolDefinition | IntelKind::SymbolReferences => {
                 vec![str_param("symbol", "符号名", true)]
@@ -3129,6 +3139,25 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     uncertainty: Uncertainty::new("medium", &["heuristic_param_binding"], 0),
                 }
             }
+            IntelKind::Scan => {
+                let mode = input["mode"]
+                    .as_str()
+                    .and_then(super::code_intel_tools::scan_tool::ScanMode::parse)
+                    .unwrap_or(super::code_intel_tools::scan_tool::ScanMode::Rules);
+                let min_severity = input["min_severity"].as_str().unwrap_or("medium");
+                let limit = input["limit"].as_u64().unwrap_or(50) as usize;
+                let data = scan_tool::scan_report(root, mode, min_severity, limit)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("scan_code: {e}")))?;
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new(
+                        "medium",
+                        &["pattern_rules", "heuristic_confidence"],
+                        0,
+                    ),
+                }
+            }
             IntelKind::PrDriftGate => {
                 let base_in = input["base"].as_str().unwrap_or("");
                 let head_in = input["head"].as_str().unwrap_or("");
@@ -3270,7 +3299,7 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
 /// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
 /// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
 /// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
-pub const PROTOCOL_TOOL_SURFACE: [&str; 24] = CODE_INTEL_TOOL_SURFACE;
+pub const PROTOCOL_TOOL_SURFACE: [&str; 25] = CODE_INTEL_TOOL_SURFACE;
 
 /// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
 fn max_tool_bytes() -> usize {
@@ -4327,7 +4356,7 @@ pub fn chain_dossier_markdown(project: &Path, chain_id: &str) -> Result<String, 
 /// LLM 默认工具面（9 个）：审计协议所需的最小集合。
 ///
 /// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 24] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 25] = [
     "coverage_summary",
     "coverage_triage",
     "get_project_routes",
@@ -4352,6 +4381,7 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 24] = [
     "audit_workflow",
     "autopilot",
     "poc_package",
+    "scan_code",
 ];
 
 /// 会改变外部状态的工具（写操作）。MCP 侧据此做只读/读写分级：

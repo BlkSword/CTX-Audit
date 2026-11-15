@@ -85,8 +85,8 @@ use super::super::*;
     #[test]
     fn test_tool_surface_shape() {
         // 默认面 = 21 个能力工具 + 3 个 SOP 工具（工作流/自动驾驶/PoC 打包）
-        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 24);
-        assert_eq!(IntelKind::all().len(), 30);
+        assert_eq!(CODE_INTEL_TOOL_SURFACE.len(), 25);
+        assert_eq!(IntelKind::all().len(), 31);
         assert_eq!(CODE_INTEL_LEGACY_SURFACE.len(), 7);
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"get_project_routes"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"coverage_summary"));
@@ -104,6 +104,7 @@ use super::super::*;
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"audit_workflow"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"autopilot"));
         assert!(CODE_INTEL_TOOL_SURFACE.contains(&"poc_package"));
+        assert!(CODE_INTEL_TOOL_SURFACE.contains(&"scan_code"));
         assert!(CODE_INTEL_LEGACY_SURFACE.contains(&"get_incremental_status"));
     }
 
