@@ -52,10 +52,6 @@ docs/
 
 ROADMAP.md
 AGENTS.md
-/benchmarks/*
-!benchmarks/evaluate.py
-!benchmarks/evaluate_real_project.py
-!benchmarks/run-baseline.sh
 /docs
 CHANGELOG.md
 /.opencode
