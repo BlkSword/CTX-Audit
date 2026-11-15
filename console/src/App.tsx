@@ -1077,6 +1077,13 @@ function recordAction(action: string, data: unknown): void {
   const summary = JSON.stringify(data).slice(0, 2000)
   recentActions.unshift({ at: new Date().toLocaleTimeString(), action, summary })
   if (recentActions.length > 3) recentActions.pop()
+  // Notify the assistant view so the evidence can flow into the brief without
+  // the operator copying it by hand.
+  try {
+    window.dispatchEvent(new CustomEvent('ctx-audit:action-recorded', { detail: { action, summary } }))
+  } catch {
+    /* non-browser */
+  }
 }
 
 
@@ -1087,7 +1094,7 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
   const [result, setResult] = useState<{ ok: boolean; sessionId?: string; created?: boolean; accepted?: boolean; error?: string } | null>(null)
   const [existing, setExisting] = useState<string | null>(null)
   const [available, setAvailable] = useState<boolean | null>(null)
-  const [replies, setReplies] = useState<Array<{ at?: number; text: string }>>([])
+  const [replies, setReplies] = useState<Array<{ at?: number; text: string; kind?: 'assistant' | 'tool'; tool?: string }>>([])
 
   useEffect(() => {
     if (!props.overview) return
@@ -1103,6 +1110,21 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
         setExisting(null)
       })
   }, [props.overview, props.workspace.path])
+
+  // Evidence hand-off: when a capability action finishes, append its result to
+  // the brief so the agent sees what the operator just collected.
+  useEffect(() => {
+    const onRecorded = (ev: Event): void => {
+      const detail = (ev as CustomEvent<{ action: string; summary: string }>).detail
+      if (!detail) return
+      setText(
+        (current) =>
+          `${current}\n\n## 动作结果（${detail.action}）\n\n\`\`\`json\n${detail.summary}\n\`\`\`\n`,
+      )
+    }
+    window.addEventListener('ctx-audit:action-recorded', onRecorded)
+    return () => window.removeEventListener('ctx-audit:action-recorded', onRecorded)
+  }, [])
 
   // Poll the bound session for assistant text while the page is open.
   useEffect(() => {
@@ -1209,8 +1231,17 @@ function AssistantPage(props: { overview: Overview | null; workspace: Workspace 
                   h(
                     'div',
                     { key: i },
-                    h('div', { className: 'log-meta' }, reply.at ? new Date(reply.at).toLocaleTimeString() : `#${i + 1}`),
-                    h('div', { className: 'log-entry agent' }, reply.text),
+                    h(
+                      'div',
+                      { className: 'log-meta' },
+                      reply.at ? new Date(reply.at).toLocaleTimeString() : `#${i + 1}`,
+                      reply.kind === 'tool' ? ` · TOOL ${reply.tool ?? ''}` : ' · AGENT',
+                    ),
+                    h(
+                      'div',
+                      { className: `log-entry ${reply.kind === 'tool' ? '' : 'agent'}` },
+                      reply.kind === 'tool' ? `→ ${reply.text}` : reply.text,
+                    ),
                   ),
                 ),
               ),

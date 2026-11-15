@@ -324,7 +324,10 @@ enum Commands {
         /// 注册遗留细粒度工具面（默认只暴露高阶能力与基础工具）
         #[arg(long)]
         legacy_tools: bool,
-    },
+
+        /// 只读模式：不注册写操作工具（report_finding / finish_analysis）
+        #[arg(long)]
+        read_only: bool,},
 
     /// 鉴权基线卡（链/规则/过滤器/注解消费者/被关闭的钩子）
     ///
@@ -872,7 +875,10 @@ async fn main() -> Result<()> {
             daemon,
         } => commands::watch::execute(path, severity, "sarif", output_path, ignore, daemon).await,
 
-        Commands::Mcp { legacy_tools } => commands::mcp::run_mcp_server(legacy_tools)
+        Commands::Mcp {
+        legacy_tools,
+        read_only,
+    } => commands::mcp::run_mcp_server_scoped(legacy_tools, read_only)
             .await
             .map_err(|e| miette::miette!("MCP server error: {}", e)),
 

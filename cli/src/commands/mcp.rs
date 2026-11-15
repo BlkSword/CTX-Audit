@@ -4078,11 +4078,24 @@ fn is_default_surface_tool(name: &str) -> bool {
 
 impl McpServerState {
     async fn new(legacy_tools: bool) -> Self {
+        Self::new_scoped(legacy_tools, false).await
+    }
+
+    /// 带只读开关的构造：只读模式不注册写操作工具。
+    async fn new_scoped(legacy_tools: bool, read_only: bool) -> Self {
         // legacy gate：默认只注册高阶 code-intel 工具面
         let legacy = legacy_tools || ctx_audit_tools::legacy_tools_enabled();
         let registry = std::sync::Arc::new(ctx_audit_tools::ToolRegistry::new());
         // 注册内置工具（基础工具 + 高阶 code-intel；legacy 打开时含搜索、污点、模式、调用图）
-        ctx_audit_tools::register_all_tools(&registry, ".".to_string(), None, None, legacy).await;
+        ctx_audit_tools::register_all_tools_scoped(
+            &registry,
+            ".".to_string(),
+            None,
+            None,
+            legacy,
+            read_only,
+        )
+        .await;
 
         // 跨进程接线：把 daemon 的真实增量状态叠加到 get_incremental_status 上。
         // 同名注册即覆盖（ToolRegistry::register 用 HashMap::insert），装饰器内部委托原实现。
@@ -4113,11 +4126,19 @@ impl McpServerState {
 // ── MCP Server Main Loop ────────────────────────────────
 
 pub async fn run_mcp_server(legacy_tools: bool) -> Result<(), Box<dyn std::error::Error>> {
+    run_mcp_server_scoped(legacy_tools, false).await
+}
+
+/// 带只读开关的 MCP server 入口。
+pub async fn run_mcp_server_scoped(
+    legacy_tools: bool,
+    read_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let reader = stdin.lock();
 
-    let state = McpServerState::new(legacy_tools).await;
+    let state = McpServerState::new_scoped(legacy_tools, read_only).await;
 
     for line in reader.lines() {
         let line = line?;

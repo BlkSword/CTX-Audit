@@ -3250,6 +3250,16 @@ pub async fn register_code_intel_tools_with_legacy(
     project_path: String,
     legacy: bool,
 ) {
+    register_code_intel_tools_scoped(registry, project_path, legacy, false).await;
+}
+
+/// 带只读开关的注册入口：`read_only` 为真时不注册写操作工具。
+pub async fn register_code_intel_tools_scoped(
+    registry: &Arc<ToolRegistry>,
+    project_path: String,
+    legacy: bool,
+    read_only: bool,
+) {
     for kind in IntelKind::all() {
         let name = kind.name();
         let allowed = if legacy {
@@ -3258,6 +3268,9 @@ pub async fn register_code_intel_tools_with_legacy(
             CODE_INTEL_TOOL_SURFACE.contains(&name)
         };
         if !allowed {
+            continue;
+        }
+        if read_only && is_write_tool(name) {
             continue;
         }
         let tool: Arc<dyn Tool> = Arc::new(CodeIntelTool::new(project_path.clone(), kind));
@@ -4241,6 +4254,15 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 21] = [
     "audit_brief",
     "trace_vulnerability_chain",
 ];
+
+/// 会改变外部状态的工具（写操作）。MCP 侧据此做只读/读写分级：
+/// 只读模式（默认）不注册这些工具，避免 Agent 在无人值守时写文件或落库。
+pub const CODE_INTEL_WRITE_TOOLS: [&str; 2] = ["report_finding", "finish_analysis"];
+
+/// 判断某工具是否属于写操作。
+pub fn is_write_tool(name: &str) -> bool {
+    CODE_INTEL_WRITE_TOOLS.contains(&name)
+}
 
 /// 默认面之外的细粒度高阶工具（legacy 模式下注册，避免上下文被工具定义占满）。
 pub const CODE_INTEL_LEGACY_SURFACE: [&str; 7] = [

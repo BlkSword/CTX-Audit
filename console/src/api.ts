@@ -200,7 +200,7 @@ export const api = {
         ok: boolean
         sessionId: string | null
         available?: boolean
-        replies?: Array<{ at?: number; text: string }>
+        replies?: Array<{ at?: number; text: string; kind?: 'assistant' | 'tool'; tool?: string }>
         error?: string
       }>(r),
     ),

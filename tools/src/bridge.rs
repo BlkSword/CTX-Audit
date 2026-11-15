@@ -903,12 +903,23 @@ impl Tool for FinishAnalysisTool {
 
 /// 注册所有内置工具
 pub async fn register_built_in_tools(registry: &Arc<ToolRegistry>, project_path: String) {
-    let tools: Vec<Arc<dyn Tool>> = vec![
+    register_built_in_tools_scoped(registry, project_path, false).await;
+}
+
+/// 带只读开关的基础工具注册：只读模式跳过 report_finding / finish_analysis。
+pub async fn register_built_in_tools_scoped(
+    registry: &Arc<ToolRegistry>,
+    project_path: String,
+    read_only: bool,
+) {
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool::new(project_path.clone())),
         Arc::new(ListFilesTool::new(project_path.clone())),
-        Arc::new(ReportFindingTool),
-        Arc::new(FinishAnalysisTool),
     ];
+    if !read_only {
+        tools.push(Arc::new(ReportFindingTool));
+        tools.push(Arc::new(FinishAnalysisTool));
+    }
 
     for tool in tools {
         if let Err(e) = registry.register(tool).await {
@@ -947,14 +958,35 @@ pub async fn register_all_tools(
     query_engine: Option<std::sync::Arc<deepaudit_core::CallGraphQueryEngine>>,
     legacy_tools: bool,
 ) {
+    register_all_tools_scoped(
+        registry,
+        project_path,
+        ast_engine,
+        query_engine,
+        legacy_tools,
+        false,
+    )
+    .await;
+}
+
+/// 带只读开关的注册入口：`read_only` 为真时不注册写操作工具。
+pub async fn register_all_tools_scoped(
+    registry: &Arc<ToolRegistry>,
+    project_path: String,
+    ast_engine: Option<std::sync::Arc<deepaudit_core::ASTEngine>>,
+    query_engine: Option<std::sync::Arc<deepaudit_core::CallGraphQueryEngine>>,
+    legacy_tools: bool,
+    read_only: bool,
+) {
     // 基础工具（read_file / list_files / report_finding / finish_analysis）两个工具面都需要
-    register_built_in_tools(registry, project_path.clone()).await;
+    register_built_in_tools_scoped(registry, project_path.clone(), read_only).await;
 
     // 高阶代码智能工具（9 个高阶语义能力 + provenance/uncertainty）
-    crate::code_intel_tools::register_code_intel_tools_with_legacy(
+    crate::code_intel_tools::register_code_intel_tools_scoped(
         registry,
         project_path.clone(),
         legacy_tools,
+        read_only,
     )
     .await;
 
