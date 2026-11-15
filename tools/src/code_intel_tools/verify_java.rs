@@ -158,6 +158,31 @@ public class CtxAuditHarness {
 }
 "#;
 
+/// 从目标文件向上找 Java 源码根：包声明 `a.b.c` 对应目录 `.../a/b/c/`，
+/// 因此源码根 = 目标文件父目录向上回溯 `包段数` 层。
+fn project_source_root(target: &Path) -> Option<PathBuf> {
+    let src = std::fs::read_to_string(target).ok()?;
+    let mut depth = 0usize;
+    for line in src.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("package ") {
+            let name = rest.trim_end_matches(';').trim();
+            if !name.is_empty() {
+                depth = name.split('.').count();
+            }
+            break;
+        }
+        if t.starts_with("public class ") || t.starts_with("class ") {
+            break;
+        }
+    }
+    let mut cur = target.parent()?;
+    for _ in 0..depth {
+        cur = cur.parent()?;
+    }
+    Some(cur.to_path_buf())
+}
+
 fn java_cmd() -> &'static str {
     "java"
 }
@@ -413,10 +438,22 @@ pub fn java_verify(
         }
     }
 
-    let compile = Command::new(javac_cmd())
-        .arg("-nowarn")
-        .arg("-d")
-        .arg(&out_dir)
+    // 真实项目的 controller 依赖同项目其他模块的类。把项目源码根加入 sourcepath，
+    // javac 会按包路径从源码树解析依赖，无需预先构建 classpath。
+    let source_root = project_source_root(target);
+    // 第三方依赖（jar）无法从源码树解析：允许通过 CTX_AUDIT_VERIFY_CLASSPATH 提供。
+    let extra_cp = std::env::var("CTX_AUDIT_VERIFY_CLASSPATH").ok().filter(|v| !v.trim().is_empty());
+    let mut compile_cmd = Command::new(javac_cmd());
+    compile_cmd.arg("-nowarn").arg("-d").arg(&out_dir);
+    if let Some(root) = source_root.as_ref() {
+        compile_cmd.arg("-sourcepath").arg(root);
+        // 依赖类只用于解析符号，不产出 class（避免把整个项目编译一遍）
+        compile_cmd.arg("-implicit:none");
+    }
+    if let Some(cp) = extra_cp.as_ref() {
+        compile_cmd.arg("-classpath").arg(cp);
+    }
+    let compile = compile_cmd
         .args(&sources)
         .output()
         .map_err(|e| format!("无法执行 javac: {e}"))?;
@@ -429,7 +466,10 @@ pub fn java_verify(
             "function": function,
             "archetype": archetype,
             "tier": "compile_failed",
-            "evidence": {"stderr": err.chars().take(600).collect::<String>()},
+            "evidence": {
+                "stderr": err.chars().take(600).collect::<String>(),
+                "hint": "真实项目依赖第三方 jar 时，用 CTX_AUDIT_VERIFY_CLASSPATH 提供 classpath（如 mvn dependency:build-classpath 的输出）",
+            },
             "sandbox": {"runner": "javac+java", "network_enforced": false},
             "uncertainty": {"level": "high", "reasons": ["fixture_does_not_compile"]},
         }));
@@ -443,9 +483,13 @@ pub fn java_verify(
         Some(p) => format!("{p}.CtxAuditHarness"),
         None => "CtxAuditHarness".to_string(),
     };
+    let run_cp = match extra_cp.as_ref() {
+        Some(cp) => format!("{}:{}", out_dir.display(), cp),
+        None => out_dir.display().to_string(),
+    };
     let run = Command::new(java_cmd())
         .arg("-cp")
-        .arg(&out_dir)
+        .arg(&run_cp)
         .arg(&harness_fqcn)
         .arg(&fqcn)
         .arg(function)

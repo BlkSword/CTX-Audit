@@ -723,11 +723,41 @@ pub(crate) const LIB_ENTRY_NAMES: [&str; 8] = [
 ];
 
 /// 入口清单：method 级路由（文件/行）+ 覆盖判定（来自端点表）。
+/// 测试/示例代码路径判定：这些文件里的危险调用不是生产攻击面。
+///
+/// 只按路径与文件名判断（不做内容分析），覆盖常见约定：
+/// `test/`、`tests/`、`__tests__/`、`spec/`、`fixtures/`、`examples/`、
+/// `*.test.js`、`*.spec.ts`、`*_test.go`、`*Test.java`、`test_*.py`。
+pub(crate) fn is_test_or_example_path(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_lowercase();
+    let segments: Vec<&str> = lower.split('/').collect();
+    for seg in &segments {
+        if matches!(
+            *seg,
+            "test" | "tests" | "__tests__" | "spec" | "specs" | "fixtures" | "examples" | "example"
+        ) {
+            return true;
+        }
+    }
+    let name = segments.last().copied().unwrap_or("");
+    name.contains(".test.")
+        || name.contains(".spec.")
+        || name.ends_with("_test.go")
+        || name.ends_with("test.java")
+        || name.ends_with("tests.java")
+        || name.starts_with("test_")
+        || name.ends_with("_test.py")
+}
+
 pub(crate) fn collect_entries(files: &[(String, String)], id: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for (path, content) in files.iter().take(max_index_files()) {
         let lang = chain_language_of(path);
         if !(path.ends_with(".java") || matches!(lang, "js" | "ts")) {
+            continue;
+        }
+        // 测试/示例代码不是生产攻击面：其危险调用不应成为候选链入口。
+        if is_test_or_example_path(path) {
             continue;
         }
         let scan = scan_routes_in_file_prefixed(path, content, "", id, "");
@@ -988,13 +1018,15 @@ pub(crate) fn candidates_legacy(
             };
             handler_of.insert(
                 (file.clone(), line),
-                (file.clone(), ln, name, json!({
+                (file.clone(), ln, name.clone(), json!({
                     "kind": "http",
                     "method": e.get("method").cloned().unwrap_or(Value::Null),
                     "route": e.get("route").cloned().unwrap_or(Value::Null),
                     "file": file,
                     "mapping_line": line,
                     "handler_line": ln,
+                    // 可调用单元名：动态验证与 PoC 骨架据此定位函数（HTTP 入口的 route 是路径，不是函数名）
+                    "handler": name,
                     "entry_kind": e.get("entry_kind").cloned().unwrap_or(Value::Null),
                     "auth": auth_v,
                 })),

@@ -329,6 +329,8 @@ fn entry_index(pre: &Pre, entries: &[Value]) -> BTreeMap<(usize, u32), Value> {
             "file": file,
             "mapping_line": line,
             "handler_line": dl,
+            // 可调用单元名：HTTP 入口的 route 是路径，动态验证需要函数名
+            "handler": lookup_name,
             "entry_kind": e.get("entry_kind").cloned().unwrap_or(Value::Null),
             "auth": auth_label,
         });
@@ -940,6 +942,15 @@ pub(crate) fn candidates(
         .unwrap_or_default();
     let t1 = Instant::now();
     let mut sinks = scan_sinks_with(files, &extra_sinks, include_builtin_sinks);
+    // 测试/示例代码里的危险调用不是生产攻击面：直接剔除，避免候选链落在测试文件上。
+    let sinks_before_filter = sinks.len();
+    sinks.retain(|s| {
+        s.get("file")
+            .and_then(|v| v.as_str())
+            .map(|f| !super::chain::is_test_or_example_path(f))
+            .unwrap_or(true)
+    });
+    let sinks_filtered = sinks_before_filter - sinks.len();
     let t_sinks = t1.elapsed().as_millis() as u64;
     sinks.sort_by(|a, b| {
         (
@@ -956,6 +967,7 @@ pub(crate) fn candidates(
 
     let mut stats: BTreeMap<String, usize> = BTreeMap::new();
     stats.insert("sinks_scanned".to_string(), sinks.len());
+    stats.insert("sinks_filtered_test_paths".to_string(), sinks_filtered);
     stats.insert("entries".to_string(), all_entries.len());
     stats.insert("entries_nextjs".to_string(), nextjs_count);
     stats.insert("entries_python".to_string(), python_count);
