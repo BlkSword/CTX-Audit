@@ -4977,7 +4977,11 @@ mod tests {
             ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.len() + 3,
             "默认工具面应为高阶工具 + 3 个基础工具"
         );
-        assert_eq!(ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.len(), 21, "高阶工具面应为 21");
+        assert_eq!(
+            ctx_audit_tools::CODE_INTEL_TOOL_SURFACE.len(),
+            24,
+            "高阶工具面应为 24（21 个能力 + 3 个 SOP 工具）"
+        );
     }
 
     /// legacy gate：默认 state 的 registry 只含默认面工具；legacy 打开后严格更多。

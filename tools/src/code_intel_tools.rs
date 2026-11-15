@@ -230,6 +230,9 @@ pub enum IntelKind {
     IncrementalStatus,
     /// 项目级端点表（一次调用返回全项目路由 + 覆盖判定）
     ProjectRoutes,
+    AuditWorkflow,
+    Autopilot,
+    PocPackage,
     /// 鉴权基线卡：链/规则/过滤器/注解消费者/被关闭的钩子（一屏可复核）
     SecurityBaseline,
     /// 单条路由判定 + 可机械证伪命令 + 敏感返回面
@@ -267,7 +270,7 @@ pub enum IntelKind {
 }
 
 impl IntelKind {
-    pub fn all() -> [IntelKind; 27] {
+    pub fn all() -> [IntelKind; 30] {
         [
             IntelKind::ProjectIndex,
             IntelKind::SymbolDefinition,
@@ -279,6 +282,9 @@ impl IntelKind {
             IntelKind::FrameworkContext,
             IntelKind::IncrementalStatus,
             IntelKind::ProjectRoutes,
+            IntelKind::AuditWorkflow,
+            IntelKind::Autopilot,
+            IntelKind::PocPackage,
             IntelKind::SecurityBaseline,
             IntelKind::ExplainRoute,
             IntelKind::CoverageSummary,
@@ -328,6 +334,9 @@ impl IntelKind {
             IntelKind::VerifyPayload => "verify_payload",
             IntelKind::AuditBrief => "audit_brief",
             IntelKind::TraceVulnerabilityChain => "trace_vulnerability_chain",
+            IntelKind::AuditWorkflow => "audit_workflow",
+            IntelKind::Autopilot => "autopilot",
+            IntelKind::PocPackage => "poc_package",
         }
     }
 
@@ -360,6 +369,9 @@ impl IntelKind {
             IntelKind::AuditBrief => "一次性审计简报：覆盖待审队列 + 头部链档 + 载荷档位，便于 agent 用单次调用建立工作集",
             IntelKind::TraceVulnerabilityChain => "SOP 级链路追踪：给定 chain_id 或 entry/sink，一次返回链档、载荷档位、SSA 参数流、最小证伪切片与下一步动作",
             IntelKind::ExplainRoute => "单条路由判定：verdict + 逐项检查证据 + 可机械证伪命令 + 敏感返回面",
+            IntelKind::AuditWorkflow => "一键审计工作流：覆盖率→待审→候选链→链档→载荷判定，每步产出稳定证据 ID",
+            IntelKind::Autopilot => "自动驾驶：按预算自主循环（工作流→排序→动态验证→PoC→结论），决策轨迹可查",
+            IntelKind::PocPackage => "PoC 工件打包：Mermaid 拓扑 + 请求骨架 + Guard Gap + 修复建议 + 复现步骤",
         }
     }
 }
@@ -562,6 +574,30 @@ impl CodeIntelTool {
                 ),
                 int_param("limit", "brief 模式分页大小（0=全部）", 0),
                 int_param("offset", "brief 模式分页起点（默认 0）", 0),
+            ],
+            IntelKind::AuditWorkflow => vec![
+                int_param("triage_limit", "待审条数上限（0=全部，上限 200）", 20),
+                int_param("chain_limit", "候选链条数上限", 20),
+                int_param("deep_limit", "做链档与载荷判定的链数上限", 3),
+                str_param(
+                    "stop_after",
+                    "只跑到该阶段：coverage|triage|chains|dossier|payload（缺省全跑）",
+                    false,
+                ),
+            ],
+            IntelKind::Autopilot => vec![
+                int_param("budget", "深挖预算（最多处理多少条链，1..20）", 3),
+                bool_param("verify", "是否尝试动态验证（需 CTX_AUDIT_VERIFY_DIR）"),
+                bool_param("poc", "是否打包 PoC 工件"),
+                int_param("triage_limit", "待审条数上限", 20),
+                int_param("chain_limit", "候选链条数上限", 20),
+            ],
+            IntelKind::PocPackage => vec![
+                str_param("chain_id", "链 ID（来自 candidate_chains）", false),
+                str_param("entry_file", "入口文件（配合 entry_line）", false),
+                int_param("entry_line", "入口行号", 0),
+                str_param("sink_file", "汇文件（配合 sink_line）", false),
+                int_param("sink_line", "汇行号", 0),
             ],
             IntelKind::SymbolDefinition | IntelKind::SymbolReferences => {
                 vec![str_param("symbol", "符号名", true)]
@@ -3037,6 +3073,62 @@ all_chains.extend(sa_token_security_chains(policy_files));
                     ),
                 }
             }
+            IntelKind::AuditWorkflow => {
+                let opts = workflow::WorkflowOptions {
+                    triage_limit: input["triage_limit"].as_u64().unwrap_or(20) as usize,
+                    chain_limit: input["chain_limit"].as_u64().unwrap_or(20) as usize,
+                    deep_limit: input["deep_limit"].as_u64().unwrap_or(3) as usize,
+                    stop_after: input["stop_after"].as_str().map(|v| v.to_string()),
+                    verify: false,
+                };
+                let data = workflow::audit_workflow_report(root, &opts)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("audit_workflow: {e}")))?;
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new(
+                        "medium",
+                        &["name_level_graph", "heuristic_guards", "static_only"],
+                        0,
+                    ),
+                }
+            }
+            IntelKind::Autopilot => {
+                let opts = autopilot::AutopilotOptions {
+                    budget: input["budget"].as_u64().unwrap_or(3) as usize,
+                    verify: input["verify"].as_bool().unwrap_or(false),
+                    poc: input["poc"].as_bool().unwrap_or(true),
+                    triage_limit: input["triage_limit"].as_u64().unwrap_or(20) as usize,
+                    chain_limit: input["chain_limit"].as_u64().unwrap_or(20) as usize,
+                };
+                let data = autopilot::autopilot_report(root, &opts)
+                    .map_err(|e| ToolError::ExecutionFailed(format!("autopilot: {e}")))?;
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new(
+                        "medium",
+                        &["name_level_graph", "heuristic_guards", "static_only"],
+                        0,
+                    ),
+                }
+            }
+            IntelKind::PocPackage => {
+                let data = poc::poc_package_report(
+                    root,
+                    input["chain_id"].as_str(),
+                    input["entry_file"].as_str(),
+                    input["entry_line"].as_u64().map(|v| v as u32),
+                    input["sink_file"].as_str(),
+                    input["sink_line"].as_u64().map(|v| v as u32),
+                )
+                .map_err(|e| ToolError::ExecutionFailed(format!("poc_package: {e}")))?;
+                IntelEnvelope {
+                    data,
+                    provenance: vec![prov(".", 0, &id)],
+                    uncertainty: Uncertainty::new("medium", &["heuristic_param_binding"], 0),
+                }
+            }
             IntelKind::PrDriftGate => {
                 let base_in = input["base"].as_str().unwrap_or("");
                 let head_in = input["head"].as_str().unwrap_or("");
@@ -3178,7 +3270,7 @@ fn slim_slice_envelope(mut env: IntelEnvelope) -> IntelEnvelope {
 /// 依据 R257 方案：一个意图一个工具，先声明覆盖边界（coverage_summary）→ 取清单
 /// （coverage_triage）→ 单条判定（explain_route）→ 机械证伪（assert_verdict）→ 证据
 /// （slice_backward / get_sanitizer_guards / get_framework_context）→ 落库（report_finding）。
-pub const PROTOCOL_TOOL_SURFACE: [&str; 21] = CODE_INTEL_TOOL_SURFACE;
+pub const PROTOCOL_TOOL_SURFACE: [&str; 24] = CODE_INTEL_TOOL_SURFACE;
 
 /// 单次工具响应的载荷预算（`CTX_AUDIT_MAX_TOOL_BYTES` 可覆盖；默认 64KB）。
 fn max_tool_bytes() -> usize {
@@ -4235,7 +4327,7 @@ pub fn chain_dossier_markdown(project: &Path, chain_id: &str) -> Result<String, 
 /// LLM 默认工具面（9 个）：审计协议所需的最小集合。
 ///
 /// 依据 R257：一个意图一个工具；未在名单内的高阶工具走 `--legacy-tools` / `CTX_AUDIT_LEGACY_TOOLS=1`。
-pub const CODE_INTEL_TOOL_SURFACE: [&str; 21] = [
+pub const CODE_INTEL_TOOL_SURFACE: [&str; 24] = [
     "coverage_summary",
     "coverage_triage",
     "get_project_routes",
@@ -4257,6 +4349,9 @@ pub const CODE_INTEL_TOOL_SURFACE: [&str; 21] = [
     "verify_payload",
     "audit_brief",
     "trace_vulnerability_chain",
+    "audit_workflow",
+    "autopilot",
+    "poc_package",
 ];
 
 /// 会改变外部状态的工具（写操作）。MCP 侧据此做只读/读写分级：
