@@ -271,6 +271,18 @@ export const api = {
       body: JSON.stringify({ cwd, text }),
     }).then((r) => json<{ ok: boolean; sessionId?: string; created?: boolean; accepted?: boolean; error?: string }>(r)),
 
+  addActionEvidence: (
+    id: string,
+    payload: { action: string; summary: string; data?: unknown; id?: string },
+  ) =>
+    fetch(`${API_BASE}/workspaces/${id}/evidence`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then((r) =>
+      json<{ ok: boolean; sessionId: string; evidenceId: string; error?: string }>(r),
+    ),
+
   sessions: (id: string) =>
     fetch(`${API_BASE}/workspaces/${id}/sessions`).then((r) =>
       json<{ ok: boolean; sessions: AuditSession[] }>(r),

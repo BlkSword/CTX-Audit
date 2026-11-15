@@ -290,6 +290,31 @@ export function createConsoleApi(options) {
       return sendJson(res, 404, { ok: false, error: 'unknown session action' })
     }
 
+    // ── Append an action result as evidence to the latest session ────────
+    const evMatch = path.match(/^\/workspaces\/([^/]+)\/evidence$/)
+    if (evMatch && req.method === 'POST') {
+      const ws = findWorkspace(evMatch[1])
+      if (!ws) return sendJson(res, 404, { ok: false, error: 'workspace not found' })
+      const body = await readBody(req)
+      const list = sessions.list(ws.id)
+      let target = list.find((x) => x.status === 'running') ?? list[0]
+      if (!target) {
+        target = sessions.create(ws.id, { kind: 'manual', label: '手工取证' })
+        sessions.update(ws.id, target.id, { status: 'done', finishedAt: new Date().toISOString() })
+      }
+      const existing = Array.isArray(target.evidence) ? target.evidence : []
+      const id = String(body.id ?? `EV-action-${existing.length + 1}`)
+      const entry = {
+        id,
+        stage: 'action',
+        kind: String(body.action ?? 'action'),
+        summary: String(body.summary ?? '').slice(0, 500),
+        data: body.data ?? null,
+      }
+      const updated = sessions.appendEvidence(ws.id, target.id, [entry])
+      return sendJson(res, 200, { ok: true, sessionId: target.id, evidenceId: id, session: updated })
+    }
+
     // ── Workspace ledger (counts + latest sessions) ──────────────────────
     const ledgerMatch = path.match(/^\/workspaces\/([^/]+)\/ledger$/)
     if (ledgerMatch && req.method === 'GET') {

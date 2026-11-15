@@ -1151,7 +1151,7 @@ function ActionsPage(props: { workspace: Workspace }) {
     try {
       const res = await api.runAction(props.workspace.id, active.id, values)
       setResult(res)
-      if (res.ok) recordAction(active.id, res.data ?? res.stdout ?? '')
+      if (res.ok) recordAction(props.workspace.id, active.id, res.data ?? res.stdout ?? '')
     } catch (e) {
       setResult({ ok: false, error: (e as Error).message })
     } finally {
@@ -1241,10 +1241,13 @@ function ActionsPage(props: { workspace: Workspace }) {
 /** Last few executed capabilities, appended to the assistant brief on demand. */
 const recentActions: Array<{ at: string; action: string; summary: string }> = []
 
-function recordAction(action: string, data: unknown): void {
+function recordAction(workspaceId: string, action: string, data: unknown): void {
   const summary = JSON.stringify(data).slice(0, 2000)
   recentActions.unshift({ at: new Date().toLocaleTimeString(), action, summary })
   if (recentActions.length > 3) recentActions.pop()
+  // Persist the action outcome as session evidence so it survives a reload and
+  // the agent can cite it by id.
+  void api.addActionEvidence(workspaceId, { action, summary }).catch(() => {})
   // Notify the assistant view so the evidence can flow into the brief without
   // the operator copying it by hand.
   try {
