@@ -381,9 +381,19 @@ pub fn java_verify(
     };
     std::fs::create_dir_all(&pkg_dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
 
+    // 具名包里的类不能引用默认包类，所以桩与 harness 都要带同样的 package 声明。
+    let pkg_line = match &package {
+        Some(p) => format!("package {p};\n"),
+        None => String::new(),
+    };
     let write = |name: &str, body: &str| -> Result<PathBuf, String> {
         let p = pkg_dir.join(name);
-        std::fs::write(&p, body).map_err(|e| format!("写入 {name} 失败: {e}"))?;
+        let full = if body.starts_with("package ") {
+            body.to_string()
+        } else {
+            format!("{pkg_line}{body}")
+        };
+        std::fs::write(&p, full).map_err(|e| format!("写入 {name} 失败: {e}"))?;
         Ok(p)
     };
     write(&format!("{class}.java"), &instrumented)?;
@@ -429,10 +439,14 @@ pub fn java_verify(
         Some(p) => format!("{p}.{class}"),
         None => class.clone(),
     };
+    let harness_fqcn = match &package {
+        Some(p) => format!("{p}.CtxAuditHarness"),
+        None => "CtxAuditHarness".to_string(),
+    };
     let run = Command::new(java_cmd())
         .arg("-cp")
         .arg(&out_dir)
-        .arg("CtxAuditHarness")
+        .arg(&harness_fqcn)
         .arg(&fqcn)
         .arg(function)
         .arg(payload)

@@ -23,3 +23,4 @@ pub mod scan;
 pub mod watch;
 pub mod workflow;
 pub mod poc;
+pub mod autopilot;

@@ -117,6 +117,65 @@ export interface ActionResult {
   error?: string
 }
 
+export interface AuditEvidence {
+  id: string
+  stage: string
+  kind: string
+  summary?: string
+  data?: unknown
+}
+
+export interface AuditFinding {
+  id: string
+  title: string
+  severity: string
+  evidenceIds: string[]
+  note: string
+  createdAt: string
+}
+
+export interface AuditSession {
+  id: string
+  workspaceId: string
+  kind: string
+  label: string
+  status: 'running' | 'done' | 'failed'
+  createdAt: string
+  finishedAt: string | null
+  durationMs?: number
+  agentSessionId: string | null
+  workflow: {
+    stages: Array<{ stage: string; status: string; ms: number; evidence_ids?: string[] }>
+    evidenceCounts: Record<string, number>
+    nextActions: Array<{ kind: string; tool: string; hint: string; evidence_id?: string }>
+    limits: unknown[]
+    stoppedAfter: string | null
+  } | null
+  evidence: AuditEvidence[]
+  findings: AuditFinding[]
+  notes: string[]
+  error: string | null
+}
+
+export interface WorkspaceLedger {
+  workspaceId: string
+  sessions: number
+  byStatus: Record<string, number>
+  byKind: Record<string, number>
+  evidenceTotal: number
+  findingsTotal: number
+  latest: Array<{
+    id: string
+    kind: string
+    label: string
+    status: string
+    createdAt: string
+    finishedAt: string | null
+    evidence: number
+    findings: number
+  }>
+}
+
 export interface GateVerdict {
   severity: string
   kind: string
@@ -211,6 +270,48 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ cwd, text }),
     }).then((r) => json<{ ok: boolean; sessionId?: string; created?: boolean; accepted?: boolean; error?: string }>(r)),
+
+  sessions: (id: string) =>
+    fetch(`${API_BASE}/workspaces/${id}/sessions`).then((r) =>
+      json<{ ok: boolean; sessions: AuditSession[] }>(r),
+    ),
+
+  session: (id: string, sessionId: string) =>
+    fetch(`${API_BASE}/workspaces/${id}/sessions/${sessionId}`).then((r) =>
+      json<{ ok: boolean; session: AuditSession }>(r),
+    ),
+
+  ledger: (id: string) =>
+    fetch(`${API_BASE}/workspaces/${id}/ledger`).then((r) =>
+      json<{ ok: boolean; ledger: WorkspaceLedger }>(r),
+    ),
+
+  auditRun: (id: string, opts: { triageLimit?: number; chainLimit?: number; deepLimit?: number; label?: string }) =>
+    fetch(`${API_BASE}/workspaces/${id}/audit-run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(opts),
+    }).then((r) =>
+      json<{ ok: boolean; session?: AuditSession; evidenceCount?: number; durationMs?: number; error?: string }>(r),
+    ),
+
+  addEvidence: (id: string, sessionId: string, evidence: AuditEvidence[]) =>
+    fetch(`${API_BASE}/workspaces/${id}/sessions/${sessionId}/evidence`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ evidence }),
+    }).then((r) => json<{ ok: boolean; session: AuditSession }>(r)),
+
+  addFinding: (
+    id: string,
+    sessionId: string,
+    finding: { title: string; severity: string; evidenceIds: string[]; note: string },
+  ) =>
+    fetch(`${API_BASE}/workspaces/${id}/sessions/${sessionId}/findings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(finding),
+    }).then((r) => json<{ ok: boolean; session: AuditSession; finding: AuditFinding }>(r)),
 
   /** Subscribe to the audit stream; returns an unsubscribe function. */
   stream(id: string, onEvent: (event: string, data: unknown) => void): () => void {

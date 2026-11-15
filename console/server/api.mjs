@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { actionCatalogue, findAction, validateActionArgs } from './actions.mjs'
+import { createSessionStore } from './sessions.mjs'
 
 const DEFAULT_TIMEOUT_MS = 90000
 
@@ -34,6 +35,7 @@ export function createConsoleApi(options) {
   }
 
   let workspaces = loadWorkspaces()
+  const sessions = createSessionStore(stateDir)
 
   const slug = (p) =>
     p
@@ -228,6 +230,129 @@ export function createConsoleApi(options) {
       return sendJson(res, 200, { ok: true, workspaces })
     }
 
+    // ── Audit sessions (durable per workspace) ───────────────────────────
+    const sess = path.match(/^\/workspaces\/([^/]+)\/sessions(?:\/([A-Za-z0-9-]+))?(?:\/([a-z-]+))?$/)
+    if (sess) {
+      const ws = findWorkspace(sess[1])
+      if (!ws) return sendJson(res, 404, { ok: false, error: 'workspace not found' })
+      const sessionId = sess[2]
+      const sub = sess[3]
+
+      if (!sessionId && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, sessions: sessions.list(ws.id) })
+      }
+      if (!sessionId && req.method === 'POST') {
+        const body = await readBody(req)
+        const record = sessions.create(ws.id, {
+          kind: body.kind ? String(body.kind) : undefined,
+          label: body.label ? String(body.label) : undefined,
+          agentSessionId: body.agentSessionId ? String(body.agentSessionId) : undefined,
+        })
+        return sendJson(res, 200, { ok: true, session: record })
+      }
+      if (sessionId && !sub && req.method === 'GET') {
+        const record = sessions.get(ws.id, sessionId)
+        if (!record) return sendJson(res, 404, { ok: false, error: 'session not found' })
+        return sendJson(res, 200, { ok: true, session: record })
+      }
+      if (sessionId && !sub && req.method === 'PATCH') {
+        const body = await readBody(req)
+        const record = sessions.update(ws.id, sessionId, body)
+        if (!record) return sendJson(res, 404, { ok: false, error: 'session not found' })
+        return sendJson(res, 200, { ok: true, session: record })
+      }
+      if (sessionId && !sub && req.method === 'DELETE') {
+        const removed = sessions.remove(ws.id, sessionId)
+        return sendJson(res, removed ? 200 : 404, { ok: removed })
+      }
+      if (sessionId && sub === 'evidence' && req.method === 'POST') {
+        const body = await readBody(req)
+        const entries = Array.isArray(body.evidence) ? body.evidence : []
+        const record = sessions.appendEvidence(ws.id, sessionId, entries)
+        if (!record) return sendJson(res, 404, { ok: false, error: 'session not found' })
+        return sendJson(res, 200, { ok: true, session: record })
+      }
+      if (sessionId && sub === 'findings' && req.method === 'POST') {
+        const body = await readBody(req)
+        const record = sessions.get(ws.id, sessionId)
+        if (!record) return sendJson(res, 404, { ok: false, error: 'session not found' })
+        const finding = {
+          id: `F-${record.findings.length + 1}`,
+          title: String(body.title ?? ''),
+          severity: String(body.severity ?? 'medium'),
+          evidenceIds: Array.isArray(body.evidenceIds) ? body.evidenceIds.map(String) : [],
+          note: String(body.note ?? ''),
+          createdAt: new Date().toISOString(),
+        }
+        const updated = sessions.update(ws.id, sessionId, { findings: [...record.findings, finding] })
+        return sendJson(res, 200, { ok: true, session: updated, finding })
+      }
+      return sendJson(res, 404, { ok: false, error: 'unknown session action' })
+    }
+
+    // ── Workspace ledger (counts + latest sessions) ──────────────────────
+    const ledgerMatch = path.match(/^\/workspaces\/([^/]+)\/ledger$/)
+    if (ledgerMatch && req.method === 'GET') {
+      const ws = findWorkspace(ledgerMatch[1])
+      if (!ws) return sendJson(res, 404, { ok: false, error: 'workspace not found' })
+      return sendJson(res, 200, { ok: true, ledger: sessions.ledger(ws.id) })
+    }
+
+    // ── One-click audit: run the workflow and persist it as a session ────
+    const runMatch = path.match(/^\/workspaces\/([^/]+)\/audit-run$/)
+    if (runMatch && req.method === 'POST') {
+      const ws = findWorkspace(runMatch[1])
+      if (!ws) return sendJson(res, 404, { ok: false, error: 'workspace not found' })
+      const body = await readBody(req)
+      const triageLimit = Number(body.triageLimit ?? 20)
+      const chainLimit = Number(body.chainLimit ?? 20)
+      const deepLimit = Number(body.deepLimit ?? 3)
+      const label = body.label ? String(body.label) : '一键审计'
+      const record = sessions.create(ws.id, { kind: 'workflow', label })
+      const args = [
+        'workflow',
+        ws.path,
+        '--triage-limit',
+        String(triageLimit),
+        '--chain-limit',
+        String(chainLimit),
+        '--deep-limit',
+        String(deepLimit),
+        '-o',
+        'json',
+      ]
+      const result = await runCli(ws.path, args)
+      if (!result.ok) {
+        const failed = sessions.update(ws.id, record.id, {
+          status: 'failed',
+          finishedAt: new Date().toISOString(),
+          error: result.stderr ?? result.error ?? 'workflow failed',
+        })
+        return sendJson(res, 200, { ok: false, session: failed, error: failed?.error })
+      }
+      const data = result.data ?? {}
+      const evidence = Array.isArray(data.evidence) ? data.evidence : []
+      const updated = sessions.update(ws.id, record.id, {
+        status: 'done',
+        finishedAt: new Date().toISOString(),
+        durationMs: result.durationMs,
+        workflow: {
+          stages: data.stages ?? [],
+          evidenceCounts: data.evidence_counts ?? {},
+          nextActions: data.next_actions ?? [],
+          limits: data.limits ?? [],
+          stoppedAfter: data.stopped_after ?? null,
+        },
+        evidence,
+      })
+      return sendJson(res, 200, {
+        ok: true,
+        session: updated,
+        evidenceCount: evidence.length,
+        durationMs: result.durationMs,
+      })
+    }
+
     const m = path.match(/^\/workspaces\/([^/]+)\/([a-z-]+)$/)
     if (m) {
       const ws = findWorkspace(m[1])
@@ -348,5 +473,5 @@ export function createConsoleApi(options) {
     sendJson(res, 404, { ok: false, error: 'not found' })
   }
 
-  return { handle, runCli, listWorkspaces: () => workspaces, logger }
+  return { handle, runCli, listWorkspaces: () => workspaces, sessions, logger }
 }

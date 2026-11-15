@@ -514,6 +514,40 @@ enum Commands {
         output: String,
     },
 
+    /// 自动驾驶：按预算自主循环（工作流 → 排序 → 动态验证 → PoC → 结论）
+    #[command(
+        after_help = "预算限制深挖链数；决策规则固定，不含随机与 LLM 推断。动态验证需 CTX_AUDIT_VERIFY_DIR。"
+    )]
+    Autopilot {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 深挖预算（最多处理多少条链）
+        #[arg(long, default_value_t = 3)]
+        budget: usize,
+
+        /// 是否尝试动态验证（需 CTX_AUDIT_VERIFY_DIR）
+        #[arg(long)]
+        verify: bool,
+
+        /// 是否打包 PoC 工件
+        #[arg(long, default_value_t = true)]
+        poc: bool,
+
+        /// 待审条数上限
+        #[arg(long, default_value_t = 20)]
+        triage_limit: usize,
+
+        /// 候选链条数上限
+        #[arg(long, default_value_t = 20)]
+        chain_limit: usize,
+
+        /// 输出格式 (json|md)
+        #[arg(short = 'o', long, default_value = "json")]
+        output: String,
+    },
+
     /// PoC 工件打包：Mermaid 拓扑 + 请求骨架 + Guard Gap + 修复建议
     #[command(
         after_help = "只打包证据，不执行请求；--chain-id 或 entry/sink 坐标二选一。"
@@ -947,6 +981,26 @@ async fn main() -> Result<()> {
             .map_err(|e| miette::miette!("MCP server error: {}", e)),
 
         Commands::Baseline { path, output } => commands::baseline::execute(path, output).await,
+        Commands::Autopilot {
+            path,
+            budget,
+            verify,
+            poc,
+            triage_limit,
+            chain_limit,
+            output,
+        } => {
+            commands::autopilot::execute(
+                path,
+                budget,
+                verify,
+                poc,
+                triage_limit,
+                chain_limit,
+                output,
+            )
+            .await
+        }
         Commands::Poc {
             path,
             chain_id,
