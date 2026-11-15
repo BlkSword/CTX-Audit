@@ -1,5 +1,6 @@
 # ctx-audit profile patch: mount the CTX-Audit Console inside this profile's web
-# surface.
+# surface, and register the CTX-Audit MCP server so the agent can call the audit
+# tools directly instead of shelling out.
 #
 # The listening port stays a boot flag (`--port`), so this profile can run
 # alongside the default web profile without either one owning a fixed port.
@@ -10,3 +11,14 @@
         checkout: C:/project/CTX-Audit
         mount: /console
         apiMount: /api/console
+
+    # The audit tool surface (21 high-level + 3 base tools) as native agent
+    # tools, namespaced as mcp__ctx-audit__<tool>.
+    - id: mcp-ctx-audit
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ctx-audit
+        transport: stdio
+        command: C:/project/CTX-Audit/target/release/ctx-audit.exe
+        args: ['mcp']
+        cwd: C:/project/CTX-Audit
