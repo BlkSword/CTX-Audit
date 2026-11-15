@@ -1,6 +1,6 @@
 import { createElement as h, useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from './api'
-import type { ActionSpec, ChainDossier, Overview, Workspace } from './api'
+import type { ActionSpec, AuditSession, ChainDossier, Overview, Workspace, WorkspaceLedger } from './api'
 import { Icon } from './icons'
 import { ChainFlow, Donut, StackedBar } from './charts'
 import { Badge, Bar, Card, Empty, Loading, Metric, SkeletonRows, Table, fmtMs, shortPath, tierTone, verdictTone } from './ui'
@@ -194,7 +194,7 @@ export default function App() {
           : error
             ? h(Empty, { title: '分析失败', hint: error, action: h('button', { className: 'btn', onClick: () => void loadOverview(active.id) }, '重试') })
             : page === 'overview'
-              ? h(OverviewPage, { overview, loading, onGoto: setPage })
+              ? h(OverviewPage, { overview, loading, onGoto: setPage, workspace: active })
               : page === 'stream'
                 ? h(StreamPage, { workspace: active, onDone: () => void loadOverview(active.id) })
                 : page === 'coverage'
@@ -279,7 +279,12 @@ export default function App() {
 
 /* ── Overview ─────────────────────────────────────────────────────────── */
 
-function OverviewPage(props: { overview: Overview | null; loading: boolean; onGoto: (p: Page) => void }) {
+function OverviewPage(props: {
+  overview: Overview | null
+  loading: boolean
+  onGoto: (p: Page) => void
+  workspace: Workspace
+}) {
   if (props.loading && !props.overview) return h(Loading, { label: '正在建立工作区总览…' })
   if (!props.overview) return h(Empty, { title: '暂无数据', hint: '点击右上角“重新分析”生成总览。' })
   const o = props.overview
@@ -316,6 +321,7 @@ function OverviewPage(props: { overview: Overview | null; loading: boolean; onGo
         hint: `覆盖 ${fmtMs(o.timings.auditMs)} · 链 ${fmtMs(o.timings.chainsMs)}`,
       }),
     ),
+    h(AuditSessionPanel, { workspace: props.workspace, overview: o }),
     h(
       'div',
       { className: 'grid k2' },
@@ -550,6 +556,168 @@ function CoveragePage(props: { overview: Overview | null; loading: boolean }) {
 }
 
 /* ── Chains ───────────────────────────────────────────────────────────── */
+
+function AuditSessionPanel(props: { workspace: Workspace; overview: Overview }) {
+  const [ledger, setLedger] = useState<WorkspaceLedger | null>(null)
+  const [sessions, setSessions] = useState<AuditSession[]>([])
+  const [selected, setSelected] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [budget, setBudget] = useState(3)
+
+  async function refresh() {
+    try {
+      const [l, s] = await Promise.all([
+        api.ledger(props.workspace.id),
+        api.sessions(props.workspace.id),
+      ])
+      if (l.ok) setLedger(l.ledger)
+      if (s.ok) setSessions(s.sessions)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  useEffect(() => {
+    void refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.workspace.id])
+
+  async function runAudit() {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await api.auditRun(props.workspace.id, {
+        triageLimit: 20,
+        chainLimit: 20,
+        deepLimit: budget,
+        label: `一键审计 · 预算 ${budget}`,
+      })
+      if (!r.ok) setError(r.error ?? '审计失败')
+      else setSelected(r.session?.id ?? null)
+      await refresh()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const current = sessions.find((s) => s.id === selected) ?? sessions[0] ?? null
+  const evidence = current?.evidence ?? []
+
+  return h(Card, {
+    title: '审计会话',
+    sub: ledger
+      ? `${ledger.sessions} 次会话 · 证据 ${ledger.evidenceTotal} 条 · 发现 ${ledger.findingsTotal} 条 · 完成 ${ledger.byStatus.done ?? 0} / 失败 ${ledger.byStatus.failed ?? 0}`
+      : '尚无审计记录',
+    actions: h(
+      'div',
+      { className: 'row' },
+      h(
+        'select',
+        {
+          className: 'input sm',
+          value: String(budget),
+          onChange: (e: { target: { value: string } }) => setBudget(Number(e.target.value)),
+          title: '深挖预算：本轮最多处理多少条链',
+        },
+        ...[1, 2, 3, 5, 8].map((n) => h('option', { key: n, value: String(n) }, `预算 ${n}`)),
+      ),
+      h(
+        'button',
+        { className: 'btn primary sm', onClick: () => void runAudit(), disabled: busy },
+        busy ? h('span', { className: 'spinner' }) : h(Icon, { name: 'play' }),
+        busy ? '审计中…' : '一键审计',
+      ),
+    ),
+    children: h(
+      'div',
+      { className: 'stack' },
+      error ? h('div', { className: 'error-text' }, error) : null,
+      sessions.length === 0
+        ? h(Empty, { title: '还没有审计会话', hint: '点右上角“一键审计”跑一轮完整 SOP。' })
+        : h(
+            'div',
+            { className: 'split' },
+            h(
+              'div',
+              { className: 'stack tight' },
+              ...sessions.slice(0, 8).map((s) =>
+                h(
+                  'button',
+                  {
+                    key: s.id,
+                    className: `session-item${current?.id === s.id ? ' active' : ''}`,
+                    onClick: () => setSelected(s.id),
+                  },
+                  h('span', { className: 'session-label' }, s.label),
+                  h(
+                    'span',
+                    { className: 'session-meta' },
+                    h(Badge, {
+                      tone: s.status === 'done' ? 'ok' : s.status === 'failed' ? 'danger' : 'warn',
+                    }, s.status),
+                    ` ${s.evidence.length} 证据`,
+                    s.durationMs ? ` · ${fmtMs(s.durationMs)}` : '',
+                  ),
+                ),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'stack tight' },
+              current
+                ? h(
+                    'div',
+                    null,
+                    h('div', { className: 'section-title' }, `会话 ${current.id}`),
+                    h(
+                      'div',
+                      { className: 'meta-line' },
+                      `创建 ${new Date(current.createdAt).toLocaleString()}`,
+                      current.finishedAt ? ` · 完成 ${new Date(current.finishedAt).toLocaleString()}` : '',
+                      current.workflow?.stoppedAfter ? ` · 停在 ${current.workflow.stoppedAfter}` : '',
+                    ),
+                    current.error ? h('div', { className: 'error-text' }, current.error) : null,
+                    h(
+                      'table',
+                      { className: 'data compact' },
+                      h('thead', null, h('tr', null, h('th', null, '证据 ID'), h('th', null, '阶段'), h('th', null, '摘要'))),
+                      h(
+                        'tbody',
+                        null,
+                        ...evidence.slice(0, 12).map((e) =>
+                          h(
+                            'tr',
+                            { key: e.id },
+                            h('td', { className: 'mono' }, e.id),
+                            h('td', null, e.stage),
+                            h('td', null, e.summary ?? e.kind),
+                          ),
+                        ),
+                      ),
+                    ),
+                    evidence.length > 12
+                      ? h('div', { className: 'hint' }, `仅显示前 12 条，共 ${evidence.length} 条`)
+                      : null,
+                    current.workflow?.nextActions?.length
+                      ? h(
+                          'div',
+                          { className: 'hint' },
+                          '下一步：',
+                          ...current.workflow.nextActions.map((a, i) =>
+                            h('span', { key: i }, ` ${a.tool}（${a.evidence_id ?? '-'}）`),
+                          ),
+                        )
+                      : null,
+                  )
+                : null,
+            ),
+          ),
+    ),
+  })
+}
 
 function ChainsPage(props: { overview: Overview | null; loading: boolean; workspace: Workspace }) {
   const [selected, setSelected] = useState<string | null>(null)

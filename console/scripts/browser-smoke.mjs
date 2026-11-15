@@ -136,6 +136,50 @@ try {
   const statusbar = await evaluate(`document.querySelector('.statusbar')?.textContent ?? ''`)
   check('status bar shows engine state', /ENGINE (READY|OFFLINE)/.test(statusbar), statusbar.slice(0, 80))
 
+  // The overview must also expose the audit-session ledger and its controls.
+  const sessionPanel = await evaluate(`(() => {
+    const titles = [...document.querySelectorAll('.card-title, .section-title, h3, h2')].map(e => e.textContent.trim())
+    const hasPanel = titles.some(t => t.includes('审计会话'))
+    const hasRun = [...document.querySelectorAll('.btn')].some(b => b.textContent.includes('一键审计'))
+    const hasBudget = Boolean(document.querySelector('select.input.sm'))
+    const sessionItems = document.querySelectorAll('.session-item').length
+    return { hasPanel, hasRun, hasBudget, sessionItems }
+  })()`)
+  check(
+    'audit session panel renders with run control',
+    sessionPanel.hasPanel && sessionPanel.hasRun && sessionPanel.hasBudget,
+    JSON.stringify(sessionPanel),
+  )
+
+  // One-click audit must actually run the SOP and add a session.
+  const beforeCount = await evaluate(`document.querySelectorAll('.session-item').length`)
+  await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('.btn')].find(b => b.textContent.includes('一键审计'))
+    btn?.click()
+    return true
+  })()`)
+  let afterCount = beforeCount
+  let auditDone = false
+  for (let i = 0; i < 90; i++) {
+    const state = await evaluate(`(() => {
+      const busyText = [...document.querySelectorAll('.btn')].some(b => b.textContent.includes('审计中'))
+      const meta = document.querySelector('.card-sub')?.textContent ?? ''
+      return { busy: busyText, meta, items: document.querySelectorAll('.session-item').length,
+               evidenceRows: document.querySelectorAll('table.data.compact tbody tr').length }
+    })()`)
+    afterCount = state.items
+    if (!state.busy && afterCount > beforeCount && state.evidenceRows > 0) {
+      auditDone = true
+      break
+    }
+    await sleep(1000)
+  }
+  check(
+    'one-click audit runs and stores evidence',
+    auditDone,
+    `sessions ${beforeCount} -> ${afterCount}`,
+  )
+
   // Switch to the chains view and confirm rows appear.
   await evaluate(`(() => {
     const btn = [...document.querySelectorAll('.nav-item')].find(b => b.textContent.includes('候选链'))

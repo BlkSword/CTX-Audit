@@ -860,3 +860,27 @@ select.input {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.session-item:hover { border-color: var(--rule-strong); }
+.session-item.active { border-color: var(--accent); background: var(--accent-soft); }
+.session-label { font-size: 11.5px; font-weight: 600; }
+.session-meta { font-size: 10.5px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+.split { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; }
+.stack.tight { gap: 6px; }
+table.data.compact td, table.data.compact th { padding: 4px 8px; font-size: 10.5px; }
+.mono { font-family: ui-monospace, monospace; font-size: 10px; color: var(--accent); }
+.meta-line { font-size: 10.5px; color: var(--muted); margin-bottom: 6px; }
+select.input.sm { height: 24px; font-size: 10.5px; padding: 0 6px; }
