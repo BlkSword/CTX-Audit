@@ -21,3 +21,4 @@ pub mod verify;
 pub mod rules;
 pub mod scan;
 pub mod watch;
+pub mod workflow;

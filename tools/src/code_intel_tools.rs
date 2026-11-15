@@ -47,6 +47,7 @@ pub mod probe;
 pub mod ssa;
 pub mod verify;
 pub mod verify_java;
+pub mod workflow;
 pub use chain_vocab::learn_vocab;
 pub(crate) use chain::*;
 pub(crate) use chain_scan::*;
@@ -3960,7 +3961,7 @@ pub fn audit_brief_report(project: &Path, limit: usize) -> Result<Value, String>
 }
 
 /// 按 sink kind 推断载荷类型。
-fn archetype_for_sink(kind: &str) -> &'static str {
+pub(crate) fn archetype_for_sink(kind: &str) -> &'static str {
     match kind {
         "deserialize" => "deser",
         "exec" | "exec_command" => "command",

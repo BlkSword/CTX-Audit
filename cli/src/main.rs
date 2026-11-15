@@ -514,6 +514,36 @@ enum Commands {
         output: String,
     },
 
+    /// 一键审计工作流：覆盖率 → 待审 → 候选链 → 链档 → 载荷判定（带证据 id）
+    #[command(
+        after_help = "阶段固定五步；--stop-after 可只跑到某阶段；证据 id 形如 EV-payload-1。"
+    )]
+    Workflow {
+        /// 项目路径
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// 待审条数上限（0 = 全部，内部上限 200）
+        #[arg(long, default_value_t = 20)]
+        triage_limit: usize,
+
+        /// 候选链条数上限
+        #[arg(long, default_value_t = 20)]
+        chain_limit: usize,
+
+        /// 做链档与载荷判定的链数上限
+        #[arg(long, default_value_t = 3)]
+        deep_limit: usize,
+
+        /// 只跑到该阶段（coverage|triage|chains|dossier|payload）
+        #[arg(long)]
+        stop_after: Option<String>,
+
+        /// 输出格式 (json|md)
+        #[arg(short = 'o', long, default_value = "json")]
+        output: String,
+    },
+
     /// 单条路由判定（verbatim 证据 + 可机械证伪的 --assert 退出码）
     #[command(after_help = "退出码：--assert 不匹配时返回 1，可用于 CI/脚本化复核。")]
     ExplainRoute {
@@ -883,6 +913,24 @@ async fn main() -> Result<()> {
             .map_err(|e| miette::miette!("MCP server error: {}", e)),
 
         Commands::Baseline { path, output } => commands::baseline::execute(path, output).await,
+        Commands::Workflow {
+            path,
+            triage_limit,
+            chain_limit,
+            deep_limit,
+            stop_after,
+            output,
+        } => {
+            commands::workflow::execute(
+                path,
+                triage_limit,
+                chain_limit,
+                deep_limit,
+                stop_after,
+                output,
+            )
+            .await
+        }
         Commands::Audit {
             path,
             out,

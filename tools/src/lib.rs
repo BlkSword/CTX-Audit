@@ -52,6 +52,7 @@ pub use code_intel_tools::audit_brief_report;
 pub use code_intel_tools::trace_vulnerability_chain_report;
 pub use code_intel_tools::ssa::{summary_report, summaries_for};
 pub use code_intel_tools::gate::suggest_waivers;
+pub use code_intel_tools::workflow::{audit_workflow_report, WorkflowOptions};
 pub use executor::ToolExecutor;
 #[cfg(feature = "legacy-tools")]
 pub use pattern_tools::register_pattern_tools;
