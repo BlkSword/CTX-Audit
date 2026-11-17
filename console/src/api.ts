@@ -180,6 +180,7 @@ export interface GateVerdict {
   severity: string
   kind: string
   reason: string
+  route?: string | null
   evidence?: unknown
 }
 
@@ -228,9 +229,36 @@ export const api = {
     ),
 
   chains: (id: string, limit = 20) =>
-    fetch(`${API_BASE}/workspaces/${id}/chains?limit=${limit}`).then((r) =>
-      json<{ ok: boolean; chains: ChainRow[]; stats: Record<string, number>; error?: string }>(r),
-    ),
+    fetch(`${API_BASE}/workspaces/${id}/chains?limit=${limit}`)
+      .then((r) =>
+        json<{
+          ok: boolean
+          chains: Array<Record<string, unknown>>
+          stats: Record<string, number>
+          error?: string
+        }>(r),
+      )
+      .then((r) => ({
+        ...r,
+        // The CLI emits chain dossiers in snake_case; the views work in camelCase.
+        chains: (r.chains ?? []).map((c) => {
+          const entry = (c['entry'] ?? {}) as Record<string, unknown>
+          const sink = (c['sink'] ?? {}) as Record<string, unknown>
+          return {
+            chainId: String(c['chain_id'] ?? ''),
+            tier: String(c['tier'] ?? ''),
+            controllability: String(c['controllability'] ?? ''),
+            score: Number(c['score'] ?? 0),
+            sinkKind: String(sink['kind'] ?? ''),
+            sinkFile: String(sink['file'] ?? ''),
+            sinkLine: Number(sink['line'] ?? 0),
+            entryRoute: (entry['route'] as string | null) ?? null,
+            entryMethod: (entry['method'] as string | null) ?? null,
+            steps: Array.isArray(c['steps']) ? (c['steps'] as unknown[]).length : 0,
+            guards: Array.isArray(c['guards']) ? (c['guards'] as unknown[]).length : 0,
+          } as ChainRow
+        }),
+      })),
 
   chain: (id: string, chainId: string) =>
     fetch(`${API_BASE}/workspaces/${id}/chain?id=${encodeURIComponent(chainId)}`).then((r) =>

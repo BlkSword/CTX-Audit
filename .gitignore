@@ -83,3 +83,6 @@ console/.state-test/
 
 console/.state-e2e/
 
+# console build scratch (esbuild + node compile cache)
+console/.tmp-esbuild/
+console/.state/

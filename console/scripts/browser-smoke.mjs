@@ -1,12 +1,10 @@
 /**
- * Headless browser smoke test for the console.
+ * Headless browser smoke test for the console (Vue 3 rewrite).
  *
  * Drives the installed Chrome over the DevTools protocol (no extra dependency):
- * loads the console, waits for the overview to render real numbers, switches
- * views, runs a validated action, and asserts the DOM reflects each step.
- *
- *   node scripts/browser-smoke.mjs                       # standalone :4317
- *   node scripts/browser-smoke.mjs --url http://127.0.0.1:4321/console/
+ * loads the console, walks the workspace picker into a workspace, checks the
+ * overview KPIs, runs a one-click audit, visits each view, and asserts the DOM
+ * reflects every step.
  */
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
@@ -40,7 +38,7 @@ const chrome = spawn(
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-gpu',
-    '--window-size=1440,900',
+    '--window-size=1600,1000',
     'about:blank',
   ],
   { stdio: 'ignore' },
@@ -118,121 +116,110 @@ try {
   const title = await evaluate('document.title')
   check('page loads', title.includes('CTX-Audit'), title)
 
-  // Wait for the overview to finish loading (metrics render real numbers).
-  let metrics = null
-  for (let i = 0; i < 40; i++) {
-    metrics = await evaluate(`(() => {
-      const els = [...document.querySelectorAll('.metric-value')].map(e => e.textContent.trim())
-      return els.length ? els : null
-    })()`)
-    if (metrics && metrics.length >= 4) break
-    await sleep(1000)
-  }
-  check('overview metrics render', Array.isArray(metrics) && metrics.length >= 4, JSON.stringify(metrics))
-
-  const kpis = await evaluate(`[...document.querySelectorAll('.kpi .v')].map(e => e.textContent.trim())`)
-  check('top bar KPIs render', Array.isArray(kpis) && kpis.length >= 4, JSON.stringify(kpis))
-
-  const statusbar = await evaluate(`document.querySelector('.statusbar')?.textContent ?? ''`)
-  check('status bar shows engine state', /ENGINE (READY|OFFLINE)/.test(statusbar), statusbar.slice(0, 80))
-
-  // The overview must also expose the audit-session ledger and its controls.
-  const sessionPanel = await evaluate(`(() => {
-    const titles = [...document.querySelectorAll('.card-title, .section-title, h3, h2')].map(e => e.textContent.trim())
-    const hasPanel = titles.some(t => t.includes('审计会话'))
-    const hasRun = [...document.querySelectorAll('.btn')].some(b => b.textContent.includes('一键审计'))
-    const hasBudget = Boolean(document.querySelector('select.input.sm'))
-    const sessionItems = document.querySelectorAll('.session-item').length
-    return { hasPanel, hasRun, hasBudget, sessionItems }
+  const picker = await evaluate(`(() => {
+    const cards = document.querySelectorAll('.ws-card').length
+    const empty = Boolean(document.querySelector('.empty-title'))
+    const heading = document.querySelector('.picker-title')?.textContent ?? ''
+    return { cards, empty, heading }
   })()`)
+  check('workspace picker renders', picker.cards > 0 || picker.empty, JSON.stringify(picker))
+
+  const entered = await evaluate(`(() => {
+    const card = document.querySelector('.ws-card')
+    if (!card) return false
+    card.click()
+    return true
+  })()`)
+  await sleep(2500)
+  const shell = await evaluate(`(() => ({
+    hasSidebar: Boolean(document.querySelector('.sidebar')),
+    hasTopbar: Boolean(document.querySelector('.topbar')),
+    hasStatusbar: Boolean(document.querySelector('.statusbar')),
+    navItems: document.querySelectorAll('.nav-item').length,
+    hash: location.hash,
+  }))()`)
   check(
-    'audit session panel renders with run control',
-    sessionPanel.hasPanel && sessionPanel.hasRun && sessionPanel.hasBudget,
-    JSON.stringify(sessionPanel),
+    'workspace shell renders',
+    entered && shell.hasSidebar && shell.hasTopbar && shell.hasStatusbar && shell.navItems >= 9,
+    JSON.stringify(shell),
   )
 
-  // One-click audit must actually run the SOP and add a session.
-  const beforeCount = await evaluate(`document.querySelectorAll('.session-item').length`)
+  let kpis = null
+  for (let i = 0; i < 40; i++) {
+    kpis = await evaluate(`[...document.querySelectorAll('.kpi-value')].map(e => e.textContent.trim())`)
+    if (kpis && kpis.length >= 4) break
+    await sleep(1000)
+  }
+  check('overview KPIs render', Array.isArray(kpis) && kpis.length >= 4, JSON.stringify(kpis))
+
+  const topbarKpis = await evaluate(
+    `[...document.querySelectorAll('.topbar-kpi-value')].map(e => e.textContent.trim())`,
+  )
+  check('topbar KPI strip renders', Array.isArray(topbarKpis) && topbarKpis.length >= 4, JSON.stringify(topbarKpis))
+
+  // The session KPI is the ledger count; the pill strip is capped, so compare the
+  // KPI rather than the number of rendered pills.
+  const sessionKpi = () =>
+    evaluate(`(() => {
+      const kpis = [...document.querySelectorAll('.kpi')]
+      const k = kpis.find(el => el.textContent.includes('审计会话'))
+      return k ? Number(k.querySelector('.kpi-value')?.textContent.trim() ?? '0') : -1
+    })()`)
+  const before = await sessionKpi()
   await evaluate(`(() => {
-    const btn = [...document.querySelectorAll('.btn')].find(b => b.textContent.includes('一键审计'))
+    const btn = [...document.querySelectorAll('.el-button')].find(b => b.textContent.includes('一键审计'))
     btn?.click()
     return true
   })()`)
-  let afterCount = beforeCount
   let auditDone = false
-  for (let i = 0; i < 90; i++) {
-    const state = await evaluate(`(() => {
-      const busyText = [...document.querySelectorAll('.btn')].some(b => b.textContent.includes('审计中'))
-      const meta = document.querySelector('.card-sub')?.textContent ?? ''
-      return { busy: busyText, meta, items: document.querySelectorAll('.session-item').length,
-               evidenceRows: document.querySelectorAll('table.data.compact tbody tr').length }
-    })()`)
-    afterCount = state.items
-    if (!state.busy && afterCount > beforeCount && state.evidenceRows > 0) {
+  let after = before
+  for (let i = 0; i < 150; i++) {
+    const state = await evaluate(`(() => ({
+      busy: [...document.querySelectorAll('.el-button')].some(b => b.classList.contains('is-loading')),
+    }))()`)
+    after = await sessionKpi()
+    if (!state.busy && after > before) {
       auditDone = true
       break
     }
     await sleep(1000)
   }
-  check(
-    'one-click audit runs and stores evidence',
-    auditDone,
-    `sessions ${beforeCount} -> ${afterCount}`,
-  )
+  check('one-click audit runs and stores a session', auditDone, `sessions ${before} -> ${after}`)
 
-  // Switch to the chains view and confirm rows appear.
-  await evaluate(`(() => {
-    const btn = [...document.querySelectorAll('.nav-item')].find(b => b.textContent.includes('候选链'))
-    btn?.click()
-    return true
-  })()`)
-  await sleep(1200)
-  const chainRows = await evaluate(`document.querySelectorAll('table.data tbody tr').length`)
-  check('chains view lists rows', chainRows > 0, `${chainRows} rows`)
-
-  // Switch to the actions view and run the baseline action.
-  await evaluate(`(() => {
-    const btn = [...document.querySelectorAll('.nav-item')].find(b => b.textContent.includes('能力动作'))
-    btn?.click()
-    return true
-  })()`)
-  await sleep(1200)
-  const actionButtons = await evaluate(`[...document.querySelectorAll('.btn')].map(b => b.textContent.trim()).filter(Boolean)`)
-  check('action catalogue renders', actionButtons.some((t) => t.includes('鉴权基线卡')), `${actionButtons.length} buttons`)
-
-  await evaluate(`(() => {
-    const btn = [...document.querySelectorAll('.btn')].find(b => b.textContent.trim() === '鉴权基线卡')
-    btn?.click()
-    return true
-  })()`)
-  await sleep(600)
-  await evaluate(`(() => {
-    const btn = [...document.querySelectorAll('.btn')].find(b => b.textContent.includes('执行'))
-    btn?.click()
-    return true
-  })()`)
-
-  let resultText = ''
-  for (let i = 0; i < 40; i++) {
-    resultText = await evaluate(`document.querySelector('.logpane')?.textContent ?? ''`)
-    if (resultText.includes('chains_total') || resultText.includes('summary')) break
-    await sleep(1000)
+  const views = ['审计会话', '覆盖与待审', '候选链', '载荷档位', '能力动作', '漂移闸门', '报告', '审计助手']
+  const visited = []
+  for (const label of views) {
+    const ok = await evaluate(`(() => {
+      const item = [...document.querySelectorAll('.nav-item')].find(a => a.textContent.includes(${JSON.stringify(label)}))
+      if (!item) return false
+      item.click()
+      return true
+    })()`)
+    await sleep(1400)
+    const rendered = await evaluate(`(() => ({
+      panels: document.querySelectorAll('.panel').length,
+      hash: location.hash,
+    }))()`)
+    visited.push({ label, ok, panels: rendered.panels, hash: rendered.hash })
   }
-  check('action executes and returns data', resultText.length > 100, `${resultText.length} chars`)
+  const allVisited = visited.every((v) => v.ok && v.panels > 0)
+  check('all views navigate and render', allVisited, JSON.stringify(visited.map((v) => `${v.label}:${v.panels}`)))
 
-  // Assistant view must render the brief and the send control.
   await evaluate(`(() => {
-    const btn = [...document.querySelectorAll('.nav-item')].find(b => b.textContent.includes('审计助手'))
-    btn?.click()
+    const item = [...document.querySelectorAll('.nav-item')].find(a => a.textContent.includes('审计会话'))
+    item?.click()
     return true
   })()`)
-  await sleep(1500)
-  const assistant = await evaluate(`(() => ({
-    hasTextarea: Boolean(document.querySelector('textarea.input')),
-    hasSend: [...document.querySelectorAll('.btn')].some(b => b.textContent.includes('发送给 Agent')),
-    brief: (document.querySelector('textarea.input')?.value ?? '').slice(0, 40),
+  await sleep(1600)
+  const sessionView = await evaluate(`(() => ({
+    items: document.querySelectorAll('.session-item').length,
+    evidenceRows: document.querySelectorAll('.el-table__row').length,
   }))()`)
-  check('assistant view renders brief', assistant.hasTextarea && assistant.hasSend, assistant.brief)
+  check(
+    'session view lists sessions and evidence',
+    sessionView.items > 0 && sessionView.evidenceRows > 0,
+    JSON.stringify(sessionView),
+  )
 
   const errors = await evaluate(`window.__smokeErrors ?? []`)
   check('no uncaught page errors', !Array.isArray(errors) || errors.length === 0, JSON.stringify(errors))

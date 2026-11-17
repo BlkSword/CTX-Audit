@@ -1,91 +1,68 @@
 # CTX-Audit Console
 
-工作区中心化的审计控制台：每个审计项目 = 一个 workspace，包含总览、审计流、覆盖与待审、候选链、漂移闸门、报告六个视图。
+工作区中心化的审计控制台。Vue 3 + Element Plus + Vite，零依赖 Node API。
 
-## 快速开始
-
-```powershell
-# 一键：装依赖（如需要）→ 构建 → 类型检查 → 测试 → 启动
-.\scripts\start-console.ps1
-
-# 只做检查，不启动
-.\scripts\start-console.ps1 -Check
-
-# 指定端口 / 强制重建
-.\scripts\start-console.ps1 -Port 4319 -Build
-```
-
-或手动：
+## 运行
 
 ```bash
 cd console
-npm install          # 首次
-npm run build        # 构建 SPA 到 dist/
-npm run serve        # 启动 API + 静态服务（默认 http://127.0.0.1:4317）
+npm install
+npm run build
+npm run serve          # http://127.0.0.1:4317
 ```
 
-环境变量：
+或由 DSH 插件挂到 Web 面的 `/console`（见 `dsh-profile/`）。
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `CTX_CONSOLE_PORT` | `4317` | 监听端口 |
-| `CTX_CONSOLE_HOST` | `127.0.0.1` | 监听地址（仅回环） |
-| `CTX_AUDIT_BIN` | `../target/release/ctx-audit.exe` | ctx-audit 二进制路径 |
-| `CTX_CONSOLE_CLI_TIMEOUT_MS` | `90000` | 单次 CLI 调用超时 |
+## 结构
 
-开发模式（Vite HMR，API 代理到 4317）：
+```
+src/
+  main.ts                 应用入口（Element Plus + Router）
+  router.ts               路由：工作区选择 → 工作区外壳（9 视图）
+  store.ts                工作区状态（总览/台账/会话）
+  api.ts                  API 客户端与类型（含 snake_case → camelCase 映射）
+  styles.css              设计系统（token + 共享原语 + Element Plus 主题覆盖）
+  views/
+    WorkspacePicker.vue   工作区选择 / 添加 / 移除
+    WorkspaceShell.vue    侧栏 + 顶栏 KPI + 状态栏 + 子路由出口
+    OverviewView.vue      KPI、一键审计、覆盖分布、载荷档位、头部链
+    SessionsView.vue      审计台账、会话列表、阶段耗时、证据表
+    CoverageView.vue      端点覆盖与待审队列
+    ChainsView.vue        候选链列表 + 链档抽屉
+    PayloadView.vue       载荷档位分布 + 逐链重跑判定
+    ActionsView.vue       14 个受校验动作
+    GateView.vue          PR 漂移闸门
+    ReportView.vue        报告生成
+    AssistantView.vue     审计助手（简报 → Agent → 回复与工具轨迹）
+server/
+  index.mjs               独立 HTTP 服务
+  api.mjs                 共享 API（独立服务与 DSH 插件共用）
+  sessions.mjs            审计会话持久化与台账
+  actions.mjs             14 个动作定义与参数校验
+scripts/
+  browser-smoke.mjs       无头浏览器冒烟（CDP，零依赖）
+  e2e.mjs                 端到端 API 检查
+tests/
+  sessions.test.mjs       会话存储单测
+```
+
+## 设计语言
+
+参考 DSH 的克制风格，但不照搬：
+
+- **表面**：暖中性灰阶（`#151517` → `#353638`），按亮度分层，不用纯黑；
+- **分隔**：白色 alpha 细线（`rgba(255,255,255,0.06)`），读起来是"光"而不是"框"；
+- **强调**：白色是品牌色（主按钮白底黑字），蓝色只用于链接与信息态；
+- **状态**：胶囊 chip 用填充色表达，不用描边；
+- **表格**：无斑马纹，只有 hover 与发丝分隔线；
+- **圆角**：4 / 8 / 12 / 16px 四档，比常见后台更圆但不夸张；
+- **数字**：等宽数字（`font-variant-numeric: tabular-nums`）。
+
+## 验证
 
 ```bash
-npm run dev          # http://127.0.0.1:4318
+npm run typecheck              # vue-tsc
+npm test                       # 会话存储 13/13
+node scripts/e2e.mjs           # 端到端 API
+node scripts/browser-smoke.mjs # 无头浏览器 9/9
 ```
-
-## 页面
-
-| 视图 | 数据来源 | 内容 |
-|---|---|---|
-| 总览 | `audit -o json` + `chain --list` | 端点/未覆盖/候选链/耗时四个指标、覆盖分布、链档分布、高风险待审 Top12 |
-| 审计流 | SSE `/api/workspaces/:id/stream` | 覆盖分析 → 链扫描的逐步状态、耗时、错误 |
-| 覆盖与待审 | `audit` worklist | 风险分排序的待审端点、判定徽章、信号标签 |
-| 候选链 | `chain --list` + `chain --id` | 链列表 + 点击查看链档（路径步骤/守卫/断点） |
-| 漂移闸门 | `gate --git` | base/head/严格模式，判决与 verdict 列表 |
-| 载荷档位 | `payload viability` | 选链 → 读链档坐标 → 选 archetype → 判定档位（payload_killed / guard_ineffective_token / taint_lost / payload_may_survive / unreachable） |
-| 能力动作 | `actions.mjs` 注册表 | **14 个 CLI 动作**（审计/链/链档/单路由/载荷/基线/可达性探针/路径切片/单文件分析/信号链/diff/闸门/扫描/报告），参数服务端校验 |
-| 报告 | 总览数据 | Markdown 预览 + 下载 `.md` + 复制 + **复制 Agent 简报**（含工作区路径与下一步动作） |
-
-## API
-
-```
-GET    /api/health
-GET    /api/workspaces
-POST   /api/workspaces                 { path, name? }
-DELETE /api/workspaces/:id
-GET    /api/workspaces/:id/overview
-GET    /api/workspaces/:id/worklist?limit=200
-GET    /api/workspaces/:id/chains?limit=20
-GET    /api/workspaces/:id/chain?id=CH-xxxx
-POST   /api/workspaces/:id/gate        { base, head, strict? }
-GET    /api/workspaces/:id/stream      (SSE)
-```
-
-## 安全边界
-
-- 仅回环监听；工作区路径必须存在且为目录；
-- 无 shell：CLI 以 argv 数组直接 spawn；
-- 每次调用有超时与输出上限；请求体上限 256KB；
-- 只读分析：不执行 payload、不修改被审计仓库。
-
-## 设计
-
-深色高密度界面，单一强调色（`#4f8cff`），语义色区分覆盖/风险/链档；所有指标使用等宽数字；表格粘性表头、空态与加载骨架齐备。设计令牌集中在 `src/styles.css` 的 `:root`。
-
-图表为**零依赖 SVG**（`src/charts.ts`）：链档分布环形图、覆盖分布堆叠条、链路径流程图（entry → steps → sink），渲染确定、无第三方图表库。
-
-## 测试
-
-```bash
-node --test tests/*.test.mjs     # 动作注册表与参数校验（6 项）
-```
-
-## 与 DSH 的关系
-
-同一份 API 与 SPA 既可作为独立服务运行，也可由 `dsh-ctx-audit-console` 插件挂到 DSH Web 的 `/console` 与 `/api/console`（见该插件 README）。SPA 会按自身 pathname 自动选择 API 前缀。
