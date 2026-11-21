@@ -836,8 +836,39 @@ enum RulesAction {
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// 主线程栈大小。
+///
+/// Windows 给主线程 1 MB，Linux/macOS 是 8 MB。debug 构建不做栈帧复用，
+/// `main` 的 async 状态机（39 个命令分支的 await 点）+ clap 构建命令树
+/// 在 1 MB 栈上会直接 STATUS_STACK_OVERFLOW（0xC00000FD）——连 `--version`
+/// 都进不去。这里与下方 rayon 池的 64 MB 约定保持一致，把整个 CLI 放进
+/// 一条具名大栈线程执行；release 构建同样受益于余量。
+const MAIN_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+fn main() -> Result<()> {
+    let handle = std::thread::Builder::new()
+        .name("ctx-audit-main".to_string())
+        .stack_size(MAIN_STACK_SIZE)
+        .spawn(run_cli)
+        .into_diagnostic()?;
+
+    // 保留 panic 的原有语义：子线程 panic 时在主线程继续展开。
+    match handle.join() {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// 在大栈线程上建立 tokio 运行时并驱动命令。
+fn run_cli() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .into_diagnostic()?;
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     let cli = Cli::parse();
 
     // 初始化日志
