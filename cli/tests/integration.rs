@@ -5,10 +5,13 @@
 
 use std::process::Command;
 
-fn cli_bin() -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap();
-    dir.join("ctx-audit").to_string_lossy().to_string()
+/// 被测二进制的绝对路径。
+///
+/// 用 cargo 为集成测试注入的 `CARGO_BIN_EXE_<name>`，而不是从
+/// `current_exe()` 反推：反推在 Windows 上会漏掉 `.exe` 后缀，在只跑了
+/// `cargo build --release` 而没构建 debug 产物的 CI 上会指向不存在的文件。
+fn cli_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_ctx-audit")
 }
 
 /// 测试本地扫描

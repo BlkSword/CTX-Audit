@@ -49,7 +49,9 @@ jobs:
         run: cargo build --release
 
       - name: Run tests
-        run: cargo test --workspace
+        # --no-fail-fast：一个包失败时继续跑其余包，否则 core/tools 的测试
+        # 会被 cli 集成测试的失败挡住而静默跳过。
+        run: cargo test --workspace --no-fail-fast
 
       - name: CLI smoke tests
         run: |
