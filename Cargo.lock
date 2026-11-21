@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-audit"
-version = "3.1.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-audit-daemon"
-version = "3.1.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -574,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "ctx-audit-tools"
-version = "3.1.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -592,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "deepaudit-core"
-version = "3.1.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",

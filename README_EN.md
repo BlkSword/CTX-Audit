@@ -1,4 +1,9 @@
-> **⚠️ Development status**: This project is in an **experimental R&D stage**. Interfaces and output schemas may change substantially, and releases may not keep pace with the latest changes. Use it **with caution in production**: validate in test or staging first, and pin the version you depend on.
+> **⚠️ Version status: `0.x` (initial development line)**
+>
+> The public API is **not stable**: CLI commands, the MCP tool surface and output
+> schemas may change within a minor release. Breaking changes bump `0.MINOR`
+> only; fixes bump `0.MINOR.PATCH`. See [VERSIONING.md](VERSIONING.md).
+> Pin the version you depend on and expect minor upgrades to need adaptation.
 
 # CTX-Audit
 
@@ -250,7 +255,7 @@ ctx-audit report --from .ctx-audit/gate-artifacts -o md
 
 ## MCP surface
 
-24 high-level tools + 3 base tools (`read_file`, `list_files`, `finish_analysis`); legacy fine-grained tools are opt-in via `--legacy-tools`. Every response uses the same envelope: `data` + `provenance` + `uncertainty`.
+25 high-level tools + 3 base tools (`read_file`, `list_files`, `finish_analysis`; 28 total); legacy fine-grained tools are opt-in via `--legacy-tools`. Every response uses the same envelope: `data` + `provenance` + `uncertainty`.
 
 `ctx-audit mcp --read-only` withholds the two write tools (`report_finding`, `finish_analysis`), so an unattended agent can gather evidence but cannot record findings or close an analysis.
 

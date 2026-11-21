@@ -1,4 +1,8 @@
-> **⚠️ 研发阶段声明**：本项目处于**试验研发阶段**，接口与输出 schema 可能发生较大变更；发行版不一定能及时跟进最新变更。请谨慎用于生产环境，建议先在测试/预发环境验证，并锁定所依赖的版本。
+> **⚠️ 版本状态：`0.x`（初始研发线）**
+>
+> 本项目的公开 API **未稳定**：CLI 命令、MCP 工具面、输出 schema 均可能在小版本内变动。
+> 破坏性变更只涨 `0.MINOR`，修复只涨 `0.MINOR.PATCH`，详见 [VERSIONING.md](VERSIONING.md)。
+> 请锁定版本使用，并预期 minor 升级需要适配；生产环境建议先在测试/预发验证。
 
 # CTX-Audit
 
@@ -339,7 +343,7 @@ ctx-audit report --from .ctx-audit/gate-artifacts -o json  # 机器可读 gate-r
 
 ## MCP 工具面
 
-默认 **24 个高阶工具 + 3 个基础工具（read_file / list_files / finish_analysis）**；遗留细粒度工具面需 `--legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1` 开启。所有响应使用统一 envelope：`data` + `provenance` + `uncertainty`。
+默认 **25 个高阶工具 + 3 个基础工具（read_file / list_files / finish_analysis，共 28 个）**；遗留细粒度工具面需 `--legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1` 开启。所有响应使用统一 envelope：`data` + `provenance` + `uncertainty`。
 
 ### 只读模式
 

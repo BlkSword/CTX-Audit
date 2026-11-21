@@ -86,3 +86,8 @@ console/.state-e2e/
 # console build scratch (esbuild + node compile cache)
 console/.tmp-esbuild/
 console/.state/
+
+# 引擎自身写入目标目录的扫描产物（R247 backlog：扫描时应排除这些）
+ctx-audit-json-*.json
+ctx-audit-sarif-*.json
+ctx-audit-report-*.md
