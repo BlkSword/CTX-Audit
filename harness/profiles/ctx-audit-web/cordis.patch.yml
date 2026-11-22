@@ -16,8 +16,10 @@
 # default; nothing here needs to restate that.
 #
 # The Vue console is NOT mounted here: its host plugin (`dsh-ctx-audit-console`)
-# lives outside this repository. Deployments that have it should also apply
-# `cordis.patch.console.yml` from this directory.
+# lives outside this repository and carries its own bundle patch, so installing
+# it with `ctxa plugin add link:<path>` is all a deployment needs. Nothing in
+# this file should reference it — a fresh install without that package must
+# still compose, and a dangling row would fail to import and take the page down.
 
 - insert: []
 

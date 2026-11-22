@@ -22,11 +22,17 @@
 # 唯一需要额外安装的是 **Vue 控制台页面**（dsh-ctx-audit-console），它住在私有
 # checkout 里，属于可选的 UI 层，与 agent 能力无关。
 #
+# LLM 配置：隔离 home 是空的，所以首次运行会缺 provider 与 API key。本脚本
+# **不自动复制密钥**（那会把 key 写到第二个地方而不经你同意），而是：
+#   - 从主 home 复制 settings.yaml 的**非密钥部分**（provider 定义、默认模型）；
+#   - 打印一条明确的提示，告诉你缺哪个 key、怎么补。
+#
 # 用法：
 #   ctxa                      # 启动审计 Web（默认端口 4321）
 #   ctxa --port 4400          # 换端口
 #   ctxa headless "任务..."    # 一次性任务，答案打到 stdout
 #   ctxa plugin add <pkg>     # 管理审计 profile 的插件（可选，仅 UI 用）
+#   ctxa doctor               # 检查隔离 home 的配置完整性
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +42,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # 放在仓库内而不是 ~/.ctxa：审计状态与引擎版本天然绑定，仓库删掉即彻底清理。
 export CTXA_HOME="${CTXA_HOME:-$REPO_ROOT/.ctxa}"
 export DSH_HOME="$CTXA_HOME"
+HOST_HOME="${DSH_HOST_HOME:-$HOME/.dsh}"
 
 # ── 引擎二进制 ──────────────────────────────────────────────────────────────
 if [[ -z "${CTX_AUDIT_MCP_CMD:-}" ]]; then
@@ -61,6 +68,35 @@ export CTX_AUDIT_MCP_CMD
 if [[ ! -f "$CTXA_HOME/profiles/ctx-audit-web/package.json" ]]; then
   echo "==> 初始化隔离运行时 $CTXA_HOME" >&2
   DSH_HOME="$CTXA_HOME" bash "$REPO_ROOT/harness/install.sh"
+fi
+
+# ── LLM 配置：只搬非密钥部分 ────────────────────────────────────────────────
+# settings.yaml 里 provider 定义与默认模型不含密钥（密钥在 .credentials.yaml
+# 的 refs 段，指向环境变量名）。所以复制 settings.yaml 是安全的；密钥必须由
+# 使用者自己决定要不要带过来。
+if [[ ! -f "$CTXA_HOME/settings.yaml" && -f "$HOST_HOME/settings.yaml" ]]; then
+  cp "$HOST_HOME/settings.yaml" "$CTXA_HOME/settings.yaml"
+  echo "==> 已从 $HOST_HOME/settings.yaml 复制 provider 与默认模型（不含密钥）" >&2
+fi
+
+# 密钥引用：只在隔离 home 完全没有 .credentials.yaml 时提示，不自动复制。
+if [[ ! -f "$CTXA_HOME/.credentials.yaml" ]]; then
+  echo "note: 隔离 home 还没有 API key。两种补法（任选其一）：" >&2
+  echo "      a) export DEEPSEEK_API_KEY=... 后再运行 ctxa" >&2
+  echo "      b) 只复制主 home 凭据文件的 version+refs 段：" >&2
+  echo "         sed -n '/^version:/,/^records:/p' \"$HOST_HOME/.credentials.yaml\" \\" >&2
+  echo "           | head -n -1 > \"$CTXA_HOME/.credentials.yaml\"" >&2
+fi
+
+# ── doctor：检查配置完整性 ──────────────────────────────────────────────────
+if [[ "${1:-}" == "doctor" ]]; then
+  echo "CTXA_HOME = $CTXA_HOME"
+  echo "DSH_HOME  = $DSH_HOME"
+  echo "engine    = $CTX_AUDIT_MCP_CMD"
+  for f in profiles/ctx-audit-web/package.json skills/ctx-audit-auditor/SKILL.md settings.yaml .credentials.yaml; do
+    if [[ -e "$CTXA_HOME/$f" ]]; then echo "  ok   $f"; else echo "  MISS $f"; fi
+  done
+  exit 0
 fi
 
 # ── 分派 ────────────────────────────────────────────────────────────────────
