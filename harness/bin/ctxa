@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ctxa — CTX-Audit 的 agent 运行时入口。
 #
-# 为什么需要它：CTX-Audit 的 agent 能力（preset / skill / MCP 工具面 / 控制台）
-# 全部由 DSH 提供，但**运行时状态必须与主机上日常使用的 DSH 隔离**——否则
-# 审计会话会混进个人工作区的会话列表，个人 profile 的改动也会影响审计行为。
+# 为什么需要它：CTX-Audit 的 agent 能力（preset / skill / MCP 工具面）全部由
+# DSH 提供，但**运行时状态必须与主机上日常使用的 DSH 隔离**——否则审计会话会
+# 混进个人工作区的会话列表，个人 profile 的改动也会影响审计行为。
 #
-# 隔离靠 DSH_HOME：DSH 把 profiles / sessions / storages / skills / cache 全部
-# 解析在 $DSH_HOME 下（见 @deepseek-ai/dsh-home-paths 的 resolveDshHome）。
+# 隔离靠 DSH_HOME：DSH 把 profiles / sessions / storages / skills / credentials
+# 全部解析在 $DSH_HOME 下（见 @deepseek-ai/dsh-home-paths 的 resolveDshHome）。
 # 本脚本把 DSH_HOME 固定到仓库内的 .ctxa/，于是：
 #   - 审计会话落在 .ctxa/sessions/<workspace>/，不进 ~/.dsh/sessions/
 #   - 审计 profile 落在 .ctxa/profiles/，与 ~/.dsh/profiles/ 互不可见
@@ -15,11 +15,18 @@
 # 每个工作区再按 cwd 分目录（DSH 自己按 cwd 哈希分 sessions 子目录），
 # 所以同一台机器上多个被审项目之间也不会互相污染。
 #
+# **不需要安装任何插件。** agent 框架由三样东西组成，全部随仓库提供：
+#   1. profile 定义        → harness/profiles/ctx-audit-web/（install.sh 复制）
+#   2. agent preset        → harness/plugins/ctx-audit-web/presets/（同上）
+#   3. skill + MCP 工具面  → harness/skills/ + ctx-audit 二进制
+# 唯一需要额外安装的是 **Vue 控制台页面**（dsh-ctx-audit-console），它住在私有
+# checkout 里，属于可选的 UI 层，与 agent 能力无关。
+#
 # 用法：
-#   ctxa                      # 启动审计 Web 控制台（默认端口 4321）
+#   ctxa                      # 启动审计 Web（默认端口 4321）
 #   ctxa --port 4400          # 换端口
-#   ctxa headless "任务..."    # 一次性任务
-#   ctxa plugin add <pkg>     # 管理审计 profile 的插件
+#   ctxa headless "任务..."    # 一次性任务，答案打到 stdout
+#   ctxa plugin add <pkg>     # 管理审计 profile 的插件（可选，仅 UI 用）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,18 +63,50 @@ if [[ ! -f "$CTXA_HOME/profiles/ctx-audit-web/package.json" ]]; then
   DSH_HOME="$CTXA_HOME" bash "$REPO_ROOT/harness/install.sh"
 fi
 
-# ── 默认动作：起审计 Web 控制台 ─────────────────────────────────────────────
-if [[ $# -eq 0 ]]; then
-  set -- --port "${CTXA_PORT:-4321}" --no-open
-fi
-
-# 第一个参数是 dsh 子命令（headless / plugin / tui …）时直接透传；
-# 否则按「启动 web profile + 参数」处理。
+# ── 分派 ────────────────────────────────────────────────────────────────────
+# `headless` 在 DSH 里是一个独立 profile（不是子命令），所以它需要自己的
+# profile 目录；这里按需生成一个只含审计 bundle 的 headless profile。
 case "${1:-}" in
-  headless|plugin|tui|rescue)
-    exec dsh --profile ctx-audit-web "$@"
+  headless)
+    shift
+    headless_profile="$CTXA_HOME/profiles/ctx-audit-headless"
+    if [[ ! -f "$headless_profile/package.json" ]]; then
+      mkdir -p "$headless_profile"
+      cat > "$headless_profile/package.json" <<'JSON'
+{
+  "name": "dsh-profile-ctx-audit-headless",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-headless",
+        "@local/ctx-audit-web"
+      ]
+    }
+  }
+}
+JSON
+      printf '[]\n' > "$headless_profile/cordis.yml"
+      cp "$REPO_ROOT/harness/profiles/ctx-audit-web/cordis.patch.yml" \
+         "$headless_profile/cordis.patch.yml"
+      # bundle 必须能从 profile 目录解析到：@local/* 只可能来自 profile 自身。
+      mkdir -p "$headless_profile/node_modules/@local"
+      cp -R "$REPO_ROOT/harness/plugins/ctx-audit-web" \
+            "$headless_profile/node_modules/@local/ctx-audit-web"
+    fi
+    exec dsh --profile ctx-audit-headless "$@"
+    ;;
+  plugin)
+    # 插件管理只影响 UI 层；agent 能力不依赖任何插件。
+    shift
+    exec dsh plugin --profile ctx-audit-web "$@"
     ;;
   *)
+    if [[ $# -eq 0 ]]; then
+      set -- --port "${CTXA_PORT:-4321}" --no-open
+    fi
     exec dsh --profile ctx-audit-web "$@"
     ;;
 esac
