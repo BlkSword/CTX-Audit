@@ -93,9 +93,19 @@ if [[ "${1:-}" == "doctor" ]]; then
   echo "CTXA_HOME = $CTXA_HOME"
   echo "DSH_HOME  = $DSH_HOME"
   echo "engine    = $CTX_AUDIT_MCP_CMD"
-  for f in profiles/ctx-audit-web/package.json skills/ctx-audit-auditor/SKILL.md settings.yaml .credentials.yaml; do
+  for f in profiles/ctx-audit-web/package.json skills/ctx-audit-auditor/SKILL.md .credentials.yaml; do
     if [[ -e "$CTXA_HOME/$f" ]]; then echo "  ok   $f"; else echo "  MISS $f"; fi
   done
+  # DSH 首次启动会把 settings.yaml 重命名成 settings.yaml.imported（legacy
+  # import：把旧式顶层 section 搬进各 entry 的 config）。所以两者任一存在即算
+  # 配置已就位，否则会误报缺失。
+  if [[ -e "$CTXA_HOME/settings.yaml" ]]; then
+    echo "  ok   settings.yaml"
+  elif [[ -e "$CTXA_HOME/settings.yaml.imported" ]]; then
+    echo "  ok   settings.yaml（已由 DSH 导入为 .imported）"
+  else
+    echo "  MISS settings.yaml（provider 与默认模型；从主 home 复制一份即可）"
+  fi
   exit 0
 fi
 
