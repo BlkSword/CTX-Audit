@@ -1,8 +1,50 @@
 # Audit-specific overrides on top of the web template.
 #
 # The web app's own layer already supplies the shell, transport and client
-# modules; this layer is where an audit deployment pins its provider/model and
-# persona. Remember that a patch REPLACES the targeted row's whole `config`, so
-# every key the row owns has to be restated here. Copy the provider/model rows
-# from `harness/settings.yaml` when this profile is used to run agents.
-[]
+# modules. This layer does three things the bundle cannot do for itself:
+#
+#   1. mount the Vue console (the bundle ships the older panel, which is turned
+#      off below because the two would otherwise both claim a sidebar entry);
+#   2. pin the MCP row to read-only, so an unattended agent cannot write
+#      findings or close an analysis;
+#   3. pin the provider/model.
+#
+# Remember that a patch REPLACES the targeted row's whole `config`, so every key
+# the row owns has to be restated here — that is why the MCP row repeats
+# serverName/transport/command/args instead of only overriding `args`.
+#
+# The bundle's own patch layer (plugins/ctx-audit-web/presets/ctx-audit.patch.yml)
+# is what registers the `ctx-audit` agent preset and sets it as the deployment
+# default; nothing here needs to restate that.
+
+- insert:
+    - id: ctx-audit-console
+      name: 'dsh-ctx-audit-console'
+      config:
+        checkout: C:/project/CTX-Audit
+        mount: /console
+        apiMount: /api/console
+
+# The bundle's panel duplicates the Vue console above; keep one sidebar entry.
+- id: ctx-audit-web
+  name: '@local/ctx-audit-web'
+  disabled: true
+
+# Read-only MCP surface: report_finding / finish_analysis are not registered,
+# so the agent can gather evidence but cannot write verdicts back.
+- id: ctx-audit-mcp
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: ctxaudit
+    transport: stdio
+    command: C:/project/CTX-Audit/target/release/ctx-audit.exe
+    args: [ 'mcp', '--read-only' ]
+    cwd: C:/project/CTX-Audit
+    failOnStartupError: false
+
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoningEffort: high
