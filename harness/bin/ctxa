@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# ctxa — CTX-Audit 的 agent 运行时入口。
+#
+# 为什么需要它：CTX-Audit 的 agent 能力（preset / skill / MCP 工具面 / 控制台）
+# 全部由 DSH 提供，但**运行时状态必须与主机上日常使用的 DSH 隔离**——否则
+# 审计会话会混进个人工作区的会话列表，个人 profile 的改动也会影响审计行为。
+#
+# 隔离靠 DSH_HOME：DSH 把 profiles / sessions / storages / skills / cache 全部
+# 解析在 $DSH_HOME 下（见 @deepseek-ai/dsh-home-paths 的 resolveDshHome）。
+# 本脚本把 DSH_HOME 固定到仓库内的 .ctxa/，于是：
+#   - 审计会话落在 .ctxa/sessions/<workspace>/，不进 ~/.dsh/sessions/
+#   - 审计 profile 落在 .ctxa/profiles/，与 ~/.dsh/profiles/ 互不可见
+#   - 主机 DSH 的 home patch（~/.dsh/cordis.patch.yml）**不会**被加载
+#
+# 每个工作区再按 cwd 分目录（DSH 自己按 cwd 哈希分 sessions 子目录），
+# 所以同一台机器上多个被审项目之间也不会互相污染。
+#
+# 用法：
+#   ctxa                      # 启动审计 Web 控制台（默认端口 4321）
+#   ctxa --port 4400          # 换端口
+#   ctxa headless "任务..."    # 一次性任务
+#   ctxa plugin add <pkg>     # 管理审计 profile 的插件
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# ── 隔离的运行时根 ──────────────────────────────────────────────────────────
+# 放在仓库内而不是 ~/.ctxa：审计状态与引擎版本天然绑定，仓库删掉即彻底清理。
+export CTXA_HOME="${CTXA_HOME:-$REPO_ROOT/.ctxa}"
+export DSH_HOME="$CTXA_HOME"
+
+# ── 引擎二进制 ──────────────────────────────────────────────────────────────
+if [[ -z "${CTX_AUDIT_MCP_CMD:-}" ]]; then
+  for candidate in \
+    "$REPO_ROOT/target/release/ctx-audit.exe" \
+    "$REPO_ROOT/target/release/ctx-audit"; do
+    if [[ -x "$candidate" ]]; then
+      CTX_AUDIT_MCP_CMD="$candidate"
+      break
+    fi
+  done
+  if [[ -z "${CTX_AUDIT_MCP_CMD:-}" ]] && command -v ctx-audit >/dev/null 2>&1; then
+    CTX_AUDIT_MCP_CMD="$(command -v ctx-audit)"
+  fi
+  if [[ -z "${CTX_AUDIT_MCP_CMD:-}" ]]; then
+    echo "error: 找不到 ctx-audit 二进制；先 cargo build --release，或设置 CTX_AUDIT_MCP_CMD" >&2
+    exit 1
+  fi
+fi
+export CTX_AUDIT_MCP_CMD
+
+# ── 首次使用：把审计 profile 装进隔离 home ──────────────────────────────────
+if [[ ! -f "$CTXA_HOME/profiles/ctx-audit-web/package.json" ]]; then
+  echo "==> 初始化隔离运行时 $CTXA_HOME" >&2
+  DSH_HOME="$CTXA_HOME" bash "$REPO_ROOT/harness/install.sh"
+fi
+
+# ── 默认动作：起审计 Web 控制台 ─────────────────────────────────────────────
+if [[ $# -eq 0 ]]; then
+  set -- --port "${CTXA_PORT:-4321}" --no-open
+fi
+
+# 第一个参数是 dsh 子命令（headless / plugin / tui …）时直接透传；
+# 否则按「启动 web profile + 参数」处理。
+case "${1:-}" in
+  headless|plugin|tui|rescue)
+    exec dsh --profile ctx-audit-web "$@"
+    ;;
+  *)
+    exec dsh --profile ctx-audit-web "$@"
+    ;;
+esac

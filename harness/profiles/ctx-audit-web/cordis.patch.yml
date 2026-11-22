@@ -1,13 +1,11 @@
 # Audit-specific overrides on top of the web template.
 #
 # The web app's own layer already supplies the shell, transport and client
-# modules. This layer does three things the bundle cannot do for itself:
+# modules. This layer does two things the bundle cannot do for itself:
 #
-#   1. mount the Vue console (the bundle ships the older panel, which is turned
-#      off below because the two would otherwise both claim a sidebar entry);
-#   2. pin the MCP row to read-only, so an unattended agent cannot write
+#   1. pin the MCP row to read-only, so an unattended agent cannot write
 #      findings or close an analysis;
-#   3. pin the provider/model.
+#   2. pin the provider/model.
 #
 # Remember that a patch REPLACES the targeted row's whole `config`, so every key
 # the row owns has to be restated here — that is why the MCP row repeats
@@ -16,16 +14,14 @@
 # The bundle's own patch layer (plugins/ctx-audit-web/presets/ctx-audit.patch.yml)
 # is what registers the `ctx-audit` agent preset and sets it as the deployment
 # default; nothing here needs to restate that.
+#
+# The Vue console is NOT mounted here: its host plugin (`dsh-ctx-audit-console`)
+# lives outside this repository. Deployments that have it should also apply
+# `cordis.patch.console.yml` from this directory.
 
-- insert:
-    - id: ctx-audit-console
-      name: 'dsh-ctx-audit-console'
-      config:
-        checkout: C:/project/CTX-Audit
-        mount: /console
-        apiMount: /api/console
+- insert: []
 
-# The bundle's panel duplicates the Vue console above; keep one sidebar entry.
+# The bundle's panel duplicates the Vue console; keep one sidebar entry.
 - id: ctx-audit-web
   name: '@local/ctx-audit-web'
   disabled: true

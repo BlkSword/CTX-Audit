@@ -91,3 +91,6 @@ console/.state/
 ctx-audit-json-*.json
 ctx-audit-sarif-*.json
 ctx-audit-report-*.md
+
+# CTX-Audit agent 运行时（隔离的 DSH_HOME：profiles/sessions/storages）
+.ctxa/
