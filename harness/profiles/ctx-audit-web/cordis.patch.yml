@@ -43,6 +43,10 @@
 - id: agent-default-model
   name: "@deepseek-ai/dsh-agent-default-model"
   config:
-    provider: deepseek-official
-    model: deepseek-flash
-    reasoningEffort: high
+    # Command Code route. `deepseek-v4.1-flash` is the model the audit rounds
+    # were actually run on; `max` is its highest reasoning tier (the catalog
+    # offers low/high/max). Requires the @mars-sea/dsh-commandcode-provider
+    # bundle and COMMANDCODE_API_KEY in the credential store.
+    provider: commandcode
+    model: deepseek/deepseek-v4.1-flash
+    reasoningEffort: max

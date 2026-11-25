@@ -109,8 +109,10 @@ DSH 中 MCP 工具名前缀为 `mcp__ctxaudit__`。**只读面 26 个**，按下
 ## 3. 取证优先流程
 
 ```
-Phase 0 体检：audit_brief（首选）或 coverage_summary + get_project_routes
+Phase 0 体检（**强制**）：audit_brief（首选）或 coverage_summary + get_project_routes
         读三件事：文件数 / 语言能力（哪些语言只有启发式）/ 是否 index_truncated_at_limit
+        **未调用 audit_brief 不得进入 Phase 1** —— 否则你不知道引擎对这个目标是否失明
+        （端点轴为 0、语言只有启发式、索引被截断），会把"引擎看不见"误读成"没有问题"
 Phase 1 定向取证（主线，不需要先扫描）：
         explain_route(route) 拿单个端点的鉴权推导
         slice_backward(file, line) 拿函数归属 + 窗口 + 逐行标注；窗口外用 read_file 补
@@ -124,6 +126,92 @@ Phase 4 引擎改进：仅通用修复，只降权不丢弃
 Phase 5 验证：单测 + before/after 对照，确认不回退
 Phase 6 固化：commit + CHANGELOG + 台账 + 报告（0day 才双份）
 ```
+
+### 3.1 成本纪律（实测数据，必须遵守）
+
+**`slice_backward` 的 `detail` 参数决定成本，默认值不是最优：**
+
+| detail | 保留什么 | 何时用 |
+|---|---|---|
+| `full`（默认） | 全部：逐行 `provenance`（每行一条）、`reachability`、`dispatch_candidates`、`nearest_declaration` | 需要可达性 / 分派候选 / 最近声明锚点时 |
+| `code` | 纯文本窗口 + **`decision_facts`（守卫、容量锚点）**；去掉逐行 provenance 与拓扑附加字段 | **默认应该用这个** |
+
+实测（同一目标、同一 `file:line`）：
+
+| 目标 | `full` | `code` | 倍数 |
+|---|---|---|---|
+| 真实项目单点 | 21,482 字符 | 4,130 字符 | 5.2× |
+| 本仓库大文件 | 202,937 字符 | 63,242 字符 | 3.2× |
+
+**规则**：先 `detail=code` 看代码——它**已经带 `decision_facts`**，判断"有没有守卫 / 容量够不够"够用。
+只有当你要 `reachability` / `dispatch_candidates` / `nearest_declaration` 时，才对**那一个**位置补 `detail=full`。
+
+**注意**：`code` 不是"小输出"的保证——窗口本身（`depth` + `forward`）才是主项。窗口大时先收窄
+`depth` / `forward`，再考虑换 `detail`。
+
+**超预算时会发生什么**（`CTX_AUDIT_MAX_TOOL_BYTES`，默认 64 KB）：响应会被逐级裁剪，并在
+`data` 里如实标注 `truncated_by_budget` / `budget_bytes` / `items_removed`，必要时还有
+`provenance_total` / `provenance_kept` / `string_cap_chars`，同时 `uncertainty.reasons` 追加
+`truncated_by_payload_budget`。**看到这些字段就说明内容不全**，要么收窄窗口重取，要么换 `detail`。
+
+**同理，`grep` 不是敌人**：找"某个字符串在哪"用 `grep` 比任何 MCP 工具都快。MCP 的价值在**结构化事实**
+（守卫判定、可达性、载荷档位），不在"看代码"。真实轮次里 agent 的 MCP 调用只占 4–7%，原因就是
+默认 `full` 的输出比裸读贵 5 倍而信息量没多——**用 `detail=code` 才能让证据轴真正被用起来**。
+
+### 3.2 SOP 工具会返回什么（用之前先知道预期）
+
+**`audit_workflow`** —— 五阶段一键 SOP（`coverage → triage → chains → dossier → payload`）：
+
+```json
+{
+  "schema": "audit-workflow/v1",
+  "stages": [{"stage": "coverage", "status": "done", "evidence_ids": ["EV-coverage-1"]}],
+  "stopped_after": "payload",
+  "evidence": [{"id": "EV-coverage-1", "stage": "coverage", "kind": "...", "summary": "..."}],
+  "evidence_counts": {"coverage": 1, "triage": 0, "chains": 0, "dossier": 0, "payload": 0, "total": 1},
+  "next_actions": [{"kind": "verify", "evidence_id": "EV-payload-1", "tool": "verify_payload", "hint": "..."}],
+  "limits": ["..."],
+  "uncertainty": {"level": "medium", "reasons": ["name_level_graph", "heuristic_guards", "static_only"]}
+}
+```
+
+**用途**：一次调用拿到全链路证据，**证据 id 稳定可引用**。适合"我要快速知道这个项目值不值得深审"。
+**不适合**：已经知道要看哪个文件时（直接 `slice_backward` 更快）。
+**注意**：`status` 取值是 `done` / `partial`；`limits` 非空说明该阶段被截断或降级，必须读。
+
+**`autopilot`** —— 预算内自主循环：
+
+```json
+{
+  "schema": "autopilot/v1",
+  "verdict": "has_verified_payload|all_candidates_killed|undecided|no_candidate_chains|no_attempt_made",
+  "counts": {"candidates": 0, "attempted": 0, "verified": 0, "killed": 0, "undecided": 0, "packaged": 0},
+  "findings": [], "packages": [], "undecided": [],
+  "workflow_summary": {"stopped_after": "payload", "evidence_counts": {}},
+  "trace": [{"step": 1, "action": "workflow", "evidence": 0}]
+}
+```
+
+**用途**：无人值守跑一轮，`trace` 说明"为什么停在这里"。
+**注意**：`verdict` 是**引擎的判定**，不是你的判定 —— 你仍要按 Phase 3 复核。
+
+**`poc_package`** —— 给定 `chain_id`，返回：
+
+```json
+{
+  "schema": "poc-package/v1",
+  "chain": {"chain_id": "...", "entry": {}, "sink": {}, "steps": [], "step_count": 0},
+  "verdict": {"payload_tier": "...", "viability": {}, "reachable": {}, "killed_at": null, "taint_lost_at": null, "archetype": "..."},
+  "topology": {"format": "mermaid", "diagram": "..."},
+  "request": {"method": "...", "route": "...", "params": [], "curl": "...", "test_skeleton": "..."},
+  "guard_gap": {"effective": [], "ineffective": [], "unknown": [], "summary": "N effective / N ineffective / N unknown"},
+  "remediation": [], "reproduce": []
+}
+```
+
+**用途**：把一条链变成可交付工件（拓扑 + 请求骨架 + 守卫缺口 + 修复建议）。
+**注意**：`request` 为 `null` 表示坐标不全（`incomplete_coordinates`），此时不要编造请求；
+`guard_gap.unknown` 非空说明守卫归属未定，**不能当作"无守卫"**。
 
 **判读纪律**：先读 `uncertainty` 与 `scope_anchor` 再信 `data`；`truncated_at_limit` / `total_hits > limit`
 不能当"就这些"；切片是**后向前缀**不是数据流；`in_conditional_region` 与 `preprocess_note` 说明条件编译是否

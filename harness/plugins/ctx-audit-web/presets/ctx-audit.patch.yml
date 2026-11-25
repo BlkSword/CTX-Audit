@@ -174,6 +174,24 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  # A summarization call replays the whole prefix, so the summary
+                  # budget competes with the prompt for the same window. Some
+                  # adapters size the request from their own wire estimate and
+                  # clamp max_tokens to a small floor once that estimate fills
+                  # the window; the summary then ends on a token cap and the
+                  # checkpoint is rejected as incomplete. Triggering compaction
+                  # earlier leaves the summary its full budget.
+                  #
+                  # 0.6 is the value verified against the route this preset is
+                  # deployed with. If `agent-default-model` in the profile patch
+                  # is pointed at a different provider/model, add a matching
+                  # entry here — an unmatched route silently falls back to the
+                  # 0.8 default and can hit the same truncation.
+                  modelPolicies:
+                    - provider: commandcode
+                      model: deepseek/deepseek-v4.1-flash
+                      thresholdRatio: 0.6
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner

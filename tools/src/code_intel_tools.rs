@@ -3310,6 +3310,36 @@ fn max_tool_bytes() -> usize {
         .unwrap_or(64 * 1024)
 }
 
+/// 把超长字符串字段截断到 `max_chars`，返回被截掉的字符数。
+///
+/// 切片响应的主项常常是**单个字符串**（`detail=code` 的 `code` 字段整段代码），
+/// 数组截断对它无效——不处理就会出现"标了 truncated_by_budget 却仍然超预算"。
+fn truncate_long_strings(v: &mut Value, max_chars: usize) -> usize {
+    let mut removed = 0usize;
+    match v {
+        Value::String(s) => {
+            let total = s.chars().count();
+            if total > max_chars {
+                let kept: String = s.chars().take(max_chars).collect();
+                removed += total - max_chars;
+                *s = format!("{kept}\n…[truncated {removed} chars by payload budget]");
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                removed += truncate_long_strings(item, max_chars);
+            }
+        }
+        Value::Object(map) => {
+            for (_k, val) in map.iter_mut() {
+                removed += truncate_long_strings(val, max_chars);
+            }
+        }
+        _ => {}
+    }
+    removed
+}
+
 /// 把超预算的响应数组截断到保留 `keep` 条，返回移除条数。
 fn truncate_arrays(v: &mut Value, keep: usize) -> usize {
     let mut removed = 0usize;
@@ -3333,21 +3363,51 @@ fn truncate_arrays(v: &mut Value, keep: usize) -> usize {
     removed
 }
 
-/// 载荷预算：超过预算时逐级截断数组并显式标注（不静默丢数据）。
-fn apply_payload_budget(mut env: IntelEnvelope) -> IntelEnvelope {
-    let budget = max_tool_bytes();
-    let size = serde_json::to_string(&env).map(|s| s.len()).unwrap_or(0);
-    if size <= budget {
+/// 载荷预算：超过预算时逐级截断并显式标注（不静默丢数据）。
+///
+/// 截断必须覆盖 **`provenance`**：它是逐行记账，条目数随切片窗口线性增长，往往是
+/// 超预算的主项。只截 `data` 里的数组会让响应仍然远超预算，却已经标了
+/// `truncated_by_budget`——那是在陈述一件没有发生的事。
+fn apply_payload_budget(env: IntelEnvelope) -> IntelEnvelope {
+    apply_payload_budget_with(env, max_tool_bytes())
+}
+
+/// 预算裁剪的纯函数形式：预算显式传入，便于单测（环境变量是进程级的，测试里改它会串扰）。
+///
+/// 度量口径必须与**上线口径**一致：MCP 响应走 `to_string_pretty`（见
+/// `ToolResult::to_mcp_response`），缩进让同一份数据大出约 1.5 倍。按紧凑序列化
+/// 度量会得出"已压到 64 KB"的结论，而线上实际是 67 KB。
+fn apply_payload_budget_with(mut env: IntelEnvelope, budget: usize) -> IntelEnvelope {
+    let size_of = |env: &IntelEnvelope| {
+        serde_json::to_string_pretty(env)
+            .map(|s| s.len())
+            .unwrap_or(0)
+    };
+    if size_of(&env) <= budget {
         return env;
     }
     let mut removed_total = 0usize;
+    let provenance_total = env.provenance.len();
     for keep in [200usize, 100, 50, 20, 10, 5, 3] {
         removed_total += truncate_arrays(&mut env.data, keep);
-        let now = serde_json::to_string(&env).map(|s| s.len()).unwrap_or(0);
-        if now <= budget {
+        if env.provenance.len() > keep {
+            env.provenance.truncate(keep);
+        }
+        if size_of(&env) <= budget {
             break;
         }
     }
+    // 数组截断对**单个超长字符串**无效（`detail=code` 的 `code` 字段就是整段代码）。
+    // 逐级收紧字符串上限，直到落进预算或到下限。
+    let mut string_cap = 0usize;
+    for cap in [32_768usize, 16_384, 8_192, 4_096, 2_048, 1_024] {
+        if size_of(&env) <= budget {
+            break;
+        }
+        string_cap = cap;
+        removed_total += truncate_long_strings(&mut env.data, cap);
+    }
+    let provenance_kept = env.provenance.len();
     if let Some(obj) = env.data.as_object_mut() {
         obj.insert("truncated_by_budget".to_string(), json!(true));
         obj.insert(
@@ -3355,10 +3415,41 @@ fn apply_payload_budget(mut env: IntelEnvelope) -> IntelEnvelope {
             json!(budget),
         );
         obj.insert("items_removed".to_string(), json!(removed_total));
+        if provenance_kept < provenance_total {
+            obj.insert("provenance_total".to_string(), json!(provenance_total));
+            obj.insert("provenance_kept".to_string(), json!(provenance_kept));
+        }
+        if string_cap > 0 {
+            obj.insert("string_cap_chars".to_string(), json!(string_cap));
+        }
     }
     env.uncertainty
         .reasons
         .push("truncated_by_payload_budget".to_string());
+    // 记账字段本身也占预算：上面那轮是在**加字段之前**判定的，加完可能又超了。
+    // 这里再收一轮，保证"标了 truncated_by_budget"的响应真的落在预算内。
+    // 先砍 provenance（它是记账，不是判定材料），再收紧字符串，最后才动数组。
+    let mut guard = 0;
+    while size_of(&env) > budget && guard < 12 {
+        guard += 1;
+        if !env.provenance.is_empty() {
+            let keep = env.provenance.len() / 2;
+            env.provenance.truncate(keep);
+            if let Some(obj) = env.data.as_object_mut() {
+                obj.insert("provenance_kept".to_string(), json!(keep));
+            }
+            continue;
+        }
+        let next_cap = string_cap.max(1) / 2;
+        if next_cap == 0 {
+            break;
+        }
+        string_cap = next_cap;
+        truncate_long_strings(&mut env.data, string_cap);
+        if let Some(obj) = env.data.as_object_mut() {
+            obj.insert("string_cap_chars".to_string(), json!(string_cap));
+        }
+    }
     env
 }
 

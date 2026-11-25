@@ -304,3 +304,104 @@ use super::super::*;
             .unwrap();
         assert_eq!(fallback["defined_in_source"], false, "{v}");
     }
+
+    /// 载荷预算必须真的把响应压到预算内，且截断要覆盖 provenance。
+    ///
+    /// 回归背景：`provenance` 是逐行记账，条目数随切片窗口线性增长；只截 `data`
+    /// 里的数组时，响应仍远超预算却已标 `truncated_by_budget`——那是在陈述一件
+    /// 没有发生的事（实测 202,938 字符 vs 65,536 预算）。
+    #[test]
+    fn test_payload_budget_truncates_provenance_too() {
+        let provenance: Vec<Provenance> = (0..400)
+            .map(|i| prov("src/big.rs", i + 1, "statv1:1f:1b"))
+            .collect();
+        let env = IntelEnvelope {
+            data: json!({
+                "snippets": (0..400)
+                    .map(|i| json!({"line": i + 1, "text": "let x = 1;"}))
+                    .collect::<Vec<_>>(),
+            }),
+            provenance,
+            uncertainty: Uncertainty::new("low", &[], 0),
+        };
+        let before = serde_json::to_string_pretty(&env).unwrap().len();
+        assert!(before > 20_000, "构造的响应应明显超预算: {before}");
+
+        let budget = 8_192usize;
+        let out = apply_payload_budget_with(env, budget);
+        let after = serde_json::to_string_pretty(&out).unwrap().len();
+        assert!(
+            after <= budget,
+            "裁剪后必须真的落在预算内: {after} > {budget}"
+        );
+        assert_eq!(out.data["truncated_by_budget"], true);
+        assert_eq!(out.data["budget_bytes"], budget);
+        assert_eq!(out.data["provenance_total"], 400);
+        let kept = out.data["provenance_kept"].as_u64().unwrap();
+        assert_eq!(
+            out.provenance.len() as u64,
+            kept,
+            "上报的保留条数必须与实际一致"
+        );
+        assert!(kept < 400, "provenance 应被截断: {kept}");
+        assert!(
+            out.uncertainty
+                .reasons
+                .iter()
+                .any(|r| r == "truncated_by_payload_budget"),
+            "截断必须写进 uncertainty: {:?}",
+            out.uncertainty.reasons
+        );
+    }
+
+    /// 单个超长字符串也必须被压下去：数组截断对它无效。
+    ///
+    /// 回归背景：`detail=code` 的 `code` 字段是整段代码，一个字段就能吃掉全部预算；
+    /// 只截数组时响应仍是 67,169 字符（预算 65,536），却已标 `truncated_by_budget`。
+    #[test]
+    fn test_payload_budget_truncates_long_strings() {
+        let big_code = "let x = 1;\n".repeat(20_000);
+        let env = IntelEnvelope {
+            data: json!({"code": big_code, "detail": "code"}),
+            provenance: Vec::new(),
+            uncertainty: Uncertainty::new("low", &[], 0),
+        };
+        let before = serde_json::to_string_pretty(&env).unwrap().len();
+        assert!(before > 100_000, "构造的响应应远超预算: {before}");
+
+        let budget = 16_384usize;
+        let out = apply_payload_budget_with(env, budget);
+        let after = serde_json::to_string_pretty(&out).unwrap().len();
+        assert!(
+            after <= budget,
+            "超长字符串必须被截断到预算内: {after} > {budget}"
+        );
+        assert_eq!(out.data["truncated_by_budget"], true);
+        let cap = out.data["string_cap_chars"].as_u64().unwrap();
+        assert!(cap > 0, "应上报字符串上限: {}", out.data);
+        let code = out.data["code"].as_str().unwrap();
+        assert!(
+            code.contains("truncated"),
+            "截断必须留下可见标记: {}",
+            &code[code.len().saturating_sub(80)..]
+        );
+    }
+
+    /// 未超预算时不得改动响应，也不得凭空标注截断。
+    #[test]
+    fn test_payload_budget_leaves_small_response_alone() {
+        let env = IntelEnvelope {
+            data: json!({"ok": true}),
+            provenance: vec![prov("a.py", 1, "statv1:1f:1b")],
+            uncertainty: Uncertainty::new("low", &[], 0),
+        };
+        let out = apply_payload_budget_with(env, 64 * 1024);
+        assert!(out.data.get("truncated_by_budget").is_none());
+        assert_eq!(out.provenance.len(), 1);
+        assert!(
+            !out.uncertainty
+                .reasons
+                .iter()
+                .any(|r| r == "truncated_by_payload_budget")
+        );
+    }
