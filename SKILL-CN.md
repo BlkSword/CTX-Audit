@@ -306,20 +306,20 @@ ctx-audit audit <repo> --out report/ --limit 100
 
 1. **假设**：从端点表/覆盖率挑「入口 → 可疑汇」；
 2. **can_reach(from,to)**：
-eachable=false 直接换假设；	rue 看 hops/path；
+reachable=false 直接换假设；reachable=true 看 hops/path；
 3. **slice_between(from,to,radius)**：只切需要的步（每步窗口，总 ≤12KB）；
 4. **判定三事实**：controlled / guarded / reachable，全部要 file:line 证据；
-5. **证伪**：ssert_chain_step 逐步核对工具给的链。
+5. **证伪**：assert_chain_step 逐步核对工具给的链。
 
 CLI：
-`ash
+```bash
 ctx-audit probe reach  <ROOT> --from-file A.java --from-line 37 --to-file A.java --to-line 47 -o json
 ctx-audit probe slice  <ROOT> --from-file A.java --from-line 37 --to-file A.java --to-line 47 -o md
-`
+```
 
 不确定性（强制标注）：can_reach 是名字级图（无接收者类型解析），
-eachable=true 只代表拓扑可能；
-earest_def_fallback=true 表示行号不在函数体内已回退到最近定义。探针不回答"是不是漏洞"。
+reachable=true 只代表拓扑可能；
+nearest_def_fallback=true 表示行号不在函数体内已回退到最近定义。探针不回答"是不是漏洞"。
 
 ### Harness 骨架（把候选变成可执行验证）
 
