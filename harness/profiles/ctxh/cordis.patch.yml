@@ -1,0 +1,35 @@
+# ctxh runtime overrides — the audit agent's model route and MCP surface.
+#
+# This is a PROFILE patch on top of the installed bundles, so it replaces the
+# whole `config` of every row it touches: restate every key the row owns.
+#
+# Layer order (lowest first): bundle patches in `dsh.profile.bundles` order,
+# then this file, then the home patch, then `--patch` overlays. The
+# `@local/ctx-audit-web` bundle already registers the `ctx-audit` agent preset
+# and sets `agent-preset-registry.default`; nothing here restates that.
+
+# Provider/model for the audit agent. Every value is overridable from the
+# environment so one template serves several deployments without edits.
+#
+# NOTE: the compaction policy in the preset matches `(provider, model)`
+# EXACTLY and silently falls back to thresholdRatio 0.8 when it does not match.
+# If you point these variables somewhere else, add a matching entry to
+# `presets/ctx-audit.patch.yml` or compaction will start truncating summaries.
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: !!js process.env.CTXH_PROVIDER || 'commandcode'
+    model: !!js process.env.CTXH_MODEL || 'deepseek/deepseek-v4.1-flash'
+    reasoningEffort: !!js process.env.CTXH_EFFORT || 'max'
+
+# Read-only MCP surface: report_finding / finish_analysis are not registered,
+# so the agent gathers evidence but cannot write verdicts back.
+- insert:
+    - id: ctx-audit-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ctxaudit
+        transport: stdio
+        command: !!js process.env.CTX_AUDIT_MCP_CMD || 'ctx-audit'
+        args: ['mcp', '--read-only']
+        failOnStartupError: false

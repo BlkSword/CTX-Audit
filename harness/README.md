@@ -14,6 +14,60 @@ DSH_HOME="$HOME/.dsh" ./install.sh
 CTX_AUDIT_MCP_CMD=ctx-audit ./bin/ctx-audit-dsh "对 ./project 做安全审计"
 ```
 
+## 最小运行时（`ctxh`）
+
+如果只需要**审计 agent**（不需要 Web 控制台、Office 渲染、语音等），用最小组合：
+
+```bash
+./bin/ctxh-install.sh          # 装到 ~/.ctxh，实测约 254 MB
+export COMMANDCODE_API_KEY=...
+./bin/ctxh "把 /path/to/target 审一遍"
+```
+
+对比：`npm i -g @deepseek-ai/dsh` 是 **1,165 MB**（含 LibreOffice 339 MB、Web 前端 25 MB、
+语音/图像/实验性包），而最小组合只装 base + headless + 我们自己的四个部件：
+
+| 组成 | 体积 |
+|---|---|
+| `@deepseek-ai/*`（DSH 代码，245 个包） | 30.6 MB |
+| 第三方依赖 | 197.5 MB |
+| ├─ 其中 `@img/sharp`（图片） | 27.9 MB |
+| ├─ `node-pty`（终端） | 26.8 MB |
+| ├─ `openai`+`@google/genai`+`@anthropic-ai/sdk`（pi-ai 多 provider） | 45.0 MB |
+| └─ `@opentelemetry/*`（遥测） | 16.3 MB |
+| 瘦 CLI（复制自全局 `dsh` 的 `lib/`，不含其 91 个依赖） | 66 KB |
+| skill | 25 KB |
+| `ctx-audit` 引擎二进制 | 25.6 MB |
+| **合计** | **253.7 MB** |
+
+**宿主不需要装全局 `dsh`**——`ctxh` 用 profile 内的瘦 CLI 启动。
+
+### 安装脚本处理掉的四个坑（都实测踩过）
+
+1. **先普通 `npm install` base+headless**，让 npm 自动装 peer。用 `--legacy-peer-deps`
+   会跳过 peer，直到运行时 import 才报 `ERR_MODULE_NOT_FOUND`。
+2. **`commandcode` provider 必须用 `--force` 单独补装**：它的 peer 写 `^0.2.0-rc.1`，
+   而 semver 对 prerelease 要求同 patch，`0.2.2-rc.5` 不满足 → 普通 install 会 ERESOLVE。
+3. **我们的 bundle 声明的三个插件要显式装**（`agent-preset` / `agent-preset-registry` /
+   `mcp-client`），它们不是 base 的依赖。不装的话组合树能 dump，但运行时
+   `3 entries did not activate`。
+4. **`@local/*` bundle 必须在最后一次 npm 之后复制**——每次 npm install 都会删掉手工
+   放进去的目录。
+
+### 凭据
+
+实测把 `.credentials.yaml` 复制到新 home **不被识别**，只有环境变量生效：
+
+```bash
+export COMMANDCODE_API_KEY=...   # 首选
+```
+
+### 边界
+
+- 这是 **headless** 组合，没有 Web UI。要控制台用 `ctxa`（另一条路径）。
+- 版本组合是钉死的（`0.2.2-rc.5` + provider `0.12.0`）；升级时改
+  `profiles/ctxh/package.json` 里的版本号并重跑安装脚本。
+
 ## 使用
 
 ```bash

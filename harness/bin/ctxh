@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# ctxh — CTX-Audit 的最小 agent 运行时启动器。
+#
+# 与 `ctxa` 的分工：
+#   ctxa  = 完整开发运行时（Web 控制台 + 全部 bundle，依赖全局 dsh）
+#   ctxh  = 最小运行时（只有审计必需的 bundle，自带头 CLI，不依赖全局 dsh）
+#
+# 为什么单独一个：`npm i -g @deepseek-ai/dsh` 是 1.1 GB，而审计 agent 需要的
+# 最小组合实测 254 MB。ctxh 用 profile 内的瘦 CLI 启动，宿主不需要装全局 dsh。
+#
+# 用法：
+#   ctxh                                   # 一次性任务（headless）
+#   ctxh "把 /path/to/target 审一遍"
+#   ctxh --dump-config                     # 检查组合树
+#   CTXH_HOME=/opt/ctxh ctxh ...           # 换运行时根
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+export CTXH_HOME="${CTXH_HOME:-$HOME/.ctxh}"
+export DSH_HOME="$CTXH_HOME"
+
+PROFILE_DIR="$CTXH_HOME/profiles/ctxh"
+[ -f "$PROFILE_DIR/package.json" ] || {
+  printf 'error: %s 未安装；先运行 %s/ctxh-install.sh\n' "$PROFILE_DIR" "$SCRIPT_DIR" >&2
+  exit 1
+}
+
+# ── 引擎二进制 ──────────────────────────────────────────────────────────────
+if [ -z "${CTX_AUDIT_MCP_CMD:-}" ]; then
+  for candidate in \
+    "$REPO_ROOT/target/release/ctx-audit.exe" \
+    "$REPO_ROOT/target/release/ctx-audit"; do
+    [ -x "$candidate" ] && { CTX_AUDIT_MCP_CMD="$candidate"; break; }
+  done
+  if [ -z "${CTX_AUDIT_MCP_CMD:-}" ] && command -v ctx-audit >/dev/null 2>&1; then
+    CTX_AUDIT_MCP_CMD="$(command -v ctx-audit)"
+  fi
+  if [ -z "${CTX_AUDIT_MCP_CMD:-}" ]; then
+    printf 'error: 找不到 ctx-audit 二进制；设置 CTX_AUDIT_MCP_CMD 或先 cargo build --release\n' >&2
+    exit 1
+  fi
+fi
+export CTX_AUDIT_MCP_CMD
+
+# ── CLI：优先 profile 内的瘦副本，其次 PATH 上的 dsh ────────────────────────
+LOCAL_CLI="$PROFILE_DIR/node_modules/@deepseek-ai/dsh/lib/bin.js"
+if [ -f "$LOCAL_CLI" ]; then
+  exec node "$LOCAL_CLI" --profile ctxh "$@"
+fi
+if command -v dsh >/dev/null 2>&1; then
+  exec dsh --profile ctxh "$@"
+fi
+printf 'error: 既没有 profile 内的 CLI，也没有 PATH 上的 dsh；重跑 ctxh-install.sh\n' >&2
+exit 1
