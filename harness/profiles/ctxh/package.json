@@ -5,11 +5,7 @@
   "description": "CTX-Audit agent runtime: the minimal DSH composition an audit actually needs.",
   "dependencies": {
     "@deepseek-ai/dsh-base": "0.2.2-rc.5",
-    "@deepseek-ai/dsh-headless": "0.2.2-rc.5",
-    "@deepseek-ai/dsh-agent-preset": "0.2.2-rc.5",
-    "@deepseek-ai/dsh-agent-preset-registry": "0.2.2-rc.5",
-    "@deepseek-ai/dsh-mcp-client": "0.2.2-rc.5",
-    "@mars-sea/dsh-commandcode-provider": "0.12.0"
+    "@deepseek-ai/dsh-headless": "0.2.2-rc.5"
   },
   "dsh": {
     "profile": {

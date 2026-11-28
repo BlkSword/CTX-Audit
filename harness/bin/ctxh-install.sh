@@ -66,13 +66,21 @@ npm install --no-audit --no-fund --loglevel=error \
   "@deepseek-ai/dsh-base@$DSH_BASE_VERSION" \
   "@deepseek-ai/dsh-headless@$DSH_BASE_VERSION"
 
-# ── 3) bundle 需要的三个插件 + provider（--force，保住 peer 树）──────────────
-say "安装 preset / MCP client 插件 + commandcode provider"
+# ── 3) provider 与 bundle 需要的插件 ────────────────────────────────────────
+#
+# 两条命令必须分开，而且都用 --force：
+#   - 与 base+headless 同一次 install 时，npm 会按 provider 的 peer 范围
+#     （^0.2.0-rc.1）挑一个 0.2.0-rc.x，与已装的 0.2.2-rc.5 冲突并 ERESOLVE；
+#   - 三个插件不是 base 的依赖，但不装会在运行时 "did not activate"。
+say "安装 commandcode provider"
+npm install --no-audit --no-fund --loglevel=error --force \
+  "@mars-sea/dsh-commandcode-provider@$PROVIDER_VERSION"
+
+say "安装 preset / MCP client 插件"
 npm install --no-audit --no-fund --loglevel=error --force \
   "@deepseek-ai/dsh-agent-preset@$DSH_BASE_VERSION" \
   "@deepseek-ai/dsh-agent-preset-registry@$DSH_BASE_VERSION" \
-  "@deepseek-ai/dsh-mcp-client@$DSH_BASE_VERSION" \
-  "@mars-sea/dsh-commandcode-provider@$PROVIDER_VERSION"
+  "@deepseek-ai/dsh-mcp-client@$DSH_BASE_VERSION"
 
 # ── 4) CLI：复制全局 dsh 的 lib（约 65 KB，不复制它的 91 个依赖）─────────────
 CLI_READY=""

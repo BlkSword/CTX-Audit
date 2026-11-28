@@ -137,6 +137,27 @@ cargo build --release
 # 产物：target/release/ctx-audit、target/release/ctx-audit-daemon
 ```
 
+### 只跑引擎（CI / 脚本）
+
+上面的二进制就是完整的确定性分析能力，不依赖任何 agent 环境。
+
+### 跑审计 agent（`ctxh`）
+
+需要一个会读证据、做判定的 LLM agent 时，装最小运行时：
+
+```bash
+./harness/bin/ctxh-install.sh        # Node >= 24.9；装到 ~/.ctxh，约 254 MB
+export COMMANDCODE_API_KEY=...
+cd /path/to/target
+/path/to/CTX-Audit/harness/bin/ctxh "完整审计这个项目，按 ctx-audit-auditor skill 输出 JSON"
+```
+
+它装的是 **base + headless 两个 DSH bundle + 本仓库的 preset / MCP 行 / skill**，
+不含 Web 控制台、Office 渲染、语音等审计用不到的部分。对比 `npm i -g @deepseek-ai/dsh`
+的 1,165 MB，实测 **254 MB**，且宿主不需要装全局 DSH（启动器用 profile 内的瘦 CLI）。
+
+需要 Web 控制台时用 `ctxa`（完整运行时，见 `harness/README.md`）。
+
 ### 常用命令
 
 ```bash
