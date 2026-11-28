@@ -48,24 +48,27 @@ weakly to the first, and does not own the last.
 
 ### 2.1 Locate (get a first point)
 
+The candidate axis is weak: **the engine cannot locate from zero**. A first point usually comes from one
+of these five, in order of yield:
+
 | Path | How | Reality check |
 |---|---|---|
-| Rule / taint scan | `ctx-audit scan <PATH> --deep --min-severity low -o json` | Low recall on C: a scan hit is a bonus, not an expectation |
-| From the attack surface | `get_framework_context(file)` for routes **and the authorization-coverage verdict of each route** (CSRF, container filters and interceptors come with it — see §3.4), then `get_call_hierarchy(f, direction: "callees")` | Only meaningful on **modelled web framework stacks**; on other languages it returns routes with the authorization fields empty, and you may **not** read that as "no authorization" (see the boundary at the end of §3.4) |
-| From a sink upward | `get_symbol_references("<dangerous API>")` then `get_call_hierarchy(f, direction: "callers")` | Works, but noisy in large C code bases |
-| From data flow / dispatch | `get_dataflow_path(source, sink)`; `dispatch_candidates` (see §3) for unresolved indirect calls | The dispatch candidate set is the engine's only mechanical help for indirect calls |
-| Outside the engine | Your own hypothesis, a fuzzer, an advisory or a fix diff | Today this is the most productive path — say so in your report instead of pretending the engine found it |
+| **Authorization surface** | `get_project_routes(only_uncovered: true)` for `no_global_*`; or `permitted_by_global_config` (**explicitly permitted — the highest-value signal**) | Only works where the endpoint axis is live |
+| **Fix diff** | `git log --since=6.months` over security-looking commits, or the project's advisories | **Highest hit rate**, language-agnostic |
+| **Danger-surface list** | Write it down yourself: upload/parse, export/download, URL fetch, command execution, template render, deserialization entry | The only workable path when the endpoint axis is blind |
+| **`scan_code` grouping** | `scan_code(mode: "rules", min_severity: "high", limit: 50)` → group by `(vuln_type, file)`, sample 1–2 per group | A hit is a bonus, not an expectation; near-100% FP on mature projects |
+| **Chains filtered by sink** | `candidate_chains(sink: "deserialize")` and friends | Only for modelled stacks |
 
 ### 2.2 Evidence (turn the point into decidable material)
 
 ```text
-slice_backward         {file, line, depth: 40}   → owning function, window, per-line markers
-get_sanitizer_guards   {file, line}              → checks/branches on the path
-get_call_hierarchy     {function, direction}     → callers/callees, unresolved_edges, candidates
-get_symbol_definition  {symbol} / get_symbol_references {symbol}   → where it lives / who uses it
-get_dataflow_path      {source, sink}            → source→sink path (needs a rule-backed label)
-get_framework_context  {file}                    → routes + coverage verdict / CSRF / container filters / interceptors (§3.4)
-read_file              {file_path, start_line, end_line}  → fill whatever the window missed
+slice_backward         {file, line, detail: "code"}   → owning function, window, decision_facts (guards, anchors)
+get_sanitizer_guards   {file, line}                   → checks/branches on the path
+trace_params           {file, line}                   → intra-function mini-SSA: params → locals → call args, implicit sinks
+get_framework_context  {file, handler}                → middleware/interceptor/annotation scope (§3.4)
+can_reach              {from_file/line, to_file/line} → topological reachability (name-level graph)
+slice_between          {from_*, to_*} + {radius}      → slice along the path, one step at a time
+read_file              {file_path, start_line, end_line} → fill whatever the window missed
 ```
 
 `slice_backward` is a **backward prefix slice**, not a data-flow derivation. It delivers the function
@@ -73,6 +76,13 @@ header and the lines around the target, and it looks **forward** past the target
 extends to the last use of an identifier from the target line (`forward_max`, default 64), and attaches
 the declaration lines of identifiers seen in the window (`declaration_for`). If a fact you need is still
 outside the window, call `read_file` or slice again at a new line — do not treat the window as complete.
+
+**Always pass `line`.** With `symbol` alone, `target_line` is `null` and the owning function resolves to
+the wrong class (measured).
+
+**Prefer `detail: "code"` over the default `full`.** It keeps `decision_facts` (guards, capacity anchors)
+and drops the per-line provenance: ~3KB versus ~10KB at the same position. Reach for `full` only when you
+need `reachability`, `dispatch_candidates` or `nearest_declaration`.
 
 ### 2.3 Judge
 
@@ -257,33 +267,81 @@ a look — the engine never removes a candidate silently, and neither should you
 
 ---
 
-## 7. Tool reference
+## 7. Tool reference (26 read-only tools)
 
-**Default surface (14)**
+`ctx-audit mcp --read-only` registers 26; the full surface is 28 (it adds `report_finding` /
+`finish_analysis`). **Names outside this list do not exist** — the `get_project_index` /
+`get_symbol_definition` / `get_symbol_references` / `get_call_hierarchy` / `get_dataflow_path` /
+`get_incremental_status` / `security_scan` / `query_callers` / `get_code_context` /
+`check_sanitizer` names are gone from the default surface.
 
-| Tool | Required | Optional |
-|---|---|---|
-| `get_project_index` | — | `refresh` |
-| `get_symbol_definition` | `symbol` | `refresh` |
-| `get_symbol_references` | `symbol` | `refresh` |
-| `get_call_hierarchy` | `function` | `direction`, `refresh` |
-| `slice_backward` | `file` | `line`, `depth`, `forward`, `forward_max`, `symbol`, `refresh` |
-| `get_dataflow_path` | `source` | `sink`, `file`, `refresh` |
-| `get_sanitizer_guards` | `file` | `line`, `refresh` |
-| `get_framework_context` | `file` | `handler`, `refresh` |
-| `get_project_routes` | — | — |
-| `get_incremental_status` | — | `refresh` |
-| `read_file` | `file_path` | `start_line`, `end_line` |
-| `list_files` | — | `path`, `pattern` |
-| `report_finding` | `title`, `description`, `severity`, `file_path`, `line_number` | — |
-| `finish_analysis` | `summary`, `findings_count` | — |
+**A. Orientation and coverage**
 
-The response fields and reading rules of `get_framework_context` are in **§3.4** (six coverage verdicts,
-`global_scope`, `coverage_caveat`, `csrf`, the three parallel protection surfaces, and the language boundary).
+| Tool | Required | Optional | Typical size |
+|---|---|---|---|
+| `coverage_summary` | — | `project_path` `refresh` | ~1–2KB |
+| `coverage_triage` | — | `limit`(20) | 1–6KB |
+| `audit_brief` | — | `limit`(10, ≤20) | 6–19KB |
+| `get_project_routes` | — | `detail`(brief/lines/full) `route_pattern` `only_uncovered` `min_role` `limit` `offset` | **2–45KB** |
+| `explain_route` | `route` or `file`+`handler` | — | 0.6–2.7KB |
+| `assert_verdict` | `route` | `expect`(covered/uncovered/permitted/any) | ~2KB |
 
-**Legacy surface** (`ctx-audit mcp --legacy-tools` or `CTX_AUDIT_LEGACY_TOOLS=1`) keeps the old
-fine-grained names (`security_scan`, `query_callers`, `get_code_context`, `check_sanitizer`, …).
-Calling them on the default surface returns a migration hint instead of failing silently.
+**B. Locate and slice**
+
+| Tool | Required | Optional | Typical size |
+|---|---|---|---|
+| `slice_backward` | `file` | `line` `symbol` `detail`(code) `depth`(40) `forward`(8) `forward_max`(64) | 3KB(code) / 10KB+(full) |
+| `trace_params` | `file` | `line` | ~1.2KB |
+| `get_sanitizer_guards` | `file` | `line` | ~0.4KB |
+| `get_framework_context` | `file` | `handler` | ~1.6KB |
+| `read_file` | `file_path` | `start_line` `end_line` | — |
+| `list_files` | — | `path` `pattern` | — |
+
+**C. Chains and reachability**
+
+| Tool | Required | Optional | Typical size |
+|---|---|---|---|
+| `candidate_chains` | — | `limit`(20) `sink` | ~1.5–2KB/chain |
+| `chain_dossier` | `chain_id` | — | ~2.3KB |
+| `trace_vulnerability_chain` | `chain_id` or `entry_*`+`sink_*` | `archetype` | ~5.6KB |
+| `assert_chain_step` | `chain_id` `step` | `expect`(line_present/line_absent) | ~0.5KB |
+| `can_reach` | `from_file` `to_file` | `from_line` `to_line` `graph`(scoped/name) | ~1.2KB |
+| `slice_between` | `from_file` `to_file` | `from_line` `to_line` `radius`(20) | ~1.5KB |
+
+**D. Payload and verification**
+
+| Tool | Required | Optional | Typical size |
+|---|---|---|---|
+| `payload_viability` | `entry_file` `sink_file` | `entry_line` `sink_line` `archetype` | ~1.5KB |
+| `verify_payload` | `file` `function` `payload` | `archetype` | needs `CTX_AUDIT_VERIFY_DIR` |
+| `harness_skeleton` | `file` | `line` | ~1.4KB |
+
+**E. SOP and deliverables**
+
+| Tool | Required | Optional | Typical size |
+|---|---|---|---|
+| `audit_workflow` | — | `triage_limit` `chain_limit` `deep_limit` `stop_after` | 10–18KB |
+| `autopilot` | — | `budget`(1–20) `verify` `poc` | ~3.3KB |
+| `poc_package` | `chain_id` or `entry_*`+`sink_*` | — | ~3.7KB |
+| `pr_drift_gate` | `base` `head` | `light` `strict_sinks` | 0.9KB+ |
+
+**F. Candidate source**
+
+| Tool | Required | Optional | Typical size |
+|---|---|---|---|
+| `scan_code` | — | `mode`(rules/taint/deep) `min_severity` `limit`(50, 0=200, cap 500) | 1–23KB |
+
+The reading rules for `get_framework_context` are in **§3.4** (coverage verdicts, `global_scope`,
+`coverage_caveat`, `csrf`, the three parallel protection surfaces, and the language boundary).
+
+**Budget red line**: a single response is capped at 64KB by default (`CTX_AUDIT_MAX_TOOL_BYTES`). Seeing
+`truncated_by_budget`, `truncated_at_limit`, `provenance_kept < provenance_total` or
+`string_cap_chars` means **the content is incomplete** — narrow the arguments and call again.
+
+**Legacy surface** (`--legacy-tools` or `CTX_AUDIT_LEGACY_TOOLS=1`) keeps 7 old fine-grained tools
+(`get_project_index` / `get_symbol_definition` / `get_symbol_references` / `get_call_hierarchy` /
+`get_dataflow_path` / `get_incremental_status` / `get_security_baseline`). Calling them on the default
+surface returns a migration hint instead of failing silently.
 
 ---
 

@@ -36,38 +36,49 @@
 | 必须先扫描吗 | **不需要**。证据工具按需建立索引：首次调用返回 `index.hit_source=miss` + `build_ms` + `files_indexed`；索引落盘复用；改完代码传 `refresh: true` |
 | 默认工具面 | **28 个** = 25 个高阶工具 + `read_file` / `list_files` / `finish_analysis`。旧细粒度工具面（符号跳转/调用层级/数据流等）需 `--legacy-tools` |
 | 谁判定 | 你。finding 是候选，每条结论都必须追溯到工具输出 |
-| 动态验证（可选） | `verify_payload` 支持 sql/ssrf/path/command/template/deserialize 六类，需设置 `CTX_AUDIT_VERIFY_DIR` 指向白名单 fixture 目录；默认关闭，不是沙箱 |
+| 动态验证（可选） | `verify_payload` 支持 sql/ssrf/path/command/template/deserialize/xss/jndi，按扩展名分派 Python/Node/Java；需设置 `CTX_AUDIT_VERIFY_DIR` 指向白名单 fixture 目录；Java 另可给 `CTX_AUDIT_VERIFY_CLASSPATH`。默认关闭，不是沙箱 |
 
 ---
 
 ## 2. 流程：选点 → 取证 → 判定
 
+> 完整的执行手册（工具成本表、档位选择、反模式）见 `harness/skills/ctx-audit-auditor/SKILL.md`。
+> 本节只讲**推理主线**。
+
 ### 2.1 选点（先拿到一个点）
+
+引擎的候选轴弱——**它不能从零定位**，第一个点通常靠这五条路：
 
 | 路径 | 怎么做 | 现实约束 |
 |---|---|---|
-| 规则/污点扫描 | `ctx-audit scan <PATH> --deep --min-severity low -o json` | C 上召回低：命中算意外收获，不是预期 |
-| 从攻击面往下 | `get_framework_context(file)` 拿路由**与该路由的鉴权覆盖判定**（CSRF、容器过滤器、拦截器一并给，读法见 §3.4），再 `get_call_hierarchy(f, direction: "callees")` | 只对**已建模的 Web 框架栈**有效；其余语言只给路由，鉴权字段为空——那时**不得**据此判"无鉴权"（§3.4 末条的边界） |
-| 从 sink 往上 | `get_symbol_references("<危险 API>")`，再 `get_call_hierarchy(f, direction: "callers")` | 可用，但大 C 代码库里噪声大 |
-| 从数据流/派发 | `get_dataflow_path(source, sink)`；未解析间接调用用 `dispatch_candidates`（见 §3） | 派发候选是引擎对"间接调用"唯一的机械化帮助 |
-| 引擎之外 | 你自己的假设、fuzzer、advisory、修复 diff | **今天是最高产的路径**——如实写在报告里，不要假装是引擎找到的 |
+| **鉴权面** | `get_project_routes(only_uncovered: true)` 找 `no_global_*`；或找 `permitted_by_global_config`（**显式放行，最高价值**） | 只对有端点轴的项目有效 |
+| **修复 diff** | `git log --since=6.months` 读 security 相关提交，或项目 advisory | **命中率最高**，任何语言都适用 |
+| **危险面清单** | 人工列：上传/解析、导出/下载、URL 抓取、命令执行、模板渲染、反序列化入口 | 端点轴失明时唯一可行的路 |
+| **`scan_code` 分组** | `scan_code(mode: "rules", min_severity: "high", limit: 50)` → 按 `(vuln_type, file)` 分组，每组抽 1–2 个代表 | 命中算意外收获，不是预期；成熟项目近 100% FP |
+| **候选链按汇过滤** | `candidate_chains(sink: "deserialize")` 等 | 只对已建模的框架栈有效 |
 
 ### 2.2 取证（把点变成可判定材料）
 
 ```text
-slice_backward         {file, line, depth: 40}   → 所属函数、窗口、逐行标注
-get_sanitizer_guards   {file, line}              → 路径上的校验/分支
-get_call_hierarchy     {function, direction}     → 上下游、unresolved_edges、派发候选
-get_symbol_definition  {symbol} / get_symbol_references {symbol}   → 定义在哪 / 谁在用
-get_dataflow_path      {source, sink}            → source→sink 路径（需要规则给的标签）
-get_framework_context  {file, handler}           → 路由 + 覆盖判定/CSRF/容器过滤器/拦截器（§3.4）
-read_file              {file_path, start_line, end_line}  → 补窗口之外
+slice_backward         {file, line, detail: "code"}  → 所属函数、窗口、decision_facts（守卫/容量锚点）
+get_sanitizer_guards   {file, line}                  → 路径上的校验/分支
+trace_params           {file, line}                  → 函数内 mini-SSA：参数→局部→实参绑定、隐式汇
+get_framework_context  {file, handler}               → 中间件/拦截器/注解生效范围（§3.4）
+can_reach              {from_file/line, to_file/line} → 两点拓扑可达（名级图）
+slice_between          {from_*, to_*}+{radius}       → 沿路径按需切片
+read_file              {file_path, start_line, end_line} → 补窗口之外
 ```
 
 `slice_backward` 是**后向前缀切片**，不是数据流推导。它交付函数头与目标行附近的原文，并向目标行
-**之后**下探（`forward`，默认 8），在必要时扩展到目标行上标识符的**最后一处使用**（`forward_max`，
+**之后**下探（`forward`，默认 8），必要时扩展到目标行上标识符的**最后一处使用**（`forward_max`,
 默认 64），并**附带**窗口内标识符的声明行（`declaration_for`）。若你需要的行仍在窗口之外，
 用 `read_file` 或换一个行号再切一次——不要把窗口当成全集。
+
+**必须给 `line`**：只给 `symbol` 时 `target_line` 为 `null`，函数归属会指向错误的类（实测）。
+
+**`detail` 选 `code` 不是 `full`**：`code` 保留 `decision_facts`（守卫、容量锚点）却去掉逐行
+provenance，实测同一位置 3KB vs 10KB。只有需要 `reachability` / `dispatch_candidates` /
+`nearest_declaration` 时才用 `full`。
 
 ### 2.3 判定
 
@@ -236,32 +247,80 @@ finding 是**候选**：`candidate: true`、`decision_required: true`。读 `det
 
 ---
 
-## 7. 工具清单
+## 7. 工具清单（26 个只读工具）
 
-**默认面（14）**
+`ctx-audit mcp --read-only` 注册 26 个；完整面 28 个（多 `report_finding` / `finish_analysis`）。
+**表外的名字不存在**——旧文档里的 `get_project_index` / `get_symbol_definition` /
+`get_symbol_references` / `get_call_hierarchy` / `get_dataflow_path` / `get_incremental_status` /
+`security_scan` / `query_callers` / `get_code_context` / `check_sanitizer` 都**已移出默认面**。
 
-| 工具 | 必填 | 可选 |
-|---|---|---|
-| `get_project_index` | — | `refresh` |
-| `get_symbol_definition` | `symbol` | `refresh` |
-| `get_symbol_references` | `symbol` | `refresh` |
-| `get_call_hierarchy` | `function` | `direction`、`refresh` |
-| `slice_backward` | `file` | `line`、`depth`、`forward`、`forward_max`、`symbol`、`refresh` |
-| `get_dataflow_path` | `source` | `sink`、`file`、`refresh` |
-| `get_sanitizer_guards` | `file` | `line`、`refresh` |
-| `get_framework_context` | `file` | `handler`、`refresh` |
-| `get_project_routes` | — | — |
-| `get_incremental_status` | — | `refresh` |
-| `read_file` | `file_path` | `start_line`、`end_line` |
-| `list_files` | — | `path`、`pattern` |
-| `report_finding` | `title`、`description`、`severity`、`file_path`、`line_number` | — |
-| `finish_analysis` | `summary`、`findings_count` | — |
+**A. 开局与覆盖**
 
-`get_framework_context` 的返回字段与判读口径见 **§3.4**（覆盖判定六种取值、`global_scope`、`coverage_caveat`、`csrf`、三个并列保护面、语言边界）。
+| 工具 | 必填 | 可选 | 典型成本 |
+|---|---|---|---|
+| `coverage_summary` | — | `project_path` `refresh` | ~1–2KB |
+| `coverage_triage` | — | `limit`(20) | 1–6KB |
+| `audit_brief` | — | `limit`(10, ≤20) | 6–19KB |
+| `get_project_routes` | — | `detail`(brief/lines/full) `route_pattern` `only_uncovered` `min_role` `limit` `offset` | **2–45KB** |
+| `explain_route` | `route` 或 `file`+`handler` | — | 0.6–2.7KB |
+| `assert_verdict` | `route` | `expect`(covered/uncovered/permitted/any) | ~2KB |
 
-**遗留面**（`ctx-audit mcp --legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1`）保留旧细粒度工具名
-（`security_scan`、`query_callers`、`get_code_context`、`check_sanitizer` 等）。在默认面调用它们
-只会返回**迁移提示**，不会静默失败。
+**B. 定位与切片**
+
+| 工具 | 必填 | 可选 | 典型成本 |
+|---|---|---|---|
+| `slice_backward` | `file` | `line` `symbol` `detail`(code) `depth`(40) `forward`(8) `forward_max`(64) | 3KB(code) / 10KB+(full) |
+| `trace_params` | `file` | `line` | ~1.2KB |
+| `get_sanitizer_guards` | `file` | `line` | ~0.4KB |
+| `get_framework_context` | `file` | `handler` | ~1.6KB |
+| `read_file` | `file_path` | `start_line` `end_line` | — |
+| `list_files` | — | `path` `pattern` | — |
+
+**C. 链与可达**
+
+| 工具 | 必填 | 可选 | 典型成本 |
+|---|---|---|---|
+| `candidate_chains` | — | `limit`(20) `sink` | ~1.5–2KB/链 |
+| `chain_dossier` | `chain_id` | — | ~2.3KB |
+| `trace_vulnerability_chain` | `chain_id` 或 `entry_*`+`sink_*` | `archetype` | ~5.6KB |
+| `assert_chain_step` | `chain_id` `step` | `expect`(line_present/line_absent) | ~0.5KB |
+| `can_reach` | `from_file` `to_file` | `from_line` `to_line` `graph`(scoped/name) | ~1.2KB |
+| `slice_between` | `from_file` `to_file` | `from_line` `to_line` `radius`(20) | ~1.5KB |
+
+**D. 载荷与验证**
+
+| 工具 | 必填 | 可选 | 典型成本 |
+|---|---|---|---|
+| `payload_viability` | `entry_file` `sink_file` | `entry_line` `sink_line` `archetype` | ~1.5KB |
+| `verify_payload` | `file` `function` `payload` | `archetype` | 需 `CTX_AUDIT_VERIFY_DIR` |
+| `harness_skeleton` | `file` | `line` | ~1.4KB |
+
+**E. SOP 与产出**
+
+| 工具 | 必填 | 可选 | 典型成本 |
+|---|---|---|---|
+| `audit_workflow` | — | `triage_limit` `chain_limit` `deep_limit` `stop_after` | 10–18KB |
+| `autopilot` | — | `budget`(1–20) `verify` `poc` | ~3.3KB |
+| `poc_package` | `chain_id` 或 `entry_*`+`sink_*` | — | ~3.7KB |
+| `pr_drift_gate` | `base` `head` | `light` `strict_sinks` | 0.9–? KB |
+
+**F. 候选源**
+
+| 工具 | 必填 | 可选 | 典型成本 |
+|---|---|---|---|
+| `scan_code` | — | `mode`(rules/taint/deep) `min_severity` `limit`(50, 0=200, 上限 500) | 1–23KB |
+
+**`get_framework_context` 的判读口径见 §3.4**（覆盖判定取值、`global_scope`、`coverage_caveat`、
+`csrf`、三个并列保护面、语言边界）。
+
+**成本红线**：单次响应默认上限 64KB（`CTX_AUDIT_MAX_TOOL_BYTES`）。看到
+`truncated_by_budget` / `truncated_at_limit` / `provenance_kept < provenance_total` /
+`string_cap_chars` 就说明**内容不全**，必须收窄参数重取。
+
+**遗留面**（`--legacy-tools` 或 `CTX_AUDIT_LEGACY_TOOLS=1`）保留 7 个旧细粒度工具
+（`get_project_index` / `get_symbol_definition` / `get_symbol_references` /
+`get_call_hierarchy` / `get_dataflow_path` / `get_incremental_status` / `get_security_baseline`）。
+在默认面调用它们只会返回**迁移提示**，不会静默失败。
 
 ---
 

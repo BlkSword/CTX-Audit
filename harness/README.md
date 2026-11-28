@@ -60,15 +60,15 @@ CTX_AUDIT_MCP_CMD=<abs>/ctx-audit dsh --profile ctx-audit-web --port 3081 --no-o
 **静默失败陷阱**：bundle 的 patch 必须为自己插一行，否则客户端半区永远不进 boot graph 且没有任何报错。
 
 **控制面板**（插件注册的 `main` 页面）：顶部状态胶囊（MCP 就绪 / 引擎版本 / 工具数）+ 四个 KPI；
-卡片含 **MCP 配置**、**MCP 引擎（实时 stdio 握手：服务端与协议版本、13 个工具及描述）**、
+卡片含 **MCP 配置**、**MCP 引擎（实时 stdio 握手：服务端与协议版本、26 个只读工具及描述）**、
 **日志**（从工作区 `.ctx-audit/*.log` 尾部读，可选文件与行数）、**证据产物**（有界清单 + 体积 + 相对时间）、
 **路线图**（随仓库提交的 `roadmap.json`）。数据全部来自插件 host 半区的只读端点。
 页头还有**目标选择器**：候选由 `/targets` 自动发现（带 `.ctx-audit/` 证据或看起来是项目的目录），选中后产物 / 日志 / **项目体检**（以该目标为 cwd 实时调用 MCP `get_project_index`）都跟随它；目标路径受允许根约束（越权返回 400）。
 
 另有 **Agent 预设**只读名册卡（走宿主自己的 remote 面 `ctx.remote.agentPresets`，显示 id / 默认 / `broken`），
-并为 13 个 `mcp__ctxaudit__*` 工具各注册一张 `tool.call.toolview` 卡片（按工具名 keyed，注册失败只告警）。
+并为 `mcp__ctxaudit__*` 工具各注册一张 `tool.call.toolview` 卡片（按工具名 keyed，注册失败只告警）。
 
-**审计专用 agent 预设 `ctx-audit`**（`plugins/ctx-audit-web/presets/ctx-audit.patch.yml`）：**内置 `standard` 能力面的超集**（33 个能力行 = jobs / goal / plan mode / workflow-PTC / 委派 / 压缩 / skill / web 全都在），差异只在 persona（审计身份 + 硬规则 + "用整台机器"的打法）、三处刻意不做（不设 `complete: true`、`ralph` 保持 disabled、不含写文件的编辑器）；随 bundle 注册并被设为部署默认（也可在 profile 层覆写 `agent-preset-registry.default`）。
+**审计专用 agent 预设 `ctx-audit`**（`plugins/ctx-audit-web/presets/ctx-audit.patch.yml`）：**内置 `standard` 能力面的超集**（19 个顶层行 / 展开 32 个插件 / 启用 26 个 = jobs / goal / plan mode / workflow-PTC / 委派 / 压缩 / skill / web 全都在），差异只在 persona（审计身份 + 硬规则 + "用整台机器"的打法）、三处刻意不做（不设 `complete: true`、`ralph` 保持 disabled、不含写文件的编辑器）；随 bundle 注册并被设为部署默认（也可在 profile 层覆写 `agent-preset-registry.default`）。
 
 **校验**（预设的行不会在启动时校验，坏预设只在会话挂载时才报）：
 
@@ -83,6 +83,22 @@ node harness/scripts/verify-ctx-audit-web.mjs --dsh <path to @deepseek-ai/dsh>
 - `bin/run-*.sh` 会在任务中显式要求加载 `ctx-audit-auditor` skill，因此即使没有自定义 preset，审计流程仍会加载 skill。
 - 如果你需要审计专用 persona（`ctx-audit-auditor` preset），请通过私有 overlay 提供，不应放入公共框架。
 - 做法见 [PRIVATE-USE.md](./PRIVATE-USE.md)。
+
+## 审计 skill（`ctx-audit-auditor`）
+
+`skills/ctx-audit-auditor/SKILL.md` 是 agent 的**执行手册**，v2 版按当前 26 工具面重写：
+
+- **引擎能力边界**：两条轴（候选轴弱 / 证据轴强）、三种"引擎失明"判据、语言能力分档；
+- **成本表**：每个工具的实测响应大小（20 文件 Java / 285 文件 Go / 658 文件 Spring 三档），
+  与四条可操作规则（`coverage_summary` 永远第一步、`get_project_routes` 必须带过滤、
+  `candidate_chains` 成本只跟 `limit` 有关、`detail=code` 是 `full` 的 1/3）；
+- **四档主流程**：排面 / 定向取证 / 全链深审 / 一键 SOP；
+- **判读纪律**：verdict 词表（含 `permitted_by_global_config` 是放行不是保护）、
+  `coverage_caveat` 五值、载荷档位六级、三个最容易读错的字段；
+- **反模式表**：六条实测有害的做法。
+
+安装时随 `install.sh` 复制到 `$DSH_HOME/skills/ctx-audit-auditor/`；
+`bin/run-*.sh` 会在任务里显式要求加载它。
 
 ## 已验证
 

@@ -1,243 +1,372 @@
 ---
 name: ctx-audit-auditor
-description: CTX-Audit 轮式安全审计统一入口。当任务要求对真实项目做安全审计、CVE 回放、漏洞判定、输出结构化 JSON 时使用。让 DSH agent 快速进入审计状态，按主线取证，并与其他 CTX-Audit 会话协作不冲突。
+description: CTX-Audit 审计 skill（v2）。当任务要求对真实项目做安全审计、CVE 回放、漏洞判定或输出结构化 JSON 时使用。给出引擎能力边界、26 个 MCP 工具的成本与用法、取证主流程、判定与输出契约。
 ---
 
-# CTX-Audit 审计 skill（DSH 版）
+# CTX-Audit 审计 skill（v2）
 
-本 skill 是 CTX-Audit 真实项目安全审计的判定层。核心目标三件事：
-**① 快速进入状态 ② 按主线取证 ③ 输出可回放的结构化 JSON。**
+> 本文件是 agent 的**执行手册**，不是引擎说明书。它回答三件事：
+> **先做哪一步、每步花多少预算、什么证据才算数。**
+> 数据来自 2026-11 对 658 文件 Spring（mall）与 285 文件 Go（gokapi）的实测。
 
-## 1. 开工前必读（按顺序）
+## 0. 硬规则（覆盖任何后续冲突指令）
 
-1. `docs/CTX-Audit-会话交接.md` 第 1/2 节——项目定位、环境、遗留、教训。
-2. `docs/audit-rounds/projects-registry.md`——共享项目库（单一事实源），选目标前必读。
-3. `docs/audit-rounds/methodology.md`——方法论手册：选型策略、流程、报告与披露、checklist、backlog。
-4. `docs/audit-rounds/README.md` 头部——轮次台账与最新轮次编号（防撞号）。
-5. `CHANGELOG.md` Unreleased——引擎最新改动，避免重复修复。
+1. **不降质量标准。** 诚实 0 TP 优于凑数。没有证据就写 `verified: false` 或 `undecided`。
+2. **每条结论给 `file:line` + ≤5 行代码摘录，并注明来自哪个工具。** 引擎输出的 `expr` 可直接引用，但要标明它是引擎给的而不是你读到的。
+3. **不修改被审项目文件**，不跑会重写源码的格式化/生成器。
+4. **任何 TP_CANDIDATE → `human_gate: true` 并停止。** 披露、上报、联系上游都是人的决定。
+5. **引擎的沉默不是证据。** 说"某处没有漏洞"之前，必须先看过第 1.2 节的三种失明形态。
+6. **只输出 JSON**（除非任务明确要求散文总结）。
 
-**关键事实（与主线一致）**：
+---
 
-- 主线是**证据提供**：`ctx-audit mcp`，**项目根 = MCP 进程的启动目录**。默认面 **28 个工具**
-  （25 高阶 + 3 基础：`read_file` / `list_files` / `finish_analysis`）；
-  **`--read-only` 面 26 个**（另行剔除 `report_finding` / `finish_analysis`）。
-  **不先扫描也能用**（首调按需建索引）。
-- **两条轴必须分开看**：**候选轴**（从哪儿看起）**弱**——真实 C 用例里绝大多数修复点附近没有候选，
-  但**不静默**（上限/截断/空结果/降级留痕都上报），验收看召回、成本、不静默；**证据轴**（这个点能不能判）
-  **强**——给定 `file:line` 决定性行齐备，验收看交付率与边界是否如实。⇒ **引擎不能从零定位**，
-  它把"点"变成"可判定的材料"；`scan_code` = 给 LLM 批量筛查的 **fuzz 类候选源**。
-- **`scan_code` / CLI `scan` 是辅助**：只在需要"哪里可能有问题"的候选集时使用；
-  输出带 `candidate: true` / `decision_required: true`，是候选种子而非结论。
-- 引擎**不做**漏洞真值判定：判定由人或 LLM 在证据之上完成。
-- 报告纪律：只有 0day 产出双份报告；非 0day 只登记台账。
-- 长任务用 nohup + 哨兵文件；测试机与私有台账信息不进 tracked 文件。
-- 完整流程与**度量纪律**（多 hunk 按 locus 分组取证、事实取漏洞侧原文并逐条自检、纯新增 hunk 显式锚点、
-  降级条件必须写进结论）见仓库根 `SKILLS.md`（英文）/ `SKILL-CN.md`（中文）。
+## 1. 引擎能力边界
 
-## 2. DSH 工具映射
+### 1.1 两条轴（决定你该怎么用它）
 
-DSH 中 MCP 工具名前缀为 `mcp__ctxaudit__`。**只读面 26 个**，按下表用；表外的名字不存在。
-
-### A. 开局与覆盖（先看这里，不要先扫描）
-
-| 本 skill 写法 | DSH 实际调用 | 用途 |
-|---|---|---|
-| `audit_brief` | `mcp__ctxaudit__audit_brief` | **推荐第一步**：项目画像 + 覆盖摘要 + 待审清单一次拿全 |
-| `coverage_summary` | `mcp__ctxaudit__coverage_summary` | 覆盖率摘要 + 边界（是否触顶 / 未建模框架 / 置信度） |
-| `coverage_triage` | `mcp__ctxaudit__coverage_triage` | 排序后的待审端点清单 |
-| `get_project_routes` | `mcp__ctxaudit__get_project_routes` | 端点表：方法 / 路径 / 鉴权判定 / 证据行 |
-| `explain_route` | `mcp__ctxaudit__explain_route` | 单个端点的鉴权推导链 |
-| `assert_verdict` | `mcp__ctxaudit__assert_verdict` | 把"端点是否受保护"的判断固化成可复核结论 |
-
-### B. 定位与切片
-
-| 本 skill 写法 | DSH 实际调用 | 用途 |
-|---|---|---|
-| `slice_backward` | `mcp__ctxaudit__slice_backward` | `(file, line)` 后向前缀窗口 + 逐行标注 + 函数归属 |
-| `read_file` | `mcp__ctxaudit__read_file` | 窗口外补行（参数 `file_path`） |
-| `list_files` | `mcp__ctxaudit__list_files` | 列目录 |
-| `trace_params` | `mcp__ctxaudit__trace_params` | 函数内 mini-SSA：参数 → 局部 → 实参绑定、隐式汇 |
-| `get_framework_context` | `mcp__ctxaudit__get_framework_context` | 框架上下文：注解 / 中间件 / 容器 / 生效范围 |
-| `get_sanitizer_guards` | `mcp__ctxaudit__get_sanitizer_guards` | 守卫与净化器清单（含是否截断） |
-
-### C. 链与可达
-
-| 本 skill 写法 | DSH 实际调用 | 用途 |
-|---|---|---|
-| `candidate_chains` | `mcp__ctxaudit__candidate_chains` | 候选链（入口 → 危险汇），带档位与分数 |
-| `chain_dossier` | `mcp__ctxaudit__chain_dossier` | 单链链档：每步 `file:line` / 守卫 / 断点 / 不确定性 / 反证命令 |
-| `assert_chain_step` | `mcp__ctxaudit__assert_chain_step` | 逐步证伪 |
-| `can_reach` | `mcp__ctxaudit__can_reach` | 两点可达判定 |
-| `slice_between` | `mcp__ctxaudit__slice_between` | 两点之间按需切片 |
-| `trace_vulnerability_chain` | `mcp__ctxaudit__trace_vulnerability_chain` | 入口 → 汇追踪（含实参） |
-
-### D. 载荷与验证
-
-| 本 skill 写法 | DSH 实际调用 | 用途 |
-|---|---|---|
-| `payload_viability` | `mcp__ctxaudit__payload_viability` | 载荷存活判定（`payload_killed` / `guard_ineffective_token` / `taint_lost` / `payload_may_survive`） |
-| `verify_payload` | `mcp__ctxaudit__verify_payload` | 受限动态验证（需 `CTX_AUDIT_VERIFY_DIR`） |
-| `harness_skeleton` | `mcp__ctxaudit__harness_skeleton` | 生成验证夹具骨架 |
-
-### E. SOP 与产出
-
-| 本 skill 写法 | DSH 实际调用 | 用途 |
-|---|---|---|
-| `audit_workflow` | `mcp__ctxaudit__audit_workflow` | 五阶段一键 SOP：覆盖率 → 待审 → 候选链 → 链档 → 载荷，带稳定证据 id |
-| `autopilot` | `mcp__ctxaudit__autopilot` | 预算内自主循环，输出 verdict / findings / trace |
-| `poc_package` | `mcp__ctxaudit__poc_package` | PoC 工件：Mermaid 拓扑 + 请求骨架 + Guard Gap + 修复建议 |
-| `pr_drift_gate` | `mcp__ctxaudit__pr_drift_gate` | PR 漂移闸门（base/head 两棵树对比） |
-
-### F. 候选源
-
-| 本 skill 写法 | DSH 实际调用 | 用途 |
-|---|---|---|
-| `scan_code` | `mcp__ctxaudit__scan_code` | 规则 / 污点 / 深度三档扫描；输出是候选种子 |
-
-**只读面的两个缺口**：`report_finding` 与 `finish_analysis` 在 `--read-only` 下不注册。
-所以第 4 节的 JSON 契约**写在回复正文里**，无法回写引擎台账；需要回写时由人工在会话语义外登记。
-
-**旧工具名已删除**：`get_project_index`、`get_symbol_definition`、`get_symbol_references`、
-`get_call_hierarchy`、`get_dataflow_path`、`get_incremental_status`、`security_scan`、`query_callers`、
-`get_code_context`、`check_sanitizer`、`query_middleware_chain`、`trace_taint` 全部**不存在**，
-不要调用，也不要照抄旧文档里的调用链。
-
-如果 `mcp__ctxaudit__*` 完全不可用，先检查 MCP server 是否启动：
-- 本地 Windows：`CTX_AUDIT_MCP_CMD` 指向 `ctx-audit.exe`
-- Linux：`CTX_AUDIT_MCP_CMD=ctx-audit` 或加入 PATH
-
-## 3. 取证优先流程
-
-```
-Phase 0 体检（**强制**）：audit_brief（首选）或 coverage_summary + get_project_routes
-        读三件事：文件数 / 语言能力（哪些语言只有启发式）/ 是否 index_truncated_at_limit
-        **未调用 audit_brief 不得进入 Phase 1** —— 否则你不知道引擎对这个目标是否失明
-        （端点轴为 0、语言只有启发式、索引被截断），会把"引擎看不见"误读成"没有问题"
-Phase 1 定向取证（主线，不需要先扫描）：
-        explain_route(route) 拿单个端点的鉴权推导
-        slice_backward(file, line) 拿函数归属 + 窗口 + 逐行标注；窗口外用 read_file 补
-        trace_params(function) 拿参数绑定与隐式汇
-        get_sanitizer_guards / get_framework_context 拿守卫与中间件生效范围
-Phase 2 仅在不知道从哪看起时：scan_code（规则 → 污点 → 深度）→ 按 (vuln_type, file) 分组
-Phase 2.5 有候选链时：candidate_chains → chain_dossier → payload_viability 逐跳核实
-        每跳只问"流到位吗 / 有净化吗 / 可达吗"
-Phase 3 判定：TP 五条件 / FP 六判据
-Phase 4 引擎改进：仅通用修复，只降权不丢弃
-Phase 5 验证：单测 + before/after 对照，确认不回退
-Phase 6 固化：commit + CHANGELOG + 台账 + 报告（0day 才双份）
-```
-
-### 3.1 成本纪律（实测数据，必须遵守）
-
-**`slice_backward` 的 `detail` 参数决定成本，默认值不是最优：**
-
-| detail | 保留什么 | 何时用 |
-|---|---|---|
-| `full`（默认） | 全部：逐行 `provenance`（每行一条）、`reachability`、`dispatch_candidates`、`nearest_declaration` | 需要可达性 / 分派候选 / 最近声明锚点时 |
-| `code` | 纯文本窗口 + **`decision_facts`（守卫、容量锚点）**；去掉逐行 provenance 与拓扑附加字段 | **默认应该用这个** |
-
-实测（同一目标、同一 `file:line`）：
-
-| 目标 | `full` | `code` | 倍数 |
+| 轴 | 回答 | 实测水平 | 你该做的 |
 |---|---|---|---|
-| 真实项目单点 | 21,482 字符 | 4,130 字符 | 5.2× |
-| 本仓库大文件 | 202,937 字符 | 63,242 字符 | 3.2× |
+| **候选轴** | 从哪儿看起？ | **弱**：真实 C 用例 17 个修复点里只有 1 个在 ±3 行内有候选；对成熟项目候选常 100% FP | 自己选点（advisory / 修复 diff / 攻击面直觉 / 阅读）；引擎的候选当"待排除清单"，不当"发现清单" |
+| **证据轴** | 这个点能不能判？ | **强**：给定 `file:line`，函数归属、守卫、容量锚点、逐行原文齐备（17/17 locus 交付决定性行） | **主线**：一旦有了点，用引擎把"点"变成可判定的材料 |
 
-**规则**：先 `detail=code` 看代码——它**已经带 `decision_facts`**，判断"有没有守卫 / 容量够不够"够用。
-只有当你要 `reachability` / `dispatch_candidates` / `nearest_declaration` 时，才对**那一个**位置补 `detail=full`。
+**推论**：引擎不能从零定位。**第一步永远是"你想看哪里"**，第二步才是调工具。
 
-**注意**：`code` 不是"小输出"的保证——窗口本身（`depth` + `forward`）才是主项。窗口大时先收窄
-`depth` / `forward`，再考虑换 `detail`。
+### 1.2 Phase 0 必须判定：引擎是否对这个目标失明
 
-**超预算时会发生什么**（`CTX_AUDIT_MAX_TOOL_BYTES`，默认 64 KB）：响应会被逐级裁剪，并在
-`data` 里如实标注 `truncated_by_budget` / `budget_bytes` / `items_removed`，必要时还有
-`provenance_total` / `provenance_kept` / `string_cap_chars`，同时 `uncertainty.reasons` 追加
-`truncated_by_payload_budget`。**看到这些字段就说明内容不全**，要么收窄窗口重取，要么换 `detail`。
+调 `coverage_summary`（1–2KB，最便宜）读三个字段，任一命中就说明该轴失效：
 
-**同理，`grep` 不是敌人**：找"某个字符串在哪"用 `grep` 比任何 MCP 工具都快。MCP 的价值在**结构化事实**
-（守卫判定、可达性、载荷档位），不在"看代码"。真实轮次里 agent 的 MCP 调用只占 4–7%，原因就是
-默认 `full` 的输出比裸读贵 5 倍而信息量没多——**用 `detail=code` 才能让证据轴真正被用起来**。
+| 症状 | 字段 | 含义 | 应对 |
+|---|---|---|---|
+| **端点轴失明** | `method_routes == 0` | 目标用自研分发（PHP `$ACT`、Go `mux.HandleFunc` 包装、动态 `*Server`），或框架未被建模。`unmodelled_route_stacks` 非空说明引擎猜到了某个框架（**可能猜错**，实测把 DokuWiki 猜成 Laravel） | 放弃端点/鉴权驱动，转人工读码 + `scan_code` |
+| **鉴权链失明** | `chain_count == 0` 且 `reasons` 含 `no_security_chain_found` | 没有 Spring Security / Shiro / Sa-Token / Express-Flask-Next 中间件 | 鉴权结论只能靠读代码；`explain_route` 的 verdict 不可信 |
+| **索引残缺** | `index_truncated_at_limit == true` | 文件数触顶（默认 2000） | **一切"没找到"都不能当"不存在"**，必须在报告里声明 |
 
-### 3.2 SOP 工具会返回什么（用之前先知道预期）
+补充：`confidence` 是**鉴权建模**的置信度，不是整体回答的可信度。`confidence: high` + `method_routes: 0` 是自相矛盾的组合，**以 method_routes 为准**。
 
-**`audit_workflow`** —— 五阶段一键 SOP（`coverage → triage → chains → dossier → payload`）：
+### 1.3 语言能力分档（决定投入产出比）
 
-```json
-{
-  "schema": "audit-workflow/v1",
-  "stages": [{"stage": "coverage", "status": "done", "evidence_ids": ["EV-coverage-1"]}],
-  "stopped_after": "payload",
-  "evidence": [{"id": "EV-coverage-1", "stage": "coverage", "kind": "...", "summary": "..."}],
-  "evidence_counts": {"coverage": 1, "triage": 0, "chains": 0, "dossier": 0, "payload": 0, "total": 1},
-  "next_actions": [{"kind": "verify", "evidence_id": "EV-payload-1", "tool": "verify_payload", "hint": "..."}],
-  "limits": ["..."],
-  "uncertainty": {"level": "medium", "reasons": ["name_level_graph", "heuristic_guards", "static_only"]}
-}
+| 档 | 语言 | 能做什么 |
+|---|---|---|
+| T1 | Java/Spring、JS/TS/Next(.js) | 端点枚举 + 鉴权覆盖 + 候选链 + 载荷档位全套 |
+| T2 | Python（FastAPI/Flask/Django） | 端点与守卫可用；候选链较弱 |
+| T3 | Go / PHP / .NET / Laravel | **只枚举端点与汇**，包装器/中间件常解析不了；候选基本不可用 |
+| — | C/C++/Rust | 只有规则与局部证据，无端点轴 |
+| **盲区** | `.tmpl` / `.html` / `.vue` / `.jsx` 模板文件 | **完全不解析**。模板里的泄露/注入必须人工读 |
+
+---
+
+## 2. 工具面：26 个只读工具
+
+`ctx-audit mcp --read-only` 注册 26 个工具（完整 28 个里剔除 `report_finding` / `finish_analysis`）。
+**表外的工具名不存在**，不要照抄旧文档。
+
+### 2.1 成本表（实测，单次响应字符数）
+
+三列分别是：20 文件 Java（hard2 夹具）、285 文件 Go（gokapi）、658 文件 Spring（mall）。
+"—" 表示未在该类目上测。
+
+| 工具 | 小(20) | 中(285 Go) | 大(658 Spring) | 可调项 |
+|---|---|---|---|---|
+| `get_sanitizer_guards` | 407 | — | — | 无 |
+| `assert_chain_step` | 499 | — | — | 无 |
+| `pr_drift_gate light` | — | — | 872 | `light` |
+| `coverage_summary` | 1,005 | 1,057 | 1,821 | **无——最便宜，Phase 0 首选** |
+| `coverage_triage` | 1,008 | 3,345 | 6,303 | `limit` |
+| `trace_params` | 1,183 | — | — | `depth` |
+| `can_reach` | 1,199 | — | — | 无 |
+| `harness_skeleton` | 1,389 | — | — | 无 |
+| `slice_between` | 1,492 | — | — | `radius` |
+| `payload_viability` | 1,496 | — | — | 无 |
+| `get_framework_context` | 1,648 | — | — | 无 |
+| `assert_verdict` | — | — | 1,895 | 无 |
+| `get_project_routes brief` | 2,015 | 10,127 | **45,519 ⚠截断** | `route_pattern` `only_uncovered` `limit` |
+| `chain_dossier` | 2,276 | — | — | 无 |
+| `explain_route` | — | 572 | 2,526 | 无 |
+| `autopilot` | 3,339 | 3,349 | — | `budget` |
+| `slice_backward code` | 3,163 | — | — | `depth` `forward` |
+| `poc_package` | 3,722 | — | — | 无 |
+| `trace_vulnerability_chain` | 5,602 | — | — | 无 |
+| `audit_brief limit=5` | 5,946 | 7,858 | 12,954 | `limit` |
+| `audit_brief` 默认 10 | 6,753 | 10,000 | **19,233** | 同上 |
+| `scan_code rules high limit=20` | 917–3,033 | 8,976 | 11,012 | `mode` `limit` `min_severity` |
+| `slice_backward full` | 10,301 | — | — | **改用 `detail=code`** |
+| `audit_workflow` | 10,390 | 17,819 | — | `*_limit` `stop_after` |
+| `candidate_chains limit=5` | 10,719 | 10,390 | 10,911 | `limit`（约 **1.5–2KB/链**，与项目规模无关） |
+| `get_project_routes full` | — | 26,372 | 36,000（截断） | 只在需要拦截器/链证据时 |
+
+**从表里能读出的四条规则**：
+
+1. **`coverage_summary` 永远是第一步**——最贵也就 1.8KB，却直接决定后面怎么走。
+2. **`get_project_routes` 的成本随项目规模爆炸**（2KB → 45KB），因为响应里带
+   `uncovered_endpoints` + `needs_triage.samples` + `dynamic_registration_samples` 的完整数组。
+   **大项目必须带 `route_pattern`、`only_uncovered` 或小的 `limit`。**
+3. **`candidate_chains` 的成本只跟 `limit` 有关**（≈1.5–2KB/链），跟项目大小无关。
+   所以"先拿 5 条看看"在任何项目上都只要 ~10KB。
+4. **`detail=full` 是 `detail=code` 的 3–5 倍**（10KB vs 3KB），而 `code` 已经带
+   `decision_facts`。没有可达性/分派需求就别用 `full`。
+
+**预算红线**：单次工具响应默认上限 **64KB**（`CTX_AUDIT_MAX_TOOL_BYTES`）。
+超限时响应会被裁剪并标注 `truncated_by_budget` / `budget_bytes` / `items_removed`，
+必要时还有 `provenance_total` / `provenance_kept` / `string_cap_chars`，
+同时 `uncertainty.reasons` 追加 `truncated_by_payload_budget`。
+**看到任何一个这些字段 ⇒ 内容不全**，要么收窄参数重取，要么换工具。
+
+### 2.2 分组速查
+
+**A. 开局与覆盖**
+| 工具 | 关键参数 | 用途 |
+|---|---|---|
+| `coverage_summary` | — | **Phase 0 首选**：覆盖率 + 三种失明判据 |
+| `coverage_triage` | `limit`(20) | 排序待审清单（不含证据正文） |
+| `audit_brief` | `limit`(10, ≤20) | 画像 + 待审 + 头部链；**chains ≤ min(limit,8)** |
+| `get_project_routes` | `detail`(brief) `route_pattern` `only_uncovered` `min_role` `limit` `offset` | 端点表；**大项目必须带 `route_pattern` 或 `only_uncovered`** |
+| `explain_route` | `route` 或 `file`+`handler` | 单端点鉴权推导链（含 `coverage_caveat`、`sensitive_return`） |
+| `assert_verdict` | `route` `expect`(covered/uncovered/permitted/any) | 把判断固化成 pass/fail |
+
+**B. 定位与切片**
+| 工具 | 关键参数 | 用途 |
+|---|---|---|
+| `slice_backward` | `file` `line` `detail`(code) `depth`(40) `forward`(8) | **主力**：函数归属 + 窗口 + `decision_facts`（守卫/容量锚点） |
+| `trace_params` | `file` `line` | 函数内 mini-SSA：参数→局部→实参绑定，标隐式汇 |
+| `get_sanitizer_guards` | `file` `line` | 变量路径上的条件分支 |
+| `get_framework_context` | `file` `handler` | 中间件/拦截器/注解生效范围 |
+| `read_file` `list_files` | — | 窗口外补行、列目录 |
+
+**C. 链与可达**
+| 工具 | 关键参数 | 用途 |
+|---|---|---|
+| `candidate_chains` | `limit`(20) `sink` | 入口→汇候选链（**候选，不是结论**） |
+| `chain_dossier` | `chain_id` | 单链链档：每步 file:line / 守卫 / 断点 / 反证命令 |
+| `trace_vulnerability_chain` | `chain_id` 或 `entry_*`+`sink_*` | **链档+载荷+SSA+最小切片一次给全**（性价比最高） |
+| `assert_chain_step` | `chain_id` `step` `expect`(line_present/line_absent) | 逐步证伪 |
+| `can_reach` | `from_file/line` `to_file/line` `graph`(scoped/name) | 拓扑可达 |
+| `slice_between` | `from_*` `to_*` `radius`(20) | 沿路径按需切片（替代一次性链档） |
+
+**D. 载荷与验证**
+| 工具 | 关键参数 | 用途 |
+|---|---|---|
+| `payload_viability` | `entry_*` `sink_*` `archetype` | 逐跳推演载荷存活 |
+| `verify_payload` | `file` `function` `payload` `archetype` | 受限动态验证（Python/Node/Java；需 `CTX_AUDIT_VERIFY_DIR`） |
+| `harness_skeleton` | `file` `line` | 生成 curl/MockMvc 骨架（静态，不执行） |
+
+**E. SOP 与产出**
+| 工具 | 关键参数 | 用途 |
+|---|---|---|
+| `audit_workflow` | `triage_limit` `chain_limit` `deep_limit` `stop_after` | 五阶段一次跑完，证据 ID 稳定可引用 |
+| `autopilot` | `budget`(1–20) `verify` `poc` | 预算内自主循环，带决策 trace |
+| `poc_package` | `chain_id` 或 `entry_*`+`sink_*` | Mermaid 拓扑 + 请求骨架 + Guard Gap + 修复建议 |
+| `pr_drift_gate` | `base` `head` `light` `strict_sinks` | PR 漂移判决（block 时 exit_code=2） |
+
+**F. 候选源**
+| 工具 | 关键参数 | 用途 |
+|---|---|---|
+| `scan_code` | `mode`(rules/taint/deep) `min_severity` `limit`(50, 0=200, 上限 500) | 传统 SAST 候选集 |
+
+### 2.3 参数陷阱（都是实测踩过的）
+
+1. **`slice_backward` 必须给 `line`。** 只给 `symbol` 时 `target_line` 为 `null`，函数归属会指向**错误的类**（实测 `symbol=process` 解析成 `Dao` 而不是 `process`）。用 `symbol` 之前先用 `grep` 拿到行号。
+2. **`get_project_routes` 不带过滤 = 贵。** 658 文件 Spring 上 `detail=brief` 是 45KB（已触顶截断）。**永远先给 `route_pattern` 或 `only_uncovered: true`**，或者用 `coverage_triage` 拿排序清单。
+3. **`candidate_chains` 每条约 1.5–2KB。** `limit=5` 约 10KB，`limit=20` 约 27KB。先估再调。
+4. **`audit_brief` 要显式传 `limit`。** 默认 10 在 658 文件项目上是 19KB。
+5. **`verify_payload` 的 `archetype` 参数说明只写了 sql/ssrf，但底层接受 sql/ssrf/path/command/template/deserialize/xss/jndi，并按扩展名分派 Python/Node/Java。** 别被参数描述限制住。
+6. **`scan_code` 的 `by_severity` 是全量统计，`findings` 是截断后的。** 实测 mall 报 `critical: 388, high: 293`，但只返回 20 条——**不要以为一共 20 条**。
+
+---
+
+## 3. 主流程：选档，不要一条路走到黑
+
+### 档 A — 排面（目标 ≤5 分钟，任何项目都先做这个）
+
+```
+coverage_summary                       # 1–2KB，判断三种失明
+  ├─ 有端点轴 → coverage_triage limit=5~10   # 3–6KB，拿排序清单
+  └─ 端点轴失明 → 直接转档 B（人工选点）+ scan_code 兜底
 ```
 
-**用途**：一次调用拿到全链路证据，**证据 id 稳定可引用**。适合"我要快速知道这个项目值不值得深审"。
-**不适合**：已经知道要看哪个文件时（直接 `slice_backward` 更快）。
-**注意**：`status` 取值是 `done` / `partial`；`limits` 非空说明该阶段被截断或降级，必须读。
+产出：一句话结论 + 失明声明 + 3–5 个待看点。**没有待看点就停，不要硬凑。**
 
-**`autopilot`** —— 预算内自主循环：
+### 档 B0 — 没有点时，点从哪来
 
-```json
-{
-  "schema": "autopilot/v1",
-  "verdict": "has_verified_payload|all_candidates_killed|undecided|no_candidate_chains|no_attempt_made",
-  "counts": {"candidates": 0, "attempted": 0, "verified": 0, "killed": 0, "undecided": 0, "packaged": 0},
-  "findings": [], "packages": [], "undecided": [],
-  "workflow_summary": {"stopped_after": "payload", "evidence_counts": {}},
-  "trace": [{"step": 1, "action": "workflow", "evidence": 0}]
-}
+引擎的候选轴弱，所以"第一个点"通常要靠这五条路（按性价比排序）：
+
+| 来源 | 怎么拿 | 适用 |
+|---|---|---|
+| **鉴权面** | `get_project_routes(only_uncovered: true)` 找 `no_global_*`；或找 `permitted_by_global_config`（**显式放行，最高价值**） | 有端点轴的项目 |
+| **修复 diff** | `git log --since=6.months -- '*.java'`，读 security 相关提交；或项目 advisory | 任何项目，命中率最高 |
+| **危险面清单** | 人工列：上传/解析、导出/下载、URL 抓取、命令执行、模板渲染、反序列化入口 | 无端点轴的项目（Go/PHP/自研分发） |
+| **`scan_code` 分组** | `scan_code(mode: rules, min_severity: high, limit: 50)` → 按 `(vuln_type, file)` 分组，每组抽 1–2 个代表 | 不知道从哪看起时 |
+| **候选链按汇过滤** | `candidate_chains(sink: 'deserialize')` 等，按汇类型集中看 | 已建模的项目 |
+
+**不要**把 `scan_code` 的 findings 当发现清单——成熟项目实测近 100% FP，它的价值是"指出该读哪个文件/函数"。
+
+### 档 B — 定向取证（主线，占 80% 的工作量）
+
+前提：**你已经有一个点**（`file:line`、一个路由、或一条候选链）。
+
+```
+1. slice_backward(file, line, detail=code)     # ~3KB：函数归属 + decision_facts
+2. get_sanitizer_guards(file, line)            # 守卫是否存在（含 total_hits/truncated）
+3. trace_params(file, line)                    # 参数绑定：外部输入能不能走到 sink
+4. get_framework_context(file, handler)        # 中间件/拦截器是否真的生效
+5. explain_route(route) / assert_verdict       # 只有端点轴可用时才做
 ```
 
-**用途**：无人值守跑一轮，`trace` 说明"为什么停在这里"。
-**注意**：`verdict` 是**引擎的判定**，不是你的判定 —— 你仍要按 Phase 3 复核。
+**每步只回答一个问题**，四个问题都答完就是一个完整判定：
 
-**`poc_package`** —— 给定 `chain_id`，返回：
+| 问 | 工具 | 答不了怎么办 |
+|---|---|---|
+| 数据流到得了吗？ | `trace_params` / `can_reach` | 手工往前追调用者；名级图不代表真实调用 |
+| 有净化吗？ | `get_sanitizer_guards` / `slice_backward` 的 `decision_facts.guards` | 读代码；`no_check_found` 只表示**没检出标记**，不表示没有 |
+| 外部可控吗？ | `trace_params` 的 `tainted_args` + 读调用方 | 这是引擎最弱的一环，**必须人工确认** |
+| 端点需要鉴权吗？ | `explain_route` / `get_framework_context` | 端点轴失明时只能读 SecurityConfig/中间件 |
 
-```json
-{
-  "schema": "poc-package/v1",
-  "chain": {"chain_id": "...", "entry": {}, "sink": {}, "steps": [], "step_count": 0},
-  "verdict": {"payload_tier": "...", "viability": {}, "reachable": {}, "killed_at": null, "taint_lost_at": null, "archetype": "..."},
-  "topology": {"format": "mermaid", "diagram": "..."},
-  "request": {"method": "...", "route": "...", "params": [], "curl": "...", "test_skeleton": "..."},
-  "guard_gap": {"effective": [], "ineffective": [], "unknown": [], "summary": "N effective / N ineffective / N unknown"},
-  "remediation": [], "reproduce": []
-}
+### 档 C — 全链深审（已有一条可疑链）
+
+```
+trace_vulnerability_chain(chain_id)     # 5.6KB：链档 + 载荷 + SSA + 最小切片一次拿全
+  → payload_viability(entry, sink, archetype)   # 载荷在哪一跳被杀/丢失
+  → assert_chain_step(chain_id, N)              # 逐步证伪
+  → poc_package(chain_id)                       # 变成可交付工件
 ```
 
-**用途**：把一条链变成可交付工件（拓扑 + 请求骨架 + 守卫缺口 + 修复建议）。
-**注意**：`request` 为 `null` 表示坐标不全（`incomplete_coordinates`），此时不要编造请求；
-`guard_gap.unknown` 非空说明守卫归属未定，**不能当作"无守卫"**。
+**优先级**：`trace_vulnerability_chain` > `chain_dossier` + `payload_viability` 分开调（前者一次拿全，更省）。
 
-**判读纪律**：先读 `uncertainty` 与 `scope_anchor` 再信 `data`；`truncated_at_limit` / `total_hits > limit`
-不能当"就这些"；切片是**后向前缀**不是数据流；`in_conditional_region` 与 `preprocess_note` 说明条件编译是否
-参与编译未知；被降级的候选带 `severity_original` / `severity_downgraded_by`——**不要把"被降级"读成"不存在"**。
+### 档 D — 一键 SOP（判断"值不值得深审"）
 
-## 4. 输出契约（headless 默认）
+```
+audit_workflow(triage_limit=10, chain_limit=10, deep_limit=3)   # 10–18KB
+autopilot(budget=3)                                             # 3.3KB
+```
 
-除非用户明确要求人类可读总结，否则输出严格 JSON：
+**用途**：快速知道这个项目值不值得投入，或作为无人值守的初筛。
+**注意**：
+- `audit_workflow` 的 `limits` 数组非空 = 某阶段被降级，**必须读**。
+- `autopilot` 的 `verdict` 是**引擎判定**，不是你的判定；`trace` 说明它为什么停在那里。
+- 两者的 `evidence` 里带 `EV-*` 稳定 ID，引用时直接写 ID。
+
+---
+
+## 4. 判读纪律
+
+### 4.1 envelope 三件套
+
+每个响应都是 `{data, provenance, uncertainty}`：
+
+1. **先读 `uncertainty`，再信 `data`。** `level` + `reasons` 是引擎自述"哪些没解析出来"。
+2. **`provenance[].resolver` 说明这一行怎么来的**（`slice+line-window`、`symbol-index`、`file-heuristic`…）。一条结论混着不同 resolver 时，按**最弱**的理解。
+3. **`provenance` 是逐行记账，不是证据正文。** 它会让响应变大（可占 70%），判断时只看 `data`。
+
+**看到这些就停手重取**：`truncated_at_limit`、`truncated_by_budget`、`total_hits > limit`、`provenance_kept < provenance_total`、`string_cap_chars` 存在。
+
+### 4.2 路由判定词表（`explain_route` / `get_project_routes` 的 `global_coverage`）
+
+| 值 | 归类 | 含义 |
+|---|---|---|
+| `covered_by_global_config` | 已覆盖 | 命中声明式安全链（Spring/Sa-Token/Shiro/Filter/Interceptor） |
+| `covered_by_middleware` | 已覆盖 | Express/Flask/Next 中间件覆盖 |
+| `covered_by_annotation` | 已覆盖 | 方法/类注解（`@PreAuthorize` 等）且有消费者 |
+| `covered_by_internal_auth` | 已覆盖 | 路由内 helper 做了鉴权（≤3 跳） |
+| `permitted_by_global_config` | **放行** | 明确 `permitAll` / 白名单——**这是高危信号，不是"已保护"** |
+| `no_global_config_found` | 未覆盖 | 项目里没有任何安全链 |
+| `no_global_match_found` | 未覆盖 | 有安全链但这条路由没被匹配 |
+| `excluded_from_interceptor` | 未覆盖 | 被拦截器的 exclude 排除 |
+| `unknown` / `coverage_unknown` | **待判** | 建模不足——**不能当已覆盖** |
+| `ambiguous_across_chains` | **待判** | 多条链给出不同结论，引擎不挑乐观的那条 |
+| `not_an_endpoint` | 非端点 | Spring Bean 但无路由映射 |
+| `framework_not_modeled` | **待判** | 框架未建模 |
+
+**`permitted_by_global_config` 是审计中最常见的高价值入口**：它意味着"这条路由被显式放行了"，只需再确认 handler 里没有自建鉴权。
+
+### 4.3 `coverage_caveat`（非空即不得把判定当定论）
+
+`dynamic_matcher_unresolved` / `route_excluded_from_interceptor` / `declaring_class_not_a_bean` / `unmodeled_protection_signal` / `index_truncated_at_limit`
+
+### 4.4 载荷 / 守卫 / 汇 词表
+
+**载荷档位 `tier`**（从"死"到"活"）：
+
+`unreachable` < `taint_lost` < `payload_killed` < `guard_ineffective_token` < `payload_may_survive` < `payload_verified`
+
+- `payload_killed`：守卫真的把载荷杀了（**这是排除依据**）
+- `guard_ineffective_token`：有守卫但只挡了部分 token（**值得深挖**）
+- `taint_lost`：参数名在途中不匹配（**可能是假阴性，要人工确认**）
+- `payload_may_survive`：静态推演活到了 sink（**仍不等于可利用**）
+- `payload_verified`：动态验证真的跑到了（最强的证据）
+
+**守卫类型 `guard.kind`**：`allowlist` `sanitize` `signature` `bounds` `path_check` `ssrf_check` `template_escape` `auth`
+→ `guard.verdict` 为 `partial` 时要读 `evidence` 那一行原文，判断它到底挡了什么。
+
+**汇类型 `sink.kind`**：`exec` `eval` `sql` `template` `deserialize` `jndi` `ssrf` `file_write` `module_access` `reflect` `xml_parse` `redirect` `header_injection`
+
+**载荷原型 `archetype`**：`sql` `path` `jndi` `template` `deser` `command` `ssrf` `xss` `xxe` `redirect` `header`
+
+### 4.5 三个最容易读错的字段
+
+| 字段 | 错误读法 | 正确读法 |
+|---|---|---|
+| `no_check_found: true` | "没有守卫" | "作用域内没检出检查标记"——守卫可能以别的形态存在（自定义函数、AOP、框架默认） |
+| `controllability: unknown` | "不可控" | "引擎不知道"——必须人工从调用方确认 |
+| `taint_lost` | "不可利用" | "参数名在传递中丢了"——很可能是 name-level 分析的假阴性 |
+
+---
+
+### 4.6 上下文预算纪律
+
+一次审计的上下文是有限的，实测最容易烧穿的三处：
+
+| 烧穿点 | 单次 | 应对 |
+|---|---|---|
+| `audit_brief` 不传 `limit` | ~19KB | 显式 `limit: 5` |
+| `get_project_routes` 不带过滤 | ~45KB | 加 `route_pattern` / `only_uncovered` |
+| `slice_backward detail=full` | 10–200KB | 用 `detail=code` |
+
+**推荐的单次审计预算分配**（以一次中等规模审计为例）：
+
+- Phase 0：**≤3%**（coverage_summary + triage）
+- 每个候选点：**≤8%**（slice + guards + trace_params + 一次读代码）
+- 深审链：**≤15%**（trace_vulnerability_chain + payload_viability）
+- 留 **≥40%** 给"读代码"——引擎给的是材料，判断要看原文
+
+**超了怎么办**：不要硬扛。把已得结论写成 JSON 落盘（`write`），再开新一轮。这正是 `engine_blindness` 和 `fp_families` 要写进契约的原因——它是给下一轮复用的。
+
+---
+
+## 5. 判定标准
+
+**TP 需同时满足**：
+1. 可达：source→sink 路径存在
+2. **攻击者可控**（引擎最弱，必须人工确认）
+3. 无有效净化/屏障
+4. 生产代码（`file_role: production`，不是 test/build/vendor）
+5. 有可复现的验证思路（或已 `payload_verified`）
+
+置信度标注：`0.95+`（多证据交叉）/ `0.7–0.95`（一维未验证）/ `<0.7`（标 `needs_review`）
+
+**FP 满足其一即可**：不可达 / 有效净化 / 有效屏障 / 非生产代码 / 参数不可控（常量、数值、服务端生成）/ 设计内功能 / 漏洞类型与上下文不匹配
+
+**攻击链写法**（TP 必填）：`外部输入点 → 中间传播(file:line) → sink(file:line)`，每环标注角色：入口 | 传播 | gadget | sink
+
+---
+
+## 6. 输出契约
 
 ```json
 {
   "round": "<轮号>",
   "target": "<项目>",
   "phase": "triage|deep_review|final",
+  "engine_blindness": ["endpoint_axis", "auth_chain", "index_truncated"],
   "summary": {"tp_candidates": 0, "fp": 0, "hardening": 0},
-  "tp_candidates": [
-    {
-      "title": "...",
-      "cwe": "CWE-xxx",
-      "chain": ["源 文件:行", "传播 文件:行", "sink 文件:行"],
-      "scenario": "攻击者画像+前提+后果",
-      "verified": false,
-      "verify_plan": "实机验证步骤建议",
-      "human_gate": true
-    }
-  ],
+  "tp_candidates": [{
+    "title": "...",
+    "cwe": "CWE-xxx",
+    "chain": ["源 file:line", "传播 file:line", "sink file:line"],
+    "scenario": "攻击者画像 + 前提 + 后果",
+    "evidence_refs": ["file:line + ≤5 行摘录（注明工具）"],
+    "verified": false,
+    "verify_plan": "...",
+    "human_gate": true
+  }],
   "fp_families": [{"family": "...", "count": 0, "reason": "...", "examples": ["file:line"]}],
   "hardening": [{"title": "...", "evidence": "file:line"}],
   "deep_review_suggestions": ["..."],
@@ -245,27 +374,71 @@ Phase 6 固化：commit + CHANGELOG + 台账 + 报告（0day 才双份）
 }
 ```
 
-## 5. 人工闸门（遇到即停）
+`engine_blindness` 非空时，报告正文必须有一句"引擎对这个目标的 X 轴失明，以下结论不含 X 轴判断"。
 
-- 任何 TP_CANDIDATE → `human_gate: true`，不得自行继续。
+---
+
+## 7. 人工闸门（遇到即停）
+
+- 任何 TP_CANDIDATE → `human_gate: true`，不再继续。
 - 需要联网上报 / git push / 修改引擎源码 → 停。
-- 规则 YAML 新增/修改需附回放验证计划。
+- 规则 YAML 新增或修改 → 需附回放验证计划。
 
-## 6. 已知 FP 家族（节选）
+---
 
-- React JSX 默认转义 / DOMPurify 白名单 / res.json 非 HTML sink
-- DB 自增 ID/UUID/服务端生成路径
-- 配置键名映射表常量 / 示例默认凭证 / 测试 fixture
+## 8. 已知 FP 家族（先查这个再下判断）
+
+- React JSX 默认转义 / DOMPurify 白名单 / `res.json` 非 HTML sink
+- DB 自增 ID / UUID / 服务端生成路径（不是用户可控）
+- 配置键名常量 / 示例默认凭证 / 测试 fixture
 - redirect 固定值或同源相对路径
-- Math.random 非安全用途
-- vendor/构建产物/自动生成代码
+- `Math.random` 非安全用途
+- vendor / 构建产物 / min 化 bundle / 自动生成代码
+- 第三方前端 JS（swagger-ui / chosen / asciinema player）
+- Go 字符串常量被当成端点（`"/error"` 是健康检查常量）
+- Go 路由包装器（`mux.HandleFunc(w, requireLogin(h))`）被当成未鉴权
 - 模板字面量 `${}` 插值 ≠ 纯字面量
-- 定长缓冲区 + `printf` 族格式串：**宽度/整数精度是最小值不是上限**，不能据此断言"输出有界"
+- 定长缓冲区 + `printf` 族：**宽度/整数精度是最小值不是上限**，不能据此断言输出有界
+- CWE-1333（正则回溯）要先验证量词是否被字面量分隔符钉死——钉死的是线性，实测 3/4 是 FP
 
-## 7. 红线
+---
 
-1. 不降质量标准：宁可诚实 0 TP。
-2. 每条结论给证据 `文件:行号 + 代码摘录 ≤5行`，并注明来自哪个工具/哪个 resolver。
-3. 未实跑验证的推断标 `"verified": false`。
-4. 不修改目标项目文件。
-5. 只输出 JSON（除非任务明确要求总结）。
+## 9. 反模式（这些做法实测有害）
+
+| 反模式 | 为什么错 | 正确做法 |
+|---|---|---|
+| 一上来 `scan_code(deep)` 全量 | 成熟项目 100% FP，且返回 20 条却报 681 条 | Phase 0 用 `coverage_summary`，扫描只在"不知道从哪看起"时用 |
+| 把 `candidate_chains` 的 100 条逐条核实 | 单链核实成本 > 直接读代码 | 先按 `payload.tier` + `score` 排序，只深挖 `guard_ineffective_token` / `payload_may_survive` |
+| 相信 `confidence: high` | 它只描述鉴权建模，不描述整体可信度 | 以 `method_routes` / `index_truncated_at_limit` / `uncertainty.reasons` 为准 |
+| 用 `symbol` 代替 `line` 调 `slice_backward` | 函数归属会指错 | 先 `grep` 拿行号 |
+| 引擎没报就当没有 | 端点轴/模板/Go 包装器都是盲区 | 先判 1.2 节的失明形态，再决定"没报"能不能当证据 |
+| 为了产出而凑 finding | 降标准比 0 TP 伤害更大 | 诚实 0 TP + `hardening` 列表 |
+
+---
+
+## 10. 环境
+
+| 项 | 值 |
+|---|---|
+| 启动 | `ctx-audit mcp [--read-only]`（stdio JSON-RPC） |
+| 项目根 | **MCP 进程的启动目录**；所有工具有 `project_path` 可覆盖 |
+| 必须先扫描吗 | **不需要**。首次调用按需建索引（`index.hit_source=miss` + `build_ms`） |
+| 索引缓存 | TTL 内复用；改代码后传 `refresh: true` |
+| 动态验证 | 需 `CTX_AUDIT_VERIFY_DIR` 指向白名单 fixture 目录；Java 额外可给 `CTX_AUDIT_VERIFY_CLASSPATH` |
+| 载荷预算 | `CTX_AUDIT_MAX_TOOL_BYTES`（默认 64KB） |
+| 索引上限 | `CTX_AUDIT_INDEX_MAX_FILES`（默认 2000） |
+
+---
+
+## 11. 引擎缺口（判定时要主动规避）
+
+这些是**已知**的，不是你判断失误：
+
+1. **`.tmpl` / `.html` / `.vue` 模板文件不解析** —— 模板里的泄露/注入必须人工读。
+2. **Go 路由包装器不建模** —— `mux.HandleFunc` + 中间件链解析不了，鉴权结论不可信。
+3. **"路径/参数是否用户可控"判断弱** —— `controllability` 常为 `unknown`。
+4. **名级图无类型解析** —— `can_reach` 的 `reachable: true` 只代表拓扑可能。
+5. **候选轴对成熟项目近 100% FP** —— 候选当"排除清单"用。
+6. **第三方静态资产不过滤** —— min 化 JS 会进候选。
+
+遇到这些，**如实写进报告**，不要替引擎圆场，也不要因此否定整个结论。
