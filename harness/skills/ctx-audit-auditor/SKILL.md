@@ -162,14 +162,15 @@ description: CTX-Audit 审计 skill（v2）。当任务要求对真实项目做�
 |---|---|---|
 | `scan_code` | `mode`(rules/taint/deep) `min_severity` `limit`(50, 0=200, 上限 500) | 传统 SAST 候选集 |
 
-### 2.3 参数陷阱（都是实测踩过的）
+### 2.3 参数与成本须知
 
-1. **`slice_backward` 必须给 `line`。** 只给 `symbol` 时 `target_line` 为 `null`，函数归属会指向**错误的类**（实测 `symbol=process` 解析成 `Dao` 而不是 `process`）。用 `symbol` 之前先用 `grep` 拿到行号。
-2. **`get_project_routes` 不带过滤 = 贵。** 658 文件 Spring 上 `detail=brief` 是 45KB（已触顶截断）。**永远先给 `route_pattern` 或 `only_uncovered: true`**，或者用 `coverage_triage` 拿排序清单。
-3. **`candidate_chains` 每条约 1.5–2KB。** `limit=5` 约 10KB，`limit=20` 约 27KB。先估再调。
-4. **`audit_brief` 要显式传 `limit`。** 默认 10 在 658 文件项目上是 19KB。
-5. **`verify_payload` 的 `archetype` 参数说明只写了 sql/ssrf，但底层接受 sql/ssrf/path/command/template/deserialize/xss/jndi，并按扩展名分派 Python/Node/Java。** 别被参数描述限制住。
-6. **`scan_code` 的 `by_severity` 是全量统计，`findings` 是截断后的。** 实测 mall 报 `critical: 388, high: 293`，但只返回 20 条——**不要以为一共 20 条**。
+1. **`get_project_routes` 不带过滤 = 贵。** 658 文件 Spring 上 `detail=brief` 是 45KB（已触顶截断）。**永远先给 `route_pattern` 或 `only_uncovered: true`**，或者用 `coverage_triage` 拿排序清单。
+2. **`candidate_chains` 每条约 1.5–2KB。** `limit=5` 约 10KB，`limit=20` 约 27KB。先估再调。
+3. **`audit_brief` 要显式传 `limit`。** 默认 10 在 658 文件项目上是 19KB。
+4. **`verify_payload` 的 `archetype` 参数说明只写了 sql/ssrf，但底层接受 sql/ssrf/path/command/template/deserialize/xss/jndi，并按扩展名分派 Python/Node/Java。** 别被参数描述限制住。
+5. **`scan_code` 的 `by_severity` 是全量统计，`findings` 是截断后的。** 实测 658 文件项目报 `critical: 388, high: 293`，但只返回 20 条——**不要以为一共 20 条**。
+
+**`slice_backward` 两种定位都可用了**：给 `line` 直接定位；只给 `symbol` 时引擎会先把它解析成本文件里的定义行（`target_line_source: "symbol"`），函数归属取该符号自身。两者都对不上时才是 `file_end`——那时要自己给 `line`。
 
 ---
 

@@ -66,17 +66,60 @@ impl SsaGraph {
         g
     }
 
+    /// 行 → 所属函数。注解行 / Javadoc 行属于**紧随其后**的那个函数，不属于上一个。
+    ///
+    /// 只看"不大于目标行的最近定义"会把方法上方的 `@RequestMapping`、`///` 判给上一个
+    /// 函数（实测：`DemoController.java:71` 的注解行被解析成 :65 的 `updateBrand`，
+    /// 而它实际属于 :73 的 `deleteBrand`）。这里的判据是：如果目标行到下一个定义之间
+    /// 只隔着空白/注解/注释，就归下一个定义。
     fn enclosing(&self, file: &str, line: u32) -> Option<(String, u32)> {
         let defs = self.defs.get(file)?;
-        defs.iter()
+        let prev = defs
+            .iter()
             .filter(|(_, l)| *l <= line)
-            .max_by_key(|(_, l)| *l)
+            .max_by_key(|(_, l)| *l);
+        let next = defs
+            .iter()
+            .filter(|(_, l)| *l > line)
+            .min_by_key(|(_, l)| *l);
+        if let Some((next_name, next_line)) = next {
+            if prev.is_none() || self.is_pre_definition_region(file, line, *next_line) {
+                return Some((next_name.clone(), *next_line));
+            }
+        }
+        if let Some((name, def_line)) = prev {
+            return Some((name.clone(), *def_line));
+        }
+        defs.iter()
+            .min_by_key(|(_, l)| l.abs_diff(line))
             .map(|(n, l)| (n.clone(), *l))
-            .or_else(|| {
-                defs.iter()
-                    .min_by_key(|(_, l)| l.abs_diff(line))
-                    .map(|(n, l)| (n.clone(), *l))
-            })
+    }
+
+    /// `line..=def_line` 之间是否只有空白、注解与注释（即目标行在下一个函数的头部区）。
+    fn is_pre_definition_region(&self, file: &str, line: u32, def_line: u32) -> bool {
+        let Some(content) = self.contents.get(file) else {
+            return false;
+        };
+        let text: Vec<&str> = content.lines().collect();
+        let start = line as usize;
+        let end = (def_line as usize).saturating_sub(1);
+        if start == 0 || end < start {
+            return false;
+        }
+        // 窗口上限：只认紧邻的头部区，避免把远处的注释也算进去
+        if end - start > 20 {
+            return false;
+        }
+        (start..=end).all(|i| {
+            let t = text.get(i - 1).map(|s| s.trim()).unwrap_or("");
+            t.is_empty()
+                || t.starts_with('@')
+                || t.starts_with("//")
+                || t.starts_with('*')
+                || t.starts_with("/*")
+                || t.starts_with("*/")
+                || t.starts_with('#')
+        })
     }
 
     fn def_end(&self, file: &str, def_line: u32) -> u32 {
@@ -578,6 +621,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// 注解行归属：方法上方的 `@RequestMapping` 属于**紧随其后**的方法。
+    ///
+    /// 回归背景：只看"不大于目标行的最近定义"会把它判给上一个方法（实测
+    /// `DemoController.java:71` 的 `@RequestMapping` 被解析成 :65 的 `updateBrand`，
+    /// 而它实际属于 :73 的 `deleteBrand`），后续所有参数流结论都跟着错。
+    #[test]
+    fn enclosing_prefers_the_following_definition_over_annotations() {
+        let dir = tmp("enclosing-annotation");
+        write_tree(
+            &dir,
+            &[(
+                "C.java",
+                r#"public class C {
+    public void updateBrand(Long id) {
+        log(id);
+    }
+
+    @Operation(summary = "x")
+    @RequestMapping(value = "/b/{id}", method = RequestMethod.GET)
+    public void deleteBrand(@PathVariable("id") Long id) {
+        dao.delete(id);
+    }
+}
+"#,
+            )],
+        );
+        let g = SsaGraph::build(&dir);
+        // 行号：1 class / 2 updateBrand / 3 体内 / 4 } / 5 空 / 6-7 注解 / 8 deleteBrand
+        let (name, line) = g.enclosing("C.java", 6).expect("应能归属");
+        assert_eq!(name, "deleteBrand", "注解行必须归下一个方法: {name}@{line}");
+        assert_eq!(line, 8);
+        let (name1b, _) = g.enclosing("C.java", 7).unwrap();
+        assert_eq!(name1b, "deleteBrand", "第二个注解行亦然");
+        // 方法头本身仍然归属自己
+        let (name2, _) = g.enclosing("C.java", 8).unwrap();
+        assert_eq!(name2, "deleteBrand");
+        // 上一个方法的函数体内仍然归属上一个
+        let (name3, _) = g.enclosing("C.java", 3).unwrap();
+        assert_eq!(name3, "updateBrand");
     }
 
     #[test]

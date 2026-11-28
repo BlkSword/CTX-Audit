@@ -1267,6 +1267,8 @@ impl Tool for CodeIntelTool {
                 // 语义升级：定位目标行所在的**函数**，窗口必须覆盖函数头（否则切片读者看不到上下文）
                 let (sindex, s_hit, s_build_ms) =
                     crate::symbol_index::get_or_build(root, refresh, None);
+                // `symbol` 单独使用时的解析结果（在 match 外读取，故在此声明）
+                let mut symbol_resolved_line: Option<u32> = None;
                 let mut function_name: Option<String> = None;
                 let mut function_def_line: Option<u32> = None;
                 // 根因定向证据：函数头原文（可引用），以及无法解析时的最近声明锚点
@@ -1313,10 +1315,45 @@ impl Tool for CodeIntelTool {
                         // 体范围判定用代码段（多行字符串里的顶格行不应被当成 dedent）
                         let code = code_lines(content, hash_comment_language(path));
                         let code_refs: Vec<&str> = code.iter().map(|s| s.as_str()).collect();
-                        let center = if line > 0 { line.min(lines.len()) } else { lines.len() };
+                        // `symbol` 单独使用（不给 line）时，先把这个名字用符号索引解析成本文件里的
+                        // 定义行。不解析的话 center 会退到文件末尾，函数归属落到**最后一个**定义上，
+                        // 与调用方想看的符号毫无关系（实测 symbol=process 被解析成 Dao）。
                         let brace = is_brace_language(path);
                         // K&R 容忍只在 C 类文件生效（跨语言误召回的入口，必须门控）
                         let c_like = is_c_like_path(path);
+                        symbol_resolved_line = if line == 0 && !symbol.is_empty() {
+                            let via_index = sindex.file_index(path).and_then(|fi| {
+                                sindex
+                                    .definitions_in_file(fi)
+                                    .into_iter()
+                                    .find(|(name, _, _)| name == symbol)
+                                    .map(|(_, l, _)| l)
+                            });
+                            // 索引只收"带 def 关键字"的定义；Java/JS 等方法没有关键字，
+                            // 索引里查不到 ⇒ 退回按函数头解析逐行扫描。
+                            via_index.or_else(|| {
+                                code_refs.iter().enumerate().find_map(|(idx, code_line)| {
+                                    let following: Vec<&str> = code_refs
+                                        .iter()
+                                        .skip(idx + 1)
+                                        .filter(|s| !s.trim().is_empty())
+                                        .take(6)
+                                        .copied()
+                                        .collect();
+                                    match function_header_name_multi(code_line, &following, c_like) {
+                                        Some(name) if name == symbol => Some((idx + 1) as u32),
+                                        _ => None,
+                                    }
+                                })
+                            })
+                        } else {
+                            None
+                        };
+                        let center = match symbol_resolved_line {
+                            Some(l) => (l as usize).min(lines.len()),
+                            None if line > 0 => line.min(lines.len()),
+                            None => lines.len(),
+                        };
                         // 目标行之前最后一条声明，且其函数体覆盖目标行 ⇒ 它就是所在函数。
                         //
                         // 归属选择**优先**取"自身能解析为函数头"的定义：函数体内的局部声明
@@ -1357,12 +1394,34 @@ impl Tool for CodeIntelTool {
                                 .collect();
                             function_header_name_multi(code_line, &following, c_like).is_some()
                         };
-                        let enclosing = defs
-                            .iter()
-                            .filter(|(_, def_line, _)| parses_as_header(*def_line))
-                            .next_back()
-                            .or_else(|| defs.last())
-                            .cloned();
+                        // 由 `symbol` 解析出来的行：它的"所属函数"就是这个符号本身。
+                        // 索引里可能没有这条定义（Java/JS 方法没有 def 关键字），
+                        // 那样 `defs` 只会剩下外层类，归属就会错成类名。
+                        let symbol_def = symbol_resolved_line.and_then(|l| {
+                            defs.iter()
+                                .find(|(_, def_line, _)| *def_line == l)
+                                .cloned()
+                                .or_else(|| {
+                                    let idx = (l as usize).saturating_sub(1);
+                                    let code_line = code_refs.get(idx).copied().unwrap_or("");
+                                    let following: Vec<&str> = code_refs
+                                        .iter()
+                                        .skip(idx + 1)
+                                        .filter(|s| !s.trim().is_empty())
+                                        .take(6)
+                                        .copied()
+                                        .collect();
+                                    function_header_name_multi(code_line, &following, c_like)
+                                        .map(|name| (name, l, String::new()))
+                                })
+                        });
+                        let enclosing = symbol_def.or_else(|| {
+                            defs.iter()
+                                .filter(|(_, def_line, _)| parses_as_header(*def_line))
+                                .next_back()
+                                .or_else(|| defs.last())
+                                .cloned()
+                        });
                         if let Some((name, def_line, _)) = &enclosing {
                             function_name = Some(name.clone());
                             function_def_line = Some(*def_line);
@@ -1763,7 +1822,18 @@ impl Tool for CodeIntelTool {
                         "scope_anchor": scope_anchor,
                         "nearest_declaration": nearest_declaration,
                         "includes_function_header": includes_function_header,
-                        "target_line": if line > 0 { json!(line) } else { Value::Null },
+                        "target_line": if line > 0 {
+                json!(line)
+            } else {
+                symbol_resolved_line.map(|l| json!(l)).unwrap_or(Value::Null)
+            },
+            "target_line_source": if line > 0 {
+                json!("line")
+            } else if symbol_resolved_line.is_some() {
+                json!("symbol")
+            } else {
+                json!("file_end")
+            },
                         "window": {"start_line": window_start + 1, "end_line": window_end},
                         "depth": depth,
                         "forward": forward,

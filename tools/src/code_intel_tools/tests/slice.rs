@@ -4,6 +4,55 @@
 
 use super::super::*;
 
+    /// `symbol` 单独使用（不给 `line`）时必须解析成**该符号自己**的定义行。
+    ///
+    /// 回归背景：`line` 缺省时 `center` 会退到文件末尾，函数归属落到最后一个定义上——
+    /// 实测 `symbol=process` 被解析成同文件的 `Dao` 类。Java/JS 的方法没有 `def`
+    /// 关键字，符号索引里查不到，必须再按函数头解析兜底。
+    #[tokio::test]
+    async fn slice_by_symbol_resolves_to_that_symbol_not_the_file_end() {
+        let root = std::env::temp_dir().join("ctx-audit-slice-symbol");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/C.java"),
+            r#"public class C {
+    public void alpha(String a) {
+        sink(a);
+    }
+
+    @RequestMapping(value = "/x")
+    public void beta(String b) {
+        sink(b);
+    }
+}
+"#,
+        )
+        .unwrap();
+        crate::index_cache::invalidate(&root);
+        crate::symbol_index::invalidate(&root);
+
+        let tool = CodeIntelTool::new(root.to_string_lossy().to_string(), IntelKind::SliceBackward);
+        let out = tool
+            .execute(json!({"file": "src/C.java", "symbol": "beta", "detail": "code"}))
+            .await
+            .unwrap();
+        let d = out.data.clone().expect("应有 envelope data");
+        assert_eq!(d["data"]["target_line_source"], "symbol", "{d}");
+        assert_eq!(d["data"]["target_line"], 7, "应解析到 beta 的定义行: {d}");
+        assert_eq!(d["data"]["function"], "beta", "归属必须是 beta 不是类名: {d}");
+        assert_eq!(d["data"]["function_def_line"], 7, "{d}");
+
+        // alpha 也一样，且不能落到文件末尾的 beta 上
+        let out2 = tool
+            .execute(json!({"file": "src/C.java", "symbol": "alpha", "detail": "code"}))
+            .await
+            .unwrap();
+        let d2 = out2.data.clone().expect("应有 envelope data");
+        assert_eq!(d2["data"]["target_line"], 2, "{d2}");
+        assert_eq!(d2["data"]["function"], "alpha", "{d2}");
+    }
+
     /// 多行签名：C/C++ 签名跨 3 行以上时也必须能取出函数名（实测
     /// `static node_t *open_header(` + 2 行参数 + `… int len) {`）。
     #[test]
